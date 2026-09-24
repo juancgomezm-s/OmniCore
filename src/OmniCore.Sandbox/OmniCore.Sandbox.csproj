@@ -1,9 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Multi-target: compartida con OmniCoder (net8) sin exigirle migrar (ADR-0038 §6). No usar APIs exclusivas de net10. -->
   <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
     <PackageId>OmniCore.Sandbox</PackageId>
-    <Description>Aislamiento de procesos y fronteras de rutas en Windows (AppContainer, Job Objects). Compartida con OmniCoder; no depende de ningun otro proyecto OmniCore.</Description>
+    <Description>Aislamiento de procesos y fronteras de rutas (Windows: AppContainer y Job Objects; Linux: bubblewrap/Landlock/seccomp). Compartida con OmniCoder; no depende de ningún otro proyecto OmniCore.</Description>
   </PropertyGroup>
 
 </Project>

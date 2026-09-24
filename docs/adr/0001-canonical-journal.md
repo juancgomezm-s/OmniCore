@@ -89,7 +89,7 @@ Varios `ArtifactId` pueden apuntar al mismo blob, lo que da deduplicación. La m
 
 - **La unidad de retención es la Session.** Mientras la sesión exista, todo artifact referenciado por sus eventos se conserva. **Un artifact referenciado por historia canónica no puede desaparecer arbitrariamente.** Hay dos únicas salidas explícitas:
   - **Evento `ArtifactRedacted`:** elimina el contenido por seguridad, por ejemplo si se filtró un secreto. Conserva hash y metadata, y las lecturas devuelven `Redacted`.
-  - **`omni session purge <id>`:** borra la sesión completa, eventos y referencias. Sus artifacts quedan sin referencias y el GC los recoge.
+  - **`omni session purge <id>`:** borra la sesión completa, eventos y referencias. Sus artifacts quedan sin referencias y el GC los recoge. Los registros de **auditoría** de esa sesión (metadata redactada) **sobreviven** a la purga (ADR-0043).
 - **GC mark-and-sweep:**
   - El conjunto vivo es todo lo referenciado por alguna sesión retenida, más las escrituras en curso protegidas por un lease.
   - Se borran los blobs fuera del conjunto vivo con más antigüedad que un periodo de gracia (24 h por defecto).

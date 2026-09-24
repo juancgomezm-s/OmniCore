@@ -1,6 +1,9 @@
 # ADR-0015 — Process Runtime unificado: `process.exec` como primitive, shell como superficie de riesgo
 
-- **Estado:** Aceptada (2026-09-24)
+- **Estado:** Aceptada — rev. 2 (2026-09-24). **Rev. 2** (revisión integral):
+  - `SandboxProfile` se reemplaza por el de ADR-0038 §3: sin `None`, con red y filesystem declarados, multiplataforma;
+  - la resolución de ejecutables y la allowlist de entorno se precisan en ADR-0037 §6;
+  - los procesos de build/test/restore tienen **red sin restricción** por decisión del usuario (ADR-0037 §4).
 - **Reemplaza:** `shell.exec` como tool principal (spec §38) y el `IProcessRuntime` genérico de la spec §39
 - **Relacionado:** ADR-0004 (efectos), ADR-0008 (Sandbox), ADR-0014 (pipeline), ADR-0018 (secretos)
 - **Diagrama:** [arquitectura §8](../architecture/arquitectura.md#8-process-runtime)
@@ -38,7 +41,7 @@ Existen (`bash`, `cmd`, `powershell`), pero como superficie de **mayor riesgo**:
 | Aspecto | `process.exec` | `shell.exec` |
 |---|---|---|
 | Autorización | Política estructurada sobre ejecutable + argv | `Ask` por defecto; `Allow` solo con una regla explícita del usuario |
-| Sandbox | Según el perfil de la Task | **AppContainer obligatorio** (ADR-0008) y red denegada por defecto |
+| Sandbox | Perfil por defecto según `ProcessEffect` (ADR-0038 §3) | Sandbox `Strong` y red denegada por defecto; con sandbox `Basic` solo tras `WeakSandboxConsent` (ADR-0038 §3) |
 | `EffectClass` | La declarada | Siempre `NonIdempotent`; nunca se reintenta solo |
 | Perfil de modelo | Cualquiera permitido | Requiere `HarnessPolicy` que lo habilite (traits mínimos, ADR-0007) |
 | Análisis del texto | No aplica | Solo **advisory** para UX (reglas portadas de OmniCoder); **nunca** es la autoridad |
@@ -62,7 +65,7 @@ public interface IProcessHandle : IAsyncDisposable
 
 `process.exec` y `shell.exec` comparten este runtime, que cubre:
 
-- **Sandbox:** `SandboxProfile` es `None | JobObjectOnly | AppContainer`, e incluye límites de CPU, memoria y cantidad de procesos (ADR-0008). Todo proceso corre al menos dentro de un Job Object con kill-on-close.
+- **Sandbox:** `SandboxProfile` según ADR-0038 §3 (`Strong | Basic`, filesystem, red y límites). Todo proceso tiene al menos control del árbol de procesos (Job Object, cgroup o grupo de procesos) y límites de recursos.
 - **Entorno:** se construye desde una allowlist más el delta del claim. Los `SecretRef` se resuelven al lanzar y sus valores se registran en el redactor (ADR-0018). Solo se persisten los **nombres** de las variables.
 - **Salida y backpressure:**
   - canal acotado;
@@ -78,5 +81,5 @@ public interface IProcessHandle : IAsyncDisposable
 | Elemento | Categoría |
 |---|---|
 | Tipos `ProcessClaim`, `ProcessEffect`, `SandboxProfile` (se referencian desde `ResourceClaims` en M1) | **Necesario desde M1** (solo tipos) |
-| `IProcessRuntime` con Job Object (M3), AppContainer (M3), `shell.exec` (M3, tras `process.exec`) | **Contract now / implementation later** |
+| `IProcessRuntime` mínimo con control del árbol de procesos (M2, lo necesita el servidor local managed), confinamiento `Strong` por plataforma, `process.exec` y `shell.exec` (M3) | **Contract now / implementation later** |
 | PTY/ConPTY, procesos interactivos | **Deferable** |

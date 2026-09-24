@@ -28,8 +28,17 @@ public sealed class ProjectDependencyTests
             "OmniCore.Abstractions", "OmniCore.Domain", "OmniCore.Engine", "OmniCore.Context", "OmniCore.Models",
             "OmniCore.Tools", "OmniCore.Security", "OmniCore.Execution", "OmniCore.Infrastructure", "OmniCore.Protocol",
         ],
-        ["OmniCore.Cli"] = ["OmniCore.Host", "OmniCore.Protocol"],
+        ["OmniCore.Client"] = ["OmniCore.Protocol"],
+        ["OmniCore.Cli"] = ["OmniCore.Client", "OmniCore.Host", "OmniCore.Protocol"],
     };
+
+    // Frameworks visuales: solo el cliente de terminal puede referenciarlos (ADR-0030 §6).
+    private static readonly string[] UiFrameworkPackagePrefixes = ["Terminal.Gui", "Spectre.Console"];
+    private const string UiHostProject = "OmniCore.Cli";
+
+    // Excepción a "todo net10": solo las librerías que consume OmniCoder (net8) compilan también para net8 (ADR-0038 §6).
+    private static readonly HashSet<string> Net8MultiTargetProjects =
+        new(["OmniCore.Protocol", "OmniCore.Client", "OmniCore.Sandbox"], StringComparer.Ordinal);
 
     public static TheoryData<string> Projects()
     {
@@ -75,6 +84,46 @@ public sealed class ProjectDependencyTests
             .ToArray();
 
         Assert.True(packages.Length == 0, $"{project} debe ser puro y no tener paquetes: {string.Join(", ", packages)}");
+    }
+
+    [Theory]
+    [MemberData(nameof(Projects))]
+    public void Only_shared_libraries_target_net8(string project)
+    {
+        var frameworks = XDocument.Load(SourceProjects()[project])
+            .Descendants("TargetFrameworks")
+            .SelectMany(e => e.Value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .ToArray();
+        var targetsNet8 = frameworks.Any(tf => tf.StartsWith("net8", StringComparison.OrdinalIgnoreCase));
+
+        if (Net8MultiTargetProjects.Contains(project))
+        {
+            Assert.True(targetsNet8 && frameworks.Contains("net10.0"),
+                $"{project} debe compilar para net10.0 y net8.0 (lo consume OmniCoder); declara: {string.Join(", ", frameworks)}.");
+        }
+        else
+        {
+            Assert.False(targetsNet8, $"{project} no puede apuntar a net8: la excepción es solo para Protocol, Client y Sandbox (ADR-0038).");
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(Projects))]
+    public void Ui_frameworks_are_referenced_only_by_the_terminal_client(string project)
+    {
+        if (project == UiHostProject)
+        {
+            return;
+        }
+
+        var uiPackages = XDocument.Load(SourceProjects()[project])
+            .Descendants("PackageReference")
+            .Select(e => (string?)e.Attribute("Include") ?? string.Empty)
+            .Where(id => UiFrameworkPackagePrefixes.Any(prefix => id.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+
+        Assert.True(uiPackages.Length == 0,
+            $"{project} no puede referenciar frameworks visuales ({string.Join(", ", uiPackages)}); solo {UiHostProject} (ADR-0030).");
     }
 
     private static Dictionary<string, string> SourceProjects() =>

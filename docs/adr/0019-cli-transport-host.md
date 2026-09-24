@@ -51,7 +51,9 @@ public interface IOmniTransport
    ```
 
 3. **La superficie pública de Host es mínima:** la fábrica del host y del cliente in-process. Se verifica con un test (ADR-0009 §2.4).
-4. **Commands (ADR-0024):**
+4. **Input estructurado (ADR-0033):** `SendInput` lleva `InputPart[]` (`TextPart` y `ReferencePart`), no un string. Las referencias `@…` las resuelve el Host.
+   **Estado del cliente (ADR-0030):** `ClientProjection`, en `OmniCore.Client`, consume los `WireEvent`s del cliente. Los renderers TUI y plain leen de ella. **Excepción documentada:** el JSON renderer lee de `OmniClientSession`, emite `WireEnvelope`s tal cual y termina con un registro `RunOutcome { exitCode, outcome, runId }` (ADR-0030 §4).
+   **Commands (ADR-0024):**
    - El CLI parsea la sintaxis `/…` y produce una `CommandInvocation` estructurada.
    - Al Host solo llegan `WireCommand`s tipados o `SendInput` literal.
    - El catálogo de commands de servidor se obtiene con `QueryAsync(ListCommands)`.

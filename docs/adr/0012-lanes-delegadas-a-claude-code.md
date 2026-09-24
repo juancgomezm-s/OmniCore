@@ -1,6 +1,10 @@
 # ADR-0012 — Lanes delegadas a Claude Code
 
-- **Estado:** Aceptada — rev. 2 (2026-09-24): §3.6–3.7 integran el Effect Journal y el Plan.
+- **Estado:** Aceptada — rev. 3 (2026-09-24). Rev. 2: §3.6–3.7 integran el Effect Journal y el Plan. **Rev. 3** (decisión del usuario en la revisión integral):
+  - se implementa en **M7**, después de los worktrees; ya no en M6;
+  - **riesgo residual aceptado:** el proceso `claude` corre con sandbox `Basic` (control del árbol y límites, ADR-0038 §3) y red, así que **puede leer fuera del worktree**;
+  - como mitigación, se neutralizan `.claude/` y `.mcp.json` del repo dentro del worktree;
+  - la opción `--permission-prompt-tool` requiere MCP y queda para M8 o después.
 - **Relacionado:** ADR-0011 §3.3 (sin OAuth de Anthropic), ADR-0008 (aislamiento)
 - **Spec:** §10, §14 (Delegated), §16, INV-004, INV-005, INV-015
 
@@ -90,4 +94,4 @@ El adaptador se identifica internamente como `claude-code`. En la interfaz se de
 - ORQ puede combinar Explorer/Verifier locales con una Lane de implementación en Claude Code usando la suscripción del usuario, de forma permitida.
 - El consumo cuenta contra los límites del plan del usuario. El router debe tratarlo como un recurso limitado (disponibilidad y cuota) y no como gratuito.
 - Dependencia de un binario externo cuya CLI evoluciona. Se detectan capacidades por `system/init.capabilities`, no por versión, y hay un test de contrato con salida grabada de stream-json.
-- **Milestone:** M6 (multi-agent), después de M5 (router) y con M7 (worktrees) como requisito del aislamiento obligatorio.
+- **Milestone:** **M7** (rev. 3), después de los worktrees. `--permission-prompt-tool` requiere M8.

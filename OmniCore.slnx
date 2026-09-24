@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/OmniCore.Abstractions/OmniCore.Abstractions.csproj" />
     <Project Path="src/OmniCore.Cli/OmniCore.Cli.csproj" />
+    <Project Path="src/OmniCore.Client/OmniCore.Client.csproj" />
     <Project Path="src/OmniCore.Context/OmniCore.Context.csproj" />
     <Project Path="src/OmniCore.Domain/OmniCore.Domain.csproj" />
     <Project Path="src/OmniCore.Engine/OmniCore.Engine.csproj" />

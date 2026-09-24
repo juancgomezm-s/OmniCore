@@ -1,6 +1,11 @@
 # ADR-0028 — Memory como servicio externo al Core; separación Memory / Knowledge / Skills
 
-- **Estado:** Aceptada (2026-09-24). Contratos ahora; implementación a partir de M8.
+- **Estado:** Aceptada — rev. 2 (2026-09-24). Contratos ahora; implementación a partir de M8.
+- **Rev. 2** (decisión del usuario en la revisión integral): **toda la memoria entra en v1**: Session en M8; Project, Workspace y Global en M10. La spec §3 se corrige en consecuencia.
+- **Confianza** (revisión integral):
+  - en un workspace no confiable no se lee ni se promueve memoria de proyecto (ADR-0039 §3);
+  - el ranking pondera por origen: `UserStated` > `Promoted` con evidencia > `Observed` > origen `Model` (el de menor peso);
+  - la memoria nunca se presenta al modelo como instrucción, sino como dato con procedencia.
 - **Spec:** §54 (Knowledge, RAG y Memory)
 - **Relacionado:** ADR-0016 (WorkingState), ADR-0018 (secretos), ADR-0022 (scopes), ADR-0026 (skills), ADR-0029 (procedencia)
 - **Diagrama:** [arquitectura §30](../architecture/arquitectura.md#30-memory)

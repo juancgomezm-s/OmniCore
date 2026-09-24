@@ -7,6 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\OmniCore.Client\OmniCore.Client.csproj" />
     <ProjectReference Include="..\OmniCore.Host\OmniCore.Host.csproj" />
     <ProjectReference Include="..\OmniCore.Protocol\OmniCore.Protocol.csproj" />
   </ItemGroup>

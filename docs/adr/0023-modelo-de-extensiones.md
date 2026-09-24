@@ -9,7 +9,7 @@
 
 ### 1. Extensión = paquete instalable que registra componentes
 
-Una extensión puede aportar: **Tools, Commands, Skills, Hooks, ContextContributors, ModelProviders, Validators y CompletionGates.** No hay marketplace en v1.
+Una extensión puede aportar: **Tools, Commands, Skills, Hooks, ContextContributors, ModelProviders, Validators, CompletionGates** y **SidebarWidgets** declarativos (ADR-0032 §3). No hay marketplace en v1.
 
 ### 2. Frontera: un protocolo, no un assembly
 
@@ -22,7 +22,7 @@ Una extensión puede aportar: **Tools, Commands, Skills, Hooks, ContextContribut
 
 ### 3. Manifest versionado
 
-`omnicore-extension.json`:
+`omnicore-extension.yaml` (revisión integral: YAML, ADR-0039; el ejemplo se muestra en JSON solo por legibilidad de la estructura):
 
 ```json
 {
@@ -40,7 +40,8 @@ Una extensión puede aportar: **Tools, Commands, Skills, Hooks, ContextContribut
     "contextContributors": ["progress-dictionary"],
     "modelProviders":      [],
     "validators":          ["abl-syntax"],
-    "completionGates":     []
+    "completionGates":     [],
+    "sidebarWidgets":      [{ "id": "abl-dictionary", "title": "DICTIONARY" }]
   },
   "requests": {
     "capabilities": ["tool.register", "hook.observe", "context.contribute"],
@@ -58,12 +59,25 @@ Este `TrustLevel` lo usan todos los componentes: extensiones, hooks, tools, comm
 | Nivel | Qué es | Ejecución | Capacidades por defecto |
 |---|---|---|---|
 | `Core` | Compilado en OmniCore | in-process | todas las que su diseño requiera |
-| `Trusted` | Instalado por el usuario y marcado explícitamente como confiable (propio o de un publisher conocido) | fuera de proceso, `JobObjectOnly` | las solicitadas en el manifest, con consentimiento una vez |
-| `Project` | Viene en `.omnicore/` del repo | fuera de proceso, `JobObjectOnly` | solo si el usuario confió en el workspace; las solicitadas, con consentimiento |
-| `ThirdParty` | Instalado desde fuente externa sin marca de confianza | fuera de proceso, **AppContainer** | subconjunto seguro (`Observe` redactado, `Annotate`, tools con `Ask` en su primer uso) |
+| `Trusted` | Instalado por el usuario y marcado explícitamente como confiable (propio o de un publisher conocido) | fuera de proceso, sandbox `Strong` (ADR-0038) | las solicitadas en el manifest, con consentimiento una vez |
+| `Project` | Viene en `.omnicore/` del repo | fuera de proceso, sandbox `Strong` | solo si el usuario confió en el workspace (ADR-0039); las solicitadas, con consentimiento |
+| `ThirdParty` | Instalado desde fuente externa sin marca de confianza | fuera de proceso, sandbox `Strong` | subconjunto seguro (`Observe` redactado, `Annotate`, tools con `Ask` en su primer uso por sesión) |
 | `Untrusted` | Origen desconocido, hash no verificado o endpoint remoto | deshabilitado; o solo `Observe` redactado si es remoto | ninguna más |
 
 Correspondencia con ADR-0020: `Plugin` → `ThirdParty` (o `Trusted` si el usuario lo marca) y `External` → `Untrusted`.
+
+**Precisiones (revisión integral):**
+
+- **Orden total:** `Core > Trusted > Project > ThirdParty > Untrusted`. Lo usan las reglas de "una fuente de menor confianza no oculta a una de mayor" (ADR-0024, ADR-0026).
+- **Sandbox:** todo nivel que no sea `Core` corre con sandbox **`Strong`** cuando la plataforma lo ofrece (ADR-0038). `Trusted` y `Project` se diferencian de `ThirdParty` en el consentimiento y las capacidades, no en un sandbox más débil.
+- **Consentimiento:** en ningún nivel se conceden capacidades implícitas; `Project` y `Trusted` reciben solo las solicitadas y consentidas.
+
+**Servidores MCP** (como extensiones de `SourceKind.Mcp`):
+
+- **MCP local configurado por el usuario** (en su `settings.yaml`): nivel `Trusted`, con un techo de permisos declarado en esa configuración (equivalente a `requests.permissions`). Corre con sandbox `Strong`.
+- **MCP declarado en el repo** (`.omnicore/` o `.mcp.json`): nivel `Project`; requiere workspace confiable y consentimiento.
+- **MCP remoto:** `Untrusted` salvo que el usuario lo marque `Trusted` explícitamente. Los argumentos salientes pasan por el redactor (ADR-0018).
+- **Primer uso:** las tools MCP con efecto hacen `Ask` en su primer uso por sesión, salvo que la fuente sea `Trusted`.
 
 ### 5. `ComponentSource`: origen común de todo componente
 

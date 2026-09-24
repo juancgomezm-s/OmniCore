@@ -83,6 +83,14 @@ public abstract record ModelStreamEvent;
 
 Estos tipos viven en **Domain**: son datos persistidos en eventos y artifacts. `IModelProvider` vive en **Abstractions**.
 
+**`ProviderCapabilities.UsageReporting`** (agregado el 2026-09-24, ADR-0031 §3) declara qué informa el provider:
+
+- `Usage` (tokens);
+- `Cost` (`Reported` si lo informa el provider, `Estimated` si se calcula con el precio declarado);
+- `Quota` (créditos o cuota restantes).
+
+El cliente nunca muestra un dato que el provider no declara: una cuota no informada se muestra como `—`.
+
 ### 3. Qué se normaliza y qué no
 
 | Información | ¿Se normaliza? | ¿Se persiste para resume? | ¿Entra al Context Engine? | ¿Es sensible? |
@@ -102,6 +110,20 @@ Estos tipos viven en **Domain**: son datos persistidos en eventos y artifacts. `
 2. Si el siguiente Turn va a otro modelo o familia (escalación o cambio de modelo), el Context Engine proyecta el bloque según una regla de degradación portada de Pi (`transform-messages`): el razonamiento visible se convierte en texto marcado o se omite, y lo opaco se descarta.
 3. El adapter es el único componente que interpreta `ProviderOpaque` y `ProviderState`. El Core los trata como bytes con metadata.
 4. Todo lo opaco es `Sensitivity = Sensitive` (ADR-0001 §9): no va a logs ni telemetría, ni se muestra en `/context`.
+
+## Propiedad de los tipos de modelo (revisión integral, 2026-09-24)
+
+Resuelve la superposición de tipos detectada en la revisión (modelos F17):
+
+| Tipo | Es dueño de | No debe contener |
+|---|---|---|
+| `DeclaredCapabilities` (ADR-0007; reemplaza el `ModelDescriptor` de la spec §17) | hechos del modelo: contexto, output máximo, modalidades, soporte de tools, esfuerzos de razonamiento, `UsageReporting` | políticas |
+| `ProviderDescriptor` | familia, endpoint, auth y **compat flags** (ADR-0011 §8) | datos por modelo |
+| `EffectiveModelProfile` (ADR-0007) | hechos + traits resueltos **por `ModelQualificationKey`** | decisiones por Turn |
+| `HarnessPolicy` | `ToolCallFormat`, `ToolMode`, `MaxVisibleTools`, `Guidance`, `PlanControl`… | hechos |
+| `EffectiveExecutionProfile` (spec §20) | intersección **por Turn**: `EffectiveModelProfile` ∩ requisitos de la Task ∩ `AgentProfile` ∩ permisos ∩ disponibilidad | — |
+| `ModelSelection` | valores resueltos para **una** request: modelo, esfuerzo, `ToolMode`, presupuesto de contexto (`long`) | — |
+| `ModelRequest.Reasoning` | se deriva de `ModelSelection.Effort`; no es una segunda fuente | — |
 
 ## Clasificación
 

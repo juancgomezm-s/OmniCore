@@ -50,7 +50,9 @@ aliases:
 
 - El router trabaja con **alias** y con el `EffectiveModelProfile` de cada modelo (ADR-0007), nunca con ids de modelo. Nombres como Luna o Sol viven aquí (spec §21).
 - Descubrimiento (`/v1/models`, `/props`, catálogos) **completa** el descriptor; lo declarado prevalece.
-- Se resuelve por scopes (spec §51): User (`~/.omnicore/`) → Project (`.omnicore/`) → overrides de Run/Task.
+- **Ubicación (revisión integral):** `providers.yaml` en el directorio de configuración de usuario (ADR-0039 §2). **Providers, `baseUrl` y `auth.ref` solo se definen en scope User**; un repo nunca puede redefinirlos (ADR-0039 §4). `~/.omnicore/` no existe.
+- **Catálogo (models.dev):** se usa un **snapshot embebido** en el binario. La actualización por red es opt-in (`models.catalog.refresh: true`), coherente con local-first.
+- **Registro mínimo en M2:** un provider, un modelo por defecto, sin alias ni router. Si no hay modelo configurado, se emite el error tipado `NoModelConfigured`, con la sugerencia de `/doctor` y un asistente de configuración en el CLI.
 
 ### 3. Credenciales y autenticación
 
@@ -89,7 +91,7 @@ aliases:
 - `LocalModelHost` soporta dos modos:
   - **attach:** se conecta a un `llama-server` ya levantado.
   - **managed:** lo lanza y supervisa.
-- El modo managed porta de `LocalModelEngine`: puerto efímero asignado por el SO en loopback, `--api-key` aleatoria por proceso y Job Object.
+- El modo managed porta de `LocalModelEngine`: puerto efímero asignado por el SO en loopback, `--api-key` aleatoria por proceso y control del árbol de procesos (`IProcessTreeControl`, ADR-0038 §2: Job Object en Windows, cgroup o grupo de procesos en Linux). Por eso **M2 incluye un `IProcessRuntime` mínimo** (lanzar, controlar el árbol, cancelar); el confinamiento de filesystem y red, y la tool `process.exec`, siguen en M3.
 - El modo managed añade: **detección de caída, reinicio con límite y backoff**, y los eventos `ProviderUnavailable` / `ProviderRestarted`.
 - **Referencia: ik_llama.** Verificado en `OmniCoder/installer/ik-llama/llama-server.exe` (build `baac291`):
   - `--help` expone `--jinja`, `--chat-template[-file]`, `--grammar[-file]`, `--json-schema`, `--parallel-tool-calls`, `--parallel`, `--api-key[-file]`, `--metrics` y el endpoint de slots.
