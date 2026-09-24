@@ -13,6 +13,10 @@
 2. `PermissionTimeout` se trata como **`Deny`** (fail-closed). El timeout es configurable.
 3. Las solicitudes de lanes paralelas o background entran en una **cola de aprobaciones** del Run; el cliente las atiende una a una. La lane queda en `WaitingForPermission` y su heartbeat lo refleja.
 4. Ninguna respuesta del modelo puede resolver un `Ask` (INV-002).
+5. Las mismas reglas aplican a todo `Ask` generado por el runtime (rev. 2, 2026-09-24):
+   - reconciliaciones `Unresolvable` de efectos (ADR-0004);
+   - revisiones de Plan que expanden scope (ADR-0016);
+   - uso de superficies shell (ADR-0015).
 
 ## Consecuencias
 

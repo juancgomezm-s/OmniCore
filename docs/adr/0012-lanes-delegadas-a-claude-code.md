@@ -1,6 +1,6 @@
 # ADR-0012 — Lanes delegadas a Claude Code
 
-- **Estado:** Aceptada (2026-09-24)
+- **Estado:** Aceptada — rev. 2 (2026-09-24): §3.6–3.7 integran el Effect Journal y el Plan.
 - **Relacionado:** ADR-0011 §3.3 (sin OAuth de Anthropic), ADR-0008 (aislamiento)
 - **Spec:** §10, §14 (Delegated), §16, INV-004, INV-005, INV-015
 
@@ -56,13 +56,18 @@ Dentro de esta Lane, las tools las ejecuta Claude Code, no el Tool Runtime de Om
 3. **Opción a evaluar:** `--permission-prompt-tool` apuntando a una tool MCP de OmniCore. El Permission Engine resolvería los `Ask` de Claude Code y la autoridad volvería a OmniCore (ADR-0003 aplica igual).
 4. **Completion Gates siguen aplicando** (INV-015). El `AgentResult` que devuelve Claude Code es una *propuesta*; Build/Test/Acceptance gates corren en OmniCore sobre el worktree.
 5. **Context isolation** (INV-005): Claude Code recibe solo el `TaskPacket` renderizado, nunca el transcript del padre.
+6. **Effect Journal a nivel de Lane (rev. 2, ADR-0004):**
+   - OmniCore no observa cada efecto con garantías; los eventos de tools de Claude Code son informativos.
+   - La Lane entera se trata como una ToolCall `NonIdempotent` confinada a su worktree.
+   - Si OmniCore muere a mitad de la Lane, al reanudar se evalúa el estado del worktree: se continúa con `--resume` o se descarta el worktree y se reinicia desde la base (ADR-0021).
+7. **Plan (ADR-0016):** el `TaskPacket` incluye el `WorkingState` compacto. El `AgentResult` puede traer `PlanMutation`s propuestas, que el `PlanService` valida como cualquier otra propuesta.
 
 ### 4. Mapeo de eventos
 
 | stream-json de Claude Code | Evento OmniCore |
 |---|---|
 | `system/init` (modelo, tools, `capabilities`) | `LaneStarted` + `ModelSelected` |
-| `assistant` / `user` (tool_use, tool_result) | `ToolStarted` / `ToolCompleted` (origen: externo) |
+| `assistant` / `user` (tool_use, tool_result) | `ExternalToolObserved` (informativo; no entra al ciclo de vida de ToolCall de ADR-0004) |
 | `stream_event` (deltas) | progreso coalescido, no canónico (ADR-0002 §5) |
 | `system/api_retry` (`error`: `rate_limit`, `overloaded`…) | `LaneHeartbeat` + causa |
 | `system/permission_denied` | `PermissionDenied` |

@@ -1,7 +1,8 @@
 # ADR-0011 — Mecanismo de conexión a proveedores de modelos
 
-- **Estado:** Aceptada (2026-09-24)
-- **Amplía:** ADR-0005
+- **Estado:** Aceptada — rev. 2 (2026-09-24)
+- **Rev. 2:** se alinea con ADR-0005 rev. 2 (familias provider-native en lugar de "dialectos" sobre OpenAI-compatible) y con ADR-0018 (`ISecretProvider`).
+- **Complementa:** ADR-0005 (contratos del Model Runtime)
 - **Spec:** §17–§22, §70–§73, INV-010, INV-011
 
 ## Contexto
@@ -17,16 +18,18 @@ Observaciones de OmniCoder que motivan decisiones:
 
 ## Decisión
 
-### 1. Adaptadores por dialecto, no por proveedor
+### 1. Adapters por familia de protocolo nativo, no por proveedor
 
-| Dialecto | Cubre |
-|---|---|
-| `OpenAiChatCompletions` | ik_llama / llama.cpp, OpenRouter, DeepSeek, Groq, xAI, Mistral, Together, Fireworks, Cerebras… |
-| `OpenAiResponses` | modelos recientes de OpenAI con API key |
-| `OpenAiCodexResponses` (variante de Responses) | modelos de OpenAI con la suscripción ChatGPT del usuario (§3.4) |
-| `AnthropicMessages` | Anthropic nativo (prompt caching, thinking) |
+Las familias y contratos están en ADR-0005 rev. 2. Este ADR define cómo se conectan.
 
-- Cada dialecto implementa `IModelProvider` con un cliente HTTP propio y delgado (`HttpClient` + System.Text.Json con source generation). No se usan SDKs oficiales: añaden peso y no exponen las extensiones de llama.cpp.
+| Adapter (familia) | Perfil / endpoint | Cubre |
+|---|---|---|
+| `OpenAiChatCompatibleProvider` | `/v1/chat/completions` | ik_llama / llama.cpp, OpenRouter, DeepSeek, Groq, xAI, Mistral, Together, Fireworks, Cerebras… |
+| `OpenAIResponsesProvider` | perfil `api`: Responses API con API key | Modelos OpenAI |
+| `OpenAIResponsesProvider` | perfil `codex`: backend ChatGPT con OAuth | Modelos OpenAI con la suscripción ChatGPT del usuario (§3.4) |
+| `AnthropicMessagesProvider` | Messages API nativa | Anthropic (prompt caching, thinking, firmas) |
+
+- Cada adapter implementa `IModelProvider` con un cliente HTTP propio y delgado (`HttpClient` + System.Text.Json con source generation). No se usan SDKs oficiales: añaden peso y no exponen las extensiones de llama.cpp.
 - Diferencias entre endpoints "compatibles" se declaran como **capacidades/quirks** en el `ModelDescriptor` / `ProviderDescriptor`, nunca con `if (provider == ...)`.
 - Extensiones llama.cpp (gramática GBNF, `json_schema`, `/tokenize`, `/props`, slots) se activan por capacidad declarada.
 
@@ -34,24 +37,24 @@ Observaciones de OmniCoder que motivan decisiones:
 
 ```yaml
 providers:
-  local:      { dialect: OpenAiChatCompletions, baseUrl: auto, auth: none, host: managed }
-  openrouter: { dialect: OpenAiChatCompletions, baseUrl: https://openrouter.ai/api/v1, auth: { kind: apiKey, ref: openrouter } }
-  anthropic:  { dialect: AnthropicMessages, auth: { kind: apiKey, ref: anthropic } }
+  local:      { family: OpenAiChatCompatible, baseUrl: auto, auth: none, host: managed }
+  openrouter: { family: OpenAiChatCompatible, baseUrl: https://openrouter.ai/api/v1, auth: { kind: apiKey, ref: openrouter } }
+  anthropic:  { family: AnthropicMessages, auth: { kind: apiKey, ref: anthropic } }
 models:
   qwen-27b: { provider: local, params: 27B, context: 65536, toolFormats: [Native, Grammar] }
-  sonnet:   { provider: anthropic, class: frontier, context: 200000, cost: { inPerMTok: 3, outPerMTok: 15 } }
+  sonnet:   { provider: anthropic, context: 200000, cost: { inPerMTok: 3, outPerMTok: 15 } }
 aliases:
   local-worker:    qwen-27b
   frontier-strong: sonnet
 ```
 
-- El router trabaja con **alias y categorías** (ADR-0007), nunca con ids de modelo. Nombres como Luna o Sol viven aquí (spec §21).
+- El router trabaja con **alias** y con el `EffectiveModelProfile` de cada modelo (ADR-0007), nunca con ids de modelo. Nombres como Luna o Sol viven aquí (spec §21).
 - Descubrimiento (`/v1/models`, `/props`, catálogos) **completa** el descriptor; lo declarado prevalece.
 - Se resuelve por scopes (spec §51): User (`~/.omnicore/`) → Project (`.omnicore/`) → overrides de Run/Task.
 
 ### 3. Credenciales y autenticación
 
-1. `ICredentialStore` con implementación en **Windows Credential Manager** (o DPAPI) y variables de entorno como alternativa. Los secretos nunca aparecen en configuración, eventos, `ContextSnapshot` ni logs; un redactor los elimina de mensajes de error.
+1. Los secretos se leen solo mediante `ISecretProvider` (ADR-0018). Detrás está `ICredentialStore` (escritura: **Windows Credential Manager** o DPAPI), con variables de entorno y comandos como fuentes alternativas. Los secretos nunca aparecen en configuración, eventos, `ContextSnapshot`, artifacts ni logs; el redactor de ADR-0018 los elimina en cada sink.
 2. `IAuthProvider` por proveedor con tipos `None | ApiKey | Bearer | OAuth`. La arquitectura soporta OAuth **desde el inicio** (refresh de tokens, expiración, revocación), para no tener que rediseñar cuando se habilite un flujo.
 3. **Login por suscripción:**
    - **Anthropic (Claude Free/Pro/Max): no se implementa.** La página de cumplimiento legal de Anthropic ([code.claude.com/docs/en/legal-and-compliance](https://code.claude.com/docs/en/legal-and-compliance)) prohíbe usar tokens OAuth de esas cuentas en cualquier otro producto, herramienta o servicio, incluido el Agent SDK. Se hace cumplir desde abril de 2026. Anthropic se usa solo con API key.
@@ -67,13 +70,13 @@ aliases:
    - **Tokens:**
      - `access`, `refresh`, `expires` y `chatgpt_account_id` (claim `https://api.openai.com/auth` del JWT) se guardan en `ICredentialStore` (Credential Manager / DPAPI), nunca en texto plano.
      - El refresh es preventivo antes de expirar y está serializado entre procesos. Si un 401 persiste tras un refresh, el error es `AuthenticationFailed`.
-   - **Dialecto:** variante `OpenAiCodexResponses` del dialecto Responses.
+   - **Adapter:** perfil `codex` de `OpenAIResponsesProvider` (ADR-0005).
      - Endpoint `https://chatgpt.com/backend-api/codex/responses` con header `ChatGPT-Account-Id`.
      - Quirks declarados como compat flags: `store: false` obligatorio, `instructions` como system prompt.
      - Transporte SSE primero. WebSocket (beta `responses_websockets`) queda como optimización posterior, con fallback a SSE como hace Pi.
    - **Uso individual:** cada usuario inicia sesión con su propia cuenta. OmniCore no comparte, revende ni intermedia el acceso.
    - **Contención del riesgo:**
-     - Queda aislado en `ChatGptSubscriptionAuthProvider` + `OpenAiCodexResponses`.
+     - Queda aislado en `ChatGptSubscriptionAuthProvider` + el perfil `codex`.
      - Tests de contrato con respuestas grabadas detectan cambios del backend.
      - El circuit breaker y el router hacen fallback a API key o a modelos locales si el backend rechaza o cambia.
      - `/doctor` reporta el estado de la sesión de ChatGPT.
@@ -123,8 +126,8 @@ Se **portan a C#** (no se traducen línea a línea) conservando el aviso de copy
 | Pieza | Origen principal | Por qué |
 |---|---|---|
 | Flags de compatibilidad tipados (`supportsDeveloperRole`, `maxTokensField`, `thinkingFormat`, `requiresToolResultName`, …) + `detectCompat`/`getCompat` | Pi `pi-ai/types.d.ts:468-622`, `api/openai-completions.js:1236-1356` | Es la forma más limpia de declarar quirks. Encaja con §1: registros C# con overrides opcionales |
-| Normalización entre dialectos (replay de thinking, IDs de tool call, degradación de imágenes) | Pi `api/transform-messages.js` | Lógica pura |
-| Implementaciones de dialecto como referencia | Pi `api/*.js`, código async simple; OpenCode `llm/src/protocols/*.ts`, diseño Protocol/Route | Guían los tres adaptadores de §1 |
+| Normalización entre familias (replay de thinking, IDs de tool call, degradación de imágenes) | Pi `api/transform-messages.js` | Lógica pura |
+| Implementaciones de dialecto como referencia | Pi `api/*.js`, código async simple; OpenCode `llm/src/protocols/*.ts`, diseño Protocol/Route | Guían los adapters de §1 |
 | Prompt caching (breakpoints Anthropic, `prompt_cache_key`) | Pi `anthropic-messages.js`, `openai-prompt-cache.js`; OpenCode `provider/transform.ts:358-407` | Reglas pequeñas, mucho ahorro |
 | Clasificador de overflow (25 regex anotadas + overflow silencioso) | Pi `utils/overflow.js`; OpenCode `llm/src/provider-error.ts` | Tablas de datos |
 | Política de reintentos (`x-should-retry`, `Retry-After`, tope 60 s, backoff + jitter, lista no reintentable de cuota/billing) | Pi `utils/provider-retry.js`, `utils/retry.js`; OpenCode `session/retry.ts` | Alimenta §5 |
@@ -147,7 +150,7 @@ Tres mecanismos, sin ninguna forma de evasión:
 1. **Lanes delegadas a Claude Code** con la suscripción del propio usuario, por la vía que Anthropic permite. Ver ADR-0012.
 2. **Prompt caching como política, no como detalle.**
    - El `ContextMaterializer` ordena el contexto de lo estable a lo volátil: system → tools → skills → task → historia → turno actual. Así el prefijo cacheable es máximo.
-   - Los breakpoints se colocan según el dialecto: Anthropic admite hasta 4 `cache_control`, con TTL de 5 min o 1 h. OpenAI usa `prompt_cache_key`.
+   - Los breakpoints se colocan según la familia: Anthropic admite hasta 4 `cache_control`, con TTL de 5 min o 1 h. OpenAI usa `prompt_cache_key`.
    - `TokenUsage` registra cache read/write por Turn. `/context` y `/stats` muestran la tasa de aciertos de caché.
    - Tests deterministas verifican que dos Turns consecutivos comparten el prefijo byte a byte.
 3. **Enrutamiento por costo.**
@@ -159,9 +162,9 @@ Tres mecanismos, sin ninguna forma de evasión:
 
 | Milestone | Alcance |
 |---|---|
-| M2 | `OpenAiChatCompletions`; `LocalModelHost` attach + managed; `ICredentialStore` + API key; timeouts y errores tipados; verificación en vivo de ik_llama |
+| M2 | `OpenAiChatCompatibleProvider`; `LocalModelHost` attach + managed; `ISecretProvider` + API key; timeouts y errores tipados; verificación en vivo de ik_llama |
 | M3 | Reintentos, circuit breaker, cola por endpoint |
-| M5 | `OpenAiResponses` + `OpenAiCodexResponses`, **login con suscripción ChatGPT (§3.4)**, `AnthropicMessages`, registro completo con alias, descubrimiento, costo/presupuesto, OAuth genérico |
+| M5 | `OpenAIResponsesProvider` (perfiles `api` y `codex`), **login con suscripción ChatGPT (§3.4)**, `AnthropicMessagesProvider`, registro completo con alias, descubrimiento, costo/presupuesto, OAuth genérico |
 
 ## Consecuencias
 
