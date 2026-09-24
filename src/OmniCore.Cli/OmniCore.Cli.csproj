@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>omni</AssemblyName>
+    <RootNamespace>OmniCore.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OmniCore.Host\OmniCore.Host.csproj" />
+    <ProjectReference Include="..\OmniCore.Protocol\OmniCore.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>

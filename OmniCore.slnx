@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OmniCore.Abstractions/OmniCore.Abstractions.csproj" />
+    <Project Path="src/OmniCore.Cli/OmniCore.Cli.csproj" />
+    <Project Path="src/OmniCore.Context/OmniCore.Context.csproj" />
+    <Project Path="src/OmniCore.Domain/OmniCore.Domain.csproj" />
+    <Project Path="src/OmniCore.Engine/OmniCore.Engine.csproj" />
+    <Project Path="src/OmniCore.Execution/OmniCore.Execution.csproj" />
+    <Project Path="src/OmniCore.Host/OmniCore.Host.csproj" />
+    <Project Path="src/OmniCore.Infrastructure/OmniCore.Infrastructure.csproj" />
+    <Project Path="src/OmniCore.Models/OmniCore.Models.csproj" />
+    <Project Path="src/OmniCore.Protocol/OmniCore.Protocol.csproj" />
+    <Project Path="src/OmniCore.Sandbox/OmniCore.Sandbox.csproj" />
+    <Project Path="src/OmniCore.Security/OmniCore.Security.csproj" />
+    <Project Path="src/OmniCore.Tools/OmniCore.Tools.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OmniCore.ArchitectureTests/OmniCore.ArchitectureTests.csproj" />
+    <Project Path="tests/OmniCore.Tests/OmniCore.Tests.csproj" />
+  </Folder>
+</Solution>
