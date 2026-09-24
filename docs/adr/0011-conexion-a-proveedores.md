@@ -118,6 +118,21 @@ Se **portan a C#** (no se traducen línea a línea) conservando el aviso de copy
 
 **Lo que ninguno resuelve y OmniCore añade:** gramática GBNF / `json_schema` para modelos locales (ADR-0007), conteo exacto con `/tokenize` (ambos estiman con chars/4) y supervisión del servidor local.
 
+### 9. Estrategias de ahorro con modelos frontera
+
+Tres mecanismos, sin ninguna forma de evasión:
+
+1. **Lanes delegadas a Claude Code** con la suscripción del propio usuario, por la vía que Anthropic permite. Ver ADR-0012.
+2. **Prompt caching como política, no como detalle.**
+   - El `ContextMaterializer` ordena el contexto de lo estable a lo volátil: system → tools → skills → task → historia → turno actual. Así el prefijo cacheable es máximo.
+   - Los breakpoints se colocan según el dialecto: Anthropic admite hasta 4 `cache_control`, con TTL de 5 min o 1 h. OpenAI usa `prompt_cache_key`.
+   - `TokenUsage` registra cache read/write por Turn. `/context` y `/stats` muestran la tasa de aciertos de caché.
+   - Tests deterministas verifican que dos Turns consecutivos comparten el prefijo byte a byte.
+3. **Enrutamiento por costo.**
+   - El router (ADR-0007) manda a modelos locales todo lo que no requiere un modelo frontera: meta-tareas, exploración, verificación.
+   - La escalación a frontera es explícita y lleva una causa registrada (spec §73).
+   - Tareas no interactivas (resúmenes masivos, clasificación, evaluación de la regression suite) pueden ir a la **Message Batches API** de Anthropic, más barata a cambio de latencia. Se modela como un modo de ejecución del provider, no como otro provider.
+
 ## Plan por milestone
 
 | Milestone | Alcance |
