@@ -16,5 +16,5 @@ Estados: **Aceptada**, **Propuesta**, **Reemplazada por ADR-XXXX**.
 | [0008](0008-sandbox-compartido.md) | Sandbox como librería compartida `OmniCore.Sandbox` | Aceptada |
 | [0009](0009-grafo-de-dependencias.md) | Grafo de dependencias entre proyectos | Aceptada |
 | [0010](0010-plataforma-y-tooling.md) | .NET 10 en todo, tooling de build y tests | Aceptada |
-| [0011](0011-conexion-a-proveedores.md) | Mecanismo de conexión a proveedores de modelos | Aceptada (suscripción OpenAI: propuesta) |
+| [0011](0011-conexion-a-proveedores.md) | Mecanismo de conexión a proveedores de modelos | Aceptada |
 | [0012](0012-lanes-delegadas-a-claude-code.md) | Lanes delegadas a Claude Code con la suscripción del usuario | Aceptada |
