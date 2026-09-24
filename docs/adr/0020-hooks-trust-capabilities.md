@@ -11,9 +11,9 @@
 | Nivel | Origen | Ejecución | Capacidades por defecto |
 |---|---|---|---|
 | `Core` | compilado en OmniCore | in-process | todas las de observación y restricción; lee `ProviderState` solo si lo necesita |
-| `Trusted` | extensión marcada como confiable por el usuario | fuera de proceso, `JobObjectOnly` | las solicitadas en su manifest, con consentimiento: `Observe`, `Annotate`, `Restrict` |
-| `Project` | `.omnicore/hooks` del repo | **fuera de proceso** (`process.exec`, sandbox `JobObjectOnly`) | `Observe` (redactado), `Annotate`, `Restrict` |
-| `ThirdParty` | extensión instalada sin marca de confianza | fuera de proceso, sandbox `AppContainer` | `Observe` (redactado), `Annotate` |
+| `Trusted` | extensión marcada como confiable por el usuario | fuera de proceso, sandbox `Strong` | las solicitadas en su manifest, con consentimiento: `Observe`, `Annotate`, `Restrict` |
+| `Project` | `.omnicore/hooks` del repo | **fuera de proceso**, sandbox `Strong` (ADR-0038) | las **solicitadas y consentidas**, dentro de `Observe` (redactado), `Annotate` y `Restrict`. Solo corren si el workspace es confiable (ADR-0039) |
+| `ThirdParty` | extensión instalada sin marca de confianza | fuera de proceso, sandbox `Strong` (ADR-0038) | `Observe` (redactado), `Annotate` |
 | `Untrusted` | endpoint remoto (webhook, MCP remoto) u origen no verificado | red con timeout, o deshabilitado | `Observe` (redactado, filtrado por tipo de evento) |
 
 Los hooks de un proyecto no confiable no se ejecutan hasta que el usuario confía en el workspace. Es el mismo principio del trust dialog; aquí es explícito.

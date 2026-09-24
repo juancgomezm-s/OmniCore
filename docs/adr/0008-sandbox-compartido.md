@@ -1,6 +1,6 @@
 # ADR-0008 — Sandbox como librería compartida `OmniCore.Sandbox`
 
-- **Estado:** Aceptada — rev. 2 (2026-09-24): §7 resuelve la frontera Security ↔ Sandbox con `IPathBoundaryValidator`.
+- **Estado:** Aceptada — rev. 3 (2026-09-24). Rev. 2: §7 resuelve la frontera Security ↔ Sandbox con `IPathBoundaryValidator`. **Rev. 3:** OmniCore es **multiplataforma** (Windows + Linux completos, macOS best-effort) y Sandbox compila para **`net10.0;net8.0`** (ADR-0038). Las referencias a "solo Windows" y "solo net10" de este ADR quedan reemplazadas por ADR-0038 §1–§3 y §6.
 - **Spec:** §39, §47, §76, §77
 
 ## Contexto
@@ -64,5 +64,5 @@ En OmniCoder el aislamiento fuerte solo se usa en workers de orquestación (`OSR
 
 ## Riesgos abiertos
 
-- AppContainer sin red rompe `dotnet restore`/NuGet dentro del sandbox; el toolchain de OmniCoder cubre JDK/git/Android, no el SDK de .NET. Resolver en M3 (caché local de NuGet o `PermissionDelta` de red explícito).
+- ~~AppContainer sin red rompe `dotnet restore`~~ **Resuelto (revisión integral):** los procesos de build/test/restore tienen red sin restricción por decisión del usuario (ADR-0037 §4, ADR-0038 §3). El resto de los procesos sigue sin red por defecto.
 - La validación léxica de rutas es TOCTOU; el respaldo real es la ACL del AppContainer.

@@ -1,13 +1,15 @@
 # ADR-0009 — Grafo de dependencias entre proyectos
 
-- **Estado:** Aceptada — rev. 2 (2026-09-24)
-- **Rev. 1:** el mismo grafo. La rev. 2 no cambia ninguna arista; agrega reglas de frontera **dentro** del grafo: la validación de rutas, la autoridad de `AuthorizedToolIntent`, el CLI desacoplado y proyectos futuros.
+- **Estado:** Aceptada — rev. 3 (2026-09-24)
+- **Rev. 1:** grafo inicial de 13 proyectos.
+- **Rev. 2:** sin cambios de aristas; agrega reglas de frontera **dentro** del grafo: validación de rutas, autoridad de `AuthorizedToolIntent`, CLI desacoplado y proyectos futuros.
+- **Rev. 3:** agrega el proyecto **`OmniCore.Client`** (ADR-0030) y la regla de que los frameworks visuales solo aparecen en `OmniCore.Cli`.
 - **Spec:** §78–§81
 - **Diagrama:** [arquitectura §18](../architecture/arquitectura.md#18-permission-y-sandbox-boundaries)
 
 ## Decisión
 
-### 1. Grafo (sin cambios)
+### 1. Grafo
 
 ```text
 Domain            ← (nada)
@@ -22,7 +24,8 @@ Security          ← Abstractions, Domain          (NO Sandbox)
 Execution         ← Abstractions, Domain, Sandbox
 Infrastructure    ← Abstractions, Domain
 Host              ← todos los anteriores salvo Sandbox directo (composition root)
-Cli               ← Host, Protocol
+Client            ← Protocol       (rev. 3) ClientProjection, modelos de presentación, acciones; sin frameworks visuales
+Cli               ← Client, Host, Protocol   (Terminal.Gui y Spectre.Console solo aquí)
 ```
 
 `tests/OmniCore.ArchitectureTests/ProjectDependencyTests.cs` lo hace cumplir leyendo los `ProjectReference`. Un proyecto nuevo sin frontera declarada hace fallar los tests.
@@ -41,8 +44,9 @@ Cli               ← Host, Protocol
    - Protocol no depende de Domain.
    - `ProtocolMapper` (dominio → wire) vive en Host.
 4. **CLI desacoplado (ADR-0019).**
-   - El código del CLI usa solo tipos de `OmniCore.Protocol` (`IOmniClient`). El único punto que toca Host es la composición en `Program.cs`, que crea un cliente in-process.
-   - *Test nuevo en M1:* las referencias IL de `omni.dll` son solo `OmniCore.Protocol` y `OmniCore.Host`, y la superficie pública de Host se limita a la fábrica del host y del cliente.
+   - El código del CLI usa solo tipos de `OmniCore.Protocol` y `OmniCore.Client`. El único punto que toca Host es la composición en `Program.cs`, que crea un cliente in-process.
+   - *Test nuevo en M1:* las referencias IL de `omni.dll` son solo `OmniCore.Protocol`, `OmniCore.Client` y `OmniCore.Host`, y la superficie pública de Host se limita a la fábrica del host y del cliente.
+   - *Test vigente (rev. 3):* los paquetes `Terminal.Gui` y `Spectre.Console*` solo pueden aparecer en `OmniCore.Cli` (ADR-0030 §6).
 5. **Proyectos futuros previstos** (se agregan con su frontera cuando lleguen, no antes):
    - `OmniCore.Qualification` (M5): runner de la Model Qualification Suite. Consume el runtime como un cliente, igual que el CLI.
    - `OmniCore.Extensions` (M8): host de extensiones fuera de proceso (Extension API por JSON-RPC, ADR-0023). Ejecuta tools, commands, skills, hooks y contributors de fuentes no `Core`. Depende de Abstractions y Domain.
@@ -50,7 +54,7 @@ Cli               ← Host, Protocol
 6. **Commands (ADR-0024):**
    - Los contratos (`CommandDescriptor`, `ICommandHandler`) viven en Abstractions.
    - El `CommandRegistry` de servidor está en Host y los DTOs del catálogo en Protocol.
-   - `ClientAction`s y `KeyBindingService` viven solo en el cliente (Cli), nunca en el Core (ADR-0025).
+   - `ClientAction`s y el modelo de keybindings viven en `OmniCore.Client`; su enlace con teclas reales vive en `OmniCore.Cli`. Nunca en el Core (ADR-0025).
    - **El Engine no contiene ningún parser de `/`.**
 
 ## Consecuencias

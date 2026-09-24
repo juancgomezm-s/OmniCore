@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptada (2026-09-24). Diseño ahora; implementación en M7.
 - **Reemplaza:** la ubicación `.omnicore/worktrees/<lane-id>` dentro del repo (spec §48)
-- **Relacionado:** ADR-0004 (reconciliación Git), ADR-0012 (lanes de Claude Code), ADR-0022 §3 (directorio de datos)
+- **Relacionado:** ADR-0004 (reconciliación Git), ADR-0012 (lanes de Claude Code), ADR-0022 §3 y ADR-0039 §2 (directorio de datos por plataforma)
 
 ## Contexto
 

@@ -12,7 +12,8 @@
 public sealed record ContextProvenance(
     ContributorId Contributor,          // "core.working-state", "core.files", "skill:progress-compile", "memory.project", "knowledge.rag"…
     ContributionCategory Category,      // PlanWorkingState | System | Task | Skill | ProjectMemory | WorkspaceMemory | SessionMemory
-                                        // | GlobalMemory | Knowledge | File | ToolObservation | Conversation | SubagentResult | Checkpoint
+                                        // | GlobalMemory | ScratchMemory | Knowledge | File | Reference | ToolObservation | Conversation
+                                        // | SubagentResult | Checkpoint | HookAnnotation | ExtensionContribution   (ampliado en la revisión integral)
     ComponentSource Source,             // ADR-0023
     IReadOnlyList<ProvenanceRef> Refs,  // skill id+versión, memoryIds, ruta+hash, ArtifactRef, (SessionId, seq)
     Sensitivity Sensitivity);

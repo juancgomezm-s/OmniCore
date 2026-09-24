@@ -17,8 +17,9 @@
    - reconciliaciones `Unresolvable` de efectos (ADR-0004);
    - revisiones de Plan que expanden scope (ADR-0016);
    - uso de superficies shell (ADR-0015).
+6. **Protocolo (rev. 3, ADR-0034):** todo `Ask` se publica como `InteractionRequested`, con opciones decididas por el servidor, y se resuelve con `RespondToInteraction`. El "cliente interactivo" de este ADR es cualquier cliente conectado capaz de mostrar `InteractionRequest`s: el overlay de la TUI o el plain renderer en una TTY.
 
 ## Consecuencias
 
-- El modo one-shot es seguro por defecto; para automatizar se usan grants preconfigurados (lifetime `Project`/`Session`), nunca "aprobar todo" implícito.
+- El modo one-shot es seguro por defecto; para automatizar se usan reglas preconfiguradas del usuario o grants con lifetime `Workspace` (ADR-0037 §5), nunca "aprobar todo" implícito.
 - Una lane denegada devuelve un error tipado (`PermissionDenied`), no una excepción genérica.

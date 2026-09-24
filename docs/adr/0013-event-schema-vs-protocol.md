@@ -41,6 +41,14 @@ DomainEvent (schema vN) --[upcasters al leer]--> DomainEvent (schema actual) --[
 | Nuevo formato de mensaje wire, framing o transporte | Sin cambio | `ProtocolVersion` +1 |
 | Evento nuevo solo interno | Nuevo `EventType` | Sin cambio (no se mapea) |
 
+## Precisiones (revisión integral, 2026-09-24)
+
+- **Nombres de tipos:** el evento durable es `DomainEvent`; en el protocolo, `WireEvent` y `WireCommand`. `EngineEvent` (spec §55) desaparece como nombre.
+- **`EventType`:** en minúsculas con puntos, derivado 1:1 de los nombres de la spec (`RunStarted` → `run.started`, `PlanItemCompleted` → `plan_item.completed`).
+- **`CorrelationId`:** siempre es el `RunId`. El `TurnId` tiene su propio campo.
+- **`CausationId`:** es un id tipado `EventId | CommandId`, y todo `WireCommand`/`CommandAck` lleva `CommandId`.
+- **DTOs wire:** todos viven en `OmniCore.Protocol` con **sus propios tipos de id** (string) y enums propios. Nunca referencian Domain; `ProtocolMapper` (Host) los traduce.
+
 ## Clasificación
 
 | Elemento | Categoría |

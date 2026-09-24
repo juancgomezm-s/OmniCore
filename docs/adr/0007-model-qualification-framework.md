@@ -34,6 +34,8 @@ Resolución **por campo**:
 
 Un override siempre queda registrado en el `ExecutionFingerprint` (ADR-0017).
 
+**Nombre (revisión integral):** `EffectiveModelProfile` es **por modelo** (por `ModelQualificationKey`). La intersección **por Turn** que describe la spec §20 se llama `EffectiveExecutionProfile` (ver la tabla de propiedad de ADR-0005).
+
 ### 2. Traits empíricos
 
 Cada trait se modela como `TraitScore { Value (0..1), Confidence, SampleSize, Source, MeasuredAt }`.

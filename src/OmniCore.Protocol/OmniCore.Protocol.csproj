@@ -1,3 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- Multi-target: OmniCoder (net8) consume Protocol sin migrar (ADR-0038 §6). No usar APIs exclusivas de net10. -->
+  <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
+  </PropertyGroup>
+
 </Project>

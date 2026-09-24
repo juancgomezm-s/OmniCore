@@ -4,6 +4,10 @@
 - **Spec:** §5, §7, §9, §24–§28, §50, §64
 - **Diagramas:** [arquitectura §14–§17](../architecture/arquitectura.md#14-run--plan-y-run--taskgraph)
 
+> **Revisión integral (2026-09-24):**
+> - las transiciones completas de `PlanItem` (con un evento por transición, mutaciones `Unblock`, `Fail` y `Cancel`, jerarquía padre/hijo y defaults de `Required`) están en **ADR-0036 §4**, que prevalece sobre §2 y §4 de este ADR;
+> - la creación del plan, la fase de planificación por modo y el paso PLAN → ACT en el mismo Run con aprobación están en **ADR-0035 §3–§4**.
+
 ## Contexto
 
 En otros agentes, el seguimiento del plan depende de que el modelo reescriba una lista textual, y tras 3–4 pasos deja de mantenerla. En OmniCore el plan es **control ejecutivo del runtime**, no una feature del CLI.

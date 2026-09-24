@@ -20,7 +20,8 @@ OmniCore ejecuta objetivos sobre repositorios mediante **Tasks** y **Lanes**, co
 | `OmniCore.Infrastructure` | SQLite, artifacts, stores |
 | `OmniCore.Protocol` | Commands, eventos y DTOs wire-safe |
 | `OmniCore.Host` | Composition root |
-| `OmniCore.Cli` | Cliente CLI (`omni`) |
+| `OmniCore.Client` | Estado de cliente independiente del framework visual (`ClientProjection`, presentación, acciones) |
+| `OmniCore.Cli` | Cliente `omni`: TUI (Terminal.Gui v2), plain (Spectre.Console) y JSON |
 
 ## Uso
 
@@ -34,3 +35,4 @@ dotnet run --project src/OmniCore.Cli
 
 - [Especificación v1](docs/spec/OmniCore-v1.md)
 - [Decisiones de arquitectura](docs/adr/README.md)
+- [Arquitectura: diagramas, preguntas abiertas y roadmap](docs/architecture/arquitectura.md)

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Multi-target: OmniCoder (net8) puede reutilizar ClientProjection sin migrar (ADR-0038 §6). No usar APIs exclusivas de net10. -->
+  <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
+    <Description>Estado de cliente independiente del framework visual: ClientProjection, modelos de presentación, acciones y sidebar (ADR-0030). No debe referenciar Terminal.Gui ni Spectre.Console.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OmniCore.Protocol\OmniCore.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>

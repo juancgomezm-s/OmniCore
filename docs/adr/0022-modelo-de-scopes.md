@@ -32,13 +32,19 @@ BuiltIn → Organization* → User (= Global) → Project → Workspace → Sess
 
 ### 3. Almacenamiento por scope
 
+> **Revisión integral (2026-09-24):**
+> - las rutas concretas por plataforma y por archivo están en **ADR-0039 §2** y **ADR-0038 §1**, que prevalecen sobre esta tabla; `%APPDATA%` y `%LOCALAPPDATA%` son los valores de Windows;
+> - los grants persistentes se guardan por **`WorkspaceId`**, nunca por `ProjectId` (ADR-0037 §5);
+> - `ProjectId` solo sirve para compartir memoria y configuración versionable, nunca para autorización;
+> - la canonicalización de rutas para las identidades está en ADR-0038 §4.
+
 Resuelve OAQ-1 con la opción B aprobada.
 
 | Scope | Versionable (en el repo) | Datos locales (fuera del repo) |
 |---|---|---|
 | BuiltIn | — | binarios de OmniCore |
 | User | — | `%APPDATA%\OmniCore\` (config que sigue al perfil) · `%LOCALAPPDATA%\OmniCore\user.db` (perfiles de modelo, memoria global, grants de usuario) |
-| Project | `.omnicore/` en la raíz del repo: settings, skills, commands, hooks y extensiones del proyecto | `%LOCALAPPDATA%\OmniCore\projects\<ProjectId>\` (memoria de proyecto, grants con lifetime `Project`) |
+| Project | `.omnicore/` en la raíz del repo: settings, skills, commands, hooks y extensiones del proyecto | `%LOCALAPPDATA%\OmniCore\projects\<ProjectId>\` (memoria de proyecto; los grants persistentes van por `WorkspaceId`, ADR-0037 §5) |
 | Workspace | — | `%LOCALAPPDATA%\OmniCore\workspaces\<WorkspaceId>\` (`journal.db`, `blobs\`, `worktrees\`, memoria de workspace) |
 | Session → Lane | — | dentro del journal del workspace (eventos) |
 

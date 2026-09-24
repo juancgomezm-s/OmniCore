@@ -10,7 +10,7 @@
 ### 1. El Engine nunca interpreta `/`
 
 - El cliente transforma el texto en operaciones estructuradas (`CommandInvocation`).
-- El Engine recibe `WireCommand`s tipados o `SendInput { text }`. Un `SendInput` cuyo texto empieza por `/` es **texto literal** para el modelo; el Engine nunca lo parsea.
+- El Engine recibe `WireCommand`s tipados o `SendInput { InputPart[] }` (ADR-0033). Un `TextPart` que empieza por `/` es **texto literal** para el modelo; el Engine nunca lo parsea.
 - *Test:* un `SendInput("/cancel")` no cancela nada.
 
 ### 2. Tipos de command
@@ -18,12 +18,12 @@
 | Kind | Quién lo ejecuta | Resultado | Ejemplos |
 |---|---|---|---|
 | `ClientCommand` | el cliente | una `ClientAction` (ADR-0025); puede hacer `QueryAsync` de read models | `/plan`, `/tasks`, `/context`, `/keybindings`, `/help`, `/exit` |
-| `EngineCommand` | el Engine, vía `WireCommand` | `CreateSession`, `StartRun`, `CancelRun`, `ApprovePermission`, `ResumeRun`, `Compact`, `SetMode`… | `/cancel`, `/resume`, `/compact`, `/mode act` |
+| `ServerCommand` (antes llamado `EngineCommand`) | el Engine, vía `WireCommand` | `CreateSession`, `StartRun`, `CancelRun`, `RespondToInteraction` (ADR-0034), `ResumeRun`, `Compact`, `SetDefaultMode`… | `/cancel`, `/resume`, `/compact`, `/mode act` (cambia el modo del **próximo** Run, ADR-0035 §4) |
 | `PromptCommand` | el `CommandService` del Host: expande una plantilla con argumentos | `SendInput` o `StartRun` con `Origin = PromptCommand(id, version)` | `/review <file>` definido en `.omnicore/commands/review.md` |
 | `WorkflowCommand` | el `CommandService` del Host | `StartRun` con `WorkflowRef` (TaskGraph o plantilla de plan) + argumentos | `/fix-tests`, `/orq-auth` |
 | `ExtensionCommand` | el handler de una extensión (fuera de proceso, ADR-0023) | cualquiera de los anteriores, **devuelto como dato** para que lo ejecute el cliente o el Host | `/prowin-compile` |
 
-**Un handler de extensión nunca ejecuta directamente un `EngineCommand`.** Devuelve una intención (por ejemplo, "iniciar Run con X"), y el Host la somete a las mismas validaciones y permisos que cualquier command.
+**Un handler de extensión nunca ejecuta directamente un `ServerCommand`.** Devuelve una intención (por ejemplo, "iniciar Run con X"), y el Host la somete a las mismas validaciones y permisos que cualquier command.
 
 ### 3. Contratos
 
@@ -50,13 +50,13 @@ public interface ICommandHandler
 
 public sealed record CommandInvocation(CommandId Id, ParsedArguments Arguments, InvocationOrigin Origin); // Typed | Palette | KeyBinding | Api
 
-public abstract record CommandOutcome;   // ClientActionRequested | EngineCommandRequested | PromptExpanded | WorkflowRequested | CommandFailed
+public abstract record CommandOutcome;   // ClientActionRequested | ServerCommandRequested | PromptExpanded | WorkflowRequested | CommandFailed
 ```
 
 **Dos registries, un catálogo:**
 
 - `ClientCommandRegistry`, en el cliente: commands de UI.
-- `CommandRegistry`, en el Host: `EngineCommand`, `PromptCommand`, `WorkflowCommand` y `ExtensionCommand`.
+- `CommandRegistry`, en el Host: `ServerCommand`, `PromptCommand`, `WorkflowCommand` y `ExtensionCommand`.
 - El cliente obtiene el catálogo del Host con `QueryAsync(ListCommands)` y lo combina con el suyo. Así OmniCoder y el CLI ven los mismos commands de servidor.
 
 ### 4. Precedencia y conflictos
@@ -69,7 +69,7 @@ public abstract record CommandOutcome;   // ClientActionRequested | EngineComman
    3. **Mismo scope y misma confianza:** el nombre también es ambiguo.
    - Un nombre corto ambiguo no se resuelve en silencio: la invocación pide desambiguar (palette o lista), y `/commands` muestra el conflicto.
 4. **Aliases:** siguen las mismas reglas, y un alias nunca oculta un nombre canónico ni un nombre corto no ambiguo.
-5. **Capacidades:** un command cuya `RequiredCapabilities` no se cumple (por ejemplo, un `EngineCommand` sin Run activo) aparece deshabilitado, con la razón visible.
+5. **Capacidades:** un command cuya `RequiredCapabilities` no se cumple (por ejemplo, un `ServerCommand` sin Run activo) aparece deshabilitado, con la razón visible.
 
 ## Clasificación
 

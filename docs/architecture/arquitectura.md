@@ -1,11 +1,13 @@
-# OmniCore — Arquitectura (revisión v0.3)
+# OmniCore — Arquitectura (revisión v0.5)
 
 - **Fecha:** 2026-09-24
 - **Estado:** para revisión antes de iniciar M1. **No se ha implementado código funcional.**
 - **Alcance:**
   - **v0.2:** decisiones P0/P1 (puntos 1–30), en §4–§24.
   - **v0.3:** extensibilidad, commands y memoria (puntos 31–41), en §25–§30. Además amplía las tablas de §21–§24.
-- **Documentos:** [ADRs](../adr/README.md) · [Spec v0.3](../spec/OmniCore-v1.md)
+  - **v0.4:** cliente interactivo UI/TUI (decisiones 42–51), en §31–§34, con ampliaciones en §21–§24.
+  - **v0.5:** revisión integral + entrevista, en §35–§40. El roadmap de §24 queda consolidado como **fuente de verdad**.
+- **Documentos:** [ADRs](../adr/README.md) · [Spec v0.5](../spec/OmniCore-v1.md)
 
 La base conceptual se mantiene sin cambios:
 
@@ -21,13 +23,14 @@ Se conservan también el Context Engine, ToolCatalog/Planner/Plan/Router/Runtime
 |---|---|---|
 | 1 | ADRs afectados | [README de ADRs](../adr/README.md). v0.2: 0001–0012 revisados y 0013–0021 nuevos. v0.3: 0009, 0017, 0019 y 0020 revisados; 0022–0029 nuevos |
 | 2 | Spec principal | [OmniCore-v1.md](../spec/OmniCore-v1.md), v0.3 |
-| 3 | Tests de arquitectura | Sin cambios de grafo; dos tests nuevos planificados para M1 (ADR-0009 §2) |
+| 3 | Tests de arquitectura | v0.4: `OmniCore.Client` agregado al grafo, más un test que prohíbe Terminal.Gui y Spectre fuera de `OmniCore.Cli`. Dos tests más planificados para M1 (ADR-0009 §2) |
 | 4–20 | Diagramas y diseños v0.2 | §4–§20 |
 | 21 | Tabla de decisiones (puntos 1–41) | §21 |
 | — | Clasificación de abstracciones | §22 |
 | — | Open Architecture Questions | §23 |
 | — | Roadmap M1–M10 revisado | §24 |
 | 31–41 | Diagramas y diseños v0.3: scopes, extensiones, commands/keybindings, skills, tools, memory | §25–§30 |
+| 42–51 | Diseños v0.4: capas del cliente, layout y responsive, sidebar y widgets, conversación, composer e interacciones | §31–§34 |
 
 ---
 
@@ -152,7 +155,8 @@ flowchart LR
   end
   RAW -->|"ToolCallRequested"| SV
   SV -->|"ok"| PR
-  PR -->|"ToolIntent<br/>Effect · Claims · Risk"| PE
+  PR -->|"ToolIntent<br/>Effect · Claims · Risk"| ENG["Engine<br/>único llamador"]
+  ENG --> PE
   SV -->|"inválida"| RJ["ToolCallRejected → repair loop"]
   PR -->|"rechazo"| RJ
   PE -->|"Allow → AuthorizedToolIntent<br/>constructor internal · solo Security"| EX
@@ -177,7 +181,7 @@ flowchart TB
   PEN["Permission Engine<br/>IExecutableResolver · políticas estructuradas<br/>shell: Ask + AppContainer obligatorio"] --> L
   subgraph UPR["Unified Process Runtime · OmniCore.Execution"]
     L["ProcessLaunch<br/>ArgumentList · env allowlist + SecretRef"]
-    SB["SandboxProfile<br/>JobObjectOnly · AppContainer"]
+    SB["SandboxProfile<br/>Strong · Basic por plataforma"]
     H["IProcessHandle"]
     OUT["Output: canal acotado<br/>stdout/stderr + seq"]
     SP["Spool → Artifact CAS<br/>ring buffer para preview"]
@@ -542,7 +546,7 @@ flowchart LR
 | 26 | Fingerprint | `ContextSnapshot.ModelDescriptorHash` | `ExecutionFingerprint` por componentes en `TurnStarted` | Explicar qué configuración recibió cada Turn | M1: tipo. M2/M5/M8: componentes |
 | 27 | Secretos | `ICredentialStore` + redactor genérico (ADR-0011) | `ISecretProvider` + `Secret` no serializable + redactor obligatorio en cada sink | Imposible persistir un secreto por accidente | M1: journal. M2: resto |
 | 28 | CLI y composition root | `OmniHost.RunAsync(CliClient.RunAsync)` | CLI → `IOmniClient`/`IOmniTransport` → Host → Engine, incluso in-process | Mismo CLI para InProcess, stdio y pipes | M1: in-process. M9: stdio |
-| 29 | Hooks | Solo INV-014 | Niveles Core/Project/Plugin/External, capacidades explícitas, `HookResult` sin ampliación | Hooks de terceros sin acceso a secretos ni estado privado | M8 |
+| 29 | Hooks | Solo INV-014 | Niveles de confianza unificados (Core/Trusted/Project/ThirdParty/Untrusted, ADR-0023), capacidades explícitas, `HookResult` sin ampliación | Hooks de terceros sin acceso a secretos ni estado privado | M8 |
 | 30 | Worktrees | `.omnicore/worktrees/<lane>` sin semántica de workspace sucio | `WorktreeBase` (por defecto `SnapshotOfWorkingTree`), worktrees fuera del repo, integración 3-way sin pisar cambios | La Lane ve lo que ve el usuario | M7 |
 | 31 | Commands | Lista de `/` commands en el CLI | Subsistema formal (ADR-0024): `CommandDescriptor`/`Registry`/`Handler`; kinds Client, Engine, Prompt, Workflow, Extension; el Engine nunca interpreta `/`; precedencia con nombres reservados y restricción de confianza | Commands de extensiones y proyectos sin colisiones silenciosas; mismo catálogo para CLI y OmniCoder | M1: mínimo. M2: Prompt. M6: Workflow. M8: Extension y precedencia |
 | 32 | Keybindings | No existía | `ClientAction` como unidad única; `KeyBindingService` con `When`/`Priority`/`Source`; Command Palette (ADR-0025), solo cliente | Un solo sistema de acciones para teclado, texto y palette | M1: interrupt y cancel. M10: configurable, palette |
@@ -555,6 +559,16 @@ flowchart LR
 | 39 | Promoción de memoria | — | `Observation → MemoryCandidate → MemoryPolicy → Promote/Reject/Ask`; Global siempre `Ask`; Project requiere evidencia | El LLM no promociona solo | M8+ |
 | 40 | Memory en el contexto | — | `MemoryContextContributor` con slot propio en `ContextBudget`; `WorkingState` pinned y separado | Cientos de memorias no entran al prompt | M8+ |
 | 41 | Diagnósticos | `/context` sin origen | `ContextProvenance` en cada `ContextItem`; `/context` por categoría; `/commands`, `/keybindings`, `/skills`, `/extensions`, `/memory` (ADR-0029) | Explicar qué contribuyó a una ejecución sin exponer contenido sensible | M1: tipos. M2: `/context`, `/tools`. M8/M10: resto |
+| 42 | Tecnología de la TUI | No definida | Terminal.Gui v2 (2.5.0) como dueño de la TUI y Spectre.Console (0.57.2) para renderables y modo plain; ambos `net10.0`; solo en `OmniCore.Cli` (ADR-0030) | Frameworks maduros, sin acoplar el Core | Track TUI después de M3 (v0.5) |
+| 43 | Capa de presentación | CLI con lógica propia | Proyecto nuevo `OmniCore.Client` (solo depende de Protocol) con `ClientProjection` como reducer puro y único estado para TUI y plain; JSON emite eventos del protocolo (ADR-0030) | Un solo estado para todos los renderers; reutilizable por OmniCoder | **M1** |
+| 44 | Layout | — | 4 zonas: header (cwd dominante + git compacto), conversación + sidebar, composer, status line como última línea (ADR-0031) | Arquitectura de información estable | M2 |
+| 45 | Status line | — | `StatusLineModel` + `UsageSnapshot` con `MetricAvailability`; cuota nunca inferida (`—`); `ProviderCapabilities.UsageReporting` | No mostrar datos inventados | M1: tipos. M5: costo y cuota |
+| 46 | Sidebar | — | `SidebarHost` + `ISidebarWidget` con `Evaluate`/`Build` → `WidgetModel` declarativo; visible/auto/expanded/priority; widgets de extensión declarativos (ADR-0032) | Sidebar multipropósito, no panel de Plan | M2: Session/Plan. M3: Files. M6: Agents. M8: extensiones |
+| 47 | Responsive y tema | — | Modos `Stacked`/`Tabbed`/`Overlay` por breakpoints configurables; `ThemeRole` semánticos + glyphs Unicode/ASCII; color nunca como única señal; `NO_COLOR` (ADR-0031) | Terminales de cualquier tamaño y accesibilidad | M2 |
+| 48 | Conversación | — | `ConversationBlock`s semánticos que se actualizan en su lugar; `ToolPresentation` como metadata, sin UI en las tools; verbosidad Normal/Verbose/Trace solo en el renderer (ADR-0033) | Actividad legible, no un log crudo | M1: plain. M2: TUI |
+| 49 | Composer y referencias | `SendInput(text)` | `SendInput { InputPart[] }` con `TextPart`/`ReferencePart`; `@file`, `@folder`, `@task`, `@lane`, `@artifact`, `@skill` resueltos por el Host con permisos y procedencia (ADR-0033) | Las referencias no dependen de texto literal | **M1**: forma del protocolo. M2/M3: resolución y autocompletado |
+| 50 | Human-in-the-loop | `Ask` abstracto (ADR-0003) | `InteractionRequest` / `RespondToInteraction`; opciones decididas por el servidor; overlay sin destruir `MainView`; Lane en `WAITING FOR PERMISSION` (ADR-0034) | Un solo mecanismo para permisos, conflictos, cambios de scope y memoria | **M1**: DTOs. M2: overlay |
+| 51 | Acciones de cliente | Lista mínima (ADR-0025) | Acciones iniciales (sidebar, palette, vistas, modelo, búsqueda, inspector, diff, interrupt/cancel, cerrar overlay); menús también resuelven a `ClientAction` | Un solo sistema de input | M1: interrupt/cancel. M10: configurable |
 | — | Scopes e identidades | Jerarquía de §51 sin estrategias | `ScopeLevel`, `ProjectId` (repo) ≠ `WorkspaceId` (carpeta local), estrategia de resolución por subsistema (ADR-0022) | Listas de scopes distintas por subsistema; memoria multi-repo | **M1**: identidades para ubicar el journal |
 
 ## 22. Clasificación de abstracciones
@@ -580,6 +594,8 @@ flowchart LR
 | Regla "el Engine no interpreta `/`", `CommandInvocation`, `ClientCommandRegistry` mínimo (v0.3) | `CommandRegistry` del Host + precedencia (M8), Prompt (M2), Workflow (M6), Extension (M8) | Completers avanzados |
 | `ClientAction` + bindings de interrupt/cancel (v0.3) | `KeyBindingService` configurable, palette (M10) | Combinaciones concretas restantes |
 | `ContextProvenance`, `ContributionCategory`, `ContextItemKind.Memory`/`Knowledge` (v0.3) | Skills (M8), Memory (M8+), `/context` por categoría (M2) | Búsqueda vectorial, dedupe semántico, diff de contexto |
+| `OmniCore.Client`, `ClientProjection`/`ClientState`, `PlainRenderer`, `JsonRenderer` (v0.4) | TUI Terminal.Gui v0 + `SpectreSegmentAdapter` (M2) | Desktop, animaciones |
+| `SendInput { InputPart[] }`, DTOs `InteractionRequest`/`RespondToInteraction`, `UsageSnapshot`/`Metric<T>`, `ThemeRole`, `ConversationBlock` básicos (v0.4) | `ISidebarWidget` y widgets (M2–M8), `ToolPresentation` (M2), `ReferenceResolver` (M2+), responsive (M2) | Paleta y temas finales |
 
 ## 23. Open Architecture Questions
 
@@ -609,7 +625,7 @@ Solo las decisiones realmente abiertas. Todo lo demás está decidido en los ADR
 - **Identidad del workspace** (*refinada en v0.3, ADR-0022*): `WorkspaceId` = primeros 16 hex de SHA-256 de la **ruta canónica de la raíz abierta**. Un registro `workspaces.json` mapea id → ruta, lo que permite re-vincular si la carpeta se mueve.
 - **Identidad del proyecto:** `ProjectId` se deriva de la URL `origin` normalizada, del `git-common-dir` o de la raíz, y es compartido por todos los clones y worktrees. Sus datos no versionables (memoria de proyecto, grants `Project`) van en `%LOCALAPPDATA%\OmniCore\projects\<ProjectId>\`.
 - **Workspaces multi-repo:** un workspace con varios repos tiene un solo journal y varios `ProjectId`.
-- **Datos de scope User:** van en `%LOCALAPPDATA%\OmniCore\user.db`, que incluye perfiles de modelo (ADR-0007) y grants con lifetime `Session`/`User`.
+- **Datos de scope User:** van en `user.db` en el directorio de datos de la plataforma, que incluye perfiles de modelo (ADR-0007) y memoria Global. Los grants se guardan según ADR-0037 §5 (Session en el journal; Workspace en la configuración local del workspace).
 - **`.omnicore/` en el repo** queda **solo** para configuración versionable del proyecto (settings, skills, hooks) y nunca para datos de runtime.
 
 **Trade-offs:** se pierde "todo junto al repo" a cambio de seguridad (sin riesgo de commitear historia con contenido sensible) y limpieza. Además, ningún glob del agente tiene que excluir los datos de OmniCore.
@@ -632,9 +648,9 @@ Cuánto se retienen las sesiones, las refs de snapshot (7 días propuesto) y la 
 
 Qué probes componen `quick`, los umbrales de trait → `HarnessPolicy` y el tamaño de muestra para `Calibrated`. Los contratos ya están congelados.
 
-### OAQ-6 — Momento de migrar OmniCoder a .NET 10 · DEFERABLE
+### OAQ-6 — Cómo consume OmniCoder (net8) a OmniCore · **RESUELTA** (2026-09-24)
 
-Pendiente desde ADR-0008. No afecta a OmniCore.
+`OmniCore.Protocol`, `OmniCore.Client` y `OmniCore.Sandbox` compilan para `net10.0;net8.0` (decisión del usuario, ADR-0038 §6). OmniCoder no necesita migrar.
 
 ### OAQ-7 — Capacidades reales de ik_llama por request · IMPLEMENTATION DETAIL (M2)
 
@@ -657,47 +673,69 @@ Para las tools, la Extension API podría ser un superconjunto de MCP (reutilizar
 
 ### OAQ-11 — Derivación de `ProjectId` con varios remotos o sin `origin` · IMPLEMENTATION DETAIL (M1)
 
-Por defecto se usa `origin`; si no existe, el primer remoto en orden alfabético; y si no hay remotos, el `git-common-dir`. Un override manual en `.omnicore/settings` permite fijarlo.
+Por defecto se usa `origin`; si no existe, el primer remoto en orden alfabético; y si no hay remotos, el `git-common-dir`. **Corrección (revisión integral):** el override manual **no** vive en el repo; vive en el `settings.yaml` local del Workspace (ADR-0039 §2), porque `ProjectId` no debe poder fijarse desde un repo ajeno.
 
 ### OAQ-12 — Pesos de ranking y umbrales de promoción de memoria · DEFERABLE (M8+)
 
 La fórmula `relevancia × importance × confidence × recencia × afinidad` y las N ocurrencias para promover a Project se calibran con datos reales. Los contratos ya están congelados.
 
-## 24. Roadmap revisado M1–M10
+### OAQ-13 — Spectre dentro de la TUI · IMPLEMENTATION DETAIL (spike al inicio del track TUI, después de M3)
 
-**Principio:** vertical slices correctos sin hipotecar el diseño. Solo se implementa lo que el milestone usa; los contratos marcados como "Necesaria desde M1" se congelan.
+En modo TUI, Terminal.Gui es dueño de la consola, así que los renderables de Spectre se traducen de `Segment`s a atributos de Terminal.Gui con `SpectreSegmentAdapter`.
+
+- **Qué se valida:** fidelidad de estilos, ancho de caracteres Unicode y CJK, y rendimiento con diffs grandes (virtualización).
+- **Si el spike falla:** los diffs y tablas de la TUI usan vistas nativas de Terminal.Gui (`TableView`, `TreeView`) y Spectre queda solo para el modo plain. El contrato de `ClientProjection` no cambia.
+
+### OAQ-14 — Fuentes de cuota por provider · DEFERABLE (M5)
+
+Qué providers informan cuota y cómo:
+
+- créditos de OpenRouter;
+- headers de rate limit de OpenAI y Anthropic;
+- límites de la suscripción ChatGPT.
+
+El contrato (`Metric<QuotaInfo>` con `NotSupported` → `—`) ya está congelado.
+
+### OAQ-15 — Compatibilidad AOT de Terminal.Gui v2 y YamlDotNet · IMPLEMENTATION DETAIL (track TUI / M2)
+
+Hay que verificar si Terminal.Gui v2 y el generador estático de YamlDotNet publican sin warnings con Native AOT.
+
+- **Si no lo hacen:** el binario se publica self-contained sin AOT, que es el camino por defecto; AOT es una opción, no un requisito (ADR-0038 §5).
+
+### OAQ-16 — Sandbox fuerte en macOS · DEFERABLE (v1.x)
+
+Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` con `WeakSandboxConsent`.
+
+## 24. Roadmap M1–M10 (fuente de verdad)
+
+> **Consolidado en la revisión integral v0.5.**
+> - Reemplaza la tabla anterior y sus dos tablas de agregados (v0.3 y v0.4).
+> - La spec §86–§95 y §99 solo lo resumen; ante cualquier diferencia, **prevalece esta tabla**.
+> - Principio: se implementa solo lo que el milestone usa; los contratos "Necesaria desde M1" (§22) se congelan en M1.
 
 | Milestone | Contenido | Criterio de salida |
 |---|---|---|
-| **M1 — Runtime sin IA + Planning** | Ids y primitives; envelope de eventos; `SqliteEventStore` + `InMemoryEventStore` (OAQ-1); Session, Run, **Plan, PlanItem**, Task, TaskGraph, Lane, Turn, ToolCall (ciclo de vida) con sus máquinas de estado; `PlanService`, `ProgressReconciler` R1–R7, watchdog; Completion Pipeline con `PendingTaskGate` y `PlanCompletionGate`; proyección `WorkingState`; contratos congelados de §22; `FakeTool` + `ScriptedModelProvider`; `IOmniClient` in-process; CLI `omni sim`, `/plan`, `/tasks`, `/events`; redactor en el serializador del journal; tests de arquitectura nuevos (IVT de Security, referencias IL del CLI) | Una ejecución simulada con Plan de varios items y un TaskGraph N:M se reconstruye **completa** desde el journal. Los tests deterministas de reconciliación Plan ↔ Task pasan. `PlanCompletionGate` bloquea un DONE prematuro. |
-| **M2 — Explorer** | `OpenAiChatCompatibleProvider` (ik_llama) + `LocalModelHost` attach/managed; `ISecretProvider` + Credential Manager; resolver de `EffectiveModelProfile` (Declared + Heuristic + Overrides) y `HarnessPolicy`; Context Engine v1 con `WorkingState` fijo al final; `ContextSnapshot` + `ExecutionFingerprint`; pipeline de tools real; `filesystem.read/list` y `search.text`; Permission Engine v1 + `IPathBoundaryValidator` (Sandbox `PathBoundary`); CAS v1 + externalización básica; `plan.propose`; `PlanControl`; `StallPolicy`; `Ask` por `ScopeExpansion` | `omni "explícame este repositorio"` produce un Plan mantenido por el runtime, un `AgentResult` y Turns explicables por fingerprint |
-| **M3 — Native Coder** | `filesystem.write/patch` con version tokens; Effect Journal + reconciliación FS; commits Barrier; `IProcessRuntime` + Job Objects + AppContainer; `process.exec` y luego `shell.exec`; tools de build y test; Build/Test/AcceptanceCriteria gates; reintentos y circuit breaker de providers | `omni act "corrige este test"`. Matar el proceso a mitad de un write y reanudar reconcilia sin duplicar el efecto |
-| **M4 — Context management** | Prune, Compress, Externalize, Compact; `ContextCheckpoint`; MetaModelService; GC y `verify-journal` | Sesiones largas sin crecimiento ilimitado; el WorkingState sobrevive a la compaction |
-| **M5 — Models + Qualification** | `OpenAIResponsesProvider` (api + codex, login ChatGPT); `AnthropicMessagesProvider` con `ProviderOpaque`; registro y alias; router + escalación; `OmniCore.Qualification` con suite `quick`; `ModelQualificationKey`, estados y store; `omni model inspect/qualify` | Cambiar de worker local a frontier sin modificar la Task; cualificar un modelo nuevo sin cambiar el runtime |
-| **M6 — Multi-agent** | Descomposición, scheduler de lanes, lanes paralelas y background, heartbeat, `AgentResult`; lanes delegadas a Claude Code (ADR-0012) | Explore + Implement + Verify como Tasks diferenciadas, con el Plan reconciliado en paralelo |
-| **M7 — Isolation** | Worktrees con `SnapshotOfWorkingTree`, integración 3-way, reconciliación Git, cleanup y recuperación | Coders concurrentes sin pisar el workspace ni los cambios del usuario |
-| **M8 — Extensibility** | Hooks con niveles y capacidades, Skills, Scope Resolver, MCP | Un hook de proyecto puede restringir pero no ampliar, verificado por test |
-| **M9 — Protocol + Host** | `StdioTransport`, negociación de `ProtocolVersion`, Host separado, lease entre procesos (OAQ-2), read models persistidos | El mismo CLI funciona in-process y por stdio sin cambios |
-| **M10 — CLI v1 + evaluación** | CLI completo, suite `full`, calibración, regression suite agentic, comparación con Pi | Criterios de madurez de la spec §96 |
+| **M1 — Runtime sin IA + Planning** | **Dominio:** ids tipados, `ScopeLevel`, `WorkspaceId`/`ProjectId` con rutas canónicas (ADR-0038 §4); Session, Run, Plan/PlanItem, Task/TaskGraph, Lane, Turn, ToolCall y sus máquinas de estado (ADR-0036); conversación ↔ Run, modos y cancelación (ADR-0035).<br>**Journal:** envelope, `EventType`, upcasters vacíos, `SqliteEventStore` + `InMemoryEventStore`, `IArtifactStore` simple (ADR-0041 §3), rutas de plataforma (ADR-0038/0039).<br>**Plan:** `PlanService`, `ProgressReconciler` R1–R7, watchdog, Completion Pipelines de Lane y de Run, `WorkingState`.<br>**Permisos:** tipos + `ScriptedPermissionPolicy` + `AuditSink` básico.<br>**Contratos congelados** (§22), incluidos `ITokenCounter` + `FakeTokenCounter`, `InteractionRequest` con eventos de dominio y `LocalizedText`.<br>**Cliente:** `OmniCore.Client` (`ClientProjection`), plain renderer interactivo (con pregunta en línea) y JSON renderer, recursos `es`/`en`.<br>**Simulación:** `omni sim` + escenarios YAML + golden rule.<br>**Tests de arquitectura:** IVT solo Security, referencias IL del CLI, multi-target | Los escenarios de `omni sim` (plan de varios items, TaskGraph N:M, `Ask`, crash + resume) se reconstruyen idénticos desde el journal, en **Windows y Linux** |
+| **M2 — Explorer** | **Modelo local:** `OpenAiChatCompatibleProvider` (ik_llama), `LocalModelHost` attach + managed, `IProcessRuntime` mínimo (control del árbol de procesos), registro mínimo de modelos + `NoModelConfigured`.<br>**Configuración:** YAML + schemas, Scope Resolver de configuración, confianza de workspace (ADR-0039).<br>**Seguridad:** `ISecretProvider` + `ICredentialStore` por plataforma; Permission Engine v1 (defaults autónomos, grants por `WorkspaceId`, `/permissions`, topes de gasto); `IPathBoundaryValidator` por plataforma; audit store.<br>**Modelo y contexto:** `EffectiveModelProfile` (Declared + Heuristic + Overrides) + `HarnessPolicy`; token counters reales; Context Engine v1 (`WorkingState`, `SessionConversationContributor`, política provisional de ADR-0042); `ContextSnapshot` + fingerprint.<br>**Tools:** pipeline real, read tools, `reference.resolve`, CAS v1, `ToolPresentation`.<br>**Planificación y diagnóstico:** `plan.propose`, `PlanApproval` (PLAN → ACT), `PromptCommand`, `/context` y `/tools` | `omni "explícame este repositorio"` en el plain renderer interactivo, con Plan mantenido por el runtime y Turns explicables por fingerprint |
+| **M3 — Native Coder** | `write`/`patch` con version tokens; Effect Journal + reconciliación de filesystem; commits Barrier; sandbox `Strong` (AppContainer en Windows, bubblewrap + Landlock + seccomp en Linux) + `WeakSandboxConsent`; `process.exec` (build/test con red), `shell.exec`; gates Build/Test/Acceptance; reintentos y circuit breaker de providers | `omni act "corrige este test"`; un crash durante un write se reanuda sin duplicar el efecto |
+| **M4 — Context management** (+ **track TUI v0**) | Prune, Compress, Externalize, Compact, `ContextCheckpoint`, MetaModelService, GC, `verify-journal`, retención de auditoría.<br>**Track TUI v0** (decisión del usuario: después de M3): Terminal.Gui con 4 zonas, `SidebarHost` (sesión, plan, archivos + diff), overlays, responsive, roles de tema, autocompletado de `/` y `@`, spike de `SpectreSegmentAdapter` (OAQ-13) | Sesiones largas sin crecimiento ilimitado; el `WorkingState` sobrevive a la compaction; la TUI v0 usable sobre la misma `ClientProjection` |
+| **M5 — Models + Qualification** | `OpenAIResponsesProvider` (perfiles `api` y `codex`, **login ChatGPT**); `AnthropicMessagesProvider` (`ProviderOpaque`); registro completo + alias; router + escalación; `OmniCore.Qualification` + suite `quick`, estados y store; costo y cuota reales en la status line; calibración de estimaciones de tokens | Cambiar de worker local a frontier sin modificar la Task; cualificar un modelo sin cambiar el runtime |
+| **M6 — Multi-agent** | Descomposición, scheduler de lanes, lanes background, heartbeat agregado, agregación de `AgentResult`, `WorkflowCommand`, tools `Dynamic`, `core.agents` + `LaneInspector` (TUI). **Solo las lanes de lectura corren en paralelo**; las escritoras se serializan con un lease de escritura hasta M7 | Explore + Implement + Verify como Tasks diferenciadas, con el Plan reconciliado |
+| **M7 — Isolation** | Worktrees con `SnapshotOfWorkingTree`, integración 3-way, reconciliación Git, cleanup; **lanes escritoras paralelas**; **lanes delegadas a Claude Code** (ADR-0012 rev. 3, riesgo residual aceptado) | Coders concurrentes sin pisar el workspace ni los cambios del usuario |
+| **M8 — Extensibility** | Host de extensiones (`OmniCore.Extensions`) + manifest YAML + `ExtensionBoundary`; **MCP** con las reglas de confianza de ADR-0023; hooks; ciclo de vida de skills; `CommandRegistry` con precedencia + `ExtensionCommand`; `toolPreferences`; **Session Memory**; `/commands`, `/skills`, `/extensions`, `/memory session` | Un hook o extensión puede restringir pero no ampliar, verificado por test |
+| **M9 — Protocol + Host** | `StdioTransport`, negociación de `ProtocolVersion`, Host separado, lease entre procesos, read models persistidos; integración de OmniCoder vía Protocol y Client en net8 | El mismo CLI funciona in-process y por stdio; un cliente net8 se conecta |
+| **M10 — CLI v1 + memoria + evaluación** | **Memoria Project, Workspace y Global** con promoción (toda la memoria en v1); keybindings configurables, Command Palette, `session.search`; suite `full` + calibración; regression suite; comparación con Pi; adapter de OmniCoder | Criterios de madurez de la spec §96 |
 
-**Cambios frente a la spec v0.1:**
+**Cambios frente a los roadmaps anteriores:**
 
-- Planning entra en M1.
-- La persistencia pasa de M9 a M1.
-- La cualificación se suma a M5.
-- La integración del login ChatGPT queda en M5.
-- Las lanes de Claude Code quedan en M6.
-- M9 se reduce a protocolo y Host.
+- Planning y persistencia entran en M1.
+- M1 agrega los componentes mínimos de simulación (ADR-0041).
+- M2 incorpora el Scope Resolver de configuración, el `IProcessRuntime` mínimo, el registro mínimo de modelos y los topes de gasto.
+- La TUI sale de M2 y pasa a un track después de M3.
+- Las lanes de Claude Code pasan de M6 a M7.
+- En M6 solo corren en paralelo las lanes de lectura.
+- Toda la memoria entra en v1.
 
-**Agregados de v0.3 al roadmap** (sin cambiar los criterios de salida):
-
-| Milestone | Agrega |
-|---|---|
-| M1 | `ScopeLevel`, `WorkspaceId`/`ProjectId` (ubicación del journal); tipos `TrustLevel`/`SourceKind`/`ComponentSource`; `ToolDescriptor.Source`/`.Protection`; `ContextProvenance` + `ContributionCategory` + `ContextItemKind.Memory`/`Knowledge`; regla "el Engine no interpreta `/`" con test; `ClientCommandRegistry` mínimo; `ClientAction` + bindings de interrupt/cancel |
-| M2 | `/context` por categoría y origen; `/tools` con origen; nombres visibles únicos en el `ToolPlanner`; `PromptCommand` desde `.omnicore/commands` |
-| M6 | `WorkflowCommand`; tools `Dynamic` |
-| M8 | Host de extensiones (`OmniCore.Extensions`) + manifest + `ExtensionBoundary`; `CommandRegistry` con precedencia + `ExtensionCommand`; ciclo de vida y precedencia de skills; `toolPreferences`; tools MCP; hooks con `TrustLevel` unificado; Session Memory + `MemoryContextContributor` + `memory.propose`; `/commands`, `/skills`, `/extensions`, `/memory session` |
-| M10 | `KeyBindingService` configurable + `/keybindings`; Command Palette/TUI; Project/Workspace/Global Memory con promoción; `/memory project\|global` |
 
 ---
 
@@ -733,11 +771,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  MAN["omnicore-extension.json<br/>id · version · omnicoreApi<br/>provides · requests · runtime · source"] --> INST["Instalación o confianza<br/>consentimiento de capacidades"]
+  MAN["omnicore-extension.yaml<br/>id · version · omnicoreApi<br/>provides · requests · runtime · source"] --> INST["Instalación o confianza<br/>consentimiento de capacidades"]
   INST --> TL{"TrustLevel"}
   TL -->|"Core"| INP["in-process"]
-  TL -->|"Trusted · Project"| JO["proceso · JobObjectOnly"]
-  TL -->|"ThirdParty"| APC["proceso · AppContainer"]
+  TL -->|"Trusted · Project"| JO["proceso · sandbox Strong"]
+  TL -->|"ThirdParty"| APC["proceso · sandbox Strong · capacidades mínimas"]
   TL -->|"Untrusted"| OFF["deshabilitado o solo Observe"]
   JO --> API["OmniCore Extension API<br/>JSON-RPC stdio · semver"]
   APC --> API
@@ -831,10 +869,11 @@ flowchart LR
   end
   OBS["Observaciones<br/>modelo · runtime · usuario"] --> CAND["MemoryCandidate<br/>scope propuesto · evidencia"]
   CAND --> POL{"MemoryPolicy"}
-  POL -->|"Promote"| GM
-  POL -->|"Ask"| USR["Usuario"]
+  POL -->|"Promote: Session automático · Project/Workspace con evidencia"| SM
+  POL -->|"Promote con evidencia"| PM
+  POL -->|"Ask · Global siempre"| USR["Usuario"]
   POL -->|"Reject"| RJM["MemoryRejected"]
-  USR --> PM
+  USR -->|"confirma"| GM
   subgraph STORES["Memory stores · OmniCore.Memory"]
     GM["Global · User"]
     PM["Project"]
@@ -856,3 +895,302 @@ flowchart LR
 ```
 
 Memory, Knowledge y Skills entran por contributors distintos, con storage, ciclo de vida y políticas propios. El `WorkingState` no compite por el presupuesto de memoria.
+
+---
+
+# Revisión v0.4 — cliente interactivo (UI/TUI)
+
+## 31. Capas del cliente
+
+[ADR-0030](../adr/0030-arquitectura-del-cliente.md)
+
+```mermaid
+flowchart TB
+  subgraph PROTO["OmniCore.Protocol"]
+    IOC["IOmniClient · WireEvent · WireCommand · WireQuery"]
+  end
+  subgraph CLIENTP["OmniCore.Client · sin frameworks visuales"]
+    SESS["OmniClientSession"]
+    PROJ["ClientProjection · reducer puro"]
+    STATE["ClientState<br/>Header · Conversation · Sidebar · Composer<br/>StatusLine · Overlays · Settings"]
+    ACTS["ClientAction · ClientCommandRegistry<br/>KeyBindingRegistry"]
+    WID["ISidebarWidget · WidgetModel"]
+    CMP["ComposerParser → InputPart"]
+  end
+  subgraph CLIP["OmniCore.Cli · Terminal.Gui + Spectre.Console"]
+    TUI["Tui: OmniApplication · MainView · SidebarHost<br/>ComposerView · StatusLineView · OverlayHost"]
+    RND["Rendering: Event · Tool · Diff · Artifact<br/>SpectreSegmentAdapter"]
+    PLAIN["Plain: PlainRenderer"]
+    JSON["Plain: JsonRenderer"]
+  end
+  IOC --> SESS
+  SESS --> PROJ
+  PROJ --> STATE
+  WID --> STATE
+  STATE --> TUI
+  STATE --> PLAIN
+  SESS -->|"WireEvents tal cual"| JSON
+  TUI --> RND
+  TUI --> ACTS
+  ACTS --> SESS
+  CMP --> SESS
+```
+
+| Condición | Renderer |
+|---|---|
+| TTY interactiva | TUI (Terminal.Gui) |
+| stdout redirigido, `TERM=dumb`, `--plain` o CI | PlainRenderer (Spectre o texto; respeta `NO_COLOR`) |
+| `--json` | JsonRenderer: NDJSON de eventos del protocolo + resultado |
+
+## 32. Layout y responsive
+
+[ADR-0031](../adr/0031-layout-status-line-y-tema.md)
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ C:\Repos\OmniCore   main +2 -1                                      HEADER   │
+├────────────────────────────────────────────────────┬─────────────────────────┤
+│ MAIN CONVERSATION                                  │ SIDEBAR (SidebarHost)   │
+│  ● Searching repository                            │ SESSION · PLAN          │
+│  ✓ Found 4 relevant files                          │ SUBCODERS · FILES       │
+├────────────────────────────────────────────────────┴─────────────────────────┤
+│ > composer: texto · /commands · @references                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Qwen 27B · medium · ctx 42k/64k 66%       session 118k tok · $0.08 · credits —│
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+```mermaid
+flowchart LR
+  RS["Resize"] --> BP{"ancho vs ui.breakpoints"}
+  BP -->|"≥ 120"| ST["Stacked<br/>sidebar 32–40 col · widgets apilados"]
+  BP -->|"90–119"| TB["Tabbed / estrecho<br/>≈ 26 col · menos metadata"]
+  BP -->|"< 90"| OV["Overlay<br/>sidebar oculto · sidebar.toggle"]
+  RS --> HT{"altura baja"}
+  HT -->|"sí"| COL["colapsar widgets de menor prioridad"]
+```
+
+**Status line:** `UsageSnapshot` distingue `Reported`, `Estimated` (solo costo, se muestra `≈`), `NotSupported`/`Unknown` (`—`), `NotApplicable` (se omite) y `Stale`. **La cuota nunca se estima.**
+
+## 33. Sidebar y widgets
+
+[ADR-0032](../adr/0032-sidebar-y-widgets.md)
+
+```mermaid
+flowchart TB
+  STATE["ClientState"] --> EVAL["Evaluate por widget<br/>None · Low · Normal · Attention"]
+  CFG["Config: sidebar.visible · sidebar.mode<br/>widgets.id.visible true/false/auto<br/>expanded · priority"] --> ORD
+  EVAL --> ORD["Orden: Attention arriba → priority → registro"]
+  ORD --> BUILD["Build(state, size) → WidgetModel declarativo<br/>List · Tree · KeyValue · Progress · Badge"]
+  BUILD --> REN["Renderer por tipo de WidgetModel<br/>OmniCore.Cli"]
+  W1["core.session · fijo arriba"] --> EVAL
+  W2["core.plan"] --> EVAL
+  W3["core.agents"] --> EVAL
+  W4["core.files"] --> EVAL
+  WX["extensiones · provides.sidebarWidgets<br/>datos redactados según TrustLevel"] --> EVAL
+```
+
+## 34. Conversación, composer e interacciones
+
+[ADR-0033](../adr/0033-conversacion-y-composer.md) · [ADR-0034](../adr/0034-interaction-requests.md)
+
+```mermaid
+sequenceDiagram
+  participant U as Usuario
+  participant C as Composer / ClientProjection
+  participant H as Host
+  participant E as Engine
+  participant P as Permission Engine
+  U->>C: "arregla @file:AuthService.cs"
+  C->>H: SendInput [TextPart, ReferencePart File]
+  H->>E: SendInput mapeado a comando de dominio
+  E->>P: ToolIntent reference.resolve (lectura de AuthService.cs)
+  P-->>E: Allow
+  E->>E: ContextItem File con procedencia · UserInputReceived
+  E->>P: ToolIntent process.exec (herramienta externa)
+  P-->>E: Ask
+  E-->>H: InteractionRequested (opciones del servidor)
+  H-->>C: WireEvent
+  C-->>U: overlay de permiso · Lane en WAITING FOR PERMISSION
+  U->>C: Allow for this Run
+  C->>H: RespondToInteraction
+  H->>E: PermissionGranted lifetime Run
+  E-->>C: ToolCall events → ActivityBlock "● Running tests" → "✓ 143 passed"
+```
+
+---
+
+# Revisión v0.5 — revisión integral y entrevista
+
+La revisión integral la hicieron tres revisores independientes, con focos en dominio y runtime, seguridad y extensibilidad, y modelos, protocolo y roadmap. Encontraron unos 70 hallazgos, con solapamiento entre ellos. Los que requerían una decisión de producto se resolvieron entrevistando al usuario (§39); el resto se resolvió en los ADRs 0035–0043 y con correcciones en ADRs anteriores (§40).
+
+## 35. Conversación, Run y modos
+
+[ADR-0035](../adr/0035-conversacion-run-y-modos.md)
+
+```mermaid
+stateDiagram-v2
+  [*] --> Created: SendInput sin Run activo
+  Created --> Running: RunStarted
+  Running --> AwaitingInput: la Lane raíz espera al usuario
+  AwaitingInput --> Running: UserInputReceived
+  Running --> Validating: se propone completar
+  Validating --> Running: RunValidationRejected
+  Validating --> Completed: gates OK · outcome Completed / CompletedWithIssues / Planned
+  Running --> Failed: RunFailed
+  Running --> Cancelled: CancelRun
+  AwaitingInput --> Cancelled: CancelRun
+  Completed --> [*]
+  Failed --> [*]
+  Cancelled --> [*]
+```
+
+```mermaid
+flowchart LR
+  P["Run en modo Plan<br/>planificación: revisa Plan rev.1"] --> PA{"InteractionRequest<br/>PlanApproval"}
+  PA -->|"Aprobar y ejecutar"| A["Mismo Run en modo Act<br/>RunModeChanged"]
+  PA -->|"Aprobar sin ejecutar"| PL["RunCompleted outcome Planned"]
+  PA -->|"Seguir planificando"| P
+  PA -->|"sin cliente: Deny"| PL
+  A --> G["Completion Gates"]
+```
+
+## 36. Máquinas de estado
+
+[ADR-0036](../adr/0036-maquinas-de-estado.md)
+
+```mermaid
+stateDiagram-v2
+  [*] --> Queued: LaneCreated
+  Queued --> Provisioning: LaneProvisioning
+  Queued --> Running: LaneStarted
+  Provisioning --> Running: LaneStarted
+  Running --> Blocked: LaneBlocked
+  Blocked --> Running: LaneUnblocked
+  Running --> Completed: LaneCompleted
+  Running --> Failed: LaneFailed
+  Blocked --> Failed: LaneFailed
+  Provisioning --> Failed: LaneFailed
+  Running --> Cancelled: LaneCancelled
+  Blocked --> Cancelled: LaneCancelled
+  Completed --> [*]
+  Failed --> [*]
+  Cancelled --> [*]
+```
+
+La actividad de la Lane (`WaitingForModel`, `WaitingForTool`, `WaitingForPermission`, `WaitingForInput`, `WaitingForSubtask`, `Validating` y `Stalled`) **se deriva** de otros eventos y nunca se persiste. Así se cumple INV-021 sin depender de heartbeats.
+
+## 37. Modelo de permisos
+
+[ADR-0037](../adr/0037-modelo-de-permisos.md)
+
+```mermaid
+flowchart LR
+  TI["ToolIntent · claims"] --> L1["CoreBoundary"]
+  TI --> L2["Parent / Task / AgentProfile"]
+  TI --> L3["WorkspaceBoundary"]
+  TI --> L4["UserPolicy + perfil de modo<br/>autónomo por defecto"]
+  TI --> L5["HookRestrictions"]
+  TI --> L6["ExtensionBoundary"]
+  L1 --> MIN["mínimo · Deny menor que Ask menor que Allow"]
+  L2 --> MIN
+  L3 --> MIN
+  L4 --> MIN
+  L5 --> MIN
+  L6 --> MIN
+  MIN -->|"Ask de UserPolicy o del perfil"| GR{"¿Grant vigente?<br/>clave WorkspaceId"}
+  GR -->|"sí"| AL["Allow"]
+  GR -->|"no"| IR["InteractionRequest"]
+  MIN -->|"Deny"| DN["PermissionDenied"]
+  MIN -->|"Allow"| AL
+  AL --> ATI["AuthorizedToolIntent<br/>+ PermissionDecisionRecord"]
+```
+
+## 38. Plataformas y sandbox
+
+[ADR-0038](../adr/0038-plataformas-sandbox-y-distribucion.md) · [ADR-0039](../adr/0039-workspace-trust-y-configuracion.md)
+
+```mermaid
+flowchart TB
+  subgraph ABS["Abstracciones · OmniCore.Abstractions"]
+    SB["IProcessSandbox"]
+    PT["IProcessTreeControl"]
+    CS["ICredentialStore"]
+    PP["IPlatformPaths"]
+    PB["IPathBoundaryValidator"]
+  end
+  subgraph WIN["Windows · completo"]
+    W1["AppContainer + Job Objects"]
+    W2["Credential Manager · DPAPI"]
+    W3["APPDATA · LOCALAPPDATA"]
+  end
+  subgraph LNX["Linux · completo"]
+    L1["bubblewrap + Landlock + seccomp + cgroup"]
+    L2["Secret Service"]
+    L3["XDG config · data · state"]
+  end
+  subgraph MAC["macOS · best-effort"]
+    M1["Basic: grupo de procesos + límites"]
+    M2["Keychain"]
+    M3["Application Support"]
+  end
+  SB --> W1
+  SB --> L1
+  SB --> M1
+  CS --> W2
+  CS --> L2
+  CS --> M2
+  PP --> W3
+  PP --> L3
+  PP --> M3
+  M1 -. "sin sandbox fuerte: WeakSandboxConsent por sesión" .-> SB
+```
+
+- **Distribución:** self-contained por RID, con analizadores de AOT activos.
+- **Multi-target:** `OmniCore.Protocol`, `OmniCore.Client` y `OmniCore.Sandbox` compilan para `net10.0;net8.0`, para que OmniCoder los consuma sin migrar. Un test lo verifica.
+
+## 39. Decisiones de la entrevista
+
+| # | Pregunta | Decisión del usuario | ADR |
+|---|---|---|---|
+| E1 | ¿Cómo se relacionan los mensajes con los Runs? | **El Run abarca la conversación** hasta pasar los gates; 1 Run activo por Session | 0035 |
+| E2 | ¿Qué es PLAN y cómo se ejecuta? | **Mismo Run con aprobación** (`PlanApproval` → Act, o termina `Planned`) | 0035 |
+| E3 | ¿Plataforma? | **Multiplataforma desde v1** | 0038 |
+| E4 | ¿Idioma de UI? | **Localizable, español por defecto** | 0040 |
+| E5 | ¿Qué plataformas con soporte completo? | **Windows + Linux** (macOS best-effort) | 0038 |
+| E6 | ¿Sin sandbox fuerte? | **Permitir con confirmación de sesión** (`WeakSandboxConsent`, incluida shell) | 0038 |
+| E7 | ¿Distribución? | **Self-contained por RID, AOT posible** | 0038 |
+| E8 | ¿Autonomía por defecto? | **Autónomo** (ACT/ORQ escriben y corren build/test sin preguntar dentro del workspace) | 0037 |
+| E9 | ¿Formato de configuración? | **YAML en todo** | 0039 |
+| E10 | ¿Memoria en v1? | **Toda en v1** (Session M8; Project, Workspace y Global M10) | 0028 rev. 2 |
+| E11 | ¿Claude Code lanes? | **M7, riesgo residual aceptado** | 0012 rev. 3 |
+| E12 | ¿TUI en el camino crítico? | **Después de M3** (track paralelo a M4) | §24 |
+| E13 | ¿Gasto en providers de pago? | **Tope por sesión y diario con Ask** (5/20 USD, configurable), desde M2 | 0037 §7 |
+| E14 | ¿Red para restore/build? | **Red libre para procesos de build** (riesgo documentado) | 0037 §4 |
+| E15 | ¿Auditoría y purga? | **Sobrevive, redactada**, 180 días | 0043 |
+| E16 | ¿Cómo consume OmniCoder (net8)? | **Protocol y Client multi-target** | 0038 §6 |
+| E17 | ¿Y Sandbox? | **También multi-target** | 0038 §6 |
+
+## 40. Hallazgos resueltos por arquitectura
+
+| Tema | Resolución | Dónde |
+|---|---|---|
+| Máquinas de estado incompletas (Run sin transiciones, Task sin cancelación, Lane no reconstruible, PlanItem sin `Unblock`/`Fail`/`Cancel`, ToolCall sin cancelación) | Tablas con un evento por transición; actividad de Lane derivada; jerarquía de PlanItem (solo las hojas cuentan); `ToolCallCancelled`; `PermissionEvaluated` para toda llamada | 0036 |
+| `FailurePolicy`, `PendingTaskGate`, quién propone completar, cancelación | Run con `FailurePolicy` (default `BlockDependents`), pipelines por nivel, tabla de cancelación | 0035 |
+| M1 necesitaba piezas de M2/M6 (autorización, artifacts, mutaciones de plan, `AgentResult`) | `ScriptedPermissionPolicy`, `IArtifactStore` simple, `ProposePlanMutation`, contrato `AgentResult` en M1; `omni sim` definido | 0037 §9, 0041 |
+| Tipos de permisos sin definir, combinación ternaria ambigua, lifetimes contradictorios | Tipos, orden `Deny < Ask < Allow`, `Once/Run/Session/Workspace`, grants por `WorkspaceId` | 0037 |
+| Un repo podía redefinir providers o la seguridad | Confianza de workspace + allowlist de claves configurables desde el repo | 0039 |
+| `ProjectId` suplantable | No autoriza nada; solo sirve para compartir memoria; no se puede sobrescribir desde el repo | 0037 §5, 0039 §2 |
+| `SandboxProfile` inconsistente | `Strong \| Basic` + filesystem + red + límites; sin `None` | 0038 §3 |
+| Resolución de ejecutables y entorno | Sin cwd ni workspace; build/test son `WorkspaceEffect`; allowlist de entorno; secretos en Deny | 0037 §6 |
+| MCP sin confianza definida | MCP local de usuario `Trusted`, del repo `Project`, remoto `Untrusted` salvo marca | 0023 |
+| Trust levels contradictorios entre 0020 y 0023 | Orden total, consentimiento explícito, sandbox `Strong` para todo lo que no es Core | 0020, 0023 |
+| Wire DTOs con tipos de Domain; `StatusLineModel` mezclado | DTOs con ids propios en Protocol; `UsageSnapshot` en Protocol y `StatusLineModel` en Client | 0013, 0031, 0034 |
+| Dos significados de `EffectiveModelProfile`; tipos de modelo superpuestos | `EffectiveExecutionProfile` por Turn; tabla de propiedad | 0005, 0007 |
+| Sin conteo de tokens determinista; contexto sin política antes de M4 | `ITokenCounter` + `FakeTokenCounter`; política provisional | 0042 |
+| Nombres de eventos y comandos (`EngineEvent`, `EngineCommand`, `EventType`) | `DomainEvent`/`WireEvent`; `ServerCommand`; `EventType` en minúsculas con puntos; `CorrelationId` = `RunId`; `CommandId` | 0013, 0024 |
+| JSON renderer ambiguo | Excepción documentada; `RunOutcome` final | 0019, 0030 |
+| Orden del roadmap (Scope Resolver, proceso mínimo, registro de modelos, paralelismo en M6, Claude Code) | Roadmap consolidado | §24 |
+| Auditoría y telemetría sin definir | Audit store de User que sobrevive a la purga; telemetría solo local | 0043 |
+| Diagrama de memoria que promovía directo a Global | Corregido: Global siempre `Ask` | §30 |
+| Textos obsoletos (spec §79/§80/§98, EPIC-006, niveles de hooks, `keybindings.json`…) | Notas v0.5 y reemplazos | varios |

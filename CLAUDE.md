@@ -2,7 +2,7 @@
 
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
-- Especificación: `docs/spec/OmniCore-v1.md` (v0.3)
+- Especificación: `docs/spec/OmniCore-v1.md` (v0.5)
 - Decisiones: `docs/adr/` — **prevalecen sobre la spec**. Léelas antes de cambiar cualquier cosa que toquen.
 - Arquitectura (diagramas, clasificación de abstracciones, preguntas abiertas, roadmap): `docs/architecture/arquitectura.md`
 
@@ -41,20 +41,31 @@ Paquetes: `dotnet add <proyecto> package <id>` (Central Package Management; la v
 21. Las extensiones y skills no `Core` corren fuera de proceso; su manifest es un techo de permisos (`ExtensionBoundary`), nunca un grant (ADR-0023).
 22. Memory es un servicio externo que entra solo como `IContextContributor`. El runtime funciona sin ella, y el LLM nunca promociona memoria por sí solo (ADR-0028).
 23. Todo `ContextItem` lleva procedencia (ADR-0029).
+24. La UI está desacoplada: Terminal.Gui y Spectre.Console solo en `OmniCore.Cli` (lo verifica un test). `OmniCore.Client` (`ClientProjection`, modelos de presentación, acciones, widgets) no conoce frameworks visuales, y todos los renderers leen el mismo estado (ADR-0030).
+25. Todo human-in-the-loop pasa por `InteractionRequest`/`RespondToInteraction`, con opciones decididas por el servidor (ADR-0034). La status line nunca inventa datos: sin cuota informada muestra `—` (ADR-0031).
+26. Un Run abarca la conversación hasta pasar los gates, con 1 Run activo por Session. PLAN → ACT ocurre en el mismo Run tras `PlanApproval` (ADR-0035).
+27. Cada transición de estado canónico tiene exactamente un evento. La actividad de Lane (`Waiting*`, `Stalled`) se deriva y nunca se persiste (ADR-0036).
+28. Permisos: las capas se combinan por mínimo (`Deny < Ask < Allow`), y un grant solo levanta `Ask` de `UserPolicy` o del perfil, nunca un `Deny`. Los grants persistentes van por `WorkspaceId`. El perfil por defecto es autónomo (ADR-0037).
+29. Un workspace no confiable ignora su `.omnicore/`. Un repo nunca configura providers, credenciales, permisos amplios ni sandbox (ADR-0039).
+30. La auditoría sobrevive a la purga de sesiones, y la telemetría es solo local (ADR-0043).
 
 ## Reglas de trabajo
 
 - Grafo de dependencias en ADR-0009, verificado por `tests/OmniCore.ArchitectureTests`. Cambiar el grafo = actualizar ADR y test en el mismo cambio.
 - `OmniCore.Sandbox` no depende de nada de OmniCore: se comparte con OmniCoder (ADR-0008).
-- Todo en .NET 10. No agregar targets net8.
+- Todo en .NET 10. **Única excepción:** `OmniCore.Protocol`, `OmniCore.Client` y `OmniCore.Sandbox` compilan también para net8, porque las consume OmniCoder. En esas tres no se usan APIs exclusivas de net10, y un test lo verifica (ADR-0038 §6).
+- Multiplataforma: Windows y Linux completos, macOS best-effort. Nada de rutas ni APIs de plataforma fuera de las abstracciones de ADR-0038 §2. Los analizadores AOT están activos: sin reflexión dinámica en el Core.
+- Configuración en YAML (YamlDotNet con generador estático), validada con schema (ADR-0039).
+- Textos visibles al usuario: `LocalizedText` con recursos `es` (por defecto) y `en`. Los prompts al modelo, en inglés (ADR-0040).
 - Errores tipados (spec §71), no `Exception` genérica para fallos de dominio.
 - Toda operación async significativa recibe `CancellationToken` y lo propaga.
 - Priorizar tests deterministas (`ScriptedModelProvider`, `FakeTool`, etc.) sobre tests con LLM.
 - Todo valor configurable debe tener un test que demuestre que cambia el comportamiento (lección de OmniCoder, ADR-0007).
 - Identificadores y código en inglés; documentación y mensajes al usuario en español.
-- Datos de runtime **fuera del repo**: `%LOCALAPPDATA%\OmniCore\workspaces\<WorkspaceId>\` (journal, blobs, worktrees). `.omnicore/` del repo es solo configuración versionable (ADR-0022 §3).
+- Datos de runtime **fuera del repo**: `<data>/workspaces/<WorkspaceId>/` (journal, blobs, worktrees), donde `<data>` es el directorio de datos de la plataforma (`%LOCALAPPDATA%\OmniCore` en Windows, `$XDG_DATA_HOME/omnicore` en Linux). `.omnicore/` del repo es solo configuración versionable (ADR-0039 §2).
 
 ## Estado
 
-- **Hecho:** esqueleto (13 proyectos + tests de arquitectura) y revisión arquitectónica v0.2/v0.3 (ADRs 0001–0029). OAQ-1 resuelta el 2026-09-24 (opción B).
+- **Hecho:** esqueleto (14 proyectos + tests de arquitectura; multi-target y analizadores AOT) y revisión arquitectónica v0.2–v0.5 (ADRs 0001–0043), incluida la revisión integral con entrevista al usuario. OAQ-1 y OAQ-6 resueltas.
+- **Roadmap:** la fuente de verdad es `docs/architecture/arquitectura.md` §24.
 - **Siguiente:** M1 — runtime sin IA + Planning (spec §86, arquitectura §24), cuando el usuario apruebe la revisión. No implementar nada fuera de lo que M1 usa: los contratos marcados "Necesaria desde M1" se congelan, y el resto espera a su milestone.

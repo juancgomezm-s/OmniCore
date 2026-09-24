@@ -10,7 +10,7 @@
 ## Decisión
 
 1. Generación de esquemas: `JsonSchemaExporter` (BCL) cuando la entrada de la tool sea un tipo C#.
-2. Validación: librería existente. Candidata principal **JsonSchema.Net** (json-everything, basada en System.Text.Json). Se confirma versión y licencia al integrarla en M2 (EPIC-006).
+2. Validación: librería existente. Candidata principal **JsonSchema.Net** (json-everything, basada en System.Text.Json). Se confirma versión y licencia al integrarla en M2 (EPIC-017).
 3. `OmniCore.Abstractions` no expone el tipo de la librería: el contrato usa una representación propia (`JsonElement` del esquema) para que el proveedor de validación sea reemplazable.
 
 4. La validación de esquema es la **primera etapa** del pipeline de tools (ADR-0014). Es pura y ocurre antes de `Prepare`.
