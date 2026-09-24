@@ -1,6 +1,6 @@
 # ADR-0011 — Mecanismo de conexión a proveedores de modelos
 
-- **Estado:** Aceptada (2026-09-24), salvo §3.3 (Propuesta, pendiente de decisión)
+- **Estado:** Aceptada (2026-09-24)
 - **Amplía:** ADR-0005
 - **Spec:** §17–§22, §70–§73, INV-010, INV-011
 
@@ -22,7 +22,8 @@ Observaciones de OmniCoder que motivan decisiones:
 | Dialecto | Cubre |
 |---|---|
 | `OpenAiChatCompletions` | ik_llama / llama.cpp, OpenRouter, DeepSeek, Groq, xAI, Mistral, Together, Fireworks, Cerebras… |
-| `OpenAiResponses` | modelos recientes de OpenAI |
+| `OpenAiResponses` | modelos recientes de OpenAI con API key |
+| `OpenAiCodexResponses` (variante de Responses) | modelos de OpenAI con la suscripción ChatGPT del usuario (§3.4) |
 | `AnthropicMessages` | Anthropic nativo (prompt caching, thinking) |
 
 - Cada dialecto implementa `IModelProvider` con un cliente HTTP propio y delgado (`HttpClient` + System.Text.Json con source generation). No se usan SDKs oficiales: añaden peso y no exponen las extensiones de llama.cpp.
@@ -54,10 +55,31 @@ aliases:
 2. `IAuthProvider` por proveedor con tipos `None | ApiKey | Bearer | OAuth`. La arquitectura soporta OAuth **desde el inicio** (refresh de tokens, expiración, revocación), para no tener que rediseñar cuando se habilite un flujo.
 3. **Login por suscripción:**
    - **Anthropic (Claude Free/Pro/Max): no se implementa.** La página de cumplimiento legal de Anthropic ([code.claude.com/docs/en/legal-and-compliance](https://code.claude.com/docs/en/legal-and-compliance)) prohíbe usar tokens OAuth de esas cuentas en cualquier otro producto, herramienta o servicio, incluido el Agent SDK. Se hace cumplir desde abril de 2026. Anthropic se usa solo con API key.
-   - **OpenAI (ChatGPT Plus/Pro): Propuesta, pendiente.** OpenAI lo ha tolerado públicamente, pero no hay un flujo OAuth documentado para terceros. Los harnesses que reutilizan el client OAuth de Codex han sido cortados en ocasiones. Si se habilita, será un `IAuthProvider` aislado, desactivable y marcado como no oficial.
-   - **No se reutilizan client IDs de otros productos.** Pi y OpenCode usan el client ID de Codex CLI (`app_EMoamEEZ73f0CkXaXp7hrann`). Pi además usa el de Claude Code y el de VS Code Copilot, y **se hace pasar por Claude Code**: `user-agent: claude-cli/…`, remapeo de nombres de tools e inyecta "You are Claude Code…" en el system prompt. OmniCore solo usará flujos OAuth documentados o apps OAuth registradas a su nombre, identificándose como OmniCore.
+   - **OpenAI (ChatGPT): requerimiento obligatorio, se implementa.** Ver §3.4.
+   - **Regla general: no se reutilizan client IDs de otros productos ni se suplanta a otro producto.** Pi usa el client ID de Claude Code y el de VS Code Copilot, y **se hace pasar por Claude Code**: `user-agent: claude-cli/…`, remapeo de nombres de tools e inyecta "You are Claude Code…" en el system prompt. Nada de eso se porta. La única excepción es el flujo de ChatGPT de §3.4, porque OpenAI respalda públicamente que harnesses de terceros lo usen, y aun así OmniCore se identifica como OmniCore.
+4. **Login con suscripción de ChatGPT (obligatorio).**
+   - **Base de legitimidad:** Tibo Sottiaux (OpenAI, Codex) anunció que Pi se sumó a "la lista de agentes abiertos que soportan iniciar sesión con tu cuenta de ChatGPT y usar el mismo uso que obtienes en Codex" (traducido; [x.com/thsottiaux](https://x.com/thsottiaux/status/2012030806169121160)). El programa *Codex for Open Source* de OpenAI nombra a OpenCode, Cline y pi como herramientas que apoya. Son declaraciones públicas, **no contractuales**: OpenAI puede cambiar la política.
+   - **Flujo** (el mismo que Pi y OpenCode, portado desde su código MIT):
+     - OAuth 2.0 + PKCE contra `https://auth.openai.com` con el client público de Codex, `scope openid profile email offline_access`, callback en loopback `http://localhost:1455/auth/callback`.
+     - Alternativa **device code** (`/api/accounts/deviceauth/usercode` → `/codex/device`) para entornos sin navegador o con el puerto 1455 ocupado.
+     - Referencias: Pi `pi-ai/dist/auth/oauth/openai-codex.js`, OpenCode `packages/opencode/src/plugin/openai/codex.ts`.
+   - **Identificación honesta:** `originator: omnicore` y `User-Agent: omnicore/<versión> (<os>; <arch>)`. Nunca se imita el user-agent ni los prompts de Codex CLI.
+   - **Tokens:**
+     - `access`, `refresh`, `expires` y `chatgpt_account_id` (claim `https://api.openai.com/auth` del JWT) se guardan en `ICredentialStore` (Credential Manager / DPAPI), nunca en texto plano.
+     - El refresh es preventivo antes de expirar y está serializado entre procesos. Si un 401 persiste tras un refresh, el error es `AuthenticationFailed`.
+   - **Dialecto:** variante `OpenAiCodexResponses` del dialecto Responses.
+     - Endpoint `https://chatgpt.com/backend-api/codex/responses` con header `ChatGPT-Account-Id`.
+     - Quirks declarados como compat flags: `store: false` obligatorio, `instructions` como system prompt.
+     - Transporte SSE primero. WebSocket (beta `responses_websockets`) queda como optimización posterior, con fallback a SSE como hace Pi.
+   - **Uso individual:** cada usuario inicia sesión con su propia cuenta. OmniCore no comparte, revende ni intermedia el acceso.
+   - **Contención del riesgo:**
+     - Queda aislado en `ChatGptSubscriptionAuthProvider` + `OpenAiCodexResponses`.
+     - Tests de contrato con respuestas grabadas detectan cambios del backend.
+     - El circuit breaker y el router hacen fallback a API key o a modelos locales si el backend rechaza o cambia.
+     - `/doctor` reporta el estado de la sesión de ChatGPT.
+   - **Complemento opcional:** una lane delegada al CLI oficial de Codex (`codex exec --json`), análoga a ADR-0012, si algún día el flujo directo deja de estar disponible.
 5. Resolución de secretos por comando (idea de Pi, `resolve-config-value`): `auth.ref` puede apuntar a un gestor de contraseñas (`cmd:op read …`). El comando lo define el usuario en su configuración de scope User, nunca un proyecto ni el modelo.
-4. Validación de endpoints portada de `ProviderEndpointValidator` de OmniCoder: URL absoluta http(s), sin `user:pass`, redirecciones sin downgrade HTTPS→HTTP ni cambio de host.
+6. Validación de endpoints portada de `ProviderEndpointValidator` de OmniCoder: URL absoluta http(s), sin `user:pass`, redirecciones sin downgrade HTTPS→HTTP ni cambio de host.
 
 ### 4. Servidor local: ambos modos desde M2, referencia ik_llama
 
@@ -139,7 +161,7 @@ Tres mecanismos, sin ninguna forma de evasión:
 |---|---|
 | M2 | `OpenAiChatCompletions`; `LocalModelHost` attach + managed; `ICredentialStore` + API key; timeouts y errores tipados; verificación en vivo de ik_llama |
 | M3 | Reintentos, circuit breaker, cola por endpoint |
-| M5 | `OpenAiResponses`, `AnthropicMessages`, registro completo con alias, descubrimiento, costo/presupuesto, OAuth genérico |
+| M5 | `OpenAiResponses` + `OpenAiCodexResponses`, **login con suscripción ChatGPT (§3.4)**, `AnthropicMessages`, registro completo con alias, descubrimiento, costo/presupuesto, OAuth genérico |
 
 ## Consecuencias
 
