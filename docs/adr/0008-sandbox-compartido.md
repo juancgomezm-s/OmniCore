@@ -1,6 +1,6 @@
 # ADR-0008 — Sandbox como librería compartida `OmniCore.Sandbox`
 
-- **Estado:** Aceptada (2026-09-24)
+- **Estado:** Aceptada — rev. 2 (2026-09-24): §7 resuelve la frontera Security ↔ Sandbox con `IPathBoundaryValidator`.
 - **Spec:** §39, §47, §76, §77
 
 ## Contexto
@@ -24,11 +24,43 @@ En OmniCoder el aislamiento fuerte solo se usa en workers de orquestación (`OSR
 2. **No depende de ningún otro proyecto OmniCore** (lo verifica `ProjectDependencyTests`), para que OmniCoder pueda consumirlo sin arrastrar el Core.
 3. Todo en **.NET 10**. OmniCoder (hoy `net8.0-windows`) deberá migrar a `net10.0-windows` para consumirlo; el momento de esa migración queda **pendiente de decisión**.
 4. Portado por etapas:
-   - **M2:** validación de rutas y reparse points (+ sus tests) → usada por `OmniCore.Security`.
+   - **M2:** validación de rutas y reparse points (+ sus tests), como `OmniCore.Sandbox.PathBoundary`. `OmniCore.Security` la usa **solo a través de `IPathBoundaryValidator`** (Abstractions), cuya implementación es un adapter en `OmniCore.Execution` (rev. 2; ver §7 y ADR-0009).
    - **M3:** AppContainer, Job Objects, leases de ACL, toolchain → usados por `OmniCore.Execution` detrás de `IProcessRuntime`.
    - Las reglas JS (comandos seguros/destructivos, rutas secretas) se reescriben en C# como políticas del Permission Engine, usando sus 33 casos de test como especificación.
 5. El worker Node de operaciones de archivo **no** se porta: en OmniCore las tools de archivo son C# nativo validadas en proceso; el AppContainer se reserva para ejecución de procesos.
 6. APIs Windows marcadas con `[SupportedOSPlatform("windows")]`; el resto del Core no queda atado a Windows.
+7. **Frontera de rutas sin ciclos (rev. 2, 2026-09-24).** Resuelve la contradicción con ADR-0009, que prohíbe `Security → Sandbox`:
+
+   ```text
+   Abstractions:  IPathBoundaryValidator  (contrato)
+   Sandbox:       PathBoundary            (implementación real; sin dependencias OmniCore)
+   Execution:     SandboxPathBoundaryValidator : IPathBoundaryValidator   (adapter; Execution ya referencia Sandbox)
+   Security:      usa IPathBoundaryValidator (solo Abstractions)
+   Host:          registra el adapter
+   ```
+
+   **Contrato:**
+
+   ```csharp
+   public interface IPathBoundaryValidator
+   {
+       // Pura: normalización léxica (.., separadores, absolutas, UNC, ADS, nombres reservados de Windows).
+       LexicalPathResult NormalizeLexically(string workspaceRoot, string path);
+
+       // I/O de solo lectura: resuelve reparse points (symlink, junction, mount) y verifica la frontera física.
+       ValueTask<PhysicalPathResult> ResolveAsync(WorkspaceBoundary boundary, NormalizedPath path, CancellationToken ct);
+   }
+   ```
+
+   **Uso por etapa:**
+   - `Prepare` (ADR-0014) usa solo la parte léxica, que es pura.
+   - Permission Engine usa `ResolveAsync`, una observación de solo lectura y sin efectos.
+   - En la ejecución, Sandbox vuelve a comprobar sobre el handle abierto (ruta final del handle, sin seguir reparse points) para cerrar la ventana TOCTOU.
+
+   **Alternativas descartadas:**
+   - `Security → Sandbox`: arrastra P/Invoke de Windows a Security.
+   - Duplicar la lógica.
+   - Mover la validación a Domain: requiere I/O.
 
 ## Riesgos abiertos
 

@@ -2,8 +2,8 @@
 
 ## Especificación Funcional y Técnica
 
-**Versión:** 0.1
-**Estado:** Draft técnico para implementación
+**Versión:** 0.3 (2026-09-24)
+**Estado:** Draft técnico en revisión, previo a M1
 **Runtime objetivo:** .NET 10 LTS / C#
 **Producto consumidor inicial:** Omni CLI
 **Producto consumidor futuro:** OmniCoder
@@ -11,6 +11,40 @@
 
 > Documento original de análisis. Las decisiones que lo precisan o modifican están en `docs/adr/`.
 > Cuando un ADR contradiga esta especificación, prevalece el ADR.
+
+## Cambios en v0.2
+
+Revisión arquitectónica previa a M1. Diagramas, tabla completa de cambios, preguntas abiertas y roadmap en [`docs/architecture/arquitectura.md`](../architecture/arquitectura.md).
+
+| Tema | Secciones afectadas | ADR |
+|---|---|---|
+| Canonical Journal = Event Store + artifacts inmutables content-addressed | §4, §40, §55–§59 | 0001, 0002 |
+| Versión de schema de evento separada del protocolo | §55, §61–§62 | 0013 |
+| Effect Journal y reconciliación de ToolCalls | §12, §71–§72 | 0004 |
+| Pipeline `Prepare → ToolIntent → Permission → AuthorizedToolIntent → Execute` | §33 | 0014 |
+| `process.exec` como primitive; shell como superficie de riesgo | §38–§39 | 0015 |
+| Model Runtime provider-native con content blocks y estado opaco | §17–§19 | 0005, 0011 |
+| Model Qualification Framework en lugar de clases por tamaño | §20–§21 | 0007 |
+| Plan/Todo canónico, WorkingState, ProgressReconciler, PlanCompletionGate | §5, §7, §24, §50, §64 | 0016 |
+| ExecutionFingerprint | §12, §29 | 0017 |
+| Secretos y redacción | §4, §76 | 0018 |
+| CLI → IOmniClient/IOmniTransport → Host | §61–§62, §81 | 0019 |
+| Hooks: confianza y capacidades | §49 | 0020 |
+| Worktrees con workspace sucio | §48 | 0021 |
+| Roadmap: Planning y persistencia en M1 | §86–§95, §99 | — |
+
+## Cambios en v0.3
+
+| Tema | Secciones afectadas | ADR |
+|---|---|---|
+| Scopes, `ProjectId` ≠ `WorkspaceId`, estrategias de resolución por subsistema | §51, §59 | 0022 |
+| Extensiones: manifest, Extension API fuera de proceso, `TrustLevel` unificado, `ExtensionBoundary` | §31, §44, §49 | 0023, 0020 |
+| Commands como subsistema; el Engine no interpreta `/` | §60, §64 | 0024 |
+| Client Actions, keybindings, Command Palette (solo cliente) | §64 | 0025 |
+| Skills: scopes, ciclo de vida, precedencia | §52–§53 | 0026 |
+| Origen de tools y precedencia; built-ins protegidas | §31–§32 | 0027 |
+| Memory como servicio externo; Memory ≠ Knowledge ≠ Skills; promoción | §24, §26, §54 | 0028 |
+| Procedencia de `ContextItem` y diagnósticos | §24, §29, §66 | 0029 |
 
 ---
 
@@ -197,6 +231,8 @@ Recibirán un `TaskPacket` y una materialización explícita de contexto.
 
 El historial canónico será append-only.
 
+*v0.2:* la historia canónica es el **Canonical Journal**: un Event Store append-only más artifacts inmutables referenciados por eventos (ADR-0001). Un artifact referenciado por historia canónica no puede desaparecer arbitrariamente.
+
 ## INV-007 — Contexto como proyección
 
 El contexto enviado al modelo será siempre una proyección derivada del estado.
@@ -239,17 +275,46 @@ La finalización deberá pasar por `CompletionGates`.
 
 Los clientes interactuarán con OmniCore mediante commands y eventos.
 
+## INV-017 — Plan canónico propiedad del runtime (v0.2)
+
+El Plan de un Run es estado canónico. El modelo solo propone `PlanMutation`s; `PlanService` y `ProgressReconciler` deciden (ADR-0016).
+
+## INV-018 — Ninguna ejecución sin `AuthorizedToolIntent` (v0.2)
+
+Una tool solo se ejecuta con un `AuthorizedToolIntent`, que solo el Permission Engine puede construir. `Prepare` es puro (ADR-0014).
+
+## INV-019 — Intent durable antes del efecto (v0.2)
+
+Ningún efecto lateral comienza antes de que su intent esté confirmado con un commit Barrier. Todo intento de efecto es reconciliable tras un crash (ADR-0002, ADR-0004).
+
+## INV-020 — Los secretos nunca se persisten (v0.2)
+
+API keys, tokens y credenciales nunca llegan al journal, los artifacts, el contexto, el transcript, los logs, el audit ni la telemetría (ADR-0018).
+
+## INV-021 — Estado en eventos, contenido en artifacts (v0.2)
+
+El estado de Session, Run, Plan, TaskGraph, Lane, Turn y ToolCall se reconstruye solo desde eventos. Los artifacts guardan contenido (ADR-0001).
+
+## INV-022 — Autorización de procesos estructurada (v0.2)
+
+La autorización de procesos se decide sobre ejecutable resuelto + argv, nunca interpretando texto de shell (ADR-0015).
+
 ---
 
 # 5. Modelo conceptual principal
 
 La jerarquía fundamental será:
 
+*v0.2:* un Run contiene **un Plan** (progreso lógico, con revisiones) y **un TaskGraph** (ejecución técnica), relacionados N:M por `PlanItem ↔ Task` (ADR-0016).
+
 ```text
 Session
   │
   └── Run
        │
+       ├── Plan (rev.N)
+       │    └── PlanItem ──(PlanItemLink N:M)──┐
+       │                                        ▼
        └── TaskGraph
             │
             ├── Task
@@ -362,9 +427,23 @@ Preparing
 Running
 Validating
 Completed
+CompletedWithIssues   (v0.2: FailurePolicy = AllowPartial con items requeridos Failed; ADR-0016 §10)
 Failed
 Cancelled
 ```
+
+## FR-RUN-007 (v0.2)
+
+Todo Run tendrá un Plan desde su creación. En estrategia Direct sin fase de planificación, el runtime crea `Plan rev.1` con un único item igual al objetivo del Run (ADR-0016 §11).
+
+## 7.1 Plan (v0.2)
+
+- **Qué es:** el Plan es el progreso lógico, el compromiso visible para el usuario. El TaskGraph son las unidades técnicas de ejecución.
+- **Relación:** `PlanItem ↔ Task` es N:M mediante `PlanItemLink(TaskId, Required, Role)`.
+- **Estados de `PlanItem`:** `Pending`, `Ready`, `InProgress`, `Blocked`, `Completed`, `Failed`, `Skipped`, `Cancelled`.
+- **Quién lo modifica:** el modelo **propone** `PlanMutation`s (`Start`, `Complete`, `Block`, `Add`, `Split`, `Reorder`, `Skip`, `Revise`). `PlanService` valida, aplica la política de impacto y emite eventos. `ProgressReconciler` sincroniza automáticamente con el TaskGraph (reglas R1–R7).
+- **Revisiones:** el plan conserva sus revisiones (`rev.1 → rev.2 → …`). Los cambios que expanden el scope requieren `Ask`.
+- **Detalle completo:** ADR-0016.
 
 ---
 
@@ -489,6 +568,18 @@ AllowPartial
 Retry
 Escalate
 ```
+
+## FR-TG-005 — Estados de Task (v0.2)
+
+```text
+Pending → Ready → Running → Completed
+                         ↘ Blocked ↔ Running
+                         ↘ Failed
+Pending/Ready/Blocked → Cancelled | Skipped
+```
+
+- `Ready` requiere que las dependencias requeridas estén `Completed` (FR-TG-002).
+- Una Task puede tener **varias Lanes a lo largo del tiempo**, por reintento, escalación o restart, pero en v1 solo una activa a la vez.
 
 ---
 
@@ -657,6 +748,14 @@ Deberá registrar consumo de tokens cuando el provider lo permita.
 ## FR-TURN-005
 
 Deberá permitir reproducir posteriormente las condiciones relevantes de una ejecución.
+
+## FR-TURN-006 (v0.2)
+
+`TurnStarted` registrará un `ExecutionFingerprint` por componentes: modelo, perfil efectivo, harness, adapter, política de contexto, ToolPlan, template, agent profile, skills, revisión de plan, overrides y build (ADR-0017).
+
+## FR-TURN-007 (v0.2)
+
+Las ToolCalls de un Turn siguen el ciclo de vida durable del Effect Journal. Al reanudar, se reconcilian antes de continuar, y un Turn con respuesta de modelo completa no se re-infiere (ADR-0004).
 
 ---
 
@@ -893,6 +992,17 @@ otros futuros
 
 Agent Runtime dependerá únicamente de `IModelProvider`/`IModelRuntime`.
 
+**v0.2 — reemplazado por ADR-0005:**
+
+- **Contrato:** un único método, `StreamAsync(ModelRequest) → IAsyncEnumerable<ModelStreamEvent>`. `CompleteAsync` pasa a ser un helper que agrega el stream.
+- **Tres familias nativas:**
+  - `OpenAIResponsesProvider`, con los perfiles `api` y `codex`;
+  - `AnthropicMessagesProvider`, nativo y nunca vía OpenAI-compatible;
+  - `OpenAiChatCompatibleProvider`, para ik_llama, llama.cpp y OpenRouter.
+- **Representación interna:**
+  - `ModelResponse { ContentBlocks[] (Text, ToolCall, ToolResult, Reasoning, Citation, Media, ProviderOpaque), Usage, StopReason, ProviderState, Metadata }`;
+  - `ProviderOpaque` y `ProviderState` preservan, sin interpretarlos, los datos que deben volver intactos al provider: firmas de thinking y reasoning cifrado.
+
 ---
 
 # 19. ModelSelection
@@ -937,6 +1047,13 @@ EffectiveModelProfile
 ```
 
 Un modelo capaz de usar 50 tools no implica que recibirá 50 tools.
+
+**v0.2 — ADR-0007:**
+
+- **Fuentes del perfil:** `EffectiveModelProfile` se resuelve **por campo** desde cuatro fuentes: `DeclaredCapabilities` (hechos), `HeuristicDefaults` (provisionales; el número de parámetros solo participa aquí), `EmpiricalModelProfile` (traits medidos por la Model Qualification Suite para una `ModelQualificationKey`) y `UserOverrides` (siempre gana).
+- **Política del harness:** `HarnessPolicyResolver`, una función pura, deriva `ToolCallFormat`, `ToolMode`, `MaxVisibleTools`, `GuidanceLevel`, `RepairAttempts`, `PlanControl`, `StallThresholdTurns` y `CompletionStrictness`.
+- **Estados de cualificación:** `Unknown → Declared → ProvisionallyClassified → Qualified → Calibrated` (+ `Stale`).
+- **Router:** consume solo `EffectiveModelProfile`. No ejecuta benchmarks ni infiere calidad por nombre.
 
 ---
 
@@ -1054,7 +1171,7 @@ public sealed record ContextItem
 
     public RetentionPolicy Retention { get; init; }
 
-    public ContextSource Source { get; init; }
+    public ContextSource Source { get; init; }   // v0.3: ContextProvenance (contributor, categoría, ComponentSource, refs, sensibilidad; ADR-0029)
 }
 ```
 
@@ -1074,7 +1191,15 @@ Knowledge
 SubagentResult
 Summary
 Checkpoint
+WorkingState      (v0.2)
+Memory            (v0.3, ADR-0028; Knowledge sigue siendo un kind distinto)
 ```
+
+*v0.2:* `WorkingState` es una proyección del estado canónico: objetivo, plan compacto, item y Task actuales, criterios de aceptación, blockers, trabajo pendiente y siguiente paso.
+
+- Entra con `Priority = Pinned` y `Retention = RegenerateEachTurn`, y tiene presupuesto reservado.
+- Nunca se poda, comprime ni compacta. Se ubica al final del contexto, antes del turno actual, para no invalidar el prefijo cacheado.
+- Sobrevive a compaction, rebuild, cambio de modelo y resume (ADR-0016 §7).
 
 ---
 
@@ -1127,6 +1252,8 @@ Generation reserve   7K
 ```
 
 El presupuesto dependerá de `ModelDescriptor`.
+
+*v0.2/v0.3:* hay slots explícitos para `WorkingState` (reservado y pinned; ADR-0016), `Skills` (ADR-0026) y `Memory` (ADR-0028). La memoria nunca consume el slot del WorkingState.
 
 ---
 
@@ -1201,6 +1328,8 @@ public sealed record ContextCheckpoint
 }
 ```
 
+*v0.2:* el checkpoint **no** es la fuente del plan. `PendingWork` y el progreso se toman del Plan canónico vía `WorkingState`. El checkpoint resume hechos, decisiones e intentos fallidos de la región compactada.
+
 ---
 
 # 29. ContextSnapshot
@@ -1224,7 +1353,7 @@ public sealed record ContextSnapshot
 
     public long BasedOnEventSequence { get; init; }
 
-    public string ModelDescriptorHash { get; init; }
+    public ExecutionFingerprint Fingerprint { get; init; }   // v0.2: reemplaza ModelDescriptorHash (ADR-0017)
 
     public IReadOnlyList<ContextItem> Items { get; init; }
 
@@ -1270,6 +1399,12 @@ MCP
 Dynamic
 ```
 
+*v0.3 (ADR-0027):*
+
+- **Orígenes:** `BuiltIn`, `Project`, `Skill`, `Extension`, `Mcp` y `Dynamic`.
+- **Ids:** el `ToolId` canónico lleva un namespace por origen (`project.`, `skill.<id>.`, `ext.<id>.`, `mcp.<server>.`, `dyn.<owner>.`), así que no puede colisionar.
+- **Sustitución:** las built-ins sensibles son `Protected`. Solo se reemplazan con una preferencia explícita del usuario más un `Ask`, nunca en silencio.
+
 ---
 
 # 32. ToolDescriptor
@@ -1297,6 +1432,10 @@ public sealed record ToolDescriptor
     public ToolRisk Risk { get; init; }
 
     public OutputPolicy OutputPolicy { get; init; }
+
+    public ComponentSource Source { get; init; }        // v0.3: kind · scope · trust · owner · version (ADR-0023)
+
+    public ToolProtection Protection { get; init; }     // v0.3: Protected impide sustitución implícita (ADR-0027)
 }
 ```
 
@@ -1304,21 +1443,30 @@ public sealed record ToolDescriptor
 
 # 33. ITool
 
+*v0.2 — reemplazado por ADR-0014.* `ValidateAsync` desaparece, porque podía hacer I/O observable antes de la autorización.
+
 ```csharp
 public interface ITool
 {
     ToolDescriptor Descriptor { get; }
 
-    ValueTask<ToolValidationResult> ValidateAsync(
-        ToolCall call,
-        ToolExecutionContext context,
-        CancellationToken cancellationToken);
+    // Pura: sin I/O ni efectos; síncrona.
+    ToolPreparation Prepare(
+        ValidatedToolCall call,
+        ToolPreparationContext context);
 
+    // Solo acepta intents autorizados; solo Security puede construirlos.
     ValueTask<ToolResult> ExecuteAsync(
-        ToolCall call,
+        AuthorizedToolIntent intent,
         ToolExecutionContext context,
         CancellationToken cancellationToken);
 }
+```
+
+Pipeline:
+
+```text
+RawToolCall → schema validation → Prepare → ToolIntent { Effect, Claims, Risk, Reconciliation } → Permission Engine → AuthorizedToolIntent → ExecuteAsync
 ```
 
 ---
@@ -1440,6 +1588,8 @@ git.log
 git.show
 ```
 
+*v0.2 (ADR-0015):* el primitive es **`process.exec(executable, argv[], workingDirectory, environment)`**. `shell.exec(shell, script)` existe como superficie de **riesgo alto**: `Ask` por defecto, AppContainer obligatorio y `EffectClass = NonIdempotent`. Security nunca autoriza interpretando texto de shell.
+
 ---
 
 # 39. Process Runtime
@@ -1473,6 +1623,16 @@ CancellationToken
 
 PTY e interacción podrán añadirse sobre el mismo runtime.
 
+*v0.2 — contrato concreto en ADR-0015.* `IProcessRuntime.StartAsync(ProcessLaunch, SandboxProfile)` devuelve un `IProcessHandle` con:
+
+- salida por canal acotado con backpressure;
+- spool de la salida completa a un artifact CAS;
+- stdin;
+- `WaitAsync`;
+- cancelación graceful → kill del árbol vía Job Object.
+
+El entorno se arma desde una allowlist + `SecretRef`, y solo se persisten los nombres de las variables.
+
 ---
 
 # 40. Artifact Store
@@ -1484,11 +1644,15 @@ public sealed record ArtifactRef
 {
     public ArtifactId Id { get; init; }
 
+    public ContentHash Hash { get; init; }          // v0.2: sha256; identidad física del blob (ADR-0001)
+
     public string MediaType { get; init; }
 
     public long Size { get; init; }
 
     public ArtifactKind Kind { get; init; }
+
+    public Sensitivity Sensitivity { get; init; }   // v0.2: Normal | Sensitive
 }
 ```
 
@@ -1620,6 +1784,8 @@ WorkspaceBoundary
 UserPolicy
    ∩
 HookRestrictions
+   ∩
+ExtensionBoundary   (v0.3: techo declarado en el manifest de la extensión o skill; ADR-0023 §6)
 ```
 
 Ninguna capa inferior podrá ampliar la frontera superior.
@@ -1722,6 +1888,13 @@ integration decision
 
 Esto reducirá conflictos entre coders concurrentes.
 
+*v0.2 — ADR-0021:*
+
+- **Ubicación:** los worktrees viven **fuera del repo**, en `%LOCALAPPDATA%\OmniCore\workspaces\<WorkspaceId>\worktrees\` (ADR-0022), no en `.omnicore/worktrees`.
+- **Base por defecto:** `WorktreeBase = SnapshotOfWorkingTree`. Es un commit sintético con tracked modificados, staged y untracked no ignorados, creado con un index temporal sin tocar el del usuario. Alternativas: `Head` y `PatchOverlay`.
+- **Integración:** 3-way merge con el snapshot como base. Si el usuario cambió las mismas zonas, se emite `IntegrationConflict` y no se escribe nada.
+- **Resto del ciclo:** cleanup y recuperación por reconciliación con `git worktree list`.
+
 ---
 
 # 49. Lifecycle hooks
@@ -1783,6 +1956,13 @@ request validation
 
 Nunca elevar permisos.
 
+*v0.2 — ADR-0020:*
+
+- **Niveles de confianza:** en v0.3 se unifican con el modelo de extensiones (ADR-0023): `Core`, `Trusted`, `Project`, `ThirdParty` y `Untrusted`, con ejecución fuera de proceso para los no-Core.
+- **Capacidades explícitas:** `Observe` redactado, `Annotate`, `Restrict`, `ReadToolArguments(None|Redacted|Full)`, `ReadArtifacts` y `ReadProviderState` (solo Core).
+- **Secretos:** `ReadSecrets` no existe.
+- **Resultado:** `HookResult` no tiene variante de ampliación de permisos.
+
 ---
 
 # 50. Completion Gates
@@ -1800,6 +1980,7 @@ Completion Pipeline
           ├── BuildGate
           ├── TestGate
           ├── PendingTaskGate
+          ├── PlanCompletionGate        (v0.2, ADR-0016 §10)
           ├── ValidationGate
           └── WorkspaceConsistencyGate
           │
@@ -1857,6 +2038,18 @@ public interface IScopeResolver<T>
         CancellationToken cancellationToken);
 }
 ```
+
+*v0.3 (ADR-0022):*
+
+- **Niveles:** `BuiltIn → Organization* → User (Global) → Project → Workspace → Session → Run → Task → Lane`. `Organization` es diferible.
+- **Identidades:** `ProjectId` identifica el repo y es común a clones y worktrees. `WorkspaceId` identifica la carpeta raíz local, que puede contener varios proyectos.
+- **Resolución:** no hay last-write-wins genérico, cada subsistema declara su estrategia:
+  - configuración: el más específico gana, salvo claves `locked`;
+  - permisos: intersección;
+  - commands, tools y skills: precedencia con restricción de confianza;
+  - hooks: unión;
+  - memoria: ranking.
+- **Resultado:** `ResolveAsync` devuelve además las contribuciones de cada scope, para diagnóstico.
 
 ---
 
@@ -1919,6 +2112,14 @@ explicit invocation
 
 No deberán cargarse skills irrelevantes en el contexto.
 
+*v0.3 (ADR-0026):*
+
+- **Scopes:** `BuiltIn → Global → Project → Workspace → Session`.
+- **Ciclo de vida:** `Discovered → Eligible → Activated → Loaded → Released`. Una skill instalada no consume contexto; solo lo hace en `Loaded`.
+- **Precedencia:** gana el scope más específico, salvo skills `sealed` o que el reemplazo venga de una fuente de menor confianza. En esos casos el conflicto queda visible.
+- **Contribuciones:** instrucciones, context contributors, tools, workflows, validators y referencias de knowledge.
+- **Permisos:** una skill nunca amplía permisos, y su `permissions` es un techo.
+
 ---
 
 # 54. Knowledge, RAG y Memory
@@ -1940,6 +2141,16 @@ OmniCore
 
 La memoria persistente podrá desarrollarse posteriormente sin modificar Context Engine.
 
+*v0.3 (ADR-0028):*
+
+- **Tres conceptos distintos:** `Skill` (cómo hacer), `Knowledge` (dominio estable) y `Memory` (lo aprendido). No comparten storage, ciclo de vida ni políticas.
+- **Working Context** (WorkingState y observaciones recientes) no es memoria: lo administra el Context Engine.
+- **Scopes de memoria:** Session, Project, Workspace, Global/User y, opcionalmente, scratch de Run/Task/Lane.
+- **Registro:** `MemoryRecord` con scope, kind (Fact, Preference, Decision, Convention, Procedure, Pitfall, Architecture, Environment, Summary), importance, confidence, provenance, expiración y `Supersedes`.
+- **Recuperación:** `retrieve → rank → dedupe → ContextBudget`.
+- **Promoción:** `Observation → MemoryCandidate → MemoryPolicy → Promote | Reject | Ask`. El LLM nunca promociona solo, y Global siempre requiere `Ask`.
+- **Independencia:** el runtime funciona igual con la memoria deshabilitada.
+
 ---
 
 # 55. Event Model
@@ -1948,10 +2159,19 @@ Toda operación relevante deberá producir eventos.
 
 Envelope:
 
+*v0.2 (ADR-0001, ADR-0013):*
+
+- **Versión del protocolo:** `ProtocolVersion` sale del evento de dominio y pasa al `WireEnvelope` del protocolo.
+- **Versión del schema:** el evento durable se identifica por `EventType` + `EventSchemaVersion`.
+- **Campos nuevos:** `CausationId`, `CorrelationId`, `PlanItemId?`, `ToolCallId?` y `ArtifactRefs[]`.
+- **Tipo de `Sequence`:** `long` por sesión.
+
+Envelope original, conservado como referencia:
+
 ```csharp
 public abstract record EngineEvent
 {
-    public int ProtocolVersion { get; init; }
+    public int ProtocolVersion { get; init; }   // v0.2: eliminado del dominio; ver ADR-0013
 
     public EventId EventId { get; init; }
 
@@ -2024,6 +2244,36 @@ ValidationStarted
 ValidationCompleted
 ```
 
+Eventos agregados en v0.2:
+
+```text
+Planning (ADR-0016)
+  PlanCreated · PlanRevised · PlanItemAdded · PlanItemUpdated · PlanItemStarted
+  PlanItemBlocked · PlanItemUnblocked · PlanItemCompleted · PlanItemFailed
+  PlanItemSkipped · PlanItemCancelled · PlanItemReordered · PlanItemLinked
+  PlanItemUnlinked · PlanMutationRejected · ProgressStalled
+
+Effect Journal (ADR-0004); reemplazan ToolStarted/ToolCompleted/ToolFailed
+  ToolCallRequested · ToolCallRejected · ToolCallPrepared · ToolCallAuthorized
+  ToolCallStarted · ToolCallSucceeded · ToolCallFailed
+  ToolCallEffectUnknown · ToolCallReconciled
+
+Turn
+  TurnAbandoned
+
+Artifacts (ADR-0001)
+  ArtifactRedacted
+
+Worktrees (ADR-0021)
+  WorktreeCreated · IntegrationStarted · IntegrationCompleted · IntegrationConflict · WorktreeRemoved
+
+Lanes externas (ADR-0012)
+  ExternalToolObserved
+
+Seguridad (ADR-0018)
+  SecretLeakSuspected   (solo audit log)
+```
+
 ---
 
 # 57. Event Store
@@ -2043,6 +2293,13 @@ SQLiteEventStore
 ```
 
 El historial canónico será append-only.
+
+*v0.2 (ADR-0002):* `SqliteEventStore` desde **M1**; `InMemoryEventStore` queda solo para tests. Hay dos clases de commit:
+
+- **Standard** (WAL + `NORMAL`);
+- **Barrier** (`FULL`), obligatoria antes de cualquier efecto lateral.
+
+Junto con el Artifact Store, el Event Store forma el Canonical Journal (ADR-0001).
 
 ---
 
@@ -2104,6 +2361,13 @@ artifacts
 
 El Event Store seguirá siendo la fuente histórica principal.
 
+*v0.2:*
+
+- **Read models:** las tablas distintas de `events`, `artifacts` y `artifact_refs` son read models reconstruibles.
+- **Blobs:** son content-addressed (`blobs/sha256/…`).
+- **Ubicación:** todo vive en el directorio de datos del workspace, fuera del repo: `%LOCALAPPDATA%\OmniCore\workspaces\<WorkspaceId>\` (ADR-0022 §3).
+- **`.omnicore/` en el repo:** queda solo para configuración versionable del proyecto.
+
 ---
 
 # 60. Engine Commands
@@ -2128,6 +2392,12 @@ Interrupt
 ResumeRun
 ```
 
+*v0.3 (ADR-0024):*
+
+- **Commands tipados:** son `WireCommand`s. El Engine **nunca** interpreta texto que empiece por `/`: un `SendInput("/x")` es texto literal.
+- **Parsing:** los commands textuales los parsea el cliente, y sus kinds son `ClientCommand`, `EngineCommand`, `PromptCommand`, `WorkflowCommand` y `ExtensionCommand`.
+- **Registry del Host:** expone el catálogo de commands de servidor vía `ListCommands`, con reglas de precedencia y nombres reservados.
+
 ---
 
 # 61. Omni Protocol
@@ -2149,6 +2419,12 @@ Client
 ```
 
 El protocolo no deberá depender de CLI.
+
+*v0.2 (ADR-0013, ADR-0019):*
+
+- **Mensajes wire:** son `WireEnvelope { ProtocolVersion, MessageType, payload }`, con DTOs propios en `OmniCore.Protocol`, separados de los eventos de dominio.
+- **Mapeo:** `ProtocolMapper` (Host) traduce `DomainEvent → WireEvent`.
+- **Negociación:** el cliente declara sus versiones con `hello` (M9).
 
 ---
 
@@ -2174,6 +2450,12 @@ Primero se implementará `InProcessTransport`.
 Después `StdioTransport`.
 
 En Windows podrá añadirse `NamedPipeTransport`.
+
+*v0.2 (ADR-0019):*
+
+- **Flujo:** CLI → `IOmniClient` (`SendAsync`, `SubscribeAsync`, `QueryAsync`) → `IOmniTransport` → Host (`OmniServer`) → Engine.
+- **In-process:** también usa DTOs wire. En debug serializa cada mensaje para detectar fugas de tipos de dominio.
+- **Composición:** el código del CLI solo conoce `OmniCore.Protocol`, y `Program.cs` es el único punto de composición.
 
 ---
 
@@ -2220,9 +2502,10 @@ No maximizar UX.
 Comandos iniciales:
 
 ```text
+/plan          (v0.2: vista lógica del Plan; ADR-0016 §12)
 /context
 /events
-/tasks
+/tasks         (v0.2: vista técnica con columna PLAN)
 /lanes
 /tools
 /model
@@ -2233,6 +2516,8 @@ Comandos iniciales:
 /exit
 ```
 
+*v0.2:* `/plan` es la vista del Plan. El cambio de modo de ejecución pasa a `/mode plan|act|orq`, y los one-shot `omni plan|act|orq "…"` (§65) se mantienen.
+
 Posteriormente:
 
 ```text
@@ -2240,9 +2525,7 @@ Posteriormente:
 /resume
 /fork
 
-/plan
-/act
-/orq
+/mode plan|act|orq   (v0.2: antes /plan, /act, /orq)
 
 /models
 
@@ -2257,7 +2540,19 @@ Posteriormente:
 
 /usage
 /doctor
+
+/commands       (v0.3)
+/keybindings    (v0.3)
+/extensions     (v0.3)
+/memory [session|project|global]   (v0.3)
 ```
+
+*v0.3 (ADR-0025):*
+
+- **Acciones:** los keybindings y la Command Palette resuelven a las mismas `ClientAction`s que los `ClientCommand`s; no hay dos sistemas de acciones.
+- **`KeyBindingService`:** tiene `When`, `Priority` y `Source` (`User > Extension > Default`) y es configurable en `keybindings.json`.
+- **Ámbito:** es solo del cliente y no pertenece al Core.
+- **Bindings obligatorios:** `run.interrupt` y `run.cancel` siempre tienen tecla.
 
 ---
 
@@ -2307,6 +2602,12 @@ Compressible        4,100
 Externalizable      2,700
 Pinned              6,054
 ```
+
+*v0.3 (ADR-0029):*
+
+- **Procedencia:** cada `ContextItem` lleva `ContextProvenance` (contributor, categoría, `ComponentSource`, refs y sensibilidad).
+- **Desglose:** `/context` agrupa por categoría (Plan/WorkingState, Skills, Project Memory, Session Memory, Knowledge/RAG, Files, Tool observations, Conversation…) y muestra el origen de cada una.
+- **Contenido sensible:** nunca se muestra; solo metadata.
 
 ---
 
@@ -2400,6 +2701,20 @@ LaneStalled
 ProviderUnavailable
 Cancellation
 InternalInvariantViolation
+```
+
+Agregados en v0.2:
+
+```text
+UnknownEffect          (ADR-0004)
+ReconciliationConflict (ADR-0004)
+ArtifactMissing        (ADR-0001)
+ArtifactCorrupted      (ADR-0001)
+RateLimited            (ADR-0011)
+AuthenticationFailed   (ADR-0011)
+IntegrationConflict    (ADR-0021)
+PlanMutationRejected   (ADR-0016; se devuelve al modelo, no es fallo del Run)
+ProgressStalled        (ADR-0016)
 ```
 
 No deberán reducirse todos a `Exception`.
@@ -2553,6 +2868,14 @@ OmniCore.Host
 OmniCore.Cli
 ```
 
+*v0.2/v0.3:*
+
+- **Ya existe:** `OmniCore.Sandbox`, compartido con OmniCoder (ADR-0008).
+- **Proyectos futuros, con su frontera en ADR-0009 §2.5:**
+  - `OmniCore.Qualification` (M5);
+  - `OmniCore.Extensions` (M8), el host de extensiones fuera de proceso;
+  - `OmniCore.Memory` (M8+), opcional y que ningún proyecto del Core referencia.
+
 ---
 
 # 79. Responsabilidades por proyecto
@@ -2650,6 +2973,13 @@ await OmniHost
 
 Configuración/registro deberá encapsularse.
 
+*v0.2 (ADR-0019):* el patrón del skeleton, `OmniHost.RunAsync(CliClient.RunAsync)`, es temporal y se elimina en M1. Forma final:
+
+```csharp
+await using var client = OmniHost.CreateInProcessClient(options);   // o StdioOmniClient.Connect(...)
+return await CliApp.RunAsync(client, args);
+```
+
 ---
 
 # 82. Testing strategy
@@ -2675,6 +3005,15 @@ OmniCore deberá priorizar pruebas deterministas sobre pruebas dependientes de L
 | Cancellation | propagates                          |
 | Router       | capability constraints              |
 | Scheduler    | concurrency limits                  |
+| Plan (v0.2)  | reconciliación Plan ↔ Task determinista (R1–R7), rechazo de mutaciones inválidas, revisiones reconstruibles |
+| PlanCompletionGate (v0.2) | item requerido no terminal bloquea DONE |
+| Watchdog (v0.2) | `ProgressStalled` tras N Turns sin señal |
+| Effect Journal (v0.2) | crash entre `Started` y outcome → reconciliación sin duplicar efecto |
+| Tool pipeline (v0.2) | `Prepare` sin I/O; `AuthorizedToolIntent` solo desde Security |
+| Journal (v0.2) | artifact referenciado no se recolecta; corrupción detectada |
+| Protocol (v0.2) | upcasters; mapper dominio → wire |
+| Secrets (v0.2) | un secreto de prueba no aparece en ningún sink |
+| Profile (v0.2) | cada campo de `HarnessPolicy` cambia el comportamiento |
 
 ---
 
@@ -2760,26 +3099,43 @@ cost when known
 
 ---
 
-# 86. Milestone M1 — Runtime sin IA
+# 86. Milestone M1 — Runtime sin IA + Planning
+
+*v0.2: revisado. Detalle y criterios en `docs/architecture/arquitectura.md` §24.*
 
 Debe implementar:
 
 ```text
+Domain primitives (ids UUIDv7 tipados)
 Session
-Run
-Task
-TaskGraph
+Run (+ CompletedWithIssues)
+Plan · PlanItem · PlanItemLink · PlanMutation
+Task · TaskGraph
 Lane
 Turn
-Events
+ToolCall lifecycle (dominio del Effect Journal)
+Event model (EventType, EventSchemaVersion, causation, correlation, ArtifactRefs)
 State machines
+PlanService · ProgressReconciler (R1–R7) · watchdog de progreso
+Completion Pipeline con PendingTaskGate y PlanCompletionGate
+Proyección WorkingState
+SqliteEventStore + InMemoryEventStore
+Contratos congelados (ITool/Prepare, ToolIntent, AuthorizedToolIntent, ModelResponse/ContentBlocks,
+  EffectiveModelProfile/HarnessPolicy, ExecutionFingerprint, SecretRef/Secret)
+Redactor en el serializador del journal
+IOmniClient + InProcessTransport + ProtocolMapper mínimo
+FakeTool · ScriptedModelProvider
+CLI: omni sim · /plan · /tasks · /events
+Architecture tests: IVT solo Security; referencias IL del CLI
+v0.3: ScopeLevel · WorkspaceId/ProjectId (ubicación del journal)
+v0.3: TrustLevel · SourceKind · ComponentSource · ToolDescriptor.Source/Protection
+v0.3: ContextProvenance · ContributionCategory · ContextItemKind.Memory/Knowledge
+v0.3: regla "el Engine no interpreta '/'" (test) · ClientCommandRegistry mínimo · ClientAction + bindings interrupt/cancel
 ```
 
 No requiere modelo.
 
-Criterio:
-
-una ejecución completamente simulada puede reconstruirse por eventos.
+Criterio: una ejecución completamente simulada, con un Plan de varios items y un TaskGraph N:M, puede reconstruirse por eventos. Los tests deterministas de reconciliación Plan ↔ Task pasan. `PlanCompletionGate` bloquea un DONE prematuro.
 
 ---
 
@@ -2788,12 +3144,15 @@ una ejecución completamente simulada puede reconstruirse por eventos.
 Incluye:
 
 ```text
-Model abstraction
-llama.cpp provider
-Context Engine v1
-read/list/search
-permissions
-Tool Runtime
+OpenAiChatCompatibleProvider (ik_llama) + LocalModelHost attach/managed
+ISecretProvider + Credential Manager
+EffectiveModelProfile (Declared + Heuristic + Overrides) + HarnessPolicy
+Context Engine v1 con WorkingState fijo
+ContextSnapshot + ExecutionFingerprint
+Pipeline real de tools: read/list/search
+Permission Engine v1 + IPathBoundaryValidator (Sandbox PathBoundary)
+Artifact Store CAS v1 + externalización básica
+plan.propose · PlanControl · StallPolicy · Ask por ScopeExpansion
 Explorer
 ```
 
@@ -2803,6 +3162,8 @@ Debe permitir:
 omni "explícame este repositorio"
 ```
 
+con Plan mantenido por el runtime y Turns explicables por fingerprint.
+
 ---
 
 # 88. Milestone M3 — Native Coder
@@ -2810,14 +3171,13 @@ omni "explícame este repositorio"
 Incluye:
 
 ```text
-write
-patch
-Process Runtime
-build
-test
-optimistic concurrency
-validation
-Completion Gates
+write · patch con version tokens
+Effect Journal + reconciliación de filesystem · commits Barrier
+Unified Process Runtime + Job Objects + AppContainer
+process.exec (luego shell.exec como superficie de riesgo)
+build · test
+Completion Gates (AcceptanceCriteria, Build, Test)
+reintentos y circuit breaker de providers
 ```
 
 Debe permitir:
@@ -2826,6 +3186,8 @@ Debe permitir:
 omni act "corrige este test"
 ```
 
+y reanudar tras matar el proceso a mitad de un write sin duplicar el efecto.
+
 ---
 
 # 89. Milestone M4 — Context management completo
@@ -2833,34 +3195,34 @@ omni act "corrige este test"
 Incluye:
 
 ```text
-Artifact Store
 Prune
 Externalize
 Compress
 Compact
 MetaModelService
 ContextCheckpoint
+GC de artifacts · verify-journal
 ```
 
-Debe soportar sesiones prolongadas sin crecimiento ilimitado de hot context.
+Debe soportar sesiones prolongadas sin crecimiento ilimitado de hot context. El WorkingState sobrevive a la compaction.
 
 ---
 
-# 90. Milestone M5 — Model Router
+# 90. Milestone M5 — Models + Qualification
 
 Incluye:
 
 ```text
-Model registry
-ModelDescriptor
-EffectiveModelProfile
-ModelPolicy
-routing
-reasoning effort
-escalation
+OpenAIResponsesProvider (api + codex; login ChatGPT)
+AnthropicMessagesProvider (ProviderOpaque: firmas de thinking)
+Model registry + alias
+Router + escalación
+ModelQualificationKey · estados · store de perfiles
+OmniCore.Qualification + suite quick
+omni model inspect · omni model qualify
 ```
 
-Debe poder cambiar entre worker local y frontera sin modificar Task.
+Debe poder cambiar entre worker local y frontera sin modificar la Task, y cualificar un modelo nuevo sin modificar el Router ni el runtime.
 
 ---
 
@@ -2875,19 +3237,10 @@ parallel lanes
 background lanes
 heartbeat
 AgentResult
+Lanes delegadas a Claude Code (ADR-0012)
 ```
 
-Debe permitir:
-
-```text
-Explore
-+
-Implement
-+
-Verify
-```
-
-como Tasks diferenciadas.
+Debe permitir Explore + Implement + Verify como Tasks diferenciadas, con el Plan reconciliado en paralelo.
 
 ---
 
@@ -2896,10 +3249,10 @@ como Tasks diferenciadas.
 Incluye:
 
 ```text
-Git worktrees
-Workspace isolation
-stale write protection
-integration validation
+Git worktrees con WorktreeBase = SnapshotOfWorkingTree
+integración 3-way · IntegrationConflict
+reconciliación Git
+cleanup y recuperación de worktrees
 ```
 
 ---
@@ -2909,7 +3262,7 @@ integration validation
 Incluye:
 
 ```text
-Hooks
+Hooks con niveles de confianza y capacidades (ADR-0020)
 Skills
 Scope Resolver
 MCP integration
@@ -2919,17 +3272,18 @@ Memory/RAG podrá comenzar después sobre `IContextContributor`.
 
 ---
 
-# 94. Milestone M9 — Persistence + Protocol
+# 94. Milestone M9 — Protocol + Host
+
+*v0.2: la persistencia se adelanta a M1.*
 
 Incluye:
 
 ```text
-SQLite
-durable EventStore
-ContextSnapshot persistence
-Omni Protocol
-stdio transport
+StdioTransport
+negociación de ProtocolVersion
 Host separado
+lease de escritor entre procesos
+read models persistidos
 ```
 
 ---
@@ -2943,11 +3297,9 @@ Debe soportar:
 ```text
 sessions
 resume
-plan
-act
-orq
+plan (vista) · /mode plan|act|orq
 context
-models
+models (inspect · qualify)
 tasks
 lanes
 tools
@@ -2955,8 +3307,10 @@ skills
 permissions
 diff
 stats
-doctor
+doctor (incluye verify-journal)
 ```
+
+Además: suite de cualificación `full`, calibración y regression suite agentic.
 
 ---
 
@@ -3076,78 +3430,65 @@ Finalmente se retirará Pi.
 
 # 99. Epics de implementación
 
-Orden propuesto:
+*v0.2: orden revisado; Planning, persistencia y contratos congelados entran al inicio.*
 
 ```text
-EPIC-001 Domain primitives
-
-EPIC-002 Event model
-
-EPIC-003 State machines
-
+M1
+EPIC-001 Domain primitives + ids
+EPIC-002 Event model (envelope, EventType/SchemaVersion, upcasters)
+EPIC-003 State machines (Run, Task, Lane, Turn, ToolCall)
 EPIC-004 Task Graph
+EPIC-005 Plan model + PlanService
+EPIC-006 ProgressReconciler + watchdog
+EPIC-007 Completion Pipeline (PendingTask, PlanCompletion)
+EPIC-008 SqliteEventStore + InMemoryEventStore
+EPIC-009 Contratos congelados (tools, modelo, perfil, fingerprint, secretos)
+EPIC-010 IOmniClient in-process + ProtocolMapper mínimo
+EPIC-011 CLI v0: sim · /plan · /tasks · /events
 
-EPIC-005 Permission Engine
+M2
+EPIC-012 Model abstractions + OpenAiChatCompatibleProvider (ik_llama)
+EPIC-013 LocalModelHost attach/managed
+EPIC-014 SecretProvider + redacción completa
+EPIC-015 EffectiveModelProfile + HarnessPolicy
+EPIC-016 ContextItem + ContextBudget + Materializer + WorkingState
+EPIC-017 Tool pipeline + read/list/search
+EPIC-018 Permission Engine v1 + PathBoundary
+EPIC-019 Artifact Store CAS v1
+EPIC-020 Explorer + plan.propose
 
-EPIC-006 Tool contracts
+M3
+EPIC-021 File write/patch + version tokens
+EPIC-022 Effect Journal + reconciliación FS + commits Barrier
+EPIC-023 Unified Process Runtime + Sandbox
+EPIC-024 Native Coder + Build/Test/Acceptance gates
 
-EPIC-007 Process Runtime
+M4
+EPIC-025 Externalization · Compression · Compaction · MetaModelService · GC
 
-EPIC-008 Artifact Store
+M5
+EPIC-026 OpenAIResponsesProvider (api + codex) + AnthropicMessagesProvider
+EPIC-027 Model registry + Router + escalación
+EPIC-028 Model Qualification Framework + suite quick
 
-EPIC-009 Model abstractions
+M6
+EPIC-029 Task Decomposition + Lane Scheduler + Parallel/Background Lanes
+EPIC-030 Lanes delegadas a Claude Code
 
-EPIC-010 llama.cpp provider
+M7
+EPIC-031 Worktree Isolation + integración
 
-EPIC-011 ContextItem
+M8
+EPIC-032 Hooks + Skills + Scope Resolver + MCP
 
-EPIC-012 ContextBudget + Materializer
+M9
+EPIC-033 Omni Protocol stdio + Host Process
 
-EPIC-013 Explorer
-
-EPIC-014 CLI v0
-
-EPIC-015 File write/patch
-
-EPIC-016 Native Coder
-
-EPIC-017 Validation + Completion Gates
-
-EPIC-018 Externalization
-
-EPIC-019 MetaModelService 4B
-
-EPIC-020 Compression + Compaction
-
-EPIC-021 Model Router
-
-EPIC-022 Tool Discovery
-
-EPIC-023 Task Decomposition
-
-EPIC-024 Lane Scheduler
-
-EPIC-025 Parallel/Background Lanes
-
-EPIC-026 Worktree Isolation
-
-EPIC-027 Hooks
-
-EPIC-028 Skills + Scope Resolver
-
-EPIC-029 SQLite Persistence
-
-EPIC-030 Omni Protocol
-
-EPIC-031 Host Process
-
-EPIC-032 CLI v1
-
-EPIC-033 Regression Suite
-
-EPIC-034 Pi Comparison
-
-EPIC-035 OmniCoder Adapter
+M10
+EPIC-034 CLI v1
+EPIC-035 Regression Suite + qualification full
+EPIC-036 Pi Comparison
+EPIC-037 OmniCoder Adapter
 ```
 
 ---
@@ -3165,11 +3506,13 @@ Create Session
  ↓
 Create Run
  ↓
-Create Task
+Create Plan rev.1          (v0.2)
+ ↓
+Create Task  ↔ PlanItem    (v0.2)
  ↓
 Create Lane
  ↓
-Materialize Context
+Materialize Context (+ WorkingState, ExecutionFingerprint)
  ↓
 Select local model
  ↓
@@ -3181,7 +3524,9 @@ read/search
  ↓
 AgentResult
  ↓
-Completion Gate
+ProgressReconciler → PlanItem Completed   (v0.2)
+ ↓
+Completion Gate (incluye PlanCompletionGate)
  ↓
 RunCompleted
 ```
@@ -3299,7 +3644,11 @@ OmniCore v1 se considerará terminado cuando:
 12. EventStore permita inspección completa;
 13. sessions puedan persistirse/reanudarse;
 14. regression suite sea ejecutable;
-15. OmniCore pueda compararse objetivamente contra Pi.
+15. OmniCore pueda compararse objetivamente contra Pi;
+16. (v0.2) todo Run tenga un Plan canónico mantenido por el runtime y reconciliado con el TaskGraph;
+17. (v0.2) un crash durante un efecto lateral se reconcilie sin duplicarlo;
+18. (v0.2) los modelos nuevos puedan cualificarse empíricamente sin modificar Router ni runtime;
+19. (v0.2) ningún secreto aparezca en journal, artifacts, contexto ni logs.
 
 ---
 
