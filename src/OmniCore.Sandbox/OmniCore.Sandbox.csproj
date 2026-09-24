@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>OmniCore.Sandbox</PackageId>
+    <Description>Aislamiento de procesos y fronteras de rutas en Windows (AppContainer, Job Objects). Compartida con OmniCoder; no depende de ningun otro proyecto OmniCore.</Description>
+  </PropertyGroup>
+
+</Project>

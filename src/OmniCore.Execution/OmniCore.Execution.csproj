@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />
+    <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />
+    <ProjectReference Include="..\OmniCore.Sandbox\OmniCore.Sandbox.csproj" />
+  </ItemGroup>
+
+</Project>

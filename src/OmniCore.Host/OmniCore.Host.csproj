@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />
+    <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />
+    <ProjectReference Include="..\OmniCore.Engine\OmniCore.Engine.csproj" />
+    <ProjectReference Include="..\OmniCore.Context\OmniCore.Context.csproj" />
+    <ProjectReference Include="..\OmniCore.Models\OmniCore.Models.csproj" />
+    <ProjectReference Include="..\OmniCore.Tools\OmniCore.Tools.csproj" />
+    <ProjectReference Include="..\OmniCore.Security\OmniCore.Security.csproj" />
+    <ProjectReference Include="..\OmniCore.Execution\OmniCore.Execution.csproj" />
+    <ProjectReference Include="..\OmniCore.Infrastructure\OmniCore.Infrastructure.csproj" />
+    <ProjectReference Include="..\OmniCore.Protocol\OmniCore.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>
