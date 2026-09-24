@@ -1,6 +1,6 @@
 # ADR-0005 — Un único provider OpenAI-compatible como base
 
-- **Estado:** Aceptada (2026-09-24)
+- **Estado:** Aceptada (2026-09-24) — ampliada por [ADR-0011](0011-conexion-a-proveedores.md) (tres dialectos, registro, credenciales, servidor local)
 - **Spec:** §17–§19, INV-011
 
 ## Contexto
