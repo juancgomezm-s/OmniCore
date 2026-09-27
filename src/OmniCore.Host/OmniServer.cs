@@ -164,6 +164,43 @@ public sealed class OmniServer : IOmniClient
 
     public RunId? LastRunId() => _lastRunId;
 
+    /// <summary>Store del servidor (para el Turn de Explorer, que persiste en el mismo journal).</summary>
+    public IEventStore AcquireStore() => _store;
+
+    /// <summary>Registro de codecs del servidor.</summary>
+    public IEventCodecRegistry AcquireCodecs() => _codecs;
+
+    /// <summary>El LaneId del último run (del journal) o null si no hay run persistido.</summary>
+    public LaneId? LastLaneId()
+    {
+        if (_lastSessionId is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var tail = _store.ReadFrom(_lastSessionId!, 1);
+            foreach (var evt in tail)
+            {
+                if (evt.Type.ToString().Equals("lane.created", StringComparison.Ordinal))
+                {
+                    var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+                    if (payload is LaneCreated lane)
+                    {
+                        return lane.LaneId;
+                    }
+                }
+            }
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        return null;
+    }
+
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         if (name == "state")
@@ -213,7 +250,7 @@ public sealed class OmniServer : IOmniClient
     private static string Redact(string content, int max)
     {
         // Redacción real: quita secretos (keys, bearer, JWT, cookies) y luego trunca.
-        var redacted = new OmniCore.Infrastructure.PiiRedactor().Redact(content);
+        var redacted = new OmniCore.Domain.PiiRedactor().Redact(content);
         var safe = redacted is null ? "" : redacted!;
         if (safe.Length <= max)
         {

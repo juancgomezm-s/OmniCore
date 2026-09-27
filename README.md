@@ -81,17 +81,20 @@ Entregado el núcleo de M1 — runtime sin IA + Planning — sobre las 30 invari
 > cambia (ADR-0030 §3) y cuando el runtime lo permita, Terminal.Gui lo sustituye como otro
 > renderer.
 
-Estado: 117 tests verdes (dominio, codec de eventos, pipeline de tools con Allow/Deny/Ask,
+Estado: 124 tests verdes (dominio, codec de eventos, pipeline de tools con Allow/Deny/Ask,
 reconciliación ADR-0004, PlanService, ProgressReconciler R1–R7, simulación, crash/resume
-end-to-end, cliente/renderers/TUI, arquitectura, y 8+ pruebas de integración de cierre de M2).
+end-to-end, cliente/renderers/TUI, arquitectura, y 12+ pruebas de integración del cierre de M2).
 
-## Estado de M2 (Explorer — núcleo + cableado + bloqueantes resueltos)
+## Estado de M2 (Explorer — turn real persistido + cableado e2e)
 
-117 tests verdes, build 0 errores. El Turn end-to-end conecta de verdad: contexto materializado
-(fingerprint + WorkingState del run, restaurado entre procesos vía journal) → modelo →
-tool-calls por el pipeline REAL de tools y permisos → contenido de las tools devuelto al modelo
-→ EndTurn. Verificado en vivo (el modelo llamó `filesystem.read`/`reference.resolve` y ajustó su
-respuesta).
+124 tests verdes, build 0 errores. El Turn end-to-end persiste en el journal (TurnStarted,
+eventos del pipeline de tools, ModelCompleted con la respuesta como artifact, TurnCompleted) y
+el replay tras reiniciar está probado. plan.propose aplica desde el Explorer con las
+proyecciones del mismo Run; los secretos (`.env`, `.pem`, `.key`, `.ssh/`, Bearer/JWT) se
+bloquean y redactan antes de journal, contexto, errores, audit y tool results; el presupuesto
+del Run (TaskBudget) con costo real y topes de sesión/día emite InteractionRequested(BudgetExceeded);
+el ContextOverflow se marca cuando un pinned supera el presupuesto; y el criterio
+`omni "explícame este repositorio"` tiene test automatizado con el plain renderer.
 
 - **Model runtime (ADR-0005/0011):** `IModelProvider`, `OpenAiChatCompatibleProvider` (mapeo y
   parse de `chat.completions`, `function.arguments` como string JSON, `ProviderCallId` correlacionado,

@@ -58,9 +58,20 @@ public sealed class ContextSnapshot
 
     public int TokenCount { get; }
 
+    /// <summary>True si la política de presupuesto recortó el contexto (ContextOverflow, ADR-0042 §3).</summary>
+    public bool Overflowed { get; }
+
     public ContextSnapshot(Guid snapshotId, SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId,
         TurnId? turnId, long basedOnEventSequence, ExecutionFingerprint fingerprint,
         IReadOnlyList<ContextItem> items, int tokenCount)
+        : this(snapshotId, sessionId, runId, taskId, laneId, turnId, basedOnEventSequence, fingerprint, items,
+            tokenCount, false)
+    {
+    }
+
+    public ContextSnapshot(Guid snapshotId, SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId,
+        TurnId? turnId, long basedOnEventSequence, ExecutionFingerprint fingerprint,
+        IReadOnlyList<ContextItem> items, int tokenCount, bool overflowed)
     {
         SnapshotId = snapshotId;
         SessionId = sessionId;
@@ -72,6 +83,7 @@ public sealed class ContextSnapshot
         Fingerprint = fingerprint;
         Items = items;
         TokenCount = tokenCount;
+        Overflowed = overflowed;
     }
 }
 

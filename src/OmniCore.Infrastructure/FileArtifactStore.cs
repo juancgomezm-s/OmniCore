@@ -19,16 +19,19 @@ public sealed class FileArtifactStore : IArtifactStore
 
     public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
     {
-        var hash = Sha256.Hex(content);
+        // Redacción obligatoria del contenido antes de persistir (ADR-0018 §4): ningún blob
+        // del store lleva secretos en claro.
+        var safe = new OmniCore.Domain.RedactionPolicy().Redact(content);
+        var hash = Sha256.Hex(safe);
         var blobPath = BlobPath(hash);
         if (!File.Exists(blobPath))
         {
             var parent = Path.GetDirectoryName(blobPath)!;
             Directory.CreateDirectory(parent);
-            File.WriteAllText(blobPath, content);
+            File.WriteAllText(blobPath, safe);
         }
 
-        return new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(hash), (long) content.Length, mediaType, kind,
+        return new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(hash), (long) safe.Length, mediaType, kind,
             sensitivity);
     }
 

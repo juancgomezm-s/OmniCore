@@ -49,6 +49,14 @@ public sealed class ReadFileTool : ITool
                 null, 0, false, EffectOutcome.None));
         }
 
+        // ADR-0018 §4: rutas de secretos (.env, PEM/SSH, credenciales) NUNCA se leen ni exponen.
+        var redaction = new OmniCore.Domain.RedactionPolicy();
+        if (redaction.IsSecretPath(path!))
+        {
+            return System.Threading.Tasks.Task.FromResult(new ToolResult("Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida por redacción (ADR-0018)", null,
+                null, 0, false, EffectOutcome.None));
+        }
+
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
@@ -63,6 +71,8 @@ public sealed class ReadFileTool : ITool
         }
 
         var content = File.ReadAllText(full);
+        // Redacción obligatoria del contenido antes de exponerlo al modelo (ADR-0018 §4).
+        content = redaction.Redact(content);
         var truncated = content.Length > 8000 ? content.Substring(0, 8000) : content;
         var externalized = content.Length > 8000;
         return System.Threading.Tasks.Task.FromResult(new ToolResult(

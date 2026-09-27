@@ -2,6 +2,7 @@ namespace OmniCore.Host;
 
 using OmniCore.Abstractions;
 using OmniCore.Engine;
+using OmniCore.Execution;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Protocol;
@@ -59,6 +60,26 @@ public sealed class OmniHost
     /// completo con GC y verify llega en M2. Se expone aquí para no quedar huérfano.
     /// </summary>
     public static IArtifactStore CreateArtifactStore(string dataDirectory) => new FileArtifactStore(dataDirectory);
+
+    /// <summary>LocalModelHost cableado con el SystemProcessRuntime real (attach + managed, ADR-0011 §4).</summary>
+    public static LocalModelHost CreateLocalModelHost() => new LocalModelHost(SystemProcessRuntime.Instance());
+
+    /// <summary>Resolver de configuración por scope (ADR-0022 §25) con lookup vacío por defecto.</summary>
+    public static OmniCore.Domain.ScopeResolver<string> CreateScopeResolver()
+    {
+        return new OmniCore.Domain.ScopeResolver<string>((scope, key) =>
+        {
+            // Lookup por defecto: sin capas configuradas, nada se resuelve → fallback.
+            return null;
+        });
+    }
+
+    /// <summary>CredentialStore de plataforma del milestone M2 (FileCredentialStore; ver ADR-0011 AC-2026-09-27).</summary>
+    public static ICredentialStore CreateCredentialStore(string dataDirectory) =>
+        new FileCredentialStore(Path.Combine(dataDirectory, "credentials.ini"));
+
+    /// <summary>Token counter real (heurístico chars/4) para el runtime (no el Fake de tests).</summary>
+    public static ITokenCounter CreateTokenCounter() => new HeuristicTokenCounter();
 
     /// <summary>
     /// Catálogo de tools Core completo (fake + filesystem.read/reference.resolve/plan.propose)

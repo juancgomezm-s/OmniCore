@@ -204,7 +204,7 @@ public sealed class CliApp
     /// <summary>Trunca JSON de diagnóstico sin romper paréntesis (parser perezoso para shell).</summary>
     private static string RedactJson(string json, int max)
     {
-        var redacted = new OmniCore.Infrastructure.PiiRedactor().Redact(json);
+        var redacted = new OmniCore.Domain.PiiRedactor().Redact(json);
         if (redacted.Length <= max)
         {
             return redacted;
@@ -229,6 +229,19 @@ public sealed class CliApp
             Console.WriteLine("  " + model.Id + " → provider '" + model.ProviderId + "'"
                 + (provider is null ? "" : " (" + provider.Family + ", " + provider.BaseUrl + ")"));
         }
+
+        // Requisito 8: componentes de M2 cableados en el Host (no aislados ni solo en tests).
+        var tokenizer = OmniHost.CreateTokenCounter();
+        var resolver = OmniHost.CreateScopeResolver();
+        var creds = OmniHost.CreateCredentialStore(".");
+        var localHost = OmniHost.CreateLocalModelHost();
+        var artifacts = OmniHost.CreateArtifactStore(".");
+        Console.WriteLine("Runtime cableado:");
+        Console.WriteLine("  tokenCounter=" + tokenizer.Id);
+        Console.WriteLine("  scopeResolver=" + (resolver is null ? "?" : resolver.GetType().Name));
+        Console.WriteLine("  credentialStore=" + creds.GetType().Name + " (" + creds + ")");
+        Console.WriteLine("  localModelHost=" + localHost.GetType().Name + " managed=" + localHost.IsManagedRunning());
+        Console.WriteLine("  artifactStore=" + artifacts.GetType().Name + " (" + artifacts + ")");
 
         var configured = registry.Models().Count > 0;
         Console.WriteLine(configured ? "Estado: modelo configurado ✓" : "Estado: sin modelo configurado (ejecuta omni ask para ver la guía)");
@@ -292,20 +305,27 @@ public sealed class CliApp
             var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!), 8192,
                 OmniCore.Domain.ToolMode.Direct, null);
 
-            // 3. Turn end-to-end: contexto REAL del run + fingerprint + tools reales + permisos.
+            // 3. Turn end-to-end: contexto REAL del run + fingerprint + tools reales + permisos,
+            //    con persistencia en el journal del servidor (Turn, tools, respuesta como artifact).
             var executor = OmniHost.CreateSimExecutor(Path.GetFullPath("."));
             var materializer = new OmniCore.Context.ContextMaterializer(
-                new OmniCore.Infrastructure.FakeTokenCounter(),
+                new OmniCore.Infrastructure.HeuristicTokenCounter(),
                 new OmniCore.Context.IContextContributor[] {
                     new OmniCore.Context.WorkingStateContributor(workingStateText),
                 });
+            var laneId = server.LastLaneId() ?? OmniCore.Domain.LaneId.New();
+            var artifacts = OmniHost.CreateArtifactStore("." + Path.DirectorySeparatorChar + ".omnicore-artifacts");
             var turn = new OmniCore.Host.ExplorerTurn(
                 (req, token) => provider.Complete(req, token),
-                executor, hostTools.Catalog(), materializer, fingerprint, selection);
+                executor, hostTools.Catalog(), materializer, fingerprint, selection,
+                server.AcquireStore(), server.AcquireCodecs(), artifacts,
+                new OmniCore.Infrastructure.InMemoryAuditSink(),
+                new OmniCore.Domain.RedactionPolicy());
             var instruction = "Ayudas a un asistente de ingeniería. Work Thread del workspace:\n"
                 + "Contexto del run disponible ({context}).\n"
                 + "Responde en español, sé conciso y usa las tools cuando aporten.";
-            var result = turn.Ask(question, instruction, sessionId, runId, workingStateText, CancellationToken.None);
+            var result = turn.Ask(question, instruction, sessionId, runId, laneId, workingStateText,
+                CancellationToken.None);
 
             foreach (OmniCore.Host.ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
             {

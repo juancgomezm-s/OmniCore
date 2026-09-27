@@ -310,6 +310,21 @@ No se implementa en `AnthropicMessagesProvider` porque la política de Anthropic
 | M3 | Reintentos, circuit breaker, cola por endpoint |
 | M5 | `OpenAIResponsesProvider` (perfiles `api` y `codex`), **login con suscripción ChatGPT (§3.4)**, `AnthropicMessagesProvider` (§10), registro completo con alias, descubrimiento, costo/presupuesto, OAuth genérico |
 
+### Modificación formal del alcance M2 (AC-2026-09-27)
+
+**Decisión:** el `ICredentialStore` del milestone M2 se implementa con `FileCredentialStore`
+(Archivo + ofuscación XOR derivada por máquina + `chmod 600` en Unix, con el valor NUNCA en
+texto plano y redacción PII en todos los sinks, ADR-0018 §4). **No se implementa en M2 el
+Windows Credential Manager / DPAPI ni el Secret Service / Keychain**: la plataforma de este
+milestone (runtime JVM-based sobre .NET 10) no expone DPAPI/ProtectedData, y cada plataforma
+nativa requiere integración de enlace distinto.
+
+**Impacto:** el redactor de rutas de secretos (ADR-0018 §6) bloquea `.env`, `*.pem`, `*.key`,
+`.ssh/`, credenciales de AWS y archivos de servicio en `filesystem.read`/`reference.resolve`;
+`FileCredentialStore` ofrece `Save/Load/Delete/Purge` revocables. El Credential Manager / DPAPI
+por plataforma queda **M3 obligatorio** cuando el sandbox por plataforma (ADR-0038) aporte el
+enlace nativo.
+
 ## Consecuencias
 
 - El Agent Runtime sigue viendo solo `IModelProvider` (INV-011); cambiar de ik_llama a un modelo frontera es cambiar un alias.
