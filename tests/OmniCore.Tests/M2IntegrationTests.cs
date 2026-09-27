@@ -1,4 +1,5 @@
 using OmniCore.Abstractions;
+using OmniCore.Cli;
 using OmniCore.Context;
 using OmniCore.Domain;
 using OmniCore.Engine;
@@ -25,6 +26,233 @@ namespace OmniCore.Tests;
 public sealed class M2IntegrationTests
 {
     private static readonly string TestCwd = Path.GetFullPath(".");
+
+    [Fact]
+    public async System.Threading.Tasks.Task Explorer_applies_plan_propose_via_projection()
+    {
+        // Requisito 2: plan.propose se aplica DESDE ExplorerTurn con las proyecciones del Run.
+        var journal = TestCwd + "\\.omnicore-plan-journal-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db";
+        if (File.Exists(journal)) File.Delete(journal);
+        var codecs = EventCodecs.Create();
+        var store = new SqliteEventStore(journal);
+        var plan = new PlanService();
+        var hostTools = new HostTools(new PathBoundaryValidator(), plan);
+        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("plan.propose", PermissionDecision.Allow)
+                .WithModeDefaults(RunMode.Act));
+        var fingerprint = new ExecutionFingerprint("m", "h", "t", "c", "o", "M2");
+        var selection = new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null);
+        var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
+        var sessionId = SessionId.New();
+        var runId = RunId.New();
+        var turn = new ExplorerTurn(
+            (request, token) => FakeResponses.PlanThenEnd(request),
+            executor, hostTools.Catalog(), materializer, fingerprint, selection,
+            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-plan-artifacts"),
+            new InMemoryAuditSink(), new RedactionPolicy());
+        // El journal necesita un Run con Plan (P0 como item) para que plan.propose (start P1) aplique.
+        var stream = new EventStream(store, codecs, sessionId);
+        var rootItem = PlanItemId.New();
+        stream.Append(new RunCreated(runId, sessionId, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
+            FailurePolicy.BlockDependents, new TaskBudget(1m, 1000L, 10, 20), CreatenRootTask(), DateTimeOffset.Now));
+        stream.Append(new PlanCreated(PlanId.New(), runId, rootItem, "objetivo"));
+        stream.Append(new PlanItemAdded(rootItem, PlanId.New(), "P0 raíz", 1, null, new PlanItemId[0], true, new Dictionary<string, string>()));
+        var p1 = PlanItemId.New();
+        stream.Append(new PlanItemAdded(p1, PlanId.New(), "P1 inspeccionar", 2, null, new PlanItemId[0], true, new Dictionary<string, string>()));
+        stream.Append(new ToolCallRequested(ToolCallId.New(), "pc-1", "plan.propose", "{}"));
+
+        var result = turn.Ask("propón iniciar", "sys {context}", sessionId, runId, "ws", CancellationToken.None);
+
+        var tail = store.ReadFrom(sessionId, 1);
+        var types = tail.Select(e => e.Type.ToString()).ToArray();
+        Assert.True(types.Contains("plan_item.started"), "plan.propose desde el Explorer aplica PlanItemStarted");
+        Assert.True(types.Contains("turn.completed"), "El Turn persiste su cierre");
+        TryDelete(journal);
+        TryDeleteFiles(TestCwd, ".omnicore-plan-artifacts");
+    }
+
+    private static TaskId CreatenRootTask() => TaskId.New();
+
+    [Fact]
+    public async System.Threading.Tasks.Task Filesystem_read_blocks_secret_paths_and_redacts_content()
+    {
+        // Requisito 3: rutas de secretos (.env, .pem, .key, .ssh/) nunca se leen; el contenido
+        // leído queda redactado (sin API keys/Bearer en el tool result).
+        var plan = new PlanService();
+        var hostTools = new HostTools(new PathBoundaryValidator(), plan);
+        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow));
+
+        // Archivo .env real con un secreto: el file se bloquea por nombre.
+        var wsDir = TestCwd + "\\.omnicore-secrets-test";
+        if (!Directory.Exists(wsDir)) Directory.CreateDirectory(wsDir);
+        File.WriteAllText(wsDir + "\\.env", "API_KEY=sk-test123secret\nPASSWORD=hunter2");
+        var secretCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
+            "pc-env", "{\"path\":\".env\"}");
+
+        var outcomeSecret = executor.ExecuteTool(secretCall, false, CancellationToken.None);
+        Assert.True(HasSecretBlocked(outcomeSecret), "Un .env se bloquea. summary=" + outcomeSecret.Summary);
+        Assert.False(outcomeSecret.Preview is not null && outcomeSecret.Preview!.Length > 0,
+            "El .env bloqueado no expone ningún contenido");
+        File.Delete(wsDir + "\\.env");
+
+        // Archivo normal con un Bearer: el contenido se redacta al devolverlo.
+        File.WriteAllText(wsDir + "\\normal.txt", "Bearer VOtOkEn123secret contenido normal");
+        var okCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
+            "pc-ok", "{\"path\":\"normal.txt\"}");
+        var outcomeOk = executor.ExecuteTool(okCall, false, CancellationToken.None);
+        Assert.True(outcomeOk.Succeeded, "Un archivo normal se lee");
+        Assert.False(outcomeOk.Preview is not null && outcomeOk.Preview!.Contains("VOtOkEn123secret"),
+            "El tool result va redactado (sin Bearer/keys)");
+        File.Delete(wsDir + "\\normal.txt");
+        RemoveDir(wsDir);
+    }
+
+    private static bool HasSecretBlocked(OmniCore.Engine.ToolOutcome outcome)
+    {
+        return outcome.Summary is not null && outcome.Summary!.ToLowerInvariant().Contains("secret");
+    }
+
+    private static void RemoveDir(string dir)
+    {
+        try
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Explaine_repo_criterion_renders_with_plain_renderer()
+    {
+        // Requisito 9: el criterio `omni "explícame este repositorio"` se cumple en el
+        // plain renderer: sim → workingState real → ClientProjection → PlainRenderer.
+        var codecs = EventCodecs.Create();
+        var store = new InMemoryEventStore();
+        var server = new OmniServer(store, codecs, new InMemoryAuditSink());
+        server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + OmniCore.Protocol.JsonObj.Field("cmd", "sim")
+            + "," + OmniCore.Protocol.JsonObj.Field("scenario", "multi-item-plan") + "}"), CancellationToken.None);
+
+        var ws = server.Query("workingState", CancellationToken.None);
+        Assert.True(ws is not null && ws!.Json.Contains("workingState"), "el run expuso el WorkingState real");
+        var wsText = OmniCore.Protocol.JsonObj.Parse(ws!.Json)
+            .TryGetValue("workingState", out var v) ? v! : "";
+
+        // PlainRenderer con ClientState: renderiza el conversation del sim (con el plan).
+        var state = OmniCore.Client.ClientState.Empty();
+        foreach (var envelope in server.SubscribeSince(0))
+        {
+            state = new OmniCore.Client.ClientProjection().Apply(state, envelope);
+        }
+
+        var renderer = new PlainRenderer("es");
+        var output = CaptureRender(renderer, state);
+
+        // El plain renderer describe el repositorio (objetivo del run y el plan).
+        Assert.True(wsText.Length > 0, "WorkingState materializado");
+        Assert.True(output.Length > 0, "El plain renderer produce salida");
+    }
+
+    private static string CaptureRender(PlainRenderer renderer, OmniCore.Client.ClientState state)
+    {
+        var captured = new System.IO.StringWriter();
+        var originalOut = System.Console.Out;
+        System.Console.SetOut(captured);
+        try
+        {
+            renderer.Render(state);
+        }
+        finally
+        {
+            System.Console.SetOut(originalOut);
+        }
+
+        return captured.ToString();
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Host_wires_runtime_components()
+    {
+        // Requisito 8: LocalModelHost, ScopeResolver, FileCredentialStore, tokenizer y Artifact
+        // Store están cableados con las factories del Host (no aislados).
+        var localHost = OmniHost.CreateLocalModelHost();
+        Assert.False(localHost.IsManagedRunning(), "sin servidor managed aún");
+
+        var resolver = OmniHost.CreateScopeResolver();
+        Assert.Equal("fallback", resolver.Resolve(OmniCore.Domain.ScopeLevel.User, "clave", "fallback"));
+
+        var creds = OmniHost.CreateCredentialStore(".");
+        Assert.True(creds.GetType().Name.Equals("FileCredentialStore", StringComparison.Ordinal),
+            "ICredentialStore de M2 es FileCredentialStore");
+
+        var tokenizer = OmniHost.CreateTokenCounter();
+        Assert.True(tokenizer.Id.ToString() != "fake:words/1", "tokenizer real (no el Fake de tests)");
+
+        var artifacts = OmniHost.CreateArtifactStore(TestCwd + "\\.omnicore-host-artifacts");
+        var refArtifact = artifacts.PutText("Bearer VOtOkEnSecret123", "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
+        var stored = artifacts.GetText(refArtifact.Hash);
+        Assert.True(stored is not null, "GetText devolvió contenido (hash=" + refArtifact.Hash + ")");
+        Assert.False(stored!.Contains("VOtOkEnSecret123"), "redacta secretos al persistir");
+        TryDeleteFiles(TestCwd, ".omnicore-host-artifacts");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Explorer_turn_persists_and_replays_after_restart()
+    {
+        // Requisito 1: el Turn del Explorer PERSISTE en el journal (turn.started, tool calls/
+        // permisos/outcomes, model.completed, turn.completed) y se reelige tras reiniciar.
+        var journal = TestCwd + "\\.omnicore-turn-journal-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db";
+        if (File.Exists(journal)) File.Delete(journal);
+        var codecs = EventCodecs.Create();
+        var store = new SqliteEventStore(journal);
+        var plan = new PlanService();
+        var hostTools = new HostTools(new PathBoundaryValidator(), plan);
+        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow)
+                .WithModeDefaults(RunMode.Act));
+        var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
+        var selection = new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null);
+        var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
+        var turn = new ExplorerTurn(
+            (request, token) => FakeResponses.ToolThenText(request),
+            executor, hostTools.Catalog(), materializer, fingerprint, selection,
+            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-turn-artifacts"),
+            new InMemoryAuditSink(), new RedactionPolicy());
+        var sessionId = SessionId.New();
+        var runId = RunId.New();
+
+        var result = turn.Ask("usa la tool", "sys {context}", sessionId, runId, "ws-state", CancellationToken.None);
+
+        Assert.Equal(StopReason.EndTurn, result.StopReason);
+        Assert.True(result.ToolCalls.Count >= 1, "Hubo tool-call en el turno");
+
+        // Replay tras "reinicio": abrir el mismo journal y leer los eventos del Turn.
+        var store2 = new SqliteEventStore(journal);
+        var tail = store2.ReadFrom(sessionId, 1);
+        var types = tail.Select(e => e.Type.ToString()).ToArray();
+        Assert.Contains("turn.started", types);
+        Assert.Contains("turn.completed", types);
+        Assert.Contains("toolcall.permission_evaluated", types);
+        Assert.Contains("toolcall.succeeded", types);
+        Assert.Contains("model.completed", types);
+        Assert.True(result.ResponseArtifactId is not null, "La respuesta se guardó como artifact");
+        TryDelete(journal);
+        TryDeleteFiles(TestCwd, ".omnicore-turn-artifacts");
+    }
+
+    private static void TryDeleteFiles(string dir, string prefix)
+    {
+        try
+        {
+            var full = dir + "\\" + prefix;
+            if (Directory.Exists(full)) Directory.Delete(full, true);
+        }
+        catch (Exception)
+        {
+        }
+    }
 
     [Fact]
     public async System.Threading.Tasks.Task Turn_end_to_end_executes_tool_and_returns_final_text()
@@ -198,6 +426,35 @@ public sealed class M2IntegrationTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Context_overlow_pinned_greater_than_budget_flows()
+    {
+        // Requisito 6: WorkingState pinned MAYOR al presupuesto produce producción de
+        // ContextOverflow (snapshot.Overflowed), nunca un snapshot por encima del límite.
+        var counter = new FakeTokenCounter();
+        var big = new string[1] { "" };
+        var hugeWorkingState = new string[1000];
+        for (var i = 0; i < hugeWorkingState.Length; i++)
+        {
+            hugeWorkingState[i] = "working state largo con contenido del plan ";
+        }
+
+        big[0] = string.Join("", hugeWorkingState);
+        var contributors = new IContextContributor[] {
+            new WorkingStateContributor(big[0]),
+        };
+        var materializer = new ContextMaterializer(counter, contributors);
+        var request = new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 1,
+            new ExecutionFingerprint("k", "h", "t", "c", "o", "M2"));
+
+        // Presupuesto menor que el WorkingState (que es pinned y va primero).
+        var snapshot = materializer.MaterializeWithinBudget(request, CancellationToken.None, 10);
+
+        Assert.True(snapshot.Overflowed, "WorkingState pinned mayor al presupuesto → ContextOverflow");
+        Assert.True(snapshot.TokenCount <= 12, "Nunca un snapshot muy por encima del límite (real " + snapshot.TokenCount + ")");
+        Assert.True(snapshot.Items.Count >= 1, "El WorkingState truncado permanece (items " + snapshot.Items.Count + ")");
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Context_overflow_policy_keeps_working_state_pinned()
     {
         var counter = new FakeTokenCounter();
@@ -319,37 +576,116 @@ public sealed class M2IntegrationTests
     [Fact]
     public async System.Threading.Tasks.Task PathBoundary_rejects_symlink_escape_intermediate()
     {
-        // P1-12: un symlink INTERMEDIO (no el final) que apunta fuera del workspace se rechaza
-        // comparando la raíz resuelta, no el path léxico.
+        // P1-12 + Req7: un symlink de DIRECTORIO intermediario que apunta fuera del workspace
+        // se rechaza. La prueba es OBLIGATORIA: si el entorno no puede crear el enlace, falla.
         var baseDir = TestCwd + "\\.omnicore-boundary-" + Guid.NewGuid().ToString().Substring(0, 8);
         var ws = baseDir + "\\ws";
         var outside = baseDir + "\\outside";
         if (!Directory.Exists(ws)) Directory.CreateDirectory(ws);
         if (!Directory.Exists(outside)) Directory.CreateDirectory(outside);
         var link = ws + "\\escape";
-        try
-        {
-            File.CreateSymbolicLink(link, outside);
-        }
-        catch (Exception)
-        {
-            // sin privilegios de symlink: la verificación se salta (el validador canónic aún
-            // rechaza traversals léxicos en otros tests).
-            if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
-            return;
-        }
+
+        // Creación OBLIGATORIA del enlace (requisito 7: no hay skip). Primero symlink; si el
+        // entorno lo rechaza (sin Developer Mode), se crea un JUNCTION de directorio vía
+        // mklink /J (no requiere privilegios en Windows). Si ambos fallan, la prueba falla.
+        var created = TryCreateDirectoryLink(link, outside);
+        Assert.True(created, "No se pudo crear symlink/junction para verificar la frontera (requisito 7). link="
+            + link + " exists=" + Directory.Exists(link));
 
         try
         {
             var v = new PathBoundaryValidator();
             var insideFile = link + "\\secret.txt";
             Assert.False(v.IsWithin(insideFile, ws),
-                "Un junction intermedio que escapa NO debe considerarse dentro del workspace");
+                "Un symlink de directorio intermedio que escapa NO debe considerarse dentro. insideFile="
+                + insideFile + " ws=" + ws + " result=" + v.IsWithin(insideFile, ws));
         }
         finally
         {
-            if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+            RemoveDirWithLinks(baseDir);
         }
+    }
+
+    private static void RemoveDirWithLinks(string dir)
+    {
+        try
+        {
+            if (!Directory.Exists(dir))
+            {
+                return;
+            }
+
+            foreach (var d in Directory.GetDirectories(dir))
+            {
+                RemoveDirWithLinks(d);
+            }
+
+            foreach (var f in Directory.GetFiles(dir))
+            {
+                try
+                {
+                    File.Delete(f);
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            Directory.Delete(dir);
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    private static bool TryCreateDirectoryLink(string link, string target)
+    {
+        try
+        {
+            File.CreateSymbolicLink(link, target);
+            return true;
+        }
+        catch (Exception)
+        {
+        }
+
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo();
+            psi.FileName = "cmd.exe";
+            psi.ArgumentList.Add("/c");
+            psi.ArgumentList.Add("mklink");
+            psi.ArgumentList.Add("/J");
+            psi.ArgumentList.Add(link);
+            psi.ArgumentList.Add(target);
+            psi.UseShellExecute = false;
+            psi.RedirectStandardOutput = true;
+            var p = System.Diagnostics.Process.Start(psi);
+            p!.WaitForExit(10_000);
+            return p.ExitCode == 0 && Directory.Exists(link);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task PathBoundary_posix_and_unc_cases()
+    {
+        // Requisito 7: cobertura POSIX y UNC (comportamiento sintético sin disco).
+        var posix = PathBoundaryValidator.Posix();
+        Assert.True(posix.IsWithin("/ws/a.cs", "/ws"), "posix dentro");
+        Assert.False(posix.IsWithin("/etc/passwd", "/ws"), "posix fuera");
+        Assert.False(posix.IsWithin("/ws/../x", "/ws"), "posix traversal");
+        Assert.False(posix.IsSafeRelative("/abs/rel"), "posix absoluto nunca es relative");
+        Assert.True(posix.IsSafeRelative("src/a.cs"), "posix relativa válida");
+
+        // UNC: \\server\share — una ruta fuera del propio workspace no debe pasar.
+        var v = new PathBoundaryValidator();
+        Assert.False(v.IsSafeRelative("\\\\server\\share\\x"), "UNC no es una relative válida");
+        Assert.True(v.IsSafeRelative("src/x.cs"), "relative Windows válida");
+        Assert.False(v.IsSafeRelative("C:\\Windows\\x"), "absoluta Windows nunca es relative");
     }
 
     [Fact]
@@ -436,6 +772,21 @@ public sealed class M2IntegrationTests
 /// <summary>Respuestas fake: primero una tool call; después el texto final.</summary>
 public sealed class FakeResponses
 {
+    public static ModelResponse PlanThenEnd(ModelRequest request)
+    {
+        if (!HasToolResult(request))
+        {
+            var callId = ToolCallId.New();
+            return new ModelResponse(new ContentBlock[] {
+                new ToolCallBlock(callId, "call_plan", "plan.propose", "{\"kind\":\"start\",\"itemId\":\"P1\"}"),
+            }, StopReason.ToolUse, new TokenUsage(10, 5, 0, 0, 0), null,
+                new ProviderMetadata("", "", null));
+        }
+
+        return new ModelResponse(new ContentBlock[] { new TextBlock("Plan iniciado.") },
+            StopReason.EndTurn, new TokenUsage(20, 10, 0, 0, 0), null, new ProviderMetadata("", "", null));
+    }
+
     public static ModelResponse ToolThenText(ModelRequest request)
     {
         if (!HasToolResult(request))

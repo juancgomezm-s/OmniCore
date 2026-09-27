@@ -54,37 +54,79 @@ public sealed class ContextMaterializer
         }
 
         var ordered = OrderItems(items);
-        var budgeted = maxTokens > 0 ? ApplyBudget(ordered, maxTokens, cancellationToken) : ordered;
-        var total = 0;
-        var counted = new List<ContextItem>();
-        foreach (var item in budgeted)
+
+        // 1. Cuento REAL de cada item (el EstimatedTokens del contributor suele ser 0 en M2).
+        var countedOrdered = new List<ContextItem>();
+        foreach (var item in ordered)
         {
             var count = _counter.CountAsync(item, cancellationToken).GetAwaiter().GetResult();
-            counted.Add(WithTokens(item, count));
-            total += count;
+            countedOrdered.Add(WithTokens(item, count));
+        }
+
+        var budgetResult = maxTokens > 0 ? ApplyBudget(countedOrdered, maxTokens, cancellationToken) : null;
+        var budgeted = budgetResult is null ? countedOrdered : budgetResult!.Items;
+        var overflowed = budgetResult is not null && budgetResult!.Overflowed;
+        var total = 0;
+        var final = new List<ContextItem>();
+        foreach (var item in budgeted)
+        {
+            total += item.EstimatedTokens;
+            final.Add(item);
         }
 
         return new ContextSnapshot(Guid.NewGuid(), request.SessionId, request.RunId, request.TaskId, request.LaneId,
-            request.TurnId, request.BasedOnEventSequence, request.Fingerprint, counted, total);
+            request.TurnId, request.BasedOnEventSequence, request.Fingerprint, final, total, overflowed);
+    }
+
+    private sealed class BudgetResult
+    {
+        public IReadOnlyList<ContextItem> Items { get; }
+
+        public bool Overflowed { get; }
+
+        public BudgetResult(IReadOnlyList<ContextItem> items, bool overflowed)
+        {
+            Items = items;
+            Overflowed = overflowed;
+        }
     }
 
     /// <summary>Política de overflow: suelta items de menor prioridad/retention y trunca.
     /// El WorkingState y System (pinned) se agregan UNA sola vez; el resto se ordena por
-    /// prioridad y se suelta/trunca al superar el presupuesto.</summary>
-    private static IReadOnlyList<ContextItem> ApplyBudget(IReadOnlyList<ContextItem> items, int maxTokens,
+    /// prioridad y se suelta/trunca al superar el presupuesto. Si un pinned supera el límite
+    /// incluso truncado, se marca Overflowed (ContextOverflow del Turn).</summary>
+    private static BudgetResult ApplyBudget(IReadOnlyList<ContextItem> items, int maxTokens,
         CancellationToken cancellationToken)
     {
         var kept = new List<ContextItem>();
         var total = 0;
+        var overflowed = false;
 
         // 1. Pinned sin límite primero (WorkingState y System); se marcan para no re-agregarlos.
+        //    Si un pinned ya supera el presupuesto, se trunca y marca overflow (P: ContextOverflow
+        //    del Turn, no un snapshot por encima del límite).
         var excluded = new List<string>();
         foreach (var item in items)
         {
             if (item.Kind == ContextItemKind.WorkingState || item.Kind == ContextItemKind.System)
             {
-                kept.Add(item);
-                total += item.EstimatedTokens;
+                var remaining = Math.Max(0, maxTokens - total);
+                if (item.EstimatedTokens > remaining)
+                {
+                    var truncated = TruncateTo(item, Math.Max(1, remaining));
+                    if (truncated is not null)
+                    {
+                        kept.Add(truncated!);
+                        total += Math.Min(item.EstimatedTokens, remaining);
+                        overflowed = true;
+                    }
+                }
+                else
+                {
+                    kept.Add(item);
+                    total += item.EstimatedTokens;
+                }
+
                 excluded.Add(item.Id);
             }
         }
@@ -114,6 +156,7 @@ public sealed class ContextMaterializer
                 if (truncated is not null)
                 {
                     kept.Add(truncated!);
+                    overflowed = true;
                 }
 
                 break;
@@ -123,11 +166,12 @@ public sealed class ContextMaterializer
             if (item.Kind == ContextItemKind.WorkingState)
             {
                 kept.Add(TruncateTo(item, Math.Max(0, maxTokens - total))!);
+                overflowed = true;
                 break;
             }
         }
 
-        return kept.ToArray();
+        return new BudgetResult(kept.ToArray(), overflowed);
     }
 
     private static IReadOnlyList<ContextItem> SortByPriority(IReadOnlyList<ContextItem> items)
@@ -169,7 +213,7 @@ public sealed class ContextMaterializer
             content = content.Substring(0, chars) + "…[truncado]";
         }
 
-        return new ContextItem(item.Id, item.Kind, content, item.EstimatedTokens, item.Priority, item.Retention,
+        return new ContextItem(item.Id, item.Kind, content, tokens, item.Priority, item.Retention,
             item.Provenance);
     }
 

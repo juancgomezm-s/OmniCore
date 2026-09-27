@@ -64,10 +64,17 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
             return new ResolvedReference("invalid", clean, "fuera del workspace");
         }
 
+        // ADR-0018 §4: las referencias a secretos (.env, claves, credenciales) se niegan.
+        if (new OmniCore.Domain.RedactionPolicy().IsSecretPath(full))
+        {
+            return new ResolvedReference("invalid", clean, "ruta de secretos protegida (ADR-0018)");
+        }
+
         if (File.Exists(full))
         {
             var text = File.ReadAllText(full);
-            var preview = text.Length > 200 ? text.Substring(0, 200) + "…" : text;
+            var redacted = new OmniCore.Domain.RedactionPolicy().Redact(text);
+            var preview = redacted.Length > 200 ? redacted.Substring(0, 200) + "…" : redacted;
             return new ResolvedReference("file", full, preview);
         }
 
