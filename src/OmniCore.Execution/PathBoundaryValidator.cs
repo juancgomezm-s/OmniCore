@@ -5,20 +5,23 @@ using OmniCore.Abstractions;
 /// <summary>
 /// Validador de frontera de rutas del workspace (ADR-0008 §7, ADR-0037 §1). La implementación
 /// vive en Execution (varón el grafo); Security usa solo la interfaz. M2 canonicaliza con
-/// Path.GetFullPath (colapsa . y .., resuelve relativos contra el cwd), unifica separadores a
-/// '/' para comparar, detecta traversal y, con resolución activa, comprueba que el objetivo
-/// final no escape de la raíz vía symlink/junction (FileInfo.ResolveLinkTarget). En Windows
-/// compara sin importar mayúsculas. El sandbox real (AppContainer/Job) llega en M3.
+/// Path.GetFullPath (colapsa . y .., resuelve relativos contra el cwd), detecta traversal,
+/// resuelve symlinks/junctions en CADA componente intermedio (no solo el objetivo final) para
+/// que un enlace que escapa de la raíz no atraviese la frontera, y compara sin importar
+/// mayúsculas en Windows (detectado por IsPathFullyQualified("C:\\x")). El sandbox real
+/// (AppContainer/Job) llega en M3.
 /// </summary>
 public sealed class PathBoundaryValidator : IPathBoundaryValidator
 {
+    private static readonly bool _windows = Path.IsPathFullyQualified("C:\\x");
+
     private readonly bool _caseInsensitive;
 
     private readonly bool _resolveLinks;
 
     public PathBoundaryValidator()
     {
-        _caseInsensitive = Path.IsPathFullyQualified("C:");
+        _caseInsensitive = _windows;
         _resolveLinks = true;
     }
 
@@ -42,23 +45,23 @@ public sealed class PathBoundaryValidator : IPathBoundaryValidator
         var fullPath = Normalized(physicalPath);
         var fullRoot = Normalized(root);
 
-        // 1. Traversal: cualquier segmento '..' (tras GetFullPath ya colapsado) es sospechoso.
         if (HasTraversal(fullPath) || HasTraversal(fullRoot))
         {
             return false;
         }
 
-        // 2. Enlaces: resolver symlinks/junctions del objetivo final; si la raíz es un enlace,
-        //    la frontera real es su objetivo.
         if (_resolveLinks)
         {
-            var resolvedRoot = ResolveFinalLink(fullRoot);
+            // Resolver enlaces en CADA componente: un junction intermedio puede apuntar fuera.
+            var resolvedRoot = ResolveAllLinks(fullRoot);
+            var resolvedPath = ResolveAllLinks(fullPath);
             if (!resolvedRoot.Equals(fullRoot, StringComparison.Ordinal))
             {
-                return IsWithin(resolvedRoot, fullRoot);
+                // La raíz misma es un enlace → su objetivo define la frontera.
+                return IsWithin(resolvedPath, resolvedRoot);
             }
 
-            fullPath = ResolveFinalLink(fullPath);
+            fullPath = resolvedPath;
             fullRoot = resolvedRoot;
         }
 
@@ -77,7 +80,6 @@ public sealed class PathBoundaryValidator : IPathBoundaryValidator
             return false;
         }
 
-        // Absolutas (C:\…, /…, //host/…) nunca son "relative".
         if (Path.IsPathFullyQualified(relativePath) || relativePath.StartsWith("/") || relativePath.StartsWith("\\"))
         {
             return false;
@@ -100,7 +102,7 @@ public sealed class PathBoundaryValidator : IPathBoundaryValidator
         return true;
     }
 
-    /// <summary>Normaliza: GetFullPath (absoluto, colapsa . y ..) + separadores a '/'.</summary>
+    /// <summary>Normaliza: GetFullPath + separadores a '/'.</summary>
     private static string Normalized(string path)
     {
         var full = Path.GetFullPath(path);
@@ -120,35 +122,64 @@ public sealed class PathBoundaryValidator : IPathBoundaryValidator
         return false;
     }
 
-    /// <summary>Devuelve el objetivo real si la ruta final es un symlink/junction.</summary>
-    private static string ResolveFinalLink(string fullPath)
+    /// <summary>
+    /// Resuelve todos los componentes que sean symlinks/junctions reescribiendo la ruta con
+    /// los objetivos reales. Los directorios intermedios pueden ser enlaces que escapan de la
+    /// frontera; resolverlos previa comparación evita el bypass (P1-12).
+    /// </summary>
+    private static string ResolveAllLinks(string fullPath)
     {
-        var native = fullPath.Replace('/', '\\');
+        // Reconstruye la ruta nativa (separadores de plataforma) y resuelve el enlace del
+        // primer componente que sea symlink/junction; reescribe el prefijo con su objetivo.
+        var native = fullPath.Replace('/', _windows ? '\\' : '/');
+        var separator = _windows ? '\\' : '/';
+        var segments = native.Contains(separator) ? native.Split(separator) : new string[] { native };
+        var cumulative = "";
+        var resolved = native;
+        foreach (var seg in segments)
+        {
+            if (seg.Length == 0)
+            {
+                continue;
+            }
+
+            cumulative = cumulative.Length == 0 ? seg : cumulative + separator + seg;
+            var linkTarget = ResolveFinalLink(cumulative);
+            if (linkTarget is not null && !linkTarget.Equals(cumulative, StringComparison.Ordinal))
+            {
+                resolved = linkTarget + native.Substring(cumulative.Length);
+                break;
+            }
+        }
+
+        return Normalized(resolved);
+    }
+
+    private static string? ResolveFinalLink(string native)
+    {
         if (!File.Exists(native) && !Directory.Exists(native))
         {
-            return fullPath;
+            return null;
         }
 
         try
         {
             var fi = new FileInfo(native);
-            var target = fi.ResolveLinkTarget(true);
+            var target = fi.ResolveLinkTarget(false);
             if (target is not null)
             {
                 var targetPath = target!.FullName;
-                if (targetPath is not null && targetPath!.Length > 0
-                    && !targetPath!.Equals(fullPath, StringComparison.Ordinal)
-                    && !targetPath!.Replace('\\', '/').Equals(fullPath, StringComparison.Ordinal))
+                if (targetPath is not null && targetPath!.Length > 0)
                 {
-                    return Normalized(targetPath!);
+                    return Path.GetFullPath(targetPath!);
                 }
             }
         }
         catch (Exception)
         {
-            // no-enlace o sin permisos; tratar como ruta ordinaria
+            return null;
         }
 
-        return fullPath;
+        return null;
     }
 }

@@ -171,9 +171,11 @@ public sealed class JsonObj
 
     private static string Unquote(string token) => token.Length >= 2 ? Unescape(token.Substring(1, token.Length - 2)) : token;
 
-    public static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    public static string Escape(string value) =>
+        value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t");
 
-    public static string Unescape(string value) => value.Replace("\\\"", "\"").Replace("\\\\", "\\");
+    public static string Unescape(string value) =>
+        value.Replace("\\t", "\t").Replace("\\r", "\r").Replace("\\n", "\n").Replace("\\\"", "\"").Replace("\\\\", "\\");
 }
 
 /// <summary>Codificador de wire envelopes a JSON.</summary>

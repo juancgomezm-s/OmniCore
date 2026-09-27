@@ -24,25 +24,29 @@ public sealed class ToolOutcome
 
     public string? Summary { get; }
 
+    /// <summary>Contenido real de la herramienta (Preview) que vuelve al modelo en el Turn.</summary>
+    public string? Preview { get; }
+
     public EffectOutcome? Effect { get; }
 
     public ToolCallState FinalState { get; }
 
     public IReadOnlyList<DomainEventPayload> Events { get; }
 
-    public ToolOutcome(bool succeeded, string? summary, EffectOutcome? effect, ToolCallState finalState,
-        IReadOnlyList<DomainEventPayload> events)
+    public ToolOutcome(bool succeeded, string? summary, string? preview, EffectOutcome? effect,
+        ToolCallState finalState, IReadOnlyList<DomainEventPayload> events)
     {
         Succeeded = succeeded;
         Summary = summary;
+        Preview = preview;
         Effect = effect;
         FinalState = finalState;
         Events = events;
     }
 
-    public static ToolOutcome Ok(string summary, EffectOutcome effect, ToolCallState state,
-        IReadOnlyList<DomainEventPayload> events) => new(true, summary, effect, state, events);
+    public static ToolOutcome Ok(string summary, string? preview, EffectOutcome effect, ToolCallState state,
+        IReadOnlyList<DomainEventPayload> events) => new(true, summary, preview, effect, state, events);
 
-    public static ToolOutcome Failed(string reason, ToolCallState state, IReadOnlyList<DomainEventPayload> events) =>
-        new(false, reason, null, state, events);
+    public static ToolOutcome Failed(string reason, string? preview, ToolCallState state,
+        IReadOnlyList<DomainEventPayload> events) => new(false, reason, preview, null, state, events);
 }

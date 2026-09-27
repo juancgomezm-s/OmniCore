@@ -32,6 +32,8 @@ public sealed class OmniServer : IOmniClient
 
     private ContextSnapshot? _lastSnapshot;
 
+    private string _lastWorkingStateText = "";
+
     private readonly string? _stateFile;
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit)
@@ -70,10 +72,51 @@ public sealed class OmniServer : IOmniClient
 
         var text = File.ReadAllText(_stateFile!);
         var sep = text.IndexOf('\n');
-        if (sep > 0)
+        if (sep <= 0)
         {
-            _lastSessionId = SessionId.Parse(text.Substring(0, sep));
-            _lastRunId = RunId.Parse(text.Substring(sep + 1));
+            return;
+        }
+
+        _lastSessionId = SessionId.Parse(text.Substring(0, sep));
+        _lastRunId = RunId.Parse(text.Substring(sep + 1));
+
+        // Reconstruir el snapshot desde el journal (P0-3): una nueva invocación recupera el
+        // contexto que el run de otra invocación materializó, sin re-ejecutar el sim.
+        _lastSnapshot = MaterializeFromJournal(_lastSessionId!, _lastRunId!);
+    }
+
+    /// <summary>
+    /// Reconstruye el ContextSnapshot del último run desde el store persistente (replay del
+    /// journal vía las proyecciones, igual que MaterializeSnapshot pero sin RunResult vivo).
+    /// Devuelve null si el journal no tiene eventos del run.
+    /// </summary>
+    private ContextSnapshot? MaterializeFromJournal(SessionId sessionId, RunId runId)
+    {
+        try
+        {
+            var tail = _store.ReadFrom(sessionId, 1);
+            if (tail.Count == 0)
+            {
+                return null;
+            }
+
+            var runProj = OmniCore.Engine.RunProjection.Replay(sessionId, runId, _codecs, tail);
+            var planProj = OmniCore.Engine.PlanProjection.Replay(_codecs, tail);
+            var workingState = OmniCore.Engine.WorkingStateProjector.Project(runProj, planProj);
+            if (workingState is null)
+            {
+                return null;
+            }
+
+            _lastWorkingStateText = OmniCore.Engine.WorkingStateProjector.Render(workingState!);
+            return MaterializeSnapshot(
+                new SimulationEngine.RunResult(sessionId, runId, 0, new string[0], runProj, planProj,
+                    OmniCore.Engine.TaskGraphProjection.Replay(_codecs, tail),
+                    OmniCore.Engine.LaneProjection.Replay(_codecs, tail), workingState));
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 
@@ -117,6 +160,10 @@ public sealed class OmniServer : IOmniClient
 
     public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => _events.ToArray();
 
+    public SessionId? LastSessionId() => _lastSessionId;
+
+    public RunId? LastRunId() => _lastRunId;
+
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         if (name == "state")
@@ -124,6 +171,13 @@ public sealed class OmniServer : IOmniClient
             var run = _lastSnapshot is null ? "none" : "M2:" + _lastSnapshot!.TokenCount.ToString();
             return new SessionQueryResult("state", "{\"runtime\":\"omnicore\",\"milestone\":\"M2\","
                 + JsonObj.Field("runState", run) + "}");
+        }
+
+        if (name == "workingState")
+        {
+            var ws = _lastWorkingStateText is null || _lastWorkingStateText.Length == 0 ? "{}"
+                : "{" + JsonObj.Field("workingState", _lastWorkingStateText) + "}";
+            return new SessionQueryResult("workingState", ws);
         }
 
         if (name == "context")
@@ -145,6 +199,7 @@ public sealed class OmniServer : IOmniClient
             return new SessionQueryResult("context",
                 "{\"snapshot\":{" + JsonObj.Field("tokens", _lastSnapshot!.TokenCount.ToString())
                 + ",\"fingerprint\":" + JsonObj.Field("fingerprint", _lastSnapshot!.Fingerprint.Hash())
+                + ",\"workingState\":" + JsonObj.Field("workingState", _lastWorkingStateText)
                 + ",\"items\":[" + string.Join(",", items.ToArray()) + "]}}");
         }
 
@@ -157,7 +212,9 @@ public sealed class OmniServer : IOmniClient
     /// </summary>
     private static string Redact(string content, int max)
     {
-        var safe = content is null ? "" : content!;
+        // Redacción real: quita secretos (keys, bearer, JWT, cookies) y luego trunca.
+        var redacted = new OmniCore.Infrastructure.PiiRedactor().Redact(content);
+        var safe = redacted is null ? "" : redacted!;
         if (safe.Length <= max)
         {
             return safe;
@@ -181,6 +238,9 @@ public sealed class OmniServer : IOmniClient
             AuditRun(result);
             var snapshot = MaterializeSnapshot(result);
             _lastSnapshot = snapshot;
+            _lastWorkingStateText = result.WorkingState is null
+                ? ""
+                : OmniCore.Engine.WorkingStateProjector.Render(result.WorkingState!);
             _events.Add(WireEnvelope.Event(Ids.NewV7(), "{" + JsonObj.FieldRaw("type", "\"sim.events\"")
                 + "," + JsonObj.Field("exitCode", result.ExitCode == 0 ? "0" : "1")
                 + "," + JsonObj.Field("run", result.Run.State.ToString())
@@ -337,6 +397,33 @@ public sealed class Scenarios
                 new SimulatedTask("T1",
                     new SimulatedLink[] { new SimulatedLink("P1", "implements") },
                     new string[0], "Escribir objetivo"),
+            },
+            turns,
+            AuthPermissions(),
+            "Completed",
+            new Dictionary<string, string>());
+    }
+
+    /// <summary>Escenario que ejerce plan.propose de verdad (P0-6): el modelo inicia el item.</summary>
+    public static SimulationScenario WithPlanPropose()
+    {
+        var turns = new Dictionary<string, IReadOnlyList<SimulatedTurnAction>>();
+        turns["root"] = [
+            SimulatedTurnAction.ToolCall("plan.propose", "applied"),
+            SimulatedTurnAction.DoneMarker(),
+        ];
+        return new SimulationScenario(
+            "with-plan-propose",
+            RunMode.Act,
+            "Iniciar el plan",
+            new SimulatedPlanMutation[] {
+                new SimulatedPlanMutation("P1", "Inspeccionar", new string[0]),
+                new SimulatedPlanMutation("P2", "Implementar", new string[] { "P1" }),
+            },
+            new SimulatedTask[] {
+                new SimulatedTask("T1",
+                    new SimulatedLink[] { new SimulatedLink("P1", "implements") },
+                    new string[0], "Inspeccionar"),
             },
             turns,
             AuthPermissions(),

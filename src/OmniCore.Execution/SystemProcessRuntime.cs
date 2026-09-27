@@ -5,11 +5,10 @@ using OmniCore.Abstractions;
 
 /// <summary>
 /// Implementación de IProcessRuntime sobre System.Diagnostics.Process (ADR-0038 §2, ADR-0011 §4).
-/// Comportamiento de M2: lanza con grupo de procesos propio, espera con timeout real y
-/// cancela por CancellationToken, y al cancelar/timeout mata el árbol completo con
-/// Kill(true) (Windows: process group; el proceso no se descarta hasta que termina de verdad).
-/// El drenaje de stdout/stderr ocurre al terminar (los streams ya están cerrados, read no
-/// bloquea). El confinamiento de capabilities (Job/AppContainer, bubblewrap) llega en M3.
+/// Wait: drena stdout/stderr CONCURRENTEMENTE (Task.Run) para no bloquear si el hijo produce
+/// mucho, espera el timeout real o la cancelación, mata el árbol (Kill(true)) si vence el
+/// timeout y DESPUÉS recoge la salida (ya el proceso no existe → ReadToEnd no bloquea).
+/// CancelTree mata el árbol completo (Windows process group, ADR-0038 §4).
 /// </summary>
 public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFactory
 {
@@ -45,7 +44,6 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
             psi.UseShellExecute = false;
         }
 
-        // Grupo de procesos propio: Kill(true) mata todo el árbol en Windows (ADR-0038 §4).
         psi.CreateNewProcessGroup = true;
 
         var process = Process.Start(psi);
@@ -66,6 +64,22 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         }
 
         KillTree(process);
+        try
+        {
+            process.WaitForExit(30_000);
+        }
+        catch (Exception)
+        {
+        }
+
+        _alive.Remove(handle.Pid);
+        try
+        {
+            process.Dispose();
+        }
+        catch (Exception)
+        {
+        }
     }
 
     public bool IsAlive(ProcessHandle handle)
@@ -85,24 +99,28 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
             return new ProcessResult(-1, null, null, true);
         }
 
-        var timedOut = !WaitForExitOrCancel(process, timeout, cancellationToken);
-        var stdout = SafeRead(process.StandardOutput);
-        var stderr = SafeRead(process.StandardError);
-        var exitCode = process.HasExited && !timedOut ? process.ExitCode : -1;
+        // 1. Drenaje CONCURRENTE (no bloqueante): leer en dos tasks paralelos.
+        var stdoutTask = System.Threading.Tasks.Task.Run<string?>(() => SafeRead(process.StandardOutput));
+        var stderrTask = System.Threading.Tasks.Task.Run<string?>(() => SafeRead(process.StandardError));
 
-        // El tiempo de timeout se consumió: el árbol muere aunque el wait haya terminado, y
-        // NO se devuelve hasta que el proceso salió (evita colgar el journal en el resume).
-        if (timedOut)
+        // 2. Espera del proceso real con timeout y cancelación.
+        var completed = WaitForExitOrCancel(process, timeout, cancellationToken);
+
+        // 3. Si venció y sigue vivo, matar el árbol y esperar a que muera.
+        if (!completed)
         {
             KillTree(process);
-            try
+            var deadline = DateTimeOffset.Now.AddSeconds(30);
+            while (!process.HasExited && DateTimeOffset.Now < deadline)
             {
-                process.WaitForExit(60_000);
-            }
-            catch (Exception)
-            {
+                process.WaitForExit(100);
             }
         }
+
+        // 4. Ahora (proceso muerto) recogemos la salida: ReadToEnd finaliza y no bloquea.
+        var stdout = WaitOrNull(stdoutTask);
+        var stderr = WaitOrNull(stderrTask);
+        var exitCode = process.HasExited ? process.ExitCode : -1;
 
         _alive.Remove(handle.Pid);
         try
@@ -113,7 +131,7 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         {
         }
 
-        return new ProcessResult(exitCode, stdout, stderr, timedOut);
+        return new ProcessResult(exitCode, stdout, stderr, !completed);
     }
 
     private static bool WaitForExitOrCancel(Process process, TimeSpan timeout, CancellationToken cancellationToken)
@@ -144,12 +162,7 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
             }
             catch (Exception)
             {
-                if (process.HasExited)
-                {
-                    return true;
-                }
-
-                return false;
+                return process.HasExited;
             }
         }
 
@@ -167,21 +180,38 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         }
         catch (Exception)
         {
-            // ya salió o sin permisos; no es fatal
         }
     }
 
-    private static string? SafeRead(StreamReader? reader)
+    private static string? SafeRead(object reader)
     {
-        if (reader is null)
+        var sr = reader as System.IO.StreamReader;
+        if (sr is null)
         {
             return null;
         }
 
         try
         {
-            var text = reader!.ReadToEnd();
+            var text = sr!.ReadToEnd();
             return text is null ? null : text!.Trim();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static string? WaitOrNull(System.Threading.Tasks.Task<string?> task)
+    {
+        try
+        {
+            if (task.IsCompleted)
+            {
+                return task.Result;
+            }
+
+            return task.Wait(5000) ? task.Result : null;
         }
         catch (Exception)
         {

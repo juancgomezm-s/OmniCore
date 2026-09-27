@@ -81,40 +81,38 @@ Entregado el núcleo de M1 — runtime sin IA + Planning — sobre las 30 invari
 > cambia (ADR-0030 §3) y cuando el runtime lo permita, Terminal.Gui lo sustituye como otro
 > renderer.
 
-Estado: 80 tests verdes (dominio, codec de eventos, pipeline de tools con Allow/Deny/Ask,
+Estado: 117 tests verdes (dominio, codec de eventos, pipeline de tools con Allow/Deny/Ask,
 reconciliación ADR-0004, PlanService, ProgressReconciler R1–R7, simulación, crash/resume
-end-to-end, cliente/renderers/TUI y arquitectura).
-Pendiente del roadmap: los milestones M2+.
+end-to-end, cliente/renderers/TUI, arquitectura, y 8+ pruebas de integración de cierre de M2).
 
-## Estado de M2 (Explorer — núcleo implementado)
+## Estado de M2 (Explorer — núcleo + cableado + bloqueantes resueltos)
 
-El contrato del milestone está entregado y verificado (97 tests verdes, build 0 errores):
+117 tests verdes, build 0 errores. El Turn end-to-end conecta de verdad: contexto materializado
+(fingerprint + WorkingState del run, restaurado entre procesos vía journal) → modelo →
+tool-calls por el pipeline REAL de tools y permisos → contenido de las tools devuelto al modelo
+→ EndTurn. Verificado en vivo (el modelo llamó `filesystem.read`/`reference.resolve` y ajustó su
+respuesta).
 
-- **Model runtime (ADR-0005/0011):** `IModelProvider` con el contrato neutral
-  (`ModelRequest`/`ModelResponse`/`ContentBlock`/`ProviderOpaque`), `OpenAiChatCompatibleProvider`
-  con mapeo y parse de `chat.completions` (texto + tool calls + usage) verificado, y registro
-  mínimo de providers/modelos con `NoModelConfigured`.
-- **Perfil y política (ADR-0007):** `EffectiveModelProfile` + `HarnessPolicyResolver` puro
-  (ToolCallFormat, ToolMode, PlanControl, RepairAttempts, StallThreshold), con tests que prueban
-  que los valores cambian el comportamiento.
-- **Permisos (ADR-0037 §4):** `ModeDefaultsPolicy` con perfil autónomo (escribir en ACT vs PLAN,
-  build/test, secretos siempre Deny) + `IPathBoundaryValidator` (Execution) que rechaza traversal.
-- **Context Engine v1:** `ContextMaterializer` puro (WorkingState al final, conteo con token
-  counter, fingerprint) + `WorkingStateContributor` + `ExecutionFingerprint`.
-- **Tools Core:** `filesystem.read`, `reference.resolve` reales con frontera de paths;
-  `plan.propose`; `ToolPresentation` declarativa.
-- **Planning (ADR-0035 §4):** el modo Plan emite `PlanApproval` (InteractionRequested) y el Run
-  pasa a ACT con `RunModeChanged` en el mismo Run.
-- **Configuración:** `ConfigLoader` YAML (YamlDotNet verificado en este runtime) con registro
-  mínimo por defecto; providers/models YAML descargados.
-- **CLI:** `omni explain` muestra el contexto materializado (WorkingState) + milestone, y `omni sim`
-  mantiene todo M1.
+- **Model runtime (ADR-0005/0011):** `IModelProvider`, `OpenAiChatCompatibleProvider` (mapeo y
+  parse de `chat.completions`, `function.arguments` como string JSON, `ProviderCallId` correlacionado,
+  escapes JSON completos, Content-Type `application/json`, `ModelProviderException` con el body,
+  TLS relajado solo para loopback/privado) y registro de providers/modelos.
+- **Turn real (`ExplorerTurn`):** contexto + fingerprint + plan + tools + permisos (asks se
+  deniegan sin cliente interactivo, ADR-0003), presupuesto (SpendGuard integrado, ADR-0037 §7) y
+  overflow de contexto con WorkingState pinned.
+- **Permisos (ADR-0037):** `ModeDefaultsPolicy` + `ScriptedPermissionPolicy` con capa por modo,
+  Ask aprobado ejecuta exactamente una vez (`AuthorizeApproved`, INV-002); `FileCredentialStore`
+  con secretos ofuscados (nunca texto plano) y `ScopeResolver` (ADR-0022 §25).
+- **Procesos/frontera:** `SystemProcessRuntime` (kill-tree `Kill(true)`, timeout real con drenaje
+  concurrente, `IsAlive`), `PathBoundaryValidator` canónico (GetFullPath + symlinks/junctions
+  intermedios + case-insensitive Windows), `LocalModelHost` (puerto efímero real + API key
+  criptográfica + readiness + supervisión de muerte).
+- **Planning (ADR-0035 §4):** modo Plan emite `PlanApproval` → ACT vía `RunModeChanged`;
+  `plan.propose` aplica la mutación de verdad vía `PlanService` (eventos reales en el journal).
+- **Configuración (ADR-0011):** `ConfigLoader` YAML respeta `auth: none` / `{apiKey}` y los
+  `context`/`maxOutput` de los modelos; el CLI no pide key a providers sin auth.
+- **Diagnóstico:** `omni doctor`, `omni explain "pregunta"` (contexto real redactado con PII
+  removal) y `omni ask` end-to-end.
 
-### Conexión en vivo
-
-`omni ask "…"` conecta a un servidor local de chat.completions (ik_llama/llama.cpp) habilitando TLS
-para IP local, con la API key por entorno (`OMNI_QWEN_KEY`) y normalizando la respuesta: emite
-`ReasoningBlock` desde `reasoning_content` (modelos tipo Qwen), `TextBlock` y `StopReason`
-(`EndTurn`/`MaxOutputTokens`/`ToolUse`). Verificado contra un servidor real.
-
-Pendiente de M2: `LocalModelHost` (attach/managed) y `ISecretProvider` sobre Credential Manager/DPAPI.
+Pendiente de M3: workflows interactivos `/permissions`/`/context` con UI, `process.exec` real,
+credenciales por plataforma (DPAPI/Credential Manager) y reinicio con backoff del managed host.

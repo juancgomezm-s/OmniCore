@@ -131,20 +131,22 @@ public sealed class LocalModelHost
     public int ChosenPort() => _chosenPort;
 
     /// <summary>
-    /// 4xx-udp/6xxxx puerto efímero candidato en rango alto de alto riesgo de colisión
-    /// (el servidor llama.cpp recibe --port; en M2 el rango 10.000-12.000, suficiente).
+    /// Puerto efímero real: reserva un socket (TcpListener) para obtener un puerto libre, lo
+    /// libera y lo devuelve. La ventana entre el release y el bind del servidor puede colisionar,
+    /// pero elimina el "número aleatorio que puede chocar" del enfoque anterior (P2-13).
     /// </summary>
     private static int EphemeralPort()
     {
-        var rnd = Random.Shared;
-        return 10_000 + (int) (rnd.NextInt64() % 2_000);
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint) listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
     }
 
-    private static string RandomApiKey(int bytes)
-    {
-        var rnd = Random.Shared;
-        return rnd.GetHexString(bytes);
-    }
+    /// <summary>API key aleatoria criptográfica (RandomNumberGenerator, no Random.Shared).</summary>
+    private static string RandomApiKey(int bytes) =>
+        System.Security.Cryptography.RandomNumberGenerator.GetHexString(bytes * 2);
 }
 
 /// <summary>Especificación para lanzar el servidor managed (ik_llama/llama.cpp).</summary>

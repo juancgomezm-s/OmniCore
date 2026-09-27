@@ -7,6 +7,28 @@ namespace OmniCore.Tests;
 public sealed class SimulationTests
 {
     [Fact]
+    public async Task Plan_propose_applies_mutation_to_plan_projection()
+    {
+        // P0-6: plan.propose debe aplicar la mutación de verdad (PlanProjection cambia).
+        var codecs = EventCodecs.Create();
+        var store = new InMemoryEventStore();
+        var hostTools = OmniHost.CreateHostTools();
+        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+            OmniCore.Security.ScriptedPermissionPolicy.WithTool("plan.propose",
+                OmniCore.Domain.PermissionDecision.Allow));
+        var engine = new SimulationEngine(store, codecs, new InMemoryAuditSink(), executor);
+        var scenario = Scenarios.WithPlanPropose();
+
+        var result = engine.Execute(scenario, TestContext.Current.CancellationToken);
+
+        // El item P1 debe haber pasado a InProgress (PlanItemStarted emitido por PlanService).
+        var tail = store.ReadFrom(result.SessionId, 1);
+        var types = tail.Select(e => e.Type.ToString()).ToArray();
+        Assert.True(types.Contains("plan_item.started"), "plan.propose emite PlanItemStarted");
+        Assert.Equal(0, result.ExitCode);
+    }
+
+    [Fact]
     public async Task Sim_multi_item_plan_completes()
     {
         var codecs = EventCodecs.Create();

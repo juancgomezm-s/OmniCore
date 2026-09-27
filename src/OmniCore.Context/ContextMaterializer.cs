@@ -21,6 +21,12 @@ public sealed class ContextMaterializer
         _contributors = contributors;
     }
 
+    /// <summary>Contributors configurados (para que un runtime combine el WorkingState en vivo).</summary>
+    public IReadOnlyList<IContextContributor> Contributors() => _contributors;
+
+    /// <summary>El contador de tokens configurado.</summary>
+    public ITokenCounter Counter() => _counter;
+
     public ContextSnapshot Materialize(MaterializeRequest request, CancellationToken cancellationToken)
     {
         return MaterializeWithinBudget(request, cancellationToken, 0);
@@ -62,19 +68,24 @@ public sealed class ContextMaterializer
             request.TurnId, request.BasedOnEventSequence, request.Fingerprint, counted, total);
     }
 
-    /// <summary>Política de overflow: suelta items de menor prioridad/retention y trunca.</summary>
+    /// <summary>Política de overflow: suelta items de menor prioridad/retention y trunca.
+    /// El WorkingState y System (pinned) se agregan UNA sola vez; el resto se ordena por
+    /// prioridad y se suelta/trunca al superar el presupuesto.</summary>
     private static IReadOnlyList<ContextItem> ApplyBudget(IReadOnlyList<ContextItem> items, int maxTokens,
         CancellationToken cancellationToken)
     {
         var kept = new List<ContextItem>();
         var total = 0;
-        // 1. Pinned sin límite primero (WorkingState y System no se recortan salvo trunca final).
+
+        // 1. Pinned sin límite primero (WorkingState y System); se marcan para no re-agregarlos.
+        var excluded = new List<string>();
         foreach (var item in items)
         {
             if (item.Kind == ContextItemKind.WorkingState || item.Kind == ContextItemKind.System)
             {
                 kept.Add(item);
                 total += item.EstimatedTokens;
+                excluded.Add(item.Id);
             }
         }
 
@@ -82,6 +93,12 @@ public sealed class ContextMaterializer
         var rest = SortByPriority(items);
         foreach (var item in rest)
         {
+            if (IsExcluded(item, excluded))
+            {
+                continue;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             var next = total + item.EstimatedTokens;
             if (next <= maxTokens)
             {
@@ -193,6 +210,19 @@ public sealed class ContextMaterializer
     }
 
     private static bool IsWorkingState(ContextItem item) => item.Kind == ContextItemKind.WorkingState;
+
+    private static bool IsExcluded(ContextItem item, List<string> excluded)
+    {
+        foreach (var id in excluded)
+        {
+            if (id.Equals(item.Id, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static bool AlreadyIn(List<ContextItem> result, ContextItem item)
     {

@@ -49,9 +49,9 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
 
         using var httpReq = new HttpRequestMessage(HttpMethod.Post, url)
         {
-            Content = new StringContent(body),
+            // Content-Type explícito: StringContent sin segundo arg produce text/plain (P1-9).
+            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
         };
-        // El Content-Type es un header de CONTENT (no de request); StringContent ya lo declara.
         if (_descriptor.Auth.Kind == AuthKind.ApiKey && _descriptor.Auth.SecretRef is not null)
         {
             var secret = _secrets.GetSecret(_descriptor.Auth.SecretRef!, cancellationToken);
@@ -321,13 +321,16 @@ public sealed class ModelProviderException : InvalidOperationException
 {
     public string Kind { get; }
 
+    private readonly string _detail;
+
     public ModelProviderException(string kind, string message)
     {
         Kind = kind;
-        setDetail(message);
+        _detail = message is null ? "" : message!;
     }
 
-    private void setDetail(string m) { }
+    /// <summary>El mensaje del proveedor se conserva (base(message) no es alcanzable; override).</summary>
+    public override string Message => "provider " + Kind + ": " + _detail;
 }
 
 /// <summary>Mini parser JSON plano para respuestas de chat.completions (no streaming).</summary>
