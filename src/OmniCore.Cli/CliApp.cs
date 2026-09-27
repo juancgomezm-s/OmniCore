@@ -172,13 +172,10 @@ public sealed class CliApp
     {
         var question = args.Length >= 2 ? args[1] : "explícame el estado del plan";
         var server = ResumeAwareServer();
-        var payload = "{" + JsonObj.Field("cmd", "sim") + ","
-            + JsonObj.Field("scenario", "multi-item-plan") + "}";
-        server.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
 
         var cancellationToken = CancellationToken.None;
-        var ctx = server.Query("context", cancellationToken);
         var state = server.Query("state", cancellationToken);
+        var ws = server.Query("workingState", cancellationToken);
 
         Console.WriteLine("omni explain: contexto del run y plan mantenido por el runtime.");
         Console.WriteLine("Pregunta: " + question);
@@ -189,11 +186,12 @@ public sealed class CliApp
             Console.WriteLine("Run: " + milestone);
         }
 
-        if (ctx is not null)
+        if (ws is not null)
         {
-            var json = OmniCore.Protocol.JsonObj.Parse(ctx!.Json)
-                .TryGetValue("snapshot", out var s) ? s! : "{}";
-            Console.WriteLine("Contexto materializado: " + RedactJson(json, 500));
+            var text = OmniCore.Protocol.JsonObj.Parse(ws!.Json)
+                .TryGetValue("workingState", out var v) ? v! : "";
+            Console.WriteLine("WorkingState (redactado):");
+            Console.WriteLine(RedactJson(text, 900));
         }
         else
         {
