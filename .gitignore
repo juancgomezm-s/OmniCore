@@ -480,3 +480,12 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# OmniCore: journal local del CLI (sim --crash/--resume) y lastsession del sim
+omnicore-sim-journal.db
+omnicore-sim-journal.db-journal
+lastsession.txt
+audit.jsonl
+# Credencial de test del FileCredentialStore de los tests de integración
+.omnicore-test-creds.ini
+.omnicore-test-creds/

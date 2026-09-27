@@ -1,0 +1,5 @@
+providers:
+  local-qwen:
+    baseUrl: "https://192.168.1.104:8080/v1"
+    authRef: "local-qwen-key"
+    family: "OpenAiChatCompatible"

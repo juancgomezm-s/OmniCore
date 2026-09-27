@@ -6,6 +6,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OmniCore.Host\OmniCore.Host.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Infrastructure\OmniCore.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Client\OmniCore.Client.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Tools\OmniCore.Tools.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Cli\OmniCore.Cli.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Context\OmniCore.Context.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Models\OmniCore.Models.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Execution\OmniCore.Execution.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Security\OmniCore.Security.csproj" />
   </ItemGroup>
 
   <ItemGroup>

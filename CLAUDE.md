@@ -66,6 +66,6 @@ Paquetes: `dotnet add <proyecto> package <id>` (Central Package Management; la v
 
 ## Estado
 
-- **Hecho:** esqueleto (14 proyectos + tests de arquitectura; multi-target y analizadores AOT) y revisión arquitectónica v0.2–v0.5 (ADRs 0001–0043), incluida la revisión integral con entrevista al usuario. OAQ-1 y OAQ-6 resueltas.
-- **Roadmap:** la fuente de verdad es `docs/architecture/arquitectura.md` §24.
-- **Siguiente:** M1 — runtime sin IA + Planning (spec §86, arquitectura §24), cuando el usuario apruebe la revisión. No implementar nada fuera de lo que M1 usa: los contratos marcados "Necesaria desde M1" se congelan, y el resto espera a su milestone.
+- **Hecho:** esqueleto (14 proyectos + tests de arquitectura; multi-target y analizadores AOT), revisión arquitectónica v0.2–v0.5 (ADRs 0001–0043), y **M1 implementado y auditado** (2026-09-25): runtime sin IA + Planning con journal durable (envelope `EventType`/`schema_version`, SQLite + in-memory), PlanService/ProgressReconciler/gates/watchdog/WorkingState, pipeline de tools con autorización real, crash/resume sin duplicar efectos, cliente con ClientProjection + renderers TUI/plain/JSON, y `omni sim` (YAML, `--json`, `--crash`/`--resume`). 86 tests verdes en Windows.
+- **Nota toolchain:** el entorno es un runtime .NET basado en JVM; Terminal.Gui 2.5.0 no se enlaza como tipos. La TUI usa render ANSI propio sobre `ClientProjection` (contrato ADR-0030 §3 intacto).
+- **Roadmap:** la fuente de verdad es `docs/architecture/arquitectura.md` §24. M2 (Explorer + modelo local) es lo siguiente.

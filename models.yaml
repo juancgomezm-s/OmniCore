@@ -1,0 +1,5 @@
+models:
+  qwen38-27b-abl-v9-best-q4kxl:
+    provider: "local-qwen"
+    context: 32768
+    maxOutput: 8192
