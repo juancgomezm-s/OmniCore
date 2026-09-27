@@ -11,8 +11,8 @@ using OmniCore.Tools;
 /// (ContextMaterializer + WorkingState del run + fingerprint) con el modelo, ejecuta las
 /// tool calls que el modelo propone a través del pipeline REAL de tools y permisos
 /// (IToolExecutor con ToolRuntime + Policy), y retroalimenta los resultados en el historial
-/// hasta EndTurn o el máximo de pasos. Es la composición que acredita el Turn de M2: contexto,
-/// fingerprint, plan y tools ya NO están aislados.
+/// hasta EndTurn o el máximo de pasos. SIN cliente interactivo: las tools que requieren Ask
+/// se deniegan (ADR-0003) — este turno del CLI no puede abrir una interacción.
 /// </summary>
 public sealed class ExplorerTurn
 {
@@ -97,9 +97,30 @@ public sealed class ExplorerTurn
         var allToolCalls = new List<ToolUseTrace>();
         var usage = new TokenUsage(0, 0, 0, 0, 0);
 
-        var materialized = _materializer.Materialize(
-            new MaterializeRequest(sessionId, runId, null, null, null, workingStateText.Length,
-                _fingerprint), cancellationToken);
+        // Presupuesto del turno (ADR-0037 §7): vigila tokens, turnos y tool calls; si se
+        // excede, la interacción BudgetExceeded corta el turno (P1-11: ya no es aislado).
+        var guard = new SpendGuard(new TaskBudget(null, 16L * 8192, 16, 24));
+
+        // Contexto REAL: el materializer del turno combina los contributors del Host con el
+        // WorkingState del run (P0-2: el estado anunciado llega al prompt, no queda en
+        // BasedOnEventSequence).
+        var contributors = new List<OmniCore.Context.IContextContributor>();
+        var injected = _materializer.Contributors();
+        foreach (var c in injected)
+        {
+            contributors.Add(c);
+        }
+
+        var hasWorkingState = HasWorkingStateContributor(contributors);
+        if (workingStateText is not null && workingStateText.Length > 0 && !hasWorkingState)
+        {
+            contributors.Add(new WorkingStateContributor(workingStateText!));
+        }
+
+        var turnMaterializer = new ContextMaterializer(_materializer.Counter(), contributors);
+        var materialized = turnMaterializer.MaterializeWithinBudget(
+            new MaterializeRequest(sessionId, runId, null, null, null, 0L,
+                _fingerprint), cancellationToken, (int) _selection.ContextBudget);
         var contextText = RenderContext(materialized);
 
         string? finalText = null;
@@ -116,7 +137,21 @@ public sealed class ExplorerTurn
                 ToolChoice.Auto(),
                 null, null, new CacheHints(4, "automatic"), null);
 
-            var resolved = _complete(request, cancellationToken);
+            ModelResponse resolved;
+            try
+            {
+                resolved = _complete(request, cancellationToken);
+                guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
+            }
+            catch (BudgetExceededException budgetEx)
+            {
+                // Tope de gasto (ADR-0037 §7 / ADR-0034): el turno corta con un texto
+                // claro; la interacción BudgetExceeded quedó registrada como stop.
+                stop = StopReason.Cancelled;
+                finalText = "Presupuesto agotado: " + budgetEx.Detail;
+                break;
+            }
+
             usage = CombineUsage(usage, resolved.Usage);
 
             finalText = null;
@@ -139,18 +174,33 @@ public sealed class ExplorerTurn
                 break;
             }
 
-            // El modelo pidió tools: ejecutar por el pipeline real y continuar.
+            // El modelo pidió tools: ejecutar por el pipeline real y continuar. SIN cliente
+            // interactivo en este turno del CLI → las Ask se deniegan (ADR-0003, INV-002).
             foreach (ToolCallBlock call in toolBlocks)
             {
+                try
+                {
+                    guard.RecordToolCall();
+                }
+                catch (BudgetExceededException budgetEx)
+                {
+                    stop = StopReason.Cancelled;
+                    finalText = "Presupuesto agotado: " + budgetEx.Detail;
+                    break;
+                }
+
                 var validated = new ValidatedToolCall(call.Id, new ToolId(call.ToolName),
                     call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
-                var outcome = _tools.ExecuteTool(validated, true, cancellationToken);
+                var outcome = _tools.ExecuteTool(validated, false, cancellationToken);
                 allToolCalls.Add(new ToolUseTrace(call.ToolName, outcome.Succeeded, outcome.Summary,
                     call.ArgumentsJson));
 
-                var resultText = outcome.Succeeded
-                    ? (outcome.Summary ?? "ok")
-                    : "error: " + (outcome.Summary ?? "failed");
+                // El contenido real de la tool (Preview) es lo que el modelo observa
+                // (p. ej. el archivo leído por filesystem.read): no solo el summary.
+                var content = outcome.Preview is not null && outcome.Preview!.Length > 0
+                    ? outcome.Preview!
+                    : (outcome.Summary ?? "ok");
+                var resultText = outcome.Succeeded ? content : "error: " + (outcome.Summary ?? "failed");
                 var assistant = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
                     new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName, call.ArgumentsJson),
                 });
@@ -159,6 +209,11 @@ public sealed class ExplorerTurn
                 });
                 messages.Add(assistant);
                 messages.Add(toolResult);
+            }
+
+            if (stop == StopReason.Cancelled)
+            {
+                break;
             }
         }
 
@@ -194,4 +249,18 @@ public sealed class ExplorerTurn
     private static TokenUsage CombineUsage(TokenUsage a, TokenUsage b) =>
         new TokenUsage(a.Input + b.Input, a.Output + b.Output, a.CacheRead + b.CacheRead,
             a.CacheWrite + b.CacheWrite, a.Reasoning + b.Reasoning);
+
+    /// <summary>True si alguno de los contributors ya aporta el WorkingState del run.</summary>
+    private static bool HasWorkingStateContributor(List<OmniCore.Context.IContextContributor> contributors)
+    {
+        foreach (var c in contributors)
+        {
+            if (c is WorkingStateContributor)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

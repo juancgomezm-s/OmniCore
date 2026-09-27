@@ -6,6 +6,7 @@ using OmniCore.Execution;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
+using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
 
@@ -139,18 +140,39 @@ public sealed class M2IntegrationTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task Processes_kill_tree_and_timeout_behavior()
+    public async System.Threading.Tasks.Task Process_timeout_return_fast_and_kill_tree()
     {
         var runtime = SystemProcessRuntime.Instance();
-        var launch = new ProcessLaunch("cmd.exe", ["/c", "ping -n 30 127.0.0.1 > NUL"], "",
+        // Proceso que vive +30s y genera salida abundante en stdout (para probar el drenaje
+        // concurrente: en la versión anterior Wait() bloqueaba el ReadToEnd hasta la muerte).
+        var launch = new ProcessLaunch("cmd.exe", ["/c", "for /l %i in (1,1,200) do @echo fila-%i-de-salida-larga", "&",
+            "ping", "-n", "40", "127.0.0.1", ">", "NUL"], "",
             new Dictionary<string, string>(), true);
         var handle = runtime.Launch(launch, CancellationToken.None);
 
-        // Timeout corto: debe devolver TimedOut sin colgar y el árbol queda matado.
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = runtime.Wait(handle, System.TimeSpan.FromSeconds(1), CancellationToken.None);
+        sw.Stop();
 
         Assert.True(result.TimedOut, "El timeout se respeta");
+        Assert.True(sw.ElapsedMilliseconds < 3000, "Timeout de 1s responde en <3s (real: " + sw.ElapsedMilliseconds + "ms)");
         Assert.False(runtime.IsAlive(handle), "El árbol quedó matado después del timeout");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Process_wait_captures_abundant_output()
+    {
+        var runtime = SystemProcessRuntime.Instance();
+        // Salida abundante con proceso rápido: el drenaje concurrente la captura entera.
+        var launch = new ProcessLaunch("cmd.exe", ["/c", "for /l %i in (1,1,500) do @echo linea-%i"], "",
+            new Dictionary<string, string>(), true);
+        var handle = runtime.Launch(launch, CancellationToken.None);
+
+        var result = runtime.Wait(handle, System.TimeSpan.FromSeconds(15), CancellationToken.None);
+
+        Assert.False(result.TimedOut, "Proceso rápido termina sin timeout");
+        Assert.True(result.Stdout is not null, "stdout capturado");
+        Assert.True(result.Stdout!.Length > 2000, "Salida abundante capturada entera (" + result.Stdout!.Length + " chars)");
     }
 
     [Fact]
@@ -187,13 +209,15 @@ public sealed class M2IntegrationTests
 
         var snapshot = materializer.MaterializeWithinBudget(request, CancellationToken.None, 200);
 
-        var hasWorkingState = false;
+        Assert.True(snapshot.TokenCount <= 200, "El presupuesto se respeta (TokenCount " + snapshot.TokenCount + ")");
+        var workingCount = 0;
         foreach (ContextItem item in snapshot.Items)
         {
-            if (item.Kind == ContextItemKind.WorkingState) hasWorkingState = true;
+            if (item.Kind == ContextItemKind.WorkingState) workingCount += 1;
         }
 
-        Assert.True(hasWorkingState, "El WorkingState permanece (es pinned) bajo overflow");
+        Assert.True(workingCount == 1, "WorkingState presente exactamente una vez (sin duplicados)");
+        Assert.True(snapshot.Items.Count >= 1, "El WorkingState permanece (es pinned) bajo overflow");
     }
 
     [Fact]
@@ -212,9 +236,65 @@ public sealed class M2IntegrationTests
         store.Save("local-qwen-key", secret.Value(), CancellationToken.None);
         var loaded = store.Load("local-qwen-key", CancellationToken.None);
         Assert.Equal("supersecreto-abc", loaded);
+
+        // P0-7: el archivo en disco NO contiene el secreto en texto plano (está ofuscado).
+        var raw = File.ReadAllText(path);
+        Assert.False(raw.Contains("supersecreto-abc"),
+            "El secreto nunca se escribe en texto plano en el archivo de credenciales");
+        Assert.True(raw.StartsWith("local-qwen-key=enc:"), "El valor se almacena ofuscado (enc:...)");
+
         store.Delete("local-qwen-key", CancellationToken.None);
         Assert.True(store.Load("local-qwen-key", CancellationToken.None) is null, "revocación: se elimina");
         File.Delete(path);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Server_restores_context_between_processes()
+    {
+        // P0-3: una nueva invocación recupera el snapshot del journal sin re-ejecutar sim.
+        var stamp = OmniserverNewStamp();
+        var journal = TestCwd + "\\.omnicore-journal-restore-" + stamp + ".db";
+        var stateFile = TestCwd + "\\lastsession-restore-" + stamp + ".txt";
+        if (File.Exists(journal)) File.Delete(journal);
+        if (File.Exists(stateFile)) File.Delete(stateFile);
+
+        // Proceso 1: ejecuta el sim y persiste journal + lastsession.
+        var server1 = OmniserverPersistent(journal, stateFile);
+        server1.Send(WireEnvelope.Command(Ids.NewV7(), "{" + OmniCore.Protocol.JsonObj.Field("cmd", "sim")
+            + "," + OmniCore.Protocol.JsonObj.Field("scenario", "multi-item-plan") + "}"), CancellationToken.None);
+        var ctx1 = server1.Query("workingState", CancellationToken.None);
+        Assert.True(ctx1 is not null && ctx1!.Json.Contains("workingState"), "El primer proceso materializó el contexto");
+
+        // Proceso 2: abre el mismo journal — LoadLastSession debe reconstruir el snapshot.
+        var server2 = OmniserverPersistent(journal, stateFile);
+        var ctx2 = server2.Query("workingState", CancellationToken.None);
+        Assert.True(ctx2 is not null && ctx2!.Json.Contains("workingState") && !ctx2!.Json.Contains("{}"),
+            "El segundo proceso restauró el snapshot. ctx2=" + (ctx2 is null ? "null" : ctx2!.Json));
+
+        TryDelete(journal);
+        TryDelete(stateFile);
+    }
+
+    private static string OmniserverNewStamp() => Guid.NewGuid().ToString().Substring(0, 8);
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception)
+        {
+            // el store mantiene el handle; la limpieza es best-effort
+        }
+    }
+
+    private static OmniServer OmniserverPersistent(string journal, string stateFile)
+    {
+        var codecs = EventCodecs.Create();
+        var store = new SqliteEventStore(journal);
+        var server = new OmniServer(store, codecs, new InMemoryAuditSink(), stateFile);
+        return server;
     }
 
     [Fact]
@@ -234,6 +314,82 @@ public sealed class M2IntegrationTests
         Assert.Equal("user-model", resolver.Resolve(ScopeLevel.Run, "model", "fallback"));
         Assert.Equal("fallback", resolver.Resolve(ScopeLevel.Run, "missing", "fallback"));
         Assert.Equal(ScopeLevel.User, resolver.SourceOf("model"));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task PathBoundary_rejects_symlink_escape_intermediate()
+    {
+        // P1-12: un symlink INTERMEDIO (no el final) que apunta fuera del workspace se rechaza
+        // comparando la raíz resuelta, no el path léxico.
+        var baseDir = TestCwd + "\\.omnicore-boundary-" + Guid.NewGuid().ToString().Substring(0, 8);
+        var ws = baseDir + "\\ws";
+        var outside = baseDir + "\\outside";
+        if (!Directory.Exists(ws)) Directory.CreateDirectory(ws);
+        if (!Directory.Exists(outside)) Directory.CreateDirectory(outside);
+        var link = ws + "\\escape";
+        try
+        {
+            File.CreateSymbolicLink(link, outside);
+        }
+        catch (Exception)
+        {
+            // sin privilegios de symlink: la verificación se salta (el validador canónic aún
+            // rechaza traversals léxicos en otros tests).
+            if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+            return;
+        }
+
+        try
+        {
+            var v = new PathBoundaryValidator();
+            var insideFile = link + "\\secret.txt";
+            Assert.False(v.IsWithin(insideFile, ws),
+                "Un junction intermedio que escapa NO debe considerarse dentro del workspace");
+        }
+        finally
+        {
+            if (Directory.Exists(baseDir)) Directory.Delete(baseDir, true);
+        }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Turn_exposes_real_file_content_to_model()
+    {
+        // P0-5: el contenido que filesystem.read lee (Preview) vuelve al modelo, no solo el summary.
+        var plan = new PlanService();
+        var hostTools = new HostTools(new PathBoundaryValidator(), plan);
+        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow)
+                .WithModeDefaults(RunMode.Act));
+        var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
+        var captured = new List<string>();
+        var turn = new ExplorerTurn((request, token) =>
+        {
+            // La segunda llamada (tras la tool) debe llevar en el historial el contenido real.
+            foreach (ModelMessage m in request.Messages)
+            {
+                foreach (ContentBlock b in m.Content)
+                {
+                    if (b is ToolResultBlock tr)
+                    {
+                        foreach (ContentBlock inner in tr.Content)
+                        {
+                            if (inner is TextBlock t) captured.Add(t.Text);
+                        }
+                    }
+                }
+            }
+
+            return FakeResponses.ToolThenText(request);
+        }, executor, hostTools.Catalog(), materializer,
+            new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
+            new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null));
+
+        turn.Ask("usa filesystem.read", "sys", SessionId.New(), RunId.New(), "", CancellationToken.None);
+
+        var forwarded = string.Join(" ", captured.ToArray());
+        Assert.False(forwarded.Contains("Ruta fuera del workspace"), "El archivo se lee dentro del workspace");
+        Assert.True(forwarded.Length > 5, "El contenido REAL del archivo se propagó al modelo: {" + forwarded + "}");
     }
 
     [Fact]

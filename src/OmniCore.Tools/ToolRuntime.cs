@@ -31,16 +31,26 @@ public sealed class ToolRuntime
 
         public string? Summary { get; }
 
+        /// <summary>Contenido de la herramienta (Preview), p. ej. el archivo leído — vuelve al modelo.</summary>
+        public string? Preview { get; }
+
         public ToolCallState FinalState { get; }
 
         public EffectOutcome Effect { get; }
 
-        public Outcome(bool succeeded, string? summary, ToolCallState finalState, EffectOutcome effect)
+        public Outcome(bool succeeded, string? summary, string? preview, ToolCallState finalState,
+            EffectOutcome effect)
         {
             Succeeded = succeeded;
             Summary = summary;
+            Preview = preview;
             FinalState = finalState;
             Effect = effect;
+        }
+
+        public Outcome(bool succeeded, string? summary, ToolCallState finalState, EffectOutcome effect) :
+            this(succeeded, summary, null, finalState, effect)
+        {
         }
     }
 
@@ -142,11 +152,12 @@ public sealed class ToolRuntime
         if (effect == EffectOutcome.Unknown)
         {
             _emit(new ToolCallFailed(call.ToolCallId, "efecto desconocido", effect));
-            return new Outcome(false, result.Summary, ToolCallState.Failed, effect);
+            return new Outcome(false, result.Summary, result.Preview, ToolCallState.Failed, effect);
         }
 
         _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\"}"));
-        return new Outcome(true, result.Summary, ToolCallState.Succeeded, effect);
+        // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
+        return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect);
     }
 
     public static ToolRuntime For(FakeCatalog catalog, IPermissionPolicy policy,

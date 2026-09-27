@@ -3,10 +3,11 @@ namespace OmniCore.Engine;
 using OmniCore.Domain;
 
 /// <summary>
-/// Guardia de gasto de un Run/Task (ADR-0037 §7): vigila turnos, tool-calls y tokens contra
-/// el TaskBudget. Puro y determinista; el engine pregunta antes de avanzar un paso. Cuando se
-/// supera un tope, levanta una excepción tipada que el engine convierte en la interacción
-/// BudgetExceeded (spec §34, ADR-0034).
+/// Guardia de gasto de un Run/Task (ADR-0037 §7): vigila turnos, tool-calls, tokens y costo
+/// USD contra el TaskBudget. Puro y determinista; el engine pregunta antes de avanzar un paso.
+/// Cuando se supera un tope, levanta una excepción tipada que el engine convierte en la
+/// interacción BudgetExceeded (spec §34, ADR-0034). Los topes por sesión/día (5/20 USD) los
+/// impone la capa de presupuesto del host sumando los recursos del guard.
 /// </summary>
 public sealed class SpendGuard
 {
@@ -17,6 +18,8 @@ public sealed class SpendGuard
     private int _toolCalls;
 
     private long _tokens;
+
+    private decimal _costUsd;
 
     public SpendGuard(TaskBudget budget)
     {
@@ -49,11 +52,27 @@ public sealed class SpendGuard
         }
     }
 
+    /// <summary>
+    /// Acumula costo estimado (USD) de un paso; lanza si supera MaxCostUsd (ADR-0037 §7).
+    /// Es la integración del tope monetario que la guardia aislada no tenía (P1-11).
+    /// </summary>
+    public void AddCostUsd(decimal usd)
+    {
+        _costUsd += Math.Max(0, usd);
+        if (_budget.MaxCostUsd is not null && _costUsd > _budget.MaxCostUsd!)
+        {
+            throw new BudgetExceededException(
+                "límite de costo: $" + _budget.MaxCostUsd + " (gastado $" + _costUsd + ")");
+        }
+    }
+
     public int Turns() => _turns;
 
     public int ToolCalls() => _toolCalls;
 
     public long Tokens() => _tokens;
+
+    public decimal CostUsd() => _costUsd;
 }
 
 /// <summary>El gasto del Run/Task superó un tope del presupuesto (ADR-0037 §7).</summary>

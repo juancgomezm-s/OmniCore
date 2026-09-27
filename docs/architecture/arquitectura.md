@@ -1,7 +1,7 @@
 # OmniCore — Arquitectura (revisión v0.5)
 
 - **Fecha:** 2026-09-24 (revisión); 2026-09-25 (auditoría de M1); 2026-09-26 (cableado de M2 + cierre de bloqueantes)
-- **Estado:** M1 implementado; M2 núcleo + cableado auditado y bloqueantes resueltos (112 tests verdes, Windows).
+- **Estado:** M1 implementado; M2 núcleo + cableado auditado y bloqueantes resueltos (117 tests verdes, Windows).
 - **Alcance:**
   - **v0.2:** decisiones P0/P1 (puntos 1–30), en §4–§24.
   - **v0.3:** extensibilidad, commands y memoria (puntos 31–41), en §25–§30. Además amplía las tablas de §21–§24.

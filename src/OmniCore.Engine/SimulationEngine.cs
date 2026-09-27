@@ -401,8 +401,16 @@ public sealed class SimulationEngine
         if (_toolExecutor is not null)
         {
             // Pipeline real (INV-001): el modelo emite request; el runtime decide y ejecuta.
-            var validated = new ValidatedToolCall(callId, new ToolId(toolName), "pc-" + toolName, "{}");
-            stream.Append(new ToolCallRequested(callId, validated.ProviderCallId, toolName, "{}"));
+            // plan.propose en el sim recibe una mutación concreta (start del primer item
+            // simbólico) para que la tool valide y declare el efecto de verdad (P0-6).
+            var callArgs = "{}";
+            if (toolName == "plan.propose")
+            {
+                callArgs = SimPlanArgs();
+            }
+
+            var validated = new ValidatedToolCall(callId, new ToolId(toolName), "pc-" + toolName, callArgs);
+            stream.Append(new ToolCallRequested(callId, validated.ProviderCallId, toolName, callArgs));
             if (faultAtTool == toolName)
             {
                 // Crash inyectado tras el Started: el proceso "muere" sin persistir el outcome.
@@ -424,12 +432,13 @@ public sealed class SimulationEngine
                 stream.Append(evt);
             }
 
-            // plan.propose: si la tool declaró una mutación válida, PlanService la aplica
-            // contra las proyecciones del run (ADR-0016 §3; INV-017: decide el runtime).
+            // plan.propose: si la tool declaró una mutación válida (JSON de la mutación en Preview,
+            // no el summary legible), PlanService la aplica contra las proyecciones del run
+            // (ADR-0016 §3; INV-017: decide el runtime). Fix P0: Preview, no Summary.
             if (toolName == "plan.propose" && outcome.Succeeded && outcome.FinalState == ToolCallState.Succeeded
-                && outcome.Effect == EffectOutcome.Applied && outcome.Summary is not null)
+                && outcome.Effect == EffectOutcome.Applied && outcome.Preview is not null)
             {
-                ApplyPlanProposal(stream, outcome.Summary!);
+                ApplyPlanProposal(stream, outcome.Preview!);
             }
 
             var doneTurn = TurnId.New();
@@ -449,6 +458,23 @@ public sealed class SimulationEngine
 
     private static EffectClass ParseEffect(string? effect) =>
         effect == "applied" ? EffectClass.Reconcilable : EffectClass.None;
+
+    /// <summary>Args JSON para plan.propose en el sim: start del primer item simbólico (P0).</summary>
+    private string SimPlanArgs()
+    {
+        var first = FirstSymbolicItem();
+        return "{\"kind\":\"start\",\"itemId\":\"" + first + "\"}";
+    }
+
+    private string FirstSymbolicItem()
+    {
+        foreach (var kv in _symbolicItems)
+        {
+            return kv.Key;
+        }
+
+        return "P1";
+    }
 
     /// <summary>
     /// Aplica la mutación declarada por `plan.propose` vía PlanService contra las proyecciones

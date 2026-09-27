@@ -206,12 +206,13 @@ public sealed class CliApp
     /// <summary>Trunca JSON de diagnóstico sin romper paréntesis (parser perezoso para shell).</summary>
     private static string RedactJson(string json, int max)
     {
-        if (json.Length <= max)
+        var redacted = new OmniCore.Infrastructure.PiiRedactor().Redact(json);
+        if (redacted.Length <= max)
         {
-            return json;
+            return redacted;
         }
 
-        return json.Substring(0, max) + "…";
+        return redacted.Substring(0, max) + "…";
     }
 
     /// <summary>
@@ -270,10 +271,13 @@ public sealed class CliApp
             // 1. Runtime real: materializa el contexto con el sim (WorkingState + plan + tokens).
             var hostTools = OmniHost.CreateHostTools();
             var server = ResumeAwareServer();
-            var ctx = server.Query("context", CancellationToken.None);
-            if (ctx is null)
+            var wsQuery = server.Query("workingState", CancellationToken.None);
+            var wsJson = wsQuery is null ? "{}" : wsQuery!.Json;
+            var workingStateText = OmniCore.Protocol.JsonObj.Parse(wsJson)
+                .TryGetValue("workingState", out var wsVal) ? wsVal! : "";
+            if (workingStateText.Length == 0)
             {
-                Console.WriteLine("omni ask: ejecuta primero `omni sim` para materializar el contexto del run.");
+                Console.WriteLine("omni ask: el run no tiene WorkingState; ejecuta primero `omni sim`.");
                 return Task.FromResult(1);
             }
 
@@ -282,26 +286,28 @@ public sealed class CliApp
             var runState = OmniCore.Protocol.JsonObj.Parse(stateJson).TryGetValue("runState", out var rs) ? rs! : "M2";
             var fingerprint = new OmniCore.Domain.ExecutionFingerprint(
                 model!, "harness-v1", "core-tools-1", "ctx-v1", "none", "M2");
+            var sessionId = server.LastSessionId() ?? OmniCore.Domain.SessionId.New();
+            var runId = server.LastRunId() ?? OmniCore.Domain.RunId.New();
 
             // 2. Provider conectado al modelo local (TLS relajado solo para loopback/privado).
             var provider = OmniHost.ConnectLocalChatCompletions(baseUrl!, model!, secretRef, key ?? "");
             var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!), 8192,
                 OmniCore.Domain.ToolMode.Direct, null);
 
-            // 3. Turn end-to-end: contexto + fingerprint + plan + tools reales + permisos.
+            // 3. Turn end-to-end: contexto REAL del run + fingerprint + tools reales + permisos.
             var executor = OmniHost.CreateSimExecutor(Path.GetFullPath("."));
             var materializer = new OmniCore.Context.ContextMaterializer(
                 new OmniCore.Infrastructure.FakeTokenCounter(),
-                new OmniCore.Context.IContextContributor[] { });
+                new OmniCore.Context.IContextContributor[] {
+                    new OmniCore.Context.WorkingStateContributor(workingStateText),
+                });
             var turn = new OmniCore.Host.ExplorerTurn(
                 (req, token) => provider.Complete(req, token),
                 executor, hostTools.Catalog(), materializer, fingerprint, selection);
-            var workingState = runState;
             var instruction = "Ayudas a un asistente de ingeniería. Work Thread del workspace:\n"
                 + "Contexto del run disponible ({context}).\n"
                 + "Responde en español, sé conciso y usa las tools cuando aporten.";
-            var result = turn.Ask(question, instruction, OmniCore.Domain.SessionId.New(),
-                OmniCore.Domain.RunId.New(), workingState, CancellationToken.None);
+            var result = turn.Ask(question, instruction, sessionId, runId, workingStateText, CancellationToken.None);
 
             foreach (OmniCore.Host.ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
             {

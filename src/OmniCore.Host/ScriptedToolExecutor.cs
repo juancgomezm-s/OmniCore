@@ -67,7 +67,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         }
 
         return outcome.Succeeded
-            ? ToolOutcome.Ok(outcome.Summary ?? "ok", outcome.Effect, outcome.FinalState, events)
-            : ToolOutcome.Failed(outcome.Summary ?? "fallo", outcome.FinalState, events);
+            ? ToolOutcome.Ok(outcome.Summary ?? "ok", outcome.Preview, outcome.Effect, outcome.FinalState, events)
+            : ToolOutcome.Failed(outcome.Summary ?? "fallo", outcome.Preview, outcome.FinalState, events);
     }
 }
