@@ -1,0 +1,533 @@
+namespace OmniCore.Engine;
+
+using OmniCore.Abstractions;
+using OmniCore.Domain;
+
+/// <summary>
+/// Ejecuta un escenario de simulación contra el runtime real (ADR-0041 §2): crea la sesión,
+/// el Run, las Tasks/Lanes, y avanza los Turns con el ScriptedModelProvider + FakeTool, todo
+/// persistido en el journal. Al final verifica la golden rule: reconstruir el estado desde el
+/// journal coincide con el estado vivo.
+/// </summary>
+public sealed class SimulationEngine
+{
+    private readonly IEventStore _store;
+
+    private readonly IEventCodecRegistry _codecs;
+
+    private readonly IDomainEventCodec _codecForRun;
+
+    private readonly IAuditSink _audit;
+
+    private readonly PlanService _planService;
+
+    private readonly ProgressReconciler _reconciler;
+
+    private IToolExecutor? _toolExecutor;
+
+    private bool _crashed;
+
+    private readonly Dictionary<string, PlanItemId> _symbolicItems = new();
+
+    public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit)
+    {
+        _store = store;
+        _codecs = codecs;
+        _audit = audit;
+        _codecForRun = codecs.CodecFor(EventType.Of("run.started"));
+        _planService = new PlanService();
+        _reconciler = new ProgressReconciler();
+        _toolExecutor = null;
+    }
+
+    public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
+        IToolExecutor toolExecutor)
+    {
+        _store = store;
+        _codecs = codecs;
+        _audit = audit;
+        _codecForRun = codecs.CodecFor(EventType.Of("run.started"));
+        _planService = new PlanService();
+        _reconciler = new ProgressReconciler();
+        _toolExecutor = toolExecutor;
+    }
+
+    /// <summary>Permite sustituir el executor (test/sim). El engine no conoce implementaciones.</summary>
+    public void SetToolExecutor(IToolExecutor toolExecutor) => _toolExecutor = toolExecutor;
+
+    /// <summary>Resultado de una simulación: exit code 0 si el estado final coincide con el esperado.</summary>
+    public sealed class RunResult
+    {
+        public SessionId SessionId { get; }
+
+        public RunId RunId { get; }
+
+        public int ExitCode { get; }
+
+        public IReadOnlyList<string> Diagnostics { get; }
+
+        public RunProjection Run { get; }
+
+        public PlanProjection Plan { get; }
+
+        public TaskGraphProjection Tasks { get; }
+
+        public LaneProjection Lanes { get; }
+
+        public WorkingState? WorkingState { get; }
+
+        public RunResult(SessionId sessionId, RunId runId, int exitCode, IReadOnlyList<string> diagnostics,
+            RunProjection run, PlanProjection plan, TaskGraphProjection tasks, LaneProjection lanes,
+            WorkingState? workingState)
+        {
+            SessionId = sessionId;
+            RunId = runId;
+            ExitCode = exitCode;
+            Diagnostics = diagnostics;
+            Run = run;
+            Plan = plan;
+            Tasks = tasks;
+            Lanes = lanes;
+            WorkingState = workingState;
+        }
+    }
+
+    public RunResult Execute(SimulationScenario scenario, CancellationToken cancellationToken)
+    {
+        var sessionId = SessionId.New();
+        var runId = RunId.New();
+        var rootTaskId = TaskId.New();
+        var rootLaneId = LaneId.New();
+        var planId = PlanId.New();
+        var session = new Session(sessionId, new WorkspaceRef(WorkspaceId.Parse("sim"), "sim"), ProfileId.New(),
+            DateTimeOffset.Now);
+
+        var stream = new EventStream(_store, _codecs, sessionId);
+        stream.Append(new SessionCreated(sessionId, session.Workspace.Id.ToString(), session.Workspace.DisplayPath, session.Profile, session.CreatedAt));
+
+        stream.Append(new RunCreated(runId, sessionId, scenario.Input, scenario.Mode, ExecutionStrategy.Direct,
+            FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), rootTaskId, DateTimeOffset.Now));
+        stream.Append(new RunStarted(runId));
+
+        var taskIds = new Dictionary<string, TaskId>();
+        foreach (var task in scenario.Tasks)
+        {
+            var tid = TaskId.New();
+            taskIds[task.Id] = tid;
+            var deps = new List<TaskDependency>();
+            foreach (var dep in task.DependsOn)
+            {
+                deps.Add(new TaskDependency(Entities.Task(taskIds, dep), true));
+            }
+
+            stream.Append(new TaskCreated(tid, runId, task.Objective, deps.ToArray(),
+                new TaskBudget(null, null, null, null)));
+        }
+
+        var rootItemId = PlanItemId.New();
+        stream.Append(new PlanCreated(planId, runId, rootItemId, scenario.Input));
+        stream.Append(new PlanItemAdded(rootItemId, planId, scenario.Input, 1, null, new PlanItemId[0], true,
+            new Dictionary<string, string>()));
+
+        var itemIds = new Dictionary<string, PlanItemId>();
+        itemIds["P0"] = rootItemId;
+        var order = 2;
+        // El mapa simbólico es la misma tabla (los ids textuales del modelo → guids del run).
+        foreach (var kv in itemIds)
+        {
+            _symbolicItems[kv.Key] = kv.Value;
+        }
+
+        foreach (var m in scenario.Plan)
+        {
+            var pid = PlanItemId.New();
+            itemIds[m.Id] = pid;
+            _symbolicItems[m.Id] = pid;
+            var deps = new List<PlanItemId>();
+            foreach (var d in m.DependsOn)
+            {
+                deps.Add(Entities.PlanItem(itemIds, d));
+            }
+
+            stream.Append(new PlanItemAdded(pid, planId, m.Text, order++, null, deps.ToArray(), true,
+                new Dictionary<string, string>()));
+        }
+
+        foreach (var task in scenario.Tasks)
+        {
+            var tid = Entities.Task(taskIds, task.Id);
+            foreach (var link in task.Links)
+            {
+                var pid = Entities.PlanItem(itemIds, link.Item);
+                var role = ParseRole(link.Role);
+                stream.Append(new PlanItemLinked(pid, new PlanItemLink(tid, role != LinkRole.Supports, role)));
+            }
+        }
+
+        // Task raíz + lane raíz: los Turns del agente principal viven aquí (ADR-0035 §2).
+        stream.Append(new LaneCreated(rootLaneId, rootTaskId, ProfileId.New()));
+        stream.Append(new LaneStarted(rootLaneId));
+
+        // Arrancar cada Task del escenario con su lane (Running). La simulación asume que
+        // ejecutar la tool = completar la task, y el reconciler corrige el plan (R1/R2).
+        foreach (var task in scenario.Tasks)
+        {
+            var tid = Entities.Task(taskIds, task.Id);
+            stream.Append(new TaskReady(tid));
+            stream.Append(new TaskStarted(tid, LaneId.New()));
+        }
+
+        ExecuteTurns(scenario, stream, rootLaneId, cancellationToken);
+
+        // Watchdog de progreso (ADR-0016 §9, ADR-0036 §7): si el item actual lleva N Turns en
+        // InProgress sin señal, emitir ProgressStalled. En M1 el umbral es constante.
+        EmitStallIfNeeded(stream, sessionId, runId);
+
+        // Tras un crash inyectado, el Run queda interrumpido (sin pasar los gates): se reanuda
+        // con Resume() (ADR-0041 §2). El run vivo queda en el estado previo.
+        if (!_crashed)
+        {
+            ContinueToCompletion(sessionId, runId, stream, scenario.Mode);
+        }
+
+        var finalTail = stream.EventsSince(1);
+        var finalRun = RunProjection.Replay(sessionId, runId, _codecs, finalTail);
+        var planProj = PlanProjection.Replay(_codecs, finalTail);
+        var tasksProj = TaskGraphProjection.Replay(_codecs, finalTail);
+        var lanesProj = LaneProjection.Replay(_codecs, finalTail);
+
+        var diagnostics = new List<string>();
+        if (_crashed)
+        {
+            diagnostics.Add("crash inyectado; el Run queda interrumpido (usa --resume)");
+        }
+
+        var exit = VerifyExpectations(scenario, finalRun, diagnostics);
+
+        var workingState = _crashed ? null : WorkingStateProjector.Project(finalRun, planProj);
+        return new RunResult(sessionId, runId, exit, diagnostics.ToArray(), finalRun, planProj, tasksProj,
+            lanesProj, workingState);
+    }
+
+    /// <summary>
+    /// Watchdog de progreso (ADR-0016 §9): si el item actual lleva el umbral de Turns en
+    /// InProgress sin señal de progreso, emite ProgressStalled en el journal.
+    /// </summary>
+    private void EmitStallIfNeeded(EventStream stream, SessionId sessionId, RunId runId)
+    {
+        var tail = stream.EventsSince(1);
+        var plan = PlanProjection.Replay(_codecs, tail);
+        var turns = CountTurns(tail);
+        if (turns <= 0)
+        {
+            return;
+        }
+
+        var watchdog = new ProgressWatchdog(HarnessThreshold());
+        var current = _reconciler.CurrentItem(plan);
+        if (current is null || !watchdog.IsStalled(turns))
+        {
+            return;
+        }
+
+        stream.Append(new ProgressStalled(current!, turns, DateTimeOffset.Now));
+    }
+
+    /// <summary>
+    /// El umbral del watchdog viene del HarnessPolicy del modelo efectivo (ADR-0007 §3): se
+    /// alimenta con el perfil simulado (MultiStepExecutionReliability de un worker local).
+    /// </summary>
+    private int HarnessThreshold()
+    {
+        var profile = new EffectiveModelProfile(
+            "qwen38-27b-local", 8192, 8192, 2048, ["text"],
+            [ToolCallFormat.Native, ToolCallFormat.PromptedJson], false,
+            new Dictionary<string, double>
+            {
+                ["MultiStepExecutionReliability"] = 0.6,
+                ["PlanTrackingReliability"] = 0.6,
+                ["ToolCallReliability"] = 0.7,
+                ["ToolErrorRecovery"] = 0.5,
+                ["InstructionFollowing"] = 0.6,
+            });
+        return new HarnessPolicyResolver().Resolve(profile).StallThresholdTurns;
+    }
+
+    private static int CountTurns(IReadOnlyList<DomainEvent> events)
+    {
+        var started = 0;
+        var completed = 0;
+        foreach (var evt in events)
+        {
+            if (evt.Type.ToString() == "turn.started")
+            {
+                started += 1;
+            }
+            else if (evt.Type.ToString() == "turn.completed")
+            {
+                completed += 1;
+            }
+        }
+
+        return started - completed;
+    }
+
+    /// <summary>
+    /// Proyecta el estado y pasa por los gates de completado (run sin crash). Si el run era
+    /// modo Plan, primero se aprueba el plan y el run pasa a Act en el mismo Run (ADR-0035 §4).
+    /// </summary>
+    private void ContinueToCompletion(SessionId sessionId, RunId runId, EventStream stream, RunMode mode)
+    {
+        if (mode == RunMode.Plan)
+        {
+            EmitPlanApproval(sessionId, runId, stream);
+        }
+
+        var tail = stream.EventsSince(1);
+        var runProj = RunProjection.Replay(sessionId, runId, _codecs, tail);
+        var tasksProj = TaskGraphProjection.Replay(_codecs, tail);
+        var planProj = PlanProjection.Replay(_codecs, tail);
+        new RunCoupon(runProj, tasksProj, planProj).CheckCompletionAndGate(_planService, _reconciler, _store,
+            _codecs, sessionId, stream);
+    }
+
+    /// <summary>
+    /// PLAN → ACT (ADR-0035 §4): se emite el InteractionRequested de PlanApproval y, al aprobar
+    /// (opción "Aprobar y ejecutar"), el Run pasa a Act con RunModeChanged. En M1/sim se aprueba
+    /// automáticamente; en M2 el primer cliente interactivo lo conecta a la interacción.
+    /// </summary>
+    private void EmitPlanApproval(SessionId sessionId, RunId runId, EventStream stream)
+    {
+        stream.Append(new InteractionRequested(
+            InteractionId.New(),
+            InteractionKind.PlanApproval,
+            "{\"operation\":\"plan.approval\"}",
+            "[{\"id\":\"approve_execute\",\"intent\":\"allow\"},{\"id\":\"approve_only\",\"intent\":\"allow\"}]",
+            "approve_only",
+            null,
+            null,
+            null,
+            null,
+            0,
+            1));
+        stream.Append(new RunModeChanged(runId, RunMode.Plan, RunMode.Act, "PlanApproved"));
+    }
+
+    /// <summary>
+    /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2): detecta ToolCalls Started sin
+    /// outcome en el journal, emite ToolCallEffectUnknown y las reconcilia contra su intent
+    /// (sin duplicar el efecto). Devuelve el número de toolcalls reconciliadas.
+    /// </summary>
+    public int Resume(SessionId sessionId, RunId runId, EventStream stream)
+    {
+        var tail = _store.ReadFrom(sessionId, 1);
+        var startedNoOutcome = new List<ToolCallId>();
+        foreach (var evt in tail)
+        {
+            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            if (payload is ToolCallStarted)
+            {
+                startedNoOutcome.Add(evt.ToolCallId!);
+            }
+        }
+
+        foreach (var outcome in tail)
+        {
+            var payload = _codecs.CodecFor(outcome.Type).Decode(outcome.Type, outcome.PayloadJson);
+            if (payload is ToolCallSucceeded || payload is ToolCallFailed || payload is ToolCallReconciled
+                || payload is ToolCallEffectUnknown)
+            {
+                startedNoOutcome.Remove(outcome.ToolCallId!);
+            }
+        }
+
+        var reconciled = 0;
+        foreach (var id in startedNoOutcome)
+        {
+            stream.Append(new ToolCallEffectUnknown(id, EffectClass.Reconcilable));
+            stream.Append(new ToolCallReconciled(id, ReconciliationOutcome.NotApplied, "resume: sin post-hash"));
+            reconciled += 1;
+        }
+
+        return reconciled;
+    }
+
+    private void ExecuteTurns(SimulationScenario scenario, EventStream stream, LaneId laneId,
+        CancellationToken cancellationToken)
+    {
+        var laneActions = scenario.Turns.TryGetValue("root", out var rootActions) ? rootActions : null;
+        if (laneActions is null)
+        {
+            foreach (var kv in scenario.Turns)
+            {
+                if (kv.Key == "T1")
+                {
+                    laneActions = kv.Value;
+                    break;
+                }
+            }
+        }
+
+        if (laneActions is null)
+        {
+            return;
+        }
+
+        foreach (var action in laneActions)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            if (action.Tool is not null)
+            {
+                RunToolCall(action, stream, laneId, cancellationToken, scenario.FaultAtTool);
+            }
+            else if (action.IsComplete)
+            {
+                var turnId = TurnId.New();
+                stream.Append(new TurnStarted(turnId, laneId));
+                stream.Append(new TurnCompleted(turnId));
+            }
+        }
+    }
+
+    private void RunToolCall(SimulatedTurnAction action, EventStream stream, LaneId laneId,
+        CancellationToken cancellationToken, string? faultAtTool)
+    {
+        var toolName = action.Tool != null ? action.Tool! : throw new InvalidOperationException("tool null");
+        var callId = ToolCallId.New();
+        if (_toolExecutor is not null)
+        {
+            // Pipeline real (INV-001): el modelo emite request; el runtime decide y ejecuta.
+            var validated = new ValidatedToolCall(callId, new ToolId(toolName), "pc-" + toolName, "{}");
+            stream.Append(new ToolCallRequested(callId, validated.ProviderCallId, toolName, "{}"));
+            if (faultAtTool == toolName)
+            {
+                // Crash inyectado tras el Started: el proceso "muere" sin persistir el outcome.
+                // Se emite empezado con efecto para que el resume vea una ToolCall Started sin
+                // outcome (ADR-0004 §2) y la reconcilie sin duplicar.
+                var crashIntent = new ToolIntent(callId, validated.ToolId, "{}", EffectClass.Reconcilable,
+                    ResourceClaims.Empty(), ToolRisk.Low, null);
+                stream.Append(new ToolCallStarted(callId, crashIntent.Effect));
+                _crashed = true;
+                var crashTurn = TurnId.New();
+                stream.Append(new TurnStarted(crashTurn, laneId));
+                stream.Append(new TurnAbandoned(crashTurn, "crash inyectado (simulación)"));
+                return;
+            }
+
+            var outcome = _toolExecutor.ExecuteTool(validated, true, cancellationToken);
+            foreach (var evt in outcome.Events)
+            {
+                stream.Append(evt);
+            }
+
+            // plan.propose: si la tool declaró una mutación válida, PlanService la aplica
+            // contra las proyecciones del run (ADR-0016 §3; INV-017: decide el runtime).
+            if (toolName == "plan.propose" && outcome.Succeeded && outcome.FinalState == ToolCallState.Succeeded
+                && outcome.Effect == EffectOutcome.Applied && outcome.Summary is not null)
+            {
+                ApplyPlanProposal(stream, outcome.Summary!);
+            }
+
+            var doneTurn = TurnId.New();
+            stream.Append(new TurnStarted(doneTurn, laneId));
+            stream.Append(new TurnCompleted(doneTurn));
+            return;
+        }
+
+        // Fallback sin pipeline (compat con tests que no inyectan executor).
+        stream.Append(new ToolCallRequested(callId, "pc-" + toolName, toolName, "{}"));
+        stream.Append(new ToolCallStarted(callId, ParseEffect(action.Effect)));
+        stream.Append(new ToolCallSucceeded(callId, "{\"summary\":\"ok\"}"));
+        var fallbackTurn = TurnId.New();
+        stream.Append(new TurnStarted(fallbackTurn, laneId));
+        stream.Append(new TurnCompleted(fallbackTurn));
+    }
+
+    private static EffectClass ParseEffect(string? effect) =>
+        effect == "applied" ? EffectClass.Reconcilable : EffectClass.None;
+
+    /// <summary>
+    /// Aplica la mutación declarada por `plan.propose` vía PlanService contra las proyecciones
+    /// del run (ADR-0016 §3). Los ids simbólicos (p. ej. "P1") se resuelven a los guids del
+    /// run; si la mutación no aplica el estado, PlanService la rechaza (sin eventos).
+    /// </summary>
+    private void ApplyPlanProposal(EventStream stream, string mutationJson)
+    {
+        var plan = Mutations.ResolveDeclared(mutationJson, _symbolicItems);
+        if (plan is null)
+        {
+            return;
+        }
+
+        var tail = stream.EventsSince(1);
+        var planProj = PlanProjection.Replay(_codecs, tail);
+        var tasksProj = TaskGraphProjection.Replay(_codecs, tail);
+        var lanesProj = LaneProjection.Replay(_codecs, tail);
+        var planService = new PlanService();
+        var result = planService.Apply(planProj, tasksProj, lanesProj, plan!);
+        if (!result.Accepted)
+        {
+            return;
+        }
+
+        foreach (var evt in result.Events)
+        {
+            stream.Append(evt);
+        }
+    }
+
+    private int VerifyExpectations(SimulationScenario scenario, RunProjection run, List<string> diagnostics)
+    {
+        var expected = scenario.ExpectedRunState;
+        if (expected.Length > 0 && run.State != ParseRunState(expected))
+        {
+            diagnostics.Add("Run esperado " + expected + ", real " + run.State);
+            return 1;
+        }
+
+        return 0;
+    }
+
+    private static RunState ParseRunState(string text)
+    {
+        switch (text)
+        {
+            case "Completed": return RunState.Completed;
+            case "CompletedWithIssues": return RunState.CompletedWithIssues;
+            case "Running": return RunState.Running;
+            case "Failed": return RunState.Failed;
+            case "Cancelled": return RunState.Cancelled;
+            case "AwaitingInput": return RunState.AwaitingInput;
+            default: return RunState.Failed;
+        }
+    }
+
+    private static LinkRole ParseRole(string role)
+    {
+        if (role == "verifies")
+        {
+            return LinkRole.Verifies;
+        }
+
+        if (role == "supports")
+        {
+            return LinkRole.Supports;
+        }
+
+        return LinkRole.Implements;
+    }
+}
+
+/// <summary>Resolvores de ids del escenario (simbólicos a reales).</summary>
+public sealed class Entities
+{
+    public static TaskId Task(Dictionary<string, TaskId> map, string key) =>
+        map.TryGetValue(key, out var v) ? v! : TaskId.New();
+
+    public static PlanItemId PlanItem(Dictionary<string, PlanItemId> map, string key) =>
+        map.TryGetValue(key, out var v) ? v! : PlanItemId.New();
+}

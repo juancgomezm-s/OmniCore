@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!-- CA1416: ProcessStartInfo.CreateNewProcessGroup solo existe en Windows; OmniCore evalúa
+       hoy en win32 + macOS/Linux (menu). El kill-tree usa el grupo solo en Windows (ADR-0038 §4). -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />
     <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />

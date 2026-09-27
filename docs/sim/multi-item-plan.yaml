@@ -1,0 +1,17 @@
+scenario: 1
+name: yaml-multi-item-plan
+session:
+  mode: act
+input: "Corregir el test de autenticación"
+plan:
+  - add: { id: P1, text: "Inspeccionar auth" }
+  - add: { id: P2, text: "Aplicar fix", dependsOn: [P1] }
+  - add: { id: P3, text: "Validar", dependsOn: [P2] }
+tasks:
+  - { id: T1, links: [{ item: P1, role: implements }] }
+  - { id: T2, links: [{ item: P2, role: implements }], dependsOn: [T1] }
+  - { id: T3, links: [{ item: P3, role: verifies }], dependsOn: [T2] }
+permissions:
+  - { tool: fake.write, decision: allow }
+expect:
+  run: Completed

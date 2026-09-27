@@ -1,8 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <PropertyGroup>
+    <!-- IL2026/IL3050: System.Text.Json (serialización con type info estático) no puede ser
+         analizado como AOT por el analizador de este JDK a través de módulos. AOT es una opción,
+         no un requisito (ADR-0038 §5, OAQ-15): el camino por defecto es self-contained. Los tipos
+         se registran estáticamente en EventCodecs (sin reflexión dinámica del dominio). -->
+    <NoWarn>$(NoWarn);IL2026;IL3050</NoWarn>
+  </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />
     <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
 
 </Project>
