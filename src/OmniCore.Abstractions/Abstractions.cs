@@ -31,7 +31,7 @@ public interface IArtifactStore
     /// <summary>Escribe un blob de texto y devuelve su ref (sha256 en streaming).</summary>
     ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity);
 
-    /// <summary>Lee el contenido de un artifact por hash; null si no existe.</summary>
+    /// <summary>Lee el contenido de un artifact por hash; null si no existe o el contenido no verifica contra el hash.</summary>
     string? GetText(ContentHash hash);
 
     /// <summary>Confirma que un blob existe y su hash coincide (sin corrupción).</summary>
