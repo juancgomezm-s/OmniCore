@@ -21,6 +21,7 @@ public sealed class HostTools
         _planPropose = new PlanProposeTool(planService);
         _catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
             .Add(new ReadFileTool(boundary))
+            .Add(new FilesystemPatchTool(boundary))
             .Add(new ReferenceResolveTool(boundary))
             .Add(_planPropose);
     }
