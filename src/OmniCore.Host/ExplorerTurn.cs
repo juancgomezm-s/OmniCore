@@ -46,6 +46,14 @@ public sealed class ExplorerTurn
 
     private readonly HarnessPolicy? _harness;
 
+    /// <summary>
+    /// Frontera de capacidad del modelo (ADR-0044 §5): el ToolPlanner (VisibleTools) oculta las
+    /// tools fuera del techo y el ToolRuntime la re-valida antes de permisos y antes de ejecutar.
+    /// La frontera restringe; jamás autoriza. null = sin frontera (semántica M2). La política
+    /// efectiva ya está intersectada con el harness por el resolver.
+    /// </summary>
+    private readonly ModelCapabilityBoundary? _boundary;
+
     // Límites de sesión/día (ADR-0037 §7): $5 por sesión, $20 por día — capa sobre el guard del Run.
     private readonly decimal _sessionCapUsd = 5m;
 
@@ -60,7 +68,8 @@ public sealed class ExplorerTurn
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
         ModelSelection selection, IEventStore store, IEventCodecRegistry codecs, IArtifactStore artifacts,
-        IAuditSink audit, RedactionPolicy redaction, HarnessPolicy? harness = null)
+        IAuditSink audit, RedactionPolicy redaction, HarnessPolicy? harness = null,
+        ModelCapabilityBoundary? boundary = null)
     {
         _complete = complete;
         _tools = tools;
@@ -74,20 +83,23 @@ public sealed class ExplorerTurn
         _audit = audit;
         _redaction = redaction;
         _harness = harness;
+        _boundary = boundary;
         _dailyKey = DateTimeOffset.Now.ToString("yyyy-MM-dd");
     }
 
     /// <summary>Constructor de conveniencia: en-memoria (tests, sin persistencia durable).</summary>
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
-        ModelSelection selection)
+        ModelSelection selection, ModelCapabilityBoundary? boundary = null)
         : this(complete, tools, catalog, materializer, fingerprint, selection,
             new OmniCore.Infrastructure.InMemoryEventStore(),
             OmniCore.Infrastructure.EventCodecs.Create(),
             new OmniCore.Infrastructure.FileArtifactStore(
                 System.IO.Path.GetTempPath() + "omnicore-artifacts-test"),
             new OmniCore.Infrastructure.InMemoryAuditSink(),
-            new OmniCore.Domain.RedactionPolicy())
+            new OmniCore.Domain.RedactionPolicy(),
+            null,
+            boundary)
     {
     }
 
@@ -348,6 +360,7 @@ public sealed class ExplorerTurn
 
             stream.Append(new TurnCompleted(turnId));
             AuditSpend(sessionId, runId, laneId, turnId, stop, usage, _redaction.Redact(finalText ?? ""));
+            AuditPolicy(sessionId, runId, turnId, stop);
             return new TurnResult(finalText, stop, steps, usage, allToolCalls.ToArray(), artifactId);
         }
         catch (Exception ex)
@@ -647,14 +660,51 @@ public sealed class ExplorerTurn
     private IReadOnlyList<ToolDefinition> VisibleTools()
     {
         var all = _catalog.Definitions();
-        if (_harness is null) return all;
         var visible = new List<ToolDefinition>();
         foreach (var tool in all)
         {
-            if (visible.Count >= _harness.MaxVisibleTools) break;
+            // ToolPlanner (ADR-0044 §5.1): la frontera oculta las tools fuera del techo de la
+            // categoría. La política efectiva del boundary ya está intersectada con el harness.
+            if (_boundary is not null && !_boundary!.IsToolVisible(tool.Name))
+            {
+                continue;
+            }
+
+            var maxVisible = _boundary is not null
+                ? _boundary!.MaxVisibleTools()
+                : (_harness?.MaxVisibleTools ?? Int32.MaxValue);
+            if (visible.Count >= maxVisible)
+            {
+                break;
+            }
+
             visible.Add(tool);
         }
+
         return visible;
+    }
+
+    /// <summary>
+    /// Registra en el audit (ADR-0043) la política efectiva aplicada al Turn — solo hash,
+    /// categoría y revisión (nunca contenido). ADR-0044 §8: el fingerprint del Turn registra el
+    /// hash/revisión de la política; aquí se añade la huella auditable de la misma.
+    /// Un fallo del audit no rompe el turno.
+    /// </summary>
+    private void AuditPolicy(SessionId sessionId, RunId runId, TurnId turnId, StopReason stop)
+    {
+        try
+        {
+            var details = new Dictionary<string, string>();
+            // El fingerprint ya se construyó con el hash de la política en ModelPolicyHash.
+            details["modelPolicyHash"] = _fingerprint.ModelPolicyHash;
+            details["stop"] = stop.ToString();
+            _audit.Record(new AuditRecord("turn.policy", null, sessionId, runId, DateTimeOffset.Now,
+                turnId.ToString(), details), CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // un fallo del audit no rompe el turno
+        }
     }
 
     private static TokenUsage CombineUsage(TokenUsage a, TokenUsage b) =>

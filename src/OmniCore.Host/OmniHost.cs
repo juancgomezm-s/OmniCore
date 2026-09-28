@@ -127,9 +127,22 @@ public sealed class OmniHost
 
     public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot)
     {
+        return CreateExplorerExecutor(catalog, workspaceRoot, null);
+    }
+
+    /// <summary>
+    /// Executor del pipeline real para el Turn de Explorer con la frontera de capacidad del
+    /// modelo (ADR-0044 §5). El modelo sin <c>UserModelPolicy</c> efectiva queda ObserveOnly: la
+    /// frontera lo rechaza aunque invoque una tool de escritura directamente. La frontera
+    /// restringe; el Permission Engine sigue siendo la única autoridad (INV-018). null = sin
+    /// frontera (semántica M2).
+    /// </summary>
+    public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot,
+        ModelCapabilityBoundary? boundary)
+    {
         var policy = new ScriptedPermissionPolicy(new Dictionary<string, OmniCore.Domain.PermissionDecision>())
             .WithModeDefaults(OmniCore.Domain.RunMode.Act);
-        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot);
+        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
     }
 
     /// <summary>

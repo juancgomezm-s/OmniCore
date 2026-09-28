@@ -332,8 +332,31 @@ public sealed class CliApp
                 harness.PlanControl, harness.StallThresholdTurns);
             var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(harnessValue)));
+            // M3 (ADR-0044 §1, §10): frontera de capacidad del modelo en el flujo REAL. La
+            // política efectiva es el techo del usuario ∩ harness; sin UserModelPolicy guardada
+            // cae en ObserveOnly (una configuración desconocida jamás escribe, §10.1). La
+            // categoría es un TECHO, nunca un permiso: la frontera restringe y el Permission
+            // Engine conserva la única autoridad (INV-018). Un fallo del store degrada SIN
+            // ampliar: fallback ObserveOnly (más restrictivo), nunca falla el ask desbloqueando.
+            var policyService = OmniHost.CreateModelPolicyService(
+                System.Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"));
+            var modelKey = OmniCore.Domain.ModelPolicyKey.For(modelDef?.ProviderId ?? "local", model!);
+            OmniCore.Domain.EffectiveModelPolicy effectivePolicy;
+            try
+            {
+                effectivePolicy = policyService.Effective(modelKey, harness, CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                effectivePolicy = OmniCore.Domain.EffectiveModelPolicy.Resolve(modelKey, null, harness);
+            }
+
+            var boundary = new OmniCore.Abstractions.ModelCapabilityBoundary(effectivePolicy);
+            // ADR-0044 §8: el fingerprint del Turn registra el hash (clave + revisión +
+            // categoría + modo de mutación) de la política efectiva aplicada.
             var fingerprint = new OmniCore.Domain.ExecutionFingerprint(
-                model!, harnessHash, "core-tools-1", "heuristic:chars4/1", "none", "M2");
+                model!, harnessHash, "core-tools-1", "heuristic:chars4/1", "none", "M2",
+                effectivePolicy.Fingerprint());
             // M2 aún no ofrece tool.search; la disponibilidad del runtime limita la selección
             // provisional a Direct, aunque el perfil recomiende Discovered para M5.
             var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
@@ -355,7 +378,8 @@ public sealed class CliApp
 
             // 3. Turn end-to-end: contexto REAL del run + fingerprint + tools reales + permisos,
             //    con persistencia en el journal del servidor (Turn, tools, respuesta como artifact).
-            var executor = OmniHost.CreateExplorerExecutor(hostTools.Catalog(), Path.GetFullPath("."));
+            var executor = OmniHost.CreateExplorerExecutor(hostTools.Catalog(), Path.GetFullPath("."),
+                boundary);
             var materializer = new OmniCore.Context.ContextMaterializer(
                 new OmniCore.Infrastructure.HeuristicTokenCounter(),
                 new OmniCore.Context.IContextContributor[] {
@@ -368,7 +392,7 @@ public sealed class CliApp
                 executor, hostTools.Catalog(), materializer, fingerprint, selection,
                 server.AcquireStore(), server.AcquireCodecs(), artifacts,
                 new OmniCore.Infrastructure.InMemoryAuditSink(),
-                new OmniCore.Domain.RedactionPolicy(), harness);
+                new OmniCore.Domain.RedactionPolicy(), harness, boundary);
             var instruction = "Ayudas a un asistente de ingeniería. Work Thread del workspace:\n"
                 + "Contexto del run disponible ({context}).\n"
                 + "Responde en español, sé conciso y usa las tools cuando aporten.";
