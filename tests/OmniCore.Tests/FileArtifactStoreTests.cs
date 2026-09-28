@@ -4,10 +4,13 @@ using OmniCore.Infrastructure;
 namespace OmniCore.Tests;
 
 /// <summary>
-/// Pruebas deterministas del endurecimiento de FileArtifactStore.Verify/GetText (M4,
-/// ADR-0001 §4–§7): el ContentHash se valida antes de construir cualquier ruta (sha256 +
-/// 64 hex minúsculas), un blob ausente o alterado no verifica, y un hash malformado,
-/// de otro algoritmo o con traversal no accede al filesystem fuera de blobs/sha256.
+/// Pruebas deterministas del endurecimiento de FileArtifactStore (M4, ADR-0001 §4–§7):
+/// el ContentHash se valida antes de construir cualquier ruta (sha256 + 64 hex
+/// minúsculas), un blob ausente o alterado no verifica ni se devuelve (aunque conserve la
+/// longitud), y un hash malformado, de otro algoritmo o con traversal no accede al
+/// filesystem fuera de blobs/sha256. Incluye la frontera de links: un blob (o directorio
+/// intermedio) que resuelva mediante symlink/junction hacia FUERA de blobs/sha256 no se
+/// lee, aunque el contenido al otro lado verifique contra el hash.
 /// </summary>
 public sealed class FileArtifactStoreTests
 {
@@ -70,6 +73,114 @@ public sealed class FileArtifactStoreTests
 
             Assert.False(store.Verify(artifact.Hash, artifact.Size));
             Assert.False(store.Verify(artifact.Hash, 0));
+        }
+        finally
+        {
+            TryDeleteTree(root);
+        }
+    }
+
+    [Fact]
+    public void GetText_is_null_for_altered_blob_even_with_same_length()
+    {
+        var (root, data) = NewDirs();
+        try
+        {
+            var store = new FileArtifactStore(data);
+            var content = "contenido original";
+            var artifact = store.PutText(content, "text/plain", ArtifactKind.Other, Sensitivity.Normal);
+
+            // Antes del sabotaje el roundtrip funciona (el null posterior es por la
+            // alteración, no por un estado previo del store).
+            Assert.Equal(content, store.GetText(artifact.Hash));
+
+            // Sabotaje en disco con la MISMA longitud (18 caracteres): solo el hash puede
+            // detectarlo, y GetText debe rechazar el contenido alterado (ADR-0001 §7).
+            var blobPath = BlobPathOf(data, artifact.Hash.Value);
+            File.WriteAllText(blobPath, "contenido alterado");
+
+            Assert.Null(store.GetText(artifact.Hash));
+            Assert.False(store.Verify(artifact.Hash, artifact.Size));
+        }
+        finally
+        {
+            TryDeleteTree(root);
+        }
+    }
+
+    [Fact]
+    public void GetText_is_null_when_intermediate_dir_is_a_link_outside_blobs()
+    {
+        var (root, data) = NewDirs();
+        try
+        {
+            var store = new FileArtifactStore(data);
+            var artifact = store.PutText("contenido-legitimo", "text/plain", ArtifactKind.Other, Sensitivity.Normal);
+            var hex = artifact.Hash.Value;
+            var blobPath = BlobPathOf(data, hex);
+            var fanoutDir = Path.GetDirectoryName(blobPath)!;
+
+            // Copia válida del blob FUERA del árbol de blobs: a través del link, File.Exists
+            // es true y el contenido SÍ verifica contra el hash, así que lo único que puede
+            // rechazar la lectura es la frontera de links del store.
+            var outside = Path.Combine(root, "outside");
+            Directory.CreateDirectory(outside);
+            File.Copy(blobPath, Path.Combine(outside, hex));
+
+            Directory.Delete(fanoutDir, recursive: true);
+            if (!TryCreateDirectoryLink(fanoutDir, outside))
+            {
+                Assert.Skip("ni symlink ni junction creables en este entorno");
+            }
+
+            // El escape es real: la ruta existe a través del link y su contenido verifica.
+            Assert.True(File.Exists(blobPath));
+            Assert.Equal(hex, Sha256.Hex(File.ReadAllText(blobPath)));
+
+            Assert.Null(store.GetText(artifact.Hash));
+            Assert.False(store.Verify(artifact.Hash, artifact.Size));
+        }
+        finally
+        {
+            TryDeleteTree(root);
+        }
+    }
+
+    [Fact]
+    public void GetText_is_null_when_blob_is_a_symlink_outside_blobs()
+    {
+        var (root, data) = NewDirs();
+        try
+        {
+            var store = new FileArtifactStore(data);
+            var artifact = store.PutText("contenido-legitimo", "text/plain", ArtifactKind.Other, Sensitivity.Normal);
+            var hex = artifact.Hash.Value;
+            var blobPath = BlobPathOf(data, hex);
+
+            // Contenido válido FUERA del árbol de blobs, con el hash exacto del artifact.
+            var outside = Path.Combine(root, "outside-blob.txt");
+            File.Copy(blobPath, outside);
+
+            File.Delete(blobPath);
+            try
+            {
+                File.CreateSymbolicLink(blobPath, outside);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                or PlatformNotSupportedException)
+            {
+                // Windows exige privilegios (o Developer Mode) para crear symlinks: el
+                // comportamiento queda cubierto por el test de directorio intermedio
+                // (junction) donde eso no se puede crear.
+                Assert.Skip("creación de symlink denegada: " + ex.GetType().Name);
+            }
+
+            // El escape es real: la ruta existe a través del link y su contenido verifica.
+            Assert.True(File.Exists(blobPath));
+            Assert.Equal(hex, Sha256.Hex(File.ReadAllText(blobPath)));
+
+            Assert.Null(store.GetText(artifact.Hash));
+            Assert.False(store.Verify(artifact.Hash, artifact.Size));
         }
         finally
         {
@@ -166,6 +277,57 @@ public sealed class FileArtifactStoreTests
         var data = Path.Combine(root, "data");
         Directory.CreateDirectory(data);
         return (root, data);
+    }
+
+    /// <summary>Ruta del blob en el layout del store (blobs/sha256/<2>/<2>/<hash>).</summary>
+    private static string BlobPathOf(string data, string hex)
+    {
+        return Path.Combine(data, "blobs", "sha256", hex.Substring(0, 2), hex.Substring(2, 2), hex);
+    }
+
+    /// <summary>
+    /// Crea un link de directorio hacia el destino: symlink; si el SO lo deniega (Windows
+    /// sin privilegios), prueba un junction con mklink /J, que no los necesita. Devuelve
+    /// false cuando el entorno no puede crear ninguno (el test se salta).
+    /// </summary>
+    private static bool TryCreateDirectoryLink(string linkPath, string targetPath)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(linkPath, targetPath);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or PlatformNotSupportedException)
+        {
+            // Fallback Windows: junction.
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(
+                "cmd.exe", "/c mklink /J \"" + linkPath + "\" \"" + targetPath + "\"")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            return p.ExitCode == 0;
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     private static void TryDeleteTree(string root)
