@@ -37,6 +37,11 @@ public sealed class CliApp
             return RunAsk(args);
         }
 
+        if (command == "act")
+        {
+            return RunAct(args);
+        }
+
         if (command == "model")
         {
             // M3 (ADR-0044 §6): políticas de modelo + onboarding. Delegación completa a
@@ -426,6 +431,146 @@ public sealed class CliApp
             return Task.FromResult(1);
         }
     }
+    /// <summary>
+    /// `omni act "instrucción"`: vertical REAL de acción sobre el workspace (M3, ADR-0044 §5).
+    /// Crea un Run Act por invocación (comando <c>act</c> del servidor, no sim), expone las tools
+    /// filesystem.read/filesystem.patch bajo la política efectiva y los permisos existentes, ejecuta
+    /// el Turn de Explorer con el modelo configurado, persiste turn/toolcall/outcome en el journal
+    /// del servidor y devuelve el resultado plano. NO autoaprueba Ask: sin cliente interactivo,
+    /// una decisión Ask se deniega (ADR-0003). Un modelo sin política efectiva queda ObserveOnly
+    /// (no escribe); PatchOnly no puede reemplazar/crear/borrar. No depende de process.exec/build/
+    /// test/sandbox: esos gates quedan para la siguiente vertical.
+    /// </summary>
+    private static Task<int> RunAct(string[] args)
+    {
+        var objective = args.Length >= 2 ? args[1] : "corrige el test";
+        var registry = OmniHost.LoadModelRegistry(".");
+        var modelDef = registry.Models().Count > 0 ? registry.Models()[0] : null;
+        var providerDesc = modelDef is null ? null : registry.Provider(modelDef!.ProviderId);
+        var authKind = providerDesc is null ? OmniCore.Abstractions.AuthKind.None : providerDesc!.Auth.Kind;
+
+        var model = System.Environment.GetEnvironmentVariable("OMNI_MODEL") ?? modelDef?.Id;
+        var baseUrl = System.Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDesc?.BaseUrl
+            ?? "http://127.0.0.1:8080/v1";
+        var secretRef = providerDesc?.Auth.SecretRef ?? "qwen";
+        var key = System.Environment.GetEnvironmentVariable("OMNI_QWEN_KEY");
+        if (authKind == OmniCore.Abstractions.AuthKind.ApiKey && (key is null || key!.Length == 0))
+        {
+            Console.WriteLine("omni act: '" + (providerDesc?.Id ?? "local") + "' requiere API key; define OMNI_QWEN_KEY (ADR-0018).");
+            return Task.FromResult(1);
+        }
+
+        try
+        {
+            if (model is null)
+            {
+                Console.WriteLine("omni act: no hay modelo configurado. Crea models.yaml o define OMNI_MODEL.");
+                return Task.FromResult(1);
+            }
+
+            var server = ResumeAwareServer();
+            // Run Act REAL por invocación (vertical, no sim): el servidor establece la sesión,
+            // la raíz durable (identidad ADR-0004 §5) y el run completo con RunMode.Act.
+            var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "act") + ","
+                + JsonObj.Field("objective", objective) + "}"), CancellationToken.None);
+            if (ack.Status != "ok")
+            {
+                Console.WriteLine("omni act: " + (ack.Error ?? "no se pudo crear el Run Act"));
+                return Task.FromResult(1);
+            }
+
+            var sessionId = server.LastSessionId() ?? OmniCore.Domain.SessionId.New();
+            var runId = server.LastRunId() ?? OmniCore.Domain.RunId.New();
+            var laneId = server.LastLaneId() ?? OmniCore.Domain.LaneId.New();
+            var workspaceRoot = Path.GetFullPath(".");
+
+            var provider = OmniHost.ConnectLocalChatCompletions(baseUrl!, model!, secretRef, key ?? "");
+            var usableContext = modelDef is not null && modelDef!.RecommendedUsableContext > 0
+                ? modelDef!.RecommendedUsableContext
+                : (modelDef is not null && modelDef!.ContextWindow > 0 ? modelDef!.ContextWindow : 8192);
+            var effectiveProfile = new OmniCore.Host.ModelProfileResolver()
+                .Resolve(modelDef ?? new OmniCore.Models.ModelDefinition(model!, "local", usableContext,
+                    usableContext, 2048), providerDesc);
+            var harness = new OmniCore.Domain.HarnessPolicyResolver().Resolve(effectiveProfile);
+            var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
+                harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
+                harness.PlanControl, harness.StallThresholdTurns);
+            var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(harnessValue)));
+
+            // Política efectiva (ADR-0044 §1, §10): modelo sin UserModelPolicy guardada → ObserveOnly
+            // (tech: una configuración desconocida jamás escribe). La categoría es TECHA, nunca un
+            // permiso: la frontera restringe y el Permission Engine conserva la única autoridad. Un
+            // fallo del store degrada SIN ampliar (fallback ObserveOnly), nunca desbloquea (more
+            // restrictive).
+            var policyService = OmniHost.CreateModelPolicyService(
+                System.Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"));
+            var modelKey = OmniCore.Domain.ModelPolicyKey.For(modelDef?.ProviderId ?? "local", model!);
+            OmniCore.Domain.EffectiveModelPolicy effectivePolicy;
+            try
+            {
+                effectivePolicy = policyService.Effective(modelKey, harness, CancellationToken.None);
+            }
+            catch (Exception)
+            {
+                effectivePolicy = OmniCore.Domain.EffectiveModelPolicy.Resolve(modelKey, null, harness);
+            }
+
+            var boundary = new OmniCore.Abstractions.ModelCapabilityBoundary(effectivePolicy);
+            var fingerprint = new OmniCore.Domain.ExecutionFingerprint(model!, harnessHash,
+                "core-tools-1", "heuristic:chars4/1", "none", "M3", effectivePolicy.Fingerprint());
+            var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
+                usableContext, OmniCore.Domain.ToolMode.Direct, null);
+
+            var hostTools = OmniHost.CreateExplorerTools();
+            var executor = OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary);
+            var materializer = new OmniCore.Context.ContextMaterializer(
+                new OmniCore.Infrastructure.HeuristicTokenCounter(),
+                new OmniCore.Context.IContextContributor[0]);
+            var artifacts = OmniHost.CreateArtifactStore(Path.Combine(workspaceRoot, ".omnicore", "artifacts"));
+            var turn = new OmniCore.Host.ExplorerTurn(
+                (req, token) => provider.Complete(req, token),
+                executor, hostTools.Catalog(), materializer, fingerprint, selection,
+                server.AcquireStore(), server.AcquireCodecs(), artifacts,
+                new OmniCore.Infrastructure.InMemoryAuditSink(),
+                new OmniCore.Domain.RedactionPolicy(), harness, boundary);
+            var instruction = "Eres un asistente de ingeniería operando en el workspace actual. "
+                + "Tienes filesystem.read y filesystem.patch bajo la política efectiva del modelo. "
+                + "Contexto del run disponible ({context}). Responde la instrucción y usa las tools "
+                + "cuando aporten; no inventes lecturas ni tokens [version:…]: lee antes de parchear.";
+            var result = turn.Ask(objective, instruction, sessionId, runId, laneId, "",
+                CancellationToken.None);
+
+            foreach (OmniCore.Host.ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
+            {
+                Console.WriteLine("[tool] " + trace.ToolName + " → "
+                    + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);
+            }
+
+            if (result.FinalText is not null && result.FinalText!.Length > 0)
+            {
+                Console.WriteLine(result.FinalText);
+            }
+
+            Console.WriteLine("── " + result.StopReason + " · steps " + result.Steps
+                + " · tokens " + (result.Usage.Input + result.Usage.Output));
+            var exit = result.StopReason == OmniCore.Domain.StopReason.EndTurn ? 0 : 1;
+            if (result.FinalText is null)
+            {
+                Console.WriteLine("omni act: el turno no produjo respuesta.");
+                exit = 1;
+            }
+
+            return Task.FromResult(exit);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("omni act: error: " + new OmniCore.Domain.PiiRedactor().Redact(ex.Message ?? "?")
+                + " [" + ex.GetType().Name + "]");
+            return Task.FromResult(1);
+        }
+    }
+
     private static OmniCore.Host.OmniServer ResumeAwareServer()
     {
         if (_server is null)
@@ -446,6 +591,9 @@ public sealed class CliApp
         Console.WriteLine();
         Console.WriteLine("Uso:");
         Console.WriteLine("  omni sim [escenario.yaml] [--json]   Ejecuta la simulación de M1");
+        Console.WriteLine("  omni act \"instrucción\"              Run Act con filesystem.read/patch bajo política efectiva (M3)");
+        Console.WriteLine("  omni ask \"texto\"                    Turn end-to-end contra el modelo local (M2)");
+        Console.WriteLine("  omni model ...                       Políticas de modelo y onboarding (M3)");
         Console.WriteLine("  omni --help                          Esta ayuda");
     }
 }
