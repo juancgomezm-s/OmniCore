@@ -1,10 +1,12 @@
 using OmniCore.Domain;
 
+using System.Text.Json;
+
 namespace OmniCore.Tests;
 
 /// <summary>
 /// Tests de ModelQualificationKey (ADR-0007 §5): serialización canónica determinista,
-/// hash SHA-256 estable, normalización de adapters, validación de campos obligatorios.
+/// hash SHA-256 estable, validación de campos obligatorios y de adapters.
 /// </summary>
 public sealed class ModelQualificationKeyTests
 {
@@ -31,10 +33,29 @@ public sealed class ModelQualificationKeyTests
     {
         var json = LocalKey().CanonicalJson();
 
+        var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        Assert.Equal(JsonValueKind.Object, root.ValueKind);
         // El primer campo es siempre providerId (orden fijo, no dependiente de cultura).
-        Assert.StartsWith("{\"providerId\":", json);
-        // El último campo es promptProfileVersion.
-        Assert.Contains("\"promptProfileVersion\":", json);
+        Assert.Equal("local", root.GetProperty("providerId").GetString());
+        Assert.Equal("qwen-x", root.GetProperty("modelId").GetString());
+        Assert.Equal("prompt-profile-v3", root.GetProperty("promptProfileVersion").GetString());
+        Assert.Equal(2, root.GetProperty("adapters").GetArrayLength());
+        Assert.Equal("lora-a", root.GetProperty("adapters")[0].GetString());
+    }
+
+    [Fact]
+    public void Canonical_json_escapes_tab_control_chars_quotes_and_unicode()
+    {
+        var key = new ModelQualificationKey("p", "m", null,
+            "Q4_K_M\t" + "\u0008" + "\u000c" + "fin",
+            new[] { "a\"b", "c" },
+            null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
+
+        var json = key.CanonicalJson();
+        var doc = JsonDocument.Parse(json);
+        Assert.Equal("Q4_K_M\t" + "\u0008" + "\u000c" + "fin", doc.RootElement.GetProperty("quantization").GetString());
+        Assert.Equal("a\"b", doc.RootElement.GetProperty("adapters")[0].GetString());
     }
 
     // ---- Cada campo relevante cambia el hash ----
@@ -201,39 +222,90 @@ public sealed class ModelQualificationKeyTests
         Assert.Contains("\"modelRevision\":\"\"", withEmpty.CanonicalJson());
     }
 
-    // ---- Normalización de adapters ----
+    // ---- Adapters: orden y multiplicidad ----
 
     [Fact]
-    public void Adapters_are_normalized_as_ordered_set()
+    public void Adapters_order_matters_in_qualification_key()
     {
-        var a = new ModelQualificationKey("p", "m", null, null, new[] { "adapter-b", "adapter-a" },
+        var a = new ModelQualificationKey("p", "m", null, null, new[] { "adapter-a", "adapter-b" },
             null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
-        var b = new ModelQualificationKey("p", "m", null, null, new[] { "adapter-a", "adapter-b" },
+        var b = new ModelQualificationKey("p", "m", null, null, new[] { "adapter-b", "adapter-a" },
             null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
 
-        Assert.Equal(a.CanonicalJson(), b.CanonicalJson());
-        Assert.Equal(a.QualificationKeyHash(), b.QualificationKeyHash());
-        Assert.True(a.Equals(b));
-        // El orden canónico es ordinal: adapter-a antes que adapter-b.
+        Assert.NotEqual(a.CanonicalJson(), b.CanonicalJson());
+        Assert.NotEqual(a.QualificationKeyHash(), b.QualificationKeyHash());
+        Assert.False(a.Equals(b));
+        // El orden canónico es el orden de entrada: se preserva.
         Assert.Equal(new[] { "adapter-a", "adapter-b" }, a.Adapters);
     }
 
     [Fact]
-    public void Duplicate_adapters_are_deduplicated()
+    public void Duplicate_adapters_are_preserved_in_qualification_key()
     {
-        var key = new ModelQualificationKey("p", "m", null, null, new[] { "adapter-a", "adapter-a", "adapter-b" },
+        var a = new ModelQualificationKey("p", "m", null, null, new[] { "adapter-a", "adapter-a", "adapter-b" },
+            null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
+        var b = new ModelQualificationKey("p", "m", null, null, new[] { "adapter-a", "adapter-b" },
             null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
 
-        Assert.Equal(new[] { "adapter-a", "adapter-b" }, key.Adapters);
+        Assert.Equal(new[] { "adapter-a", "adapter-a", "adapter-b" }, a.Adapters);
+        Assert.NotEqual(a.QualificationKeyHash(), b.QualificationKeyHash());
+    }
+
+    // ---- Adapters: inmutabilidad de la clave ----
+
+    [Fact]
+    public void Mutating_the_original_adapters_list_does_not_change_the_key()
+    {
+        var adapters = new List<string> { "adapter-a" };
+        var key = new ModelQualificationKey("p", "m", null, null, adapters,
+            null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
+        var jsonBefore = key.CanonicalJson();
+        var hashBefore = key.QualificationKeyHash();
+
+        adapters.Add("adapter-b");
+
+        Assert.Equal(jsonBefore, key.CanonicalJson());
+        Assert.Equal(hashBefore, key.QualificationKeyHash());
+        Assert.Equal(new[] { "adapter-a" }, key.Adapters);
     }
 
     [Fact]
-    public void Empty_string_adapters_are_excluded()
+    public void Adapters_cast_does_not_allow_modifying_the_key()
     {
-        var key = new ModelQualificationKey("p", "m", null, null, new[] { "", "adapter-a" },
+        var adapters = new List<string> { "adapter-a" };
+        var key = new ModelQualificationKey("p", "m", null, null, adapters,
             null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
 
-        Assert.Equal(new[] { "adapter-a" }, key.Adapters);
+        var rawList = adapters;
+        Assert.ThrowsAny<Exception>(() =>
+        {
+            typeof(System.Collections.ICollection).GetMethod("Add")!
+                .Invoke(rawList, new object[] { "adapter-b" });
+        });
+    }
+
+    [Fact]
+    public void Rejects_null_adapters_list()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new ModelQualificationKey("p", "m", null, null, null!, 
+                null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1"));
+    }
+
+    [Fact]
+    public void Rejects_null_adapter_entry()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new ModelQualificationKey("p", "m", null, null, new List<string> { "adapter-a", null! },
+                null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1"));
+    }
+
+    [Fact]
+    public void Rejects_empty_string_adapter_entry()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new ModelQualificationKey("p", "m", null, null, new[] { "", "adapter-a" },
+                null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1"));
     }
 
     // ---- Hash SHA-256 ----
