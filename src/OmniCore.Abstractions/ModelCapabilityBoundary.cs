@@ -141,6 +141,29 @@ public sealed class ModelCapabilityBoundary
         return ModelCapabilityDecision.Allow();
     }
 
+    /// <summary>
+    /// Máximo de tools visibles de la política efectiva (ya intersectada con el harness,
+    /// ADR-0044 §4). Lo usa el ToolPlanner (<c>VisibleTools</c>) para no mostrar más tools de
+    /// las que la política concede.
+    /// </summary>
+    public int MaxVisibleTools() => _policy.ToolPolicy.MaxVisibleTools;
+
+    /// <summary>
+    /// True si la tool está clasificada Y su capacidad está dentro del techo del modelo
+    /// (ADR-0044 §5.1): el ToolPlanner oculta así las tools no permitidas, reduciendo la
+    /// superficie. Una tool oculta/inventada sigue siendo rechazada por <c>Evaluate</c> si el
+    /// modelo la emite de todos modos (defensa en profundidad).
+    /// </summary>
+    public bool IsToolVisible(string toolName)
+    {
+        if (!_toolCapabilities.TryGetValue(toolName, out var capability))
+        {
+            return false;
+        }
+
+        return _policy.ToolPolicy.Allows(capability);
+    }
+
     /// <summary>Concasión del techo de mutación con la capacidad concreta de la tool.</summary>
     public bool MutationAllowed(ModelToolCapability capability)
     {

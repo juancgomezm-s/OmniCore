@@ -40,6 +40,22 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _workspaceRoot = workspaceRoot;
     }
 
+    /// <summary>
+    /// Con frontera de capacidad del modelo (ADR-0044 §5): el ToolRuntime evalúa la frontera
+    /// tras Prepare (antes de permisos) y de nuevo antes de ejecutar. La frontera restringe;
+    /// jamás autoriza. null conserva la semántica de M2 (sin frontera).
+    /// </summary>
+    public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
+        ModelCapabilityBoundary? boundary)
+    {
+        _runtime = ToolRuntime.For(catalog, policy, payload =>
+        {
+            _events.Add(payload);
+            return VoidBox.Instance;
+        }, boundary);
+        _workspaceRoot = workspaceRoot;
+    }
+
     public static ScriptedToolExecutor Default() =>
         new ScriptedToolExecutor(HostTools.Default().Catalog(),
             ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow));
@@ -51,6 +67,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// <summary>Executor con herramientas Core y la raíz real del workspace (para el Turn).</summary>
     public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, ScriptedPermissionPolicy policy,
         string workspaceRoot) => new ScriptedToolExecutor(catalog, policy, workspaceRoot);
+
+    /// <summary>
+    /// Executor con herramientas Core, raíz real del workspace y la frontera de capacidad del
+    /// modelo (ADR-0044 §5). null = sin frontera (semántica M2).
+    /// </summary>
+    public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, ScriptedPermissionPolicy policy,
+        string workspaceRoot, ModelCapabilityBoundary? boundary) =>
+        new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary);
 
     public ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken)
