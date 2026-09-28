@@ -4,12 +4,35 @@ namespace OmniCore.Domain;
 /// Rasgo empírico de cualificación (ADR-0007 §2). Value 0..1, confianza, tamaño de muestra,
 /// fuente y momento de medición.
 /// </summary>
-public sealed record TraitScore(
-    double Value,
-    double Confidence,
-    int SampleSize,
-    string Source,
-    DateTimeOffset MeasuredAt);
+public sealed class TraitScore
+{
+    public double Value { get; }
+    public double Confidence { get; }
+    public int SampleSize { get; }
+    public string Source { get; }
+    public DateTimeOffset MeasuredAt { get; }
+
+    public TraitScore(double value, double confidence, int sampleSize, string source, DateTimeOffset measuredAt)
+    {
+        if (value < 0.0 || value > 1.0 || !double.IsFinite(value))
+        {
+            throw new ArgumentOutOfRangeException(nameof(value), "TraitScore.Value debe estar en 0..1 y ser finito");
+        }
+        if (confidence < 0.0 || confidence > 1.0 || !double.IsFinite(confidence))
+        {
+            throw new ArgumentOutOfRangeException(nameof(confidence), "TraitScore.Confidence debe estar en 0..1 y ser finito");
+        }
+        if (sampleSize < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sampleSize), "TraitScore.SampleSize no puede ser negativo");
+        }
+        Value = value;
+        Confidence = confidence;
+        SampleSize = sampleSize;
+        Source = source;
+        MeasuredAt = measuredAt;
+    }
+}
 
 /// <summary>
 /// Muestra observable de una métrica de mutación (ADR-0044 §4). Es el dato crudo, tipado y
@@ -28,27 +51,33 @@ public sealed record FileMutationSample(
 
 /// <summary>
 /// Agregación determinista de muestras de una métrica de mutación (ADR-0044 §4).
-/// El total de muestras y el conteo de casos favorables bastan para recomponer el score
-/// sin recomputar el historial.
+/// Conserva el total de muestras y la media de sus valores de muestra (0..1); esa media es el
+/// valor agregado, no un conteo binario de casos favorables, por lo que el tamaño del diff y la
+/// severidad de cada muestra siguen reflejándose en el resultado. El total es long para no
+/// desbordar int en acumulaciones grandes; el constructor valida que el valor agregado sea
+/// finito y esté en 0..1.
 /// </summary>
 public sealed class FileMutationAggregate
 {
-    public int Total { get; }
-    public int Favorable { get; }
+    public long Total { get; }
+    public double Mean { get; }
 
-    public FileMutationAggregate(int total, int favorable)
+    public FileMutationAggregate(long total, double mean)
     {
-        if (total < 0 || favorable < 0 || favorable > total)
+        if (total < 0)
         {
-            throw new ArgumentOutOfRangeException(nameof(total), "agregado inválido");
+            throw new ArgumentOutOfRangeException(nameof(total), "agregado con total negativo");
+        }
+        if (!double.IsFinite(mean) || mean < 0.0 || mean > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(mean), "agregado con media inválida");
         }
         Total = total;
-        Favorable = favorable;
+        Mean = mean;
     }
 
     public static FileMutationAggregate Aggregate(FileMutationSample s)
-        => new(1, s.UnrelatedContentPreserved && s.WithinScope && s.VersionTokenRespected
-                    && s.PatchPreferred && s.BreakCount == 0 && !s.DeleteAndCreateAttempt ? 1 : 0);
+        => new(1, FileMutationEvaluator.SampleValue(s));
 }
 
 /// <summary>
@@ -96,29 +125,41 @@ public static class FileMutationEvaluator
     {
         double value = SampleValue(sample);
         // Confianza de una única muestra: no depende del tamaño del archivo (OriginalLines),
-        // solo del hecho de que hay una muestra válida. Un solo dato nunca da alta confianza.
-        double confidence = 0.5;
+        // solo del número de muestras (N). Un solo dato nunca da alta confianza.
+        double confidence = Confidence(1);
 
         return new TraitScore(value, confidence, 1, "empirical", measuredAt);
+    }
+
+    /// <summary>
+    /// Confianza de un TraitScore en función del número de muestras N, no de la longitud del
+    /// archivo ni del tamaño del diff. Crece linealmente hasta 1.0 con 10 o más muestras.
+    /// </summary>
+    private static double Confidence(long n)
+    {
+        if (n <= 0) return 0.0;
+        return Math.Min(1.0, (double)n / 10.0);
     }
 
     public static TraitScore Aggregate(IReadOnlyList<FileMutationAggregate> aggregates,
                                        DateTimeOffset measuredAt)
     {
         long total = 0;
-        long favorable = 0;
+        double sum = 0.0;
         foreach (var a in aggregates)
         {
             total += a.Total;
-            favorable += a.Favorable;
+            sum += a.Mean * (double)a.Total;
         }
         if (total == 0)
         {
             return new TraitScore(0.0, 0.0, 0, "empty", measuredAt);
         }
-        double value = (double)favorable / total;
-        // La confianza depende del número de muestras, no del tamaño del archivo.
-        double confidence = Math.Min(1.0, total / 10.0);
-        return new TraitScore(value, confidence, (int)total, "empirical", measuredAt);
+        if (total > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(aggregates), "total de muestras excede int.MaxValue");
+        }
+        double value = sum / total;
+        return new TraitScore(value, Confidence(total), (int)total, "empirical", measuredAt);
     }
 }
