@@ -360,22 +360,38 @@ public sealed class FilesystemPatchToolTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task Patch_returns_error_when_destination_is_directory()
+    public async System.Threading.Tasks.Task Patch_publish_failure_keeps_original_and_cleans_temp()
     {
+        // Bloqueante 2 de auditoría: un test determinista que fuerza un fallo DESPUÉS de
+        // escribir el temporal y antes de publicar, comprobando que el original queda
+        // intacto y el temporal se limpia. El fallo se inyecta vía costura interna
+        // (TestFailureHook) sin exponer API pública nueva ni estado global compartido.
         var ws = TempDir();
-        var executor = PatchExecutor(ws);
+        var original = "linea1\nlinea2\n";
+        File.WriteAllText(ws + "\\doc.txt", original);
+        var version = VersionOf(original);
 
-        // Creamos "doc.txt" como DIRECTORIO en vez de archivo. File.Exists devuelve true,
-        // pero File.ReadAllBytes lanza IOException. Esto simula un caso reproducible sin
-        // privilegios donde el archivo no es un archivo regular.
-        Directory.CreateDirectory(ws + "\\doc.txt");
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var patchTool = (FilesystemPatchTool)hostTools.Catalog()
+            .Find(new ToolId("filesystem.patch"))!;
+        patchTool.TestFailureHook = (temp, dest) =>
+            throw new System.IO.IOException("fallo de publicación inyectado para el test");
+
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
 
         var outcome = executor.ExecuteTool(
-            PatchCall(ws, "doc.txt", VersionOf("contenido"), "a", "b"), false, CancellationToken.None);
+            PatchCall(ws, "doc.txt", version, "linea1", "linea1-cambiada"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded,
-            "Un patch sobre un directorio debe fallar con error de I/O. summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+            "Un fallo durante la publicación debe reportarse como error. summary=" + outcome.Summary);
+        // El original debe quedar intacto (el reemplazo atómico no tocó el destino).
+        Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
+        // No deben quedar temporales huérfanos del patch.
+        var orphans = Directory.GetFiles(ws, ".doc.txt.tmp-*", SearchOption.TopDirectoryOnly);
+        // El temporal debe limpiarse cuando la publicación falla (cero temporales huérfanos).
+        Assert.Equal(0, orphans.Length);
+
     }
 
     [Fact]
