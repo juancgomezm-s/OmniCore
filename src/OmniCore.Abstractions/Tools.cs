@@ -178,12 +178,26 @@ public sealed class ToolPreparationContext
     }
 }
 
-/// <summary>Contexto de ejecución ya autorizado.</summary>
+/// <summary>
+/// Contexto de ejecución ya autorizado. <c>ReadRegistry</c> es el registro de lecturas
+/// efectivas por-Run (ADR-0044 §5): lo cablea el pipeline cuando una frontera de capacidad
+/// del modelo está activa y lo consultan las tools (filesystem.read registra, filesystem.patch
+/// exige lectura previa). null = uso directo/primitivo de la tool sin política de modelo
+/// activa (equivalente al comportamiento de M2).
+/// </summary>
 public sealed class ToolExecutionContext
 {
     public string WorkspaceRoot { get; }
 
+    public FileReadRegistry? ReadRegistry { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
+
+    public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry)
+    {
+        WorkspaceRoot = workspaceRoot;
+        ReadRegistry = readRegistry;
+    }
 }
 
 /// <summary>

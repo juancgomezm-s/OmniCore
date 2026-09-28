@@ -20,6 +20,13 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     private readonly string _workspaceRoot;
 
+    /// <summary>
+    /// Frontera de capacidad del modelo activa (ADR-0044 §5). Cuando no es null, su
+    /// <c>ReadRegistry</c> por-Run viaja al ToolExecutionContext: filesystem.read registra y
+    /// filesystem.patch exige lectura previa. null = semántica M2 (sin política de modelo).
+    /// </summary>
+    private readonly ModelCapabilityBoundary? _boundary;
+
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy)
     {
         _runtime = ToolRuntime.For(catalog, policy, payload =>
@@ -28,6 +35,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             return VoidBox.Instance;
         });
         _workspaceRoot = "sim";
+        _boundary = null;
     }
 
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot)
@@ -38,6 +46,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             return VoidBox.Instance;
         });
         _workspaceRoot = workspaceRoot;
+        _boundary = null;
     }
 
     /// <summary>
@@ -54,6 +63,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             return VoidBox.Instance;
         }, boundary);
         _workspaceRoot = workspaceRoot;
+        _boundary = boundary;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -81,7 +91,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     {
         var before = _events.Count;
         var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now);
-        var execContext = new ToolExecutionContext(_workspaceRoot);
+        // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
+        // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
+        var execContext = new ToolExecutionContext(_workspaceRoot, _boundary?.ReadRegistry());
         var outcome = _runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken);
         var emitted = _events.Count - before;
         var events = new DomainEventPayload[emitted];

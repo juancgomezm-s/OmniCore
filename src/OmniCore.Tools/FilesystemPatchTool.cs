@@ -10,8 +10,11 @@ using OmniCore.Domain;
 /// workspace. No reescritura completa, no creación ni borrado: reemplaza exactamente UNA
 /// ocurrencia de oldText por newText, conservando el contenido no relacionado. Requiere
 /// expectedVersion (token SHA-256 del contenido vigente) y rechaza un token obsoleto ANTES de
-/// mutar (STALE_WRITE). La frontera de paths se revalida en Execute contra escapes y
-/// symlinks/junctions, además de en Prepare.
+/// mutar (STALE_WRITE). Cuando el pipeline activa la política del modelo (registry por-Run
+/// cableado), exige además una LECTURA PREVIA efectiva de esa ruta/versión en el mismo Run
+/// (PRIOR_READ_REQUIRED, ADR-0044 §5): un read fallido, de otra ruta, un token fabricado o de
+/// un Run anterior no habilitan el patch. La frontera de paths se revalida en Execute contra
+/// escapes y symlinks/junctions, además de en Prepare.
 /// </summary>
 public sealed class FilesystemPatchTool : ITool
 {
@@ -116,6 +119,20 @@ public sealed class FilesystemPatchTool : ITool
         {
             // No se crea: un patch solo aplica sobre un archivo existente (ADR-0044 §3).
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Archivo no encontrado (un patch no crea archivos): " + path));
+        }
+
+        // ADR-0044 §5: exigir lectura previa EFECTIVA del MISMO path/version en este Run antes
+        // de mutar. El modelo debe haber leído este archivo con éxito y usar EL token que esa
+        // lectura expuso; un read fallido, un read de otra ruta, un token fabricado o un token
+        // de un Run anterior no habilitan el patch. Cuando el pipeline activa la política del
+        // modelo. (ReadRegistry != null) esto corta ANTES de leer los bytes y de mutar.
+        if (context.ReadRegistry is not null
+            && (expectedVersion is null || !context.ReadRegistry!.Matches(path!, expectedVersion!)))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "PRIOR_READ_REQUIRED: no se puede parchear " + path
+                + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
+                + " Lee el archivo y usa el token [version:…] que la lectura devuelva."));
         }
 
         // El patch opera sobre los BYTES REALES: se lee el contenido crudo, se calcula el token

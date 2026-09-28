@@ -279,12 +279,23 @@ public sealed class M3PolicyBoundaryTests
         Assert.Equal(ToolCallState.Rejected, obsOutcome.FinalState);
         Assert.True(File.ReadAllText(ws + "\\doc.txt") == original, "intacto tras ObserveOnly");
 
-        // PatchOnly (política guardada para la misma clave): el MISMO patch aplica.
+        // PatchOnly (política guardada para la misma clave): el MISMO patch aplica. Requiere la
+        // lectura previa efectiva del archivo en el mismo Run (ADR-0044 §5): sin ella el patch se
+        // rechaza con PRIOR_READ_REQUIRED aunque el token sea correcto.
         var patchBoundary = new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.PatchOnly));
-        var patchExecutor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
-            ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws, patchBoundary);
+        var patchPolicy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+        {
+            ["filesystem.read"] = PermissionDecision.Allow,
+            ["filesystem.patch"] = PermissionDecision.Allow,
+        });
+        var patchExecutor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), patchPolicy,
+            ws, patchBoundary);
+        var readCall = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"), "pc-pr",
+            "{\"path\":\"doc.txt\"}");
+        var readOutcome = patchExecutor.ExecuteTool(readCall, false, CancellationToken.None);
+        Assert.True(readOutcome.Succeeded, "PatchOnly permite la lectura previa. summary=" + readOutcome.Summary);
         var patchOutcome = patchExecutor.ExecuteTool(patchCall, false, CancellationToken.None);
-        Assert.True(patchOutcome.Succeeded, "PatchOnly permite el patch tras la recategorización. summary=" + patchOutcome.Summary);
+        Assert.True(patchOutcome.Succeeded, "Read previo + PatchOnly permiten el patch tras la recategorización. summary=" + patchOutcome.Summary);
         Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(ws + "\\doc.txt"));
         RmDir(ws);
     }

@@ -76,6 +76,17 @@ public sealed class ReadFileTool : ITool
         var bytes = File.ReadAllBytes(full);
         var version = FileVersion.VersionToken(bytes);
 
+        // ADR-0044 §5: registrar la lectura EFECTIVA (éxito + token real, visible en el marcador
+        // [version:…] del resultado) en el registro por-Run, para que filesystem.patch exija esta
+        // lectura previa del MISMO path/version antes de mutar. Solo ocurre en el camino exitoso:
+        // un read fallido (archivo no encontrado, encoding inválido) no registra. Si el pipeline
+        // no cablea registro (uso directo de la tool, sin política de modelo activa), no hay nada
+        // que registrar y el comportamiento de M2 se conserva.
+        if (context.ReadRegistry is not null)
+        {
+            context.ReadRegistry!.RecordRead(path, version);
+        }
+
         FileVersion.DecodedFile decoded;
         try
         {
