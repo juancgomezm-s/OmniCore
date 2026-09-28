@@ -245,6 +245,16 @@ public sealed class EventStream
             return f.ToolCallId;
         }
 
+        if (payload is ToolCallEffectUnknown u)
+        {
+            return u.ToolCallId;
+        }
+
+        if (payload is ToolCallReconciled rc)
+        {
+            return rc.ToolCallId;
+        }
+
         return null;
     }
 }

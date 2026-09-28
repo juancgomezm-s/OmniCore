@@ -74,13 +74,20 @@ public record ToolCallAuthorized(ToolCallId ToolCallId) : DomainEventPayload
     public int SchemaVersion() => 1;
 }
 
-/// <summary>ToolCallStarted: commit Barrier si EffectClass ≠ None (ADR-0004 §2, ADR-0002 §2).</summary>
+/// <summary>
+/// ToolCallStarted: commit Barrier si EffectClass ≠ None (ADR-0004 §2, ADR-0002 §2).
+/// <c>ReconciliationJson</c> (opcional) es la serialización canónica de los metadatos de
+/// reconciliación (ruta + hashes pre/post para filesystem; ADR-0004 §4). Al escribirse con
+/// commit Barrier antes del efecto, sobrevive a un crash y es la única fuente fiel del estado
+/// esperado al reconciliar desde el journal. null = sin metadatos (reconciliación conservadora).
+/// </summary>
 [JsonSerializable(typeof(ToolCallStarted))]
-public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass) : DomainEventPayload
+public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass, string? ReconciliationJson)
+    : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.started");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>ToolCallSucceeded: outcome con resultado.</summary>

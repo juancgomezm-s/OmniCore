@@ -214,8 +214,11 @@ public sealed class ToolRuntime
             }
         }
 
-        // 4. Ejecución (Barrier si hay efecto; ADR-0002 §2, ADR-0004 §2).
-        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect));
+        // 4. Ejecución (Barrier si hay efecto; ADR-0002 §2, ADR-0004 §2). El Started lleva, cuando el
+        // intent declara una reconciliación con pre/post y EXACTAMENTE un write target, la serialización
+        // canónica de los metadatos (ruta + hashes) para que un crash posterior pueda reconciliar el
+        // efecto desde el journal sin re-ejecutar (ADR-0004 §4).
+        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, ReconciliationJsonFor(intent)));
 
         ToolResult result;
         try
@@ -293,6 +296,23 @@ public sealed class ToolRuntime
 
         _emit(new ToolCallReconciled(toolCallId, ReconciliationOutcome.Conflict, "hash inesperado"));
         return ToolCallState.Reconciled;
+    }
+
+    /// <summary>
+    /// Serializa los metadatos canónicos de reconciliación para un intent con efecto. Devuelve null
+    /// (reconciliación conservadora) cuando no hay <c>ReconciliationSpec</c>, cuando el intent declara
+    /// más de un write target (ambigüedad: no se sabe contra qué archivo reconciliar) o cuando no hay
+    /// ningún target. El Engine/reconciliador trata null como "sin metadatos" y falla cerrado.
+    /// </summary>
+    private static string? ReconciliationJsonFor(ToolIntent intent)
+    {
+        if (intent.Reconciliation is null || intent.Claims.Writes.Count != 1)
+        {
+            return null;
+        }
+
+        return FilesystemReconciliationMetadata.Encode(intent.Claims.Writes[0],
+            intent.Reconciliation!.ExpectedPreHash, intent.Reconciliation!.ExpectedPostHash);
     }
 
     private static string LayersToJson(PermissionDecisionRecord decision)

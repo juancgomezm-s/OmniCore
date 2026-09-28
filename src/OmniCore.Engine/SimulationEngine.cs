@@ -25,6 +25,11 @@ public sealed class SimulationEngine
 
     private IToolExecutor? _toolExecutor;
 
+    /// <summary>Reconcilador de efectos de filesystem inyectado (ADR-0004 §4); null = conservador.</summary>
+    private readonly IFilesystemReconciler? _fsReconciler;
+
+    private readonly string _workspaceRoot;
+
     private bool _crashed;
 
     private readonly Dictionary<string, PlanItemId> _symbolicItems = new();
@@ -38,6 +43,8 @@ public sealed class SimulationEngine
         _planService = new PlanService();
         _reconciler = new ProgressReconciler();
         _toolExecutor = null;
+        _fsReconciler = null;
+        _workspaceRoot = "sim";
     }
 
     public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
@@ -50,6 +57,27 @@ public sealed class SimulationEngine
         _planService = new PlanService();
         _reconciler = new ProgressReconciler();
         _toolExecutor = toolExecutor;
+        _fsReconciler = null;
+        _workspaceRoot = "sim";
+    }
+
+    /// <summary>
+    /// Con conciliador de filesystem y raíz real (ADR-0004 §4): el resume puede clasificar los
+    /// efectos Started-sin-outcome contra rutas/hashes reales. <c>workspaceRoot</c> es el directorio
+    /// sobre el que operaron las tools; <c>reconciler == null</c> conserva el camino conservador.
+    /// </summary>
+    public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
+        IToolExecutor toolExecutor, IFilesystemReconciler? reconciler, string workspaceRoot)
+    {
+        _store = store;
+        _codecs = codecs;
+        _audit = audit;
+        _codecForRun = codecs.CodecFor(EventType.Of("run.started"));
+        _planService = new PlanService();
+        _reconciler = new ProgressReconciler();
+        _toolExecutor = toolExecutor;
+        _fsReconciler = reconciler;
+        _workspaceRoot = workspaceRoot;
     }
 
     /// <summary>Permite sustituir el executor (test/sim). El engine no conoce implementaciones.</summary>
@@ -314,42 +342,132 @@ public sealed class SimulationEngine
     }
 
     /// <summary>
-    /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2): detecta ToolCalls Started sin
-    /// outcome en el journal, emite ToolCallEffectUnknown y las reconcilia contra su intent
-    /// (sin duplicar el efecto). Devuelve el número de toolcalls reconciliadas.
+    /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2): detecta en el journal las ToolCalls
+    /// Started-sin-outcome DENTRO del run pedido, emite ToolCallEffectUnknown y las reconcilia contra
+    /// la serialización canónica de metadatos persistida en su propio <c>ToolCallStarted</c> (ruta +
+    /// hashes pre/post; ADR-0004 §4), SIN re-ejecutar el efecto. Devuelve el número de toolcalls
+    /// reconciliadas. Es IDEMPOTENTE: una ToolCall ya resuelta (Succeeded/Failed/Reconciled/
+    /// EffectUnknown) no se vuelve a emitir al reanudar varias veces, y filtra por Run/ToolCall para
+    /// no reconciliar huérfanos de otros runs de la sesión.
     /// </summary>
     public int Resume(SessionId sessionId, RunId runId, EventStream stream)
     {
+        return Resume(sessionId, runId, stream, _workspaceRoot);
+    }
+
+    /// <summary>
+    /// Variante con raíz de workspace explícita: el reconciliador inyectado _fsReconciler relee el
+    /// hash real del archivo para clasificar Applied/NotApplied/Conflict contra pre/post. Sin
+    /// reconciliador o sin metadatos → Unresolvable (falla cerrado, nunca Applied).
+    /// </summary>
+    public int Resume(SessionId sessionId, RunId runId, EventStream stream, string workspaceRoot)
+    {
         var tail = _store.ReadFrom(sessionId, 1);
-        var startedNoOutcome = new List<ToolCallId>();
-        foreach (var evt in tail)
+        var range = RunEventRange(tail, _codecs, runId);
+        if (range is null)
         {
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
-            if (payload is ToolCallStarted)
-            {
-                startedNoOutcome.Add(evt.ToolCallId!);
-            }
+            return 0; // el run no está en la sesión: nada que reconciliar
         }
 
-        foreach (var outcome in tail)
+        var from = range![0];
+        var to = range![1];
+        var startedNoOutcome = new Dictionary<ToolCallId, ToolCallStarted>();
+        var terminal = new HashSet<ToolCallId>();
+        for (var i = from; i < to; i++)
         {
-            var payload = _codecs.CodecFor(outcome.Type).Decode(outcome.Type, outcome.PayloadJson);
-            if (payload is ToolCallSucceeded || payload is ToolCallFailed || payload is ToolCallReconciled
-                || payload is ToolCallEffectUnknown)
+            var evt = tail[i];
+            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            if (payload is ToolCallStarted started)
             {
-                startedNoOutcome.Remove(outcome.ToolCallId!);
+                startedNoOutcome[started.ToolCallId] = started;
+            }
+            else if (payload is ToolCallSucceeded || payload is ToolCallFailed
+                || payload is ToolCallReconciled || payload is ToolCallEffectUnknown)
+            {
+                var id = ToolCallIdOf(payload);
+                if (id is not null)
+                {
+                    terminal.Add(id!);
+                }
             }
         }
 
         var reconciled = 0;
-        foreach (var id in startedNoOutcome)
+        foreach (var entry in startedNoOutcome)
         {
-            stream.Append(new ToolCallEffectUnknown(id, EffectClass.Reconcilable));
-            stream.Append(new ToolCallReconciled(id, ReconciliationOutcome.NotApplied, "resume: sin post-hash"));
+            var id = entry.Key;
+            var started = entry.Value;
+            if (terminal.Contains(id))
+            {
+                continue; // idempotencia: ya resuelta en un resume anterior o por su outcome
+            }
+
+            stream.Append(new ToolCallEffectUnknown(id, started.EffectClass));
+            FilesystemReconciliation result;
+            if (_fsReconciler is not null && started.ReconciliationJson is not null)
+            {
+                result = _fsReconciler!.Reconcile(workspaceRoot, started.ReconciliationJson!,
+                    CancellationToken.None);
+            }
+            else
+            {
+                // Sin metadatos/reconciliador: falla cerrado. Nunca se re-ejecuta ni se clasifica.
+                result = FilesystemReconciliation.Unresolvable(
+                    "metadatos de reconciliación ausentes o sin reconciliador: falla cerrado, sin re-ejecutar");
+            }
+
+            stream.Append(new ToolCallReconciled(id, result.Outcome, result.Detail));
             reconciled += 1;
         }
 
         return reconciled;
+    }
+
+    /// <summary>Extrae el ToolCallId de un evento de outcome (estos campos son no-nulos).</summary>
+    private static ToolCallId? ToolCallIdOf(DomainEventPayload payload)
+    {
+        if (payload is ToolCallSucceeded s) return s.ToolCallId;
+        if (payload is ToolCallFailed f) return f.ToolCallId;
+        if (payload is ToolCallReconciled r) return r.ToolCallId;
+        if (payload is ToolCallEffectUnknown u) return u.ToolCallId;
+        return null;
+    }
+
+    /// <summary>
+    /// Rango de secuencias [from, to) de los eventos atribuibles al run pedido: desde su RunCreated
+    /// hasta el RunCreated del siguiente run (o el final de la sesión). Un solo run activo por sesión
+    /// (ADR-0035). Devuelve null si el run no aparece en la sesión.
+    /// </summary>
+    private static int[]? RunEventRange(IReadOnlyList<DomainEvent> tail, IEventCodecRegistry codecs,
+        RunId runId)
+    {
+        var from = -1;
+        var to = tail.Count;
+        for (var i = 0; i < tail.Count; i++)
+        {
+            var payload = codecs.CodecFor(tail[i].Type).Decode(tail[i].Type, tail[i].PayloadJson);
+            if (payload is not RunCreated run)
+            {
+                continue;
+            }
+
+            if (run.RunId == runId)
+            {
+                from = i;
+            }
+            else if (from >= 0)
+            {
+                to = i;
+                break;
+            }
+        }
+
+        if (from < 0)
+        {
+            return null;
+        }
+
+        return new int[] { from, to };
     }
 
     private void ExecuteTurns(SimulationScenario scenario, EventStream stream, LaneId laneId,
@@ -419,7 +537,7 @@ public sealed class SimulationEngine
                 // outcome (ADR-0004 §2) y la reconcilie sin duplicar.
                 var crashIntent = new ToolIntent(callId, validated.ToolId, "{}", EffectClass.Reconcilable,
                     ResourceClaims.Empty(), ToolRisk.Low, null);
-                stream.Append(new ToolCallStarted(callId, crashIntent.Effect));
+                stream.Append(new ToolCallStarted(callId, crashIntent.Effect, null));
                 _crashed = true;
                 var crashTurn = TurnId.New();
                 stream.Append(new TurnStarted(crashTurn, laneId));
@@ -450,7 +568,7 @@ public sealed class SimulationEngine
 
         // Fallback sin pipeline (compat con tests que no inyectan executor).
         stream.Append(new ToolCallRequested(callId, "pc-" + toolName, toolName, "{}"));
-        stream.Append(new ToolCallStarted(callId, ParseEffect(action.Effect)));
+        stream.Append(new ToolCallStarted(callId, ParseEffect(action.Effect), null));
         stream.Append(new ToolCallSucceeded(callId, "{\"summary\":\"ok\"}"));
         var fallbackTurn = TurnId.New();
         stream.Append(new TurnStarted(fallbackTurn, laneId));
