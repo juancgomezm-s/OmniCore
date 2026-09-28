@@ -17,11 +17,25 @@ public sealed class ToolRuntime
 
     private readonly Func<DomainEventPayload, VoidBox> _emit;
 
+    private readonly ModelCapabilityBoundary? _boundary;
+
     public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit)
+        : this(catalog, policy, emit, null)
+    {
+    }
+
+    /// <summary>
+    /// Frontera de capacidad opcional (ADR-0044 §5): restringe, nunca autoriza. Se evalúa tras
+    /// Prepare (antes del Permission Engine) y de nuevo antes de ejecutar. Con null el pipeline
+    /// es idéntico al de M2: la frontera es un añadido componible, no un cambio de semántica.
+    /// </summary>
+    public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit,
+        ModelCapabilityBoundary? boundary)
     {
         _catalog = catalog;
         _policy = policy;
         _emit = emit;
+        _boundary = boundary;
     }
 
     /// <summary>Resultado de ejecutar o rechazar una raw tool call del modelo.</summary>
@@ -91,6 +105,23 @@ public sealed class ToolRuntime
         }
 
         var intent = ((Prepared) preparation).Intent;
+
+        // 1b. Frontera de capacidad del modelo (ADR-0044 §5): antes del Permission Engine. Con
+        // el estado aún en Requested el rechazo es Rejected en el ciclo durable (ADR-0036 §5).
+        // La frontera restringe; jamás autoriza (INV-018): una tool fuera del techo de la
+        // categoría muere aquí aunque el Permission Engine la permitiría.
+        if (_boundary is not null)
+        {
+            var boundaryDecision = _boundary!.Evaluate(intent);
+            if (!boundaryDecision.Allowed)
+            {
+                _emit(new ToolCallRejected(validated.ToolCallId,
+                    "frontera de capacidad: " + boundaryDecision.Reason));
+                return new Outcome(false, boundaryDecision.Reason, ToolCallState.Rejected,
+                    EffectOutcome.None);
+            }
+        }
+
         _emit(new ToolCallPrepared(validated.ToolCallId, intent.NormalizedArgumentsJson));
 
         // 2. Permission Engine (ADR-0037 §2): traza siempre; Ask según flujo de interacción.
@@ -169,6 +200,20 @@ public sealed class ToolRuntime
     private Outcome Execute(ValidatedToolCall call, IAuthorizedToolIntent authorized, ToolIntent intent, ITool tool,
         ToolExecutionContext execContext, CancellationToken cancellationToken)
     {
+        // 4a. Frontera de capacidad otra vez antes de ejecutar (ADR-0044 §5): el intent ya está
+        // autorizado; si el techo cambió o la primera evaluación se saltó, Authorized → Failed.
+        if (_boundary is not null)
+        {
+            var boundaryDecision = _boundary!.Evaluate(intent);
+            if (!boundaryDecision.Allowed)
+            {
+                _emit(new ToolCallFailed(call.ToolCallId,
+                    "frontera de capacidad: " + boundaryDecision.Reason, EffectOutcome.None));
+                return new Outcome(false, boundaryDecision.Reason, null, ToolCallState.Failed,
+                    EffectOutcome.None);
+            }
+        }
+
         // 4. Ejecución (Barrier si hay efecto; ADR-0002 §2, ADR-0004 §2).
         _emit(new ToolCallStarted(call.ToolCallId, intent.Effect));
 
@@ -211,6 +256,10 @@ public sealed class ToolRuntime
 
     public static ToolRuntime For(FakeCatalog catalog, IPermissionPolicy policy,
         Func<DomainEventPayload, VoidBox> emit) => new ToolRuntime(catalog, policy, emit);
+
+    public static ToolRuntime For(FakeCatalog catalog, IPermissionPolicy policy,
+        Func<DomainEventPayload, VoidBox> emit, ModelCapabilityBoundary? boundary)
+        => new ToolRuntime(catalog, policy, emit, boundary);
 
     /// <summary>
     /// Reconciliar un efecto tras un crash (ADR-0004 §4): la ToolCall fue Started pero su
