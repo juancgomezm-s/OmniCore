@@ -1,0 +1,195 @@
+using OmniCore.Domain;
+using OmniCore.Infrastructure;
+
+namespace OmniCore.Tests;
+
+/// <summary>
+/// Tests de persistencia de perfiles de cualificación empírica (ADR-0007 §6, M5): store
+/// relacional por clave exacta, roundtrip tras reabrir SQLite, aislamiento por clave,
+/// concurrencia optimista por revisión, y transición a Stale sin destruir la evidencia.
+/// </summary>
+public sealed class ModelQualificationStoreTests
+{
+    private static string TempDir()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "omnicore-m5-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static SqliteModelQualificationStore NewStore(string dir, Func<DateTimeOffset>? clock = null) =>
+        new(Path.Combine(dir, "user.db"), clock);
+
+    private static ModelQualificationKey LocalKey() =>
+        ModelQualificationKey.For("local", "qwen-x", ToolCallFormat.PromptedJson, ToolMode.Direct);
+
+    [Fact]
+    public void Upsert_creates_revision_1_and_Get_roundtrips_after_reopen()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+
+        using (var store = NewStore(dir))
+        {
+            var stored = store.Upsert(key, 0, ModelQualificationState.Qualified,
+                "quick", "1.2.3", CancellationToken.None);
+            Assert.Equal(1L, stored.ProfileRevision);
+            Assert.Equal(ModelQualificationState.Qualified, stored.State);
+            Assert.True(key.Equals(store.Get(key, CancellationToken.None)!.Key));
+        }
+
+        // Persistencia real: otro store sobre el mismo archivo ve lo mismo (roundtrip tras
+        // reabrir SQLite), reconstruyendo la clave exacta desde su JSON canónico.
+        using (var store = NewStore(dir))
+        {
+            var read = store.Get(key, CancellationToken.None);
+            Assert.NotNull(read);
+            Assert.True(key.Equals(read!.Key));
+            Assert.Equal(ModelQualificationState.Qualified, read.State);
+            Assert.Equal("quick", read.SuiteId);
+            Assert.Equal("1.2.3", read.SuiteVersion);
+            Assert.Equal(1L, read.ProfileRevision);
+        }
+    }
+
+    [Fact]
+    public void Keys_are_isolated_by_exact_configuration()
+    {
+        var dir = TempDir();
+        var baseKey = LocalKey();
+        var quantized = new ModelQualificationKey("local", "qwen-x", null, "Q8_0",
+            Array.Empty<string>(), null, null, null, "default",
+            ToolCallFormat.PromptedJson, ToolMode.Direct, "default");
+
+        using var store = NewStore(dir);
+        store.Upsert(baseKey, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        store.Upsert(quantized, 0, ModelQualificationState.Calibrated, "full", "2.0.0", CancellationToken.None);
+
+        Assert.Equal(2, store.List(CancellationToken.None).Count);
+        Assert.Equal(ModelQualificationState.Qualified,
+            store.Get(baseKey, CancellationToken.None)!.State);
+        Assert.Equal(ModelQualificationState.Calibrated,
+            store.Get(quantized, CancellationToken.None)!.State);
+        // Cada clave tiene su propio suite/version: sin herencia silenciosa.
+        Assert.Equal("1.0.0", store.Get(baseKey, CancellationToken.None)!.SuiteVersion);
+        Assert.Equal("2.0.0", store.Get(quantized, CancellationToken.None)!.SuiteVersion);
+    }
+
+    [Fact]
+    public void Upsert_requires_current_revision_and_never_overwrites()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+
+        // Revisión correcta: pasa y produce la siguiente.
+        var next = store.Upsert(key, 1, ModelQualificationState.Calibrated, "full", "2.0.0", CancellationToken.None);
+        Assert.Equal(2L, next.ProfileRevision);
+
+        // Revisión obsoleta: conflicto explícito, sin sobrescritura silenciosa.
+        var ex = Assert.Throws<ModelQualificationRevisionConflictException>(() =>
+            store.Upsert(key, 1, ModelQualificationState.Calibrated, "full", "2.0.0", CancellationToken.None));
+        Assert.Equal(1L, ex.ExpectedRevision);
+        Assert.Equal(2L, ex.ActualRevision);
+
+        // El estado no cambió a causa del intento fallido.
+        Assert.Equal(ModelQualificationState.Calibrated,
+            store.Get(key, CancellationToken.None)!.State);
+        Assert.Equal(2L, store.Get(key, CancellationToken.None)!.ProfileRevision);
+    }
+
+    [Fact]
+    public void MarkStale_preserves_evidence_and_bumps_revision()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+
+        // Una versión mayor nueva de la suite marca el perfil Stale sin destruir la evidencia.
+        var stale = store.MarkStale(key, 1, "2.0.0", CancellationToken.None);
+        Assert.Equal(ModelQualificationState.Stale, stale.State);
+        Assert.Equal(2L, stale.ProfileRevision);
+        Assert.Equal("2.0.0", stale.SuiteVersion);
+
+        // La evidencia de cualificación anterior sobrevive: key_json, suite_id y traits intactos.
+        var read = store.Get(key, CancellationToken.None)!;
+        Assert.Equal(ModelQualificationState.Stale, read.State);
+        Assert.Equal("quick", read.SuiteId);
+        Assert.True(key.Equals(read.Key));
+    }
+
+    [Fact]
+    public void MarkStale_requires_current_revision()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+
+        var ex = Assert.Throws<ModelQualificationRevisionConflictException>(() =>
+            store.MarkStale(key, 99, "2.0.0", CancellationToken.None));
+        Assert.Equal(99L, ex.ExpectedRevision);
+        Assert.Equal(1L, ex.ActualRevision);
+
+        Assert.Equal(ModelQualificationState.Qualified,
+            store.Get(key, CancellationToken.None)!.State);
+    }
+
+    [Fact]
+    public void Traits_roundtrip_and_replacement_is_per_revision()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        var profile = store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        var hash = key.QualificationKeyHash();
+
+        store.SaveTraits(key, profile.ProfileRevision,
+            new[]
+            {
+                new ModelTraitRecord(hash, profile.ProfileRevision, "InstructionFollowing", 0.8, 0.9, 12, "suite"),
+                new ModelTraitRecord(hash, profile.ProfileRevision, "ToolCallReliability", 0.6, 0.7, 8, "suite"),
+            },
+            CancellationToken.None);
+
+        var traits = store.Traits(key, profile.ProfileRevision, CancellationToken.None);
+        Assert.Equal(2, traits.Count);
+        Assert.Equal("InstructionFollowing", traits[0].Trait);
+        Assert.Equal(0.8, traits[0].Value);
+        Assert.Equal("ToolCallReliability", traits[1].Trait);
+
+        // Reemplazo por revisión: el conjunto de traits de esa revisión se sustituye, no se
+        // acumula silenciosamente.
+        store.SaveTraits(key, profile.ProfileRevision,
+            new[]
+            {
+                new ModelTraitRecord(hash, profile.ProfileRevision, "InstructionFollowing", 0.5, 0.5, 3, "recal"),
+            },
+            CancellationToken.None);
+        var after = store.Traits(key, profile.ProfileRevision, CancellationToken.None);
+        Assert.Single(after);
+        Assert.Equal(0.5, after[0].Value);
+    }
+
+    [Fact]
+    public void Trait_value_out_of_range_is_rejected()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new ModelTraitRecord("hash", 1, "TraitX", 1.5, 0.5, 1, "src"));
+    }
+
+    [Fact]
+    public void SaveTraits_rejects_mismatched_key_hash()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        var profile = store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        Assert.Throws<ArgumentException>(() =>
+            store.SaveTraits(key, profile.ProfileRevision,
+                new[] { new ModelTraitRecord("hash-otro", profile.ProfileRevision, "TraitX", 0.5, 0.5, 1, "src") },
+                CancellationToken.None));
+    }
+}
