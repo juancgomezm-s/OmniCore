@@ -232,4 +232,82 @@ public sealed class PriorReadEnforcementTests
         Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
         RmDir(ws);
     }
+
+    // ============ 6. Read de bytes inválidos (encoding): error + sin registro + patch rechazado =====
+
+    [Fact]
+    public void Read_invalid_encoding_does_not_record_and_does_not_enable_patch()
+    {
+        var ws = TempDir();
+        // Bytes UTF-8 inválidos (0xC3 seguido de 0x28 no es una secuencia válida):
+        // FileVersion.Decode los rechaza con UnsupportedEncodingException.
+        var raw = new byte[] { 0x68, 0x6F, 0x6C, 0xC3, 0x28 };
+        File.WriteAllBytes(ws + "\\doc.txt", raw);
+        var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
+        var executor = PatchPipeline(ws, boundary);
+
+        // 1. Read devuelve ToolResult ERROR (encoding inválido) y NO debe registrar la ruta:
+        //    la lectura no fue efectiva, el modelo nunca vio contenido ni el token.
+        var readOutcome = executor.ExecuteTool(ReadCall("doc.txt"), false, CancellationToken.None);
+        Assert.False(readOutcome.Succeeded, "read de bytes inválidos debe fallar. summary=" + readOutcome.Summary);
+        Assert.Equal(0, boundary.ReadRegistry().Size());
+        Assert.False(boundary.ReadRegistry().HasRead("doc.txt"));
+
+        // 2. Patch con el hash REAL de los bytes vigentes (pasaría la verificación STALE_WRITE si
+        //    la lectura estuviera registrada): debe rechazarse por PRIOR_READ_REQUIRED y el
+        //    archivo debe quedar intacto.
+        var patchOutcome = executor.ExecuteTool(
+            PatchCall("doc.txt", FilesystemPatchTool.VersionToken(raw), "hol", "hol-camb"),
+            false, CancellationToken.None);
+        Assert.False(patchOutcome.Succeeded, "El read fallido por encoding no habilita el patch. summary=" + patchOutcome.Summary);
+        Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
+        var after = File.ReadAllBytes(ws + "\\doc.txt");
+        Assert.Equal(raw.Length, after.Length);
+        for (var i = 0; i < raw.Length; i++)
+        {
+            Assert.Equal(raw[i], after[i]);
+        }
+
+        RmDir(ws);
+    }
+
+    // ============ 7. Read válido: el token del preview (lo que ve el modelo) habilita el patch ====
+
+    [Fact]
+    public void Valid_read_exposed_token_is_visible_and_enables_patch()
+    {
+        var ws = TempDir();
+        var original = "linea-uno\nlinea-dos\n";
+        File.WriteAllText(ws + "\\doc.txt", original);
+        var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
+        var executor = PatchPipeline(ws, boundary);
+
+        // 1. Read válido: registra la ruta y el marcador [version:…] llega visible en el preview
+        //    (lo que el modelo realmente observa).
+        var readOutcome = executor.ExecuteTool(ReadCall("doc.txt"), false, CancellationToken.None);
+        Assert.True(readOutcome.Succeeded, "read válido ok. summary=" + readOutcome.Summary);
+        Assert.True(boundary.ReadRegistry().HasRead("doc.txt"));
+        var exposed = ExtractTokenFromReadPreview(readOutcome.Preview!);
+        Assert.NotNull(exposed);
+        Assert.Equal(FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes(original)), exposed);
+
+        // 2. Patch con EXACTAMENTE el token que el read expuso: debe aplicar.
+        var patchOutcome = executor.ExecuteTool(
+            PatchCall("doc.txt", exposed!, "linea-dos", "linea-dos-B"), false, CancellationToken.None);
+        Assert.True(patchOutcome.Succeeded, "Read válido + token visible = patch permitido. summary=" + patchOutcome.Summary);
+        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(ws + "\\doc.txt"));
+        RmDir(ws);
+    }
+
+    /// <summary>Extrae el token de versión del marcador [version:…] tal como lo expone ReadFileTool.</summary>
+    private static string? ExtractTokenFromReadPreview(string preview)
+    {
+        const string start = "[version:";
+        var idx = preview.LastIndexOf(start, StringComparison.Ordinal);
+        if (idx < 0) return null;
+        var end = preview.IndexOf(']', idx + start.Length);
+        if (end < 0) return null;
+        return preview.Substring(idx + start.Length, end - idx - start.Length);
+    }
+
 }

@@ -76,17 +76,6 @@ public sealed class ReadFileTool : ITool
         var bytes = File.ReadAllBytes(full);
         var version = FileVersion.VersionToken(bytes);
 
-        // ADR-0044 §5: registrar la lectura EFECTIVA (éxito + token real, visible en el marcador
-        // [version:…] del resultado) en el registro por-Run, para que filesystem.patch exija esta
-        // lectura previa del MISMO path/version antes de mutar. Solo ocurre en el camino exitoso:
-        // un read fallido (archivo no encontrado, encoding inválido) no registra. Si el pipeline
-        // no cablea registro (uso directo de la tool, sin política de modelo activa), no hay nada
-        // que registrar y el comportamiento de M2 se conserva.
-        if (context.ReadRegistry is not null)
-        {
-            context.ReadRegistry!.RecordRead(path, version);
-        }
-
         FileVersion.DecodedFile decoded;
         try
         {
@@ -107,6 +96,24 @@ public sealed class ReadFileTool : ITool
         // El token se añade al final, DESPUÉS de truncar/redactar, para que siempre llegue al
         // modelo utilizable aunque el contenido no sea el completo.
         var preview = truncated + "\n\n" + VersionTokenMarker(version);
+
+        // ADR-0044 §5: registrar la lectura EFECTIVA (éxito + token real visible en el marcador
+        // [version:…] del resultado) en el registro por-Run, para que filesystem.patch exija esta
+        // lectura previa del MISMO path/version antes de mutar. Se registra SOLO aquí, en el
+        // camino exitoso, justo antes de devolver el ToolResult exitoso. El marker [version:…] se
+        // añade al final de `preview` DESPUÉS del truncado/redacción (sobre `content`), así que en
+        // el momento del registro el modelo SÍ va a recibir ese token en el resultado: la identidad
+        // path/version registrada coincide siempre con lo que el modelo observa. Un read que
+        // devuelve antes de esta línea (archivo inexistente, fuera del workspace, encoding
+        // inválido tras Decode, error, denegación, cancelación o lectura de secretos rechazada en
+        // Prepare) NO registra y por tanto no habilita un patch posterior. Si el pipeline no
+        // cablea registro (uso directo de la tool, sin política de modelo activa), no hay nada que
+        // registrar y el comportamiento de M2 se conserva.
+        if (context.ReadRegistry is not null)
+        {
+            context.ReadRegistry!.RecordRead(path, version);
+        }
+
         return System.Threading.Tasks.Task.FromResult(new ToolResult(
             externalized ? "Contenido truncado (externalizado)" : "ok (" + path + ")", preview, null,
             content.Length, externalized, EffectOutcome.None));
