@@ -57,17 +57,47 @@ public sealed class FileMutationAggregate
 /// </summary>
 public static class FileMutationEvaluator
 {
+    /// <summary>
+    /// Calcula el valor de una muestra (0..1). Penaliza severidad: delete+create y roturas
+    /// cuestan más que un simple flag desfavorable, y el tamaño del diff reduce el score
+    /// proporcionalmente cuando el patch no es preferido.
+    /// </summary>
+    public static double SampleValue(FileMutationSample sample)
+    {
+        if (sample.OriginalLines < 0 || sample.ChangedLines < 0 || sample.BreakCount < 0)
+            throw new ArgumentOutOfRangeException(nameof(sample), "muestra con valores negativos");
+
+        double value = 1.0;
+
+        // Fallos binarios: cada uno reduce el valor de forma proporcional.
+        if (!sample.UnrelatedContentPreserved) value -= 0.20;
+        if (!sample.WithinScope) value -= 0.20;
+        if (!sample.VersionTokenRespected) value -= 0.20;
+        if (!sample.PatchPreferred) value -= 0.10;
+
+        // Tamaño del diff: cuanto más grande, peor. Penalidad proporcional al ratio
+        // ChangedLines / OriginalLines, con tope. Solo se aplica si hay líneas originales.
+        if (sample.OriginalLines > 0 && sample.ChangedLines > 0)
+        {
+            double ratio = (double)sample.ChangedLines / sample.OriginalLines;
+            value -= Math.Min(0.30, ratio * 0.30);
+        }
+
+        // Roturas de parse/build/test: penalidad acumulativa (máx 0.40).
+        value -= Math.Min(0.40, sample.BreakCount * 0.20);
+
+        // Delete+create: penalidad severa adicional.
+        if (sample.DeleteAndCreateAttempt) value -= 0.30;
+
+        return Math.Clamp(value, 0.0, 1.0);
+    }
+
     public static TraitScore Evaluate(FileMutationSample sample, DateTimeOffset measuredAt)
     {
-        var favorable = sample.UnrelatedContentPreserved
-                       && sample.WithinScope
-                       && sample.VersionTokenRespected
-                       && sample.PatchPreferred
-                       && sample.BreakCount == 0
-                       && !sample.DeleteAndCreateAttempt;
-
-        var value = favorable ? 1.0 : 0.0;
-        var confidence = Math.Min(1.0, (double)sample.OriginalLines / 100.0);
+        double value = SampleValue(sample);
+        // Confianza de una única muestra: no depende del tamaño del archivo (OriginalLines),
+        // solo del hecho de que hay una muestra válida. Un solo dato nunca da alta confianza.
+        double confidence = 0.5;
 
         return new TraitScore(value, confidence, 1, "empirical", measuredAt);
     }
@@ -75,8 +105,8 @@ public static class FileMutationEvaluator
     public static TraitScore Aggregate(IReadOnlyList<FileMutationAggregate> aggregates,
                                        DateTimeOffset measuredAt)
     {
-        int total = 0;
-        int favorable = 0;
+        long total = 0;
+        long favorable = 0;
         foreach (var a in aggregates)
         {
             total += a.Total;
@@ -87,7 +117,8 @@ public static class FileMutationEvaluator
             return new TraitScore(0.0, 0.0, 0, "empty", measuredAt);
         }
         double value = (double)favorable / total;
+        // La confianza depende del número de muestras, no del tamaño del archivo.
         double confidence = Math.Min(1.0, total / 10.0);
-        return new TraitScore(value, confidence, total, "empirical", measuredAt);
+        return new TraitScore(value, confidence, (int)total, "empirical", measuredAt);
     }
 }
