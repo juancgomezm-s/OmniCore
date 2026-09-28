@@ -94,8 +94,12 @@ public sealed class M3HostRecoveryTests
             if (recordRoot)
             {
                 // El único origen aceptado por la recuperación: la raíz durable y verificada.
+                // Además se escribe la identidad durable (marcador dentro del workspace) y viaja
+                // en el evento, para que la recuperación verifique que la ruta no fue sustituida
+                // por symlink/junction (ADR-0004 §5, auditoría M3).
+                var durableIdentity = OmniCore.Host.WorkspaceRootIdentity.Establish(ws);
                 stream.Append(new WorkspaceRootEstablished(sessionId,
-                    rootOverride is null ? ws : rootOverride!, DateTimeOffset.UtcNow));
+                    rootOverride is null ? ws : rootOverride!, DateTimeOffset.UtcNow, durableIdentity));
             }
 
             stream.Append(new RunCreated(runId, sessionId, "corregir un test", RunMode.Act,

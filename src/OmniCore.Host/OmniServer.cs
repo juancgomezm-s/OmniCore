@@ -218,7 +218,7 @@ public sealed class OmniServer : IOmniClient
     /// </summary>
     private string? VerifiedWorkspaceRoot(SessionId sessionId)
     {
-        var canonical = RecordedWorkspaceRoot(sessionId);
+        var (canonical, identity) = RecordedWorkspaceRoot(sessionId);
         if (canonical is null || canonical!.Length == 0
             || !Path.IsPathFullyQualified(canonical!))
         {
@@ -231,11 +231,27 @@ public sealed class OmniServer : IOmniClient
             return null;
         }
 
+        // ADR-0004 §5 / auditoría M3: Directory.Exists no basta — una ruta reemplazada por
+        // symlink/junction sigue "existiendo" pero apunta a OTRO árbol. La identidad durable
+        // verifica que el marcador dentro del workspace sigue siendo el mismo token; si el
+        // token no existe (evento legacy / identidad no establecida) o no coincide (árbol
+        // sustituido / marcador borrado), NO se reconcilia nada: falla cerrado y visible.
+        if (!WorkspaceRootIdentity.Verify(canonical!, identity ?? ""))
+        {
+            return null;
+        }
+
         return canonical;
     }
 
-    /// <summary>Raíz canónica persistida por la sesión (solo el evento <c>WorkspaceRootEstablished</c>).</summary>
-    private string? RecordedWorkspaceRoot(SessionId sessionId)
+    /// <summary>
+    /// Raíz canónica persistida por la sesión (solo el evento <c>WorkspaceRootEstablished</c>),
+    /// junto con su identidad durable (el token del marcador dentro del workspace; ADR-0004 §5).
+    /// La recuperación usa el token al reabrir para verificar que la ruta no fue sustituida por
+    /// symlink/junction. Token vacío = identidad no establecida: la sesión no es recuperable
+    /// automáticamente y la recuperación falla cerrado.
+    /// </summary>
+    private (string? Root, string? Identity) RecordedWorkspaceRoot(SessionId sessionId)
     {
         foreach (var evt in _store.ReadFrom(sessionId, 1))
         {
@@ -249,13 +265,13 @@ public sealed class OmniServer : IOmniClient
             if (established is not null && established!.CanonicalRoot is not null
                 && established!.CanonicalRoot.Length > 0)
             {
-                return established!.CanonicalRoot;
+                return (established!.CanonicalRoot, established!.DurableIdentity ?? "");
             }
 
-            return null;
+            return (null, null);
         }
 
-        return null;
+        return (null, null);
     }
 
     private IReadOnlyList<DomainEvent> EventsForRun(IReadOnlyList<DomainEvent> all, RunId runId)
@@ -306,6 +322,11 @@ public sealed class OmniServer : IOmniClient
             return StartExplorerRun(command, fields);
         }
 
+        if (commandName == "act")
+        {
+            return StartActRun(command, fields);
+        }
+
         return CommandAck.Fail(command.MessageId, "comando desconocido en M1");
     }
 
@@ -329,12 +350,40 @@ public sealed class OmniServer : IOmniClient
             return CommandAck.Fail(command.MessageId, "falta el objetivo del Explorer");
         }
 
+        return StartRunAct(command, objective!, Path.GetFullPath("."));
+    }
+
+    /// <summary>
+    /// <c>act</c>: crea un Run Act REAL reutilizando el Explorer (vertical M3, ADR-0035 §3, ADR-0044 §5).
+    /// Acepta <c>objective</c> (la instrucción) y opcionalmente <c>workspace</c> (raíz; por defecto el cwd).
+    /// Emite <c>SessionCreated</c> + <c>WorkspaceRootEstablished</c> con identidad durable + el run Act
+    /// completo (RunCreated/RunStarted/Task/Lane/Plan). El plan llama al Turn de Explorer con las tools
+    /// filesystem.read/filesystem.patch bajo la política efectiva; NO es un sustituto del sim y no
+    /// autoaprueba Ask (sin cliente interactivo, Ask → Deny, ADR-0003).
+    /// </summary>
+    private CommandAck StartActRun(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        var objective = fields.TryGetValue("objective", out var value) ? value : null;
+        if (string.IsNullOrWhiteSpace(objective))
+        {
+            return CommandAck.Fail(command.MessageId, "falta el objetivo del act");
+        }
+
+        var workspace = fields.TryGetValue("workspace", out var w) ? w : null;
+        var workspacePath = workspace is null || workspace!.Length == 0
+            ? Path.GetFullPath(".")
+            : Path.GetFullPath(workspace!);
+        return StartRunAct(command, objective!, workspacePath);
+    }
+
+    /// <summary>Creación compartida de un Run Act real con raíz durable y verificable.</summary>
+    private CommandAck StartRunAct(WireEnvelope command, string objective, string workspacePath)
+    {
         var sessionId = SessionId.New();
         var runId = RunId.New();
         var taskId = TaskId.New();
         var laneId = LaneId.New();
         var planId = PlanId.New();
-        var workspacePath = Path.GetFullPath(".");
         var stream = new EventStream(_store, _codecs, sessionId);
         var now = DateTimeOffset.UtcNow;
         var budget = new TaskBudget(null, null, null, null);
@@ -342,16 +391,19 @@ public sealed class OmniServer : IOmniClient
             workspacePath, ProfileId.New(), now));
         // Origen explícito y seguro de la raíz del run real (ADR-0004 §5): se fija aquí, en la
         // creación de la sesión, y es lo único que la recuperación acepta al arrancar. Nunca se
-        // usa el cwd de un proceso posterior ni WorkspaceDisplayPath como autoridad.
-        stream.Append(new WorkspaceRootEstablished(sessionId, workspacePath, now));
-        stream.Append(new RunCreated(runId, sessionId, objective!, RunMode.Act,
+        // usa el cwd de un proceso posterior ni WorkspaceDisplayPath como autoridad. Se escribe
+        // además la identidad durable (marcador dentro del workspace) para que la recuperación
+        // verifique que la ruta no fue sustituida por symlink/junction.
+        var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
+        stream.Append(new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity));
+        stream.Append(new RunCreated(runId, sessionId, objective, RunMode.Act,
             ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, taskId, now));
         stream.Append(new RunStarted(runId));
-        stream.Append(new TaskCreated(taskId, runId, objective!, Array.Empty<TaskDependency>(), budget));
+        stream.Append(new TaskCreated(taskId, runId, objective, Array.Empty<TaskDependency>(), budget));
         stream.Append(new TaskReady(taskId));
         stream.Append(new LaneCreated(laneId, taskId, ProfileId.New()));
         stream.Append(new LaneStarted(laneId));
-        stream.Append(new PlanCreated(planId, runId, PlanItemId.New(), objective!));
+        stream.Append(new PlanCreated(planId, runId, PlanItemId.New(), objective));
 
         _lastSessionId = sessionId;
         _lastRunId = runId;
