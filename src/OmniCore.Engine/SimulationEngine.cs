@@ -343,12 +343,14 @@ public sealed class SimulationEngine
 
     /// <summary>
     /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2): detecta en el journal las ToolCalls
-    /// Started-sin-outcome DENTRO del run pedido, emite ToolCallEffectUnknown y las reconcilia contra
-    /// la serialización canónica de metadatos persistida en su propio <c>ToolCallStarted</c> (ruta +
-    /// hashes pre/post; ADR-0004 §4), SIN re-ejecutar el efecto. Devuelve el número de toolcalls
-    /// reconciliadas. Es IDEMPOTENTE: una ToolCall ya resuelta (Succeeded/Failed/Reconciled/
-    /// EffectUnknown) no se vuelve a emitir al reanudar varias veces, y filtra por Run/ToolCall para
-    /// no reconciliar huérfanos de otros runs de la sesión.
+    /// Started-sin-outcome DENTRO del run pedido, emite ToolCallEffectUnknown —solo si aún no se
+    /// emitió— y las reconcilia contra la serialización canónica de metadatos persistida en su propio
+    /// <c>ToolCallStarted</c> (ruta + hashes pre/post; ADR-0004 §4), SIN re-ejecutar el efecto.
+    /// Devuelve el número de toolcalls reconciliadas. Es IDEMPOTENTE: <c>ToolCallEffectUnknown</c> es
+    /// un estado INTERMEDIO (ADR-0004 §2) y no terminal, así que un crash entre
+    /// <c>EffectUnknown</c> y <c>Reconciled</c> se continúa reconciliando en el siguiente resume sin
+    /// duplicar el EffectUnknown; una ToolCall ya resuelta (Succeeded/Failed/Reconciled) no se vuelve
+    /// a tocar. Filtra por Run/ToolCall para no reconciliar huérfanos de otros runs de la sesión.
     /// </summary>
     public int Resume(SessionId sessionId, RunId runId, EventStream stream)
     {
@@ -372,7 +374,11 @@ public sealed class SimulationEngine
         var from = range![0];
         var to = range![1];
         var startedNoOutcome = new Dictionary<ToolCallId, ToolCallStarted>();
+        // Solo Succeeded/Failed/Reconciled son terminales (ADR-0004 §2). EffectUnknown es un estado
+        // INTERMEDIO: si el crash fue DESPUÉS de emitirlo y ANTES de Reconciled, la ToolCall sigue
+        // sin outcome y el siguiente resume debe continuar la reconciliación sin duplicarlo.
         var terminal = new HashSet<ToolCallId>();
+        var alreadyUnknown = new HashSet<ToolCallId>();
         for (var i = from; i < to; i++)
         {
             var evt = tail[i];
@@ -381,8 +387,12 @@ public sealed class SimulationEngine
             {
                 startedNoOutcome[started.ToolCallId] = started;
             }
+            else if (payload is ToolCallEffectUnknown unknown)
+            {
+                alreadyUnknown.Add(unknown.ToolCallId);
+            }
             else if (payload is ToolCallSucceeded || payload is ToolCallFailed
-                || payload is ToolCallReconciled || payload is ToolCallEffectUnknown)
+                || payload is ToolCallReconciled)
             {
                 var id = ToolCallIdOf(payload);
                 if (id is not null)
@@ -399,10 +409,15 @@ public sealed class SimulationEngine
             var started = entry.Value;
             if (terminal.Contains(id))
             {
-                continue; // idempotencia: ya resuelta en un resume anterior o por su outcome
+                continue; // idempotencia: ya resuelta por su outcome (o un Reconciled previo)
             }
 
-            stream.Append(new ToolCallEffectUnknown(id, started.EffectClass));
+            if (!alreadyUnknown.Contains(id))
+            {
+                // Solo el primer resume emite EffectUnknown; si ya está en el journal (crash
+                // posterior a EffectUnknown), se continúa sin duplicarlo.
+                stream.Append(new ToolCallEffectUnknown(id, started.EffectClass));
+            }
             FilesystemReconciliation result;
             if (_fsReconciler is not null && started.ReconciliationJson is not null)
             {

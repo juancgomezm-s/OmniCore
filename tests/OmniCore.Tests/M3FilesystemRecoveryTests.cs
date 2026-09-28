@@ -287,6 +287,127 @@ public sealed class M3FilesystemRecoveryTests
         }
     }
 
+    // -------------------- crash entre EffectUnknown y Reconciled (P0: estado intermedio)
+    /// <summary>Escribe en el journal un ToolCallEffectUnknown tras el Started cerrando el almacén:
+    /// replica un crash entre la emisión de EffectUnknown y la de Reconciled (ADR-0004 §2).</summary>
+    private static void AppendEffectUnknown(string storePath, SessionId sessionId, ToolCallId callId,
+        EffectClass effectClass)
+    {
+        var codecs = EventCodecs.Create();
+        var store = new SqliteEventStore(storePath);
+        try
+        {
+            var stream = new EventStream(store, codecs, sessionId);
+            stream.Append(new ToolCallEffectUnknown(callId, effectClass));
+        }
+        finally
+        {
+            store.Close();
+        }
+    }
+
+    [Fact]
+    public void Crash_after_effect_unknown_before_reconciled_is_not_applied_with_single_reconciled()
+    {
+        RunCrashBetweenUnknownAndReconciled("not-applied", false, false);
+    }
+
+    [Fact]
+    public void Crash_after_effect_unknown_before_reconciled_is_conflict_with_single_reconciled()
+    {
+        RunCrashBetweenUnknownAndReconciled("conflict", false, false);
+    }
+
+    /// <summary>
+    /// P0: el crash entre EffectUnknown y Reconciled NO pierde la ToolCall para siempre. El resume
+    /// continúa la reconciliación sin emitir un EffectUnknown duplicado, produce exactamente un
+    /// Reconciled por SQLite cerrado/reabierto y vuelve a ser idempotente al reanudar otra vez.
+    /// EffectUnknown es estado intermedio en la máquina de estados (ADR-0004 §2).
+    /// </summary>
+    private static void RunCrashBetweenUnknownAndReconciled(string caseName, bool outsidePathFlag, bool noMetaFlag)
+    {
+        var root = TempDir();
+        var ws = root + "\\ws";
+        Directory.CreateDirectory(ws);
+        var storePath = root + "\\journal.db";
+        var original = "linea-uno\nlinea-dos\n";
+        var updated = "linea-uno\nlinea-dos-C\n";
+        var pre = VersionOf(original);
+        var post = VersionOf(updated);
+        File.WriteAllText(ws + "\\doc.txt", original);
+        var sessionId = SessionId.New();
+        var runId = RunId.New();
+        var callId = ToolCallId.New();
+        try
+        {
+            string? startedJson = null;
+            if (!noMetaFlag)
+            {
+                if (outsidePathFlag)
+                {
+                    startedJson = FilesystemReconciliationMetadata.Encode("../fuera.txt", pre, post);
+                }
+                else
+                {
+                    startedJson = FilesystemReconciliationMetadata.Encode("doc.txt", pre, post);
+                }
+            }
+
+            WriteCrashJournal(storePath, sessionId, runId, callId, "doc.txt", pre, startedJson);
+
+            if (caseName == "conflict")
+            {
+                File.WriteAllText(ws + "\\doc.txt", "contenido ajeno al pre y al post");
+            }
+            else
+            {
+                // not-applied: el archivo sigue en el pre-hash (el write nunca llegó a persistir).
+            }
+
+            // Crash DESPUÉS de EffectUnknown y ANTES de Reconciled: el journal termina en
+            // EffectUnknown. Al reabrir, el resume debe continuar sin duplicar el EffectUnknown.
+            AppendEffectUnknown(storePath, sessionId, callId, EffectClass.NonIdempotent);
+
+            var store = new SqliteEventStore(storePath);
+            var engine = new SimulationEngine(store, EventCodecs.Create(), new InMemoryAuditSink(),
+                ScriptedToolExecutor.Default(), new FilesystemReconciler(new PathBoundaryValidator()), ws);
+            var stream2 = new EventStream(store, EventCodecs.Create(), sessionId);
+            var reconciled = engine.Resume(sessionId, runId, stream2, ws);
+            Assert.Equal(1, reconciled);
+
+            var results = Reconciled(store, sessionId);
+            Assert.Single(results);
+            Assert.Equal(callId, results[0].ToolCallId);
+            Assert.Equal(ExpectedOutcome(caseName), results[0].Outcome);
+            // El EffectUnknown pre-existente NO se duplica: sigue habiendo exactamente uno.
+            Assert.Equal(1, CountEvents(store, sessionId, "toolcall.effect_unknown"));
+            Assert.Equal(1, CountEvents(store, sessionId, "toolcall.reconciled"));
+            Assert.Equal(0, CountEvents(store, sessionId, "toolcall.succeeded"));
+
+            // La máquina de estados acepta Started → EffectUnknown → Reconciled.
+            var sm = StateMachines.ApplyToolCall(ToolCallState.Started,
+                new ToolCallEffectUnknown(callId, EffectClass.NonIdempotent));
+            Assert.Equal(ToolCallState.EffectUnknown, sm);
+            Assert.Equal(ToolCallState.Reconciled,
+                StateMachines.ApplyToolCall(sm, new ToolCallReconciled(callId, results[0].Outcome, "x")));
+            store.Close();
+
+            // Reanudar otra vez es idempotente: no reconcilia nada nuevo ni duplica eventos.
+            var store2 = new SqliteEventStore(storePath);
+            var engine2 = new SimulationEngine(store2, EventCodecs.Create(), new InMemoryAuditSink(),
+                ScriptedToolExecutor.Default(), new FilesystemReconciler(new PathBoundaryValidator()), ws);
+            var stream3 = new EventStream(store2, EventCodecs.Create(), sessionId);
+            Assert.Equal(0, engine2.Resume(sessionId, runId, stream3, ws));
+            Assert.Equal(1, CountEvents(store2, sessionId, "toolcall.reconciled"));
+            Assert.Equal(1, CountEvents(store2, sessionId, "toolcall.effect_unknown"));
+            store2.Close();
+        }
+        finally
+        {
+            RmDir(root);
+        }
+    }
+
     // ------------------------------ serializacion canonica / ruta sospechosa
     [Fact]
     public void Canonical_metadata_roundtrips_and_rejects_suspicious_paths()
