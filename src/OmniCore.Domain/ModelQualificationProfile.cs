@@ -32,7 +32,17 @@ public sealed class ModelQualificationProfile
 
     public string SuiteId { get; }
 
+    /// <summary>
+    /// Versión de la suite que PRODUJO esta cualificación. `MarkStale` nunca la sobrescribe:
+    /// la nueva versión de la suite queda en <see cref="StaleBySuiteVersion"/>.
+    /// </summary>
     public string SuiteVersion { get; }
+
+    /// <summary>
+    /// Versión de la suite (misma suite) que marcó este perfil Stale; null si el perfil no está
+    /// Stale. Solo se registra cuando el perfil proviene de esa suite (versión mayor superior).
+    /// </summary>
+    public string? StaleBySuiteVersion { get; }
 
     public DateTimeOffset CreatedAt { get; }
 
@@ -40,7 +50,14 @@ public sealed class ModelQualificationProfile
 
     public ModelQualificationProfile(ModelQualificationKey key, ModelQualificationState state,
         long profileRevision, string suiteId, string suiteVersion, DateTimeOffset createdAt,
-        DateTimeOffset updatedAt)
+        DateTimeOffset updatedAt) : this(key, state, profileRevision, suiteId, suiteVersion,
+        null, createdAt, updatedAt)
+    {
+    }
+
+    public ModelQualificationProfile(ModelQualificationKey key, ModelQualificationState state,
+        long profileRevision, string suiteId, string suiteVersion, string? staleBySuiteVersion,
+        DateTimeOffset createdAt, DateTimeOffset updatedAt)
     {
         Key = key;
         KeyHash = key.QualificationKeyHash();
@@ -48,6 +65,7 @@ public sealed class ModelQualificationProfile
         ProfileRevision = profileRevision;
         SuiteId = suiteId;
         SuiteVersion = suiteVersion;
+        StaleBySuiteVersion = staleBySuiteVersion;
         CreatedAt = createdAt;
         UpdatedAt = updatedAt;
     }
@@ -148,5 +166,17 @@ public sealed class ModelQualificationRevisionConflictException : Exception
     {
         ExpectedRevision = expectedRevision;
         ActualRevision = actualRevision;
+    }
+}
+
+/// <summary>
+/// `MarkStale` no aplica: el estado no es Qualified/Calibrated, o la versión nueva de la suite no
+/// es una versión mayor de la misma suite que produjo la cualificación.
+/// </summary>
+public sealed class ModelQualificationStaleException : Exception
+{
+    public ModelQualificationStaleException(string reason)
+        : base(reason)
+    {
     }
 }

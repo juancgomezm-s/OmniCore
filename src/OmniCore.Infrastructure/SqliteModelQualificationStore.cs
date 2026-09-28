@@ -10,8 +10,9 @@ using OmniCore.Domain;
 /// Resolución por clave exacta con columnas tipadas: ninguna consulta vectorial participa en una
 /// decisión de cualificación. Concasión optimista por `profile_revision` (equivalente de
 /// ADR-0044 §9 para M5): Upsert/MarkStale exigen la revisión vigente y jamás pisan cambios
-/// concurrentes. `MarkStale` no destruye la evidencia: solo cambia el estado a Stale y actualiza
-/// suite_version, conservando key_json y el historial de traits (ADR-0007 §4).
+/// concurrentes. `MarkStale` no destruye la evidencia: solo cambia el estado a Stale y registra
+/// la versión que lo volvió Stale en `stale_by_suite_version`, conservando suite_version (la suite
+/// que produjo el perfil), key_json y el historial de traits (ADR-0007 §4).
 /// </summary>
 public sealed class SqliteModelQualificationStore : IModelQualificationStore, IDisposable
 {
@@ -151,6 +152,21 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             throw new ModelQualificationRevisionConflictException(expectedRevision, existing!.ProfileRevision);
         }
 
+        if (existing.State is not (ModelQualificationState.Qualified or ModelQualificationState.Calibrated))
+        {
+            throw new ModelQualificationStaleException(
+                "MarkStale solo aplica sobre perfiles Qualified o Calibrated; estado actual: " + existing.State);
+        }
+
+        var newVersionParts = ParseVersionParts(newSuiteVersion);
+        var currentVersionParts = ParseVersionParts(existing.SuiteVersion);
+        if (newVersionParts[0] <= currentVersionParts[0])
+        {
+            throw new ModelQualificationStaleException(
+                "MarkStale solo aplica ante una versión mayor nueva de la misma suite: actual "
+                + existing.SuiteVersion + ", nueva " + newSuiteVersion);
+        }
+
         var now = _clock();
         using var tx = _conn.BeginTransaction();
         using (var update = _conn.CreateCommand())
@@ -158,12 +174,12 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             update.Transaction = tx;
             update.CommandText = """
                 UPDATE model_profiles SET
-                    state = :st, profile_revision = :rev, suite_version = :sver, updated_at = :now
+                    state = :st, profile_revision = :rev, stale_by_suite_version = :stalever, updated_at = :now
                 WHERE key_hash = :h AND profile_revision = :expected
             """;
             Add(update, "st", ModelQualificationState.Stale.ToString());
             Add(update, "rev", existing!.ProfileRevision + 1);
-            Add(update, "sver", newSuiteVersion);
+            Add(update, "stalever", newSuiteVersion);
             Add(update, "now", Iso(now));
             Add(update, "h", keyHash);
             Add(update, "expected", existing!.ProfileRevision);
@@ -178,7 +194,18 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
         tx.Commit();
         return new ModelQualificationProfile(key, ModelQualificationState.Stale, existing!.ProfileRevision + 1,
-            existing!.SuiteId, newSuiteVersion, existing!.CreatedAt, now);
+            existing!.SuiteId, existing!.SuiteVersion, newSuiteVersion, existing!.CreatedAt, now);
+    }
+
+    private static int[] ParseVersionParts(string version)
+    {
+        var parts = version.Split('.');
+        if (parts.Length < 2 || !int.TryParse(parts[0], out var major) || !int.TryParse(parts[1], out var minor))
+        {
+            throw new ArgumentException("Versión de suite inválida (se esperan al menos mayor.minor): " + version);
+        }
+
+        return [major, minor];
     }
 
     public IReadOnlyList<ModelTraitRecord> Traits(ModelQualificationKey key, long profileRevision,
@@ -290,10 +317,16 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 profile_revision INTEGER NOT NULL,
                 suite_id TEXT NOT NULL,
                 suite_version TEXT NOT NULL,
+                stale_by_suite_version TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """);
+        // Migración compatible para bases anteriores a la columna stale_by_suite_version.
+        if (!ColumnExists("model_profiles", "stale_by_suite_version"))
+        {
+            Exec("ALTER TABLE model_profiles ADD COLUMN stale_by_suite_version TEXT");
+        }
         Exec("""
             CREATE TABLE IF NOT EXISTS model_traits (
                 key_hash TEXT NOT NULL,
@@ -334,10 +367,13 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             throw new InvalidDataException("key_json no es exactamente la serialización canónica de la clave reconstruida");
         }
 
+        var staleByOrdinal = reader.GetOrdinal("stale_by_suite_version");
+        var staleBy = reader.IsDBNull(staleByOrdinal) ? null : Text(reader, "stale_by_suite_version");
+
         return new ModelQualificationProfile(key,
             Enum.Parse<ModelQualificationState>(Text(reader, "state")),
             reader.GetInt64(reader.GetOrdinal("profile_revision")),
-            Text(reader, "suite_id"), Text(reader, "suite_version"),
+            Text(reader, "suite_id"), Text(reader, "suite_version"), staleBy,
             ParseIso(Text(reader, "created_at")), ParseIso(Text(reader, "updated_at")));
     }
 
@@ -371,6 +407,15 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
     {
         var el = root.GetProperty(name);
         return el.ValueKind == JsonValueKind.Null ? null : el.GetString();
+    }
+
+    private bool ColumnExists(string table, string column)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM pragma_table_info(:t) WHERE name = :c";
+        cmd.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter(":t", table));
+        cmd.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter(":c", column));
+        return (long)cmd.ExecuteScalar()! > 0;
     }
 
     private void Exec(string sql)
