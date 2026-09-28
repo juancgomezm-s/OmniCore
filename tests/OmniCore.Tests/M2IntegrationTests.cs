@@ -576,6 +576,55 @@ public sealed class M2IntegrationTests
         TryDeleteFiles(TestCwd, ".omnicore-step-artifacts");
     }
 
+    [Fact]
+    public void Explorer_user_input_replays_as_valid_run_transitions()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var lane = LaneId.New();
+        var stream = new EventStream(store, codecs, session);
+        stream.Append(new RunCreated(run, session, "objetivo", RunMode.Act,
+            ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
+            new TaskBudget(null, null, null, null), TaskId.New(), DateTimeOffset.UtcNow));
+        stream.Append(new RunStarted(run));
+
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow), TestCwd);
+        var turn = new ExplorerTurn((request, token) =>
+            new ModelResponse(new ContentBlock[] { new TextBlock("ok") },
+                StopReason.EndTurn, new TokenUsage(1, 1, 0, 0, 0), null,
+                new ProviderMetadata("", "", null)),
+            executor, hostTools.Catalog(),
+            new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]),
+            new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
+            new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null),
+            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-run-artifacts"),
+            new InMemoryAuditSink(), new RedactionPolicy());
+
+        Assert.Equal(StopReason.EndTurn,
+            turn.Ask("primera", "sys", session, run, lane, "", CancellationToken.None).StopReason);
+        Assert.Equal(StopReason.EndTurn,
+            turn.Ask("segunda", "sys", session, run, lane, "", CancellationToken.None).StopReason);
+
+        var state = RunState.Created;
+        var lifecycle = new List<string>();
+        foreach (var evt in store.ReadFrom(session, 1))
+        {
+            var type = evt.Type.ToString();
+            if (type != "run.created" && type != "run.started" && type != "run.awaiting_input"
+                && type != "user_input.received") continue;
+            lifecycle.Add(type);
+            state = StateMachines.ApplyRun(state, codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson));
+        }
+        Assert.Equal(RunState.Running, state);
+        Assert.Equal(new[] { "run.created", "run.started", "run.awaiting_input", "user_input.received",
+            "run.awaiting_input", "user_input.received" }, lifecycle);
+        TryDeleteFiles(TestCwd, ".omnicore-run-artifacts");
+    }
+
     /// <summary>
     /// Reproduce una ToolCall desde su Requested aplicando la state machine (StateMachines.
     /// ApplyToolCall) sobre los eventos del journal; devuelve true si nunca lanza transición
