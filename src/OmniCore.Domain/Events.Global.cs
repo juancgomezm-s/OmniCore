@@ -14,6 +14,22 @@ public record SessionCreated(SessionId SessionId, string WorkspaceId, string Wor
     public int SchemaVersion() => 1;
 }
 
+/// <summary>
+/// WorkspaceRootEstablished: fija la RAÍZ DURADERA Y VERIFICABLE del workspace al crear la sesión.
+/// Es el origen EXPLÍCITO y seguro que usa la recuperación del Host (ADR-0004 §5) para reconciliar
+/// efectos tras un crash: NUNCA se acepta una ruta de display (<c>WorkspaceDisplayPath</c>) ni el
+/// cwd del proceso como autoridad. Solo la emiten los creadores de sesiones con un workspace real
+/// (p.ej. el Explorer); las sesiones de simulación no lo emiten y por tanto no son recuperables por
+/// el Host de forma automática (fallan cerrado). Cada sesión emite exactamente uno.
+/// </summary>
+public record WorkspaceRootEstablished(SessionId SessionId, string CanonicalRoot, DateTimeOffset CreatedAt)
+    : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("workspace.root_established");
+
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>UserInputReceived: el usuario envía input al Run (ADR-0035 §1).</summary>
 [JsonSerializable(typeof(UserInputReceived))]
 public record UserInputReceived(RunId RunId, string InputPartsJson, ArtifactRef? ContentRef) : DomainEventPayload

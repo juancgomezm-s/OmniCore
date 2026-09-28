@@ -29,6 +29,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunCancelled())
             .Plus(Typed.RunModeChanged())
             .Plus(Typed.SessionCreated())
+            .Plus(Typed.WorkspaceRootEstablished())
             .Plus(Typed.InteractionRequested())
             .Plus(Typed.InteractionResolved())
             .Plus(Typed.InteractionExpired())
@@ -263,6 +264,12 @@ public sealed class Typed
         Of(EventType.Of("session.created"),
             json => (SessionCreated) (JsonSerializer.Deserialize<SessionCreated>(json) ?? throw new FormatException("null")),
             payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((SessionCreated) payload))));
+
+    public static CodecPair WorkspaceRootEstablished() =>
+        Of(EventType.Of("workspace.root_established"),
+            json => (WorkspaceRootEstablished) (JsonSerializer.Deserialize<WorkspaceRootEstablished>(json)
+                ?? throw new FormatException("null")),
+            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((WorkspaceRootEstablished) payload))));
 
     public static CodecPair InteractionRequested() =>
         Of(EventType.Of("interaction.requested"),
