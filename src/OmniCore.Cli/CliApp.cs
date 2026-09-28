@@ -56,7 +56,7 @@ public sealed class CliApp
         // Default del CLI (criterio M2 `omni "explícame …"`): cualquier primer argumento que
         // no sea un subcomando es un prompt al Explorer (omni ask con la pregunta literal).
         Console.WriteLine("omni: intención asumida como pregunta → ask '" + command + "'");
-        return RunAsk(args);
+        return RunAsk(new[] { "ask", string.Join(" ", args) });
     }
 
     private static Task<int> RunSim(string[] args)
@@ -281,7 +281,7 @@ public sealed class CliApp
             }
 
             // 1. Runtime real: materializa el contexto con el sim (WorkingState + plan + tokens).
-            var hostTools = OmniHost.CreateHostTools();
+            var hostTools = OmniHost.CreateExplorerTools();
             var server = ResumeAwareServer();
             var wsQuery = server.Query("workingState", CancellationToken.None);
             var wsJson = wsQuery is null ? "{}" : wsQuery!.Json;
@@ -289,15 +289,24 @@ public sealed class CliApp
                 .TryGetValue("workingState", out var wsVal) ? wsVal! : "";
             if (workingStateText.Length == 0)
             {
-                Console.WriteLine("omni ask: el run no tiene WorkingState; ejecuta primero `omni sim`.");
-                return Task.FromResult(1);
+                var start = server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
+                    + JsonObj.Field("cmd", "explore.start") + ","
+                    + JsonObj.Field("objective", question) + "}"), CancellationToken.None);
+                if (start.Status != "ok")
+                {
+                    Console.WriteLine("omni ask: " + (start.Error ?? "no se pudo iniciar el run"));
+                    return Task.FromResult(1);
+                }
+
+                wsQuery = server.Query("workingState", CancellationToken.None);
+                wsJson = wsQuery?.Json ?? "{}";
+                workingStateText = OmniCore.Protocol.JsonObj.Parse(wsJson)
+                    .TryGetValue("workingState", out wsVal) ? wsVal! : "";
             }
 
             var stateQuery = server.Query("state", CancellationToken.None);
             var stateJson = stateQuery?.Json ?? "{}";
             var runState = OmniCore.Protocol.JsonObj.Parse(stateJson).TryGetValue("runState", out var rs) ? rs! : "M2";
-            var fingerprint = new OmniCore.Domain.ExecutionFingerprint(
-                model!, "harness-v1", "core-tools-1", "ctx-v1", "none", "M2");
             var sessionId = server.LastSessionId() ?? OmniCore.Domain.SessionId.New();
             var runId = server.LastRunId() ?? OmniCore.Domain.RunId.New();
 
@@ -307,6 +316,19 @@ public sealed class CliApp
             var usableContext = modelDef is not null && modelDef!.RecommendedUsableContext > 0
                 ? modelDef!.RecommendedUsableContext
                 : (modelDef is not null && modelDef!.ContextWindow > 0 ? modelDef!.ContextWindow : 8192);
+            var effectiveProfile = new OmniCore.Host.ModelProfileResolver()
+                .Resolve(modelDef ?? new OmniCore.Models.ModelDefinition(model!, "local", usableContext,
+                    usableContext, 2048), providerDesc);
+            var harness = new OmniCore.Domain.HarnessPolicyResolver().Resolve(effectiveProfile);
+            var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
+                harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
+                harness.PlanControl, harness.StallThresholdTurns);
+            var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(harnessValue)));
+            var fingerprint = new OmniCore.Domain.ExecutionFingerprint(
+                model!, harnessHash, "core-tools-1", "heuristic:chars4/1", "none", "M2");
+            // M2 aún no ofrece tool.search; la disponibilidad del runtime limita la selección
+            // provisional a Direct, aunque el perfil recomiende Discovered para M5.
             var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
                 usableContext, OmniCore.Domain.ToolMode.Direct, null);
 
@@ -326,7 +348,7 @@ public sealed class CliApp
 
             // 3. Turn end-to-end: contexto REAL del run + fingerprint + tools reales + permisos,
             //    con persistencia en el journal del servidor (Turn, tools, respuesta como artifact).
-            var executor = OmniHost.CreateSimExecutor(Path.GetFullPath("."));
+            var executor = OmniHost.CreateExplorerExecutor(hostTools.Catalog(), Path.GetFullPath("."));
             var materializer = new OmniCore.Context.ContextMaterializer(
                 new OmniCore.Infrastructure.HeuristicTokenCounter(),
                 new OmniCore.Context.IContextContributor[] {
@@ -339,7 +361,7 @@ public sealed class CliApp
                 executor, hostTools.Catalog(), materializer, fingerprint, selection,
                 server.AcquireStore(), server.AcquireCodecs(), artifacts,
                 new OmniCore.Infrastructure.InMemoryAuditSink(),
-                new OmniCore.Domain.RedactionPolicy());
+                new OmniCore.Domain.RedactionPolicy(), harness);
             var instruction = "Ayudas a un asistente de ingeniería. Work Thread del workspace:\n"
                 + "Contexto del run disponible ({context}).\n"
                 + "Responde en español, sé conciso y usa las tools cuando aporten.";
@@ -363,7 +385,8 @@ public sealed class CliApp
         }
         catch (Exception ex)
         {
-            Console.WriteLine("omni ask: error: " + (ex.Message ?? "?") + " [" + ex.GetType().Name + "]");
+            Console.WriteLine("omni ask: error: " + new OmniCore.Domain.PiiRedactor().Redact(ex.Message ?? "?")
+                + " [" + ex.GetType().Name + "]");
             if (ex.StackTrace is not null)
             {
                 Console.WriteLine("  frames: " + ex.StackTrace.Length + " " + string.Join("|", ex.StackTrace.Take(6)));

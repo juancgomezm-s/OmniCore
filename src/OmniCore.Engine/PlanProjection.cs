@@ -8,14 +8,14 @@ public sealed class PlanProjection
 {
     private readonly Dictionary<PlanId, Plan> _revisions = new();
 
-    public PlanId? Id { get; }
+    public PlanId? Id => IdValue;
 
-    public RunId? RunId { get; }
+    public RunId? RunId => RunIdValue;
 
     private PlanProjection(PlanId? id, RunId? runId)
     {
-        Id = id;
-        RunId = runId;
+        IdValue = id;
+        RunIdValue = runId;
     }
 
     public static PlanProjection Empty() => new(null, null);

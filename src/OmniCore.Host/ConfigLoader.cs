@@ -79,7 +79,8 @@ public sealed class ConfigLoader
                     var context = Long(values, "context", 8192);
                     var usable = Long(values, "recommendedUsableContext", context);
                     var maxOut = Long(values, "maxOutput", 2048);
-                    registry.AddModel(new ModelDefinition(id, provider!, context, usable, maxOut));
+                    registry.AddModel(new ModelDefinition(id, provider!, context, usable, maxOut,
+                        Double(values, "parametersBillions")));
                 }
             }
         }
@@ -192,5 +193,14 @@ public sealed class ConfigLoader
         if (raw! is int) return (int) raw!;
         var s = raw!.ToString()!;
         return long.TryParse(s.Trim(), out var n) ? n : fallback;
+    }
+
+    private static double? Double(Dictionary<object, object> map, string key)
+    {
+        var raw = Raw(map, key);
+        return raw is not null && double.TryParse(raw.ToString(),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var value) && value > 0
+            ? value : null;
     }
 }

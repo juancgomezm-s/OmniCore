@@ -92,7 +92,9 @@ public sealed class HarnessPolicyResolver
                 : ToolCallFormat.PromptedJson;
         }
 
-        var mode = toolReliability >= 0.6 ? ToolMode.Direct : ToolMode.Discovered;
+        // Un modelo con tool calling débil recibe pocas tools explícitas; discovery exige
+        // fiabilidad suficiente (ADR-0044 §4).
+        var mode = toolReliability >= 0.6 ? ToolMode.Discovered : ToolMode.Direct;
         var visible = profile.RecommendedUsableContext < 16_000 ? 6 : 12;
         var guidance = instructionFollowing >= 0.7 ? GuidanceLevel.Full
             : instructionFollowing >= 0.4 ? GuidanceLevel.DomainOnly : GuidanceLevel.Off;
