@@ -297,4 +297,35 @@ public sealed class ModelQualificationStoreTests
         Assert.Single(existing);
         Assert.Equal("InstructionFollowing", existing[0].Trait);
     }
+
+    [Fact]
+    public void SaveTraits_atomic_revision_check_with_two_connections()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        var hash = key.QualificationKeyHash();
+
+        using var storeA = NewStore(dir);
+        storeA.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        storeA.SaveTraits(key, 1,
+            new[] { new ModelTraitRecord(hash, 1, "InstructionFollowing", 0.8, 0.9, 12, "suite") },
+            CancellationToken.None);
+
+        using var storeB = NewStore(dir);
+        // storeB sube la revisión del perfil mientras storeA sigue operando sobre la revisión 1.
+        storeB.MarkStale(key, 1, "2.0.0", CancellationToken.None);
+
+        // El intento de storeA con la revisión obsoleta debe fallar sin tocar los traits.
+        var ex = Assert.Throws<ModelQualificationRevisionConflictException>(() =>
+            storeA.SaveTraits(key, 1,
+                new[] { new ModelTraitRecord(hash, 1, "InstructionFollowing", 0.9, 0.9, 13, "stale") },
+                CancellationToken.None));
+        Assert.Equal(1L, ex.ExpectedRevision);
+        Assert.Equal(2L, ex.ActualRevision);
+
+        // La evidencia histórica de la revisión 1 sigue intacta.
+        var historical = storeA.Traits(key, 1, CancellationToken.None);
+        Assert.Single(historical);
+        Assert.Equal(0.8, historical[0].Value);
+    }
 }

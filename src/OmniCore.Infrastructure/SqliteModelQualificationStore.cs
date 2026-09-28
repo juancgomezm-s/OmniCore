@@ -209,19 +209,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         var keyHash = key.QualificationKeyHash();
 
         // Validación cerrada ANTES de tocar la base de datos:
-        // 1) El perfil debe existir y su revisión vigente debe coincidir con profileRevision.
-        // 2) Cada trait debe tener KeyHash y ProfileRevision correctos.
-        var existing = Get(key, cancellationToken);
-        if (existing is null)
-        {
-            throw new ModelQualificationRevisionConflictException(profileRevision, 0);
-        }
-
-        if (existing!.ProfileRevision != profileRevision)
-        {
-            throw new ModelQualificationRevisionConflictException(profileRevision, existing.ProfileRevision);
-        }
-
+        // cada trait debe tener KeyHash y ProfileRevision correctos.
         foreach (var t in traits)
         {
             if (t.KeyHash != keyHash)
@@ -238,7 +226,30 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             }
         }
 
+        // Verificación y reemplazo son atómicos dentro de la transacción: la revisión vigente
+        // se revalida al reemplazar, para que un perfil subido por otro cliente entre la lectura
+        // inicial y el DELETE/INSERT no pise traits de una revisión obsoleta.
         using var tx = _conn.BeginTransaction();
+        using (var check = _conn.CreateCommand())
+        {
+            check.Transaction = tx;
+            check.CommandText = "SELECT profile_revision FROM model_profiles WHERE key_hash = :h";
+            Add(check, "h", keyHash);
+            using var reader = check.ExecuteReader();
+            if (!reader.Read())
+            {
+                tx.Rollback();
+                throw new ModelQualificationRevisionConflictException(profileRevision, 0);
+            }
+
+            var currentRevision = reader.GetInt64(0);
+            if (currentRevision != profileRevision)
+            {
+                tx.Rollback();
+                throw new ModelQualificationRevisionConflictException(profileRevision, currentRevision);
+            }
+        }
+
         using (var del = _conn.CreateCommand())
         {
             del.Transaction = tx;
