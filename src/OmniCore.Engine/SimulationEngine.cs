@@ -342,15 +342,10 @@ public sealed class SimulationEngine
     }
 
     /// <summary>
-    /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2): detecta en el journal las ToolCalls
-    /// Started-sin-outcome DENTRO del run pedido, emite ToolCallEffectUnknown —solo si aún no se
-    /// emitió— y las reconcilia contra la serialización canónica de metadatos persistida en su propio
-    /// <c>ToolCallStarted</c> (ruta + hashes pre/post; ADR-0004 §4), SIN re-ejecutar el efecto.
-    /// Devuelve el número de toolcalls reconciliadas. Es IDEMPOTENTE: <c>ToolCallEffectUnknown</c> es
-    /// un estado INTERMEDIO (ADR-0004 §2) y no terminal, así que un crash entre
-    /// <c>EffectUnknown</c> y <c>Reconciled</c> se continúa reconciliando en el siguiente resume sin
-    /// duplicar el EffectUnknown; una ToolCall ya resuelta (Succeeded/Failed/Reconciled) no se vuelve
-    /// a tocar. Filtra por Run/ToolCall para no reconciliar huérfanos de otros runs de la sesión.
+    /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2). La lógica vive en
+    /// <c>RunResumeService</c> (idempotente, scoped por Run, rechaza Runs terminales) para que el
+    /// sim y el Host compartan la misma implementación sin duplicarla. Este overload usa la raíz
+    /// de workspace configurada en el engine.
     /// </summary>
     public int Resume(SessionId sessionId, RunId runId, EventStream stream)
     {
@@ -358,131 +353,15 @@ public sealed class SimulationEngine
     }
 
     /// <summary>
-    /// Variante con raíz de workspace explícita: el reconciliador inyectado _fsReconciler relee el
-    /// hash real del archivo para clasificar Applied/NotApplied/Conflict contra pre/post. Sin
-    /// reconciliador o sin metadatos → Unresolvable (falla cerrado, nunca Applied).
+    /// Variante con raíz de workspace explícita: delega en <c>RunResumeService</c>, que relee el
+    /// hash real del archivo con el reconciliador inyectado _fsReconciler para clasificar
+    /// Applied/NotApplied/Conflict contra pre/post. Sin reconciliador o sin metadatos →
+    /// Unresolvable (falla cerrado, nunca Applied). El parámetro <c>stream</c> se conserva por
+    /// compatibilidad de API; el servicio escribe su propio EventStream sobre el mismo store.
     /// </summary>
     public int Resume(SessionId sessionId, RunId runId, EventStream stream, string workspaceRoot)
     {
-        var tail = _store.ReadFrom(sessionId, 1);
-        var range = RunEventRange(tail, _codecs, runId);
-        if (range is null)
-        {
-            return 0; // el run no está en la sesión: nada que reconciliar
-        }
-
-        var from = range![0];
-        var to = range![1];
-        var startedNoOutcome = new Dictionary<ToolCallId, ToolCallStarted>();
-        // Solo Succeeded/Failed/Reconciled son terminales (ADR-0004 §2). EffectUnknown es un estado
-        // INTERMEDIO: si el crash fue DESPUÉS de emitirlo y ANTES de Reconciled, la ToolCall sigue
-        // sin outcome y el siguiente resume debe continuar la reconciliación sin duplicarlo.
-        var terminal = new HashSet<ToolCallId>();
-        var alreadyUnknown = new HashSet<ToolCallId>();
-        for (var i = from; i < to; i++)
-        {
-            var evt = tail[i];
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
-            if (payload is ToolCallStarted started)
-            {
-                startedNoOutcome[started.ToolCallId] = started;
-            }
-            else if (payload is ToolCallEffectUnknown unknown)
-            {
-                alreadyUnknown.Add(unknown.ToolCallId);
-            }
-            else if (payload is ToolCallSucceeded || payload is ToolCallFailed
-                || payload is ToolCallReconciled)
-            {
-                var id = ToolCallIdOf(payload);
-                if (id is not null)
-                {
-                    terminal.Add(id!);
-                }
-            }
-        }
-
-        var reconciled = 0;
-        foreach (var entry in startedNoOutcome)
-        {
-            var id = entry.Key;
-            var started = entry.Value;
-            if (terminal.Contains(id))
-            {
-                continue; // idempotencia: ya resuelta por su outcome (o un Reconciled previo)
-            }
-
-            if (!alreadyUnknown.Contains(id))
-            {
-                // Solo el primer resume emite EffectUnknown; si ya está en el journal (crash
-                // posterior a EffectUnknown), se continúa sin duplicarlo.
-                stream.Append(new ToolCallEffectUnknown(id, started.EffectClass));
-            }
-            FilesystemReconciliation result;
-            if (_fsReconciler is not null && started.ReconciliationJson is not null)
-            {
-                result = _fsReconciler!.Reconcile(workspaceRoot, started.ReconciliationJson!,
-                    CancellationToken.None);
-            }
-            else
-            {
-                // Sin metadatos/reconciliador: falla cerrado. Nunca se re-ejecuta ni se clasifica.
-                result = FilesystemReconciliation.Unresolvable(
-                    "metadatos de reconciliación ausentes o sin reconciliador: falla cerrado, sin re-ejecutar");
-            }
-
-            stream.Append(new ToolCallReconciled(id, result.Outcome, result.Detail));
-            reconciled += 1;
-        }
-
-        return reconciled;
-    }
-
-    /// <summary>Extrae el ToolCallId de un evento de outcome (estos campos son no-nulos).</summary>
-    private static ToolCallId? ToolCallIdOf(DomainEventPayload payload)
-    {
-        if (payload is ToolCallSucceeded s) return s.ToolCallId;
-        if (payload is ToolCallFailed f) return f.ToolCallId;
-        if (payload is ToolCallReconciled r) return r.ToolCallId;
-        if (payload is ToolCallEffectUnknown u) return u.ToolCallId;
-        return null;
-    }
-
-    /// <summary>
-    /// Rango de secuencias [from, to) de los eventos atribuibles al run pedido: desde su RunCreated
-    /// hasta el RunCreated del siguiente run (o el final de la sesión). Un solo run activo por sesión
-    /// (ADR-0035). Devuelve null si el run no aparece en la sesión.
-    /// </summary>
-    private static int[]? RunEventRange(IReadOnlyList<DomainEvent> tail, IEventCodecRegistry codecs,
-        RunId runId)
-    {
-        var from = -1;
-        var to = tail.Count;
-        for (var i = 0; i < tail.Count; i++)
-        {
-            var payload = codecs.CodecFor(tail[i].Type).Decode(tail[i].Type, tail[i].PayloadJson);
-            if (payload is not RunCreated run)
-            {
-                continue;
-            }
-
-            if (run.RunId == runId)
-            {
-                from = i;
-            }
-            else if (from >= 0)
-            {
-                to = i;
-                break;
-            }
-        }
-
-        if (from < 0)
-        {
-            return null;
-        }
-
-        return new int[] { from, to };
+        return new RunResumeService(_store, _codecs, _fsReconciler, workspaceRoot).Resume(sessionId, runId);
     }
 
     private void ExecuteTurns(SimulationScenario scenario, EventStream stream, LaneId laneId,

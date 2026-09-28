@@ -4,6 +4,7 @@ using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Execution;
 using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 using OmniCore.Security;
@@ -44,6 +45,8 @@ public sealed class OmniServer : IOmniClient
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = null;
         LoadLastSession();
+        // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
+        RecoverPendingEffects();
     }
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile)
@@ -54,6 +57,8 @@ public sealed class OmniServer : IOmniClient
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = stateFile;
         LoadLastSession();
+        // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
+        RecoverPendingEffects();
     }
 
     /// <summary>Composición común: tools Core + defaults por modo (modo Act del sim).</summary>
@@ -128,6 +133,74 @@ public sealed class OmniServer : IOmniClient
         }
 
         File.WriteAllText(_stateFile!, _lastSessionId!.ToString() + "\n" + _lastRunId!.ToString());
+    }
+
+    /// <summary>
+    /// Recuperación del Run real al arrancar el Host (ADR-0004 §5, ADR-0041 §2): si hay un run
+    /// persistido reanudable, detecta sus ToolCalls <c>Started</c>-sin-outcome (crash) y las
+    /// reconcilia con el <c>FilesystemReconciler</c> REAL contra la raíz del workspace que el run
+    /// usó (reconstruida del <c>SessionCreated</c> del journal; fallback al cwd del proceso).
+    /// NO pasa por el executor del sim: usa un <c>RunResumeService</c> dedicado, idempotente, que
+    /// rechaza Runs terminales y nunca re-ejecuta la tool ni re-infere la respuesta. Es un no-op
+    /// (<c>0</c>) sin run persistido. Falla cerrado: si la recuperación no corre, no bloquea
+    /// el arranque ni amplía permisos; el run del journal queda con su estado incompleto intacto.
+    /// Devuelve cuántas ToolCalls se reconciliaron.
+    /// </summary>
+    private int RecoverPendingEffects()
+    {
+        if (_lastSessionId is null || _lastRunId is null)
+        {
+            return 0;
+        }
+
+        var workspaceRoot = WorkspaceRootFor(_lastSessionId!);
+        if (workspaceRoot is null || workspaceRoot!.Length == 0)
+        {
+            // Sin raíz segura el reconciliador falla cerrado de todos modos; no hay nada que inferir.
+            workspaceRoot = Path.GetFullPath(".");
+        }
+
+        var service = new RunResumeService(_store, _codecs,
+            new FilesystemReconciler(new PathBoundaryValidator()), workspaceRoot!);
+        try
+        {
+            return service.Resume(_lastSessionId!, _lastRunId!);
+        }
+        catch (Exception)
+        {
+            // Falla cerrado: jamás se re-ejecuta una tool ni se amplía un permiso por un fallo
+            // de recuperación; el run queda como estaba y se reintenta en el próximo arranque.
+            return 0;
+        }
+    }
+
+    /// <summary>Raíz del workspace del run reanudable, reconstruida del <c>SessionCreated</c> del journal.</summary>
+    private string? WorkspaceRootFor(SessionId sessionId)
+    {
+        try
+        {
+            foreach (var evt in _store.ReadFrom(sessionId, 1))
+            {
+                if (!evt.Type.ToString().Equals("session.created", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var created = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson) as SessionCreated;
+                if (created is not null && created!.WorkspaceDisplayPath is not null
+                    && created!.WorkspaceDisplayPath.Length > 0)
+                {
+                    return created!.WorkspaceDisplayPath;
+                }
+
+                return null;
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        return null;
     }
 
     private IReadOnlyList<DomainEvent> EventsForRun(IReadOnlyList<DomainEvent> all, RunId runId)
