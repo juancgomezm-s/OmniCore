@@ -1,5 +1,6 @@
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+using OmniCore.Security;
 
 namespace OmniCore.Tests;
 
@@ -358,5 +359,102 @@ internal static class BoundaryTests
             secrets: secrets ?? Array.Empty<string>());
         return new ToolIntent(new ToolCallId(Guid.NewGuid()), new ToolId(tool), "{}",
             EffectClass.NonIdempotent, claims, ToolRisk.Medium, null);
+    }
+}
+
+/// <summary>Tests del cableado de la frontera en el ToolRuntime (ADR-0044 §5).</summary>
+public sealed class ToolRuntimeBoundaryTests
+{
+    private sealed class EventSink
+    {
+        public List<OmniCore.Domain.DomainEventPayload> Events { get; } = new();
+
+        public OmniCore.Tools.VoidBox Emit(OmniCore.Domain.DomainEventPayload payload)
+        {
+            Events.Add(payload);
+            return OmniCore.Tools.VoidBox.Instance;
+        }
+
+        public int Count(string eventName)
+        {
+            var n = 0;
+            foreach (var e in Events)
+            {
+                if (e.Type().ToString() == eventName)
+                {
+                    n++;
+                }
+            }
+
+            return n;
+        }
+    }
+
+    private static ModelCapabilityBoundary FallbackBoundary()
+    {
+        var effective = EffectiveModelPolicy.Resolve(ModelPolicyKey.For("p", "m"), null,
+            new HarnessPolicy(ToolCallFormat.Native, ToolMode.Discovered, 16, GuidanceLevel.Full, 3,
+                PlanControl.ModelDriven, 8));
+        return new ModelCapabilityBoundary(effective);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task ObserveOnly_boundary_rejects_write_before_permissions()
+    {
+        var sink = new EventSink();
+        var policy = ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow);
+        var runtime = OmniCore.Tools.ToolRuntime.For(OmniCore.Tools.FakeCatalog.Default(), policy,
+            sink.Emit, FallbackBoundary());
+
+        var outcome = runtime.Run(
+            new ValidatedToolCall(OmniCore.Domain.ToolCallId.New(), new ToolId("fake.write"), "pc-1", "{}"),
+            new ToolPreparationContext("sim", DateTimeOffset.Now),
+            new ToolExecutionContext("sim"), true, TestContext.Current.CancellationToken);
+
+        // El Permission Engine habría permitido: la frontera corta antes (categoría nunca otorga).
+        Assert.False(outcome.Succeeded);
+        Assert.Equal(OmniCore.Domain.ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(0, sink.Count("toolcall.permission_evaluated"));
+        Assert.Equal(0, sink.Count("toolcall.authorized"));
+        Assert.Equal(0, sink.Count("toolcall.started"));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Boundary_allows_read_within_ceiling()
+    {
+        var sink = new EventSink();
+        var policy = ScriptedPermissionPolicy.WithTool("fake.read", PermissionDecision.Allow);
+        var runtime = OmniCore.Tools.ToolRuntime.For(OmniCore.Tools.FakeCatalog.Default(), policy,
+            sink.Emit, FallbackBoundary());
+
+        var outcome = runtime.Run(
+            new ValidatedToolCall(OmniCore.Domain.ToolCallId.New(), new ToolId("fake.read"), "pc-2", "{}"),
+            new ToolPreparationContext("sim", DateTimeOffset.Now),
+            new ToolExecutionContext("sim"), true, TestContext.Current.CancellationToken);
+
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(OmniCore.Domain.ToolCallState.Succeeded, outcome.FinalState);
+        Assert.Equal(1, sink.Count("toolcall.permission_evaluated"));
+        Assert.Equal(1, sink.Count("toolcall.succeeded"));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Without_boundary_pipeline_is_unchanged()
+    {
+        var sink = new EventSink();
+        var policy = ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow);
+        var runtime = OmniCore.Tools.ToolRuntime.For(OmniCore.Tools.FakeCatalog.Default(), policy,
+            sink.Emit);
+
+        var outcome = runtime.Run(
+            new ValidatedToolCall(OmniCore.Domain.ToolCallId.New(), new ToolId("fake.write"), "pc-3", "{}"),
+            new ToolPreparationContext("sim", DateTimeOffset.Now),
+            new ToolExecutionContext("sim"), true, TestContext.Current.CancellationToken);
+
+        // Null boundary = comportamiento M2 intacto: la frontera es componible, no obligatoria.
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(1, sink.Count("toolcall.prepared"));
+        Assert.Equal(1, sink.Count("toolcall.permission_evaluated"));
+        Assert.Equal(1, sink.Count("toolcall.succeeded"));
     }
 }
