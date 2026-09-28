@@ -83,6 +83,15 @@ public sealed class FilesystemPatchTool : ITool
         return new Prepared(intent);
     }
 
+    /// <summary>
+    /// Costura interna de test (bloqueante 2 de auditoría): permite inyectar un fallo
+    /// determinista DESPUÉS de escribir el temporal y antes de publicar, para probar el
+    /// catch de publicación (original intacto + temporal limpio) sin estado global.
+    /// </summary>
+#pragma warning disable CS0649
+    internal Action<string, string>? TestFailureHook;
+#pragma warning restore CS0649
+
     public Task<ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
@@ -169,23 +178,44 @@ public sealed class FilesystemPatchTool : ITool
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("El patch no produce ningún cambio sobre el contenido actual"));
         }
 
-        // Escrito atómico (M3): se construyen los bytes actualizados, se escriben en un archivo
-        // temporal hermano con nombre impredecible, y recién entonces se publica sobre el
-        // original vía operación de reemplazo/rename atómica donde la plataforma lo permita.
-        // Si el reemplazo falla, se limpia el temporal de esta operación (sin tocar el original).
+        // Escrito atómico (M3, bloqueante 1 de auditoría): se construyen los bytes actualizados,
+        // se escriben en un archivo temporal hermano creado con apertura EXCLUSIVA
+        // (FileMode.CreateNew + FileShare.None, FileOptions.WriteThrough) y recién entonces se
+        // publica sobre el original vía operación de reemplazo/rename atómica donde la plataforma
+        // lo permita. La apertura exclusiva evita el pre-creado de un symlink/junction por un
+        // actor local que reutilice el nombre, aunque esto NO elimina todas las carreras de
+        // symlinks (TOCTOU): se documenta como limitación conocida. Si el reemplazo falla, se
+        // limpia el temporal de esta operación (sin tocar el original).
         var newBytes = FileVersion.Encode(updated, decoded.Encoding);
         var tempPath = Path.Combine(
             Path.GetDirectoryName(full)!,
             "." + Path.GetFileName(full) + ".tmp-" + Guid.NewGuid().ToString("N"));
+        // Revalidar la frontera del TEMPORAL antes de escribirlo: el nombre se construye con
+        // GetFileName/GetDirectoryName pero si el padre de 'full' es un symlink/junction que
+        // apunta fuera, el temporal podría crearse fuera del workspace.
+        if (!_boundary.IsWithin(tempPath, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Temporal fuera del workspace"));
+        }
+        var createdTemp = false;
         try
         {
-            File.WriteAllBytes(tempPath, newBytes);
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(newBytes);
+                stream.Flush(flushToDisk: true);
+            }
+            createdTemp = true;
 
             // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
             if (!_boundary.IsWithin(full, context.WorkspaceRoot))
             {
                 return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)"));
             }
+
+            // Costura de test: si está configurada, lanza una excepción aquí — DESPUÉS de
+            // escribir el temporal y antes de publicar — para forzar el camino de fallo.
+            TestFailureHook?.Invoke(tempPath, full);
 
             PublishAtomic(tempPath, full);
         }
@@ -201,7 +231,9 @@ public sealed class FilesystemPatchTool : ITool
         }
         finally
         {
-            if (File.Exists(tempPath))
+            // Solo se limpia el temporal si este proceso lo creó (createdTemp): nunca se toca
+            // un nombre que no creamos nosotros, aunque coincida con el que se esperaba.
+            if (createdTemp && File.Exists(tempPath))
             {
                 try
                 {
@@ -275,10 +307,15 @@ public sealed class FilesystemPatchTool : ITool
     }
 
     /// <summary>
-    /// Publica el archivo temporal sobre el destino mediante operación atómica.
-    /// Usa System.IO.File.Move con overwrite=true, que en Windows corresponde a un
-    /// reemplazo atómico dentro de la misma unidad de disco. Si la plataforma no
-    /// soporta el reemplazo atómico, se degrada a Move sin overwrite + delete.
+    /// Publica el archivo temporal sobre el destino mediante System.IO.File.Move con
+    /// overwrite=true. En Windows, cuando ambos están en la misma unidad, .NET lo implementa
+    /// con MoveFileEx + REPLACE_EXISTING, que es una operación atómica a nivel de sistema de
+    /// archivos (el rename reemplaza el destino en un solo paso). Esto NO es una garantía
+    /// absoluta de atomicidad documentada por Microsoft para todos los sistemas operativos:
+    /// en plataformas o configuraciones donde el reemplazo no pueda ser atómico (unidades
+    /// cruzadas, redes), el resultado depende de la implementación de la plataforma y no
+    /// debe asumirse como atómico. Si la operación no es atómica, es la responsabilidad del
+    /// caller (ExecuteAsync) de limpiar el temporal si el destino no quedó correctamente.
     /// </summary>
     private static void PublishAtomic(string tempPath, string destPath)
     {

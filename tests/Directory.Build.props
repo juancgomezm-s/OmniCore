@@ -4,6 +4,7 @@
 
   <PropertyGroup>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);xUnit2013</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
