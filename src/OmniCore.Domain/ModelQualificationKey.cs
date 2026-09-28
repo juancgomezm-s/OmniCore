@@ -1,8 +1,9 @@
 namespace OmniCore.Domain;
 
-using System.Collections;
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 
 /// <summary>
@@ -90,11 +91,11 @@ public sealed class ModelQualificationKey
             adapterSnapshot.Add(a);
         }
 
+        Adapters = adapterSnapshot.ToImmutableArray();
         ProviderId = providerId;
         ModelId = modelId;
         ModelRevision = modelRevision;
         Quantization = quantization;
-        Adapters = adapterSnapshot;
         Backend = backend;
         BackendBuild = backendBuild;
         ChatTemplateHash = chatTemplateHash;
@@ -110,18 +111,13 @@ public sealed class ModelQualificationKey
         => new(providerId, modelId, null, null, Array.Empty<string>(), null, null, null,
             "default", toolCallFormat, toolMode, "v1");
 
-    private static readonly JsonSerializerOptions CanonicalOptions = new()
-    {
-        PropertyNameCaseInsensitive = false,
-    };
-
     /// <summary>JSON canónico determinista (orden fijo de campos; null explícito; adapters en orden de entrada).</summary>
     public string CanonicalJson()
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions
         {
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         }))
         {
             writer.WriteStartObject();
