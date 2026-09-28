@@ -300,6 +300,85 @@ public sealed class FilesystemPatchToolTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Patch_preserves_utf8_bom_encoding()
+    {
+        var ws = TempDir();
+        var executor = PatchExecutor(ws);
+        // Contenido con BOM UTF-8: EF BB BF + "hola\nmundo" en ASCII (sin BOM, porque
+        // FileVersion.Decode usa encoderShouldEmitUTF8Identifier:false).
+        // "hola" = 68 6F 6C 61; "mundo" = 6D 75 6E 64 6F; newline = 0A
+        var bom = new byte[]
+        {
+            0xEF, 0xBB, 0xBF,
+            0x68, 0x6F, 0x6C, 0x61, 0x0A,
+            0x6D, 0x75, 0x6E, 0x64, 0x6F
+        };
+        File.WriteAllBytes(ws + "\\doc.txt", bom);
+
+        var version = FilesystemPatchTool.VersionToken(bom);
+        // El texto decodificado (sin BOM) es "hola\nmundo".
+        var outcome = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", version, "mundo", "amigo"), false, CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "El patch con BOM UTF-8 debe aplicar. summary=" + outcome.Summary);
+        var after = File.ReadAllBytes(ws + "\\doc.txt");
+        Assert.Equal(0xEF, after[0]);
+        Assert.Equal(0xBB, after[1]);
+        Assert.Equal(0xBF, after[2]);
+        Assert.True(after.Length > 3);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Patch_preserves_utf16_le_bom_encoding()
+    {
+        var ws = TempDir();
+        var executor = PatchExecutor(ws);
+        // BOM UTF-16 LE (FF FE) + "hola\nmundo" en UTF-16 LE (sin BOM, porque FileVersion.Decode
+        // usa byteOrderMark:false). "hola\n" = 68 00 6F 00 6C 00 61 00 0A 00
+        // "mundo" = 6D 00 75 00 6E 00 64 00 6F 00
+        var utf16le = new byte[]
+        {
+            0xFF, 0xFE,
+            0x68, 0x00, 0x6F, 0x00, 0x6C, 0x00, 0x61, 0x00, 0x0A, 0x00,
+            0x6D, 0x00, 0x75, 0x00, 0x6E, 0x00, 0x64, 0x00, 0x6F, 0x00
+        };
+        File.WriteAllBytes(ws + "\\doc.txt", utf16le);
+
+        var version = FilesystemPatchTool.VersionToken(utf16le);
+        var outcome = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", version, "mundo", "amigo"), false, CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "El patch con BOM UTF-16 LE debe aplicar. summary=" + outcome.Summary);
+        var after = File.ReadAllBytes(ws + "\\doc.txt");
+        Assert.Equal(0xFF, after[0]);
+        Assert.Equal(0xFE, after[1]);
+        // "amigo" en UTF-16 LE: 61 00 6D 00 69 00 67 00 6F 00
+        Assert.Equal(0x61, after[12]);
+        Assert.Equal(0x00, after[13]);
+        Assert.Equal(0x6D, after[14]);
+        Assert.Equal(0x00, after[15]);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Patch_returns_error_when_destination_is_directory()
+    {
+        var ws = TempDir();
+        var executor = PatchExecutor(ws);
+
+        // Creamos "doc.txt" como DIRECTORIO en vez de archivo. File.Exists devuelve true,
+        // pero File.ReadAllBytes lanza IOException. Esto simula un caso reproducible sin
+        // privilegios donde el archivo no es un archivo regular.
+        Directory.CreateDirectory(ws + "\\doc.txt");
+
+        var outcome = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", VersionOf("contenido"), "a", "b"), false, CancellationToken.None);
+
+        Assert.False(outcome.Succeeded,
+            "Un patch sobre un directorio debe fallar con error de I/O. summary=" + outcome.Summary);
+        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+    }
+
+    [Fact]
     public void Patch_rejects_when_newText_is_empty()
     {
         var ws = TempDir();

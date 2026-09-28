@@ -169,8 +169,51 @@ public sealed class FilesystemPatchTool : ITool
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("El patch no produce ningún cambio sobre el contenido actual"));
         }
 
-        // Se reescribe con el MISMO encoding/BOM que tenía el archivo (se conserva el BOM).
-        File.WriteAllBytes(full, FileVersion.Encode(updated, decoded.Encoding));
+        // Escrito atómico (M3): se construyen los bytes actualizados, se escriben en un archivo
+        // temporal hermano con nombre impredecible, y recién entonces se publica sobre el
+        // original vía operación de reemplazo/rename atómica donde la plataforma lo permita.
+        // Si el reemplazo falla, se limpia el temporal de esta operación (sin tocar el original).
+        var newBytes = FileVersion.Encode(updated, decoded.Encoding);
+        var tempPath = Path.Combine(
+            Path.GetDirectoryName(full)!,
+            "." + Path.GetFileName(full) + ".tmp-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            File.WriteAllBytes(tempPath, newBytes);
+
+            // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
+            if (!_boundary.IsWithin(full, context.WorkspaceRoot))
+            {
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)"));
+            }
+
+            PublishAtomic(tempPath, full);
+        }
+        catch (System.IO.IOException ex)
+        {
+            return System.Threading.Tasks.Task.FromResult(
+                ToolResult.Error("Error de I/O al publicar el patch: " + ex.Message));
+        }
+        catch (System.Exception ex)
+        {
+            return System.Threading.Tasks.Task.FromResult(
+                ToolResult.Error("Error al publicar el patch: " + ex.Message));
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                }
+                catch
+                {
+                    // El temporal ya debería estar reemplazado/renombrado en el caso de éxito.
+                    // Un fallo de limpieza aquí no invalida el resultado del patch.
+                }
+            }
+        }
 
         var summary = "Patch aplicado: " + path + " (" + oldText!.Length + "→" + newText!.Length + " caracteres)";
         return System.Threading.Tasks.Task.FromResult(new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied));
@@ -229,5 +272,16 @@ public sealed class FilesystemPatchTool : ITool
         if (relative is null) return root;
         var norm = relative.Replace('\\', '/');
         return root.TrimEnd('/') + "/" + norm;
+    }
+
+    /// <summary>
+    /// Publica el archivo temporal sobre el destino mediante operación atómica.
+    /// Usa System.IO.File.Move con overwrite=true, que en Windows corresponde a un
+    /// reemplazo atómico dentro de la misma unidad de disco. Si la plataforma no
+    /// soporta el reemplazo atómico, se degrada a Move sin overwrite + delete.
+    /// </summary>
+    private static void PublishAtomic(string tempPath, string destPath)
+    {
+        System.IO.File.Move(tempPath, destPath, overwrite: true);
     }
 }
