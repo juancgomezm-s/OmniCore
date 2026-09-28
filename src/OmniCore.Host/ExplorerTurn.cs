@@ -150,7 +150,7 @@ public sealed class ExplorerTurn
         var stream = new EventStream(_store, _codecs, sessionId);
         var turnId = TurnId.New();
 
-        var messages = new List<ModelMessage>();
+        var messages = LoadConversation(stream);
         if (question is not null && question.Length > 0)
         {
             messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(question) }));
@@ -162,6 +162,7 @@ public sealed class ExplorerTurn
         var budget = ReadRunBudget(stream, runId);
         var guard = new SpendGuard(budget);
         var steps = 1;
+        var started = false;
 
         try
         {
@@ -188,6 +189,7 @@ public sealed class ExplorerTurn
             if (materialized.Overflowed)
             {
                 stream.Append(new TurnStarted(turnId, laneId));
+                started = true;
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
                 // TurnCompleted tras Abandoned (P1: transición inválida).
                 stream.Append(new TurnAbandoned(turnId, "ContextOverflow: el contexto no entra en el presupuesto"));
@@ -195,7 +197,10 @@ public sealed class ExplorerTurn
                     StopReason.ContextOverflow, 0, usage, allToolCalls.ToArray(), null);
             }
 
+            var encodedInput = System.Text.Json.JsonEncodedText.Encode(_redaction.Redact(question ?? ""));
+            stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null));
             stream.Append(new TurnStarted(turnId, laneId));
+            started = true;
 
             string? finalText = null;
             var stop = StopReason.EndTurn;
@@ -324,6 +329,12 @@ public sealed class ExplorerTurn
                 }
             }
 
+            if (finalText is null && stop == StopReason.EndTurn)
+            {
+                stream.Append(new TurnAbandoned(turnId, "Se agotó el límite de pasos del Explorer"));
+                return new TurnResult(null, StopReason.Error, steps, usage, allToolCalls.ToArray(), null);
+            }
+
             // Respuesta como artifact + ModelCompleted (persistencia del Turn).
             string? artifactId = null;
             if (finalText is not null && finalText!.Length > 0)
@@ -343,7 +354,8 @@ public sealed class ExplorerTurn
             try
             {
                 // Started → … → Abandoned (terminal); NUNCA Completed tras Abandoned (state machine).
-                stream.Append(new TurnAbandoned(turnId, "turn falló: " + _redaction.Redact(ex.Message ?? "")));
+                if (started)
+                    stream.Append(new TurnAbandoned(turnId, "turn falló: " + _redaction.Redact(ex.Message ?? "")));
             }
             catch (Exception)
             {
@@ -544,6 +556,44 @@ public sealed class ExplorerTurn
 
         parts.Add("Fingerprint: " + snapshot.Fingerprint.ModelKey + " · " + snapshot.Fingerprint.ContextPolicyHash);
         return string.Join("\n", parts.ToArray());
+    }
+
+    private List<ModelMessage> LoadConversation(EventStream stream)
+    {
+        var history = new List<ModelMessage>();
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (evt.Type.ToString() == "user_input.received")
+            {
+                var input = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson) as UserInputReceived;
+                if (input is null) continue;
+                try
+                {
+                    using var parsed = System.Text.Json.JsonDocument.Parse(input.InputPartsJson);
+                    var text = parsed.RootElement.GetString();
+                    if (!string.IsNullOrEmpty(text))
+                        history.Add(new ModelMessage(MessageRole.User,
+                            new ContentBlock[] { new TextBlock(text) }));
+                }
+                catch (System.Text.Json.JsonException) { }
+            }
+            else if (evt.Type.ToString() == "model.completed")
+            {
+                var completed = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson) as ModelCompleted;
+                if (completed?.ResponseArtifact is null) continue;
+                var text = _artifacts.GetText(completed.ResponseArtifact.Hash);
+                if (!string.IsNullOrEmpty(text))
+                    history.Add(new ModelMessage(MessageRole.Assistant,
+                        new ContentBlock[] { new TextBlock(text) }));
+            }
+        }
+
+        // M2 conserva el primer input de la sesión y la ventana más reciente. La política de
+        // recorte por tokens exactos y compaction llega en M4.
+        if (history.Count <= 8) return history;
+        var window = new List<ModelMessage> { history[0] };
+        window.AddRange(history.Skip(history.Count - 7));
+        return window;
     }
 
     private IReadOnlyList<ToolDefinition> VisibleTools()
