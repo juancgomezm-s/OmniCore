@@ -63,6 +63,14 @@ public sealed class ModelCapabilityBoundary
 
     private readonly EffectiveModelPolicy _policy;
 
+    /// <summary>
+    /// Registro de lecturas efectivas por-Run (ADR-0044 §5): lo alimentan los reads exitosos y
+    /// lo consulta filesystem.patch antes de mutar. Vive EN la frontera (es el ámbito per-Run de
+    /// la política del modelo) y viaja a los tools vía <c>ToolExecutionContext.ReadRegistry</c>.
+    /// Nunca es un estado global entre sesiones.
+    /// </summary>
+    private readonly FileReadRegistry _readRegistry;
+
     public ModelCapabilityBoundary(EffectiveModelPolicy policy)
         : this(policy, CoreTools)
     {
@@ -70,10 +78,20 @@ public sealed class ModelCapabilityBoundary
 
     public ModelCapabilityBoundary(EffectiveModelPolicy policy,
         IReadOnlyDictionary<string, ModelToolCapability> toolCapabilities)
+        : this(policy, toolCapabilities, new FileReadRegistry())
+    {
+    }
+
+    public ModelCapabilityBoundary(EffectiveModelPolicy policy,
+        IReadOnlyDictionary<string, ModelToolCapability> toolCapabilities, FileReadRegistry readRegistry)
     {
         _policy = policy;
         _toolCapabilities = toolCapabilities;
+        _readRegistry = readRegistry;
     }
+
+    /// <summary>Registro de lecturas efectivas de este Run (ADR-0044 §5).</summary>
+    public FileReadRegistry ReadRegistry() => _readRegistry;
 
     /// <summary>
     /// Valida un ToolIntent contra la política efectiva. Reglas (ADR-0044 §5):
