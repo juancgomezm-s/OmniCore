@@ -37,6 +37,13 @@ public sealed class CliApp
             return RunAsk(args);
         }
 
+        if (command == "model")
+        {
+            // M3 (ADR-0044 §6): políticas de modelo + onboarding. Delegación completa a
+            // ModelPolicyCommands: aquí solo el despacho (composición mínima del CLI).
+            return ModelPolicyCommands.Run(args);
+        }
+
         if (command == "doctor")
         {
             return RunDoctor(args);
