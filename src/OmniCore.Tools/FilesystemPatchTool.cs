@@ -1,7 +1,6 @@
 namespace OmniCore.Tools;
 
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
@@ -26,7 +25,7 @@ public sealed class FilesystemPatchTool : ITool
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.patch"),
             "Aplica un parche localizado (oldText->newText) sobre un archivo existente dentro del workspace, verificando expectedVersion.",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"expectedVersion\":{\"type\":\"string\"},\"oldText\":{\"type\":\"string\"},\"newText\":{\"type\":\"string\"}}}"),
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"expectedVersion\":{\"type\":\"string\"},\"oldText\":{\"type\":\"string\"},\"newText\":{\"type\":\"string\"}},\"required\":[\"path\",\"expectedVersion\",\"oldText\",\"newText\"]}"),
             new[] { "write" },
             readOnly: false,
             destructive: false,
@@ -110,15 +109,41 @@ public sealed class FilesystemPatchTool : ITool
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Archivo no encontrado (un patch no crea archivos): " + path));
         }
 
-        var content = File.ReadAllText(full);
+        // El patch opera sobre los BYTES REALES: se lee el contenido crudo, se calcula el token
+        // de versión SHA-256 sobre esos bytes (no sobre el string decodificado) y se conserva el
+        // encoding/BOM al reescribir (ADR-0044 §5).
+        var bytes = File.ReadAllBytes(full);
+        FileVersion.DecodedFile decoded;
+        try
+        {
+            decoded = FileVersion.Decode(bytes);
+        }
+        catch (UnsupportedEncodingException ex)
+        {
+            // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ex.Message));
+        }
+        var content = decoded.Text;
 
-        // Token de versión: se calcula sobre el contenido vigente y se compara con el esperado.
+        // Token de versión: se calcula sobre los bytes vigentes y se compara con el esperado.
         // Un token obsoleto se rechaza ANTES de cualquier mutación (STALE_WRITE, ADR-0044 §5).
-        var actualVersion = VersionToken(content);
+        var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion is null || expectedVersion != actualVersion)
         {
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("expectedVersion obsoleto (STALE_WRITE): el contenido del archivo "
                 + "cambió desde la lectura. Token actual=" + actualVersion + ". Reléelo e intenta de nuevo."));
+        }
+
+        // Bloqueante 2: no se permite un oldText que sea el contenido completo del archivo, ni un
+        // newText que vacíe el archivo (un parche localizado nunca sustituye el archivo completo).
+        if (oldText! == content)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("oldText es el contenido completo del archivo: no se permite sustituir el archivo entero con un patch localizado"));
+        }
+
+        if (newText!.Length == 0)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("newText vacío: no se permite vaciar el archivo con un patch"));
         }
 
         // Localización: oldText debe aparecer exactamente una vez. Cero ocurrencias → no se
@@ -144,7 +169,8 @@ public sealed class FilesystemPatchTool : ITool
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("El patch no produce ningún cambio sobre el contenido actual"));
         }
 
-        File.WriteAllText(full, updated);
+        // Se reescribe con el MISMO encoding/BOM que tenía el archivo (se conserva el BOM).
+        File.WriteAllBytes(full, FileVersion.Encode(updated, decoded.Encoding));
 
         var summary = "Patch aplicado: " + path + " (" + oldText!.Length + "→" + newText!.Length + " caracteres)";
         return System.Threading.Tasks.Task.FromResult(new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied));
@@ -190,17 +216,12 @@ public sealed class FilesystemPatchTool : ITool
 
     private static ToolPreparation Rejected(string reason) => new PreparationRejected(reason, null);
 
-    /// <summary>Token de versión de un contenido: SHA-256 hex. Determinista y comparable.</summary>
-    public static string VersionToken(string content)
+    /// <summary>Token de versión = SHA-256 hex de los BYTES REALES del contenido (no del string decodificado),
+    /// para que sea estable ante BOM/encoding. Determinista y comparable (ADR-0044 §5).</summary>
+    public static string VersionToken(byte[] contentBytes)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(content));
-        var sb = new StringBuilder(hash.Length * 2);
-        foreach (var b in hash)
-        {
-            sb.Append(b.ToString("x2"));
-        }
-
-        return sb.ToString();
+        var hash = SHA256.HashData(contentBytes);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static string JoinPath(string root, string relative)

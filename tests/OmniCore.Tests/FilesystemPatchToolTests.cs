@@ -59,7 +59,21 @@ public sealed class FilesystemPatchToolTests
         return sb.Append('"').ToString();
     }
 
-    private static string VersionOf(string content) => FilesystemPatchTool.VersionToken(content);
+    private static string VersionOf(string content) => FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes(content));
+
+    /// <summary>
+    /// Extrae el token de versión del marcador [version:<token>] tal como lo expone
+    /// ReadFileTool en su Preview. Es lo que hace el modelo/CLI antes de un patch.
+    /// </summary>
+    private static string? ExtractTokenFromReadPreview(string preview)
+    {
+        const string start = "[version:";
+        var idx = preview.LastIndexOf(start, StringComparison.Ordinal);
+        if (idx < 0) return null;
+        var end = preview.IndexOf(']', idx + start.Length);
+        if (end < 0) return null;
+        return preview.Substring(idx + start.Length, end - idx - start.Length);
+    }
 
     [Fact]
     public async System.Threading.Tasks.Task Patch_applies_localized_change_and_preserves_unrelated_content()
@@ -261,7 +275,86 @@ public sealed class FilesystemPatchToolTests
     [Fact]
     public void VersionToken_is_deterministic_and_content_sensitive()
     {
-        Assert.Equal(FilesystemPatchTool.VersionToken("abc"), FilesystemPatchTool.VersionToken("abc"));
-        Assert.NotEqual(FilesystemPatchTool.VersionToken("abc"), FilesystemPatchTool.VersionToken("abd"));
+        Assert.Equal(FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes("abc")),
+                    FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes("abc")));
+        Assert.NotEqual(FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes("abc")),
+                       FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes("abd")));
+    }
+
+    [Fact]
+    public void Patch_rejects_when_oldText_is_entire_file_content()
+    {
+        var ws = TempDir();
+        var executor = PatchExecutor(ws);
+        var content = "linea1\nlinea2\nlinea3\n";
+        File.WriteAllText(ws + "\\doc.txt", content);
+        var version = VersionOf(content);
+
+        // oldText == contenido completo: se rechaza (no se permite sustituir el archivo entero).
+        var outcome = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", version, content, "otro contenido"), false, CancellationToken.None);
+
+        Assert.False(outcome.Succeeded, "oldText igual al contenido completo debe rechazarse. summary=" + outcome.Summary);
+        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(content, File.ReadAllText(ws + "\\doc.txt"));
+    }
+
+    [Fact]
+    public void Patch_rejects_when_newText_is_empty()
+    {
+        var ws = TempDir();
+        var executor = PatchExecutor(ws);
+        var content = "linea1\nlinea2\n";
+        File.WriteAllText(ws + "\\doc.txt", content);
+        var version = VersionOf(content);
+
+        // newText vacío: se rechaza (no se permite vaciar el archivo).
+        var outcome = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", version, "linea1", ""), false, CancellationToken.None);
+
+        Assert.False(outcome.Succeeded, "newText vacío debe rechazarse. summary=" + outcome.Summary);
+        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(content, File.ReadAllText(ws + "\\doc.txt"));
+    }
+
+    [Fact]
+    public void EndToEnd_read_extract_version_patch_succeeds_then_stale_fails()
+    {
+        var ws = TempDir();
+        var initial = "linea1\nlinea2\nlinea3\n";
+        File.WriteAllText(ws + "\\doc.txt", initial);
+
+        // Executor que permite leer Y parchear (ambas con Allow) para simular el flujo real:
+        // leer → extraer token → parchear → token obsoleto falla.
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+        {
+            ["filesystem.read"] = PermissionDecision.Allow,
+            ["filesystem.patch"] = PermissionDecision.Allow,
+        });
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, ws);
+
+        // 1. Leer el archivo con la herramienta real (ReadFileTool) vía executor y extraer el
+        //    token de la salida (tal como lo haría el modelo). El token vive en el Preview.
+        var readCall = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"),
+            "pc-read", "{\"path\":\"doc.txt\"}");
+        var readOutcome = executor.ExecuteTool(readCall, false, CancellationToken.None);
+        Assert.True(readOutcome.Succeeded, "La lectura debe aplicar. summary=" + readOutcome.Summary);
+        var version = ExtractTokenFromReadPreview(readOutcome.Preview!);
+        Assert.NotNull(version);
+
+        // 2. Usar ese token en el patch: debe pasar.
+        var firstPatch = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", version!, "linea2", "linea2-cambiada"), false, CancellationToken.None);
+        Assert.True(firstPatch.Succeeded, "El patch con el token vigente debe aplicar. summary=" + firstPatch.Summary);
+        Assert.Equal("linea1\nlinea2-cambiada\nlinea3\n", File.ReadAllText(ws + "\\doc.txt"));
+
+        // 3. El archivo ya cambió: el MISMO token viejo ahora falla (STALE_WRITE) sin mutar.
+        var currentBefore = File.ReadAllText(ws + "\\doc.txt");
+        var stalePatch = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", version!, "linea3", "linea3-cambiada"), false, CancellationToken.None);
+        Assert.False(stalePatch.Succeeded, "El token viejo debe rechazarse. summary=" + stalePatch.Summary);
+        Assert.Equal(ToolCallState.Rejected, stalePatch.FinalState);
+        Assert.Equal(currentBefore, File.ReadAllText(ws + "\\doc.txt"));
     }
 }
