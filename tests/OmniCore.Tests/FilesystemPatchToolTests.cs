@@ -357,4 +357,56 @@ public sealed class FilesystemPatchToolTests
         Assert.Equal(ToolCallState.Rejected, stalePatch.FinalState);
         Assert.Equal(currentBefore, File.ReadAllText(ws + "\\doc.txt"));
     }
+
+    // ---- Decodificación estricta (FileVersion.Decode): BOM no soportado y bytes inválidos ----
+
+    [Fact]
+    public void Decode_rejects_utf32_le_bom()
+    {
+        // El BOM UTF-32 LE (FF FE 00 00) empieza con el prefijo del BOM UTF-16 LE (FF FE):
+        // debe rechazarse como UTF-32 y NO clasificarse mal como UTF-16 LE.
+        var bytes = new byte[] { 0xFF, 0xFE, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00 };
+        Assert.Throws<UnsupportedEncodingException>(() => FileVersion.Decode(bytes));
+    }
+
+    [Fact]
+    public void Decode_rejects_utf32_be_bom()
+    {
+        var bytes = new byte[] { 0x00, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 0x78 };
+        Assert.Throws<UnsupportedEncodingException>(() => FileVersion.Decode(bytes));
+    }
+
+    [Fact]
+    public void Decode_rejects_invalid_utf8()
+    {
+        // 0xC3 seguido de 0x28 no es una secuencia UTF-8 válida: se rechaza en vez de
+        // decodificar con caracteres de reemplazo.
+        var bytes = new byte[] { 0x68, 0x6F, 0x6C, 0xC3, 0x28 };
+        Assert.Throws<UnsupportedEncodingException>(() => FileVersion.Decode(bytes));
+    }
+
+    [Fact]
+    public void Decode_rejects_invalid_utf16()
+    {
+        // UTF-16 LE con un alto surrogado (00 D8) sin su bajo: se rechaza.
+        var bytes = new byte[] { 0xFF, 0xFE, 0x00, 0xD8, 0x41, 0x00 };
+        Assert.Throws<UnsupportedEncodingException>(() => FileVersion.Decode(bytes));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Patch_rejects_invalid_utf8_file_without_mutating()
+    {
+        var ws = TempDir();
+        var executor = PatchExecutor(ws);
+        var raw = new byte[] { 0x68, 0x6F, 0x6C, 0xC3, 0x28 }; // "hol" + secuencia UTF-8 inválida
+        File.WriteAllBytes(ws + "\\doc.txt", raw);
+        var version = FilesystemPatchTool.VersionToken(raw);
+
+        var outcome = executor.ExecuteTool(
+            PatchCall(ws, "doc.txt", version, "hol", "nuevo"), false, CancellationToken.None);
+
+        Assert.False(outcome.Succeeded, "Un archivo con bytes inválidos se rechaza sin decodificar. summary=" + outcome.Summary);
+        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.True(raw.AsSpan().SequenceEqual(File.ReadAllBytes(ws + "\\doc.txt")), "El archivo no se muta");
+    }
 }

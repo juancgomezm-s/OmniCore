@@ -15,8 +15,14 @@ public static class FileVersion
     private static readonly byte[] Utf8Bom = { 0xEF, 0xBB, 0xBF };
     private static readonly byte[] Utf16LeBom = { 0xFF, 0xFE };
     private static readonly byte[] Utf16BeBom = { 0xFE, 0xFF };
-    private static readonly byte[] Utf32LeBom = { 0x00, 0x00, 0xFE, 0xFF };
-    private static readonly byte[] Utf32BeBom = { 0xFF, 0xFE, 0x00, 0x00 };
+    private static readonly byte[] Utf32LeBom = { 0xFF, 0xFE, 0x00, 0x00 };
+    private static readonly byte[] Utf32BeBom = { 0x00, 0x00, 0xFE, 0xFF };
+
+    // Decoders estrictos: los bytes inválidos lanzan DecoderFallbackException en vez de
+    // producir caracteres de reemplazo (un patch nunca debe corromper bytes, ADR-0044 §5).
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private static readonly UnicodeEncoding StrictUtf16Le = new(bigEndian: false, byteOrderMark: false, throwOnInvalidBytes: true);
+    private static readonly UnicodeEncoding StrictUtf16Be = new(bigEndian: true, byteOrderMark: false, throwOnInvalidBytes: true);
 
     /// <summary>SHA-256 hex de los bytes reales del contenido. Determinista y comparable.</summary>
     public static string VersionToken(byte[] contentBytes)
@@ -54,34 +60,50 @@ public static class FileVersion
     }
 
     /// <summary>
-    /// Detecta el encoding por BOM y decodifica. Lanza <see cref="UnsupportedEncodingException"/>
-    /// si el BOM no es soportado (p. ej. UTF-32), sin tocar el archivo.
+    /// Detecta el encoding por BOM y decodifica estrictamente. Lanza
+    /// <see cref="UnsupportedEncodingException"/> si el BOM no es soportado (p. ej. UTF-32) o si
+    /// los bytes no son UTF-8/UTF-16 válidos, sin tocar el archivo.
     /// </summary>
     public static DecodedFile Decode(byte[] contentBytes)
     {
-        if (StartsWith(contentBytes, Utf8Bom))
-        {
-            return new DecodedFile(Encoding.UTF8.GetString(contentBytes, 3, contentBytes.Length - 3), FileEncoding.Utf8Bom);
-        }
-
-        if (StartsWith(contentBytes, Utf16LeBom))
-        {
-            return new DecodedFile(Encoding.Unicode.GetString(contentBytes, 2, contentBytes.Length - 2),
-                FileEncoding.Utf16LeBom);
-        }
-
-        if (StartsWith(contentBytes, Utf16BeBom))
-        {
-            return new DecodedFile(Encoding.BigEndianUnicode.GetString(contentBytes, 2, contentBytes.Length - 2),
-                FileEncoding.Utf16BeBom);
-        }
-
+        // UTF-32 se rechaza ANTES que UTF-16: el BOM UTF-32 LE (FF FE 00 00) empieza con el
+        // prefijo del BOM UTF-16 LE (FF FE) y, si no, se clasificaría mal como UTF-16 LE.
         if (StartsWith(contentBytes, Utf32LeBom) || StartsWith(contentBytes, Utf32BeBom))
         {
             throw new UnsupportedEncodingException("encoding no soportado: UTF-32");
         }
 
-        return new DecodedFile(Encoding.UTF8.GetString(contentBytes), FileEncoding.Utf8NoBom);
+        if (StartsWith(contentBytes, Utf8Bom))
+        {
+            return new DecodedFile(DecodeStrict(StrictUtf8, contentBytes, 3, contentBytes.Length - 3), FileEncoding.Utf8Bom);
+        }
+
+        if (StartsWith(contentBytes, Utf16LeBom))
+        {
+            return new DecodedFile(DecodeStrict(StrictUtf16Le, contentBytes, 2, contentBytes.Length - 2),
+                FileEncoding.Utf16LeBom);
+        }
+
+        if (StartsWith(contentBytes, Utf16BeBom))
+        {
+            return new DecodedFile(DecodeStrict(StrictUtf16Be, contentBytes, 2, contentBytes.Length - 2),
+                FileEncoding.Utf16BeBom);
+        }
+
+        return new DecodedFile(DecodeStrict(StrictUtf8, contentBytes, 0, contentBytes.Length), FileEncoding.Utf8NoBom);
+    }
+
+    /// <summary>Decodifica estrictamente: bytes inválidos → UnsupportedEncodingException (sin mutar).</summary>
+    private static string DecodeStrict(Encoding encoding, byte[] bytes, int index, int count)
+    {
+        try
+        {
+            return encoding.GetString(bytes, index, count);
+        }
+        catch (DecoderFallbackException ex)
+        {
+            throw new UnsupportedEncodingException("encoding inválido o secuencia de bytes corrupta en la posición " + ex.Index);
+        }
     }
 
     /// <summary>Re-codifica el texto al mismo modo de encoding (conservando el BOM) para reescribir.</summary>
