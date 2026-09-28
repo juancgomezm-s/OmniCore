@@ -1,7 +1,9 @@
 namespace OmniCore.Domain;
 
+using System.Collections;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 /// <summary>
 /// Identidad exacta de una configuración de modelo para cualificación empírica (ADR-0007 §5).
@@ -10,9 +12,15 @@ using System.Text;
 /// comportamiento concreto de esa combinación. Un cambio en cualquier campo relevante produce
 /// una clave nueva y exige una cualificación nueva (ADR-0007 §4).
 ///
-/// Serialización canónica: JSON con orden fijo de campos, UTF-8, sin dependencias de cultura
-/// ni de plataforma. Los adapters se canonizan como conjunto ordenado (deduplicado, orden
-/// ordinal) porque semánticamente es un conjunto: el orden de entrada no importa.
+/// Serialización canónica: JSON con orden fijo de campos (JsonSerializer con propiedad
+/// explicitada + JsonWriter), UTF-8, sin dependencias de cultura ni de plataforma. Null vs
+/// cadena vacía se distingue explícito en el JSON (null vs "").
+///
+/// Adapters: la clave de cualificación NO colapsa dos órdenes de adapters sin evidencia de
+/// conmutatividad. La aplicación de adapters (LoRA, fine-tunes) puede depender del orden en
+/// que se aplican, y el hash debe reflejar la configuración concreta. Se preserva el orden y
+/// la multiplicidad como opción conservadora (ADR-0007 §5). Los adapters null o entradas
+/// null/vacías se rechazan de forma explícita en vez de omitirse en silencio.
 ///
 /// Clave canónica: SHA-256 de la serialización canónica, en hexadecimal minúsculo (64 caracteres).
 /// </summary>
@@ -66,11 +74,27 @@ public sealed class ModelQualificationKey
             throw new ArgumentException("PromptProfileVersion es obligatorio", nameof(promptProfileVersion));
         }
 
+        if (adapters is null)
+        {
+            throw new ArgumentNullException(nameof(adapters), "Adapters es obligatorio (Array.Empty<string>() si no hay adapters)");
+        }
+
+        var adapterSnapshot = new List<string>(adapters.Count);
+        foreach (var a in adapters)
+        {
+            if (a is null || a!.Length == 0)
+            {
+                throw new ArgumentException("Adapters no puede contener entradas null o vacías", nameof(adapters));
+            }
+
+            adapterSnapshot.Add(a);
+        }
+
         ProviderId = providerId;
         ModelId = modelId;
         ModelRevision = modelRevision;
         Quantization = quantization;
-        Adapters = CanonicalAdapters(adapters);
+        Adapters = adapterSnapshot;
         Backend = backend;
         BackendBuild = backendBuild;
         ChatTemplateHash = chatTemplateHash;
@@ -86,35 +110,83 @@ public sealed class ModelQualificationKey
         => new(providerId, modelId, null, null, Array.Empty<string>(), null, null, null,
             "default", toolCallFormat, toolMode, "v1");
 
-    /// <summary>JSON canónico determinista (orden fijo de campos; null explícito; adapters ordenados).</summary>
+    private static readonly JsonSerializerOptions CanonicalOptions = new()
+    {
+        PropertyNameCaseInsensitive = false,
+    };
+
+    /// <summary>JSON canónico determinista (orden fijo de campos; null explícito; adapters en orden de entrada).</summary>
     public string CanonicalJson()
     {
-        var adapters = new StringBuilder();
-        adapters.Append('[');
-        for (var i = 0; i < Adapters.Count; i++)
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions
         {
-            if (i > 0)
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("providerId", ProviderId);
+            writer.WriteString("modelId", ModelId);
+            if (ModelRevision is null)
             {
-                adapters.Append(',');
+                writer.WriteNull("modelRevision");
+            }
+            else
+            {
+                writer.WriteString("modelRevision", ModelRevision);
             }
 
-            adapters.Append('"').Append(Escape(Adapters[i])).Append('"');
+            if (Quantization is null)
+            {
+                writer.WriteNull("quantization");
+            }
+            else
+            {
+                writer.WriteString("quantization", Quantization);
+            }
+
+            writer.WriteStartArray("adapters");
+            foreach (var adapter in Adapters)
+            {
+                writer.WriteStringValue(adapter);
+            }
+
+            writer.WriteEndArray();
+            if (Backend is null)
+            {
+                writer.WriteNull("backend");
+            }
+            else
+            {
+                writer.WriteString("backend", Backend);
+            }
+
+            if (BackendBuild is null)
+            {
+                writer.WriteNull("backendBuild");
+            }
+            else
+            {
+                writer.WriteString("backendBuild", BackendBuild);
+            }
+
+            if (ChatTemplateHash is null)
+            {
+                writer.WriteNull("chatTemplateHash");
+            }
+            else
+            {
+                writer.WriteString("chatTemplateHash", ChatTemplateHash);
+            }
+
+            writer.WriteString("adapterProfile", AdapterProfile);
+            writer.WriteString("toolCallFormat", ToolCallFormat.ToString());
+            writer.WriteString("toolMode", ToolMode.ToString());
+            writer.WriteString("promptProfileVersion", PromptProfileVersion);
+            writer.WriteEndObject();
         }
 
-        adapters.Append(']');
-
-        return "{\"providerId\":\"" + Escape(ProviderId) + "\""
-            + ",\"modelId\":\"" + Escape(ModelId) + "\""
-            + ",\"modelRevision\":" + Nullable(ModelRevision)
-            + ",\"quantization\":" + Nullable(Quantization)
-            + ",\"adapters\":" + adapters
-            + ",\"backend\":" + Nullable(Backend)
-            + ",\"backendBuild\":" + Nullable(BackendBuild)
-            + ",\"chatTemplateHash\":" + Nullable(ChatTemplateHash)
-            + ",\"adapterProfile\":\"" + Escape(AdapterProfile) + "\""
-            + ",\"toolCallFormat\":\"" + ToolCallFormat + "\""
-            + ",\"toolMode\":\"" + ToolMode + "\""
-            + ",\"promptProfileVersion\":\"" + Escape(PromptProfileVersion) + "\"}";
+        return Encoding.UTF8.GetString(stream.ToArray());
     }
 
     /// <summary>Hash canónico: SHA-256 de la serialización canónica, hexadecimal minúsculo (64 chars).</summary>
@@ -163,28 +235,6 @@ public sealed class ModelQualificationKey
         hash = hash * 31 + PromptProfileVersion.GetHashCode(StringComparison.Ordinal);
         return hash;
     }
-
-    private static IReadOnlyList<string> CanonicalAdapters(IReadOnlyList<string> adapters)
-    {
-        var copy = new List<string>();
-        foreach (var a in adapters)
-        {
-            if (a is not null && a!.Length > 0)
-            {
-                copy.Add(a);
-            }
-        }
-
-        copy.Sort(StringComparer.Ordinal);
-        copy = copy.Distinct(StringComparer.Ordinal).ToList();
-        return copy;
-    }
-
-    private static string Nullable(string? value) =>
-        value is null ? "null" : "\"" + Escape(value) + "\"";
-
-    private static string Escape(string value) =>
-        value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
 
     private static bool Ordinal(string a, string b) => a.Equals(b, StringComparison.Ordinal);
 
