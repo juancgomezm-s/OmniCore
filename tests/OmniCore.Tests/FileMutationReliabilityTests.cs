@@ -112,11 +112,61 @@ public sealed class FileMutationReliabilityTests
         var first = FileMutationEvaluator.Aggregate(aggregates, MeasuredAt);
         var second = FileMutationEvaluator.Aggregate(aggregates.ToList(), MeasuredAt);
 
-        Assert.Equal(3 / 4.0, first.Value);
+        // Media de los valores de muestra: Good=1.0, Bad=0.0, Good=1.0, Good=1.0 -> 0.75.
+        Assert.Equal(0.75, first.Value);
         Assert.Equal(4, first.SampleSize);
         Assert.Equal("empirical", first.Source);
         Assert.Equal(first.Value, second.Value);
         Assert.Equal(first.SampleSize, second.SampleSize);
+    }
+
+    [Fact]
+    public void Aggregate_reflects_sample_values_not_just_favorable_count()
+    {
+        // Dos series con el mismo conteo de "favorables" (1 de 2) pero valores de muestra
+        // distintos: una con diff local (3 líneas) y otra con diff grande (99 líneas).
+        // El agregado debe diferir porque la media de SampleValue captura el tamaño del diff.
+        var localDiff = new FileMutationSample("src/a.cs", 120, 3, false, true, true, true, 0, false);
+        var largeDiff = new FileMutationSample("src/a.cs", 120, 99, false, true, true, true, 0, false);
+
+        var localAggregates = new[] { GoodSample(), localDiff }.Select(FileMutationAggregate.Aggregate).ToList();
+        var largeAggregates = new[] { GoodSample(), largeDiff }.Select(FileMutationAggregate.Aggregate).ToList();
+
+        var localValue = FileMutationEvaluator.Aggregate(localAggregates, MeasuredAt).Value;
+        var largeValue = FileMutationEvaluator.Aggregate(largeAggregates, MeasuredAt).Value;
+
+        Assert.True(largeValue < localValue,
+            $"agregado con diff grande ({largeValue}) debe ser menor que con diff local ({localValue})");
+    }
+
+    [Fact]
+    public void Aggregate_single_sample_matches_Evaluate()
+    {
+        // Una única muestra: Evaluate y Aggregate deben coincidir en Value, Confidence y
+        // SampleSize, porque la confianza depende de N (una muestra), no de la longitud.
+        var sample = GoodSample();
+        var single = FileMutationEvaluator.Evaluate(sample, MeasuredAt);
+        var aggregated = FileMutationEvaluator.Aggregate(new[] { FileMutationAggregate.Aggregate(sample) }, MeasuredAt);
+
+        Assert.Equal(single.Value, aggregated.Value);
+        Assert.Equal(single.Confidence, aggregated.Confidence);
+        Assert.Equal(single.SampleSize, aggregated.SampleSize);
+    }
+
+    [Fact]
+    public void Aggregate_rejects_invalid_mean()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FileMutationAggregate(1, 1.5));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FileMutationAggregate(1, -0.1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FileMutationAggregate(1, double.NaN));
+    }
+
+    [Fact]
+    public void Aggregate_rejects_overflowing_total()
+    {
+        var aggregate = new FileMutationAggregate(int.MaxValue + 1L, 0.5);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            FileMutationEvaluator.Aggregate(new[] { aggregate }, MeasuredAt));
     }
 
     [Fact]
@@ -131,9 +181,18 @@ public sealed class FileMutationReliabilityTests
     }
 
     [Fact]
-    public void Aggregate_rejects_invalid_counts()
+    public void Aggregate_rejects_negative_total()
     {
-        Assert.Throws<ArgumentOutOfRangeException>(() => new FileMutationAggregate(0, 1));
-        Assert.Throws<ArgumentOutOfRangeException>(() => new FileMutationAggregate(-1, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FileMutationAggregate(-1, 0.5));
+    }
+
+    [Fact]
+    public void TraitScore_rejects_out_of_range_values()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TraitScore(1.5, 0.5, 1, "empirical", MeasuredAt));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TraitScore(-0.1, 0.5, 1, "empirical", MeasuredAt));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TraitScore(double.NaN, 0.5, 1, "empirical", MeasuredAt));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TraitScore(0.5, 1.5, 1, "empirical", MeasuredAt));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TraitScore(0.5, 0.5, -1, "empirical", MeasuredAt));
     }
 }
