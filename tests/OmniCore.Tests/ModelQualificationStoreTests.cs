@@ -107,6 +107,12 @@ public sealed class ModelQualificationStoreTests
         using var store = NewStore(dir);
         store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
 
+        // Guardar traits en la revisión 1 antes de MarkStale.
+        var hash = key.QualificationKeyHash();
+        store.SaveTraits(key, 1,
+            new[] { new ModelTraitRecord(hash, 1, "InstructionFollowing", 0.8, 0.9, 12, "suite") },
+            CancellationToken.None);
+
         // Una versión mayor nueva de la suite marca el perfil Stale sin destruir la evidencia.
         var stale = store.MarkStale(key, 1, "2.0.0", CancellationToken.None);
         Assert.Equal(ModelQualificationState.Stale, stale.State);
@@ -118,6 +124,12 @@ public sealed class ModelQualificationStoreTests
         Assert.Equal(ModelQualificationState.Stale, read.State);
         Assert.Equal("quick", read.SuiteId);
         Assert.True(key.Equals(read.Key));
+
+        // Los traits de la revisión histórica (1) siguen consultables.
+        var historical = store.Traits(key, 1, CancellationToken.None);
+        Assert.Single(historical);
+        Assert.Equal("InstructionFollowing", historical[0].Trait);
+        Assert.Equal(0.8, historical[0].Value);
     }
 
     [Fact]
@@ -231,5 +243,58 @@ public sealed class ModelQualificationStoreTests
             store.SaveTraits(key, profile.ProfileRevision,
                 new[] { new ModelTraitRecord("hash-otro", profile.ProfileRevision, "TraitX", 0.5, 0.5, 1, "src") },
                 CancellationToken.None));
+    }
+
+    [Fact]
+    public void SaveTraits_rejects_mismatched_profile_revision()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        var hash = key.QualificationKeyHash();
+        Assert.Throws<ModelQualificationRevisionConflictException>(() =>
+            store.SaveTraits(key, 99,
+                new[] { new ModelTraitRecord(hash, 99, "TraitX", 0.5, 0.5, 1, "src") },
+                CancellationToken.None));
+    }
+
+    [Fact]
+    public void SaveTraits_rejects_nonexistent_profile()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        var hash = key.QualificationKeyHash();
+        Assert.Throws<ModelQualificationRevisionConflictException>(() =>
+            store.SaveTraits(key, 1,
+                new[] { new ModelTraitRecord(hash, 1, "TraitX", 0.5, 0.5, 1, "src") },
+                CancellationToken.None));
+    }
+
+    [Fact]
+    public void SaveTraits_rejects_trait_with_wrong_revision_and_preserves_existing()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        var hash = key.QualificationKeyHash();
+
+        // Guardar traits válidos primero.
+        store.SaveTraits(key, 1,
+            new[] { new ModelTraitRecord(hash, 1, "InstructionFollowing", 0.8, 0.9, 12, "suite") },
+            CancellationToken.None);
+
+        // Intento inválido: trait con ProfileRevision incorrecto (2 en vez de 1).
+        Assert.Throws<ArgumentException>(() =>
+            store.SaveTraits(key, 1,
+                new[] { new ModelTraitRecord(hash, 2, "TraitX", 0.5, 0.5, 1, "src") },
+                CancellationToken.None));
+
+        // Los traits existentes siguen intactos.
+        var existing = store.Traits(key, 1, CancellationToken.None);
+        Assert.Single(existing);
+        Assert.Equal("InstructionFollowing", existing[0].Trait);
     }
 }

@@ -207,6 +207,37 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         IReadOnlyList<ModelTraitRecord> traits, CancellationToken cancellationToken)
     {
         var keyHash = key.QualificationKeyHash();
+
+        // Validación cerrada ANTES de tocar la base de datos:
+        // 1) El perfil debe existir y su revisión vigente debe coincidir con profileRevision.
+        // 2) Cada trait debe tener KeyHash y ProfileRevision correctos.
+        var existing = Get(key, cancellationToken);
+        if (existing is null)
+        {
+            throw new ModelQualificationRevisionConflictException(profileRevision, 0);
+        }
+
+        if (existing!.ProfileRevision != profileRevision)
+        {
+            throw new ModelQualificationRevisionConflictException(profileRevision, existing.ProfileRevision);
+        }
+
+        foreach (var t in traits)
+        {
+            if (t.KeyHash != keyHash)
+            {
+                throw new ArgumentException("ModelTraitRecord.KeyHash no coincide con la clave del perfil",
+                    nameof(traits));
+            }
+
+            if (t.ProfileRevision != profileRevision)
+            {
+                throw new ArgumentException(
+                    $"ModelTraitRecord.ProfileRevision ({t.ProfileRevision}) no coincide con la revisión solicitada ({profileRevision})",
+                    nameof(traits));
+            }
+        }
+
         using var tx = _conn.BeginTransaction();
         using (var del = _conn.CreateCommand())
         {
@@ -219,12 +250,6 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
         foreach (var t in traits)
         {
-            if (t.KeyHash != keyHash)
-            {
-                throw new ArgumentException("ModelTraitRecord.KeyHash no coincide con la clave del perfil",
-                    nameof(traits));
-            }
-
             using var insert = _conn.CreateCommand();
             insert.Transaction = tx;
             insert.CommandText = """
@@ -232,7 +257,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 VALUES (:h, :rev, :trait, :val, :conf, :smp, :src)
             """;
             Add(insert, "h", keyHash);
-            Add(insert, "rev", t.ProfileRevision);
+            Add(insert, "rev", profileRevision);
             Add(insert, "trait", t.Trait);
             Add(insert, "val", t.Value);
             Add(insert, "conf", t.Confidence);
