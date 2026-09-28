@@ -181,6 +181,46 @@ public sealed class ModelQualificationStoreTests
     }
 
     [Fact]
+    public void ReadRow_rejects_tampered_key_hash()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using (var store = NewStore(dir))
+        {
+            store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        }
+
+        using var conn = new Microsoft.Data.Sqlite.SqliteConnection("DataSource=" + Path.Combine(dir, "user.db"));
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE model_profiles SET key_hash = 'deadbeef' WHERE key_hash != 'deadbeef'";
+        cmd.ExecuteNonQuery();
+
+        using var store2 = NewStore(dir);
+        Assert.Throws<System.IO.InvalidDataException>(() => store2.List(CancellationToken.None));
+    }
+
+    [Fact]
+    public void ReadRow_rejects_tampered_key_json()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using (var store = NewStore(dir))
+        {
+            store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+        }
+
+        using var conn = new Microsoft.Data.Sqlite.SqliteConnection("DataSource=" + Path.Combine(dir, "user.db"));
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE model_profiles SET key_json = REPLACE(key_json, 'qwen-x', 'qwen-y')";
+        cmd.ExecuteNonQuery();
+
+        using var store2 = NewStore(dir);
+        Assert.Throws<System.IO.InvalidDataException>(() => store2.List(CancellationToken.None));
+    }
+
+    [Fact]
     public void SaveTraits_rejects_mismatched_key_hash()
     {
         var dir = TempDir();

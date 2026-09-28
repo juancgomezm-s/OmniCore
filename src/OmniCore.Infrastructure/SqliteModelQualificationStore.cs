@@ -285,7 +285,19 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
     private ModelQualificationProfile ReadRow(DbDataReader reader)
     {
-        var key = ModelQualificationKeyFromJson(Text(reader, "key_json"));
+        var keyJson = Text(reader, "key_json");
+        var keyHash = Text(reader, "key_hash");
+        var key = ModelQualificationKeyFromJson(keyJson);
+        if (key.QualificationKeyHash() != keyHash)
+        {
+            throw new InvalidDataException("key_hash no coincide con el hash de la clave reconstruida desde key_json");
+        }
+
+        if (key.CanonicalJson() != keyJson)
+        {
+            throw new InvalidDataException("key_json no es exactamente la serialización canónica de la clave reconstruida");
+        }
+
         return new ModelQualificationProfile(key,
             Enum.Parse<ModelQualificationState>(Text(reader, "state")),
             reader.GetInt64(reader.GetOrdinal("profile_revision")),
