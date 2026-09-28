@@ -197,6 +197,7 @@ public sealed class ExplorerTurn
                     StopReason.ContextOverflow, 0, usage, allToolCalls.ToArray(), null);
             }
 
+            EnsureRunAwaitingInput(stream, runId, laneId);
             var encodedInput = System.Text.Json.JsonEncodedText.Encode(_redaction.Redact(question ?? ""));
             stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null));
             stream.Append(new TurnStarted(turnId, laneId));
@@ -594,6 +595,53 @@ public sealed class ExplorerTurn
         var window = new List<ModelMessage> { history[0] };
         window.AddRange(history.Skip(history.Count - 7));
         return window;
+    }
+
+    private void EnsureRunAwaitingInput(EventStream stream, RunId runId, LaneId laneId)
+    {
+        var started = false;
+        var state = RunState.Created;
+        foreach (var evt in stream.EventsSince(1))
+        {
+            var type = evt.Type.ToString();
+            if (type != "run.created" && type != "run.started" && type != "run.awaiting_input"
+                && type != "user_input.received" && type != "run.validation_started"
+                && type != "run.validation_rejected" && type != "run.completed"
+                && type != "run.failed" && type != "run.cancelled") continue;
+
+            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var eventRun = payload switch
+            {
+                RunCreated e => e.RunId,
+                RunStarted e => e.RunId,
+                RunAwaitingInput e => e.RunId,
+                UserInputReceived e => e.RunId,
+                RunValidationStarted e => e.RunId,
+                RunValidationRejected e => e.RunId,
+                RunCompleted e => e.RunId,
+                RunFailed e => e.RunId,
+                RunCancelled e => e.RunId,
+                _ => null,
+            };
+            if (eventRun is null || !eventRun.ToString().Equals(runId.ToString(), StringComparison.Ordinal))
+                continue;
+            if (payload is RunCreated)
+            {
+                state = StateMachines.ApplyRun(state, payload);
+                continue;
+            }
+            if (payload is RunStarted) started = true;
+            if (!started) continue;
+            state = StateMachines.ApplyRun(state, payload);
+        }
+
+        // Los tests de unidad pueden ejecutar un turno sin Run persistido. En producción,
+        // RunStarted deja Running; la nueva pregunta exige Running → AwaitingInput → Running.
+        if (!started) return;
+        if (state == RunState.Running)
+            stream.Append(new RunAwaitingInput(runId, laneId));
+        else if (state != RunState.AwaitingInput)
+            throw new InvalidOperationException("El Run no admite input en estado " + state);
     }
 
     private IReadOnlyList<ToolDefinition> VisibleTools()
