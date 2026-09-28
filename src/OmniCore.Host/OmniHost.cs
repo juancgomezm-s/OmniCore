@@ -79,6 +79,21 @@ public sealed class OmniHost
     public static ICredentialStore CreateCredentialStore(string dataDirectory) =>
         new FileCredentialStore(Path.Combine(dataDirectory, "credentials.ini"));
 
+    /// <summary>Store relacional de políticas de modelo en el user.db de plataforma (ADR-0044 §8).</summary>
+    public static SqliteModelPolicyStore CreateModelPolicyStore() =>
+        new(new DefaultPlatformPaths().UserDatabasePath);
+
+    /// <summary>
+    /// Servicio de política operativa de modelos (ADR-0044): onboarding, política efectiva y
+    /// selección por workspace. Con el dataDirectory explícito, para tests y para el CLI
+    /// cuando el usuario fija otra ubicación.
+    /// </summary>
+    public static ModelPolicyService CreateModelPolicyService(string? dataDirectoryOverride)
+    {
+        var paths = new DefaultPlatformPaths(dataDirectoryOverride);
+        return new ModelPolicyService(new SqliteModelPolicyStore(paths.UserDatabasePath));
+    }
+
     /// <summary>Token counter real (heurístico chars/4) para el runtime (no el Fake de tests).</summary>
     public static ITokenCounter CreateTokenCounter() => new HeuristicTokenCounter();
 
