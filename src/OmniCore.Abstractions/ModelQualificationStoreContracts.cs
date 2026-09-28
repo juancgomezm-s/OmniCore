@@ -29,9 +29,13 @@ public interface IModelQualificationStore
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Marca un perfil como Stale sin destruir la evidencia (ADR-0007 §4): se aplica cuando una
-    /// versión mayor nueva de la suite hace que la cualificación existente quede obsoleta hasta
-    /// que se recualifique. Exige la revisión vigente vigente para no pisar cambios ajenos.
+    /// Marca un perfil como Stale sin destruir la evidencia (ADR-0007 §4): se aplica solo cuando
+    /// la suite que produjo la cualificación (suite_id + suite_version) tiene una versión mayor
+    /// nueva, y solo sobre perfiles Qualified/Calibrated. `suite_version` del perfil nunca se
+    /// sobrescribe: identifica la suite que produjo el perfil; la versión que lo volvió Stale se
+    /// registra aparte en `StaleBySuiteVersion`. Exige la revisión vigente para no pisar cambios
+    /// ajenos. Rechaza (ModelQualificationStaleException) estados no cualificados, otra suite, y
+    /// versiones minor o iguales.
     /// </summary>
     ModelQualificationProfile MarkStale(ModelQualificationKey key, long expectedRevision,
         string newSuiteVersion, CancellationToken cancellationToken);

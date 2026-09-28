@@ -117,7 +117,8 @@ public sealed class ModelQualificationStoreTests
         var stale = store.MarkStale(key, 1, "2.0.0", CancellationToken.None);
         Assert.Equal(ModelQualificationState.Stale, stale.State);
         Assert.Equal(2L, stale.ProfileRevision);
-        Assert.Equal("2.0.0", stale.SuiteVersion);
+        Assert.Equal("1.0.0", stale.SuiteVersion);
+        Assert.Equal("2.0.0", stale.StaleBySuiteVersion);
 
         // La evidencia de cualificación anterior sobrevive: key_json, suite_id y traits intactos.
         var read = store.Get(key, CancellationToken.None)!;
@@ -130,6 +131,96 @@ public sealed class ModelQualificationStoreTests
         Assert.Single(historical);
         Assert.Equal("InstructionFollowing", historical[0].Trait);
         Assert.Equal(0.8, historical[0].Value);
+    }
+
+    [Fact]
+    public void MarkStale_minor_version_does_not_stale()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+
+        Assert.Throws<Domain.ModelQualificationStaleException>(() =>
+            store.MarkStale(key, 1, "1.5.0", CancellationToken.None));
+
+        var read = store.Get(key, CancellationToken.None)!;
+        Assert.Equal(ModelQualificationState.Qualified, read.State);
+        Assert.Null(read.StaleBySuiteVersion);
+    }
+
+    [Fact]
+    public void MarkStale_rejects_unqualified_state()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using var store = NewStore(dir);
+        store.Upsert(key, 0, ModelQualificationState.ProvisionallyClassified, "quick", "1.0.0", CancellationToken.None);
+
+        Assert.Throws<Domain.ModelQualificationStaleException>(() =>
+            store.MarkStale(key, 1, "2.0.0", CancellationToken.None));
+
+        Assert.Equal(ModelQualificationState.ProvisionallyClassified,
+            store.Get(key, CancellationToken.None)!.State);
+    }
+
+    [Fact]
+    public void MarkStale_stale_by_roundtrips_after_reopen()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        using (var store = NewStore(dir))
+        {
+            store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+            store.MarkStale(key, 1, "3.1.0", CancellationToken.None);
+        }
+
+        using var reopened = NewStore(dir);
+        var read = reopened.Get(key, CancellationToken.None)!;
+        Assert.Equal(ModelQualificationState.Stale, read.State);
+        Assert.Equal("1.0.0", read.SuiteVersion);
+        Assert.Equal("3.1.0", read.StaleBySuiteVersion);
+    }
+
+    [Fact]
+    public void MarkStale_migrates_db_without_stale_by_column()
+    {
+        var dir = TempDir();
+        var dbPath = Path.Combine(dir, "user.db");
+        var key = LocalKey();
+
+        // Simula una base anterior: tabla sin la columna stale_by_suite_version.
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection("DataSource=" + dbPath))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE model_profiles (
+                    key_hash TEXT PRIMARY KEY,
+                    key_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    profile_revision INTEGER NOT NULL,
+                    suite_id TEXT NOT NULL,
+                    suite_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """;
+            cmd.ExecuteNonQuery();
+        }
+
+        using (var store = NewStore(dir))
+        {
+            store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "1.0.0", CancellationToken.None);
+            var stale = store.MarkStale(key, 1, "2.0.0", CancellationToken.None);
+            Assert.Equal("2.0.0", stale.StaleBySuiteVersion);
+        }
+
+        using var reopened = NewStore(dir);
+        var read = reopened.Get(key, CancellationToken.None)!;
+        Assert.Equal(ModelQualificationState.Stale, read.State);
+        Assert.Equal("1.0.0", read.SuiteVersion);
+        Assert.Equal("2.0.0", read.StaleBySuiteVersion);
     }
 
     [Fact]
