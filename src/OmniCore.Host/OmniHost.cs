@@ -7,6 +7,7 @@ using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Protocol;
 using OmniCore.Security;
+using OmniCore.Tools;
 
 /// <summary>
 /// Composition root de OmniCore (ADR-0019 §3). La superficie pública es mínima: la fábrica del
@@ -87,6 +88,8 @@ public sealed class OmniHost
     /// </summary>
     public static HostTools CreateHostTools() => HostTools.Default();
 
+    public static HostTools CreateExplorerTools() => HostTools.Explorer();
+
     /// <summary>
     /// Executor del pipeline real de tools + permisos para el Turn de Explorer: usa el catálogo
     /// completo y la política con defaults por modo (Act). Ask sin cliente → Deny (los turnos
@@ -105,6 +108,13 @@ public sealed class OmniHost
             .WithTool("fake.write", OmniCore.Domain.PermissionDecision.Allow)
             .WithModeDefaults(OmniCore.Domain.RunMode.Act);
         return ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, workspaceRoot);
+    }
+
+    public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot)
+    {
+        var policy = new ScriptedPermissionPolicy(new Dictionary<string, OmniCore.Domain.PermissionDecision>())
+            .WithModeDefaults(OmniCore.Domain.RunMode.Act);
+        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot);
     }
 
     /// <summary>

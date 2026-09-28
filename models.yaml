@@ -3,3 +3,4 @@ models:
     provider: "local-qwen"
     context: 32768
     maxOutput: 8192
+    parametersBillions: 27

@@ -28,6 +28,134 @@ public sealed class M2IntegrationTests
     private static readonly string TestCwd = Path.GetFullPath(".");
 
     [Fact]
+    public async System.Threading.Tasks.Task Explorer_starts_from_a_fresh_workspace_without_sim()
+    {
+        var server = OmniHost.CreateInMemoryServer();
+        var objective = "explícame este repositorio";
+        var command = WireEnvelope.Command(Ids.NewV7(), "{"
+            + JsonObj.Field("cmd", "explore.start") + ","
+            + JsonObj.Field("objective", objective) + "}");
+        var ack = server.Send(command, CancellationToken.None);
+
+        Assert.Equal("ok", ack.Status);
+        Assert.NotNull(server.LastSessionId());
+        Assert.NotNull(server.LastRunId());
+        var workingState = server.Query("workingState", CancellationToken.None)?.Json ?? "";
+        Assert.Contains(objective, workingState);
+        Assert.Contains("Plan rev.", workingState);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Explorer_never_exposes_simulation_write_tools()
+    {
+        var tools = OmniHost.CreateExplorerTools();
+        var names = tools.Catalog().Definitions().Select(tool => tool.Name).ToArray();
+        Assert.Contains("filesystem.read", names);
+        Assert.Contains("reference.resolve", names);
+        Assert.Contains("plan.propose", names);
+        Assert.DoesNotContain("fake.write", names);
+        Assert.DoesNotContain("fake.read", names);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Provisional_model_profile_controls_exposed_tools_and_rejects_hidden_calls()
+    {
+        var model = new ModelDefinition("small", "local", 8192, 4096, 1024, 4);
+        var provider = new ProviderDescriptor("local", ProviderFamily.OpenAiChatCompatible,
+            "http://localhost:8080", AuthConfig.None(), false, false, true);
+        var profile = new ModelProfileResolver().Resolve(model, provider);
+        var harness = new HarnessPolicyResolver().Resolve(profile);
+        Assert.Equal(ToolMode.Direct, harness.ToolMode);
+        Assert.Equal(6, harness.MaxVisibleTools);
+        var overridden = new ModelProfileResolver().Resolve(model, provider,
+            new Dictionary<string, double> { ["ToolCallReliability"] = 0.9 });
+        Assert.Equal(0.9, overridden.Trait("ToolCallReliability", 0));
+
+        var restricted = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 1,
+            GuidanceLevel.DomainOnly, 1, PlanControl.RuntimeDriven, 4);
+        var tools = OmniHost.CreateExplorerTools();
+        var executor = OmniHost.CreateExplorerExecutor(tools.Catalog(), TestCwd);
+        var store = new InMemoryEventStore();
+        var sessionId = SessionId.New();
+        ToolResultBlock? observed = null;
+        var turn = new ExplorerTurn((request, token) => {
+                Assert.Single(request.Tools);
+                foreach (var message in request.Messages)
+                    foreach (var block in message.Content)
+                        if (block is ToolResultBlock result) observed = result;
+                return FakeResponses.PlanThenEnd(request);
+            }, executor, tools.Catalog(),
+            new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+            new ExecutionFingerprint("small", "h", "t", "c", "o", "M2"),
+            new ModelSelection(new ModelIdValue("small"), 4096, ToolMode.Direct, null),
+            store, EventCodecs.Create(), new FileArtifactStore(TestCwd + "\\.omnicore-profile-art"),
+            new InMemoryAuditSink(), new RedactionPolicy(), restricted);
+
+        turn.Ask("pregunta", "sys", sessionId, RunId.New(), "ws", CancellationToken.None);
+        Assert.NotNull(observed);
+        Assert.True(observed!.IsError);
+        Assert.Contains("toolcall.rejected", store.ReadFrom(sessionId, 1).Select(e => e.Type.ToString()));
+        TryDeleteFiles(TestCwd, ".omnicore-profile-art");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Restart_restores_only_the_last_runs_plan()
+    {
+        var journal = Path.Combine(TestCwd, ".omnicore-restore-" + Guid.NewGuid().ToString("N") + ".db");
+        var stateFile = Path.Combine(TestCwd, ".omnicore-last-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            var store = new SqliteEventStore(journal);
+            var codecs = EventCodecs.Create();
+            var sessionId = SessionId.New();
+            var stream = new EventStream(store, codecs, sessionId);
+            var first = RunId.New();
+            var second = RunId.New();
+            foreach (var item in new[] { (first, "FIRST_RUN_ONLY"), (second, "SECOND_RUN_ONLY") })
+            {
+                var taskId = TaskId.New();
+                var planId = PlanId.New();
+                var root = PlanItemId.New();
+                stream.Append(new RunCreated(item.Item1, sessionId, item.Item2, RunMode.Act,
+                    ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
+                    new TaskBudget(null, null, null, null), taskId, DateTimeOffset.UtcNow));
+                stream.Append(new PlanCreated(planId, item.Item1, root, item.Item2));
+                stream.Append(new PlanItemAdded(PlanItemId.New(), planId, item.Item2 + " item", 2,
+                    null, Array.Empty<PlanItemId>(), true, new Dictionary<string, string>()));
+            }
+
+            File.WriteAllText(stateFile, sessionId + "\n" + second);
+            var restored = new OmniServer(new SqliteEventStore(journal), codecs,
+                new InMemoryAuditSink(), stateFile);
+            var workingState = restored.Query("workingState", CancellationToken.None)?.Json ?? "";
+            Assert.Contains("SECOND_RUN_ONLY", workingState);
+            Assert.DoesNotContain("FIRST_RUN_ONLY", workingState);
+        }
+        finally
+        {
+            TryDelete(journal);
+            TryDelete(stateFile);
+        }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Journal_redacts_nested_tool_arguments_without_breaking_replay()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var sessionId = SessionId.New();
+        var stream = new EventStream(store, codecs, sessionId);
+        stream.Append(new ToolCallRequested(ToolCallId.New(), "provider-call", "filesystem.read",
+            "{\"path\":\"README.md\",\"authorization\":\"Bearer VerySecretToken123\"}"));
+
+        var evt = store.ReadFrom(sessionId, 1).Single();
+        Assert.DoesNotContain("VerySecretToken123", evt.PayloadJson);
+        var replayed = (ToolCallRequested)codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+        using var args = System.Text.Json.JsonDocument.Parse(replayed.ArgumentsJson);
+        Assert.Equal("README.md", args.RootElement.GetProperty("path").GetString());
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Explorer_applies_plan_propose_via_projection()
     {
         // Requisito 2: plan.propose se aplica DESDE ExplorerTurn con las proyecciones del Run.
@@ -69,6 +197,48 @@ public sealed class M2IntegrationTests
         Assert.True(types.Contains("turn.completed"), "El Turn persiste su cierre");
         TryDelete(journal);
         TryDeleteFiles(TestCwd, ".omnicore-plan-artifacts");
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Rejected_plan_proposal_is_a_failed_tool_result()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var sessionId = SessionId.New();
+        var runId = RunId.New();
+        var root = PlanItemId.New();
+        var stream = new EventStream(store, codecs, sessionId);
+        stream.Append(new RunCreated(runId, sessionId, "objetivo", RunMode.Act,
+            ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
+            new TaskBudget(null, null, null, null), TaskId.New(), DateTimeOffset.UtcNow));
+        stream.Append(new PlanCreated(PlanId.New(), runId, root, "objetivo"));
+        stream.Append(new PlanItemStarted(root));
+
+        ToolResultBlock? observed = null;
+        var tools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var executor = ScriptedToolExecutor.WithWorkspace(tools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("plan.propose", PermissionDecision.Allow), TestCwd);
+        var turn = new ExplorerTurn((request, token) => {
+                foreach (var message in request.Messages)
+                    foreach (var block in message.Content)
+                        if (block is ToolResultBlock result) observed = result;
+                return FakeResponses.PlanThenEnd(request);
+            }, executor, tools.Catalog(),
+            new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+            new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
+            new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null),
+            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-rejected-plan-art"),
+            new InMemoryAuditSink(), new RedactionPolicy());
+
+        turn.Ask("inicia el plan", "sys", sessionId, runId, "ws", CancellationToken.None);
+        var types = store.ReadFrom(sessionId, 1).Select(e => e.Type.ToString()).ToArray();
+        Assert.Contains("plan_mutation.rejected", types);
+        Assert.Contains("toolcall.failed", types);
+        Assert.DoesNotContain("toolcall.succeeded", types);
+        Assert.NotNull(observed);
+        Assert.True(observed!.IsError);
+        Assert.Contains("No se puede iniciar", ((TextBlock)observed.Content[0]).Text);
+        TryDeleteFiles(TestCwd, ".omnicore-rejected-plan-art");
     }
 
     private static TaskId CreatenRootTask() => TaskId.New();

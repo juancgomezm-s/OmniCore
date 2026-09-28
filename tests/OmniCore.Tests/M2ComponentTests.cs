@@ -16,7 +16,7 @@ public sealed class M2ComponentTests
         var policy = resolver.Resolve(profile);
 
         Assert.Equal(OmniCore.Domain.ToolCallFormat.Native, policy.ToolCallFormat);
-        Assert.Equal(OmniCore.Domain.ToolMode.Direct, policy.ToolMode);
+        Assert.Equal(OmniCore.Domain.ToolMode.Discovered, policy.ToolMode);
         Assert.Equal(OmniCore.Domain.PlanControl.ModelDriven, policy.PlanControl);
         Assert.True(policy.RepairAttempts >= 3, "Buena recuperación → más reintentos");
     }
@@ -30,6 +30,7 @@ public sealed class M2ComponentTests
         var policy = resolver.Resolve(profile);
 
         Assert.Equal(OmniCore.Domain.ToolCallFormat.PromptedJson, policy.ToolCallFormat);
+        Assert.Equal(OmniCore.Domain.ToolMode.Direct, policy.ToolMode);
         Assert.Equal(OmniCore.Domain.PlanControl.RuntimeDriven, policy.PlanControl);
         Assert.True(policy.RepairAttempts < 2, "Poca recuperación → pocos reintentos");
     }

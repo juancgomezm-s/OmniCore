@@ -97,14 +97,17 @@ public sealed class ModelDefinition
 
     public long MaxOutputTokens { get; }
 
+    public double? ParameterCountBillions { get; }
+
     public ModelDefinition(string id, string providerId, long contextWindow, long recommendedUsableContext,
-        long maxOutputTokens)
+        long maxOutputTokens, double? parameterCountBillions = null)
     {
         Id = id;
         ProviderId = providerId;
         ContextWindow = contextWindow;
         RecommendedUsableContext = recommendedUsableContext;
         MaxOutputTokens = maxOutputTokens;
+        ParameterCountBillions = parameterCountBillions;
     }
 }
 

@@ -16,10 +16,10 @@ public sealed class HostTools
 
     private readonly PlanProposeTool _planPropose;
 
-    public HostTools(IPathBoundaryValidator boundary, PlanService planService)
+    public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true)
     {
         _planPropose = new PlanProposeTool(planService);
-        _catalog = FakeCatalog.Default()
+        _catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
             .Add(new ReadFileTool(boundary))
             .Add(new ReferenceResolveTool(boundary))
             .Add(_planPropose);
@@ -31,6 +31,9 @@ public sealed class HostTools
         var planService = new PlanService();
         return new HostTools(boundary, planService);
     }
+
+    public static HostTools Explorer() =>
+        new HostTools(new PathBoundaryValidator(), new PlanService(), false);
 
     public FakeCatalog Catalog() => _catalog;
 

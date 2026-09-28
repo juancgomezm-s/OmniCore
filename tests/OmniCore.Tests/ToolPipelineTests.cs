@@ -129,6 +129,32 @@ public sealed class ToolPipelineTests
     }
 
     [Fact]
+    public async Task Every_rejected_path_replays_to_a_terminal_state()
+    {
+        foreach (var testCase in new[] {
+            ("nope", OmniCore.Domain.PermissionDecision.Allow, false),
+            ("fake.write", OmniCore.Domain.PermissionDecision.Deny, false),
+            ("fake.write", OmniCore.Domain.PermissionDecision.Ask, false),
+        })
+        {
+            var sink = new EventSink();
+            var policy = ScriptedPermissionPolicy.WithTool(testCase.Item1, testCase.Item2);
+            var runtime = ToolRuntime.For(FakeCatalog.Default(), policy, sink.Emit);
+            var call = new ValidatedToolCall(OmniCore.Domain.ToolCallId.New(),
+                new ToolId(testCase.Item1), "provider-call", "{}");
+            var outcome = runtime.Run(call, new ToolPreparationContext("sim", DateTimeOffset.UtcNow),
+                new ToolExecutionContext("sim"), testCase.Item3, TestContext.Current.CancellationToken);
+
+            Assert.IsType<OmniCore.Domain.ToolCallRequested>(sink.Events[0]);
+            var state = OmniCore.Domain.ToolCallState.Requested;
+            foreach (var evt in sink.Events.Where(e => e is not OmniCore.Domain.InteractionRequested))
+                state = OmniCore.Domain.StateMachines.ApplyToolCall(state, evt);
+            Assert.Equal(outcome.FinalState, state);
+            Assert.Equal(OmniCore.Domain.ToolCallState.Rejected, state);
+        }
+    }
+
+    [Fact]
     public async Task Reconciliation_marks_effect_unknown_then_not_applied_when_post_hash_absent()
     {
         // ADR-0004 §4: una ToolCall Started sin outcome se reconcilia; sin post-hash, NotApplied.

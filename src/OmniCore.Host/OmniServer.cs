@@ -94,7 +94,7 @@ public sealed class OmniServer : IOmniClient
     {
         try
         {
-            var tail = _store.ReadFrom(sessionId, 1);
+            var tail = EventsForRun(_store.ReadFrom(sessionId, 1), runId);
             if (tail.Count == 0)
             {
                 return null;
@@ -130,6 +130,24 @@ public sealed class OmniServer : IOmniClient
         File.WriteAllText(_stateFile!, _lastSessionId!.ToString() + "\n" + _lastRunId!.ToString());
     }
 
+    private IReadOnlyList<DomainEvent> EventsForRun(IReadOnlyList<DomainEvent> all, RunId runId)
+    {
+        var events = new List<DomainEvent>();
+        var inRun = false;
+        foreach (var evt in all)
+        {
+            if (evt.Type.ToString() == "run.created")
+            {
+                var created = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson) as RunCreated;
+                inRun = created?.RunId == runId;
+            }
+
+            if (inRun) events.Add(evt);
+        }
+
+        return events;
+    }
+
     public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken)
     {
         if (command.MessageType != MessageTypes.Command)
@@ -155,6 +173,11 @@ public sealed class OmniServer : IOmniClient
             return ResumeSim(command);
         }
 
+        if (commandName == "explore.start")
+        {
+            return StartExplorerRun(command, fields);
+        }
+
         return CommandAck.Fail(command.MessageId, "comando desconocido en M1");
     }
 
@@ -163,6 +186,41 @@ public sealed class OmniServer : IOmniClient
     public SessionId? LastSessionId() => _lastSessionId;
 
     public RunId? LastRunId() => _lastRunId;
+
+    private CommandAck StartExplorerRun(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        var objective = fields.TryGetValue("objective", out var value) ? value : null;
+        if (string.IsNullOrWhiteSpace(objective))
+        {
+            return CommandAck.Fail(command.MessageId, "falta el objetivo del Explorer");
+        }
+
+        var sessionId = SessionId.New();
+        var runId = RunId.New();
+        var taskId = TaskId.New();
+        var laneId = LaneId.New();
+        var planId = PlanId.New();
+        var workspacePath = Path.GetFullPath(".");
+        var stream = new EventStream(_store, _codecs, sessionId);
+        var now = DateTimeOffset.UtcNow;
+        var budget = new TaskBudget(null, null, null, null);
+        stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(workspacePath).ToString(),
+            workspacePath, ProfileId.New(), now));
+        stream.Append(new RunCreated(runId, sessionId, objective!, RunMode.Act,
+            ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, taskId, now));
+        stream.Append(new RunStarted(runId));
+        stream.Append(new TaskCreated(taskId, runId, objective!, Array.Empty<TaskDependency>(), budget));
+        stream.Append(new TaskReady(taskId));
+        stream.Append(new LaneCreated(laneId, taskId, ProfileId.New()));
+        stream.Append(new LaneStarted(laneId));
+        stream.Append(new PlanCreated(planId, runId, PlanItemId.New(), objective!));
+
+        _lastSessionId = sessionId;
+        _lastRunId = runId;
+        _lastSnapshot = MaterializeFromJournal(sessionId, runId);
+        SaveLastSession();
+        return CommandAck.Ok(command.MessageId);
+    }
 
     /// <summary>Store del servidor (para el Turn de Explorer, que persiste en el mismo journal).</summary>
     public IEventStore AcquireStore() => _store;

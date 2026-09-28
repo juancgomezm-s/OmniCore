@@ -44,6 +44,8 @@ public sealed class ExplorerTurn
 
     private readonly RedactionPolicy _redaction;
 
+    private readonly HarnessPolicy? _harness;
+
     // Límites de sesión/día (ADR-0037 §7): $5 por sesión, $20 por día — capa sobre el guard del Run.
     private readonly decimal _sessionCapUsd = 5m;
 
@@ -58,7 +60,7 @@ public sealed class ExplorerTurn
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
         ModelSelection selection, IEventStore store, IEventCodecRegistry codecs, IArtifactStore artifacts,
-        IAuditSink audit, RedactionPolicy redaction)
+        IAuditSink audit, RedactionPolicy redaction, HarnessPolicy? harness = null)
     {
         _complete = complete;
         _tools = tools;
@@ -71,6 +73,7 @@ public sealed class ExplorerTurn
         _artifacts = artifacts;
         _audit = audit;
         _redaction = redaction;
+        _harness = harness;
         _dailyKey = DateTimeOffset.Now.ToString("yyyy-MM-dd");
     }
 
@@ -203,7 +206,7 @@ public sealed class ExplorerTurn
                     _selection,
                     messages.ToArray(),
                     instruction is not null ? instruction!.Replace("{context}", contextText) : contextText,
-                    _catalog.Definitions(),
+                    VisibleTools(),
                     ToolChoice.Auto(),
                     null, null, new CacheHints(4, "automatic"), null);
 
@@ -266,34 +269,50 @@ public sealed class ExplorerTurn
 
                     var validated = new ValidatedToolCall(call.Id, new ToolId(call.ToolName),
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
-                    var outcome = _tools.ExecuteTool(validated, false, cancellationToken);
+                    var exposed = VisibleTools().Any(tool => tool.Name == call.ToolName);
+                    var outcome = exposed
+                        ? _tools.ExecuteTool(validated, false, cancellationToken)
+                        : ToolOutcome.Failed("tool no disponible para este modelo", null,
+                            ToolCallState.Rejected, new DomainEventPayload[] {
+                                new ToolCallRequested(call.Id, validated.ProviderCallId, call.ToolName,
+                                    call.ArgumentsJson),
+                                new ToolCallRejected(call.Id, "tool no disponible para este modelo")
+                            });
+
+                    string? planError = null;
+                    IReadOnlyList<DomainEventPayload> planEvents = Array.Empty<DomainEventPayload>();
+                    if (call.ToolName == "plan.propose" && outcome.Succeeded
+                        && outcome.Effect == EffectOutcome.Applied && outcome.Preview is not null)
+                    {
+                        var proposal = ApplyPlanProposal(stream, runId, outcome.Preview!);
+                        planError = proposal.Error;
+                        planEvents = proposal.Events;
+                    }
 
                     // Persistir los eventos del pipeline REAL (request/permission/auth/outcome).
                     foreach (var evt in outcome.Events)
                     {
-                        stream.Append(evt);
+                        if (planError is not null && evt is ToolCallSucceeded)
+                            stream.Append(new ToolCallFailed(call.Id, _redaction.Redact(planError), EffectOutcome.None));
+                        else
+                            stream.Append(evt);
                     }
+                    foreach (var evt in planEvents) stream.Append(evt);
 
                     // Redacción obligatoria del tool result antes de dárselo al modelo.
                     var content = outcome.Preview is not null && outcome.Preview!.Length > 0
                         ? _redaction.Redact(outcome.Preview!)
                         : (outcome.Summary is null ? "ok" : _redaction.Redact(outcome.Summary!));
-                    var resultText = outcome.Succeeded ? content : "error: " + (outcome.Summary ?? "failed");
-                    allToolCalls.Add(new ToolUseTrace(call.ToolName, outcome.Succeeded, outcome.Summary,
+                    var succeeded = outcome.Succeeded && planError is null;
+                    var resultText = succeeded ? content : "error: " + _redaction.Redact(planError ?? outcome.Summary ?? "failed");
+                    allToolCalls.Add(new ToolUseTrace(call.ToolName, succeeded, planError ?? outcome.Summary,
                         call.ArgumentsJson));
-
-                    // plan.propose: aplicar la mutación con las proyecciones de ESTE Run.
-                    if (call.ToolName == "plan.propose" && outcome.Succeeded
-                        && outcome.Effect == EffectOutcome.Applied && outcome.Preview is not null)
-                    {
-                        ApplyPlanProposal(stream, sessionId, runId, laneId, outcome.Preview!);
-                    }
 
                     var assistant = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
                         new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName, call.ArgumentsJson),
                     });
                     var toolResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
-                        new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !outcome.Succeeded),
+                        new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
                     });
                     messages.Add(assistant);
                     messages.Add(toolResult);
@@ -394,7 +413,7 @@ public sealed class ExplorerTurn
     }
 
     /// <summary>Aplica plan.propose contra las proyecciones del mismo Run (P0-6 + requisito 2).</summary>
-    private void ApplyPlanProposal(EventStream stream, SessionId sessionId, RunId runId, LaneId laneId,
+    private (string? Error, IReadOnlyList<DomainEventPayload> Events) ApplyPlanProposal(EventStream stream, RunId runId,
         string mutationJson)
     {
         var tail = OwnTail(stream, runId);
@@ -411,7 +430,12 @@ public sealed class ExplorerTurn
         var plan = Mutations.ResolveDeclared(mutationJson, indexes);
         if (plan is null)
         {
-            return;
+            const string reason = "La mutación no identifica un item válido de este Run";
+            using var document = System.Text.Json.JsonDocument.Parse(mutationJson);
+            var kindText = document.RootElement.GetProperty("kind").GetString() ?? "";
+            var kind = PlanProposeTool.ParseKind(kindText);
+            return (reason, kind is null ? Array.Empty<DomainEventPayload>()
+                : new DomainEventPayload[] { new PlanMutationRejected(null, kind.Value, reason) });
         }
 
         var tasksProj = TaskGraphProjection.Replay(_codecs, tail);
@@ -419,13 +443,13 @@ public sealed class ExplorerTurn
         var result = new PlanService().Apply(planProj, tasksProj, lanesProj, plan!);
         if (!result.Accepted)
         {
-            return;
+            return (result.Reason ?? "mutación rechazada", new DomainEventPayload[] {
+                new PlanMutationRejected(plan.ItemId, plan.Kind,
+                    _redaction.Redact(result.Reason ?? "mutación rechazada"))
+            });
         }
 
-        foreach (var evt in result.Events)
-        {
-            stream.Append(evt);
-        }
+        return (null, result.Events);
     }
 
     /// <summary>
@@ -520,6 +544,19 @@ public sealed class ExplorerTurn
 
         parts.Add("Fingerprint: " + snapshot.Fingerprint.ModelKey + " · " + snapshot.Fingerprint.ContextPolicyHash);
         return string.Join("\n", parts.ToArray());
+    }
+
+    private IReadOnlyList<ToolDefinition> VisibleTools()
+    {
+        var all = _catalog.Definitions();
+        if (_harness is null) return all;
+        var visible = new List<ToolDefinition>();
+        foreach (var tool in all)
+        {
+            if (visible.Count >= _harness.MaxVisibleTools) break;
+            visible.Add(tool);
+        }
+        return visible;
     }
 
     private static TokenUsage CombineUsage(TokenUsage a, TokenUsage b) =>

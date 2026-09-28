@@ -2,6 +2,8 @@ namespace OmniCore.Engine;
 
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+using System.Text;
+using System.Text.Json;
 
 /// <summary>
 /// Escritor de eventos del Engine: serializa un payload tipado con el codec de su EventType,
@@ -27,7 +29,7 @@ public sealed class EventStream
     {
         var type = payload.Type();
         var codec = _codecs.CodecFor(type);
-        var json = codec.Encode(payload);
+        var json = RedactPayload(codec.Encode(payload));
         var envelope = DomainEvent.Create(_sessionId, type, payload.SchemaVersion(), null, null,
             ExtractRunId(payload), ExtractTaskId(payload), ExtractLaneId(payload), ExtractTurnId(payload),
             ExtractPlanItemId(payload), ExtractToolCallId(payload), new ArtifactRef[0], json);
@@ -37,6 +39,66 @@ public sealed class EventStream
     /// <summary>Replay de todos los eventos de la sesión desde la secuencia dada (1-based inclusive).</summary>
     public IReadOnlyList<DomainEvent> EventsSince(long fromSequenceInclusive) =>
         _store.ReadFrom(_sessionId, fromSequenceInclusive);
+
+    private static string RedactPayload(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        using var output = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(output))
+            WriteRedacted(writer, document.RootElement, new PiiRedactor());
+        return Encoding.UTF8.GetString(output.ToArray());
+    }
+
+    private static void WriteRedacted(Utf8JsonWriter writer, JsonElement element, PiiRedactor redactor)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                writer.WriteStartObject();
+                foreach (var property in element.EnumerateObject())
+                {
+                    writer.WritePropertyName(property.Name);
+                    WriteRedacted(writer, property.Value, redactor);
+                }
+                writer.WriteEndObject();
+                break;
+            case JsonValueKind.Array:
+                writer.WriteStartArray();
+                foreach (var item in element.EnumerateArray()) WriteRedacted(writer, item, redactor);
+                writer.WriteEndArray();
+                break;
+            case JsonValueKind.String:
+                var value = element.GetString() ?? "";
+                // Algunas propiedades contienen JSON serializado (p. ej. ArgumentsJson).
+                // Se redactan sus valores conservando el JSON interno válido para replay.
+                if ((value.StartsWith('{') || value.StartsWith('[')) && TryRedactNested(value, redactor, out var nested))
+                    writer.WriteStringValue(nested);
+                else
+                    writer.WriteStringValue(redactor.Redact(value));
+                break;
+            default:
+                element.WriteTo(writer);
+                break;
+        }
+    }
+
+    private static bool TryRedactNested(string value, PiiRedactor redactor, out string redacted)
+    {
+        try
+        {
+            using var nested = JsonDocument.Parse(value);
+            using var output = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(output))
+                WriteRedacted(writer, nested.RootElement, redactor);
+            redacted = Encoding.UTF8.GetString(output.ToArray());
+            return true;
+        }
+        catch (JsonException)
+        {
+            redacted = "";
+            return false;
+        }
+    }
 
     private static RunId? ExtractRunId(DomainEventPayload payload)
     {
