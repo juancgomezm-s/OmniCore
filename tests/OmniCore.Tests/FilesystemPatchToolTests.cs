@@ -106,7 +106,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "doc.txt", staleVersion, "contenido original", "nuevo"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un token obsoleto se rechaza (STALE_WRITE). summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         // No se mutó nada.
         Assert.Equal("contenido original", File.ReadAllText(ws + "\\doc.txt"));
         Assert.Contains("STALE_WRITE", outcome.Summary);
@@ -129,7 +129,7 @@ public sealed class FilesystemPatchToolTests
                 false, CancellationToken.None);
 
             Assert.False(outcome.Succeeded, "Un path que escapa del workspace se rechaza. summary=" + outcome.Summary);
-            Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+            Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         }
         finally
         {
@@ -147,7 +147,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "no-existe.txt", VersionOf("x"), "a", "b"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un patch no crea archivos: se rechaza si no existe. summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         Assert.False(File.Exists(ws + "\\no-existe.txt"), "No se crea el archivo");
     }
 
@@ -164,7 +164,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "doc.txt", version, "abc", "xyz"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "oldText ambiguo (varias ocurrencias) se rechaza. summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         Assert.True(File.ReadAllText(ws + "\\doc.txt") == content, "El archivo no cambia ante ambigüedad");
     }
 
@@ -181,7 +181,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "doc.txt", version, "texto que no aparece", "nuevo"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "oldText ausente se rechaza. summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(ToolCallState.Failed, outcome.FinalState);
     }
 
     [Fact]
@@ -295,7 +295,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "doc.txt", version, content, "otro contenido"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "oldText igual al contenido completo debe rechazarse. summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         Assert.Equal(content, File.ReadAllText(ws + "\\doc.txt"));
     }
 
@@ -408,7 +408,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "doc.txt", version, "linea1", ""), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "newText vacío debe rechazarse. summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         Assert.Equal(content, File.ReadAllText(ws + "\\doc.txt"));
     }
 
@@ -449,7 +449,7 @@ public sealed class FilesystemPatchToolTests
         var stalePatch = executor.ExecuteTool(
             PatchCall(ws, "doc.txt", version!, "linea3", "linea3-cambiada"), false, CancellationToken.None);
         Assert.False(stalePatch.Succeeded, "El token viejo debe rechazarse. summary=" + stalePatch.Summary);
-        Assert.Equal(ToolCallState.Rejected, stalePatch.FinalState);
+        Assert.Equal(ToolCallState.Failed, stalePatch.FinalState);
         Assert.Equal(currentBefore, File.ReadAllText(ws + "\\doc.txt"));
     }
 
@@ -501,7 +501,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "doc.txt", version, "hol", "nuevo"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un archivo con bytes inválidos se rechaza sin decodificar. summary=" + outcome.Summary);
-        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         Assert.True(raw.AsSpan().SequenceEqual(File.ReadAllBytes(ws + "\\doc.txt")), "El archivo no se muta");
     }
 }
