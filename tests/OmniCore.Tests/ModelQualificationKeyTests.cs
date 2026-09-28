@@ -275,13 +275,19 @@ public sealed class ModelQualificationKeyTests
         var adapters = new List<string> { "adapter-a" };
         var key = new ModelQualificationKey("p", "m", null, null, adapters,
             null, null, null, "default", ToolCallFormat.Native, ToolMode.Direct, "v1");
+        var hashBefore = key.QualificationKeyHash();
 
-        var rawList = adapters;
-        Assert.ThrowsAny<Exception>(() =>
-        {
-            typeof(System.Collections.ICollection).GetMethod("Add")!
-                .Invoke(rawList, new object[] { "adapter-b" });
-        });
+        // Cast a IList: Add debe fallar (array fijo de tamano).
+        Assert.ThrowsAny<Exception>(() => ((System.Collections.IList)key.Adapters).Add("adapter-b"));
+
+        // Cast a IList: asignacion por indice en un array string[] SÍ compila y ejecuta,
+        // pero el hash de la clave no puede cambiar si el caller intenta eso.
+        var list = (System.Collections.IList)key.Adapters;
+        Assert.ThrowsAny<Exception>(() => list[0] = "mutado");
+        // El array de respaldo SI se modifico, pero la clave ya tomo su snapshot:
+        // comprobamos que el hash sigue siendo el mismo (o que la operacion es imposible).
+
+        Assert.Equal(hashBefore, key.QualificationKeyHash());
     }
 
     [Fact]
