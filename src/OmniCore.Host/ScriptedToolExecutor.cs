@@ -14,9 +14,9 @@ using OmniCore.Tools;
 /// </summary>
 public sealed class ScriptedToolExecutor : IToolExecutor
 {
-    private readonly ToolRuntime _runtime;
+    private readonly FakeCatalog _catalog;
 
-    private readonly List<DomainEventPayload> _events = new();
+    private readonly IPermissionPolicy _policy;
 
     private readonly string _workspaceRoot;
 
@@ -29,22 +29,16 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy)
     {
-        _runtime = ToolRuntime.For(catalog, policy, payload =>
-        {
-            _events.Add(payload);
-            return VoidBox.Instance;
-        });
+        _catalog = catalog;
+        _policy = policy;
         _workspaceRoot = "sim";
         _boundary = null;
     }
 
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot)
     {
-        _runtime = ToolRuntime.For(catalog, policy, payload =>
-        {
-            _events.Add(payload);
-            return VoidBox.Instance;
-        });
+        _catalog = catalog;
+        _policy = policy;
         _workspaceRoot = workspaceRoot;
         _boundary = null;
     }
@@ -57,11 +51,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
         ModelCapabilityBoundary? boundary)
     {
-        _runtime = ToolRuntime.For(catalog, policy, payload =>
-        {
-            _events.Add(payload);
-            return VoidBox.Instance;
-        }, boundary);
+        _catalog = catalog;
+        _policy = policy;
         _workspaceRoot = workspaceRoot;
         _boundary = boundary;
     }
@@ -89,18 +80,56 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     public ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken)
     {
-        var before = _events.Count;
+        return ExecuteTool(validated, userApprovesAsk, cancellationToken, null);
+    }
+
+    /// <summary>
+    /// Pipeline real con escritura en vivo del journal (ADR-0002 §2): cuando el intent declara un
+    /// efecto (EffectClass ≠ None), <c>ToolCallStarted</c> se persiste con commit Barrier ANTES de
+    /// que la tool ejecute, y los eventos previos del pipeline se persisten en orden (Standard)
+    /// para que la secuencia del Started nunca preceda a la de sus predecesores. Los outcomes
+    /// posteriores se devuelven en <c>ToolOutcome.Events</c> para que el Engine los persista
+    /// (Standard) tras la ejecución. Con <c>stream == null</c> no se persiste nada aquí y la lista
+    /// completa vuelve en <c>Events</c> (semántica previa). Estado siempre local a la llamada: no
+    /// hay buffers ni callbacks compartidos entre Runs.
+    /// </summary>
+    public ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream? stream)
+    {
+        // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
+        // todos los eventos emitidos; tras un flush contiene solo los outcomes.
+        var buffered = new List<DomainEventPayload>();
+
+        Func<DomainEventPayload, VoidBox> emit = payload =>
+        {
+            if (stream is not null && payload is ToolCallStarted started
+                && started.EffectClass != EffectClass.None)
+            {
+                // ADR-0004 §2: el Started de un intent con efecto se confirma con commit Barrier
+                // ANTES de que la tool ejecute (aquí el ToolRuntime aún no llamó ExecuteAsync).
+                // Los eventos previos se escriben antes (Standard, en orden) para no romper la
+                // secuencia, y luego este Started como Barrier.
+                foreach (var evt in buffered)
+                {
+                    stream.Append(evt);
+                }
+
+                stream.Append(started, DurabilityClass.Barrier);
+                buffered.Clear();
+                return VoidBox.Instance;
+            }
+
+            buffered.Add(payload);
+            return VoidBox.Instance;
+        };
+
+        var runtime = ToolRuntime.For(_catalog, _policy, emit, _boundary);
         var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now);
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
         var execContext = new ToolExecutionContext(_workspaceRoot, _boundary?.ReadRegistry());
-        var outcome = _runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken);
-        var emitted = _events.Count - before;
-        var events = new DomainEventPayload[emitted];
-        for (var i = 0; i < emitted; i++)
-        {
-            events[i] = _events[before + i];
-        }
+        var outcome = runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken);
+        var events = buffered.ToArray();
 
         return outcome.Succeeded
             ? ToolOutcome.Ok(outcome.Summary ?? "ok", outcome.Preview, outcome.Effect, outcome.FinalState, events)

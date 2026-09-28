@@ -289,7 +289,7 @@ public sealed class ExplorerTurn
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
                     var exposed = VisibleTools().Any(tool => tool.Name == call.ToolName);
                     var outcome = exposed
-                        ? _tools.ExecuteTool(validated, false, cancellationToken)
+                        ? _tools.ExecuteTool(validated, false, cancellationToken, stream)
                         : ToolOutcome.Failed("tool no disponible para este modelo", null,
                             ToolCallState.Rejected, new DomainEventPayload[] {
                                 new ToolCallRequested(call.Id, validated.ProviderCallId, call.ToolName,
