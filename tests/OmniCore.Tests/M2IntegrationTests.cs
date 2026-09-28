@@ -497,6 +497,85 @@ public sealed class M2IntegrationTests
         TryDeleteFiles(TestCwd, ".omnicore-turn-artifacts");
     }
 
+    [Fact]
+    public void Explorer_reconstructs_previous_user_and_assistant_messages_from_journal()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var artifactPath = TestCwd + "\\.omnicore-conversation-" + Guid.NewGuid().ToString("N");
+        var artifacts = new FileArtifactStore(artifactPath);
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow)
+                .WithModeDefaults(RunMode.Act), TestCwd);
+        var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
+        var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
+        var selection = new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null);
+        var session = SessionId.New();
+        var run = RunId.New();
+        var lane = LaneId.New();
+
+        var first = new ExplorerTurn((request, token) =>
+            new ModelResponse(new ContentBlock[] { new TextBlock("respuesta anterior") },
+                StopReason.EndTurn, new TokenUsage(1, 1, 0, 0, 0), null,
+                new ProviderMetadata("", "", null)),
+            executor, hostTools.Catalog(), materializer, fingerprint, selection,
+            store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+        Assert.Equal(StopReason.EndTurn,
+            first.Ask("pregunta anterior", "sys", session, run, lane, "", CancellationToken.None).StopReason);
+
+        var seen = new List<string>();
+        var second = new ExplorerTurn((request, token) =>
+        {
+            foreach (var message in request.Messages)
+                foreach (var part in message.Content)
+                    if (part is TextBlock text) seen.Add(text.Text);
+            return new ModelResponse(new ContentBlock[] { new TextBlock("respuesta nueva") },
+                StopReason.EndTurn, new TokenUsage(1, 1, 0, 0, 0), null,
+                new ProviderMetadata("", "", null));
+        }, executor, hostTools.Catalog(), materializer, fingerprint, selection,
+            store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+        Assert.Equal(StopReason.EndTurn,
+            second.Ask("pregunta nueva", "sys", session, run, lane, "", CancellationToken.None).StopReason);
+        Assert.Equal(new[] { "pregunta anterior", "respuesta anterior", "pregunta nueva" }, seen);
+
+        var eventTypes = store.ReadFrom(session, 1).Select(evt => evt.Type.ToString()).ToArray();
+        Assert.Equal(2, eventTypes.Count(type => type == "user_input.received"));
+        Assert.Equal(2, eventTypes.Count(type => type == "model.completed"));
+        TryDeleteFiles(TestCwd, System.IO.Path.GetFileName(artifactPath));
+    }
+
+    [Fact]
+    public void Explorer_exhausted_steps_abandons_turn_without_completed_event()
+    {
+        var store = new InMemoryEventStore();
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow)
+                .WithModeDefaults(RunMode.Act), TestCwd);
+        var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
+        var session = SessionId.New();
+        var turn = new ExplorerTurn((request, token) =>
+            new ModelResponse(new ContentBlock[] {
+                new ToolCallBlock(ToolCallId.New(), "repeated", "unknown.tool", "{}")
+            }, StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                new ProviderMetadata("", "", null)),
+            executor, hostTools.Catalog(), materializer,
+            new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2"),
+            new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null),
+            store, EventCodecs.Create(), new FileArtifactStore(TestCwd + "\\.omnicore-step-artifacts"),
+            new InMemoryAuditSink(), new RedactionPolicy());
+
+        var result = turn.Ask("pregunta", "sys", session, RunId.New(), LaneId.New(), "", CancellationToken.None);
+        Assert.Equal(StopReason.Error, result.StopReason);
+        Assert.Equal(ExplorerTurn.MaxSteps, result.Steps);
+        var types = store.ReadFrom(session, 1).Select(evt => evt.Type.ToString()).ToArray();
+        Assert.Contains("turn.abandoned", types);
+        Assert.DoesNotContain("turn.completed", types);
+        Assert.DoesNotContain("model.completed", types);
+        TryDeleteFiles(TestCwd, ".omnicore-step-artifacts");
+    }
+
     /// <summary>
     /// Reproduce una ToolCall desde su Requested aplicando la state machine (StateMachines.
     /// ApplyToolCall) sobre los eventos del journal; devuelve true si nunca lanza transición

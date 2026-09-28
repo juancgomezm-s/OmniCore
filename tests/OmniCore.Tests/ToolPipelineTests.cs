@@ -7,6 +7,27 @@ namespace OmniCore.Tests;
 
 public sealed class ToolPipelineTests
 {
+    private sealed class ThrowingTool : ITool
+    {
+        private readonly OmniCore.Domain.EffectClass _effect;
+        public ToolDescriptor Descriptor { get; }
+
+        public ThrowingTool(string name, OmniCore.Domain.EffectClass effect)
+        {
+            _effect = effect;
+            Descriptor = new ToolDescriptor(new ToolId(name), "throws", new InputSchema("{}"),
+                Array.Empty<string>(), effect == OmniCore.Domain.EffectClass.None, false,
+                ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
+        }
+
+        public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context) =>
+            new Prepared(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
+                _effect, OmniCore.Domain.ResourceClaims.Empty(), ToolRisk.Low, null));
+
+        public Task<OmniCore.Domain.ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("boom");
+    }
+
     private sealed class EventSink
     {
         public readonly List<OmniCore.Domain.DomainEventPayload> Events = new();
@@ -151,6 +172,29 @@ public sealed class ToolPipelineTests
                 state = OmniCore.Domain.StateMachines.ApplyToolCall(state, evt);
             Assert.Equal(outcome.FinalState, state);
             Assert.Equal(OmniCore.Domain.ToolCallState.Rejected, state);
+        }
+    }
+
+    [Fact]
+    public async Task Execution_exception_is_recorded_as_failed_or_effect_unknown()
+    {
+        foreach (var effect in new[] { OmniCore.Domain.EffectClass.None,
+            OmniCore.Domain.EffectClass.Reconcilable })
+        {
+            var sink = new EventSink();
+            var tool = new ThrowingTool("throwing", effect);
+            var runtime = ToolRuntime.For(new FakeCatalog().Add(tool),
+                ScriptedPermissionPolicy.WithTool("throwing", OmniCore.Domain.PermissionDecision.Allow), sink.Emit);
+            var outcome = runtime.Run(new ValidatedToolCall(OmniCore.Domain.ToolCallId.New(),
+                new ToolId("throwing"), "pc", "{}"),
+                new ToolPreparationContext("sim", DateTimeOffset.UtcNow), new ToolExecutionContext("sim"),
+                false, TestContext.Current.CancellationToken);
+            var state = OmniCore.Domain.ToolCallState.Requested;
+            foreach (var evt in sink.Events)
+                state = OmniCore.Domain.StateMachines.ApplyToolCall(state, evt);
+            Assert.Equal(outcome.FinalState, state);
+            Assert.Equal(effect == OmniCore.Domain.EffectClass.None
+                ? OmniCore.Domain.ToolCallState.Failed : OmniCore.Domain.ToolCallState.EffectUnknown, state);
         }
     }
 

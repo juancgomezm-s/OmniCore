@@ -155,7 +155,8 @@ public sealed class StateMachines
     {
         if (evt is ToolCallRequested && from == ToolCallState.Requested) return ToolCallState.Requested;
         if (evt is ToolCallPrepared && from == ToolCallState.Requested) return ToolCallState.Prepared;
-        if (evt is ToolCallRejected && from == ToolCallState.Requested) return ToolCallState.Rejected;
+        if (evt is ToolCallRejected
+            && (from == ToolCallState.Requested || from == ToolCallState.Prepared)) return ToolCallState.Rejected;
         if (evt is PermissionEvaluated && from == ToolCallState.Prepared) return ToolCallState.Prepared;
         if (evt is PermissionRequested && from == ToolCallState.Prepared) return ToolCallState.AwaitingPermission;
         if (evt is PermissionGranted

@@ -73,7 +73,17 @@ public sealed class ToolRuntime
         // La state machine de ToolCall solo acepta PermissionEvaluated desde Prepared; cada
         // runtime (Engine y Explorer por igual) persiste las dos primeras etapas aquí.
         // 1. Prepare (puro, síncrono; ADR-0014 §3).
-        var preparation = tool.Prepare(validated, prepContext);
+        ToolPreparation preparation;
+        try
+        {
+            preparation = tool.Prepare(validated, prepContext);
+        }
+        catch (Exception ex)
+        {
+            _emit(new ToolCallRejected(validated.ToolCallId, "prepare falló: " + ex.Message));
+            return new Outcome(false, "prepare falló: " + ex.Message,
+                ToolCallState.Rejected, EffectOutcome.None);
+        }
         if (preparation is PreparationRejected rejected)
         {
             _emit(new ToolCallRejected(validated.ToolCallId, rejected.Reason));
@@ -84,7 +94,17 @@ public sealed class ToolRuntime
         _emit(new ToolCallPrepared(validated.ToolCallId, intent.NormalizedArgumentsJson));
 
         // 2. Permission Engine (ADR-0037 §2): traza siempre; Ask según flujo de interacción.
-        var decision = _policy.Evaluate(intent);
+        PermissionDecisionRecord decision;
+        try
+        {
+            decision = _policy.Evaluate(intent);
+        }
+        catch (Exception ex)
+        {
+            _emit(new ToolCallRejected(validated.ToolCallId, "política falló: " + ex.Message));
+            return new Outcome(false, "política falló: " + ex.Message,
+                ToolCallState.Rejected, EffectOutcome.None);
+        }
         _emit(new PermissionEvaluated(validated.ToolCallId, decision.Final, LayersToJson(decision), null));
         if (decision.Final == PermissionDecision.Deny)
         {
@@ -152,8 +172,23 @@ public sealed class ToolRuntime
         // 4. Ejecución (Barrier si hay efecto; ADR-0002 §2, ADR-0004 §2).
         _emit(new ToolCallStarted(call.ToolCallId, intent.Effect));
 
-        var resultTask = tool.ExecuteAsync(authorized, execContext, cancellationToken);
-        var result = resultTask.Result;
+        ToolResult result;
+        try
+        {
+            result = tool.ExecuteAsync(authorized, execContext, cancellationToken).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            var cause = "tool lanzó " + ex.GetType().Name + ": " + ex.Message;
+            if (intent.Effect != EffectClass.None)
+            {
+                _emit(new ToolCallEffectUnknown(call.ToolCallId, intent.Effect));
+                return new Outcome(false, cause, ToolCallState.EffectUnknown, EffectOutcome.Unknown);
+            }
+
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
         if (result.IsError)
         {
             // P0-2: los fallos de la tool (acceso denegado, no encontrado, falta path, ref
