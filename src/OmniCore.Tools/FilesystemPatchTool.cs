@@ -202,10 +202,10 @@ public sealed class FilesystemPatchTool : ITool
         {
             using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
             {
+                createdTemp = true;
                 stream.Write(newBytes);
                 stream.Flush(flushToDisk: true);
             }
-            createdTemp = true;
 
             // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
             if (!_boundary.IsWithin(full, context.WorkspaceRoot))

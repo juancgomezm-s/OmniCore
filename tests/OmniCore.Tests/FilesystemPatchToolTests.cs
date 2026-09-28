@@ -390,7 +390,7 @@ public sealed class FilesystemPatchToolTests
         // No deben quedar temporales huérfanos del patch.
         var orphans = Directory.GetFiles(ws, ".doc.txt.tmp-*", SearchOption.TopDirectoryOnly);
         // El temporal debe limpiarse cuando la publicación falla (cero temporales huérfanos).
-        Assert.Equal(0, orphans.Length);
+        Assert.Empty(orphans);
 
     }
 
