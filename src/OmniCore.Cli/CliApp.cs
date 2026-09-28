@@ -53,9 +53,10 @@ public sealed class CliApp
             return Task.FromResult(0);
         }
 
-        Console.WriteLine("omni: comando desconocido '" + command + "'");
-        PrintUsage();
-        return Task.FromResult(1);
+        // Default del CLI (criterio M2 `omni "explícame …"`): cualquier primer argumento que
+        // no sea un subcomando es un prompt al Explorer (omni ask con la pregunta literal).
+        Console.WriteLine("omni: intención asumida como pregunta → ask '" + command + "'");
+        return RunAsk(args);
     }
 
     private static Task<int> RunSim(string[] args)
@@ -302,8 +303,26 @@ public sealed class CliApp
 
             // 2. Provider conectado al modelo local (TLS relajado solo para loopback/privado).
             var provider = OmniHost.ConnectLocalChatCompletions(baseUrl!, model!, secretRef, key ?? "");
-            var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!), 8192,
-                OmniCore.Domain.ToolMode.Direct, null);
+            // Contexto NO hardcodeado: usamos los hechos reales del registro (P1: 8192 era fijo).
+            var usableContext = modelDef is not null && modelDef!.RecommendedUsableContext > 0
+                ? modelDef!.RecommendedUsableContext
+                : (modelDef is not null && modelDef!.ContextWindow > 0 ? modelDef!.ContextWindow : 8192);
+            var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
+                usableContext, OmniCore.Domain.ToolMode.Direct, null);
+
+            // LocalModelHost/CredentialStore conectados en el flujo ask (P1): el credential
+            // store alimenta el provider; el local host confirma que no hay servidor managed huérfano.
+            var localHost = OmniHost.CreateLocalModelHost();
+            var creds = OmniHost.CreateCredentialStore(Path.Combine(Path.GetFullPath("."), ".omnicore", "data"));
+            if (authKind == OmniCore.Abstractions.AuthKind.ApiKey && key is not null && key!.Length > 0)
+            {
+                creds.Save(secretRef, key!, CancellationToken.None);
+            }
+
+            if (localHost.IsManagedRunning())
+            {
+                System.Console.WriteLine("omni ask: (servidor local managed activo)");
+            }
 
             // 3. Turn end-to-end: contexto REAL del run + fingerprint + tools reales + permisos,
             //    con persistencia en el journal del servidor (Turn, tools, respuesta como artifact).

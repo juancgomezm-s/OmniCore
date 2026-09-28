@@ -410,7 +410,8 @@ public sealed class SimulationEngine
             }
 
             var validated = new ValidatedToolCall(callId, new ToolId(toolName), "pc-" + toolName, callArgs);
-            stream.Append(new ToolCallRequested(callId, validated.ProviderCallId, toolName, callArgs));
+            // ToolCallRequested/Prepared los emite el ToolRuntime al inicio del pipeline (P0-1):
+            // el ciclo durable Requested → Prepared → PermissionEvaluated → … es invariable.
             if (faultAtTool == toolName)
             {
                 // Crash inyectado tras el Started: el proceso "muere" sin persistir el outcome.

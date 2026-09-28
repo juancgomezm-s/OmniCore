@@ -21,7 +21,7 @@
 | Scope | Archivo o directorio | Contenido |
 |---|---|---|
 | User | `<config>/settings.yaml`, `providers.yaml`, `keybindings.yaml`, `permissions.yaml` | preferencias, providers y credenciales (`auth.ref`), keybindings, perfil de permisos y `UserPolicy`, topes de gasto |
-| User | `<data>/user.db` | perfiles de modelo (ADR-0007), memoria Global (ADR-0028) |
+| User | `<data>/user.db` | perfiles de modelo (ADR-0007), políticas operativas e historial por `ModelPolicyKey` (ADR-0044), memoria Global (ADR-0028) |
 | User | `<data>/trust.yaml` | workspaces confiables (§3) |
 | User | `<data>/audit/` | audit log (ADR-0043) |
 | Project (versionable) | `<repo>/.omnicore/settings.yaml`, `commands/`, `skills/`, `hooks/`, `extensions/` | solo las claves permitidas (§4) |

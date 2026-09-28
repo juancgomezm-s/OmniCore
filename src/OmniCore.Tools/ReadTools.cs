@@ -31,6 +31,17 @@ public sealed class ReadFileTool : ITool
         // Prepare es puro: declara las claims de lectura de la ruta concreta pedida (ADR-0014 §3),
         // para que Security evalúe la resource path real (no vacío). La lectura ocurre en Execute.
         var path = ExtractPath(call.NormalizedArgumentsJson);
+
+        // ADR-0018 §4: rutas de secretos (.env, PEM/SSH, credenciales) se REJECT en Prepare:
+        // nunca se llega a ejecutar la tool (el journal termina en ToolCallRejected, sin
+        // toolcall.succeeded). P0-2.
+        if (path is not null && path!.Length > 0 && new OmniCore.Domain.RedactionPolicy().IsSecretPath(path!))
+        {
+            return new PreparationRejected(
+                "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
+                null);
+        }
+
         var claims = path is null || path!.Length == 0
             ? ResourceClaims.Empty()
             : new ResourceClaims(new string[] { path! }, new string[0], new NetworkGrant[0], null, new string[0]);
@@ -45,34 +56,23 @@ public sealed class ReadFileTool : ITool
         var path = ExtractPath(intent.Intent.NormalizedArgumentsJson);
         if (path is null)
         {
-            return System.Threading.Tasks.Task.FromResult(new ToolResult("Falta 'path' en los argumentos", null,
-                null, 0, false, EffectOutcome.None));
-        }
-
-        // ADR-0018 §4: rutas de secretos (.env, PEM/SSH, credenciales) NUNCA se leen ni exponen.
-        var redaction = new OmniCore.Domain.RedactionPolicy();
-        if (redaction.IsSecretPath(path!))
-        {
-            return System.Threading.Tasks.Task.FromResult(new ToolResult("Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida por redacción (ADR-0018)", null,
-                null, 0, false, EffectOutcome.None));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'path' en los argumentos"));
         }
 
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(new ToolResult("Ruta fuera del workspace", null,
-                null, 0, false, EffectOutcome.None));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
         }
 
         if (!File.Exists(full))
         {
-            return System.Threading.Tasks.Task.FromResult(new ToolResult("Archivo no encontrado: " + path, null,
-                null, 0, false, EffectOutcome.None));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Archivo no encontrado: " + path));
         }
 
         var content = File.ReadAllText(full);
         // Redacción obligatoria del contenido antes de exponerlo al modelo (ADR-0018 §4).
-        content = redaction.Redact(content);
+        content = new OmniCore.Domain.RedactionPolicy().Redact(content);
         var truncated = content.Length > 8000 ? content.Substring(0, 8000) : content;
         var externalized = content.Length > 8000;
         return System.Threading.Tasks.Task.FromResult(new ToolResult(

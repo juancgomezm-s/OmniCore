@@ -67,6 +67,12 @@ public sealed class ToolRuntime
             return new Outcome(false, "tool no encontrada", ToolCallState.Rejected, EffectOutcome.None);
         }
 
+        // P0-1: ciclo durable completo — Requested → Prepared → PermissionEvaluated → …
+        // La state machine de ToolCall solo acepta PermissionEvaluated desde Prepared; cada
+        // runtime (Engine y Explorer por igual) persiste las dos primeras etapas aquí.
+        _emit(new ToolCallRequested(validated.ToolCallId, validated.ProviderCallId,
+            validated.ToolId.ToString(), validated.NormalizedArgumentsJson));
+
         // 1. Prepare (puro, síncrono; ADR-0014 §3).
         var preparation = tool.Prepare(validated, prepContext);
         if (preparation is PreparationRejected rejected)
@@ -76,6 +82,7 @@ public sealed class ToolRuntime
         }
 
         var intent = ((Prepared) preparation).Intent;
+        _emit(new ToolCallPrepared(validated.ToolCallId, intent.NormalizedArgumentsJson));
 
         // 2. Permission Engine (ADR-0037 §2): traza siempre; Ask según flujo de interacción.
         var decision = _policy.Evaluate(intent);
@@ -148,6 +155,14 @@ public sealed class ToolRuntime
 
         var resultTask = tool.ExecuteAsync(authorized, execContext, cancellationToken);
         var result = resultTask.Result;
+        if (result.IsError)
+        {
+            // P0-2: los fallos de la tool (acceso denegado, no encontrado, falta path, ref
+            // inválida) NUNCA producen toolcall.succeeded; terminan Failed/Rejected.
+            _emit(new ToolCallFailed(call.ToolCallId, result.Summary, EffectOutcome.None));
+            return new Outcome(false, result.Summary, result.Preview, ToolCallState.Rejected, EffectOutcome.None);
+        }
+
         var effect = result.EffectOutcome;
         if (effect == EffectOutcome.Unknown)
         {

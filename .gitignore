@@ -488,4 +488,6 @@ lastsession.txt
 audit.jsonl
 # Credencial de test del FileCredentialStore de los tests de integración
 .omnicore-test-creds.ini
+# Datos locales del runtime (credenciales, artifacts, journal)
+.omnicore/
 .omnicore-test-creds/

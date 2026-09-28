@@ -165,7 +165,12 @@ public sealed class StateMachines
         }
 
         if (evt is PermissionDenied && from == ToolCallState.AwaitingPermission) return ToolCallState.Rejected;
-        if (evt is ToolCallAuthorized && from == ToolCallState.Authorized) return ToolCallState.Authorized;
+        // Authorized puede llegar desde Prepared (Allow directo, INP) o Authorized (par idempotente).
+        if (evt is ToolCallAuthorized
+            && (from == ToolCallState.Prepared || from == ToolCallState.Authorized))
+        {
+            return ToolCallState.Authorized;
+        }
         if (evt is ToolCallStarted
             && (from == ToolCallState.Authorized || from == ToolCallState.Started))
         {

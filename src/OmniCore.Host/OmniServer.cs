@@ -173,7 +173,7 @@ public sealed class OmniServer : IOmniClient
     /// <summary>El LaneId del último run (del journal) o null si no hay run persistido.</summary>
     public LaneId? LastLaneId()
     {
-        if (_lastSessionId is null)
+        if (_lastSessionId is null || _lastRunId is null)
         {
             return null;
         }
@@ -181,15 +181,29 @@ public sealed class OmniServer : IOmniClient
         try
         {
             var tail = _store.ReadFrom(_lastSessionId!, 1);
+            // P0-4: el lane del Run actual (no el primero de la sesión): captura desde el
+            // RunCreated que coincide con _lastRunId.
+            var inOwnRun = false;
             foreach (var evt in tail)
             {
-                if (evt.Type.ToString().Equals("lane.created", StringComparison.Ordinal))
+                if (evt.Type.ToString().Equals("run.created", StringComparison.Ordinal))
                 {
                     var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
-                    if (payload is LaneCreated lane)
-                    {
-                        return lane.LaneId;
-                    }
+                    var runCreated = payload as RunCreated;
+                    inOwnRun = runCreated is not null
+                        && runCreated!.RunId.ToString().Equals(_lastRunId!.ToString(), StringComparison.Ordinal);
+                    continue;
+                }
+
+                if (!inOwnRun || !evt.Type.ToString().Equals("lane.created", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var lanePayload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+                if (lanePayload is LaneCreated lane)
+                {
+                    return lane.LaneId;
                 }
             }
         }
@@ -212,9 +226,9 @@ public sealed class OmniServer : IOmniClient
 
         if (name == "workingState")
         {
-            var ws = _lastWorkingStateText is null || _lastWorkingStateText.Length == 0 ? "{}"
-                : "{" + JsonObj.Field("workingState", _lastWorkingStateText) + "}";
-            return new SessionQueryResult("workingState", ws);
+            var safe = _lastWorkingStateText is null || _lastWorkingStateText.Length == 0 ? "{}"
+                : "{" + JsonObj.Field("workingState", RedactPii(_lastWorkingStateText)) + "}";
+            return new SessionQueryResult("workingState", safe);
         }
 
         if (name == "context")
@@ -236,7 +250,7 @@ public sealed class OmniServer : IOmniClient
             return new SessionQueryResult("context",
                 "{\"snapshot\":{" + JsonObj.Field("tokens", _lastSnapshot!.TokenCount.ToString())
                 + ",\"fingerprint\":" + JsonObj.Field("fingerprint", _lastSnapshot!.Fingerprint.Hash())
-                + ",\"workingState\":" + JsonObj.Field("workingState", _lastWorkingStateText)
+                + ",\"workingState\":" + JsonObj.Field("workingState", RedactPii(_lastWorkingStateText))
                 + ",\"items\":[" + string.Join(",", items.ToArray()) + "]}}");
         }
 
@@ -247,6 +261,10 @@ public sealed class OmniServer : IOmniClient
     /// Redacción de PII para diagnóstico (/context y /permissions son supervisors del runtime;
     /// nunca vuelcan contenido completo del workspace, solo cabeceras, ADR-0018).
     /// </summary>
+    /// <summary>Redacta PII (keys/bearer/JWT) del WorkingState antes de exponerlo en queries.</summary>
+    private static string RedactPii(string content) =>
+        new OmniCore.Domain.PiiRedactor().Redact(content);
+
     private static string Redact(string content, int max)
     {
         // Redacción real: quita secretos (keys, bearer, JWT, cookies) y luego trunca.

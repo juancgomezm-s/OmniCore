@@ -9,6 +9,7 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
   - v0.3: 0022–0029;
   - v0.4, cliente/TUI: 0030–0034;
   - **v0.5, revisión integral y entrevista:** 0035–0043, con correcciones en ADRs anteriores.
+  - **v0.6:** 0044–0045, política operativa por modelo y cuestionarios estructurados, con correcciones en ADRs anteriores.
 
   Diagramas, tabla de cambios, preguntas abiertas y roadmap: [docs/architecture/arquitectura.md](../architecture/arquitectura.md).
 
@@ -57,3 +58,5 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0041](0041-simulacion-m1.md) | Simulación de M1: `omni sim` y componentes mínimos | Aceptada |
 | [0042](0042-tokens-y-presupuesto-de-contexto.md) | Conteo de tokens y política de contexto antes de M4 | Aceptada |
 | [0043](0043-auditoria-y-telemetria.md) | Auditoría y telemetría | Aceptada |
+| [0044](0044-politica-de-modelos-y-mutaciones.md) | Política de modelos, onboarding y seguridad de mutaciones | Aceptada |
+| [0045](0045-cuestionarios-estructurados.md) | Cuestionarios estructurados y respuestas humanas | Aceptada |

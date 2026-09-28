@@ -2,7 +2,7 @@
 
 ## Especificación Funcional y Técnica
 
-**Versión:** 0.5 (2026-09-24)
+**Versión:** 0.6 (2026-09-27)
 **Estado:** Draft técnico en revisión, previo a M1
 **Runtime objetivo:** .NET 10 LTS / C#
 **Producto consumidor inicial:** Omni CLI
@@ -71,6 +71,13 @@ Revisión arquitectónica previa a M1. Diagramas, tabla completa de cambios, pre
 | Auditoría (sobrevive a la purga) y telemetría solo local | §58, §69 | 0043 |
 | **Toda la memoria entra en v1** (corrige §3) | §3, §54 | 0028 rev. 2 |
 | Claude Code lanes en M7; TUI después de M3; roadmap consolidado en `arquitectura.md` §24 | §86–§99 | 0012 rev. 3 |
+
+## Cambios en v0.6
+
+| Tema | Secciones afectadas | ADR |
+|---|---|---|
+| Política operativa por configuración de modelo, onboarding, límites de tools y mutaciones | §20, §35, §38, §88–§90, §99, §103 | 0044 |
+| Cuestionarios estructurados: single/multi-select, texto libre, `Otro`, `user.ask`, durabilidad y frame TUI | §60, §64.1, §88–§89, §99, §103 | 0045 |
 
 ---
 
@@ -1117,6 +1124,9 @@ Un modelo capaz de usar 50 tools no implica que recibirá 50 tools.
 - **Política del harness:** `HarnessPolicyResolver`, una función pura, deriva `ToolCallFormat`, `ToolMode`, `MaxVisibleTools`, `GuidanceLevel`, `RepairAttempts`, `PlanControl`, `StallThresholdTurns` y `CompletionStrictness`.
 - **Estados de cualificación:** `Unknown → Declared → ProvisionallyClassified → Qualified → Calibrated` (+ `Stale`).
 - **Router:** consume solo `EffectiveModelProfile`. No ejecuta benchmarks ni infiere calidad por nombre.
+- **Política operativa (ADR-0044):** `UserModelPolicy` fija un techo por `ModelPolicyKey` exacta. El
+  runtime intersecta ese techo con Task, AgentProfile, permisos, trust y disponibilidad; una
+  categoría de modelo nunca es un grant. Configuraciones desconocidas usan `ObserveOnly`.
 
 ---
 
@@ -1574,6 +1584,10 @@ Visible to model:     5
 
 Esto será particularmente importante para modelos pequeños.
 
+La selección tiene dos capas (ADR-0044): `ToolPlanner` reduce lo visible y
+`ModelCapabilityBoundary` rechaza en runtime tools o mutaciones fuera de la política, aunque el
+modelo consiga emitirlas.
+
 ---
 
 # 36. tool.search
@@ -1642,6 +1656,9 @@ Posteriormente:
 ```text
 filesystem.write
 filesystem.patch
+filesystem.create
+filesystem.delete
+filesystem.move
 
 shell.exec
 
@@ -1650,6 +1667,10 @@ git.diff
 git.log
 git.show
 ```
+
+ADR-0044 distingue patch, creación, reemplazo y operaciones destructivas. En `PatchOnly` solo se
+expone patch sobre archivos previamente leídos con `ExpectedVersionToken`; borrar y recrear la
+misma ruta cuenta como reemplazo. El runtime valida el diff real antes de aplicar.
 
 *v0.2 (ADR-0015):* el primitive es **`process.exec(executable, argv[], workingDirectory, environment)`**. `shell.exec(shell, script)` existe como superficie de **riesgo alto**: `Ask` por defecto, AppContainer obligatorio y `EffectClass = NonIdempotent`. Security nunca autoriza interpretando texto de shell.
 
@@ -2471,7 +2492,20 @@ ResumeRun
 *v0.4:*
 
 - **`SendInput`:** pasa a ser `SendInput { InputPart[] }`, con `TextPart` y `ReferencePart` (ADR-0033).
-- **Permisos:** `ApprovePermission` y `DenyPermission` se generalizan en **`RespondToInteraction { InteractionId, OptionId }`**, que responde a cualquier `InteractionRequest` (permisos, conflictos, cambios de scope, memoria), con opciones decididas por el servidor (ADR-0034).
+- **Permisos:** `ApprovePermission` y `DenyPermission` se generalizan en `RespondToInteraction`.
+  Las interacciones simples usan `ChoiceResponse { OptionId }` (ADR-0034).
+
+*v0.6 — ADR-0045:*
+
+- **Preguntas del modelo:** `user.ask` crea un `InteractionRequest` de tipo `Question` con
+  `QuestionnairePrompt`; admite varias preguntas, selección única, selección múltiple, texto libre
+  y `OtherInput` (`Otro`) con texto.
+- **Respuesta:** `RespondToInteraction { InteractionId, InteractionResponse }` usa una unión
+  `ChoiceResponse | QuestionnaireResponse`. El Host valida ids, requeridos, mínimos, máximos y
+  longitud; el cliente solo presenta y captura.
+- **Sin cliente:** una Question queda durable y la invocación devuelve `InputRequired` mientras el
+  Run permanece activo; nunca se auto-responde con `Deny`. Permisos y operaciones de riesgo
+  conservan ADR-0003.
 
 ---
 
@@ -3241,13 +3275,18 @@ cost when known
 
 # 88. Milestone M3 — Native Coder
 
-- **Escritura:** `write` y `patch` con version tokens.
+- **Escritura y política de modelo:** `write` y `patch` con version tokens, `ModelPolicyKey`,
+  `ModelToolPolicy`, `FileMutationPolicy` y `ModelCapabilityBoundary` (ADR-0044).
+- **Preguntas humanas:** DTOs tipados, schema/upcaster, tool `user.ask`, validación del Host,
+  persistencia/resume y formulario plain TTY para cuestionarios (ADR-0045).
 - **Efectos:** Effect Journal con reconciliación de filesystem y commits Barrier.
 - **Sandbox:** `Strong` por plataforma + `WeakSandboxConsent`.
 - **Procesos:** `process.exec`, build y test (con red), `shell.exec`.
 - **Gates:** Build, Test y Acceptance.
 
-**Criterio de salida:** `omni act "corrige este test"`, y un crash durante un write se reanuda sin duplicar el efecto.
+**Criterio de salida:** `omni act "corrige este test"`; un crash durante un write se reanuda sin
+duplicar el efecto; un cuestionario se resuelve exactamente una vez y sobrevive a restart; sin TTY
+devuelve `InputRequired`.
 
 ---
 
@@ -3255,7 +3294,10 @@ cost when known
 
 - **Contexto:** Prune, Externalize, Compress, Compact, `ContextCheckpoint` y MetaModelService.
 - **Journal y auditoría:** GC, `verify-journal` y retención de auditoría.
-- **TUI v0** (decisión del usuario: después de M3): se desarrolla en paralelo sobre `ClientProjection` e incluye 4 zonas, sidebar (sesión, plan, archivos), overlays, responsive y el spike de `SpectreSegmentAdapter`.
+- **TUI v0** (decisión del usuario: después de M3): se desarrolla en paralelo sobre
+  `ClientProjection` e incluye 4 zonas, sidebar (sesión, plan, archivos), overlays, responsive,
+  `ModelPolicySetup`, `Preferences > Models`, `QuestionnaireOverlay` con radio/checkbox/texto/`Otro`
+  y el spike de `SpectreSegmentAdapter`.
 
 ---
 
@@ -3462,19 +3504,20 @@ EPIC-019 Artifact Store CAS v1
 EPIC-020 Explorer + plan.propose + PlanApproval
 
 M3
-EPIC-021 File write/patch + version tokens
+EPIC-021 File write/patch + version tokens + ModelPolicyKey/store/onboarding CLI + ModelToolPolicy/FileMutationPolicy/ModelCapabilityBoundary
+EPIC-021A user.ask + cuestionarios tipados + validación Host + artifacts/resume + plain TTY
 EPIC-022 Effect Journal + reconciliación FS + commits Barrier
 EPIC-023 Sandbox Strong (Windows, Linux) + WeakSandboxConsent + process.exec/shell.exec
 EPIC-024 Native Coder + gates Build/Test/Acceptance
 
 M4 (+ track TUI v0)
 EPIC-025 Prune · Compress · Externalize · Compact · MetaModelService · GC · retención de auditoría
-EPIC-026 TUI v0 (Terminal.Gui) + SpectreSegmentAdapter
+EPIC-026 TUI v0 (Terminal.Gui) + SpectreSegmentAdapter + ModelPolicySetup + Preferences > Models + QuestionnaireOverlay
 
 M5
 EPIC-027 OpenAIResponsesProvider (api + codex/ChatGPT) + AnthropicMessagesProvider
 EPIC-028 Model registry + Router + escalación + costo/cuota
-EPIC-029 Model Qualification Framework + suite quick
+EPIC-029 Model Qualification Framework + suite quick + FileMutationReliability y recomendación de categoría
 
 M6
 EPIC-030 Decomposition + Lane Scheduler + background lanes + AgentResult agregado
@@ -3652,7 +3695,9 @@ OmniCore v1 se considerará terminado cuando:
 16. (v0.2) todo Run tenga un Plan canónico mantenido por el runtime y reconciliado con el TaskGraph;
 17. (v0.2) un crash durante un efecto lateral se reconcilie sin duplicarlo;
 18. (v0.2) los modelos nuevos puedan cualificarse empíricamente sin modificar Router ni runtime;
-19. (v0.2) ningún secreto aparezca en journal, artifacts, contexto ni logs.
+19. (v0.2) ningún secreto aparezca en journal, artifacts, contexto ni logs;
+20. (v0.6) el modelo pueda solicitar cuestionarios estructurados con selección única, múltiple,
+    texto libre y `Otro`, y la interacción sobreviva a resume sin duplicar ni inventar respuestas.
 
 ---
 

@@ -125,6 +125,56 @@ public sealed class EventStream
             return r.ToolCallId;
         }
 
+        if (payload is ToolCallPrepared pc)
+        {
+            return pc.ToolCallId;
+        }
+
+        if (payload is ToolCallRejected re)
+        {
+            return re.ToolCallId;
+        }
+
+        if (payload is PermissionEvaluated pe)
+        {
+            return pe.ToolCallId;
+        }
+
+        if (payload is PermissionRequested preq)
+        {
+            return preq.ToolCallId;
+        }
+
+        if (payload is PermissionGranted pg)
+        {
+            return pg.ToolCallId;
+        }
+
+        if (payload is PermissionDenied pd)
+        {
+            return pd.ToolCallId;
+        }
+
+        if (payload is ToolCallAuthorized a)
+        {
+            return a.ToolCallId;
+        }
+
+        if (payload is ToolCallStarted s)
+        {
+            return s.ToolCallId;
+        }
+
+        if (payload is ToolCallSucceeded sc)
+        {
+            return sc.ToolCallId;
+        }
+
+        if (payload is ToolCallFailed f)
+        {
+            return f.ToolCallId;
+        }
+
         return null;
     }
 }
