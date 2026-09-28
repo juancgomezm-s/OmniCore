@@ -20,7 +20,7 @@ public sealed class ReadFileTool : ITool
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.read"),
             "Lee el contenido de un archivo dentro del workspace (read-only).",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}"),
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}"),
             new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
     }
 
@@ -70,13 +70,34 @@ public sealed class ReadFileTool : ITool
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Archivo no encontrado: " + path));
         }
 
-        var content = File.ReadAllText(full);
+        // Token de versión: SHA-256 de los BYTES REALES (no del string decodificado), calculado
+        // ANTES de redactar/truncar, para que coincida con la verificación de filesystem.patch
+        // (ADR-0044 §5) aunque el contenido expuesto al modelo se recorte o se redacta.
+        var bytes = File.ReadAllBytes(full);
+        var version = FileVersion.VersionToken(bytes);
+
+        FileVersion.DecodedFile decoded;
+        try
+        {
+            decoded = FileVersion.Decode(bytes);
+        }
+        catch (UnsupportedEncodingException ex)
+        {
+            // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ex.Message));
+        }
+
+        var content = decoded.Text;
         // Redacción obligatoria del contenido antes de exponerlo al modelo (ADR-0018 §4).
         content = new OmniCore.Domain.RedactionPolicy().Redact(content);
         var truncated = content.Length > 8000 ? content.Substring(0, 8000) : content;
         var externalized = content.Length > 8000;
+
+        // El token se añade al final, DESPUÉS de truncar/redactar, para que siempre llegue al
+        // modelo utilizable aunque el contenido no sea el completo.
+        var preview = truncated + "\n\n" + VersionTokenMarker(version);
         return System.Threading.Tasks.Task.FromResult(new ToolResult(
-            externalized ? "Contenido truncado (externalizado)" : "ok (" + path + ")", truncated, null,
+            externalized ? "Contenido truncado (externalizado)" : "ok (" + path + ")", preview, null,
             content.Length, externalized, EffectOutcome.None));
     }
 
@@ -91,6 +112,26 @@ public sealed class ReadFileTool : ITool
         if (relative is null) return root;
         var norm = relative.Replace('\\', '/');
         return root.TrimEnd('/') + "/" + norm;
+    }
+
+    /// <summary>
+    /// Marcador del token de versión en el resultado de una lectura. Se usa "version" (no
+    /// "token") para no chocar con el patrón de redacción de secretos (ADR-0018 §4) que captura
+    /// "token: &lt;valor&gt;"; el hex del token no contiene ':' ni espacios, así que el marcador
+    /// completo sobrevive intacto a la redacción obligatoria del tool result.
+    /// </summary>
+    internal static string VersionTokenMarker(string version) => "[version:" + version + "]";
+
+    /// <summary>Extrae el token de versión de un marcador [version:hex] en el resultado.</summary>
+    internal static string? ExtractVersionToken(string text)
+    {
+        if (text is null) return null;
+        const string start = "[version:";
+        var idx = text.LastIndexOf(start, StringComparison.Ordinal);
+        if (idx < 0) return null;
+        var end = text.IndexOf(']', idx + start.Length);
+        if (end < 0) return null;
+        return text.Substring(idx + start.Length, end - idx - start.Length);
     }
 }
 
