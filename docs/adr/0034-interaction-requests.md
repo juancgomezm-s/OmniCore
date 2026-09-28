@@ -1,6 +1,6 @@
 # ADR-0034 — InteractionRequest: human-in-the-loop como protocolo y overlays
 
-- **Estado:** Aceptada (2026-09-24)
+- **Estado:** Aceptada — rev. 2 (2026-09-27; cuestionarios tipados en ADR-0045)
 - **Generaliza:** los `Ask` de ADR-0003 (permisos, reconciliación, scope del plan, promoción de memoria, conflictos de integración)
 - **Relacionado:** ADR-0003, ADR-0004, ADR-0016 §6, ADR-0021, ADR-0028 §6, ADR-0030, ADR-0032
 - **Diagrama:** [arquitectura §34](../architecture/arquitectura.md#34-conversación-composer-e-interacciones)
@@ -40,6 +40,11 @@ public sealed record InteractionOption(string Id, LocalizedText Label, OptionInt
 public sealed record RespondToInteraction(InteractionId Id, string OptionId);  // WireCommand
 ```
 
+**Rev. 2:** la forma anterior queda como `ChoicePrompt`/`ChoiceResponse`. ADR-0045 generaliza
+`InteractionRequest` y `RespondToInteraction` con payloads discriminados. Para `Kind = Question`,
+el payload es un `QuestionnairePrompt` con una o varias preguntas y la respuesta es
+`QuestionnaireResponse`; no se fuerza un cuestionario dentro de un solo `OptionId`.
+
 - **Permiso típico:** opciones `Allow once`, `Allow for this Run` y `Deny`. `Session` y `Project` solo aparecen si la política del scope lo permite.
 - **Validación en el servidor:** el Host verifica que `OptionId` pertenezca a la solicitud vigente. Una respuesta tardía o duplicada se rechaza.
 - **Cola:** las solicitudes de Lanes en paralelo se atienden **una a la vez** (ADR-0003), y cada una informa su posición en la cola.
@@ -52,21 +57,33 @@ public sealed record RespondToInteraction(InteractionId Id, string OptionId);  /
   - la Lane afectada muestra `WAITING FOR PERMISSION` en el `AgentsWidget` (`Attention`, que la sube arriba; ADR-0032);
   - la conversación registra un `InteractionBlock` (ADR-0033);
   - la status line muestra un contador `! 2 pending` si hay cola.
-- **Otros overlays** (`CommandPalette`, `LaneInspector`, `DiffPreview`, `ModelSelector`, `SessionSearch`) usan el mismo `OverlayStack`. Un `InteractionRequest` siempre tiene prioridad sobre ellos.
+- **Otros overlays** (`CommandPalette`, `LaneInspector`, `DiffPreview`, `ModelSelector`,
+  `ModelPolicySetup`, `ModelPolicies`, `SessionSearch`) usan el mismo `OverlayStack`. Un
+  `InteractionRequest` siempre tiene prioridad sobre ellos. El onboarding de ADR-0044 es un flujo
+  de preferencias iniciado por el usuario, no un permiso que el modelo pueda responder.
 - **Plain renderer:**
   - en una TTY interactiva, pregunta en línea con las mismas opciones;
-  - sin TTY o con `--json`, aplica ADR-0003: `Deny`. En `--json`, `InteractionRequested` y su resolución se emiten como eventos.
+  - sin TTY o con `--json`, aplica ADR-0003: `Deny` para permisos y riesgo. Para `Question`,
+    prevalece ADR-0045: queda durable y el resultado es `InputRequired`, sin inventar respuesta.
+    En `--json`, `InteractionRequested` y su resolución se emiten como eventos.
 
 ## Eventos de dominio y recuperación (revisión integral, 2026-09-24)
 
-- **Eventos canónicos:** `InteractionRequested`, `InteractionResolved { optionId, cause: User | Timeout | NoClient }` e `InteractionExpired`. `PermissionRequested`, `Granted` y `Denied` (ADR-0036 §5) son los específicos de `Kind = Permission`.
-- **Tras un resume:** las interacciones no resueltas se vuelven a publicar si hay un cliente conectado; si no, se aplica ADR-0003 (`Deny`).
-- **`Question`** (el modelo pregunta al usuario) **entra en v1**. Mientras espera, la Lane queda en `WaitingForInput` (ADR-0036 §3).
+- **Eventos canónicos:** `InteractionRequested`, `InteractionResolved` e `InteractionExpired`.
+  Las choices simples conservan `optionId`; los cuestionarios referencian artifacts tipados según
+  ADR-0045. `PermissionRequested`, `Granted` y `Denied` (ADR-0036 §5) son los específicos de
+  `Kind = Permission`.
+- **Tras un resume:** las interacciones no resueltas se vuelven a publicar. Sin cliente, permisos y
+  riesgo aplican ADR-0003 (`Deny`); `Question` queda `InputRequired` según ADR-0045.
+- **`Question`** (el modelo pregunta al usuario) **entra en v1** mediante `user.ask`; admite una o
+  varias preguntas, single/multi-select, texto libre y `Otro`. Mientras espera, la Lane queda en
+  `WaitingForInput` (ADR-0036 §3).
 
 ## Clasificación
 
 | Elemento | Categoría |
 |---|---|
 | DTOs `InteractionRequest`/`InteractionOption`/`RespondToInteraction` y cola (M1 los simula con `FakeTool` + Ask; el plain renderer pregunta en línea) | **Necesario desde M1** |
-| Overlays TUI (track TUI, después de M3; antes, pregunta en línea en el plain renderer), kinds `ReconciliationConflict` (M3), `PlanScopeChange` (M2), `IntegrationConflict` (M7), `MemoryPromotion` (M8) | **Contract now / implementation later** |
+| `user.ask`, cuestionarios tipados, respuesta/durabilidad y formulario plain TTY | **M3 (ADR-0045)** |
+| Overlays TUI (track TUI, después de M3; incluye `QuestionnaireOverlay`), kinds `ReconciliationConflict` (M3), `PlanScopeChange` (M2), `IntegrationConflict` (M7), `MemoryPromotion` (M8) | **M4+ / según milestone** |
 | Aprobaciones remotas o desde otro dispositivo | **Deferable** |

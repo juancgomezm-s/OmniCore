@@ -30,6 +30,14 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
     {
         // Declara la ruta resuelta pedida (ADR-0037 §1) en las claims; Security evalúa la resource.
         var reference = ArgsJson.Parse(call.NormalizedArgumentsJson).TryGetValue("ref", out var r) ? r : null;
+
+        // ADR-0018 §4: referencias a secretos (.env, PEM/SSH, credenciales) se REJECT en Prepare.
+        if (reference is not null && reference!.Length > 0
+            && new OmniCore.Domain.RedactionPolicy().IsSecretPath(reference!.TrimStart('@')))
+        {
+            return new PreparationRejected("Acceso denegado: la referencia contiene secretos (ADR-0018)", null);
+        }
+
         var claims = reference is null || reference!.Length == 0
             ? ResourceClaims.Empty()
             : new ResourceClaims(new string[] { reference!.TrimStart('@') }, new string[0], new NetworkGrant[0],
@@ -45,11 +53,15 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
         var reference = ArgsJson.Parse(intent.Intent.NormalizedArgumentsJson).TryGetValue("ref", out var r) ? r : null;
         if (reference is null)
         {
-            return System.Threading.Tasks.Task.FromResult(new ToolResult("Falta 'ref'", null, null, 0, false,
-                EffectOutcome.None));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'ref'"));
         }
 
         var resolved = Resolve(reference!, context.WorkspaceRoot);
+        if (resolved.Kind != "file" && resolved.Kind != "folder")
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(resolved.Summary));
+        }
+
         var summary = resolved.Kind + " " + resolved.TargetPath + ": " + resolved.Summary;
         return System.Threading.Tasks.Task.FromResult(new ToolResult(summary, resolved.Summary, null, 0, false,
             EffectOutcome.None));

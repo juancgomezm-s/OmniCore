@@ -13,7 +13,10 @@
 - **Un solo Run activo por Session en v1.** Los demás comandos que intenten iniciar otro Run reciben `RunAlreadyActive`.
 - **`SendInput` sin Run activo:** inicia un Run en el modo actual de la sesión (`Session.DefaultMode`, que se cambia con `/mode`). El texto del input es el objetivo inicial del Run.
 - **`SendInput` con Run activo:** se agrega al Run como mensaje de usuario y lo ve el **próximo Turn de la Lane raíz**. No interrumpe el Turn en curso; para eso existe `Interrupt` (§6).
-- **Una Lane esperando al usuario:** si la Lane raíz está esperando input (una pregunta del modelo o el final de su trabajo), el input la reactiva.
+- **Una Lane esperando al usuario:** si espera conversación abierta o continuación tras el final de
+  su trabajo, `SendInput` la reactiva. Si espera un cuestionario de `user.ask`, solo una
+  `QuestionnaireResponse` válida y correlacionada mediante `RespondToInteraction` la reactiva;
+  texto genérico del composer no resuelve el formulario (ADR-0045).
 - **Fin del Run:** el Run termina cuando pasa los Completion Gates. El siguiente `SendInput` inicia un Run nuevo en la misma sesión.
 
 **Eventos canónicos de conversación** (el contenido va en artifacts, ADR-0001):

@@ -156,7 +156,7 @@ public sealed class ExplorerTurn
         var allToolCalls = new List<ToolUseTrace>();
         var usage = new TokenUsage(0, 0, 0, 0, 0);
 
-        var budget = ReadRunBudget(stream);
+        var budget = ReadRunBudget(stream, runId);
         var guard = new SpendGuard(budget);
         var steps = 1;
 
@@ -185,8 +185,9 @@ public sealed class ExplorerTurn
             if (materialized.Overflowed)
             {
                 stream.Append(new TurnStarted(turnId, laneId));
+                // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
+                // TurnCompleted tras Abandoned (P1: transición inválida).
                 stream.Append(new TurnAbandoned(turnId, "ContextOverflow: el contexto no entra en el presupuesto"));
-                stream.Append(new TurnCompleted(turnId));
                 return new TurnResult("ContextOverflow: el contexto no cabe en el presupuesto del modelo",
                     StopReason.ContextOverflow, 0, usage, allToolCalls.ToArray(), null);
             }
@@ -215,10 +216,12 @@ public sealed class ExplorerTurn
                     // corta si excede MaxCostUsd del Run y emite InteractionRequested.
                     var stepCost = EstimateCostUsd(resolved.Usage);
                     guard.AddCostUsd(stepCost);
-                    ValidateSessionDaily(stepCost, stream, turnId);
+                    ValidateSessionDaily(stepCost);
                 }
                 catch (BudgetExceededException budgetEx)
                 {
+                    // Una SOLA emisión de la interacción de presupuesto con las opciones de
+                    // ADR-0037 (Continuar hasta +X / Detener). ValidateSessionDaily solo lanza.
                     EmitBudgetExceeded(stream, turnId, budgetEx.Detail);
                     stop = StopReason.Cancelled;
                     finalText = "Presupuesto agotado: " + budgetEx.Detail;
@@ -313,14 +316,15 @@ public sealed class ExplorerTurn
             }
 
             stream.Append(new TurnCompleted(turnId));
+            AuditSpend(sessionId, runId, laneId, turnId, stop, usage, _redaction.Redact(finalText ?? ""));
             return new TurnResult(finalText, stop, steps, usage, allToolCalls.ToArray(), artifactId);
         }
         catch (Exception ex)
         {
             try
             {
+                // Started → … → Abandoned (terminal); NUNCA Completed tras Abandoned (state machine).
                 stream.Append(new TurnAbandoned(turnId, "turn falló: " + _redaction.Redact(ex.Message ?? "")));
-                stream.Append(new TurnCompleted(turnId));
             }
             catch (Exception)
             {
@@ -330,21 +334,59 @@ public sealed class ExplorerTurn
         }
     }
 
+    /// <summary>
+    /// Registra el gasto del turno en el AUDIT (ADR-0043, INV-012): detalles redactados,
+    /// sin secretos. Persiste el gasto real del turno para los reportes y la capa de
+    /// presupuesto por sesión/día (P1: el audit sink del turno se usa).
+    /// </summary>
+    private void AuditSpend(SessionId sessionId, RunId runId, LaneId laneId, TurnId turnId,
+        StopReason stop, TokenUsage usage, string redactedFinal)
+    {
+        try
+        {
+            var details = new Dictionary<string, string>();
+            details["stop"] = stop.ToString();
+            details["inputTokens"] = usage.Input.ToString();
+            details["outputTokens"] = usage.Output.ToString();
+            details["costUsd"] = EstimateCostUsd(usage).ToString();
+            details["final"] = redactedFinal.Length > 200 ? redactedFinal.Substring(0, 200) : redactedFinal;
+            _audit.Record(new AuditRecord("turn.spend", null, sessionId, runId, DateTimeOffset.Now,
+                turnId.ToString(), details), CancellationToken.None);
+        }
+        catch (Exception)
+        {
+            // un fallo del audit no rompe el turno
+        }
+    }
+
     /// <summary>Presupuesto del Turn desde el RunCreated del journal (el comando lo configura).</summary>
     private TaskBudget ReadRunBudget(EventStream stream)
+    {
+        return ReadRunBudget(stream, null);
+    }
+
+    private TaskBudget ReadRunBudget(EventStream stream, RunId? ofRun)
     {
         var tail = stream.EventsSince(1);
         foreach (var evt in tail)
         {
-            if (evt.Type.ToString().Equals("run.created", StringComparison.Ordinal))
+            if (!evt.Type.ToString().Equals("run.created", StringComparison.Ordinal))
             {
-                var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
-                if (payload is RunCreated runCreated)
+                continue;
+            }
+
+            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            if (payload is RunCreated runCreated)
+            {
+                // P0-4: filtrar por runId — nunca el primer RunCreated de la sesión.
+                if (ofRun is not null && !runCreated.RunId.ToString().Equals(ofRun!.ToString(), StringComparison.Ordinal))
                 {
-                    return runCreated.Budget is null
-                        ? new TaskBudget(null, null, null, null)
-                        : runCreated.Budget!;
+                    continue;
                 }
+
+                return runCreated.Budget is null
+                    ? new TaskBudget(null, null, null, null)
+                    : runCreated.Budget!;
             }
         }
 
@@ -355,7 +397,7 @@ public sealed class ExplorerTurn
     private void ApplyPlanProposal(EventStream stream, SessionId sessionId, RunId runId, LaneId laneId,
         string mutationJson)
     {
-        var tail = stream.EventsSince(1);
+        var tail = OwnTail(stream, runId);
         var planProj = PlanProjection.Replay(_codecs, tail);
         var indexes = new Dictionary<string, PlanItemId>();
         var first = 1;
@@ -386,32 +428,70 @@ public sealed class ExplorerTurn
         }
     }
 
+    /// <summary>
+    /// Devuelve solo los eventos del Run dado (desde su RunCreated) — P0-4: "mismo Run" significa
+    /// filtrar por runId real, no todo lo de la sesión. El primer RunCreated de la sesión no compite.
+    /// </summary>
+    private IReadOnlyList<DomainEvent> OwnTail(EventStream stream, RunId runId)
+    {
+        var all = stream.EventsSince(1);
+        var result = new List<DomainEvent>();
+        var capture = false;
+        foreach (var evt in all)
+        {
+            if (evt.Type.ToString().Equals("run.created", StringComparison.Ordinal))
+            {
+                var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+                var runCreated = payload as RunCreated;
+                capture = runCreated is not null
+                    && runCreated!.RunId.ToString().Equals(runId.ToString(), StringComparison.Ordinal);
+                if (capture)
+                {
+                    result.Add(evt);
+                }
+
+                continue;
+            }
+
+            if (capture)
+            {
+                result.Add(evt);
+            }
+        }
+
+        return result.ToArray();
+    }
+
     /// <summary>Emite InteractionRequested(BudgetExceeded) y el evento de uso al journal.</summary>
+    /// <summary>
+    /// Emite la interacción de presupuesto (INTERACTION BudgetExceeded, ADR-0037 §7 / ADR-0034)
+    /// con las opciones canónicas: deny = Detener, allow_plus = Continuar hasta +N.
+    /// Se emite UNA sola vez por exceso (el listener del turno corta; no se re-emite).
+    /// </summary>
     private void EmitBudgetExceeded(EventStream stream, TurnId turnId, string detail)
     {
         var interactionId = InteractionId.New();
         stream.Append(new InteractionRequested(interactionId, InteractionKind.BudgetExceeded,
-            "{\"detail\":\"presupuesto agotado\"}", "[{\"id\":\"deny\",\"intent\":\"deny\"}]", "deny",
-            null, null, null, null, 0, 1));
+            "{\"detail\":\"" + detail + "\"}",
+            "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_plus\",\"intent\":\"allow_plus\",\"value\":10}]",
+            "deny", null, null, null, null, 0, 1));
     }
 
     /// <summary>
-    /// Aplica los topes de sesión/día (ADR-0037 §7: 5/20 USD): si la sesión o el día superan el
-    /// tope, emite InteractionRequested(BudgetExceeded) y aborta el Turn con Cancelled.
+    /// Acumula costo de sesión/día (ADR-0037 §7: 5/20 USD). SOLO lanza al superar el tope:
+    /// la emisión de la interacción la hace el catch del turno (evita la doble emisión).
     /// </summary>
-    private void ValidateSessionDaily(decimal stepCost, EventStream stream, TurnId turnId)
+    private void ValidateSessionDaily(decimal stepCost)
     {
         _sessionCostUsd += stepCost;
         _dailyCostUsd += stepCost;
         if (_sessionCostUsd > _sessionCapUsd)
         {
-            EmitBudgetExceeded(stream, turnId, "límite de sesión ($" + _sessionCapUsd + ")");
             throw new OmniCore.Engine.BudgetExceededException("límite de sesión ($" + _sessionCapUsd + ")");
         }
 
         if (_dailyCostUsd > _dailyCapUsd)
         {
-            EmitBudgetExceeded(stream, turnId, "límite diario ($" + _dailyCapUsd + ")");
             throw new OmniCore.Engine.BudgetExceededException("límite diario ($" + _dailyCapUsd + ")");
         }
     }

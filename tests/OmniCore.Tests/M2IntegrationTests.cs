@@ -76,35 +76,49 @@ public sealed class M2IntegrationTests
     [Fact]
     public async System.Threading.Tasks.Task Filesystem_read_blocks_secret_paths_and_redacts_content()
     {
-        // Requisito 3: rutas de secretos (.env, .pem, .key, .ssh/) nunca se leen; el contenido
-        // leído queda redactado (sin API keys/Bearer en el tool result).
+        // Requisito 3 + P0-2: rutas de secretos (.env, .pem, .key, .ssh/) se REJECT en Prepare
+        // (nunca toolcall.succeeded); el archivo normal se lee DENTRO del workspace y su
+        // contenido con Bearer llega redactado al tool result.
         var plan = new PlanService();
         var hostTools = new HostTools(new PathBoundaryValidator(), plan);
-        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
-            ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow));
-
-        // Archivo .env real con un secreto: el file se bloquea por nombre.
         var wsDir = TestCwd + "\\.omnicore-secrets-test";
         if (!Directory.Exists(wsDir)) Directory.CreateDirectory(wsDir);
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow), wsDir);
+
+        // 1. .env se rechaza en Prepare → Rejected, NUNCA toolcall.succeeded.
         File.WriteAllText(wsDir + "\\.env", "API_KEY=sk-test123secret\nPASSWORD=hunter2");
         var secretCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-env", "{\"path\":\".env\"}");
-
         var outcomeSecret = executor.ExecuteTool(secretCall, false, CancellationToken.None);
-        Assert.True(HasSecretBlocked(outcomeSecret), "Un .env se bloquea. summary=" + outcomeSecret.Summary);
+        Assert.True(outcomeSecret.FinalState == ToolCallState.Rejected,
+            "Un .env se rechaza (Rejected). summary=" + outcomeSecret.Summary);
         Assert.False(outcomeSecret.Preview is not null && outcomeSecret.Preview!.Length > 0,
             "El .env bloqueado no expone ningún contenido");
+        var secretTypes = outcomeSecret.Events.Select(e => e.Type().ToString()).ToArray();
+        Assert.True(secretTypes.Contains("toolcall.rejected"),
+            "la ruta secreta produce ToolCallRejected (no toolcall.succeeded)");
+        Assert.False(secretTypes.Contains("toolcall.succeeded"), "nunca toolcall.succeeded para un secreto");
         File.Delete(wsDir + "\\.env");
 
-        // Archivo normal con un Bearer: el contenido se redacta al devolverlo.
+        // 2. Archivo normal (dentro del workspace) con Bearer: se lee REAL y se redacta.
         File.WriteAllText(wsDir + "\\normal.txt", "Bearer VOtOkEn123secret contenido normal");
         var okCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-ok", "{\"path\":\"normal.txt\"}");
         var outcomeOk = executor.ExecuteTool(okCall, false, CancellationToken.None);
-        Assert.True(outcomeOk.Succeeded, "Un archivo normal se lee");
-        Assert.False(outcomeOk.Preview is not null && outcomeOk.Preview!.Contains("VOtOkEn123secret"),
-            "El tool result va redactado (sin Bearer/keys)");
+        Assert.True(outcomeOk.Succeeded, "Un archivo normal dentro del workspace se lee. summary=" + outcomeOk.Summary);
+        Assert.True(outcomeOk.Preview is not null, "El content leído vuelve como Preview (no es un fallo silencioso)");
+        Assert.True(outcomeOk.Preview!.Contains("contenido normal"), "El contenido del archivo se leyó de verdad");
+        Assert.False(outcomeOk.Preview!.Contains("VOtOkEn123secret"), "El tool result va redactado (sin Bearer/keys)");
         File.Delete(wsDir + "\\normal.txt");
+
+        // 3. Archivo inexistente no es un éxito.
+        var missingCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
+            "pc-missing", "{\"path\":\"no-existe.txt\"}");
+        var outcomeMissing = executor.ExecuteTool(missingCall, false, CancellationToken.None);
+        Assert.False(outcomeMissing.Succeeded, "Un archivo inexistente NO se marca como éxito");
+        Assert.False(outcomeMissing.Preview is not null && outcomeMissing.Preview!.Length > 0,
+            "Un archivo inexistente no expone contenido");
         RemoveDir(wsDir);
     }
 
@@ -127,42 +141,29 @@ public sealed class M2IntegrationTests
     [Fact]
     public async System.Threading.Tasks.Task Explaine_repo_criterion_renders_with_plain_renderer()
     {
-        // Requisito 9: el criterio `omni "explícame este repositorio"` se cumple en el
-        // plain renderer: sim → workingState real → ClientProjection → PlainRenderer.
-        var codecs = EventCodecs.Create();
-        var store = new InMemoryEventStore();
-        var server = new OmniServer(store, codecs, new InMemoryAuditSink());
-        server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + OmniCore.Protocol.JsonObj.Field("cmd", "sim")
-            + "," + OmniCore.Protocol.JsonObj.Field("scenario", "multi-item-plan") + "}"), CancellationToken.None);
-
-        var ws = server.Query("workingState", CancellationToken.None);
-        Assert.True(ws is not null && ws!.Json.Contains("workingState"), "el run expuso el WorkingState real");
-        var wsText = OmniCore.Protocol.JsonObj.Parse(ws!.Json)
-            .TryGetValue("workingState", out var v) ? v! : "";
-
-        // PlainRenderer con ClientState: renderiza el conversation del sim (con el plan).
-        var state = OmniCore.Client.ClientState.Empty();
-        foreach (var envelope in server.SubscribeSince(0))
+        // Requisito 9 (P0-3): el criterio `omni "explícame este repositorio"` debe funcionar
+        // LITERALMENTE — el default del CLI trata el primer argumento no-subcomando como pregunta.
+        var captured = CaptureStdout(() =>
         {
-            state = new OmniCore.Client.ClientProjection().Apply(state, envelope);
-        }
+            var result = CliApp.RunAsync(new string[] { "explícame este repositorio" }).GetAwaiter().GetResult();
+            System.Console.WriteLine("[exit:" + result + "]");
+        });
 
-        var renderer = new PlainRenderer("es");
-        var output = CaptureRender(renderer, state);
-
-        // El plain renderer describe el repositorio (objetivo del run y el plan).
-        Assert.True(wsText.Length > 0, "WorkingState materializado");
-        Assert.True(output.Length > 0, "El plain renderer produce salida");
+        // El CLI asume la intención como pregunta (no "comando desconocido") y renderiza la
+        // simulación + el WorkingState del plan en el plain renderer.
+        Assert.False(captured.Contains("comando desconocido"), "El CLI no rechaza la pregunta literal");
+        Assert.True(captured.Contains("intención asumida"), "El default es ask con la pregunta");
+        Assert.True(captured.Length > 0, "El plain renderer produce salida");
     }
 
-    private static string CaptureRender(PlainRenderer renderer, OmniCore.Client.ClientState state)
+    private static string CaptureStdout(System.Action action)
     {
         var captured = new System.IO.StringWriter();
         var originalOut = System.Console.Out;
         System.Console.SetOut(captured);
         try
         {
-            renderer.Render(state);
+            action();
         }
         finally
         {
@@ -199,6 +200,66 @@ public sealed class M2IntegrationTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Same_session_two_runs_do_not_cross_contaminate()
+    {
+        // P0-4: con DOS runs en la MISMA session, plan.propose del run2 debe operar sobre el
+        // plan del run2 (no el run1), y el budget se lee del run2 (no del primero).
+        var journal = TestCwd + "\\.omnicore-2runs-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db";
+        if (File.Exists(journal)) File.Delete(journal);
+        var codecs = EventCodecs.Create();
+        var store = new SqliteEventStore(journal);
+        var sessionId = SessionId.New();
+
+        var stream = new EventStream(store, codecs, sessionId);
+        // Run 1 con budget 1000 tokens.
+        var run1 = RunId.New();
+        var root1 = PlanItemId.New();
+        stream.Append(new RunCreated(run1, sessionId, "run1", RunMode.Act, ExecutionStrategy.Direct,
+            FailurePolicy.BlockDependents, new TaskBudget(null, 1000L, 20, 20), TaskId.New(), DateTimeOffset.Now));
+        stream.Append(new PlanCreated(PlanId.New(), run1, root1, "objetivo run1"));
+        stream.Append(new PlanItemAdded(root1, PlanId.New(), "R1", 1, null, new PlanItemId[0], true, new Dictionary<string, string>()));
+        var p1Run1 = PlanItemId.New();
+        stream.Append(new PlanItemAdded(p1Run1, PlanId.New(), "R1 item", 2, null, new PlanItemId[0], true, new Dictionary<string, string>()));
+        stream.Append(new PlanItemStarted(p1Run1));
+
+        // Run 2 con budget MUY distinto (10 tokens) y su propio plan.
+        var run2 = RunId.New();
+        var root2 = PlanItemId.New();
+        stream.Append(new RunCreated(run2, sessionId, "run2", RunMode.Act, ExecutionStrategy.Direct,
+            FailurePolicy.BlockDependents, new TaskBudget(null, 10L, 1, 1), TaskId.New(), DateTimeOffset.Now));
+        stream.Append(new PlanCreated(PlanId.New(), run2, root2, "objetivo run2"));
+        stream.Append(new PlanItemAdded(root2, PlanId.New(), "R2", 1, null, new PlanItemId[0], true, new Dictionary<string, string>()));
+        var p1Run2 = PlanItemId.New();
+        stream.Append(new PlanItemAdded(p1Run2, PlanId.New(), "R2 item", 2, null, new PlanItemId[0], true, new Dictionary<string, string>()));
+
+        var plan = new PlanService();
+        var hostTools = new HostTools(new PathBoundaryValidator(), plan);
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("plan.propose", PermissionDecision.Allow), TestCwd);
+        var turn = new ExplorerTurn(
+            (request, token) =>
+            {
+                // El turno de run2 recibe un budget distinto (vía RunCreated del run2).
+                return new ModelResponse(new ContentBlock[] { new TextBlock("ok") },
+                    StopReason.EndTurn, new TokenUsage(7, 7, 0, 0, 0), null, new ProviderMetadata("", "", null));
+            },
+            executor, hostTools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]),
+            new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
+            new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null),
+            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-2runs-art"),
+            new InMemoryAuditSink(), new RedactionPolicy());
+
+        var result = turn.Ask("pregunta run2", "sys", sessionId, run2, "ws|R2", CancellationToken.None);
+
+        // El turno de run2 se corta por el budget del run2 (10 tokens, 1 turno).
+        Assert.Equal(StopReason.Cancelled, result.StopReason);
+        Assert.True(result.FinalText is not null && result.FinalText!.Contains("Presupuesto"),
+            "El budget del run2 (10 tokens) cortó el turno: " + result.FinalText);
+        TryDelete(journal);
+        TryDeleteFiles(TestCwd, ".omnicore-2runs-art");
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Explorer_turn_persists_and_replays_after_restart()
     {
         // Requisito 1: el Turn del Explorer PERSISTE en el journal (turn.started, tool calls/
@@ -209,9 +270,9 @@ public sealed class M2IntegrationTests
         var store = new SqliteEventStore(journal);
         var plan = new PlanService();
         var hostTools = new HostTools(new PathBoundaryValidator(), plan);
-        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow)
-                .WithModeDefaults(RunMode.Act));
+                .WithModeDefaults(RunMode.Act), TestCwd);
         var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
         var selection = new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null);
         var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
@@ -222,24 +283,84 @@ public sealed class M2IntegrationTests
             new InMemoryAuditSink(), new RedactionPolicy());
         var sessionId = SessionId.New();
         var runId = RunId.New();
+        var fixture = TestCwd + "\\fixture.txt";
+        File.WriteAllText(fixture, "contenido fixture para el turno");
 
         var result = turn.Ask("usa la tool", "sys {context}", sessionId, runId, "ws-state", CancellationToken.None);
+        File.Delete(fixture);
 
         Assert.Equal(StopReason.EndTurn, result.StopReason);
         Assert.True(result.ToolCalls.Count >= 1, "Hubo tool-call en el turno");
+        Assert.True(result.ToolCalls[0].Succeeded,
+            "La tool del turno ejecutó con éxito. summary=" + result.ToolCalls[0].Summary);
 
-        // Replay tras "reinicio": abrir el mismo journal y leer los eventos del Turn.
+        // Replay tras "reinicio": abrir el mismo journal y REPRODUCIR con la state machine de
+        // ToolCall (P0-1): cada evento aplica una transición válida (Requested → Prepared →
+        // PermissionEvaluated → Authorized → Started → Succeeded), sin lanzar InvalidTransition.
         var store2 = new SqliteEventStore(journal);
         var tail = store2.ReadFrom(sessionId, 1);
         var types = tail.Select(e => e.Type.ToString()).ToArray();
-        Assert.Contains("turn.started", types);
-        Assert.Contains("turn.completed", types);
-        Assert.Contains("toolcall.permission_evaluated", types);
-        Assert.Contains("toolcall.succeeded", types);
-        Assert.Contains("model.completed", types);
+        Assert.True(types.Contains("turn.started"), "turn.started? types=" + string.Join(",", types));
+        Assert.True(types.Contains("turn.completed"), "turn.completed? types=" + string.Join(",", types));
+        Assert.True(types.Contains("toolcall.requested"), "requested? types=" + string.Join(",", types));
+        Assert.True(types.Contains("toolcall.prepared"), "prepared? types=" + string.Join(",", types));
+        Assert.True(types.Contains("toolcall.permission_evaluated"), "perm_eval? types=" + string.Join(",", types));
+        Assert.True(types.Contains("toolcall.succeeded"), "succeeded? types=" + string.Join(",", types));
+        Assert.True(types.Contains("model.completed"), "model? types=" + string.Join(",", types));
         Assert.True(result.ResponseArtifactId is not null, "La respuesta se guardó como artifact");
+
+        // Validar la transición de CADA toolcall del journal reabierto contra la state machine.
+        var toolcalls = new List<OmniCore.Domain.ToolCallId>();
+        foreach (var evt in tail)
+        {
+            if (evt.Type.ToString() == "toolcall.requested") toolcalls.Add(evt.ToolCallId!);
+        }
+
+        Assert.True(toolcalls.Count >= 1, "Hay al menos una toolcall en el journal");
+        foreach (var tcId in toolcalls)
+        {
+            Assert.True(ReplayToolCallValid(codecs, tail, tcId),
+                "La toolcall " + tcId + " se reproduce válidamente por la state machine");
+        }
+
         TryDelete(journal);
         TryDeleteFiles(TestCwd, ".omnicore-turn-artifacts");
+    }
+
+    /// <summary>
+    /// Reproduce una ToolCall desde su Requested aplicando la state machine (StateMachines.
+    /// ApplyToolCall) sobre los eventos del journal; devuelve true si nunca lanza transición
+    /// inválida y termina en Succeeded/Failed/Rejected.
+    /// </summary>
+    private static bool ReplayToolCallValid(OmniCore.Abstractions.IEventCodecRegistry codecs,
+        IReadOnlyList<OmniCore.Domain.DomainEvent> tail, OmniCore.Domain.ToolCallId id)
+    {
+        var state = OmniCore.Domain.ToolCallState.Requested;
+        var started = false;
+        foreach (var evt in tail)
+        {
+            if (evt.ToolCallId is null || evt.ToolCallId!.ToString() != id.ToString())
+            {
+                continue;
+            }
+
+            if (evt.Type.ToString() == "toolcall.requested") started = true;
+            var payload = codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            if (!started) continue;
+            try
+            {
+                state = OmniCore.Domain.StateMachines.ApplyToolCall(state, payload);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        return state == OmniCore.Domain.ToolCallState.Succeeded
+            || state == OmniCore.Domain.ToolCallState.Failed
+            || state == OmniCore.Domain.ToolCallState.Rejected
+            || state == OmniCore.Domain.ToolCallState.Reconciled;
     }
 
     private static void TryDeleteFiles(string dir, string prefix)
@@ -259,9 +380,9 @@ public sealed class M2IntegrationTests
     {
         var plan = new PlanService();
         var hostTools = new HostTools(new PathBoundaryValidator(), plan);
-        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow)
-                .WithModeDefaults(RunMode.Act));
+                .WithModeDefaults(RunMode.Act), TestCwd);
         var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
         var selection = new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null);
         var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
@@ -275,9 +396,12 @@ public sealed class M2IntegrationTests
             executor, hostTools.Catalog(), materializer, fingerprint, selection);
         var sessionId = SessionId.New();
         var runId = RunId.New();
+        var fixture = TestCwd + "\\fixture.txt";
+        File.WriteAllText(fixture, "contenido fixture del turno end-to-end");
 
         var result = turn.Ask("usa la tool y explica", "instruccion {context}", sessionId, runId, "ws-state",
             CancellationToken.None);
+        File.Delete(fixture);
 
         Assert.Equal(StopReason.EndTurn, result.StopReason);
         Assert.True(result.Steps >= 2, "Hubo paso de tool antes del final");
@@ -293,9 +417,9 @@ public sealed class M2IntegrationTests
     {
         var plan = new PlanService();
         var hostTools = new HostTools(new PathBoundaryValidator(), plan);
-        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow)
-                .WithModeDefaults(RunMode.Act));
+                .WithModeDefaults(RunMode.Act), TestCwd);
         var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
         var recorded = new List<ModelRequest>();
         var turn = new ExplorerTurn((request, token) =>
@@ -305,8 +429,11 @@ public sealed class M2IntegrationTests
         }, executor, hostTools.Catalog(), materializer,
             new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null));
+        var fixture = TestCwd + "\\fixture.txt";
+        File.WriteAllText(fixture, "fixture turno historial");
 
         turn.Ask("pregunta", "sys", SessionId.New(), RunId.New(), "", CancellationToken.None);
+        File.Delete(fixture);
 
         var second = recorded[1];
         var roles = second.Messages.Select(m => m.Role).ToArray();
@@ -450,7 +577,7 @@ public sealed class M2IntegrationTests
         var snapshot = materializer.MaterializeWithinBudget(request, CancellationToken.None, 10);
 
         Assert.True(snapshot.Overflowed, "WorkingState pinned mayor al presupuesto → ContextOverflow");
-        Assert.True(snapshot.TokenCount <= 12, "Nunca un snapshot muy por encima del límite (real " + snapshot.TokenCount + ")");
+        Assert.True(snapshot.TokenCount <= 10, "Nunca un snapshot por encima del límite (real " + snapshot.TokenCount + ")");
         Assert.True(snapshot.Items.Count >= 1, "El WorkingState truncado permanece (items " + snapshot.Items.Count + ")");
     }
 
@@ -694,9 +821,9 @@ public sealed class M2IntegrationTests
         // P0-5: el contenido que filesystem.read lee (Preview) vuelve al modelo, no solo el summary.
         var plan = new PlanService();
         var hostTools = new HostTools(new PathBoundaryValidator(), plan);
-        var executor = ScriptedToolExecutor.WithCoreTools(hostTools.Catalog(),
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow)
-                .WithModeDefaults(RunMode.Act));
+                .WithModeDefaults(RunMode.Act), TestCwd);
         var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
         var captured = new List<string>();
         var turn = new ExplorerTurn((request, token) =>
@@ -720,12 +847,14 @@ public sealed class M2IntegrationTests
         }, executor, hostTools.Catalog(), materializer,
             new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null));
+        File.WriteAllText(TestCwd + "\\fixture.txt", "contenido real del archivo del turno");
 
         turn.Ask("usa filesystem.read", "sys", SessionId.New(), RunId.New(), "", CancellationToken.None);
 
         var forwarded = string.Join(" ", captured.ToArray());
         Assert.False(forwarded.Contains("Ruta fuera del workspace"), "El archivo se lee dentro del workspace");
         Assert.True(forwarded.Length > 5, "El contenido REAL del archivo se propagó al modelo: {" + forwarded + "}");
+        File.Delete(TestCwd + "\\fixture.txt");
     }
 
     [Fact]
@@ -793,7 +922,7 @@ public sealed class FakeResponses
         {
             var callId = ToolCallId.New();
             return new ModelResponse(new ContentBlock[] {
-                new ToolCallBlock(callId, "call_test", "filesystem.read", "{\"path\":\"README.md\"}"),
+                new ToolCallBlock(callId, "call_test", "filesystem.read", "{\"path\":\"fixture.txt\"}"),
             }, StopReason.ToolUse, new TokenUsage(10, 5, 0, 0, 0), null,
                 new ProviderMetadata("", "", null));
         }

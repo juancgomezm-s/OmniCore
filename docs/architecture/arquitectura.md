@@ -1,13 +1,14 @@
-# OmniCore — Arquitectura (revisión v0.5)
+# OmniCore — Arquitectura (revisión v0.6)
 
-- **Fecha:** 2026-09-24 (revisión); 2026-09-25 (auditoría de M1); 2026-09-26 (cableado de M2 + cierre de bloqueantes); 2026-09-27 (cierre M2 e2e)
-- **Estado:** M1 implementado; M2 construido y cableado end-to-end (124 tests verdes, Windows).
+- **Fecha:** 2026-09-24 (revisión); 2026-09-25 (auditoría de M1); 2026-09-26 (cableado de M2 + cierre de bloqueantes); 2026-09-27 (cierre M2 e2e + decisiones 0044/0045)
+- **Estado:** M1 implementado; M2 construido y cableado end-to-end (125 tests verdes, Windows).
 - **Alcance:**
   - **v0.2:** decisiones P0/P1 (puntos 1–30), en §4–§24.
   - **v0.3:** extensibilidad, commands y memoria (puntos 31–41), en §25–§30. Además amplía las tablas de §21–§24.
   - **v0.4:** cliente interactivo UI/TUI (decisiones 42–51), en §31–§34, con ampliaciones en §21–§24.
   - **v0.5:** revisión integral + entrevista, en §35–§40. El roadmap de §24 queda consolidado como **fuente de verdad**.
-- **Documentos:** [ADRs](../adr/README.md) · [Spec v0.5](../spec/OmniCore-v1.md)
+  - **v0.6:** política operativa por modelo y cuestionarios estructurados (ADR-0044/0045), integrados en §11–§13, §22, §24 y §34.
+- **Documentos:** [ADRs](../adr/README.md) · [Spec v0.6](../spec/OmniCore-v1.md)
 
 La base conceptual se mantiene sin cambios:
 
@@ -22,7 +23,7 @@ Se conservan también el Context Engine, ToolCatalog/Planner/Plan/Router/Runtime
 | # | Entregable | Dónde |
 |---|---|---|
 | 1 | ADRs afectados | [README de ADRs](../adr/README.md). v0.2: 0001–0012 revisados y 0013–0021 nuevos. v0.3: 0009, 0017, 0019 y 0020 revisados; 0022–0029 nuevos |
-| 2 | Spec principal | [OmniCore-v1.md](../spec/OmniCore-v1.md), v0.3 |
+| 2 | Spec principal | [OmniCore-v1.md](../spec/OmniCore-v1.md), v0.6 |
 | 3 | Tests de arquitectura | v0.4: `OmniCore.Client` agregado al grafo, más un test que prohíbe Terminal.Gui y Spectre fuera de `OmniCore.Cli`. Dos tests más planificados para M1 (ADR-0009 §2) |
 | 4–20 | Diagramas y diseños v0.2 | §4–§20 |
 | 21 | Tabla de decisiones (puntos 1–41) | §21 |
@@ -276,8 +277,10 @@ flowchart LR
   U["UserOverrides<br/>siempre gana"] --> RES
   RES["ModelProfileResolver<br/>hechos = U ?? D<br/>traits = U ?? E si Qualified ?? H"] --> EMP["EffectiveModelProfile"]
   EMP --> HP["HarnessPolicyResolver · puro<br/>ToolCallFormat · ToolMode · MaxVisibleTools<br/>Guidance · Repair · PlanControl · StallThreshold"]
+  UMP["UserModelPolicy por ModelPolicyKey<br/>ObserveOnly · PatchOnly · ScopedCoder · FullAgent"] --> MCB
+  HP --> MCB["ModelCapabilityBoundary<br/>ToolPlan + FileMutationPolicy"]
   EMP --> RT["Model Router"]
-  HP --> CONS["Agent Runtime · ToolPlanner<br/>Context Engine · PlanService"]
+  MCB --> CONS["Agent Runtime · ToolPlanner<br/>Context Engine · PlanService"]
 ```
 
 ## 12. Model Qualification Framework
@@ -321,6 +324,18 @@ stateDiagram-v2
 - **Campos:** provider, modelo, revisión o hash de pesos, cuantización, adapters, backend y build, hash de chat template, perfil del adapter, `ToolCallFormat`, `ToolMode` y versión del prompt profile.
 - **Identidad:** SHA-256 de la serialización canónica.
 - **Detalle y ejemplos:** [ADR-0007 §5](../adr/0007-model-qualification-framework.md).
+
+### 13.1. Política operativa por modelo
+
+[ADR-0044](../adr/0044-politica-de-modelos-y-mutaciones.md) separa la calidad observada del techo
+de autonomía elegido por el usuario. La preferencia se resuelve por `ModelPolicyKey` exacta y vive
+en `user.db`; no es un grant de permisos. `ToolPlanner` reduce la superficie visible y
+`ModelCapabilityBoundary` hace cumplir el límite aunque el modelo emita una tool oculta.
+
+Los presets son `ObserveOnly`, `PatchOnly`, `ScopedCoder`, `FullAgent` y `Custom`. Una configuración
+desconocida cae en `ObserveOnly`; la TUI/CLI solicita clasificación al seleccionarla. Las
+preferencias son relacionales y deterministas. Un índice vectorial futuro solo puede sugerir una
+clasificación a partir de evidencia similar, nunca autorizarla.
 
 ## 14. Run → Plan y Run → TaskGraph
 
@@ -567,7 +582,7 @@ flowchart LR
 | 47 | Responsive y tema | — | Modos `Stacked`/`Tabbed`/`Overlay` por breakpoints configurables; `ThemeRole` semánticos + glyphs Unicode/ASCII; color nunca como única señal; `NO_COLOR` (ADR-0031) | Terminales de cualquier tamaño y accesibilidad | M2 |
 | 48 | Conversación | — | `ConversationBlock`s semánticos que se actualizan en su lugar; `ToolPresentation` como metadata, sin UI en las tools; verbosidad Normal/Verbose/Trace solo en el renderer (ADR-0033) | Actividad legible, no un log crudo | M1: plain. M2: TUI |
 | 49 | Composer y referencias | `SendInput(text)` | `SendInput { InputPart[] }` con `TextPart`/`ReferencePart`; `@file`, `@folder`, `@task`, `@lane`, `@artifact`, `@skill` resueltos por el Host con permisos y procedencia (ADR-0033) | Las referencias no dependen de texto literal | **M1**: forma del protocolo. M2/M3: resolución y autocompletado |
-| 50 | Human-in-the-loop | `Ask` abstracto (ADR-0003) | `InteractionRequest` / `RespondToInteraction`; opciones decididas por el servidor; overlay sin destruir `MainView`; Lane en `WAITING FOR PERMISSION` (ADR-0034) | Un solo mecanismo para permisos, conflictos, cambios de scope y memoria | **M1**: DTOs. M2: overlay |
+| 50 | Human-in-the-loop | `Ask` abstracto (ADR-0003) | `InteractionRequest` / `RespondToInteraction` con payload discriminado: choice simple o cuestionario; `user.ask`; single/multi/texto/`Otro`; overlay sin destruir `MainView`; Lane en `WaitingForPermission` o `WaitingForInput` (ADR-0034/0045) | Un mecanismo durable para permisos, conflictos, cambios de scope, memoria y preguntas del modelo | M1: choice DTOs. **M3:** cuestionario + plain. **M4:** overlay TUI |
 | 51 | Acciones de cliente | Lista mínima (ADR-0025) | Acciones iniciales (sidebar, palette, vistas, modelo, búsqueda, inspector, diff, interrupt/cancel, cerrar overlay); menús también resuelven a `ClientAction` | Un solo sistema de input | M1: interrupt/cancel. M10: configurable |
 | — | Scopes e identidades | Jerarquía de §51 sin estrategias | `ScopeLevel`, `ProjectId` (repo) ≠ `WorkspaceId` (carpeta local), estrategia de resolución por subsistema (ADR-0022) | Listas de scopes distintas por subsistema; memoria multi-repo | **M1**: identidades para ubicar el journal |
 
@@ -595,7 +610,7 @@ flowchart LR
 | `ClientAction` + bindings de interrupt/cancel (v0.3) | `KeyBindingService` configurable, palette (M10) | Combinaciones concretas restantes |
 | `ContextProvenance`, `ContributionCategory`, `ContextItemKind.Memory`/`Knowledge` (v0.3) | Skills (M8), Memory (M8+), `/context` por categoría (M2) | Búsqueda vectorial, dedupe semántico, diff de contexto |
 | `OmniCore.Client`, `ClientProjection`/`ClientState`, `PlainRenderer`, `JsonRenderer` (v0.4) | TUI Terminal.Gui v0 + `SpectreSegmentAdapter` (M2) | Desktop, animaciones |
-| `SendInput { InputPart[] }`, DTOs `InteractionRequest`/`RespondToInteraction`, `UsageSnapshot`/`Metric<T>`, `ThemeRole`, `ConversationBlock` básicos (v0.4) | `ISidebarWidget` y widgets (M2–M8), `ToolPresentation` (M2), `ReferenceResolver` (M2+), responsive (M2) | Paleta y temas finales |
+| `SendInput { InputPart[] }`, DTOs choice de `InteractionRequest`/`RespondToInteraction`, `UsageSnapshot`/`Metric<T>`, `ThemeRole`, `ConversationBlock` básicos (v0.4) | Cuestionarios tipados + `user.ask` (M3), `QuestionnaireOverlay` (M4), `ISidebarWidget` y widgets (M2–M8), `ToolPresentation` (M2), `ReferenceResolver` (M2+), responsive (M4) | Paleta y temas finales |
 
 ## 23. Open Architecture Questions
 
@@ -716,10 +731,10 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 | Milestone | Contenido | Criterio de salida |
 |---|---|---|
 | **M1 — Runtime sin IA + Planning** — **✅ IMPLEMENTADO Y VERIFICADO** (auditoría 2026-09-25) | **Dominio:** ids tipados, `ScopeLevel`, `WorkspaceId`/`ProjectId`; Session, Run, Plan/PlanItem, Task/TaskGraph, Lane, Turn, ToolCall y sus máquinas de estado (ADR-0036).<br>**Journal:** envelope (`EventType` + `EventSchemaVersion`), `SqliteEventStore` + `InMemoryEventStore`, `Sha256` y `FileArtifactStore` simple, `AuditSink` (alimentado por eventos de permisos, INV-012) y `FakeTokenCounter` (ADR-0042).<br>**Engine:** `PlanService`, `ProgressReconciler` R1–R7, `PlanCompletionGate` + `PendingTaskGate`, watchdog conectado (emite `ProgressStalled`), `WorkingState` proyectado y expuesto por el runtime.<br>**Tools:** `FakeTool` (Prepare puro), `ToolRuntime` (pipeline completo Allow/Deny/Ask con `InteractionRequest` completo), reconciliación de efectos ADR-0004.<br>**Security:** `ScriptedPermissionPolicy` implementando `IPermissionPolicy`; solo Security materializa el intent autorizado (INV-018).<br>**Protocol/Host/Cliente:** IOmniClient in-process (ADR-0019), `ClientProjection` + renderers TUI/plain/JSON sobre el mismo estado (ADR-0030 §3).<br>**Simulación:** `omni sim` (+ YAML, `--json`, `--crash`/`--resume` entre procesos) y golden rule.<br>**Estado:** 86 tests verdes; build 0 errores. **Nota toolchain:** Terminal.Gui no enlaza en este runtime JVM; la TUI usa render ANSI propio sobre los mismos modelos. | ✅ cumplido en esta máquina (Windows): `omni sim` con plan multi-item, TaskGraph N:M, pipeline con tools, crash+resume que reconcilia sin duplicar, y golden rule (replay = estado vivo). Pendiente de verificar en Linux |
-| **M2 — Explorer** — **✅ CONSTRUIDO (turn real persistido + cableado e2e; 124 tests)** | **Turn real** (`ExplorerTurn`) persistido en el journal: `TurnStarted`, eventos del pipeline (request/permission/auth/outcome), `ModelCompleted` con la respuesta como artifact, `TurnCompleted`; **replay verificado tras reiniciar** (Sqlite journal). **plan.propose aplica desde el Explorer** con las proyecciones del mismo Run (PlanItemStarted en el journal). **Protección de secretos (ADR-0018 §4):** `RedactionPolicy` bloquea `.env`/`*.pem`/`*.key`/`.ssh/`/credenciales en `filesystem.read`/`reference.resolve` y redacta (Bearer/JWT/keys) antes de journal, contexto, errores, audit, tool results y artifacts. **ICredentialStore** de M2 = `FileCredentialStore` (ofuscación + 0600; DPAPI/CredManager→M3, ADR-0011 AC-2026-09-27). **Presupuesto del Run** (`TaskBudget` desde `RunCreated`) con costo real por token, topes de sesión/día (5/20 USD) e `InteractionRequested(BudgetExceeded)`. **ContextOverflow** cuando un pinned supera el presupuesto (`ContextSnapshot.Overflowed` → `StopReason.ContextOverflow`), nunca un snapshot por encima del límite. **Cableado real:** `HeuristicTokenCounter`, `ScopeResolver`, `FileCredentialStore`, `LocalModelHost` (TcpListener + RandomNumberGenerator) y `FileArtifactStore` en las factories del Host (`omni doctor` los reporta). **Adapter/permisos/procesos/frontera** como en el milestone (function.arguments, AuthorizeApproved INV-002, kill-tree + timeout, PathBoundary POSIX/UNC/junction). **Criterio `omni "explícame este repositorio"`** en el plain renderer (test automatizado). **Pendiente M3:** workflows interactivos `/permissions`/`/context` con UI, `process.exec` real, reinicio con backoff, credenciales por plataforma. | `omni doctor` + `omni ask`/`explain` end-to-end + pruebas de integración de cierre (124 tests) |
-| **M3 — Native Coder** | `write`/`patch` con version tokens; Effect Journal + reconciliación de filesystem; commits Barrier; sandbox `Strong` (AppContainer en Windows, bubblewrap + Landlock + seccomp en Linux) + `WeakSandboxConsent`; `process.exec` (build/test con red), `shell.exec`; gates Build/Test/Acceptance; reintentos y circuit breaker de providers | `omni act "corrige este test"`; un crash durante un write se reanuda sin duplicar el efecto |
-| **M4 — Context management** (+ **track TUI v0**) | Prune, Compress, Externalize, Compact, `ContextCheckpoint`, MetaModelService, GC, `verify-journal`, retención de auditoría.<br>**Track TUI v0** (decisión del usuario: después de M3): Terminal.Gui con 4 zonas, `SidebarHost` (sesión, plan, archivos + diff), overlays, responsive, roles de tema, autocompletado de `/` y `@`, spike de `SpectreSegmentAdapter` (OAQ-13) | Sesiones largas sin crecimiento ilimitado; el `WorkingState` sobrevive a la compaction; la TUI v0 usable sobre la misma `ClientProjection` |
-| **M5 — Models + Qualification** | `OpenAIResponsesProvider` (perfiles `api` y `codex`, **login ChatGPT**); `AnthropicMessagesProvider` (`ProviderOpaque`); registro completo + alias; router + escalación; `OmniCore.Qualification` + suite `quick`, estados y store; costo y cuota reales en la status line; calibración de estimaciones de tokens | Cambiar de worker local a frontier sin modificar la Task; cualificar un modelo sin cambiar el runtime |
+| **M2 — Explorer** — **✅ CONSTRUIDO (turn real persistido + cableado e2e; 125 tests)** | **Turn real** (`ExplorerTurn`) persistido en el journal: `TurnStarted`, eventos del pipeline (request/permission/auth/outcome), `ModelCompleted` con la respuesta como artifact, `TurnCompleted`; **replay verificado tras reiniciar** (Sqlite journal). **plan.propose aplica desde el Explorer** con las proyecciones del mismo Run (PlanItemStarted en el journal). **Protección de secretos (ADR-0018 §4):** `RedactionPolicy` bloquea `.env`/`*.pem`/`*.key`/`.ssh/`/credenciales en `filesystem.read`/`reference.resolve` y redacta (Bearer/JWT/keys) antes de journal, contexto, errores, audit, tool results y artifacts. **ICredentialStore** de M2 = `FileCredentialStore` (ofuscación + 0600; DPAPI/CredManager→M3, ADR-0011 AC-2026-09-27). **Presupuesto del Run** (`TaskBudget` desde `RunCreated`) con costo real por token, topes de sesión/día (5/20 USD) e `InteractionRequested(BudgetExceeded)`. **ContextOverflow** cuando un pinned supera el presupuesto (`ContextSnapshot.Overflowed` → `StopReason.ContextOverflow`), nunca un snapshot por encima del límite. **Cableado real:** `HeuristicTokenCounter`, `ScopeResolver`, `FileCredentialStore`, `LocalModelHost` (TcpListener + RandomNumberGenerator) y `FileArtifactStore` en las factories del Host (`omni doctor` los reporta). **Adapter/permisos/procesos/frontera** como en el milestone (function.arguments, AuthorizeApproved INV-002, kill-tree + timeout, PathBoundary POSIX/UNC/junction). **Criterio `omni "explícame este repositorio"`** en el plain renderer (test automatizado). **Pendiente M3:** workflows interactivos `/permissions`/`/context` con UI, `process.exec` real, reinicio con backoff, credenciales por plataforma. | `omni doctor` + `omni ask`/`explain` end-to-end + pruebas de integración de cierre (124 tests) |
+| **M3 — Native Coder** | `write`/`patch` con version tokens; **política operativa de ADR-0044** (`ModelPolicyKey`, store, onboarding CLI mínimo, `ModelToolPolicy`, `FileMutationPolicy`, `ModelCapabilityBoundary`, fallback `ObserveOnly`); **cuestionarios ADR-0045** (payload/response tipados, `user.ask`, validación Host, artifacts, resume y formulario plain TTY); Effect Journal + reconciliación de filesystem; commits Barrier; sandbox `Strong` (AppContainer en Windows, bubblewrap + Landlock + seccomp en Linux) + `WeakSandboxConsent`; `process.exec` (build/test con red), `shell.exec`; gates Build/Test/Acceptance; reintentos y circuit breaker de providers | `omni act "corrige este test"`; un crash durante un write se reanuda sin duplicar el efecto; un modelo no clasificado no escribe; `PatchOnly` no reemplaza archivos; un cuestionario sobrevive al restart y sin TTY devuelve `InputRequired` |
+| **M4 — Context management** (+ **track TUI v0**) | Prune, Compress, Externalize, Compact, `ContextCheckpoint`, MetaModelService, GC, `verify-journal`, retención de auditoría.<br>**Track TUI v0** (decisión del usuario: después de M3): Terminal.Gui con 4 zonas, `SidebarHost` (sesión, plan, archivos + diff), overlays, responsive, roles de tema, autocompletado de `/` y `@`, spike de `SpectreSegmentAdapter` (OAQ-13), `ModelPolicySetup`, `Preferences > Models` y `QuestionnaireOverlay` con radio buttons, checkboxes, texto libre y `Otro` | Sesiones largas sin crecimiento ilimitado; el `WorkingState` sobrevive a la compaction; la TUI v0 usable; eliminar una política hace reaparecer el onboarding; cuestionarios single/multi/texto/`Otro` producen la misma respuesta tipada en TUI y plain |
+| **M5 — Models + Qualification** | `OpenAIResponsesProvider` (perfiles `api` y `codex`, **login ChatGPT**); `AnthropicMessagesProvider` (`ProviderOpaque`); registro completo + alias; router + escalación; `OmniCore.Qualification` + suite `quick`, estados y store; `FileMutationReliability` y recomendación de categoría; costo y cuota reales en la status line; calibración de estimaciones de tokens | Cambiar de worker local a frontier sin modificar la Task; cualificar un modelo sin cambiar el runtime; la evidencia puede recomendar pero nunca ampliar automáticamente su política operativa |
 | **M6 — Multi-agent** | Descomposición, scheduler de lanes, lanes background, heartbeat agregado, agregación de `AgentResult`, `WorkflowCommand`, tools `Dynamic`, `core.agents` + `LaneInspector` (TUI). **Solo las lanes de lectura corren en paralelo**; las escritoras se serializan con un lease de escritura hasta M7 | Explore + Implement + Verify como Tasks diferenciadas, con el Plan reconciliado |
 | **M7 — Isolation** | Worktrees con `SnapshotOfWorkingTree`, integración 3-way, reconciliación Git, cleanup; **lanes escritoras paralelas**; **lanes delegadas a Claude Code** (ADR-0012 rev. 3, riesgo residual aceptado) | Coders concurrentes sin pisar el workspace ni los cambios del usuario |
 | **M8 — Extensibility** | Host de extensiones (`OmniCore.Extensions`) + manifest YAML + `ExtensionBoundary`; **MCP** con las reglas de confianza de ADR-0023; hooks; ciclo de vida de skills; `CommandRegistry` con precedencia + `ExtensionCommand`; `toolPreferences`; **Session Memory**; `/commands`, `/skills`, `/extensions`, `/memory session` | Un hook o extensión puede restringir pero no ampliar, verificado por test |
@@ -1004,7 +1019,7 @@ flowchart TB
 
 ## 34. Conversación, composer e interacciones
 
-[ADR-0033](../adr/0033-conversacion-y-composer.md) · [ADR-0034](../adr/0034-interaction-requests.md)
+[ADR-0033](../adr/0033-conversacion-y-composer.md) · [ADR-0034](../adr/0034-interaction-requests.md) · [ADR-0045](../adr/0045-cuestionarios-estructurados.md)
 
 ```mermaid
 sequenceDiagram
@@ -1029,6 +1044,28 @@ sequenceDiagram
   H->>E: PermissionGranted lifetime Run
   E-->>C: ToolCall events → ActivityBlock "● Running tests" → "✓ 143 passed"
 ```
+
+Cuando el modelo necesita información, usa `user.ask` y no emite eventos directamente:
+
+```mermaid
+sequenceDiagram
+  participant M as Modelo
+  participant E as Engine
+  participant H as Host
+  participant C as ClientProjection / UI
+  participant U as Usuario
+  M->>E: user.ask QuestionnairePrompt
+  E->>H: InteractionRequested · Question
+  H->>C: WireEvent con schema tipado
+  C->>U: QuestionnaireOverlay<br/>radio · checkbox · texto · Otro
+  U->>C: Enviar QuestionnaireResponse
+  C->>H: RespondToInteraction
+  H->>E: respuesta validada + artifact redactado
+  E->>M: ToolResult estructurado, una sola vez
+```
+
+Sin TTY, la Lane queda `WaitingForInput` y el resultado es `InputRequired`; `Question` nunca se
+resuelve como `Deny` ni con una opción automática. Permisos y riesgo conservan ADR-0003.
 
 ---
 

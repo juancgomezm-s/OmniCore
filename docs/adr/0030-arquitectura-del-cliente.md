@@ -28,7 +28,8 @@ OmniCore.Protocol     IOmniClient, DTOs wire
 OmniCore.Client       (nuevo; solo depende de Protocol; sin frameworks visuales)
   Client/             OmniClientSession (envuelve IOmniClient), ClientProjection (reducer)
   Presentation/       modelos de presentación: HeaderModel, ConversationBlock, SidebarWidget models,
-                      StatusLineModel, InteractionOverlayModel, ComposerModel, ThemeRole, Glyphs
+                      StatusLineModel, InteractionOverlayModel, QuestionnaireOverlayModel,
+                      ComposerModel, ThemeRole, Glyphs
   Actions/            ClientAction, ClientCommandRegistry, KeyBindingRegistry (ADR-0024/0025)
   Sidebar/            ISidebarWidget, SidebarLayout (ADR-0032)
   Input/              ComposerParser: texto → InputPart[] (ADR-0033)

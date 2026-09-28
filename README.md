@@ -81,13 +81,13 @@ Entregado el núcleo de M1 — runtime sin IA + Planning — sobre las 30 invari
 > cambia (ADR-0030 §3) y cuando el runtime lo permita, Terminal.Gui lo sustituye como otro
 > renderer.
 
-Estado: 124 tests verdes (dominio, codec de eventos, pipeline de tools con Allow/Deny/Ask,
+Estado: 125 tests verdes (dominio, codec de eventos, pipeline de tools con Allow/Deny/Ask,
 reconciliación ADR-0004, PlanService, ProgressReconciler R1–R7, simulación, crash/resume
 end-to-end, cliente/renderers/TUI, arquitectura, y 12+ pruebas de integración del cierre de M2).
 
 ## Estado de M2 (Explorer — turn real persistido + cableado e2e)
 
-124 tests verdes, build 0 errores. El Turn end-to-end persiste en el journal (TurnStarted,
+125 tests verdes, build 0 errores. El Turn end-to-end persiste en el journal (TurnStarted,
 eventos del pipeline de tools, ModelCompleted con la respuesta como artifact, TurnCompleted) y
 el replay tras reiniciar está probado. plan.propose aplica desde el Explorer con las
 proyecciones del mismo Run; los secretos (`.env`, `.pem`, `.key`, `.ssh/`, Bearer/JWT) se

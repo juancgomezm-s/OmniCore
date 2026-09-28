@@ -118,14 +118,53 @@ public record LaneHeartbeat(
     long TokensUsed,
     int ToolCalls) { }
 
-/// <summary>Resultado normalizado de una ejecución de tool (spec §40).</summary>
-public record ToolResult(
-    string Summary,
-    string? Preview,
-    ArtifactRef? Artifact,
-    long OriginalSize,
-    bool WasExternalized,
-    EffectOutcome EffectOutcome) { }
+/// <summary>
+/// Resultado normalizado de una ejecución de tool (spec §40). `IsError` distingue explícitamente
+/// los fallos (Acceso denegado, no encontrado, falta path) de los éxitos: el runtime NUNCA emite
+/// toolcall.succeeded para un resultado con IsError=true (P0-2).
+/// </summary>
+public sealed class ToolResult
+{
+    public string Summary { get; }
+
+    public string? Preview { get; }
+
+    public ArtifactRef? Artifact { get; }
+
+    public long OriginalSize { get; }
+
+    public bool WasExternalized { get; }
+
+    public EffectOutcome EffectOutcome { get; }
+
+    public bool IsError { get; }
+
+    public ToolResult(string summary, string? preview, ArtifactRef? artifact, long originalSize,
+        bool wasExternalized, EffectOutcome effectOutcome)
+        : this(summary, preview, artifact, originalSize, wasExternalized, effectOutcome, false)
+    {
+    }
+
+    public ToolResult(string summary, string? preview, ArtifactRef? artifact, long originalSize,
+        bool wasExternalized, EffectOutcome effectOutcome, bool isError)
+    {
+        Summary = summary;
+        Preview = preview;
+        Artifact = artifact;
+        OriginalSize = originalSize;
+        WasExternalized = wasExternalized;
+        EffectOutcome = effectOutcome;
+        IsError = isError;
+    }
+
+    /// <summary>Resultado de error explícito (no-exitoso): el runtime lo marca Failed/Rejected.</summary>
+    public static ToolResult Error(string summary) =>
+        new(summary, null, null, 0, false, EffectOutcome.None, true);
+
+    /// <summary>Resultado de éxito.</summary>
+    public static ToolResult Ok(string summary, string? preview, long originalSize, bool externalized,
+        EffectOutcome effect) => new(summary, preview, null, originalSize, externalized, effect, false);
+}
 
 /// <summary>Estado completo de un Run para pasar por el PlanCompletionGate (ADR-0016 §10).</summary>
 public record RunSnapshot(

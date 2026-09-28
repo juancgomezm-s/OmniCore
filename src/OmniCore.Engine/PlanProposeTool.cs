@@ -43,9 +43,8 @@ public sealed class PlanProposeTool : ITool
         var kind = args.TryGetValue("kind", out var k) ? k : null;
         if (kind is null || ParseKind(kind!) is null)
         {
-            return System.Threading.Tasks.Task.FromResult(new ToolResult(
-                "plan.propose: 'kind' requerido y conocido (start|complete|block|unblock|fail|skip|cancel|revise)",
-                null, null, 0, false, EffectOutcome.None));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "plan.propose: 'kind' requerido y conocido (start|complete|block|unblock|fail|skip|cancel|revise)"));
         }
 
         // 2. Semántica básica: los kinds con item requieren itemId.
@@ -53,8 +52,8 @@ public sealed class PlanProposeTool : ITool
         var reason = args.TryGetValue("reason", out var r) ? r : null;
         if (RequiresItem(kind!) && (itemId is null || itemId!.Length == 0))
         {
-            return System.Threading.Tasks.Task.FromResult(new ToolResult(
-                "plan.propose: " + kind! + " requiere 'itemId'", null, null, 0, false, EffectOutcome.None));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "plan.propose: " + kind! + " requiere 'itemId'"));
         }
 
         // 3. Declaración: devuelve la mutación canónica serializada como efecto aplicado.

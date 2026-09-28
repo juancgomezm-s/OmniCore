@@ -28,10 +28,13 @@ Client Action     → IOmniClient (WireCommand / Query) | acción local de prese
 | `overlay.close` | Local | cierra el overlay superior; en un `InteractionRequest` equivale a su opción default (`Deny`) |
 | `view.plan` / `view.tasks` / `view.context` | Local + Query | vistas lógica, técnica y de contexto |
 | `model.select` | Local + Engine | selector de modelo o alias para el próximo Turn |
+| `preferences.open` / `model.policies.open` | Local + Query | abre preferencias o el mantenimiento de políticas por modelo (ADR-0044) |
+| `model.policy.inspect` / `model.policy.edit` / `model.policy.delete` | Local + Engine | inspecciona, reclasifica o elimina la preferencia exacta; eliminar hace que se vuelva a preguntar |
+| `model.qualify` | Local + Engine | inicia una cualificación con consentimiento y presupuesto cuando corresponda (ADR-0007/0044) |
 | `session.search` | Local + Query | búsqueda de sesiones |
 | `agent.inspect` | Local + Query | `LaneInspector` de la Lane seleccionada (ADR-0032) |
 | `diff.open` | Local + Query | `DiffPreview` del archivo seleccionado (ADR-0032) |
-| `interaction.respond` | Engine | responde el `InteractionRequest` activo con una opción (ADR-0034) |
+| `interaction.respond` | Engine | responde el `InteractionRequest` activo con `ChoiceResponse` o `QuestionnaireResponse` (ADR-0034/0045) |
 
 - **`ClientAction`** es la unidad de comportamiento del cliente. Un `ClientCommand` es solo su superficie textual y un keybinding su superficie de teclado; no existen dos sistemas paralelos.
 - **Acciones que tocan el Engine:** una acción como `run.cancel` emite el `WireCommand` correspondiente. Es la misma ruta que `/cancel`.

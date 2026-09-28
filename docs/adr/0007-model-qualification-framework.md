@@ -34,6 +34,10 @@ Resolución **por campo**:
 
 Un override siempre queda registrado en el `ExecutionFingerprint` (ADR-0017).
 
+Un `UserOverride` corrige hechos o traits del perfil, pero no concede tools ni permisos. El techo de
+autonomía elegido por el usuario y la política de mutación se resuelven por separado según
+ADR-0044, y después se intersectan con el resto de fronteras de ejecución.
+
 **Nombre (revisión integral):** `EffectiveModelProfile` es **por modelo** (por `ModelQualificationKey`). La intersección **por Turn** que describe la spec §20 se llama `EffectiveExecutionProfile` (ver la tabla de propiedad de ADR-0005).
 
 ### 2. Traits empíricos
@@ -55,6 +59,7 @@ Cada trait se modela como `TraitScore { Value (0..1), Confidence, SampleSize, So
 | `ContextRetrievalAccuracy` | | Usar las `ArtifactRef` y el contexto externalizado correctamente |
 | `MultiStepExecutionReliability` | | Encadenar pasos sin perder el hilo |
 | `PlanTrackingReliability` | ✓ | Respetar el plan, identificar el siguiente paso, proponer revisiones coherentes y no repetir trabajo terminado (ADR-0016) |
+| `FileMutationReliability` | ✓ | Preservar contenido no relacionado, preferir patches localizados, respetar scope/version tokens y no sustituir archivos mediante overwrite o delete+create (ADR-0044) |
 
 ### 3. Del perfil a la política del harness
 
@@ -71,6 +76,8 @@ Cada trait se modela como `TraitScore { Value (0..1), Confidence, SampleSize, So
 | `CompletionStrictness` | `CompletionDiscipline` |
 
 - La tabla de umbrales es configuración.
+- ADR-0044 añade `UserModelPolicy` y `FileMutationPolicy`: son un techo posterior al harness y no
+  alteran ni falsifican los traits empíricos.
 - Las cuatro categorías de la rev. 1 sobreviven solo como filas de `HeuristicDefaults` (≤9B / 9–27B / ≥27B / frontier → traits provisionales), no como lógica del runtime.
 - El pipeline de reparación de tool calls de la rev. 1 se mantiene:
   1. parse tolerante;
