@@ -25,7 +25,15 @@ public sealed class EventStream
         _sessionId = sessionId;
     }
 
-    public void Append(DomainEventPayload payload)
+    /// <summary>Persiste un evento con durabilidad Standard (comportamiento existente).</summary>
+    public void Append(DomainEventPayload payload) => Append(payload, DurabilityClass.Standard);
+
+    /// <summary>
+    /// Persiste un evento con la clase de durabilidad pedida (ADR-0002 §2). Usa
+    /// <see cref="DurabilityClass.Barrier"/> para confirmar con commit Barrier todo evento que
+    /// precede a un efecto lateral (p. ej. ToolCallStarted con EffectClass ≠ None).
+    /// </summary>
+    public void Append(DomainEventPayload payload, DurabilityClass durability)
     {
         var type = payload.Type();
         var codec = _codecs.CodecFor(type);
@@ -33,7 +41,7 @@ public sealed class EventStream
         var envelope = DomainEvent.Create(_sessionId, type, payload.SchemaVersion(), null, null,
             ExtractRunId(payload), ExtractTaskId(payload), ExtractLaneId(payload), ExtractTurnId(payload),
             ExtractPlanItemId(payload), ExtractToolCallId(payload), new ArtifactRef[0], json);
-        _store.Append(_sessionId, envelope, DurabilityClass.Standard, CancellationToken.None);
+        _store.Append(_sessionId, envelope, durability, CancellationToken.None);
     }
 
     /// <summary>Replay de todos los eventos de la sesión desde la secuencia dada (1-based inclusive).</summary>

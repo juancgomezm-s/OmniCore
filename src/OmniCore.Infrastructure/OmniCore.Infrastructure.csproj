@@ -17,4 +17,8 @@
     <PackageReference Include="Microsoft.Data.Sqlite" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="OmniCore.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -7,8 +7,10 @@ using OmniCore.Domain;
 /// Event Store durable en SQLite (ADR-0002 §1). Esquema: id, session_id, seq, type,
 /// schema_version, payload (TEXT JSON), con índice único (session_id, seq). Un solo escritor
 /// por sesión asigna secuencias contiguas. La clase de durabilidad Barrier se distingue en el
-/// escritor cambiando el pragma synchronous (la conexión de escritura lo alterna alrededor del
-/// commit; en M1 se registra como clase sin fsync explícito, ver ADR-0002 §2).
+/// escritor alternando el pragma synchronous alrededor de ese commit (ADR-0002 §2): la conexión
+/// usa WAL + synchronous=NORMAL por defecto y un commit Barrier la conmuta a synchronous=FULL
+/// mientras se comete la transacción, restaurando NORMAL en finally. Un error nunca deja la
+/// conexión en FULL. Standard conserva NORMAL.
 /// </summary>
 public sealed class SqliteEventStore : IEventStore
 {
@@ -21,8 +23,24 @@ public sealed class SqliteEventStore : IEventStore
         _InitializeSchema();
     }
 
+    /// <summary>
+    /// Conexión del escritor, expuesta para diagnóstico y tests del driver (p. ej. leer el
+    /// PRAGMA synchronous de la conexión). No es parte del contrato <see cref="IEventStore"/>.
+    /// </summary>
+    internal System.Data.Common.DbConnection Connection => _conn;
+
     private void _InitializeSchema()
     {
+        // WAL + synchronous=NORMAL por defecto (ADR-0002 §2). journal_mode se aplica a la base,
+        // synchronous es por conexión y se alterna alrededor de un commit Barrier.
+        var wal = _conn.CreateCommand()!;
+        wal.CommandText = "PRAGMA journal_mode=WAL";
+        wal.ExecuteNonQuery();
+
+        var syncDefault = _conn.CreateCommand()!;
+        syncDefault.CommandText = "PRAGMA synchronous=NORMAL";
+        syncDefault.ExecuteNonQuery();
+
         var ddl = _conn.CreateCommand()!;
         ddl.CommandText = """
             CREATE TABLE IF NOT EXISTS events (
@@ -58,18 +76,64 @@ public sealed class SqliteEventStore : IEventStore
         CancellationToken cancellationToken)
     {
         var next = CurrentSequence(sessionId) + 1;
-        InsertRow(sessionId, evt, next);
+        InsertRows(sessionId, new[] { (evt, next) }, durability);
     }
 
     public void AppendBatch(SessionId sessionId, IReadOnlyList<DomainEvent> events, DurabilityClass durability,
         CancellationToken cancellationToken)
     {
-        var next = CurrentSequence(sessionId);
+        var rows = new (DomainEvent Evt, long Seq)[events.Count];
+        var seq = CurrentSequence(sessionId);
+        var i = 0;
         foreach (var evt in events)
         {
-            next += 1;
-            InsertRow(sessionId, evt, next);
+            seq += 1;
+            rows[i++] = (evt, seq);
         }
+
+        InsertRows(sessionId, rows, durability);
+    }
+
+    /// <summary>
+    /// Persiste un lote en una sola transacción atómica. Para un commit Barrier conmuta la
+    /// conexión a synchronous=FULL antes de la transacción y la restaura a NORMAL en finally,
+    /// asegurando que el WAL quede sincronizado a disco antes de continuar (ADR-0002 §2). Un fallo
+    /// en cualquier fila revierte el lote entero y restaura synchronous=NORMAL: la conexión nunca
+    /// queda en FULL.
+    /// </summary>
+    private void InsertRows(SessionId sessionId, IReadOnlyList<(DomainEvent Evt, long Seq)> rows,
+        DurabilityClass durability)
+    {
+        var barrier = durability == DurabilityClass.Barrier;
+        try
+        {
+            if (barrier)
+            {
+                SetSynchronous("FULL");
+            }
+
+            using var tx = _conn.BeginTransaction();
+            foreach (var (evt, seq) in rows)
+            {
+                InsertRow(sessionId, evt, seq);
+            }
+
+            tx.Commit();
+        }
+        finally
+        {
+            if (barrier)
+            {
+                SetSynchronous("NORMAL");
+            }
+        }
+    }
+
+    private void SetSynchronous(string mode)
+    {
+        var cmd = _conn.CreateCommand()!;
+        cmd.CommandText = "PRAGMA synchronous=" + mode;
+        cmd.ExecuteNonQuery();
     }
 
     public long CurrentSequence(SessionId sessionId)
