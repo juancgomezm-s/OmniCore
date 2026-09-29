@@ -50,6 +50,33 @@ public sealed class CliApp
             return JournalCommands.VerifyJournal(args);
         }
 
+        if (command == "session" && args.Length >= 2 && args[1] == "purge")
+        {
+            // M4 (ADR-0001 §8): purga de sesión con auditoría previa.
+            return MaintenanceCommands.SessionPurge(args);
+        }
+
+        if (command == "gc")
+        {
+            // M4 (ADR-0001 §8): mark-and-sweep de blobs con gracia.
+            return MaintenanceCommands.Gc(args);
+        }
+
+        if (command == "audit" && args.Length >= 2 && args[1] == "purge")
+        {
+            // M4 (ADR-0043 §1): retención de auditoría que deja traza de sí misma.
+            return MaintenanceCommands.AuditPurge(args);
+        }
+
+        if (command == "session" || command == "audit")
+        {
+            // Subcomando faltante o desconocido: no se asume como pregunta al Explorer.
+            Console.WriteLine("omni " + command + ": subcomando desconocido (usos: "
+                + (command == "session" ? "omni session purge <id>" : "omni audit purge [--before <fecha>]")
+                + ")");
+            return Task.FromResult(2);
+        }
+
         if (command == "doctor")
         {
             return RunDoctor(args);
@@ -437,6 +464,9 @@ public sealed class CliApp
         Console.WriteLine("Uso:");
         Console.WriteLine("  omni sim [escenario.yaml] [--json]   Ejecuta la simulación de M1");
         Console.WriteLine("  omni verify-journal [ruta] [--json]  Verifica el journal y sus artifacts (M4)");
+        Console.WriteLine("  omni session purge <id>             Purga una sesión (audita antes; M4)");
+        Console.WriteLine("  omni gc [--dry-run]                 Recoge blobs huérfanos con gracia (M4)");
+        Console.WriteLine("  omni audit purge [--before <fecha>] Aplica retención de auditoría (M4)");
         Console.WriteLine("  omni --help                          Esta ayuda");
     }
 }

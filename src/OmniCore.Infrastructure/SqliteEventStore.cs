@@ -136,6 +136,34 @@ public sealed class SqliteEventStore : IEventStore
         return scalar is null ? null : _AsString(scalar);
     }
 
+    /// <summary>Cantidad de eventos persistidos de una sesión (auditoría previa a la purga).</summary>
+    public long CountEvents(SessionId sessionId)
+    {
+        var cmd = _conn.CreateCommand()!;
+        cmd.CommandText = "SELECT COUNT(*) FROM events WHERE session_id = :sid";
+        cmd.Parameters.Add(S(cmd, "sid", sessionId.ToString()));
+        return _AsLong(cmd.ExecuteScalar()!);
+    }
+
+    /// <summary>
+    /// Purga de sesión (ADR-0001 §8, <c>omni session purge</c>): borra todos los eventos de la
+    /// sesión en una transacción atómica y devuelve la cantidad de filas eliminadas. Los
+    /// registros de auditoría sobreviven (ADR-0043) porque viven en otro archivo; quien orquesta
+    /// la purga debe escribir la auditoría ANTES de llamar aquí (ver SessionPurger).
+    /// </summary>
+    public long PurgeSession(SessionId sessionId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var tx = _conn.BeginTransaction();
+        var cmd = _conn.CreateCommand()!;
+        cmd.Transaction = tx;
+        cmd.CommandText = "DELETE FROM events WHERE session_id = :sid";
+        cmd.Parameters.Add(S(cmd, "sid", sessionId.ToString()));
+        var deleted = (long) cmd.ExecuteNonQuery();
+        tx.Commit();
+        return deleted;
+    }
+
     public void Close()
     {
         if (_conn is not null)
