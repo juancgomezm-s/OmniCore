@@ -68,7 +68,7 @@ public sealed class RunResumeService
         var alreadyUnknown = new HashSet<ToolCallId>();
         for (var i = from; i < to; i++)
         {
-            var payload = _codecs.CodecFor(tail[i].Type).Decode(tail[i].Type, tail[i].PayloadJson);
+            var payload = _codecs.Decode(tail[i]);
             if (payload is ToolCallStarted started)
             {
                 startedNoOutcome[started.ToolCallId] = started;
@@ -160,7 +160,7 @@ public sealed class RunResumeService
         var to = tail.Count;
         for (var i = 0; i < tail.Count; i++)
         {
-            var payload = codecs.CodecFor(tail[i].Type).Decode(tail[i].Type, tail[i].PayloadJson);
+            var payload = codecs.Decode(tail[i]);
             if (payload is not RunCreated run)
             {
                 continue;

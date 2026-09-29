@@ -37,7 +37,7 @@ public sealed class PlanProjection
         var projection = new PlanProjection(null, null);
         foreach (var evt in evts)
         {
-            projection.Apply(registry.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson));
+            projection.Apply(registry.Decode(evt));
         }
 
         return projection;

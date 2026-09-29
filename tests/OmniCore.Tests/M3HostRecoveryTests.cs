@@ -148,7 +148,7 @@ public sealed class M3HostRecoveryTests
         var found = new List<ToolCallReconciled>();
         foreach (var evt in store.ReadFrom(sessionId, 1))
         {
-            var payload = codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = codecs.Decode(evt);
             if (payload is ToolCallReconciled r)
             {
                 found.Add(r);

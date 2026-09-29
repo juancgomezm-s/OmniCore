@@ -150,7 +150,7 @@ public sealed class M2IntegrationTests
 
         var evt = store.ReadFrom(sessionId, 1).Single();
         Assert.DoesNotContain("VerySecretToken123", evt.PayloadJson);
-        var replayed = (ToolCallRequested)codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+        var replayed = (ToolCallRequested)codecs.Decode(evt);
         using var args = System.Text.Json.JsonDocument.Parse(replayed.ArgumentsJson);
         Assert.Equal("README.md", args.RootElement.GetProperty("path").GetString());
     }
@@ -260,7 +260,7 @@ public sealed class M2IntegrationTests
         File.WriteAllText(wsDir + "\\.env", "API_KEY=sk-test123secret\nPASSWORD=hunter2");
         var secretCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-env", "{\"path\":\".env\"}");
-        var outcomeSecret = executor.ExecuteTool(secretCall, false, CancellationToken.None);
+        var outcomeSecret = executor.ExecuteToolWithoutJournal(secretCall, false, CancellationToken.None);
         Assert.True(outcomeSecret.FinalState == ToolCallState.Rejected,
             "Un .env se rechaza (Rejected). summary=" + outcomeSecret.Summary);
         Assert.False(outcomeSecret.Preview is not null && outcomeSecret.Preview!.Length > 0,
@@ -275,7 +275,7 @@ public sealed class M2IntegrationTests
         File.WriteAllText(wsDir + "\\normal.txt", "Bearer VOtOkEn123secret contenido normal");
         var okCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-ok", "{\"path\":\"normal.txt\"}");
-        var outcomeOk = executor.ExecuteTool(okCall, false, CancellationToken.None);
+        var outcomeOk = executor.ExecuteToolWithoutJournal(okCall, false, CancellationToken.None);
         Assert.True(outcomeOk.Succeeded, "Un archivo normal dentro del workspace se lee. summary=" + outcomeOk.Summary);
         Assert.True(outcomeOk.Preview is not null, "El content leído vuelve como Preview (no es un fallo silencioso)");
         Assert.True(outcomeOk.Preview!.Contains("contenido normal"), "El contenido del archivo se leyó de verdad");
@@ -285,7 +285,7 @@ public sealed class M2IntegrationTests
         // 3. Archivo inexistente no es un éxito.
         var missingCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-missing", "{\"path\":\"no-existe.txt\"}");
-        var outcomeMissing = executor.ExecuteTool(missingCall, false, CancellationToken.None);
+        var outcomeMissing = executor.ExecuteToolWithoutJournal(missingCall, false, CancellationToken.None);
         Assert.False(outcomeMissing.Succeeded, "Un archivo inexistente NO se marca como éxito");
         Assert.False(outcomeMissing.Preview is not null && outcomeMissing.Preview!.Length > 0,
             "Un archivo inexistente no expone contenido");
@@ -617,7 +617,7 @@ public sealed class M2IntegrationTests
             if (type != "run.created" && type != "run.started" && type != "run.awaiting_input"
                 && type != "user_input.received") continue;
             lifecycle.Add(type);
-            state = StateMachines.ApplyRun(state, codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson));
+            state = StateMachines.ApplyRun(state, codecs.Decode(evt));
         }
         Assert.Equal(RunState.Running, state);
         Assert.Equal(new[] { "run.created", "run.started", "run.awaiting_input", "user_input.received",
@@ -643,7 +643,7 @@ public sealed class M2IntegrationTests
             }
 
             if (evt.Type.ToString() == "toolcall.requested") started = true;
-            var payload = codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = codecs.Decode(evt);
             if (!started) continue;
             try
             {

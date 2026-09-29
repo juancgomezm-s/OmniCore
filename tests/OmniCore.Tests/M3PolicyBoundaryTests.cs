@@ -226,7 +226,7 @@ public sealed class M3PolicyBoundaryTests
         //     PatchOnly no la expone y la frontera la rechaza en el runtime aunque los permisos la
         //     permitirían: la categoría nunca concede una tool fuera de su techo (ADR-0044 §10.4).
         var hidden = new ValidatedToolCall(ToolCallId.New(), new ToolId("fake.write"), "pc-hidden", "{}");
-        var hiddenOutcome = executor.ExecuteTool(hidden, false, CancellationToken.None);
+        var hiddenOutcome = executor.ExecuteToolWithoutJournal(hidden, false, CancellationToken.None);
         Assert.False(hiddenOutcome.Succeeded, "PatchOnly no permite el reemplazo completo. summary=" + hiddenOutcome.Summary);
         Assert.Equal(ToolCallState.Rejected, hiddenOutcome.FinalState);
         var hiddenTypes = hiddenOutcome.Events.Select(e => e.Type().ToString()).ToArray();
@@ -274,7 +274,7 @@ public sealed class M3PolicyBoundaryTests
         var obsBoundary = new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.ObserveOnly));
         var obsExecutor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws, obsBoundary);
-        var obsOutcome = obsExecutor.ExecuteTool(patchCall, false, CancellationToken.None);
+        var obsOutcome = obsExecutor.ExecuteToolWithoutJournal(patchCall, false, CancellationToken.None);
         Assert.False(obsOutcome.Succeeded, "ObserveOnly rechaza el patch");
         Assert.Equal(ToolCallState.Rejected, obsOutcome.FinalState);
         Assert.True(File.ReadAllText(ws + "\\doc.txt") == original, "intacto tras ObserveOnly");
@@ -292,9 +292,9 @@ public sealed class M3PolicyBoundaryTests
             ws, patchBoundary);
         var readCall = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"), "pc-pr",
             "{\"path\":\"doc.txt\"}");
-        var readOutcome = patchExecutor.ExecuteTool(readCall, false, CancellationToken.None);
+        var readOutcome = patchExecutor.ExecuteToolWithoutJournal(readCall, false, CancellationToken.None);
         Assert.True(readOutcome.Succeeded, "PatchOnly permite la lectura previa. summary=" + readOutcome.Summary);
-        var patchOutcome = patchExecutor.ExecuteTool(patchCall, false, CancellationToken.None);
+        var patchOutcome = patchExecutor.ExecuteToolWithoutJournal(patchCall, false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Read previo + PatchOnly permiten el patch tras la recategorización. summary=" + patchOutcome.Summary);
         Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(ws + "\\doc.txt"));
         RmDir(ws);

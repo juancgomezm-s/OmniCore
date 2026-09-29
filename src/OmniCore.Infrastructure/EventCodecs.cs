@@ -1,17 +1,24 @@
 namespace OmniCore.Infrastructure;
 
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
 /// <summary>
 /// Registro de codecs de eventos con discriminador por EventType (ADR-0013 §2). Cada evento
-/// canónico se serializa a JSON con su record concreto; no se usa polimorfismo implícito. Los
-/// upcasters están vacíos en M1.
+/// canónico se serializa a JSON con su record concreto, sin polimorfismo implícito ni reflexión
+/// (contexto generado en compilación). Al leer se aplican los upcasters de la versión persistida
+/// a la actual.
 /// </summary>
 public sealed class EventCodecs : IEventCodecRegistry
 {
     private readonly Dictionary<EventType, IDomainEventCodec> _byType = new();
+
+    private readonly Dictionary<EventType, int> _versions = new();
+
+    private readonly Dictionary<(EventType Type, int From), IEventUpcaster> _upcasters = new();
 
     private EventCodecs() { }
 
@@ -86,7 +93,12 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.PlanItemReordered())
             .Plus(Typed.PlanItemLinked())
             .Plus(Typed.PlanItemUnlinked())
-            .Plus(Typed.PlanMutationRejected());
+            .Plus(Typed.PlanMutationRejected())
+            // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.requested"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -98,11 +110,73 @@ public sealed class EventCodecs : IEventCodecRegistry
         return found!;
     }
 
+    public int CurrentVersion(EventType type)
+    {
+        if (!_versions.TryGetValue(type, out var version))
+        {
+            throw new UnknownEventTypeException(type.ToString());
+        }
+
+        return version;
+    }
+
+    public DomainEventPayload Decode(DomainEvent evt)
+    {
+        ArgumentNullException.ThrowIfNull(evt);
+        var current = CurrentVersion(evt.Type);
+        if (evt.SchemaVersion > current)
+        {
+            throw new UnsupportedEventVersionException(evt.Type.ToString(), evt.SchemaVersion, current);
+        }
+
+        var json = evt.PayloadJson;
+        for (var version = Math.Max(evt.SchemaVersion, 1); version < current; version++)
+        {
+            if (!_upcasters.TryGetValue((evt.Type, version), out var upcaster))
+            {
+                throw new EventParseException(evt.Type.ToString(),
+                    "falta el upcaster v" + version + " → v" + (version + 1));
+            }
+
+            json = upcaster.Upcast(json);
+        }
+
+        return CodecFor(evt.Type).Decode(evt.Type, json);
+    }
+
+    /// <summary>Registra un upcaster (se usa también en tests para versiones sintéticas).</summary>
+    public EventCodecs WithUpcaster(IEventUpcaster upcaster)
+    {
+        ArgumentNullException.ThrowIfNull(upcaster);
+        _upcasters[(upcaster.Type, upcaster.FromVersion)] = upcaster;
+        return this;
+    }
+
+    /// <summary>Registra un codec adicional (tests de evolución de schema).</summary>
+    public EventCodecs With(Typed.CodecPair pair) => Plus(pair);
+
     private EventCodecs Plus(Typed.CodecPair pair)
     {
         _byType[pair.Type] = pair.Codec;
+        _versions[pair.Type] = pair.CurrentVersion;
         return this;
     }
+}
+
+/// <summary>Upcaster para un campo nuevo opcional: el JSON antiguo ya decodifica con valor por defecto.</summary>
+public sealed class IdentityUpcaster : IEventUpcaster
+{
+    public IdentityUpcaster(EventType type, int fromVersion)
+    {
+        Type = type;
+        FromVersion = fromVersion;
+    }
+
+    public EventType Type { get; }
+
+    public int FromVersion { get; }
+
+    public string Upcast(string payloadJson) => payloadJson;
 }
 
 /// <summary>Se desconoce un EventType persistido (evento de una versión futura sin upcaster).</summary>
@@ -111,64 +185,47 @@ public sealed class UnknownEventTypeException : InvalidOperationException
     public string EventType { get; }
 
     public UnknownEventTypeException(string type)
+        : base("tipo de evento desconocido: " + type)
     {
         EventType = type;
     }
 }
 
-/// <summary>Codec por tipo concreto; captura solo el payload tipado.</summary>
-public sealed class TypedCodec : IDomainEventCodec
+/// <summary>
+/// Codec por tipo concreto sobre el contexto de System.Text.Json generado en compilación
+/// (<see cref="EventJsonContext"/>): sin reflexión en tiempo de ejecución (analizadores AOT).
+/// </summary>
+public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEventPayload
 {
     private readonly EventType _type;
 
-    private readonly Func<string, DomainEventPayload> _decode;
+    private readonly JsonTypeInfo<T> _info;
 
-    private readonly Func<DomainEventPayload, string> _encode;
-
-    private TypedCodec(EventType type, Func<string, DomainEventPayload> decode,
-        Func<DomainEventPayload, string> encode)
+    public TypedCodec(EventType type, JsonTypeInfo<T> info, int currentVersion)
     {
         _type = type;
-        _decode = decode;
-        _encode = encode;
+        _info = info;
+        CurrentVersion = currentVersion;
     }
 
-    public static TypedCodec Of(EventType type, Func<string, DomainEventPayload> decode,
-        Func<DomainEventPayload, string> encode) => new TypedCodec(type, decode, encode);
+    /// <summary>Versión de schema que produce <see cref="Encode"/> y que espera <see cref="Decode"/>.</summary>
+    public int CurrentVersion { get; }
 
     public DomainEventPayload Decode(EventType type, string payloadJson)
     {
         try
         {
-            return _decode(payloadJson);
+            return JsonSerializer.Deserialize(payloadJson, _info) ?? throw new FormatException("payload null");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is JsonException or FormatException or NotSupportedException)
         {
-            throw new EventParseException(type.ToString(), ex.Message ?? "decode error");
+            throw new EventParseException(type.ToString(), ex.Message);
         }
     }
 
-    public string Encode(DomainEventPayload payload) => _encode(payload);
+    public string Encode(DomainEventPayload payload) => JsonSerializer.Serialize((T) payload, _info);
 
     public string DebugType() => _type.ToString();
-}
-
-/// <summary>Serializa un payload concreto a string JSON; el usuario del codec conoce el tipo.</summary>
-public sealed class EventJson
-{
-    public static string Serialize(DomainEventPayload payload) =>
-        new string(ToUtf8(JsonSerializer.SerializeToUtf8Bytes(payload)));
-
-    public static char[] ToUtf8(byte[] bytes)
-    {
-        var chars = new char[bytes.Length];
-        for (var i = 0; i < bytes.Length; i++)
-        {
-            chars[i] = (char) (bytes[i] & 0xFF);
-        }
-
-        return chars;
-    }
 }
 
 /// <summary>Un payload no pudo deserializarse a su tipo concreto (schema futuro sin upcaster).</summary>
@@ -179,10 +236,107 @@ public sealed class EventParseException : InvalidOperationException
     public string? Detail { get; }
 
     public EventParseException(string type, string detail)
+        : base("evento " + type + " no se pudo leer: " + detail)
     {
         EventType = type;
         Detail = detail;
     }
+}
+
+/// <summary>
+/// Un evento persistido tiene una versión de schema posterior a la que conoce este binario (lo
+/// escribió una versión más nueva de OmniCore): no se interpreta a ciegas (ADR-0013).
+/// </summary>
+public sealed class UnsupportedEventVersionException : InvalidOperationException
+{
+    public string EventType { get; }
+
+    public int StoredVersion { get; }
+
+    public int CurrentVersion { get; }
+
+    public UnsupportedEventVersionException(string type, int storedVersion, int currentVersion)
+        : base("evento " + type + " v" + storedVersion + " es posterior a la versión conocida v" + currentVersion)
+    {
+        EventType = type;
+        StoredVersion = storedVersion;
+        CurrentVersion = currentVersion;
+    }
+}
+
+/// <summary>Contexto de serialización generado en compilación para todos los eventos canónicos.</summary>
+[JsonSerializable(typeof(RunCreated))]
+[JsonSerializable(typeof(RunStarted))]
+[JsonSerializable(typeof(RunAwaitingInput))]
+[JsonSerializable(typeof(UserInputReceived))]
+[JsonSerializable(typeof(AssistantMessageRecorded))]
+[JsonSerializable(typeof(RunValidationStarted))]
+[JsonSerializable(typeof(RunValidationRejected))]
+[JsonSerializable(typeof(RunCompleted))]
+[JsonSerializable(typeof(RunFailed))]
+[JsonSerializable(typeof(RunCancelled))]
+[JsonSerializable(typeof(RunModeChanged))]
+[JsonSerializable(typeof(SessionCreated))]
+[JsonSerializable(typeof(WorkspaceRootEstablished))]
+[JsonSerializable(typeof(InteractionRequested))]
+[JsonSerializable(typeof(InteractionResolved))]
+[JsonSerializable(typeof(InteractionExpired))]
+[JsonSerializable(typeof(ProgressStalled))]
+[JsonSerializable(typeof(TaskCreated))]
+[JsonSerializable(typeof(TaskReady))]
+[JsonSerializable(typeof(TaskStarted))]
+[JsonSerializable(typeof(TaskBlocked))]
+[JsonSerializable(typeof(TaskUnblocked))]
+[JsonSerializable(typeof(TaskCompleted))]
+[JsonSerializable(typeof(TaskFailed))]
+[JsonSerializable(typeof(TaskSkipped))]
+[JsonSerializable(typeof(TaskCancelled))]
+[JsonSerializable(typeof(LaneCreated))]
+[JsonSerializable(typeof(LaneProvisioning))]
+[JsonSerializable(typeof(LaneStarted))]
+[JsonSerializable(typeof(LaneBlocked))]
+[JsonSerializable(typeof(LaneUnblocked))]
+[JsonSerializable(typeof(LaneCompleted))]
+[JsonSerializable(typeof(LaneFailed))]
+[JsonSerializable(typeof(LaneCancelled))]
+[JsonSerializable(typeof(TurnStarted))]
+[JsonSerializable(typeof(ModelCompleted))]
+[JsonSerializable(typeof(TurnCompleted))]
+[JsonSerializable(typeof(TurnInterrupted))]
+[JsonSerializable(typeof(TurnAbandoned))]
+[JsonSerializable(typeof(ToolCallRequested))]
+[JsonSerializable(typeof(ToolCallPrepared))]
+[JsonSerializable(typeof(ToolCallRejected))]
+[JsonSerializable(typeof(PermissionEvaluated))]
+[JsonSerializable(typeof(PermissionRequested))]
+[JsonSerializable(typeof(PermissionGranted))]
+[JsonSerializable(typeof(PermissionDenied))]
+[JsonSerializable(typeof(ToolCallAuthorized))]
+[JsonSerializable(typeof(ToolCallStarted))]
+[JsonSerializable(typeof(ToolCallSucceeded))]
+[JsonSerializable(typeof(ToolCallFailed))]
+[JsonSerializable(typeof(ToolCallEffectUnknown))]
+[JsonSerializable(typeof(ToolCallReconciled))]
+[JsonSerializable(typeof(ToolCallCancelled))]
+[JsonSerializable(typeof(PlanCreated))]
+[JsonSerializable(typeof(PlanRevised))]
+[JsonSerializable(typeof(PlanItemAdded))]
+[JsonSerializable(typeof(PlanItemUpdated))]
+[JsonSerializable(typeof(PlanItemStarted))]
+[JsonSerializable(typeof(PlanItemReady))]
+[JsonSerializable(typeof(PlanItemBlocked))]
+[JsonSerializable(typeof(PlanItemUnblocked))]
+[JsonSerializable(typeof(PlanItemCompleted))]
+[JsonSerializable(typeof(PlanItemFailed))]
+[JsonSerializable(typeof(PlanItemSkipped))]
+[JsonSerializable(typeof(PlanItemCancelled))]
+[JsonSerializable(typeof(PlanItemReopened))]
+[JsonSerializable(typeof(PlanItemReordered))]
+[JsonSerializable(typeof(PlanItemLinked))]
+[JsonSerializable(typeof(PlanItemUnlinked))]
+[JsonSerializable(typeof(PlanMutationRejected))]
+internal sealed partial class EventJsonContext : JsonSerializerContext
+{
 }
 
 /// <summary>Fábrica de pares EventType → codec para todos los eventos canónicos.</summary>
@@ -194,365 +348,227 @@ public sealed class Typed
 
         public IDomainEventCodec Codec { get; }
 
-        public CodecPair(EventType type, IDomainEventCodec codec)
+        public int CurrentVersion { get; }
+
+        public CodecPair(EventType type, IDomainEventCodec codec, int currentVersion)
         {
             Type = type;
             Codec = codec;
+            CurrentVersion = currentVersion;
         }
     }
 
-    private static CodecPair Of(EventType type, Func<string, DomainEventPayload> decode,
-        Func<DomainEventPayload, string> encode) =>
-        new CodecPair(type, TypedCodec.Of(type, decode, encode));
+    private static CodecPair Of<T>(EventType type, JsonTypeInfo<T> info, int currentVersion = 1)
+        where T : class, DomainEventPayload =>
+        new(type, new TypedCodec<T>(type, info, currentVersion), currentVersion);
 
     public static CodecPair RunCreated() =>
-        Of(EventType.Of("run.created"),
-            json => (RunCreated) (JsonSerializer.Deserialize<RunCreated>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunCreated) payload))));
+        Of(EventType.Of("run.created"), EventJsonContext.Default.RunCreated);
 
     public static CodecPair RunStarted() =>
-        Of(EventType.Of("run.started"),
-            json => (RunStarted) (JsonSerializer.Deserialize<RunStarted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunStarted) payload))));
+        Of(EventType.Of("run.started"), EventJsonContext.Default.RunStarted);
 
     public static CodecPair RunAwaitingInput() =>
-        Of(EventType.Of("run.awaiting_input"),
-            json => (RunAwaitingInput) (JsonSerializer.Deserialize<RunAwaitingInput>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunAwaitingInput) payload))));
+        Of(EventType.Of("run.awaiting_input"), EventJsonContext.Default.RunAwaitingInput);
 
     public static CodecPair UserInputReceived() =>
-        Of(EventType.Of("user_input.received"),
-            json => (UserInputReceived) (JsonSerializer.Deserialize<UserInputReceived>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((UserInputReceived) payload))));
+        Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived);
 
     public static CodecPair AssistantMessageRecorded() =>
-        Of(EventType.Of("assistant_message.recorded"),
-            json => (AssistantMessageRecorded) (JsonSerializer.Deserialize<AssistantMessageRecorded>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((AssistantMessageRecorded) payload))));
+        Of(EventType.Of("assistant_message.recorded"), EventJsonContext.Default.AssistantMessageRecorded);
 
     public static CodecPair RunValidationStarted() =>
-        Of(EventType.Of("run.validation_started"),
-            json => (RunValidationStarted) (JsonSerializer.Deserialize<RunValidationStarted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunValidationStarted) payload))));
+        Of(EventType.Of("run.validation_started"), EventJsonContext.Default.RunValidationStarted);
 
     public static CodecPair RunValidationRejected() =>
-        Of(EventType.Of("run.validation_rejected"),
-            json => (RunValidationRejected) (JsonSerializer.Deserialize<RunValidationRejected>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunValidationRejected) payload))));
+        Of(EventType.Of("run.validation_rejected"), EventJsonContext.Default.RunValidationRejected);
 
     public static CodecPair RunCompleted() =>
-        Of(EventType.Of("run.completed"),
-            json => (RunCompleted) (JsonSerializer.Deserialize<RunCompleted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunCompleted) payload))));
+        Of(EventType.Of("run.completed"), EventJsonContext.Default.RunCompleted);
 
     public static CodecPair RunFailed() =>
-        Of(EventType.Of("run.failed"),
-            json => (RunFailed) (JsonSerializer.Deserialize<RunFailed>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunFailed) payload))));
+        Of(EventType.Of("run.failed"), EventJsonContext.Default.RunFailed);
 
     public static CodecPair RunCancelled() =>
-        Of(EventType.Of("run.cancelled"),
-            json => (RunCancelled) (JsonSerializer.Deserialize<RunCancelled>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunCancelled) payload))));
+        Of(EventType.Of("run.cancelled"), EventJsonContext.Default.RunCancelled);
 
     public static CodecPair RunModeChanged() =>
-        Of(EventType.Of("run.mode_changed"),
-            json => (RunModeChanged) (JsonSerializer.Deserialize<RunModeChanged>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((RunModeChanged) payload))));
+        Of(EventType.Of("run.mode_changed"), EventJsonContext.Default.RunModeChanged);
 
     public static CodecPair SessionCreated() =>
-        Of(EventType.Of("session.created"),
-            json => (SessionCreated) (JsonSerializer.Deserialize<SessionCreated>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((SessionCreated) payload))));
+        Of(EventType.Of("session.created"), EventJsonContext.Default.SessionCreated);
 
     public static CodecPair WorkspaceRootEstablished() =>
-        Of(EventType.Of("workspace.root_established"),
-            json => (WorkspaceRootEstablished) (JsonSerializer.Deserialize<WorkspaceRootEstablished>(json)
-                ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((WorkspaceRootEstablished) payload))));
+        Of(EventType.Of("workspace.root_established"), EventJsonContext.Default.WorkspaceRootEstablished, currentVersion: 2);
 
     public static CodecPair InteractionRequested() =>
-        Of(EventType.Of("interaction.requested"),
-            json => (InteractionRequested) (JsonSerializer.Deserialize<InteractionRequested>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((InteractionRequested) payload))));
+        Of(EventType.Of("interaction.requested"), EventJsonContext.Default.InteractionRequested, currentVersion: 2);
 
     public static CodecPair InteractionResolved() =>
-        Of(EventType.Of("interaction.resolved"),
-            json => (InteractionResolved) (JsonSerializer.Deserialize<InteractionResolved>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((InteractionResolved) payload))));
+        Of(EventType.Of("interaction.resolved"), EventJsonContext.Default.InteractionResolved, currentVersion: 2);
 
     public static CodecPair InteractionExpired() =>
-        Of(EventType.Of("interaction.expired"),
-            json => (InteractionExpired) (JsonSerializer.Deserialize<InteractionExpired>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((InteractionExpired) payload))));
+        Of(EventType.Of("interaction.expired"), EventJsonContext.Default.InteractionExpired);
 
     public static CodecPair ProgressStalled() =>
-        Of(EventType.Of("progress.stalled"),
-            json => (ProgressStalled) (JsonSerializer.Deserialize<ProgressStalled>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ProgressStalled) payload))));
+        Of(EventType.Of("progress.stalled"), EventJsonContext.Default.ProgressStalled);
 
     public static CodecPair TaskCreated() =>
-        Of(EventType.Of("task.created"),
-            json => (TaskCreated) (JsonSerializer.Deserialize<TaskCreated>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskCreated) payload))));
+        Of(EventType.Of("task.created"), EventJsonContext.Default.TaskCreated);
 
     public static CodecPair TaskReady() =>
-        Of(EventType.Of("task.ready"),
-            json => (TaskReady) (JsonSerializer.Deserialize<TaskReady>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskReady) payload))));
+        Of(EventType.Of("task.ready"), EventJsonContext.Default.TaskReady);
 
     public static CodecPair TaskStarted() =>
-        Of(EventType.Of("task.started"),
-            json => (TaskStarted) (JsonSerializer.Deserialize<TaskStarted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskStarted) payload))));
+        Of(EventType.Of("task.started"), EventJsonContext.Default.TaskStarted);
 
     public static CodecPair TaskBlocked() =>
-        Of(EventType.Of("task.blocked"),
-            json => (TaskBlocked) (JsonSerializer.Deserialize<TaskBlocked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskBlocked) payload))));
+        Of(EventType.Of("task.blocked"), EventJsonContext.Default.TaskBlocked);
 
     public static CodecPair TaskUnblocked() =>
-        Of(EventType.Of("task.unblocked"),
-            json => (TaskUnblocked) (JsonSerializer.Deserialize<TaskUnblocked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskUnblocked) payload))));
+        Of(EventType.Of("task.unblocked"), EventJsonContext.Default.TaskUnblocked);
 
     public static CodecPair TaskCompleted() =>
-        Of(EventType.Of("task.completed"),
-            json => (TaskCompleted) (JsonSerializer.Deserialize<TaskCompleted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskCompleted) payload))));
+        Of(EventType.Of("task.completed"), EventJsonContext.Default.TaskCompleted);
 
     public static CodecPair TaskFailed() =>
-        Of(EventType.Of("task.failed"),
-            json => (TaskFailed) (JsonSerializer.Deserialize<TaskFailed>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskFailed) payload))));
+        Of(EventType.Of("task.failed"), EventJsonContext.Default.TaskFailed);
 
     public static CodecPair TaskSkipped() =>
-        Of(EventType.Of("task.skipped"),
-            json => (TaskSkipped) (JsonSerializer.Deserialize<TaskSkipped>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskSkipped) payload))));
+        Of(EventType.Of("task.skipped"), EventJsonContext.Default.TaskSkipped);
 
     public static CodecPair TaskCancelled() =>
-        Of(EventType.Of("task.cancelled"),
-            json => (TaskCancelled) (JsonSerializer.Deserialize<TaskCancelled>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TaskCancelled) payload))));
+        Of(EventType.Of("task.cancelled"), EventJsonContext.Default.TaskCancelled);
 
     public static CodecPair LaneCreated() =>
-        Of(EventType.Of("lane.created"),
-            json => (LaneCreated) (JsonSerializer.Deserialize<LaneCreated>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneCreated) payload))));
+        Of(EventType.Of("lane.created"), EventJsonContext.Default.LaneCreated);
 
     public static CodecPair LaneProvisioning() =>
-        Of(EventType.Of("lane.provisioning"),
-            json => (LaneProvisioning) (JsonSerializer.Deserialize<LaneProvisioning>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneProvisioning) payload))));
+        Of(EventType.Of("lane.provisioning"), EventJsonContext.Default.LaneProvisioning);
 
     public static CodecPair LaneStarted() =>
-        Of(EventType.Of("lane.started"),
-            json => (LaneStarted) (JsonSerializer.Deserialize<LaneStarted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneStarted) payload))));
+        Of(EventType.Of("lane.started"), EventJsonContext.Default.LaneStarted);
 
     public static CodecPair LaneBlocked() =>
-        Of(EventType.Of("lane.blocked"),
-            json => (LaneBlocked) (JsonSerializer.Deserialize<LaneBlocked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneBlocked) payload))));
+        Of(EventType.Of("lane.blocked"), EventJsonContext.Default.LaneBlocked);
 
     public static CodecPair LaneUnblocked() =>
-        Of(EventType.Of("lane.unblocked"),
-            json => (LaneUnblocked) (JsonSerializer.Deserialize<LaneUnblocked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneUnblocked) payload))));
+        Of(EventType.Of("lane.unblocked"), EventJsonContext.Default.LaneUnblocked);
 
     public static CodecPair LaneCompleted() =>
-        Of(EventType.Of("lane.completed"),
-            json => (LaneCompleted) (JsonSerializer.Deserialize<LaneCompleted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneCompleted) payload))));
+        Of(EventType.Of("lane.completed"), EventJsonContext.Default.LaneCompleted);
 
     public static CodecPair LaneFailed() =>
-        Of(EventType.Of("lane.failed"),
-            json => (LaneFailed) (JsonSerializer.Deserialize<LaneFailed>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneFailed) payload))));
+        Of(EventType.Of("lane.failed"), EventJsonContext.Default.LaneFailed);
 
     public static CodecPair LaneCancelled() =>
-        Of(EventType.Of("lane.cancelled"),
-            json => (LaneCancelled) (JsonSerializer.Deserialize<LaneCancelled>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((LaneCancelled) payload))));
+        Of(EventType.Of("lane.cancelled"), EventJsonContext.Default.LaneCancelled);
 
     public static CodecPair TurnStarted() =>
-        Of(EventType.Of("turn.started"),
-            json => (TurnStarted) (JsonSerializer.Deserialize<TurnStarted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TurnStarted) payload))));
+        Of(EventType.Of("turn.started"), EventJsonContext.Default.TurnStarted);
 
     public static CodecPair ModelCompleted() =>
-        Of(EventType.Of("model.completed"),
-            json => (ModelCompleted) (JsonSerializer.Deserialize<ModelCompleted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ModelCompleted) payload))));
+        Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
 
     public static CodecPair TurnCompleted() =>
-        Of(EventType.Of("turn.completed"),
-            json => (TurnCompleted) (JsonSerializer.Deserialize<TurnCompleted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TurnCompleted) payload))));
+        Of(EventType.Of("turn.completed"), EventJsonContext.Default.TurnCompleted);
 
     public static CodecPair TurnInterrupted() =>
-        Of(EventType.Of("turn.interrupted"),
-            json => (TurnInterrupted) (JsonSerializer.Deserialize<TurnInterrupted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TurnInterrupted) payload))));
+        Of(EventType.Of("turn.interrupted"), EventJsonContext.Default.TurnInterrupted);
 
     public static CodecPair TurnAbandoned() =>
-        Of(EventType.Of("turn.abandoned"),
-            json => (TurnAbandoned) (JsonSerializer.Deserialize<TurnAbandoned>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((TurnAbandoned) payload))));
+        Of(EventType.Of("turn.abandoned"), EventJsonContext.Default.TurnAbandoned);
 
     public static CodecPair ToolCallRequested() =>
-        Of(EventType.Of("toolcall.requested"),
-            json => (ToolCallRequested) (JsonSerializer.Deserialize<ToolCallRequested>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallRequested) payload))));
+        Of(EventType.Of("toolcall.requested"), EventJsonContext.Default.ToolCallRequested);
 
     public static CodecPair ToolCallPrepared() =>
-        Of(EventType.Of("toolcall.prepared"),
-            json => (ToolCallPrepared) (JsonSerializer.Deserialize<ToolCallPrepared>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallPrepared) payload))));
+        Of(EventType.Of("toolcall.prepared"), EventJsonContext.Default.ToolCallPrepared);
 
     public static CodecPair ToolCallRejected() =>
-        Of(EventType.Of("toolcall.rejected"),
-            json => (ToolCallRejected) (JsonSerializer.Deserialize<ToolCallRejected>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallRejected) payload))));
+        Of(EventType.Of("toolcall.rejected"), EventJsonContext.Default.ToolCallRejected);
 
     public static CodecPair PermissionEvaluated() =>
-        Of(EventType.Of("toolcall.permission_evaluated"),
-            json => (PermissionEvaluated) (JsonSerializer.Deserialize<PermissionEvaluated>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PermissionEvaluated) payload))));
+        Of(EventType.Of("toolcall.permission_evaluated"), EventJsonContext.Default.PermissionEvaluated);
 
     public static CodecPair PermissionRequested() =>
-        Of(EventType.Of("toolcall.permission_requested"),
-            json => (PermissionRequested) (JsonSerializer.Deserialize<PermissionRequested>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PermissionRequested) payload))));
+        Of(EventType.Of("toolcall.permission_requested"), EventJsonContext.Default.PermissionRequested);
 
     public static CodecPair PermissionGranted() =>
-        Of(EventType.Of("toolcall.permission_granted"),
-            json => (PermissionGranted) (JsonSerializer.Deserialize<PermissionGranted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PermissionGranted) payload))));
+        Of(EventType.Of("toolcall.permission_granted"), EventJsonContext.Default.PermissionGranted);
 
     public static CodecPair PermissionDenied() =>
-        Of(EventType.Of("toolcall.permission_denied"),
-            json => (PermissionDenied) (JsonSerializer.Deserialize<PermissionDenied>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PermissionDenied) payload))));
+        Of(EventType.Of("toolcall.permission_denied"), EventJsonContext.Default.PermissionDenied);
 
     public static CodecPair ToolCallAuthorized() =>
-        Of(EventType.Of("toolcall.authorized"),
-            json => (ToolCallAuthorized) (JsonSerializer.Deserialize<ToolCallAuthorized>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallAuthorized) payload))));
+        Of(EventType.Of("toolcall.authorized"), EventJsonContext.Default.ToolCallAuthorized);
 
     public static CodecPair ToolCallStarted() =>
-        Of(EventType.Of("toolcall.started"),
-            json => (ToolCallStarted) (JsonSerializer.Deserialize<ToolCallStarted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallStarted) payload))));
+        Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 2);
 
     public static CodecPair ToolCallSucceeded() =>
-        Of(EventType.Of("toolcall.succeeded"),
-            json => (ToolCallSucceeded) (JsonSerializer.Deserialize<ToolCallSucceeded>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallSucceeded) payload))));
+        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded);
 
     public static CodecPair ToolCallFailed() =>
-        Of(EventType.Of("toolcall.failed"),
-            json => (ToolCallFailed) (JsonSerializer.Deserialize<ToolCallFailed>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallFailed) payload))));
+        Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed);
 
     public static CodecPair ToolCallEffectUnknown() =>
-        Of(EventType.Of("toolcall.effect_unknown"),
-            json => (ToolCallEffectUnknown) (JsonSerializer.Deserialize<ToolCallEffectUnknown>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallEffectUnknown) payload))));
+        Of(EventType.Of("toolcall.effect_unknown"), EventJsonContext.Default.ToolCallEffectUnknown);
 
     public static CodecPair ToolCallReconciled() =>
-        Of(EventType.Of("toolcall.reconciled"),
-            json => (ToolCallReconciled) (JsonSerializer.Deserialize<ToolCallReconciled>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallReconciled) payload))));
+        Of(EventType.Of("toolcall.reconciled"), EventJsonContext.Default.ToolCallReconciled);
 
     public static CodecPair ToolCallCancelled() =>
-        Of(EventType.Of("toolcall.cancelled"),
-            json => (ToolCallCancelled) (JsonSerializer.Deserialize<ToolCallCancelled>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((ToolCallCancelled) payload))));
+        Of(EventType.Of("toolcall.cancelled"), EventJsonContext.Default.ToolCallCancelled);
 
     public static CodecPair PlanCreated() =>
-        Of(EventType.Of("plan.created"),
-            json => (PlanCreated) (JsonSerializer.Deserialize<PlanCreated>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanCreated) payload))));
+        Of(EventType.Of("plan.created"), EventJsonContext.Default.PlanCreated);
 
     public static CodecPair PlanRevised() =>
-        Of(EventType.Of("plan.revised"),
-            json => (PlanRevised) (JsonSerializer.Deserialize<PlanRevised>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanRevised) payload))));
+        Of(EventType.Of("plan.revised"), EventJsonContext.Default.PlanRevised);
 
     public static CodecPair PlanItemAdded() =>
-        Of(EventType.Of("plan_item.added"),
-            json => (PlanItemAdded) (JsonSerializer.Deserialize<PlanItemAdded>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemAdded) payload))));
+        Of(EventType.Of("plan_item.added"), EventJsonContext.Default.PlanItemAdded);
 
     public static CodecPair PlanItemUpdated() =>
-        Of(EventType.Of("plan_item.updated"),
-            json => (PlanItemUpdated) (JsonSerializer.Deserialize<PlanItemUpdated>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemUpdated) payload))));
+        Of(EventType.Of("plan_item.updated"), EventJsonContext.Default.PlanItemUpdated);
 
     public static CodecPair PlanItemStarted() =>
-        Of(EventType.Of("plan_item.started"),
-            json => (PlanItemStarted) (JsonSerializer.Deserialize<PlanItemStarted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemStarted) payload))));
+        Of(EventType.Of("plan_item.started"), EventJsonContext.Default.PlanItemStarted);
 
     public static CodecPair PlanItemReady() =>
-        Of(EventType.Of("plan_item.ready"),
-            json => (PlanItemReady) (JsonSerializer.Deserialize<PlanItemReady>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemReady) payload))));
+        Of(EventType.Of("plan_item.ready"), EventJsonContext.Default.PlanItemReady);
 
     public static CodecPair PlanItemBlocked() =>
-        Of(EventType.Of("plan_item.blocked"),
-            json => (PlanItemBlocked) (JsonSerializer.Deserialize<PlanItemBlocked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemBlocked) payload))));
+        Of(EventType.Of("plan_item.blocked"), EventJsonContext.Default.PlanItemBlocked);
 
     public static CodecPair PlanItemUnblocked() =>
-        Of(EventType.Of("plan_item.unblocked"),
-            json => (PlanItemUnblocked) (JsonSerializer.Deserialize<PlanItemUnblocked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemUnblocked) payload))));
+        Of(EventType.Of("plan_item.unblocked"), EventJsonContext.Default.PlanItemUnblocked);
 
     public static CodecPair PlanItemCompleted() =>
-        Of(EventType.Of("plan_item.completed"),
-            json => (PlanItemCompleted) (JsonSerializer.Deserialize<PlanItemCompleted>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemCompleted) payload))));
+        Of(EventType.Of("plan_item.completed"), EventJsonContext.Default.PlanItemCompleted);
 
     public static CodecPair PlanItemFailed() =>
-        Of(EventType.Of("plan_item.failed"),
-            json => (PlanItemFailed) (JsonSerializer.Deserialize<PlanItemFailed>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemFailed) payload))));
+        Of(EventType.Of("plan_item.failed"), EventJsonContext.Default.PlanItemFailed);
 
     public static CodecPair PlanItemSkipped() =>
-        Of(EventType.Of("plan_item.skipped"),
-            json => (PlanItemSkipped) (JsonSerializer.Deserialize<PlanItemSkipped>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemSkipped) payload))));
+        Of(EventType.Of("plan_item.skipped"), EventJsonContext.Default.PlanItemSkipped);
 
     public static CodecPair PlanItemCancelled() =>
-        Of(EventType.Of("plan_item.cancelled"),
-            json => (PlanItemCancelled) (JsonSerializer.Deserialize<PlanItemCancelled>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemCancelled) payload))));
+        Of(EventType.Of("plan_item.cancelled"), EventJsonContext.Default.PlanItemCancelled);
 
     public static CodecPair PlanItemReopened() =>
-        Of(EventType.Of("plan_item.reopened"),
-            json => (PlanItemReopened) (JsonSerializer.Deserialize<PlanItemReopened>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemReopened) payload))));
+        Of(EventType.Of("plan_item.reopened"), EventJsonContext.Default.PlanItemReopened);
 
     public static CodecPair PlanItemReordered() =>
-        Of(EventType.Of("plan_item.reordered"),
-            json => (PlanItemReordered) (JsonSerializer.Deserialize<PlanItemReordered>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemReordered) payload))));
+        Of(EventType.Of("plan_item.reordered"), EventJsonContext.Default.PlanItemReordered);
 
     public static CodecPair PlanItemLinked() =>
-        Of(EventType.Of("plan_item.linked"),
-            json => (PlanItemLinked) (JsonSerializer.Deserialize<PlanItemLinked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemLinked) payload))));
+        Of(EventType.Of("plan_item.linked"), EventJsonContext.Default.PlanItemLinked);
 
     public static CodecPair PlanItemUnlinked() =>
-        Of(EventType.Of("plan_item.unlinked"),
-            json => (PlanItemUnlinked) (JsonSerializer.Deserialize<PlanItemUnlinked>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanItemUnlinked) payload))));
+        Of(EventType.Of("plan_item.unlinked"), EventJsonContext.Default.PlanItemUnlinked);
 
     public static CodecPair PlanMutationRejected() =>
-        Of(EventType.Of("plan_mutation.rejected"),
-            json => (PlanMutationRejected) (JsonSerializer.Deserialize<PlanMutationRejected>(json) ?? throw new FormatException("null")),
-            payload => new string(EventJson.ToUtf8(JsonSerializer.SerializeToUtf8Bytes((PlanMutationRejected) payload))));
+        Of(EventType.Of("plan_mutation.rejected"), EventJsonContext.Default.PlanMutationRejected);
 }

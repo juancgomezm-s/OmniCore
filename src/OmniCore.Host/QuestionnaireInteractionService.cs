@@ -176,7 +176,7 @@ public sealed class QuestionnaireInteractionService
         var foundRequested = false;
         foreach (var evt in stream.EventsSince(1))
         {
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = _codecs.Decode(evt);
             if (payload is InteractionRequested req
                 && req.InteractionId.ToString().Equals(id, StringComparison.Ordinal))
             {
@@ -223,7 +223,7 @@ public sealed class QuestionnaireInteractionService
         var resolved = new HashSet<string>(StringComparer.Ordinal);
         foreach (var evt in _store.ReadFrom(sessionId, 1))
         {
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = _codecs.Decode(evt);
             if (payload is InteractionRequested req && req.Kind == InteractionKind.Question)
             {
                 pending[req.InteractionId.ToString()] = new PendingInteraction(req.InteractionId,
@@ -253,7 +253,7 @@ public sealed class QuestionnaireInteractionService
         var id = interactionId.ToString();
         foreach (var evt in stream.EventsSince(1))
         {
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = _codecs.Decode(evt);
             if (!(payload is InteractionRequested req) || req.Kind != InteractionKind.Question
                 || !req.InteractionId.ToString().Equals(id, StringComparison.Ordinal)
                 || req.QuestionnaireSchemaRef is null)
