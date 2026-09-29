@@ -14,6 +14,7 @@
     <ProjectReference Include="..\..\src\OmniCore.Models\OmniCore.Models.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Execution\OmniCore.Execution.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Security\OmniCore.Security.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Qualification\OmniCore.Qualification.csproj" />
   </ItemGroup>
 
   <ItemGroup>
