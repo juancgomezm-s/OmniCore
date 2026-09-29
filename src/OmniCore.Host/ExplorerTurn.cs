@@ -87,6 +87,9 @@ public sealed class ExplorerTurn
         _dailyKey = DateTimeOffset.Now.ToString("yyyy-MM-dd");
     }
 
+    /// <summary>Journal del Turn (tests: para abrir en él el Run al que pertenece el Turn).</summary>
+    internal IEventStore JournalStore => _store;
+
     /// <summary>Constructor de conveniencia: en-memoria (tests, sin persistencia durable).</summary>
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,

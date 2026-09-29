@@ -24,14 +24,46 @@ public sealed class GateResult
 /// <summary>
 /// PlanCompletionGate (ADR-0016 §10): rechaza la finalización si un item Required está en
 /// Pending/Ready/InProgress/Blocked. Un Failed requerido → nunca Completed limpio (el Run
-/// decide Failed vs CompletedWithIssues según la FailurePolicy).
+/// decide Failed vs CompletedWithIssues según la FailurePolicy). Solo cuentan las hojas: un item
+/// con hijos es un contenedor cuyo estado se deriva de ellos (ADR-0036 §4).
 /// </summary>
 public sealed class PlanCompletionGate
 {
+    /// <summary>Items requeridos (hojas) que terminaron en Failed.</summary>
+    public IReadOnlyList<string> FailedRequired(PlanProjection plan)
+    {
+        var failed = new List<string>();
+        foreach (var item in Leaves(plan))
+        {
+            if (item.Required && item.State == PlanItemState.Failed)
+            {
+                failed.Add(item.Description);
+            }
+        }
+
+        return failed;
+    }
+
+    /// <summary>Items sin hijos: los únicos que cuentan para el gate y las reglas R1–R7.</summary>
+    public static IReadOnlyList<PlanItem> Leaves(PlanProjection plan)
+    {
+        var items = plan.Items();
+        var parents = new HashSet<PlanItemId>();
+        foreach (var item in items)
+        {
+            if (item.ParentId is not null)
+            {
+                parents.Add(item.ParentId);
+            }
+        }
+
+        return items.Where(item => !parents.Contains(item.Id)).ToArray();
+    }
+
     public GateResult Check(PlanProjection plan)
     {
         var missing = new List<string>();
-        foreach (var item in plan.Items())
+        foreach (var item in Leaves(plan))
         {
             if (!item.Required)
             {
@@ -56,11 +88,22 @@ public sealed class PlanCompletionGate
 /// </summary>
 public sealed class PendingTaskGate
 {
-    public GateResult Check(TaskGraphProjection tasks, PlanProjection plan)
+    public GateResult Check(TaskGraphProjection tasks, PlanProjection plan) => Check(tasks, plan, null);
+
+    /// <summary>
+    /// Igual, sin contar la Task raíz del Run: su Lane es la conversación y se cierra al terminar
+    /// el Run, después de pasar los gates (ADR-0035 §2).
+    /// </summary>
+    public GateResult Check(TaskGraphProjection tasks, PlanProjection plan, TaskId? rootTask)
     {
         var missing = new List<string>();
         foreach (var task in tasks.Tasks())
         {
+            if (rootTask is not null && task.Id.Equals(rootTask))
+            {
+                continue;
+            }
+
             if (task.State == TaskState.Running)
             {
                 missing.Add("Task " + task.Id + " en ejecución");

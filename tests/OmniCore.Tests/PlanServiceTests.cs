@@ -100,7 +100,7 @@ public sealed class PlanServiceTests
         var registry = Registry();
         var sessionId = OmniCore.Domain.SessionId.New();
         var stream = new EventStream(store, registry, sessionId);
-        var runId = OmniCore.Domain.RunId.New();
+        var runId = TestRun.OpenRun(store, sessionId);
         stream.Append(new OmniCore.Domain.TaskCreated(taskId, runId, "T",
             new OmniCore.Domain.TaskDependency[0], new OmniCore.Domain.TaskBudget(null, null, null, null)));
         stream.Append(new OmniCore.Domain.TaskReady(taskId));

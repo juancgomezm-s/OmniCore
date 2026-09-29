@@ -32,10 +32,21 @@ public sealed class StateMachines
         if (evt is RunCreated && from == RunState.Created) return RunState.Created;
         if (evt is RunStarted && from == RunState.Created) return RunState.Running;
         if (evt is RunAwaitingInput && from == RunState.Running) return RunState.AwaitingInput;
-        if (evt is UserInputReceived && from == RunState.AwaitingInput) return RunState.Running;
+        // ADR-0035 §1: con el Run en curso, el input se añade como mensaje (sin cambio de estado);
+        // si la Lane raíz esperaba al usuario, lo reactiva.
+        if (evt is UserInputReceived && (from == RunState.AwaitingInput || from == RunState.Running))
+        {
+            return RunState.Running;
+        }
+
         if (evt is RunValidationStarted && from == RunState.Running) return RunState.Validating;
         if (evt is RunValidationRejected && from == RunState.Validating) return RunState.Running;
-        if (evt is RunCompleted && from == RunState.Validating) return RunState.Completed;
+        if (evt is RunCompleted completed && from == RunState.Validating)
+        {
+            return completed.Outcome == RunOutcome.CompletedWithIssues
+                ? RunState.CompletedWithIssues
+                : RunState.Completed;
+        }
         if (evt is RunFailed
             && (from == RunState.Running || from == RunState.Validating || from == RunState.AwaitingInput))
         {
@@ -215,6 +226,7 @@ public sealed class InvalidStateTransitionException : InvalidOperationException
     public string To { get; }
 
     public InvalidStateTransitionException(string entity, object from, string to)
+        : base("transición inválida de " + entity + ": desde " + (from?.ToString() ?? "null") + " con " + to)
     {
         Entity = entity;
         From = from is null ? "null" : from.ToString() ?? "null";

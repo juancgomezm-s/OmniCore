@@ -46,7 +46,11 @@ public sealed class RunProjection
         HasPlan = hasPlan;
     }
 
-    /// <summary>Reconstruye la proyección aplicando cada evento tipado en orden.</summary>
+    /// <summary>
+    /// Reconstruye la proyección aplicando en orden los eventos de ESTE Run (una sesión puede tener
+    /// varios). El estado se calcula con <see cref="StateMachines.ApplyRun"/>: un journal con una
+    /// transición inválida lanza <see cref="InvalidStateTransitionException"/> (ADR-0036).
+    /// </summary>
     public static RunProjection Replay(SessionId sessionId, RunId id, IEventCodecRegistry registry,
         IReadOnlyList<DomainEvent> evts)
     {
@@ -59,57 +63,44 @@ public sealed class RunProjection
         TaskId? rootTask = null;
         var hasPlan = false;
 
+        var created = false;
         foreach (var evt in evts)
         {
             var payload = registry.Decode(evt);
-            if (payload is RunCreated created)
+            if (payload is RunCreated runCreated)
             {
-                objective = created.Objective;
-                mode = created.Mode;
-                strategy = created.Strategy;
-                failurePolicy = created.FailurePolicy;
-                rootTask = created.RootTask;
-                createdAt = created.CreatedAt;
+                if (!runCreated.RunId.Equals(id))
+                {
+                    continue;
+                }
+
+                if (created)
+                {
+                    throw new InvalidStateTransitionException("run", state, payload.Type().ToString());
+                }
+
+                created = true;
+                objective = runCreated.Objective;
+                mode = runCreated.Mode;
+                strategy = runCreated.Strategy;
+                failurePolicy = runCreated.FailurePolicy;
+                rootTask = runCreated.RootTask;
+                createdAt = runCreated.CreatedAt;
             }
-            else if (payload is RunStarted)
+            else if (RunOf(payload) is { } runId && runId.Equals(id))
             {
-                state = RunState.Running;
+                if (!created)
+                {
+                    throw new InvalidStateTransitionException("run", "inexistente", payload.Type().ToString());
+                }
+
+                state = StateMachines.ApplyRun(state, payload);
             }
-            else if (payload is RunAwaitingInput)
-            {
-                state = RunState.AwaitingInput;
-            }
-            else if (payload is UserInputReceived)
-            {
-                state = RunState.Running;
-            }
-            else if (payload is RunValidationStarted)
-            {
-                state = RunState.Validating;
-            }
-            else if (payload is RunValidationRejected)
-            {
-                state = RunState.Running;
-            }
-            else if (payload is RunCompleted completed)
-            {
-                state = completed.Outcome == RunOutcome.CompletedWithIssues
-                    ? RunState.CompletedWithIssues
-                    : RunState.Completed;
-            }
-            else if (payload is RunFailed)
-            {
-                state = RunState.Failed;
-            }
-            else if (payload is RunCancelled)
-            {
-                state = RunState.Cancelled;
-            }
-            else if (payload is RunModeChanged changed)
+            else if (payload is RunModeChanged changed && changed.RunId.Equals(id))
             {
                 mode = changed.To;
             }
-            else if (payload is PlanCreated)
+            else if (payload is PlanCreated plan && plan.RunId.Equals(id))
             {
                 hasPlan = true;
             }
@@ -118,6 +109,20 @@ public sealed class RunProjection
         return new RunProjection(sessionId, id, createdAt, objective, mode, strategy, failurePolicy, state,
             rootTask, hasPlan);
     }
+
+    /// <summary>RunId de los eventos que cambian el estado del Run (ADR-0036 §1).</summary>
+    private static RunId? RunOf(DomainEventPayload payload) => payload switch
+    {
+        RunStarted e => e.RunId,
+        RunAwaitingInput e => e.RunId,
+        UserInputReceived e => e.RunId,
+        RunValidationStarted e => e.RunId,
+        RunValidationRejected e => e.RunId,
+        RunCompleted e => e.RunId,
+        RunFailed e => e.RunId,
+        RunCancelled e => e.RunId,
+        _ => null,
+    };
 
     public bool IsTerminal() => StateMachines.IsRunTerminal(State);
 
@@ -164,48 +169,27 @@ public sealed class TaskGraphProjection
             _tasks[created.TaskId] = new Task(created.TaskId, created.Objective, TaskState.Pending,
                 created.Dependencies, created.Budget);
         }
-        else if (payload is TaskReady ready)
+        else if (TaskOf(payload) is { } id)
         {
-            Replace(ready.TaskId, TaskState.Ready);
-        }
-        else if (payload is TaskStarted started)
-        {
-            Replace(started.TaskId, TaskState.Running);
-        }
-        else if (payload is TaskBlocked blocked)
-        {
-            Replace(blocked.TaskId, TaskState.Blocked);
-        }
-        else if (payload is TaskUnblocked unblocked)
-        {
-            Replace(unblocked.TaskId, unblocked.Requeue ? TaskState.Ready : TaskState.Running);
-        }
-        else if (payload is TaskCompleted completed)
-        {
-            Replace(completed.TaskId, TaskState.Completed);
-        }
-        else if (payload is TaskFailed failed)
-        {
-            Replace(failed.TaskId, TaskState.Failed);
-        }
-        else if (payload is TaskSkipped skipped)
-        {
-            Replace(skipped.TaskId, TaskState.Skipped);
-        }
-        else if (payload is TaskCancelled cancelled)
-        {
-            Replace(cancelled.TaskId, TaskState.Cancelled);
+            var task = Get(id)
+                ?? throw new InvalidStateTransitionException("task", "inexistente", payload.Type().ToString());
+            _tasks[id] = new Task(task.Id, task.Objective, StateMachines.ApplyTask(task.State, payload),
+                task.Dependencies, task.Budget);
         }
     }
 
-    private void Replace(TaskId id, TaskState newState)
+    private static TaskId? TaskOf(DomainEventPayload payload) => payload switch
     {
-        var task = Get(id);
-        if (task is not null)
-        {
-            _tasks[id] = new Task(task.Id, task.Objective, newState, task.Dependencies, task.Budget);
-        }
-    }
+        TaskReady e => e.TaskId,
+        TaskStarted e => e.TaskId,
+        TaskBlocked e => e.TaskId,
+        TaskUnblocked e => e.TaskId,
+        TaskCompleted e => e.TaskId,
+        TaskFailed e => e.TaskId,
+        TaskSkipped e => e.TaskId,
+        TaskCancelled e => e.TaskId,
+        _ => null,
+    };
 }
 
 /// <summary>Proyección de las Lanes (spec §10, ADR-0036 §3).</summary>
@@ -259,42 +243,24 @@ public sealed class LaneProjection
             _lanes[created.LaneId] = new Lane(created.LaneId, created.TaskId, LaneState.Queued,
                 created.AgentProfile, null);
         }
-        else if (payload is LaneProvisioning p)
+        else if (LaneOf(payload) is { } id)
         {
-            Replace(p.LaneId, LaneState.Provisioning);
-        }
-        else if (payload is LaneStarted s)
-        {
-            Replace(s.LaneId, LaneState.Running);
-        }
-        else if (payload is LaneBlocked b)
-        {
-            Replace(b.LaneId, LaneState.Blocked);
-        }
-        else if (payload is LaneUnblocked u)
-        {
-            Replace(u.LaneId, LaneState.Running);
-        }
-        else if (payload is LaneCompleted c)
-        {
-            Replace(c.LaneId, LaneState.Completed);
-        }
-        else if (payload is LaneFailed f)
-        {
-            Replace(f.LaneId, LaneState.Failed);
-        }
-        else if (payload is LaneCancelled cc)
-        {
-            Replace(cc.LaneId, LaneState.Cancelled);
+            var lane = Get(id)
+                ?? throw new InvalidStateTransitionException("lane", "inexistente", payload.Type().ToString());
+            _lanes[id] = new Lane(lane.Id, lane.TaskId, StateMachines.ApplyLane(lane.State, payload),
+                lane.AgentProfile, lane.LastHeartbeatAt);
         }
     }
 
-    private void Replace(LaneId id, LaneState newState)
+    private static LaneId? LaneOf(DomainEventPayload payload) => payload switch
     {
-        var lane = Get(id);
-        if (lane is not null)
-        {
-            _lanes[id] = new Lane(lane.Id, lane.TaskId, newState, lane.AgentProfile, lane.LastHeartbeatAt);
-        }
-    }
+        LaneProvisioning e => e.LaneId,
+        LaneStarted e => e.LaneId,
+        LaneBlocked e => e.LaneId,
+        LaneUnblocked e => e.LaneId,
+        LaneCompleted e => e.LaneId,
+        LaneFailed e => e.LaneId,
+        LaneCancelled e => e.LaneId,
+        _ => null,
+    };
 }

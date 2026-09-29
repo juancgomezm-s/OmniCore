@@ -19,6 +19,10 @@ using System.Text.Json;
 /// <item>Ids de entidad (Run, Task, Lane, Turn, PlanItem, ToolCall) leídos del payload, para
 /// indexar sin parsearlo.</item>
 /// </list>
+/// Antes de persistir, cada evento se valida contra las máquinas de estado canónicas (ADR-0036,
+/// <see cref="CanonicalStateTracker"/>): una transición inválida lanza
+/// <see cref="InvalidStateTransitionException"/> y no se escribe nada. El stream se pone al día
+/// con lo que otros escritores hayan añadido a la sesión antes de validar.
 /// </summary>
 public sealed class EventStream
 {
@@ -28,9 +32,14 @@ public sealed class EventStream
 
     private readonly SessionId _sessionId;
 
-    private RunId? _runId;
+    private readonly CanonicalStateTracker _tracker = new();
 
-    private bool _runResolved;
+    /// <summary>Eventos propios ya aplicados al estado: al releerlos del store se saltan.</summary>
+    private readonly HashSet<EventId> _appliedLocally = new();
+
+    private long _trackedThrough;
+
+    private RunId? _runId;
 
     private EventId? _lastEventId;
 
@@ -51,8 +60,12 @@ public sealed class EventStream
     /// </summary>
     public void Append(DomainEventPayload payload, DurabilityClass durability)
     {
+        CatchUp();
+        _tracker.Clone().Apply(payload);
         var envelope = BuildEnvelope(payload);
         _store.Append(_sessionId, envelope, durability, CancellationToken.None);
+        _tracker.Apply(payload);
+        _appliedLocally.Add(envelope.EventId);
     }
 
     /// <summary>
@@ -67,6 +80,13 @@ public sealed class EventStream
             return;
         }
 
+        CatchUp();
+        var validation = _tracker.Clone();
+        foreach (var payload in payloads)
+        {
+            validation.Apply(payload); // todo el lote es válido o no se escribe nada
+        }
+
         var envelopes = new DomainEvent[payloads.Count];
         for (var i = 0; i < payloads.Count; i++)
         {
@@ -74,6 +94,11 @@ public sealed class EventStream
         }
 
         _store.AppendBatch(_sessionId, envelopes, durability, CancellationToken.None);
+        for (var i = 0; i < payloads.Count; i++)
+        {
+            _tracker.Apply(payloads[i]);
+            _appliedLocally.Add(envelopes[i].EventId);
+        }
     }
 
     /// <summary>Replay de todos los eventos de la sesión desde la secuencia dada (1-based inclusive).</summary>
@@ -97,10 +122,9 @@ public sealed class EventStream
         if (ids.RunId is not null)
         {
             _runId = ids.RunId;
-            _runResolved = true;
         }
 
-        var run = ids.RunId ?? CurrentRun();
+        var run = ids.RunId ?? _runId;
         var causation = CausationScope.Current
             ?? (_lastEventId is null ? null : new EventCausation(_lastEventId));
         var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, ids.TaskId,
@@ -110,26 +134,32 @@ public sealed class EventStream
     }
 
     /// <summary>
-    /// Run en curso de la sesión. Un stream nuevo sobre una sesión existente lo recupera del
-    /// último evento correlacionado del journal (una sola lectura por stream).
+    /// Aplica al estado canónico los eventos que la sesión recibió desde la última vez (propios o
+    /// de otros escritores) y actualiza el Run en curso. La primera vez reconstruye la sesión entera.
     /// </summary>
-    private RunId? CurrentRun()
+    private void CatchUp()
     {
-        if (!_runResolved)
+        var fresh = _store.ReadFrom(_sessionId, _trackedThrough + 1);
+        foreach (var evt in fresh)
         {
-            _runResolved = true;
-            var events = _store.ReadFrom(_sessionId, 1);
-            for (var i = events.Count - 1; i >= 0; i--)
+            var payload = _codecs.Decode(evt);
+            if (!_appliedLocally.Remove(evt.EventId))
             {
-                if (events[i].CorrelationId is not null)
-                {
-                    _runId = events[i].CorrelationId;
-                    break;
-                }
+                _tracker.Apply(payload);
             }
-        }
 
-        return _runId;
+            if (payload is RunCreated created)
+            {
+                _runId = created.RunId;
+            }
+            else if (evt.CorrelationId is not null)
+            {
+                _runId = evt.CorrelationId;
+            }
+
+            // Un store que no asigne secuencia (dobles de test) avanza por posición.
+            _trackedThrough = evt.Sequence > _trackedThrough ? evt.Sequence : _trackedThrough + 1;
+        }
     }
 
     private static string RedactPayload(string json)

@@ -177,15 +177,15 @@ public sealed class SqliteEventStoreDurabilityTests
         var stream = new EventStream(spy, codecs, session);
         var run = RunId.New();
 
-        // Llamada existente (sin clase): sigue siendo Standard.
-        stream.Append(new RunStarted(run));
         // Nueva capacidad: Barrier explícito.
         stream.Append(new RunCreated(run, session, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
             FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), TaskId.New(),
             DateTimeOffset.UtcNow), DurabilityClass.Barrier);
+        // Llamada existente (sin clase): sigue siendo Standard.
+        stream.Append(new RunStarted(run));
 
         Assert.Equal(
-            new[] { DurabilityClass.Standard, DurabilityClass.Barrier },
+            new[] { DurabilityClass.Barrier, DurabilityClass.Standard },
             spy.Captured.ToArray());
     }
 

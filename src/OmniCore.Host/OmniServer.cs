@@ -399,9 +399,9 @@ public sealed class OmniServer : IOmniClient
             workspacePath, ProfileId.New(), now));
         // Origen explícito y seguro de la raíz del run real (ADR-0004 §5): se fija aquí, en la
         // creación de la sesión, y es lo único que la recuperación acepta al arrancar. Nunca se
-        // usa el cwd de un proceso posterior ni WorkspaceDisplayPath como autoridad. Se escribe
-        // además la identidad durable (marcador dentro del workspace) para que la recuperación
-        // verifique que la ruta no fue sustituida por symlink/junction.
+        // usa el cwd de un proceso posterior ni WorkspaceDisplayPath como autoridad. Se registra
+        // además la identidad durable (ruta física resuelta) para que la recuperación verifique
+        // que la ruta no fue sustituida por symlink/junction.
         var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
         stream.Append(new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity));
         stream.Append(new RunCreated(runId, sessionId, objective, RunMode.Act,
@@ -411,6 +411,7 @@ public sealed class OmniServer : IOmniClient
         stream.Append(new TaskReady(taskId));
         stream.Append(new LaneCreated(laneId, taskId, ProfileId.New()));
         stream.Append(new LaneStarted(laneId));
+        stream.Append(new TaskStarted(taskId, laneId)); // Ready → Running al arrancar su Lane (ADR-0036 §2)
         stream.Append(new PlanCreated(planId, runId, PlanItemId.New(), objective));
 
         _lastSessionId = sessionId;

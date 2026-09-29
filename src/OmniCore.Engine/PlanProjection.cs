@@ -59,7 +59,80 @@ public sealed class PlanProjection
 
     public int Revision() => Latest() is null ? 0 : Latest()!.Revision;
 
-    public IReadOnlyList<PlanItem> Items() => Latest() is null ? new PlanItem[0] : Latest()!.Items;
+    public IReadOnlyList<PlanItem> Items() => Latest() is null ? new PlanItem[0] : DeriveContainers(Latest()!.Items);
+
+    /// <summary>
+    /// Un item con hijos es un contenedor derivado (ADR-0036 §4): su estado se calcula de sus hijos
+    /// y nunca de eventos propios. <c>Failed</c> si falló un hijo requerido; <c>Completed</c> si
+    /// todos los requeridos terminaron de forma aceptable (Completed, Skipped o Cancelled);
+    /// <c>InProgress</c> si alguno está en curso o ya terminó; si no, conserva su estado.
+    /// </summary>
+    private static IReadOnlyList<PlanItem> DeriveContainers(IReadOnlyList<PlanItem> items)
+    {
+        var children = new Dictionary<PlanItemId, List<PlanItem>>();
+        foreach (var item in items)
+        {
+            if (item.ParentId is not null)
+            {
+                if (!children.TryGetValue(item.ParentId, out var list))
+                {
+                    list = new List<PlanItem>();
+                    children[item.ParentId] = list;
+                }
+
+                list.Add(item);
+            }
+        }
+
+        if (children.Count == 0)
+        {
+            return items;
+        }
+
+        var memo = new Dictionary<PlanItemId, PlanItemState>();
+        PlanItemState StateOf(PlanItem item)
+        {
+            if (memo.TryGetValue(item.Id, out var cached))
+            {
+                return cached;
+            }
+
+            memo[item.Id] = item.State; // corta ciclos accidentales
+            if (!children.TryGetValue(item.Id, out var kids))
+            {
+                return item.State;
+            }
+
+            var states = kids.Select(kid => (kid.Required, State: StateOf(kid))).ToArray();
+            var required = states.Where(s => s.Required).Select(s => s.State).ToArray();
+            PlanItemState derived;
+            if (required.Any(s => s == PlanItemState.Failed))
+            {
+                derived = PlanItemState.Failed;
+            }
+            else if (required.Length > 0 && required.All(s => s is PlanItemState.Completed or PlanItemState.Skipped
+                         or PlanItemState.Cancelled))
+            {
+                derived = PlanItemState.Completed;
+            }
+            else if (states.Any(s => s.State is PlanItemState.InProgress or PlanItemState.Blocked
+                         or PlanItemState.Completed))
+            {
+                derived = PlanItemState.InProgress;
+            }
+            else
+            {
+                derived = item.State;
+            }
+
+            memo[item.Id] = derived;
+            return derived;
+        }
+
+        return items.Select(item => children.ContainsKey(item.Id)
+            ? item with { State = StateOf(item) }
+            : item).ToArray();
+    }
 
     public PlanItem? Item(PlanItemId id)
     {
@@ -131,41 +204,9 @@ public sealed class PlanProjection
                 _revisions[plan.Id] = new Plan(plan.Id, plan.RunId, revised.Revision, plan.Items);
             }
         }
-        else if (payload is PlanItemStarted s)
+        else if (ItemOf(payload) is { } itemId)
         {
-            ReplaceState(s.PlanItemId, PlanItemState.InProgress);
-        }
-        else if (payload is PlanItemReady r)
-        {
-            ReplaceState(r.PlanItemId, PlanItemState.Ready);
-        }
-        else if (payload is PlanItemBlocked b)
-        {
-            ReplaceState(b.PlanItemId, PlanItemState.Blocked);
-        }
-        else if (payload is PlanItemUnblocked u)
-        {
-            ReplaceState(u.PlanItemId, PlanItemState.InProgress);
-        }
-        else if (payload is PlanItemReopened ro)
-        {
-            ReplaceState(ro.PlanItemId, PlanItemState.Ready);
-        }
-        else if (payload is PlanItemCompleted c)
-        {
-            ReplaceState(c.PlanItemId, PlanItemState.Completed);
-        }
-        else if (payload is PlanItemFailed f)
-        {
-            ReplaceState(f.PlanItemId, PlanItemState.Failed);
-        }
-        else if (payload is PlanItemSkipped k)
-        {
-            ReplaceState(k.PlanItemId, PlanItemState.Skipped);
-        }
-        else if (payload is PlanItemCancelled x)
-        {
-            ReplaceState(x.PlanItemId, PlanItemState.Cancelled);
+            ReplaceState(itemId, payload);
         }
         else if (payload is PlanItemReordered o)
         {
@@ -238,14 +279,30 @@ public sealed class PlanProjection
         _revisions[plan.Id] = new Plan(plan.Id, plan.RunId, plan.Revision, reordered);
     }
 
-    private void ReplaceState(PlanItemId itemId, PlanItemState newState)
+    /// <summary>PlanItemId de los eventos que cambian el estado de un item (ADR-0036 §4).</summary>
+    private static PlanItemId? ItemOf(DomainEventPayload payload) => payload switch
     {
-        var item = Item(itemId);
-        if (item is null)
-        {
-            return;
-        }
+        PlanItemStarted e => e.PlanItemId,
+        PlanItemReady e => e.PlanItemId,
+        PlanItemBlocked e => e.PlanItemId,
+        PlanItemUnblocked e => e.PlanItemId,
+        PlanItemReopened e => e.PlanItemId,
+        PlanItemCompleted e => e.PlanItemId,
+        PlanItemFailed e => e.PlanItemId,
+        PlanItemSkipped e => e.PlanItemId,
+        PlanItemCancelled e => e.PlanItemId,
+        _ => null,
+    };
 
+    /// <summary>
+    /// Aplica la transición con <see cref="StateMachines.ApplyPlanItem"/>: un evento sobre un item
+    /// inexistente o una transición inválida lanza <see cref="InvalidStateTransitionException"/>.
+    /// </summary>
+    private void ReplaceState(PlanItemId itemId, DomainEventPayload payload)
+    {
+        var item = Item(itemId)
+            ?? throw new InvalidStateTransitionException("plan_item", "inexistente", payload.Type().ToString());
+        var newState = StateMachines.ApplyPlanItem(item.State, payload);
         ReplaceItem(new PlanItem(item.Id, item.Description, newState, item.Order, item.ParentId, item.DependsOn,
             item.LinkedTasks, item.Required, item.Outcome, item.Metadata));
     }

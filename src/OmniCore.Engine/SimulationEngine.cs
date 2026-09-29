@@ -133,6 +133,10 @@ public sealed class SimulationEngine
             FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), rootTaskId, DateTimeOffset.Now));
         stream.Append(new RunStarted(runId));
 
+        // Task raíz del Run (ADR-0035 §2): la declara RunCreated y existe como cualquier otra Task.
+        stream.Append(new TaskCreated(rootTaskId, runId, scenario.Input, Array.Empty<TaskDependency>(),
+            new TaskBudget(null, null, null, null)));
+
         var taskIds = new Dictionary<string, TaskId>();
         foreach (var task in scenario.Tasks)
         {
@@ -148,10 +152,10 @@ public sealed class SimulationEngine
                 new TaskBudget(null, null, null, null)));
         }
 
+        // PlanCreated ya crea el item raíz: añadirlo otra vez sería un segundo evento para la misma
+        // creación (INV-027) y lo duplicaría en la proyección.
         var rootItemId = PlanItemId.New();
         stream.Append(new PlanCreated(planId, runId, rootItemId, scenario.Input));
-        stream.Append(new PlanItemAdded(rootItemId, planId, scenario.Input, 1, null, new PlanItemId[0], true,
-            new Dictionary<string, string>()));
 
         var itemIds = new Dictionary<string, PlanItemId>();
         itemIds["P0"] = rootItemId;
@@ -189,16 +193,21 @@ public sealed class SimulationEngine
         }
 
         // Task raíz + lane raíz: los Turns del agente principal viven aquí (ADR-0035 §2).
+        stream.Append(new TaskReady(rootTaskId));
         stream.Append(new LaneCreated(rootLaneId, rootTaskId, ProfileId.New()));
         stream.Append(new LaneStarted(rootLaneId));
+        stream.Append(new TaskStarted(rootTaskId, rootLaneId));
 
         // Arrancar cada Task del escenario con su lane (Running). La simulación asume que
         // ejecutar la tool = completar la task, y el reconciler corrige el plan (R1/R2).
         foreach (var task in scenario.Tasks)
         {
             var tid = Entities.Task(taskIds, task.Id);
+            var laneId = LaneId.New();
             stream.Append(new TaskReady(tid));
-            stream.Append(new TaskStarted(tid, LaneId.New()));
+            stream.Append(new LaneCreated(laneId, tid, ProfileId.New()));
+            stream.Append(new LaneStarted(laneId));
+            stream.Append(new TaskStarted(tid, laneId));
         }
 
         ExecuteTurns(scenario, stream, rootLaneId, cancellationToken);
@@ -427,7 +436,8 @@ public sealed class SimulationEngine
                 // outcome (ADR-0004 §2) y la reconcilie sin duplicar.
                 var crashIntent = new ToolIntent(callId, validated.ToolId, "{}", EffectClass.Reconcilable,
                     ResourceClaims.Empty(), ToolRisk.Low, null);
-                stream.Append(new ToolCallStarted(callId, crashIntent.Effect, null));
+                AppendAuthorizedChain(stream, callId, toolName, callArgs);
+                stream.Append(new ToolCallStarted(callId, crashIntent.Effect, null), DurabilityClass.Barrier);
                 _crashed = true;
                 var crashTurn = TurnId.New();
                 stream.Append(new TurnStarted(crashTurn, laneId));
@@ -455,13 +465,27 @@ public sealed class SimulationEngine
             return;
         }
 
-        // Fallback sin pipeline (compat con tests que no inyectan executor).
-        stream.Append(new ToolCallRequested(callId, "pc-" + toolName, toolName, "{}"));
-        stream.Append(new ToolCallStarted(callId, ParseEffect(action.Effect), null));
+        // Fallback sin pipeline (tests que no inyectan executor): la misma cadena canónica que
+        // produce el pipeline real, para que el journal sea válido (ADR-0004 §2, ADR-0036 §5).
+        var effect = ParseEffect(action.Effect);
+        AppendAuthorizedChain(stream, callId, toolName, "{}");
+        stream.Append(new ToolCallStarted(callId, effect, null),
+            effect == EffectClass.None ? DurabilityClass.Standard : DurabilityClass.Barrier);
         stream.Append(new ToolCallSucceeded(callId, "{\"summary\":\"ok\"}"));
         var fallbackTurn = TurnId.New();
         stream.Append(new TurnStarted(fallbackTurn, laneId));
         stream.Append(new TurnCompleted(fallbackTurn));
+    }
+
+    /// <summary>Requested → Prepared → PermissionEvaluated(Allow) → Authorized, previo al Started.</summary>
+    private static void AppendAuthorizedChain(EventStream stream, ToolCallId callId, string toolName, string args)
+    {
+        stream.AppendBatch(new DomainEventPayload[] {
+            new ToolCallRequested(callId, "pc-" + toolName, toolName, args),
+            new ToolCallPrepared(callId, args),
+            new PermissionEvaluated(callId, PermissionDecision.Allow, "[]", null),
+            new ToolCallAuthorized(callId),
+        }, DurabilityClass.Standard);
     }
 
     private static EffectClass ParseEffect(string? effect) =>
