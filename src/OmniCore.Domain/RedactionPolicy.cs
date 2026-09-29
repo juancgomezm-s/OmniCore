@@ -83,7 +83,9 @@ public sealed class RedactionPolicy
 
         for (var i = 0; i < _secretPathPatterns.Length; i++)
         {
-            var pattern = _secretPathPatterns[i];
+            // Comparación sin distinguir mayúsculas: la ruta ya está en minúsculas, el patrón
+            // también debe estarlo (p. ej. "appsettings.Production.json").
+            var pattern = _secretPathPatterns[i].ToLowerInvariant();
             if (pattern.StartsWith("*."))
             {
                 var ext = pattern.Substring(1);
@@ -94,7 +96,10 @@ public sealed class RedactionPolicy
             }
             else if (pattern.EndsWith("/"))
             {
-                if (norm.StartsWith(pattern, StringComparison.Ordinal))
+                // Un directorio de secretos protege todo lo que cuelga de él, esté donde esté
+                // dentro de la ruta (".ssh/", "home/u/.ssh/…").
+                if (norm.StartsWith(pattern, StringComparison.Ordinal)
+                    || norm.Contains("/" + pattern, StringComparison.Ordinal))
                 {
                     return true;
                 }

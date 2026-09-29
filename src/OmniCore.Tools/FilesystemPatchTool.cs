@@ -92,7 +92,7 @@ public sealed class FilesystemPatchTool : ITool
     internal Action<string, string>? TestFailureHook;
 #pragma warning restore CS0649
 
-    public Task<ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
+    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
         var (path, expectedVersion, oldText, newText) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
@@ -110,6 +110,13 @@ public sealed class FilesystemPatchTool : ITool
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+        }
+
+        // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
+        if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
         }
 
         if (!File.Exists(full))

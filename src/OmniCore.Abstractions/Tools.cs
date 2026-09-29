@@ -14,7 +14,7 @@ public interface ITool
     ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context);
 
     /// <summary>Solo acepta intents autorizados. Nunca ve ni decide su autorización.</summary>
-    Task<ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
+    Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken);
 }
 

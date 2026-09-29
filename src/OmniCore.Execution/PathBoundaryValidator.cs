@@ -52,13 +52,14 @@ public sealed class PathBoundaryValidator : IPathBoundaryValidator
 
         if (_resolveLinks)
         {
-            // Resolver enlaces en CADA componente: un junction intermedio puede apuntar fuera.
+            // Resolver enlaces en CADA componente y de forma iterativa: un enlace puede apuntar
+            // a otro enlace (cadena) o a un directorio que contiene enlaces que escapan.
             var resolvedRoot = ResolveAllLinks(fullRoot);
             var resolvedPath = ResolveAllLinks(fullPath);
-            if (!resolvedRoot.Equals(fullRoot, StringComparison.Ordinal))
+            if (resolvedRoot is null || resolvedPath is null)
             {
-                // La raíz misma es un enlace → su objetivo define la frontera.
-                return IsWithin(resolvedPath, resolvedRoot);
+                // Ciclo o profundidad excesiva: no se puede demostrar que quede dentro.
+                return false;
             }
 
             fullPath = resolvedPath;
@@ -102,6 +103,17 @@ public sealed class PathBoundaryValidator : IPathBoundaryValidator
         return true;
     }
 
+    public string? ResolvePhysical(string path)
+    {
+        if (path is null || path.Length == 0)
+        {
+            return null;
+        }
+
+        var normalized = Normalized(path);
+        return _resolveLinks ? ResolveAllLinks(normalized) : normalized;
+    }
+
     /// <summary>Normaliza: GetFullPath + separadores a '/'.</summary>
     private static string Normalized(string path)
     {
@@ -122,64 +134,80 @@ public sealed class PathBoundaryValidator : IPathBoundaryValidator
         return false;
     }
 
+    /// <summary>Máximo de enlaces a seguir antes de declarar la ruta irresoluble (evita ciclos).</summary>
+    private const int MaxLinkHops = 40;
+
     /// <summary>
     /// Resuelve todos los componentes que sean symlinks/junctions reescribiendo la ruta con
-    /// los objetivos reales. Los directorios intermedios pueden ser enlaces que escapan de la
-    /// frontera; resolverlos previa comparación evita el bypass (P1-12).
+    /// los objetivos reales, y repite hasta que ningún componente sea un enlace: un enlace
+    /// puede apuntar a otro enlace, o a un directorio que contiene enlaces que escapan de la
+    /// frontera. Devuelve null ante un ciclo o una cadena demasiado larga.
     /// </summary>
-    private static string ResolveAllLinks(string fullPath)
+    private static string? ResolveAllLinks(string fullPath)
     {
-        // Reconstruye la ruta nativa (separadores de plataforma) y resuelve el enlace del
-        // primer componente que sea symlink/junction; reescribe el prefijo con su objetivo.
-        var native = fullPath.Replace('/', _windows ? '\\' : '/');
-        var separator = _windows ? '\\' : '/';
-        var segments = native.Contains(separator) ? native.Split(separator) : new string[] { native };
-        var cumulative = "";
-        var resolved = native;
-        foreach (var seg in segments)
+        var current = Normalized(fullPath);
+        for (var hop = 0; hop < MaxLinkHops; hop++)
         {
-            if (seg.Length == 0)
+            var next = ResolveFirstLink(current);
+            if (next is null)
             {
-                continue;
+                return current;
             }
 
-            cumulative = cumulative.Length == 0 ? seg : cumulative + separator + seg;
-            var linkTarget = ResolveFinalLink(cumulative);
-            if (linkTarget is not null && !linkTarget.Equals(cumulative, StringComparison.Ordinal))
-            {
-                resolved = linkTarget + native.Substring(cumulative.Length);
-                break;
-            }
+            current = next;
         }
 
-        return Normalized(resolved);
+        return null;
     }
 
-    private static string? ResolveFinalLink(string native)
+    /// <summary>
+    /// Reescribe la ruta sustituyendo el PRIMER componente que sea un enlace por su objetivo, o
+    /// devuelve null si ningún componente es un enlace.
+    /// </summary>
+    private static string? ResolveFirstLink(string normalizedPath)
     {
-        if (!File.Exists(native) && !Directory.Exists(native))
+        var native = Path.GetFullPath(normalizedPath);
+        var root = Path.GetPathRoot(native) ?? "";
+        var parts = native.Substring(root.Length).Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        var current = root;
+        for (var i = 0; i < parts.Length; i++)
         {
-            return null;
+            current = Path.Combine(current, parts[i]);
+            var linkTarget = ResolveFinalLink(current);
+            if (linkTarget is not null && !Normalized(linkTarget).Equals(Normalized(current), StringComparison.Ordinal))
+            {
+                var rest = string.Join(Path.DirectorySeparatorChar, parts, i + 1, parts.Length - i - 1);
+                return Normalized(rest.Length == 0 ? linkTarget : Path.Combine(linkTarget, rest));
+            }
         }
 
+        return null;
+    }
+
+    /// <summary>
+    /// Objetivo inmediato del enlace en <paramref name="native"/> (symlink o junction), resuelto a
+    /// ruta absoluta, o null si no es un enlace. Funciona también con enlaces rotos: un enlace
+    /// cuyo destino todavía no existe sigue apuntando fuera y debe tratarse como tal.
+    /// </summary>
+    private static string? ResolveFinalLink(string native)
+    {
         try
         {
-            var fi = new FileInfo(native);
-            var target = fi.ResolveLinkTarget(false);
-            if (target is not null)
+            var info = new FileInfo(native);
+            var target = info.LinkTarget;
+            if (target is null || target.Length == 0)
             {
-                var targetPath = target!.FullName;
-                if (targetPath is not null && targetPath!.Length > 0)
-                {
-                    return Path.GetFullPath(targetPath!);
-                }
+                return null;
             }
+
+            var parent = Path.GetDirectoryName(native) ?? native;
+            return Path.GetFullPath(Path.IsPathRooted(target) ? target : Path.Combine(parent, target));
         }
         catch (Exception)
         {
             return null;
         }
-
-        return null;
     }
 }

@@ -1,46 +1,74 @@
 namespace OmniCore.Infrastructure;
 
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Abstractions;
 
 /// <summary>
-/// ICredentialStore sobre disco con acceso restringido (ADR-0011 §3.1). M2: los secretos se
-/// ofuscan con XOR + Base64 usando una clave derivada por máquina (RandomNumberGenerator) y un
-/// salt único por entrada; no se almacenan en texto plano. En Unix se aplica chmod 0600 al
-/// archivo (en Windows el ACL implícito del directorio del usuario + la ofuscación). El M3
-/// mueve a Windows Credential Manager / DPAPI. Nunca se loguea el valor.
+/// ICredentialStore sobre disco (ADR-0011 §3.1, ADR-0018). Cada valor se cifra antes de tocar
+/// el archivo, y el archivo vive en el directorio de datos del usuario, nunca en el repo:
+/// <list type="bullet">
+/// <item>Windows: DPAPI con ámbito <c>CurrentUser</c> (<c>enc:v2:dpapi:…</c>). Solo el mismo
+/// usuario en la misma máquina puede descifrar.</item>
+/// <item>Linux/macOS (provisional hasta Secret Service/Keychain): AES-256-GCM con una clave
+/// aleatoria de 32 bytes en <c>credentials.key</c>, junto al archivo, creada con modo 0600
+/// (<c>enc:v2:aesgcm:…</c>). Protege frente a copiar el archivo de credenciales solo, no frente a
+/// otro proceso del mismo usuario.</item>
+/// </list>
+/// Un valor que no se puede descifrar (formato antiguo XOR, archivo de otra máquina o
+/// manipulado) se trata como ausente: nunca se devuelve el texto cifrado como si fuera la key.
+/// Nunca se loguea el valor.
 /// </summary>
 public sealed class FileCredentialStore : ICredentialStore
 {
+    private const string DpapiPrefix = "enc:v2:dpapi:";
+
+    private const string AesGcmPrefix = "enc:v2:aesgcm:";
+
+    private const int KeySize = 32;
+
+    private const int NonceSize = 12;
+
+    private const int TagSize = 16;
+
+    /// <summary>Entropía adicional de DPAPI: liga el blob a OmniCore.</summary>
+    private static readonly byte[] DpapiEntropy = Encoding.UTF8.GetBytes("OmniCore.FileCredentialStore.v2");
+
+    private static readonly UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
     private readonly string _path;
+
+    private readonly string _keyPath;
 
     public FileCredentialStore(string path)
     {
         _path = path;
+        _keyPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".", "credentials.key");
     }
 
     public void Save(string key, string value, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(value);
+        cancellationToken.ThrowIfCancellationRequested();
         EnsureFile();
 
         var map = LoadMap();
-        map[key] = Obfuscate(value);
+        map[key] = Protect(value);
         WriteMap(map);
     }
 
     public string? Load(string key, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         EnsureFile();
         var map = LoadMap();
-        if (!map.TryGetValue(key, out var stored))
-        {
-            return null;
-        }
-
-        return stored is null ? null : Reveal(stored!);
+        return map.TryGetValue(key, out var stored) ? Unprotect(stored) : null;
     }
 
     public void Delete(string key, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         EnsureFile();
         var map = LoadMap();
         map.Remove(key);
@@ -50,16 +78,8 @@ public sealed class FileCredentialStore : ICredentialStore
     /// <summary>Borrado físico del archivo de credenciales (no solo la entrada).</summary>
     public void Purge()
     {
-        try
-        {
-            if (File.Exists(_path))
-            {
-                File.Delete(_path);
-            }
-        }
-        catch (Exception)
-        {
-        }
+        TryDelete(_path);
+        TryDelete(_keyPath);
     }
 
     /// <summary>Ruta del archivo (para que la prueba de cierre lo inspeccione).</summary>
@@ -70,223 +90,213 @@ public sealed class FileCredentialStore : ICredentialStore
         if (!File.Exists(_path))
         {
             var parent = Path.GetDirectoryName(_path);
-            if (parent is not null && parent!.Length > 0 && !Directory.Exists(parent!))
+            if (parent is not null && parent.Length > 0 && !Directory.Exists(parent))
             {
-                Directory.CreateDirectory(parent!);
+                Directory.CreateDirectory(parent);
             }
 
             WriteMap(new Dictionary<string, string>());
         }
-
-        ApplySecurePermissions();
     }
 
-    private void ApplySecurePermissions()
+    private string Protect(string value)
     {
-        if (!File.Exists(_path))
+        var plain = Encoding.UTF8.GetBytes(value);
+        if (OperatingSystem.IsWindows())
         {
-            return;
+            var blob = ProtectedData.Protect(plain, DpapiEntropy, DataProtectionScope.CurrentUser);
+            return DpapiPrefix + Convert.ToBase64String(blob);
         }
 
-        // Unix: chmod 0600. En Windows el directorio del usuario + DPAPI futuro; aquí
-        // la ofuscación evita que una copia del archivo exponga el secreto.
-        if (IsUnix)
+        var nonce = RandomNumberGenerator.GetBytes(NonceSize);
+        var cipher = new byte[plain.Length];
+        var tag = new byte[TagSize];
+        using (var aes = new AesGcm(LoadOrCreateKey(), TagSize))
         {
-            try
+            aes.Encrypt(nonce, plain, cipher, tag);
+        }
+
+        var packed = new byte[NonceSize + TagSize + cipher.Length];
+        nonce.CopyTo(packed, 0);
+        tag.CopyTo(packed, NonceSize);
+        cipher.CopyTo(packed, NonceSize + TagSize);
+        return AesGcmPrefix + Convert.ToBase64String(packed);
+    }
+
+    private string? Unprotect(string stored)
+    {
+        try
+        {
+            if (stored.StartsWith(DpapiPrefix, StringComparison.Ordinal))
             {
-                var args = new List<string> { "600", _path };
-                var psi = new System.Diagnostics.ProcessStartInfo();
-                psi.FileName = "chmod";
-                foreach (var a in args)
+                if (!OperatingSystem.IsWindows())
                 {
-                    psi.ArgumentList.Add(a);
+                    return null;
                 }
 
-                psi.UseShellExecute = false;
-                var p = System.Diagnostics.Process.Start(psi);
-                if (p is not null)
-                {
-                    p!.WaitForExit(10_000);
-                }
+                var blob = Convert.FromBase64String(stored.Substring(DpapiPrefix.Length));
+                return Encoding.UTF8.GetString(
+                    ProtectedData.Unprotect(blob, DpapiEntropy, DataProtectionScope.CurrentUser));
             }
-            catch (Exception)
+
+            if (stored.StartsWith(AesGcmPrefix, StringComparison.Ordinal))
             {
-                // sin chmod (p. ej. contenedor): la ofuscación sigue activa
+                if (!File.Exists(_keyPath))
+                {
+                    return null;
+                }
+
+                var packed = Convert.FromBase64String(stored.Substring(AesGcmPrefix.Length));
+                if (packed.Length < NonceSize + TagSize)
+                {
+                    return null;
+                }
+
+                var nonce = packed.AsSpan(0, NonceSize);
+                var tag = packed.AsSpan(NonceSize, TagSize);
+                var cipher = packed.AsSpan(NonceSize + TagSize);
+                var plain = new byte[cipher.Length];
+                using var aes = new AesGcm(LoadOrCreateKey(), TagSize);
+                aes.Decrypt(nonce, cipher, tag, plain);
+                return Encoding.UTF8.GetString(plain);
             }
         }
+        catch (Exception ex) when (ex is CryptographicException or FormatException or IOException
+            or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        // Formato desconocido o antiguo (XOR de M2): no se interpreta.
+        return null;
     }
 
     /// <summary>
-    /// Clave de máquina: 32 bytes derivados de una semilla persistida en el directorio temporal
-    /// del usuario (~/.omnicore-machine-key). El archivo de clave se protege igual que los
-    /// credenciales; así un secreto guardado vuelve a leerse en otra invocación.
+    /// Clave AES local (solo fuera de Windows). Se crea de forma exclusiva con modo 0600 desde el
+    /// primer byte, sin lanzar procesos <c>chmod</c>.
     /// </summary>
-    private static byte[] MachineKey()
+    private byte[] LoadOrCreateKey()
     {
-        var keyPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".omnicore-machine-key");
-        var hex = "";
-        try
+        if (File.Exists(_keyPath))
         {
-            if (File.Exists(keyPath))
+            var existing = File.ReadAllBytes(_keyPath);
+            if (existing.Length == KeySize)
             {
-                hex = File.ReadAllText(keyPath).Trim();
+                return existing;
             }
-        }
-        catch (Exception)
-        {
-            hex = "";
+
+            throw new CryptographicException("credentials.key tiene un tamaño inválido");
         }
 
-        if (hex.Length < 32)
+        var key = RandomNumberGenerator.GetBytes(KeySize);
+        var options = new FileStreamOptions
         {
-            hex = RandomHex(32);
-            try
-            {
-                File.WriteAllText(keyPath, hex);
-            }
-            catch (Exception)
-            {
-                // sin permiso de escritura del perfil: la key queda volátil (solo si el
-                // temp no es escribible, no afecta los tests de cierre)
-            }
-        }
-
-        return ToBytes(hex.Length >= 32 ? hex.Substring(0, 32) : hex + new string('0', 32 - hex.Length));
-    }
-
-    private static string Obfuscate(string value)
-    {
-        var salt = RandomHex(8);
-        var payload = salt + ":" + value;
-        var bytes = ToBytes(payload);
-        for (var i = 0; i < bytes.Length; i++)
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+        };
+        if (!OperatingSystem.IsWindows())
         {
-            bytes[i] ^= (byte) _machineKeyStatic[i % 32];
-        }
-
-        return "enc:" + ToBase64(bytes);
-    }
-
-    private static string Reveal(string stored)
-    {
-        if (!stored.StartsWith("enc:"))
-        {
-            return stored;
+            options.UnixCreateMode = OwnerOnly;
         }
 
         try
         {
-            var bytes = FromBase64(stored.Substring(4));
-            for (var i = 0; i < bytes.Length; i++)
-            {
-                bytes[i] ^= (byte) _machineKeyStatic[i % 32];
-            }
-
-            var payload = FromBytes(bytes);
-            var sep = payload.IndexOf(':');
-            return sep < 0 ? payload : payload.Substring(sep + 1);
+            using var stream = new FileStream(_keyPath, options);
+            stream.Write(key);
+            stream.Flush(flushToDisk: true);
+            return key;
         }
-        catch (Exception)
+        catch (IOException) when (File.Exists(_keyPath))
         {
-            return stored;
+            // Otro proceso la creó a la vez: se usa la suya.
+            return LoadOrCreateKey();
         }
     }
-
-    private static readonly byte[] _machineKeyStatic = MachineKey();
 
     private Dictionary<string, string> LoadMap()
     {
         var map = new Dictionary<string, string>();
-        try
-        {
-            if (!File.Exists(_path))
-            {
-                return map;
-            }
-
-            var lines = File.ReadAllText(_path).Replace("\r\n", "\n").Replace("\r", "\n");
-            foreach (var line in lines.Split('\n'))
-            {
-                var colon = line.IndexOf('=');
-                if (colon < 0)
-                {
-                    continue;
-                }
-
-                var key = line.Substring(0, colon);
-                var value = line.Substring(colon + 1);
-                if (key.Length > 0)
-                {
-                    map[DecodeKey(key)] = Unescape(value);
-                }
-            }
-        }
-        catch (Exception)
+        if (!File.Exists(_path))
         {
             return map;
+        }
+
+        var lines = File.ReadAllText(_path, Encoding.UTF8).Replace("\r\n", "\n").Replace("\r", "\n");
+        foreach (var line in lines.Split('\n'))
+        {
+            var eq = line.IndexOf('=');
+            if (eq <= 0)
+            {
+                continue;
+            }
+
+            map[DecodeKey(line.Substring(0, eq))] = line.Substring(eq + 1);
         }
 
         return map;
     }
 
+    /// <summary>Escritura atómica (temporal + rename) con modo 0600 fuera de Windows.</summary>
     private void WriteMap(Dictionary<string, string> map)
     {
         var parts = new List<string>();
-        var keys = map.Keys.ToArray();
-        for (var i = 0; i < keys.Length; i++)
+        foreach (var kv in map)
         {
-            var k = keys[i];
-            parts.Add(EncodeKey(k) + "=" + Escape(map[k]!));
+            parts.Add(EncodeKey(kv.Key) + "=" + kv.Value);
         }
 
-        File.WriteAllText(_path, string.Join("\n", parts.ToArray()));
-        ApplySecurePermissions();
+        var bytes = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(string.Join("\n", parts));
+        var temp = _path + ".tmp-" + Guid.NewGuid().ToString("N");
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+        };
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = OwnerOnly;
+        }
+
+        try
+        {
+            using (var stream = new FileStream(temp, options))
+            {
+                stream.Write(bytes);
+                stream.Flush(flushToDisk: true);
+            }
+
+            File.Move(temp, _path, overwrite: true);
+        }
+        finally
+        {
+            TryDelete(temp);
+        }
     }
 
+    // Los valores cifrados son Base64 (sin '=' problemáticos antes del prefijo ni saltos de
+    // línea); solo la clave necesita escape.
     private static string EncodeKey(string key) =>
-        key.Replace("\\", "/").Replace("=", "%3D").Replace("\n", " ");
+        key.Replace("%", "%25").Replace("=", "%3D").Replace("\n", "%0A").Replace("\r", "%0D");
 
     private static string DecodeKey(string key) =>
-        key.Replace("%3D", "=").Replace("/", "\\");
+        key.Replace("%0D", "\r").Replace("%0A", "\n").Replace("%3D", "=").Replace("%25", "%");
 
-    private static string Escape(string value) =>
-        value.Replace("\\", "\\\\").Replace("\n", "\\n");
-
-    private static string Unescape(string value)
+    private static void TryDelete(string path)
     {
-        var v = value;
-        v = v.Replace("\\n", "\n").Replace("\\\\", "\\");
-        return v;
-    }
-
-    private static bool IsUnix => !Path.IsPathFullyQualified("C:\\x");
-
-    private static string RandomHex(int bytes) => System.Security.Cryptography.RandomNumberGenerator.GetHexString(bytes);
-
-    private static byte[] ToBytes(string s)
-    {
-        var result = new byte[s.Length];
-        for (var i = 0; i < s.Length; i++)
+        try
         {
-            result[i] = (byte) s[i];
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
-
-        return result;
-    }
-
-    private static string FromBytes(byte[] b)
-    {
-        var chars = new char[b.Length];
-        for (var i = 0; i < b.Length; i++)
+        catch (IOException)
         {
-            chars[i] = (char) b[i];
         }
-
-        return new string(chars);
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
-
-    private static string ToBase64(byte[] b) => Convert.ToBase64String(b);
-
-    private static byte[] FromBase64(string s) => Convert.FromBase64String(s);
 }

@@ -197,7 +197,7 @@ public sealed class ToolRuntime
         }
     }
 
-    private Outcome Execute(ValidatedToolCall call, IAuthorizedToolIntent authorized, ToolIntent intent, ITool tool,
+    private Outcome Execute(ValidatedToolCall call, AuthorizedToolIntent authorized, ToolIntent intent, ITool tool,
         ToolExecutionContext execContext, CancellationToken cancellationToken)
     {
         // 4a. Frontera de capacidad otra vez antes de ejecutar (ADR-0044 §5): el intent ya está

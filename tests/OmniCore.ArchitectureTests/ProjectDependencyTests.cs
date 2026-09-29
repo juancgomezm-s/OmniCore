@@ -126,6 +126,32 @@ public sealed class ProjectDependencyTests
             $"{project} no puede referenciar frameworks visuales ({string.Join(", ", uiPackages)}); solo {UiHostProject} (ADR-0030).");
     }
 
+    /// <summary>
+    /// INV-013/INV-018: el constructor de AuthorizedToolIntent es internal de Abstractions y solo
+    /// Security puede usarlo. Si otro assembly recibe los internals de Abstractions, podría
+    /// fabricar autorizaciones sin pasar por el Permission Engine.
+    /// </summary>
+    [Fact]
+    public void Only_security_sees_abstractions_internals()
+    {
+        const string project = "OmniCore.Abstractions";
+        var fromCsproj = XDocument.Load(SourceProjects()[project])
+            .Descendants("InternalsVisibleTo")
+            .Select(e => (string?)e.Attribute("Include") ?? string.Empty)
+            .ToArray();
+        Assert.Equal(["OmniCore.Security"], fromCsproj);
+
+        var projectDir = Path.GetDirectoryName(SourceProjects()[project])!;
+        var fromSource = Directory.EnumerateFiles(projectDir, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !f.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            .Where(f => File.ReadLines(f).Any(line => line.Contains("assembly:", StringComparison.Ordinal)
+                && line.Contains("InternalsVisibleTo", StringComparison.Ordinal)))
+            .ToArray();
+        Assert.True(fromSource.Length == 0,
+            $"{project} no puede declarar InternalsVisibleTo en código: {string.Join(", ", fromSource)}");
+    }
+
     private static Dictionary<string, string> SourceProjects() =>
         Directory.EnumerateFiles(Path.Combine(RepositoryRoot(), "src"), "*.csproj", SearchOption.AllDirectories)
             .ToDictionary(p => Path.GetFileNameWithoutExtension(p), StringComparer.Ordinal);

@@ -51,4 +51,14 @@ public interface IPlatformPaths
 
     /// <summary>Base de datos relacional del usuario: (data)/user.db (ADR-0044 §8).</summary>
     string UserDatabasePath { get; }
+
+    /// <summary>
+    /// Configuración de usuario (<c>providers.yaml</c>, <c>models.yaml</c>…): <c>%APPDATA%\OmniCore</c>
+    /// en Windows y <c>$XDG_CONFIG_HOME/omnicore</c> en Linux (ADR-0038, ADR-0039). Nunca el cwd:
+    /// un repo no configura providers ni credenciales (INV-029).
+    /// </summary>
+    string ConfigDirectory { get; }
+
+    /// <summary>Datos de runtime de un workspace: <c>(data)/workspaces/&lt;WorkspaceId&gt;/</c> (ADR-0039 §2).</summary>
+    string WorkspaceDirectory(string workspaceId);
 }

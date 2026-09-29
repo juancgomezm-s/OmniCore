@@ -35,7 +35,7 @@ public sealed class PlanProposeTool : ITool
         return new Prepared(intent);
     }
 
-    public Task<ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
+    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
         // 1. Sintaxis: los argumentos deben ser una mutación válida (kind conocido).

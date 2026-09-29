@@ -26,7 +26,7 @@ public sealed class FilesystemPatchToolTests
 
     private static ScriptedToolExecutor PatchExecutor(string wsDir)
     {
-        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         return ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), wsDir);
     }
@@ -234,7 +234,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         File.WriteAllText(ws + "\\doc.txt", "contenido");
         var version = VersionOf("contenido");
-        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var sink = new List<DomainEventPayload>();
         var boundary = BoundaryFor(ModelPolicyPresets.ObserveOnly());
         var policy = ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow);
@@ -257,7 +257,7 @@ public sealed class FilesystemPatchToolTests
         var original = "linea1\nlinea2\n";
         File.WriteAllText(ws + "\\doc.txt", original);
         var version = VersionOf(original);
-        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var sink = new List<DomainEventPayload>();
         var boundary = BoundaryFor(ModelPolicyPresets.PatchOnly());
         var policy = ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow);
@@ -371,7 +371,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllText(ws + "\\doc.txt", original);
         var version = VersionOf(original);
 
-        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var patchTool = (FilesystemPatchTool)hostTools.Catalog()
             .Find(new ToolId("filesystem.patch"))!;
         patchTool.TestFailureHook = (temp, dest) =>
@@ -421,7 +421,7 @@ public sealed class FilesystemPatchToolTests
 
         // Executor que permite leer Y parchear (ambas con Allow) para simular el flujo real:
         // leer → extraer token → parchear → token obsoleto falla.
-        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
         {
             ["filesystem.read"] = PermissionDecision.Allow,

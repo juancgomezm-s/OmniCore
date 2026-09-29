@@ -23,11 +23,22 @@ public sealed class WorkspaceId
     /// <inheritdoc />
     public override int GetHashCode() => _value.GetHashCode();
 
+    /// <summary>
+    /// SHA-256 (16 hex) de la ruta canónica (ADR-0022 §3). El id va en nombres de directorio
+    /// (<c>workspaces/&lt;WorkspaceId&gt;/</c>), así que nunca contiene separadores ni la ruta en
+    /// claro. Solo se ignoran mayúsculas donde el filesystem también las ignora por defecto.
+    /// </summary>
     private static string _Derive(string path)
     {
         ArgumentNullException.ThrowIfNull(path);
-        var canonical = path.Trim().ToLowerInvariant().Replace('\\', '/').TrimEnd('/');
-        return canonical.Length == 0 ? "root-empty" : canonical;
+        var canonical = path.Trim().Replace('\\', '/').TrimEnd('/');
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
+        {
+            canonical = canonical.ToLowerInvariant();
+        }
+
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(canonical));
+        return Convert.ToHexStringLower(hash, 0, 8);
     }
 }
 

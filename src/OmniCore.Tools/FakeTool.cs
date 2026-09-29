@@ -45,7 +45,7 @@ public sealed class FakeTool : ITool
         return new Prepared(intent);
     }
 
-    public Task<ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
+    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
         var result = new ToolResult("ok (" + intent.Intent.ToolId + ")", "ok", null, 2, false,
