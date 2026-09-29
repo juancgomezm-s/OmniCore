@@ -36,6 +36,7 @@ dotnet run --project src/OmniCore.Cli -- tui --sim          # frame TUI de 4 zon
 dotnet run --project src/OmniCore.Cli -- doctor             # diagnóstico del registro de modelos (M2)
 dotnet run --project src/OmniCore.Cli -- explain "pregunta" # contexto materializado + fingerprint (M2)
 dotnet run --project src/OmniCore.Cli -- ask "tu pregunta"  # Turn end-to-end contra el modelo local (M2)
+dotnet run --project src/OmniCore.Cli -- act "corrige este test"  # Run Act real: fs.read/patch bajo política efectiva (M3)
 ```
 
 ## Documentación

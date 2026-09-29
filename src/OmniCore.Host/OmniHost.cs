@@ -159,14 +159,48 @@ public sealed class OmniHost
     /// <summary>
     /// Executor del Turn de Explorer. Explorer es de solo lectura, así que la capa de modo es la
     /// de PLAN: escrituras, procesos y red quedan en Deny aunque alguien meta una tool mutadora
-    /// en el catálogo (techo de seguridad, además de no exponerla). Pendiente: cablear
-    /// ModelCapabilityBoundary (ADR-0044) como capa adicional.
+    /// en el catálogo (techo de seguridad, además de no exponerla).
     /// </summary>
     public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot)
     {
+        return CreateExplorerExecutor(catalog, workspaceRoot, null);
+    }
+
+    /// <summary>
+    /// Executor del pipeline real para el Turn de Explorer con la frontera de capacidad del
+    /// modelo (ADR-0044 §5). El modelo sin <c>UserModelPolicy</c> efectiva queda ObserveOnly: la
+    /// frontera lo rechaza aunque invoque una tool de escritura directamente. La frontera
+    /// restringe; el Permission Engine sigue siendo la única autoridad (INV-018). null = sin
+    /// frontera (semántica M2).
+    /// </summary>
+    public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot,
+        ModelCapabilityBoundary? boundary)
+    {
         var policy = new ScriptedPermissionPolicy(new Dictionary<string, OmniCore.Domain.PermissionDecision>())
             .WithModeDefaults(OmniCore.Domain.RunMode.Plan);
-        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot);
+        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
+    }
+
+    /// <summary>
+    /// Catálogo de <c>omni act</c> (M3): tools Core de lectura + <c>filesystem.patch</c>, sin
+    /// FakeTools de simulación. Es la única composición real que expone mutaciones.
+    /// </summary>
+    public static HostTools CreateActTools() =>
+        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false, includeMutationTools: true);
+
+    /// <summary>
+    /// Executor de <c>omni act</c>: capa de modo ACT (escrituras dentro del workspace permitidas por
+    /// el perfil autónomo, ADR-0037 §4) más la frontera de capacidad del modelo (ADR-0044 §5), que
+    /// deja ObserveOnly a un modelo sin política efectiva. La frontera restringe; el Permission
+    /// Engine sigue siendo la única autoridad (INV-018).
+    /// </summary>
+    public static IToolExecutor CreateActExecutor(FakeCatalog catalog, string workspaceRoot,
+        ModelCapabilityBoundary boundary)
+    {
+        ArgumentNullException.ThrowIfNull(boundary);
+        var policy = new ScriptedPermissionPolicy(new Dictionary<string, OmniCore.Domain.PermissionDecision>())
+            .WithModeDefaults(OmniCore.Domain.RunMode.Act);
+        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
     }
 
     /// <summary>

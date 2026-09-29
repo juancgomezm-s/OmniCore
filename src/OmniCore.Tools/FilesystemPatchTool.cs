@@ -10,10 +10,13 @@ using OmniCore.Domain;
 /// workspace. No reescritura completa, no creación ni borrado: reemplaza exactamente UNA
 /// ocurrencia de oldText por newText, conservando el contenido no relacionado. Requiere
 /// expectedVersion (token SHA-256 del contenido vigente) y rechaza un token obsoleto ANTES de
-/// mutar (STALE_WRITE). La frontera de paths se revalida en Execute contra escapes y
-/// symlinks/junctions, además de en Prepare.
+/// mutar (STALE_WRITE). Cuando el pipeline activa la política del modelo (registry por-Run
+/// cableado), exige además una LECTURA PREVIA efectiva de esa ruta/versión en el mismo Run
+/// (PRIOR_READ_REQUIRED, ADR-0044 §5): un read fallido, de otra ruta, un token fabricado o de
+/// un Run anterior no habilitan el patch. La frontera de paths se revalida en Execute contra
+/// escapes y symlinks/junctions, además de en Prepare.
 /// </summary>
-public sealed class FilesystemPatchTool : ITool
+public sealed class FilesystemPatchTool : ITool, IReconcilableTool
 {
     private readonly ToolDescriptor _descriptor;
 
@@ -78,9 +81,38 @@ public sealed class FilesystemPatchTool : ITool
         // Se declara el claim de escritura sobre la ruta concreta para que Security evalúe la
         // resource path real (no vacío) — ADR-0014 §3, ADR-0044 §2 (RequireExpectedVersionToken).
         var claims = new ResourceClaims(new[] { path! }, new[] { path! }, new NetworkGrant[0], null, new string[0]);
+
+        // Prepare es PURO (INV-013, ADR-0014 §3): no lee el archivo. Los metadatos de reconciliación
+        // se calculan en DescribeReconciliation, ya autorizados y antes del efecto.
         var intent = new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
             EffectClass.NonIdempotent, claims, ToolRisk.Medium, null);
         return new Prepared(intent);
+    }
+
+    /// <summary>
+    /// Metadatos de reconciliación (ADR-0004 §4): dry-run del parche, sin mutar nada, que da el hash
+    /// PRE (token de versión esperado) y el hash POST (SHA-256 de los bytes que el parche
+    /// escribiría). El ToolRuntime los serializa en el ToolCallStarted (Barrier) antes del efecto;
+    /// tras un crash, el reconciliador clasifica Applied/NotApplied/Conflict sin re-ejecutar. Es
+    /// oportunista: si el dry-run no es posible (archivo ausente, encoding inválido, STALE_WRITE,
+    /// ruta fuera de la frontera o hacia un secreto) devuelve null y ExecuteAsync decide.
+    /// </summary>
+    public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context)
+    {
+        var (path, expectedVersion, oldText, newText) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
+        if (path is null || path.Length == 0 || expectedVersion is null || oldText is null || newText is null)
+        {
+            return null;
+        }
+
+        var full = JoinPath(context.WorkspaceRoot, path);
+        if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+        {
+            return null;
+        }
+
+        return DryRunReconciliation(context.WorkspaceRoot, intent.Intent.Claims, path, expectedVersion,
+            oldText, newText);
     }
 
     /// <summary>
@@ -123,6 +155,20 @@ public sealed class FilesystemPatchTool : ITool
         {
             // No se crea: un patch solo aplica sobre un archivo existente (ADR-0044 §3).
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Archivo no encontrado (un patch no crea archivos): " + path));
+        }
+
+        // ADR-0044 §5: exigir lectura previa EFECTIVA del MISMO path/version en este Run antes
+        // de mutar. El modelo debe haber leído este archivo con éxito y usar EL token que esa
+        // lectura expuso; un read fallido, un read de otra ruta, un token fabricado o un token
+        // de un Run anterior no habilitan el patch. Cuando el pipeline activa la política del
+        // modelo. (ReadRegistry != null) esto corta ANTES de leer los bytes y de mutar.
+        if (context.ReadRegistry is not null
+            && (expectedVersion is null || !context.ReadRegistry!.Matches(path!, expectedVersion!)))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "PRIOR_READ_REQUIRED: no se puede parchear " + path
+                + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
+                + " Lee el archivo y usa el token [version:…] que la lectura devuelva."));
         }
 
         // El patch opera sobre los BYTES REALES: se lee el contenido crudo, se calcula el token
@@ -256,6 +302,54 @@ public sealed class FilesystemPatchTool : ITool
 
         var summary = "Patch aplicado: " + path + " (" + oldText!.Length + "→" + newText!.Length + " caracteres)";
         return System.Threading.Tasks.Task.FromResult(new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied));
+    }
+
+    /// <summary>
+    /// Dry-run SIN MUTACIÓN del plan de reconciliación del parche (ADR-0004 §4): si el archivo está
+    /// dentro de la frontera, existe, tiene el token de versión esperado y el reemplazo es no ambiguo
+    /// (UNA sola ocurrencia), calcula el hash POST (SHA-256 de los bytes que el parche escribiría) y
+    /// devuelve un <c>ReconciliationSpec</c> con pre=expectedVersion / post=postHash. En cualquier otro
+    /// caso devuelve null (reconciliación conservadora): esto NO cambia la decisión de Prepare de
+    /// aceptar/rechazar, solo enriquece el intent con metadatos cuando son fiables.
+    /// </summary>
+    private ReconciliationSpec? DryRunReconciliation(string workspaceRoot, ResourceClaims claims,
+        string path, string expectedVersion, string oldText, string newText)
+    {
+        if (claims.Writes.Count != 1)
+        {
+            return null;
+        }
+
+        try
+        {
+            var full = JoinPath(workspaceRoot, path);
+            if (!_boundary.IsWithin(full, workspaceRoot) || !File.Exists(full))
+            {
+                return null;
+            }
+
+            var bytes = File.ReadAllBytes(full);
+            if (FilesystemPatchTool.VersionToken(bytes) != expectedVersion)
+            {
+                return null; // STALE_WRITE ya en Prepare: no hay metadatos fiables de reconciliación
+            }
+
+            var decoded = FileVersion.Decode(bytes);
+            var content = decoded.Text;
+            var first = content.IndexOf(oldText, StringComparison.Ordinal);
+            if (first < 0 || content.IndexOf(oldText, first + oldText.Length, StringComparison.Ordinal) >= 0)
+            {
+                return null; // reemplazo ausente o ambiguo: no se puede predecir el post-hash
+            }
+
+            var updated = content.Substring(0, first) + newText + content.Substring(first + oldText.Length);
+            var postBytes = FileVersion.Encode(updated, decoded.Encoding);
+            return new ReconciliationSpec(expectedVersion, FilesystemPatchTool.VersionToken(postBytes), null);
+        }
+        catch (System.Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>

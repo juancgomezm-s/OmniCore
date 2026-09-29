@@ -214,8 +214,25 @@ public sealed class ToolRuntime
             }
         }
 
-        // 4. Ejecución (Barrier si hay efecto; ADR-0002 §2, ADR-0004 §2).
-        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect));
+        // 4. Ejecución (Barrier si hay efecto; ADR-0002 §2, ADR-0004 §2). El Started lleva, cuando el
+        // intent declara una reconciliación con pre/post y EXACTAMENTE un write target, la serialización
+        // canónica de los metadatos (ruta + hashes) para que un crash posterior pueda reconciliar el
+        // efecto desde el journal sin re-ejecutar (ADR-0004 §4). Si la tool calcula esos metadatos
+        // (IReconcilableTool), se piden aquí: ya autorizada y antes del efecto, nunca en Prepare.
+        var reconciliation = intent.Reconciliation;
+        if (reconciliation is null && tool is IReconcilableTool reconcilable)
+        {
+            try
+            {
+                reconciliation = reconcilable.DescribeReconciliation(authorized, execContext);
+            }
+            catch (Exception)
+            {
+                reconciliation = null; // sin metadatos: reconciliación conservadora, nunca bloquea
+            }
+        }
+
+        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, ReconciliationJsonFor(intent.Claims, reconciliation)));
 
         ToolResult result;
         try
@@ -293,6 +310,23 @@ public sealed class ToolRuntime
 
         _emit(new ToolCallReconciled(toolCallId, ReconciliationOutcome.Conflict, "hash inesperado"));
         return ToolCallState.Reconciled;
+    }
+
+    /// <summary>
+    /// Serializa los metadatos canónicos de reconciliación para un intent con efecto. Devuelve null
+    /// (reconciliación conservadora) cuando no hay <c>ReconciliationSpec</c>, cuando el intent declara
+    /// más de un write target (ambigüedad: no se sabe contra qué archivo reconciliar) o cuando no hay
+    /// ningún target. El Engine/reconciliador trata null como "sin metadatos" y falla cerrado.
+    /// </summary>
+    private static string? ReconciliationJsonFor(ResourceClaims claims, ReconciliationSpec? reconciliation)
+    {
+        if (reconciliation is null || claims.Writes.Count != 1)
+        {
+            return null;
+        }
+
+        return FilesystemReconciliationMetadata.Encode(claims.Writes[0],
+            reconciliation.ExpectedPreHash, reconciliation.ExpectedPostHash);
     }
 
     private static string LayersToJson(PermissionDecisionRecord decision)

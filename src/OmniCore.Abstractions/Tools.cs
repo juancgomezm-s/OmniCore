@@ -18,6 +18,18 @@ public interface ITool
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Tool con efecto que describe cómo reconciliarlo tras un crash (ADR-0004 §4). El ToolRuntime la
+/// consulta DESPUÉS de la autorización y ANTES de emitir el <c>ToolCallStarted</c> (Barrier), para
+/// que los metadatos viajen en ese evento. Es el único punto con I/O previo al efecto: Prepare
+/// sigue siendo puro (INV-013) y aquí solo se lee lo que Security ya autorizó. Devuelve null si no
+/// puede predecir el efecto (reconciliación conservadora).
+/// </summary>
+public interface IReconcilableTool
+{
+    ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context);
+}
+
 /// <summary>Descripción de una tool (spec §32, ADR-0027).</summary>
 public sealed class ToolDescriptor
 {
@@ -178,12 +190,26 @@ public sealed class ToolPreparationContext
     }
 }
 
-/// <summary>Contexto de ejecución ya autorizado.</summary>
+/// <summary>
+/// Contexto de ejecución ya autorizado. <c>ReadRegistry</c> es el registro de lecturas
+/// efectivas por-Run (ADR-0044 §5): lo cablea el pipeline cuando una frontera de capacidad
+/// del modelo está activa y lo consultan las tools (filesystem.read registra, filesystem.patch
+/// exige lectura previa). null = uso directo/primitivo de la tool sin política de modelo
+/// activa (equivalente al comportamiento de M2).
+/// </summary>
 public sealed class ToolExecutionContext
 {
     public string WorkspaceRoot { get; }
 
+    public FileReadRegistry? ReadRegistry { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
+
+    public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry)
+    {
+        WorkspaceRoot = workspaceRoot;
+        ReadRegistry = readRegistry;
+    }
 }
 
 /// <summary>

@@ -492,6 +492,8 @@ lastsession.txt
 audit.jsonl
 .omnicore-test-creds.ini
 .omnicore-test-creds/
+# Marcador de identidad durable del workspace (ADR-0004 §5bis): es por clon, nunca se versiona.
+.omnicore/workspace-id
 
 # Estado local de otras herramientas de agentes
 .pi/

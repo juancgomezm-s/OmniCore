@@ -4,6 +4,7 @@ using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Execution;
 using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 using OmniCore.Security;
@@ -34,6 +35,14 @@ public sealed class OmniServer : IOmniClient
 
     private string _lastWorkingStateText = "";
 
+    /// <summary>
+    /// Motivo de un bloqueo de la recuperación del Run real al arrancar (null = recuperación ok o
+    /// no aplicable). Visible vía <c>LastRecoveryProblem()</c> y <c>Query("state")</c>. NUNCA se
+    /// traga un fallo de recuperación: si la raíz falta/corrompe o el store/reconciliador falla, el
+    /// Run queda sin reconciliar y NO continuable automáticamente (ADR-0004 §5).
+    /// </summary>
+    private string? _recoveryProblem;
+
     private readonly string? _stateFile;
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit)
@@ -44,6 +53,8 @@ public sealed class OmniServer : IOmniClient
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = null;
         LoadLastSession();
+        // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
+        RecoverPendingEffects();
     }
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile)
@@ -54,6 +65,8 @@ public sealed class OmniServer : IOmniClient
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = stateFile;
         LoadLastSession();
+        // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
+        RecoverPendingEffects();
     }
 
     /// <summary>Composición común: tools Core + defaults por modo (modo Act del sim).</summary>
@@ -130,6 +143,137 @@ public sealed class OmniServer : IOmniClient
         File.WriteAllText(_stateFile!, _lastSessionId!.ToString() + "\n" + _lastRunId!.ToString());
     }
 
+    /// <summary>
+    /// Recuperación del Run real al arrancar el Host (ADR-0004 §5, ADR-0041 §2): si hay un run
+    /// persistido reanudable, detecta sus ToolCalls <c>Started</c>-sin-outcome (crash) y las
+    /// reconcilia con el <c>FilesystemReconciler</c> REAL contra la RAÍZ DURADERA Y VERIFICADA del
+    /// workspace del run (el evento <c>WorkspaceRootEstablished</c>, único origen aceptado). NO usa
+    /// el executor del sim: un <c>RunResumeService</c> dedicado, idempotente, que rechaza Runs
+    /// terminales y nunca re-ejecuta la tool ni re-infere la respuesta.
+    ///
+    /// Contrato de seguridad (corrección del bloqueo previo a cwd + catch): NUNCA se sustituye una
+    /// raíz faltante/corrompida por el cwd del proceso ni se acepta una ruta de display como
+    /// autoridad; sin raíz durable verificada o si el store/reconciliador falla, la recuperación
+    /// queda BLOQUEADA — visible (<c>_recoveryProblem</c>) y sin reconciliar ni clasificar Applied—
+    /// y el Run NO se continúa automáticamente. Los fallos se exponen, no se tragan.
+    /// </summary>
+    private HostRecoveryResult RecoverPendingEffects()
+    {
+        if (_lastSessionId is null || _lastRunId is null)
+        {
+            // Sin run persistido no hay nada que recuperar; estado limpio.
+            _recoveryProblem = null;
+            return HostRecoveryResult.Ok(0);
+        }
+
+        string? root;
+        try
+        {
+            root = VerifiedWorkspaceRoot(_lastSessionId!);
+        }
+        catch (Exception ex)
+        {
+            // Error del journal/resolución al leer la raíz: se expone y se bloquea, sin reconciliar.
+            return BlockWith("no se pudo verificar la raíz durable del run (" + (ex.Message ?? "?") +
+                "): recuperación bloqueada, sin re-ejecutar ni clasificar Applied");
+        }
+
+        if (root is null)
+        {
+            // Raíz ausente/inválida: nunca cwd ni display path. Bloqueado y visible.
+            return BlockWith("sin raíz de workspace durable y verificada: recuperación bloqueada," +
+                " el run NO se continúa automáticamente y no se re-ejecuta ni clasifica");
+        }
+
+        var service = new RunResumeService(_store, _codecs,
+            new FilesystemReconciler(new PathBoundaryValidator()), root!);
+        try
+        {
+            var n = service.Resume(_lastSessionId!, _lastRunId!);
+            _recoveryProblem = null;
+            return HostRecoveryResult.Ok(n);
+        }
+        catch (Exception ex)
+        {
+            // Error del journal/reconciliador DURANTE la recuperación: no se oculta. El run queda
+            // sin continuar automáticamente y sin clasificar Applied para el trabajo no resuelto.
+            return BlockWith("fallo de recuperación del run (" + (ex.Message ?? "?") +
+                "): el Run queda sin continuar automáticamente, sin re-ejecutar ni clasificar Applied");
+        }
+    }
+
+    /// <summary>Registra un bloqueo visible y lo devuelve como resultado de recuperación.</summary>
+    private HostRecoveryResult BlockWith(string reason)
+    {
+        _recoveryProblem = reason;
+        return HostRecoveryResult.Blocked(reason);
+    }
+
+    /// <summary>
+    /// Raíz del workspace del run reanudable, reconstruida del evento durable y VERIFICADA (ADR-0004 §5).
+    /// Devuelve null (recuperación bloqueada) si: no hay evento <c>WorkspaceRootEstablished</c>, la ruta
+    /// no es absoluta o no existe como directorio (workspace movido/borrado). NUNCA devuelve el cwd del
+    /// proceso ni una ruta de display. Las excepciones del journal (lectura/códec) se propagan al
+    /// llamante, que las expone como bloqueo visible.
+    /// </summary>
+    private string? VerifiedWorkspaceRoot(SessionId sessionId)
+    {
+        var (canonical, identity) = RecordedWorkspaceRoot(sessionId);
+        if (canonical is null || canonical!.Length == 0
+            || !Path.IsPathFullyQualified(canonical!))
+        {
+            return null;
+        }
+
+        // El workspace debe seguir existiendo en la misma ubicación, o no se reconcilia nada.
+        if (!Directory.Exists(canonical!))
+        {
+            return null;
+        }
+
+        // ADR-0004 §5 / auditoría M3: Directory.Exists no basta — una ruta reemplazada por
+        // symlink/junction sigue "existiendo" pero apunta a OTRO árbol. La identidad durable
+        // verifica que el marcador dentro del workspace sigue siendo el mismo token; si el
+        // token no existe (evento legacy / identidad no establecida) o no coincide (árbol
+        // sustituido / marcador borrado), NO se reconcilia nada: falla cerrado y visible.
+        if (!WorkspaceRootIdentity.Verify(canonical!, identity ?? ""))
+        {
+            return null;
+        }
+
+        return canonical;
+    }
+
+    /// <summary>
+    /// Raíz canónica persistida por la sesión (solo el evento <c>WorkspaceRootEstablished</c>),
+    /// junto con su identidad durable (el token del marcador dentro del workspace; ADR-0004 §5).
+    /// La recuperación usa el token al reabrir para verificar que la ruta no fue sustituida por
+    /// symlink/junction. Token vacío = identidad no establecida: la sesión no es recuperable
+    /// automáticamente y la recuperación falla cerrado.
+    /// </summary>
+    private (string? Root, string? Identity) RecordedWorkspaceRoot(SessionId sessionId)
+    {
+        foreach (var evt in _store.ReadFrom(sessionId, 1))
+        {
+            if (!evt.Type.ToString().Equals("workspace.root_established", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var established = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson)
+                as WorkspaceRootEstablished;
+            if (established is not null && established!.CanonicalRoot is not null
+                && established!.CanonicalRoot.Length > 0)
+            {
+                return (established!.CanonicalRoot, established!.DurableIdentity ?? "");
+            }
+
+            return (null, null);
+        }
+
+        return (null, null);
+    }
+
     private IReadOnlyList<DomainEvent> EventsForRun(IReadOnlyList<DomainEvent> all, RunId runId)
     {
         var events = new List<DomainEvent>();
@@ -178,6 +322,11 @@ public sealed class OmniServer : IOmniClient
             return StartExplorerRun(command, fields);
         }
 
+        if (commandName == "act")
+        {
+            return StartActRun(command, fields);
+        }
+
         return CommandAck.Fail(command.MessageId, "comando desconocido en M1");
     }
 
@@ -187,6 +336,12 @@ public sealed class OmniServer : IOmniClient
 
     public RunId? LastRunId() => _lastRunId;
 
+    /// <summary>
+    /// Motivo (o null) de un bloqueo de la recuperación del Run real al arrancar. Visible para que
+    /// el cliente/CLI pueda reflejar que el run NO es continua automáticamente y pida intervención.
+    /// </summary>
+    public string? LastRecoveryProblem() => _recoveryProblem;
+
     private CommandAck StartExplorerRun(WireEnvelope command, Dictionary<string, string> fields)
     {
         var objective = fields.TryGetValue("objective", out var value) ? value : null;
@@ -195,25 +350,60 @@ public sealed class OmniServer : IOmniClient
             return CommandAck.Fail(command.MessageId, "falta el objetivo del Explorer");
         }
 
+        return StartRunAct(command, objective!, Path.GetFullPath("."));
+    }
+
+    /// <summary>
+    /// <c>act</c>: crea un Run Act REAL reutilizando el Explorer (vertical M3, ADR-0035 §3, ADR-0044 §5).
+    /// Acepta <c>objective</c> (la instrucción) y opcionalmente <c>workspace</c> (raíz; por defecto el cwd).
+    /// Emite <c>SessionCreated</c> + <c>WorkspaceRootEstablished</c> con identidad durable + el run Act
+    /// completo (RunCreated/RunStarted/Task/Lane/Plan). El plan llama al Turn de Explorer con las tools
+    /// filesystem.read/filesystem.patch bajo la política efectiva; NO es un sustituto del sim y no
+    /// autoaprueba Ask (sin cliente interactivo, Ask → Deny, ADR-0003).
+    /// </summary>
+    private CommandAck StartActRun(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        var objective = fields.TryGetValue("objective", out var value) ? value : null;
+        if (string.IsNullOrWhiteSpace(objective))
+        {
+            return CommandAck.Fail(command.MessageId, "falta el objetivo del act");
+        }
+
+        var workspace = fields.TryGetValue("workspace", out var w) ? w : null;
+        var workspacePath = workspace is null || workspace!.Length == 0
+            ? Path.GetFullPath(".")
+            : Path.GetFullPath(workspace!);
+        return StartRunAct(command, objective!, workspacePath);
+    }
+
+    /// <summary>Creación compartida de un Run Act real con raíz durable y verificable.</summary>
+    private CommandAck StartRunAct(WireEnvelope command, string objective, string workspacePath)
+    {
         var sessionId = SessionId.New();
         var runId = RunId.New();
         var taskId = TaskId.New();
         var laneId = LaneId.New();
         var planId = PlanId.New();
-        var workspacePath = Path.GetFullPath(".");
         var stream = new EventStream(_store, _codecs, sessionId);
         var now = DateTimeOffset.UtcNow;
         var budget = new TaskBudget(null, null, null, null);
         stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(workspacePath).ToString(),
             workspacePath, ProfileId.New(), now));
-        stream.Append(new RunCreated(runId, sessionId, objective!, RunMode.Act,
+        // Origen explícito y seguro de la raíz del run real (ADR-0004 §5): se fija aquí, en la
+        // creación de la sesión, y es lo único que la recuperación acepta al arrancar. Nunca se
+        // usa el cwd de un proceso posterior ni WorkspaceDisplayPath como autoridad. Se escribe
+        // además la identidad durable (marcador dentro del workspace) para que la recuperación
+        // verifique que la ruta no fue sustituida por symlink/junction.
+        var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
+        stream.Append(new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity));
+        stream.Append(new RunCreated(runId, sessionId, objective, RunMode.Act,
             ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, taskId, now));
         stream.Append(new RunStarted(runId));
-        stream.Append(new TaskCreated(taskId, runId, objective!, Array.Empty<TaskDependency>(), budget));
+        stream.Append(new TaskCreated(taskId, runId, objective, Array.Empty<TaskDependency>(), budget));
         stream.Append(new TaskReady(taskId));
         stream.Append(new LaneCreated(laneId, taskId, ProfileId.New()));
         stream.Append(new LaneStarted(laneId));
-        stream.Append(new PlanCreated(planId, runId, PlanItemId.New(), objective!));
+        stream.Append(new PlanCreated(planId, runId, PlanItemId.New(), objective));
 
         _lastSessionId = sessionId;
         _lastRunId = runId;
@@ -279,7 +469,8 @@ public sealed class OmniServer : IOmniClient
         {
             var run = _lastSnapshot is null ? "none" : "M2:" + _lastSnapshot!.TokenCount.ToString();
             return new SessionQueryResult("state", "{\"runtime\":\"omnicore\",\"milestone\":\"M2\","
-                + JsonObj.Field("runState", run) + "}");
+                + JsonObj.Field("runState", run)
+                + "," + JsonObj.Field("recovery", _recoveryProblem is null ? "ok" : "blocked") + "}");
         }
 
         if (name == "workingState")
@@ -442,6 +633,22 @@ public sealed class OmniServer : IOmniClient
                 ex.StackTrace is null ? "" : string.Join("; ", ex.StackTrace));
         }
     }
+}
+
+/// <summary>
+/// Resultado de la recuperación del Run real al arrancar el Host (ADR-0004 §5).
+/// <c>Ok</c>: la verificación de raíz pasó y (si había toolcalls huérfanas) se reconciliaron;
+/// <c>Reconciled</c> cuenta la reconciliación. <c>Blocked</c>: no se pudo verificar la raíz durable o
+/// falló el store/reconciliador; el Run NO se continúa automáticamente y no se reconcilió nada
+/// (sin re-ejecutar ni clasificar Applied). El motivo se expone en <c>Reason</c>.
+/// </summary>
+public sealed record HostRecoveryResult(int Reconciled, string? BlockedReason)
+{
+    public bool IsBlocked() => BlockedReason is not null;
+
+    public static HostRecoveryResult Ok(int reconciled) => new(reconciled, null);
+
+    public static HostRecoveryResult Blocked(string reason) => new(0, reason);
 }
 
 /// <summary>Escenarios de simulación incluidos para los tests deterministas y <c>omni sim</c>.</summary>
