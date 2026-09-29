@@ -56,7 +56,12 @@ public record AssistantMessageRecorded(RunId RunId, LaneId LaneId, TurnId TurnId
     public int SchemaVersion() => 1;
 }
 
-/// <summary>InteractionRequested: petición humana (ADR-0034 §3).</summary>
+/// <summary>
+/// InteractionRequested: petición humana (ADR-0034 §3). Para <c>Kind == Question</c> (ADR-0045)
+/// el schema del cuestionario viaja como artifact content-addressed (<c>QuestionnaireSchemaRef</c>)
+/// y el evento lo referencia; no se duplica el texto voluminoso en el journal. Los campos con
+/// default conservan la forma anterior (compatibilidad de protocolo, rev. 1).
+/// </summary>
 public record InteractionRequested(
     InteractionId InteractionId,
     InteractionKind Kind,
@@ -68,20 +73,37 @@ public record InteractionRequested(
     TaskId? Task,
     PlanItemId? PlanItem,
     int QueuePosition,
-    int QueueLength) : DomainEventPayload
+    int QueueLength,
+    ArtifactRef? QuestionnaireSchemaRef = null,
+    string? ToolCallJson = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("interaction.requested");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
+
+    /// <summary>Distingue el payload de cuestionario de las forms previas sin tocar el discriminator.</summary>
+    public bool IsQuestionnaire => Kind == InteractionKind.Question;
 }
 
-/// <summary>InteractionResolved: resolución de una interacción.</summary>
-public record InteractionResolved(InteractionId InteractionId, string OptionId, InteractionCause Cause)
-    : DomainEventPayload
+/// <summary>
+/// InteractionResolved: resolución de una interacción. Para <c>Kind == Question</c> la respuesta
+/// tipada (QuestionnaireResponse) viaja como artifact content-addressed (<c>AnswerRef</c>) y el
+/// estado/causa se codifica en <c>State</c>/<c>Cause</c> (ADR-0045 §7: Submitted | Cancelled |
+/// Expired; User | Timeout | NoClient). Los campos trailing con default conservan la forma anterior.
+/// </summary>
+public record InteractionResolved(
+    InteractionId InteractionId,
+    string OptionId,
+    InteractionCause Cause,
+    ArtifactRef? AnswerRef = null,
+    string? State = null,
+    string? ToolCallJson = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("interaction.resolved");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
+
+    public bool IsQuestionnaire => State is not null || AnswerRef is not null;
 }
 
 /// <summary>InteractionExpired: la interacción venció sin respuesta.</summary>
