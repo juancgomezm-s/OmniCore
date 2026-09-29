@@ -1,4 +1,6 @@
+using System.Security.Cryptography.X509Certificates;
 using OmniCore.Abstractions;
+using Task = System.Threading.Tasks.Task;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Execution;
@@ -357,6 +359,159 @@ public sealed class SecurityP0Tests
     public void Names_and_public_hosts_are_never_private(string url)
     {
         Assert.False(OmniHost.IsPrivateHost(url), url);
+    }
+
+    private static System.Security.Cryptography.X509Certificates.X509Certificate2 SelfSignedCa(string cn)
+    {
+        using var key = System.Security.Cryptography.ECDsa.Create();
+        var request = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+            "CN=" + cn, key, System.Security.Cryptography.HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(
+            new System.Security.Cryptography.X509Certificates.X509BasicConstraintsExtension(true, false, 0, true));
+        return request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+    }
+
+    [Fact]
+    public void Pinned_tls_accepts_only_the_configured_root()
+    {
+        var pinned = SelfSignedCa("192.168.1.104");
+        var other = SelfSignedCa("192.168.1.104");
+        const System.Net.Security.SslPolicyErrors untrusted = System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors;
+
+        Assert.True(OmniHost.ValidateAgainstTrustedRoot(pinned, untrusted, pinned));
+        Assert.False(OmniHost.ValidateAgainstTrustedRoot(other, untrusted, pinned),
+            "Un certificado con el mismo nombre pero otra clave se rechaza");
+        Assert.False(OmniHost.ValidateAgainstTrustedRoot(pinned,
+            untrusted | System.Net.Security.SslPolicyErrors.RemoteCertificateNameMismatch, pinned),
+            "El nombre del host debe coincidir aunque la raíz sea la fijada");
+        Assert.False(OmniHost.ValidateAgainstTrustedRoot(null, untrusted, pinned));
+    }
+
+    [Fact]
+    public async Task Pinned_tls_handler_works_end_to_end_against_a_real_tls_server()
+    {
+        // Servidor TLS real en 127.0.0.1 con un certificado autofirmado (CA) cuyo SAN es solo la IP,
+        // como el del servidor local del usuario.
+        X509Certificate2 serverCert;
+        using (var key = System.Security.Cryptography.RSA.Create(2048))
+        {
+            var request = new CertificateRequest("CN=127.0.0.1", key,
+                System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+            var san = new SubjectAlternativeNameBuilder();
+            san.AddIpAddress(System.Net.IPAddress.Loopback);
+            request.CertificateExtensions.Add(san.Build());
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+                new System.Security.Cryptography.OidCollection { new("1.3.6.1.5.5.7.3.1") }, false));
+            using var ephemeral = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+            serverCert = X509CertificateLoader.LoadPkcs12(ephemeral.Export(X509ContentType.Pfx), null);
+        }
+
+        var dir = TempDir();
+        var pinnedPath = Path.Combine(dir, "server.pem");
+        File.WriteAllText(pinnedPath, serverCert.ExportCertificatePem());
+        var otherPath = Path.Combine(dir, "other.pem");
+        File.WriteAllText(otherPath, SelfSignedCa("127.0.0.1").ExportCertificatePem());
+
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        cts.CancelAfter(TimeSpan.FromSeconds(30));
+        var server = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                System.Net.Sockets.TcpClient client;
+                try
+                {
+                    client = await listener.AcceptTcpClientAsync(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
+                using (client)
+                using (var ssl = new System.Net.Security.SslStream(client.GetStream()))
+                {
+                    try
+                    {
+                        await ssl.AuthenticateAsServerAsync(serverCert);
+                        // Se lee hasta el fin de las cabeceras de la petición (GET sin cuerpo).
+                        var buffer = new byte[4096];
+                        var received = new System.Text.StringBuilder();
+                        while (!received.ToString().Contains("\r\n\r\n", StringComparison.Ordinal))
+                        {
+                            var read = await ssl.ReadAsync(buffer, cts.Token);
+                            if (read == 0)
+                            {
+                                break;
+                            }
+
+                            received.Append(System.Text.Encoding.ASCII.GetString(buffer, 0, read));
+                        }
+
+                        await ssl.WriteAsync(System.Text.Encoding.ASCII.GetBytes(
+                            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"), cts.Token);
+                    }
+                    catch (Exception ex) when (ex is IOException or System.Security.Authentication.AuthenticationException)
+                    {
+                        // El cliente rechazó el certificado: es lo esperado en los casos negativos.
+                    }
+                }
+            }
+        }, TestContext.Current.CancellationToken);
+
+        async Task<bool> Get(string url, string pinned)
+        {
+            using var http = new HttpClient(OmniHost.CreateTlsHandler(url, pinned));
+            try
+            {
+                return (await http.GetStringAsync(url, cts.Token)) == "ok";
+            }
+            catch (HttpRequestException)
+            {
+                return false;
+            }
+        }
+
+        try
+        {
+            Assert.True(await Get("https://127.0.0.1:" + port + "/v1/models", pinnedPath),
+                "Con el certificado fijado la conexión valida");
+            Assert.False(await Get("https://127.0.0.1:" + port + "/v1/models", otherPath),
+                "Fijado a otra raíz, el servidor se rechaza aunque la IP sea privada");
+            Assert.False(await Get("https://localhost:" + port + "/v1/models", pinnedPath),
+                "El nombre debe coincidir con el SAN (solo 127.0.0.1)");
+        }
+        finally
+        {
+            cts.Cancel();
+            listener.Stop();
+            await server;
+        }
+    }
+
+    [Fact]
+    public void Trusted_certificate_loads_from_pem_and_der_and_comes_from_providers_yaml()
+    {
+        var dir = TempDir();
+        var ca = SelfSignedCa("localhost");
+        var pem = Path.Combine(dir, "ca.pem");
+        var der = Path.Combine(dir, "ca.crt");
+        File.WriteAllText(pem, ca.ExportCertificatePem());
+        File.WriteAllBytes(der, ca.Export(System.Security.Cryptography.X509Certificates.X509ContentType.Cert));
+        Assert.Equal(ca.Thumbprint, OmniHost.LoadTrustedCertificate(pem).Thumbprint);
+        Assert.Equal(ca.Thumbprint, OmniHost.LoadTrustedCertificate(der).Thumbprint);
+
+        var registry = new ConfigLoader().BuildRegistry(
+            "providers:\n  lan: { baseUrl: https://192.168.1.104:8080/v1, auth: none, caCertificate: "
+                + pem.Replace('\\', '/') + " }\n",
+            null);
+        Assert.Equal(pem.Replace('\\', '/'), registry.Provider("lan")!.TrustedCertificatePath);
+        Assert.StartsWith("fijado a", OmniHost.DescribeTls("https://192.168.1.104:8080/v1", pem));
+        Assert.StartsWith("AVISO", OmniHost.DescribeTls("https://192.168.1.104:8080/v1", null));
     }
 
     // ── #2 / #6 Rutas de plataforma y WorkspaceId ────────────────────────────────────────

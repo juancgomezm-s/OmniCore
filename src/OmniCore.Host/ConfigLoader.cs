@@ -59,7 +59,10 @@ public sealed class ConfigLoader
                 : Str(values, "family") == "OpenAIResponses"
                     ? OmniCore.Domain.ProviderFamily.OpenAIResponses
                     : OmniCore.Domain.ProviderFamily.OpenAiChatCompatible;
-            registry.Add(new ProviderDescriptor(id, family, baseUrl, auth, true, true, true));
+            registry.Add(new ProviderDescriptor(id, family, baseUrl, auth, true, true, true)
+            {
+                TrustedCertificatePath = Str(values, "caCertificate"),
+            });
         }
 
         if (modelsYaml is not null && modelsYaml!.Trim().Length > 0)
