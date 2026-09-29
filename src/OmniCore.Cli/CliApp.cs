@@ -44,6 +44,12 @@ public sealed class CliApp
             return ModelPolicyCommands.Run(args);
         }
 
+        if (command == "verify-journal")
+        {
+            // M4 (ADR-0001 §7): verificación read-only del journal y sus artifacts.
+            return JournalCommands.VerifyJournal(args);
+        }
+
         if (command == "doctor")
         {
             return RunDoctor(args);
@@ -228,6 +234,14 @@ public sealed class CliApp
     /// </summary>
     private static Task<int> RunDoctor(string[] args)
     {
+        // ADR-0001 §7: `omni doctor --verify-journal` recorre el journal del CLI y sus refs a
+        // artifacts con el mismo verificador read-only de `omni verify-journal`. El flow ask
+        // escribe los blobs bajo .omnicore-artifacts, así que esa es la raíz a verificar.
+        if (args is not null && args.Any(a => a == "--verify-journal"))
+        {
+            return JournalCommands.VerifyJournal(new[] { "verify-journal", "--artifacts", ".omnicore-artifacts" });
+        }
+
         Console.WriteLine("omni doctor — diagnóstico de M2");
         var registry = OmniHost.LoadModelRegistry(".");
         Console.WriteLine("Modelos disponibles:");
@@ -422,6 +436,7 @@ public sealed class CliApp
         Console.WriteLine();
         Console.WriteLine("Uso:");
         Console.WriteLine("  omni sim [escenario.yaml] [--json]   Ejecuta la simulación de M1");
+        Console.WriteLine("  omni verify-journal [ruta] [--json]  Verifica el journal y sus artifacts (M4)");
         Console.WriteLine("  omni --help                          Esta ayuda");
     }
 }
