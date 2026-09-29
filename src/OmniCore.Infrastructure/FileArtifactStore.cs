@@ -3,6 +3,51 @@ namespace OmniCore.Infrastructure;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
+/// <summary>Resultado de sondear un blob: distingue el motivo exacto del rechazo.</summary>
+public enum BlobStatus
+{
+    /// <summary>El blob existe y su contenido verifica contra el hash (Content en el probe).</summary>
+    Ok,
+
+    /// <summary>Hash malformado (algoritmo o valor): no se consultó el filesystem.</summary>
+    HashInvalid,
+
+    /// <summary>No hay archivo en la ruta del blob.</summary>
+    Missing,
+
+    /// <summary>La ruta atraviesa un link (symlink/junction) fuera de blobs/sha256.</summary>
+    LinkEscape,
+
+    /// <summary>La lectura falló (desapareció a mitad o es ilegible).</summary>
+    Unreadable,
+
+    /// <summary>El contenido no corresponde al hash, aunque conserve la longitud.</summary>
+    Corrupted,
+}
+
+/// <summary>
+/// Sondeo read-only de un blob (ADR-0001 §7): una única lectura verificada y el motivo exacto
+/// del rechazo. Lo consume <c>JournalVerifier</c> (verify-journal, M4) para reportar
+/// Ausente y Corrupto como problemas distintos en lugar de colapsarlos a un null.
+/// </summary>
+public sealed class BlobProbe
+{
+    /// <summary>Por qué el blob pasó o no.</summary>
+    public BlobStatus Status { get; }
+
+    /// <summary>Contenido leído; solo distinto de null cuando Status es Ok.</summary>
+    public string? Content { get; }
+
+    private BlobProbe(BlobStatus status, string? content)
+    {
+        Status = status;
+        Content = content;
+    }
+
+    /// <summary>Construye un probe (factory explícita, sin reflexión).</summary>
+    public static BlobProbe Of(BlobStatus status, string? content) => new(status, content);
+}
+
 /// <summary>
 /// Artifact Store content-addressed en filesystem (ADR-0041 §3). Blobs en
 /// blobs/sha256/&lt;2&gt;/&lt;2&gt;/&lt;hash&gt; (ADR-0001 §5). Escritura temporal → rename
@@ -14,11 +59,12 @@ using OmniCore.Domain;
 /// filesystem: GetText devuelve null y Verify false, sin salir de blobs/sha256.
 /// </para>
 /// <para>
-/// Toda lectura verifica el hash (ADR-0001 §7): GetText y Verify comparten una lectura
-/// única del blob (una sola pasada, sin releer el archivo) y devuelven null/false si el
-/// contenido no corresponde al <c>ContentHash</c> — aunque conserve la longitud — o si
-/// la ruta del blob atraviesa un link (symlink o junction) que resuelve fuera de
-/// blobs/sha256.
+/// Toda lectura verifica el hash (ADR-0001 §7): GetText, Verify y Probe comparten una lectura
+/// única del blob (una sola pasada, sin releer el archivo) y rechazan el contenido que no
+/// corresponde al <c>ContentHash</c> — aunque conserve la longitud — o cuya ruta atraviesa un
+/// link (symlink o junction) que resuelve fuera de blobs/sha256. <see cref="Probe"/> expone
+/// el motivo exacto del rechazo (hash malformado, ausente, link, ilegible o corrupto) para
+/// verify-journal (M4), sin colapsar todo a null.
 /// </para>
 /// <para>
 /// Límite documentado de la frontera de symlinks (NO está cerrada): la comprobación de
@@ -69,30 +115,42 @@ public sealed class FileArtifactStore : IArtifactStore
     {
         // Lectura verificada (ADR-0001 §7): null ante hash malformado, blob ausente, ruta
         // que atraviesa links fuera de blobs/sha256, o contenido que no corresponde al hash.
-        return TryReadVerifiedText(hash);
+        return ProbeBlob(hash).Content;
     }
 
     public bool Verify(ContentHash hash, long expectedSize)
     {
-        // La integridad la decide el hash (dentro de TryReadVerifiedText), no el tamaño: un
-        // blob alterado falla aunque conserve la longitud. expectedSize usa la semántica
+        // La integridad la decide el hash (dentro de ProbeBlob), no el tamaño: un blob
+        // alterado falla aunque conserve la longitud. expectedSize usa la semántica
         // vigente de ArtifactRef.Size (caracteres del texto, ver PutText).
-        var content = TryReadVerifiedText(hash);
+        var content = ProbeBlob(hash).Content;
         return content is not null && (long) content.Length == expectedSize;
     }
 
     /// <summary>
-    /// Lectura única y verificada compartida por GetText y Verify (ADR-0001 §7): lee el
-    /// blob UNA sola vez y comprueba el hash de lo leído. Devuelve null si el hash es
-    /// malformado, el blob no existe, la ruta atraviesa links o el contenido no corresponde
-    /// al <c>ContentHash</c>.
+    /// Sondeo read-only (verify-journal, M4): la misma lectura única y verificada de
+    /// GetText/Verify, pero distingue el motivo del rechazo (hash malformado, ausente,
+    /// link, ilegible o corrupto) en lugar de colapsarlo a null.
     /// </summary>
-    private string? TryReadVerifiedText(ContentHash hash)
+    public BlobProbe Probe(ContentHash hash) => ProbeBlob(hash);
+
+    /// <summary>
+    /// Lectura única y verificada compartida por GetText, Verify y Probe (ADR-0001 §7): lee el
+    /// blob UNA sola vez y comprueba el hash de lo leído. Devuelve el estado exacto si el hash
+    /// es malformado, el blob no existe, la ruta atraviesa links, la lectura falla o el
+    /// contenido no corresponde al <c>ContentHash</c>.
+    /// </summary>
+    private BlobProbe ProbeBlob(ContentHash hash)
     {
-        // Hash inválido → null sin construir ruta ni acceder a disco (ver TryBlobPath).
-        if (!TryBlobPath(hash, out var blobPath) || !File.Exists(blobPath))
+        // Hash inválido → sin construir ruta ni acceder a disco (ver TryBlobPath).
+        if (!TryBlobPath(hash, out var blobPath))
         {
-            return null;
+            return BlobProbe.Of(BlobStatus.HashInvalid, null);
+        }
+
+        if (!File.Exists(blobPath))
+        {
+            return BlobProbe.Of(BlobStatus.Missing, null);
         }
 
         // Un link (symlink o junction) en la ruta haría leer contenido fuera de
@@ -100,7 +158,7 @@ public sealed class FileArtifactStore : IArtifactStore
         // documentación de la clase).
         if (!BlobPathStaysInsideBlobs(blobPath))
         {
-            return null;
+            return BlobProbe.Of(BlobStatus.LinkEscape, null);
         }
 
         try
@@ -108,13 +166,15 @@ public sealed class FileArtifactStore : IArtifactStore
             // UNA sola lectura: releer el archivo permitiría que un cambio entre lecturas
             // haga pasar un contenido distinto del que se acaba de verificar (carrera).
             var content = File.ReadAllText(blobPath);
-            return Sha256.Hex(content) == hash.Value ? content : null;
+            return Sha256.Hex(content) == hash.Value
+                ? BlobProbe.Of(BlobStatus.Ok, content)
+                : BlobProbe.Of(BlobStatus.Corrupted, null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // El blob desapareció entre la comprobación y la lectura, o es ilegible: el
-            // contenido no es recuperable, y eso es exactamente null en este contrato.
-            return null;
+            // contenido no es recuperable, y eso es exactamente Unreadable en este contrato.
+            return BlobProbe.Of(BlobStatus.Unreadable, null);
         }
     }
 
