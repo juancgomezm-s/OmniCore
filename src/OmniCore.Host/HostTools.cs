@@ -23,6 +23,7 @@ public sealed class HostTools
             .Add(new ReadFileTool(boundary))
             .Add(new FilesystemPatchTool(boundary))
             .Add(new ReferenceResolveTool(boundary))
+            .Add(new UserAskTool())
             .Add(_planPropose);
     }
 
