@@ -25,6 +25,11 @@ public sealed class SimulationEngine
 
     private IToolExecutor? _toolExecutor;
 
+    /// <summary>Reconcilador de efectos de filesystem inyectado (ADR-0004 §4); null = conservador.</summary>
+    private readonly IFilesystemReconciler? _fsReconciler;
+
+    private readonly string _workspaceRoot;
+
     private bool _crashed;
 
     private readonly Dictionary<string, PlanItemId> _symbolicItems = new();
@@ -38,6 +43,8 @@ public sealed class SimulationEngine
         _planService = new PlanService();
         _reconciler = new ProgressReconciler();
         _toolExecutor = null;
+        _fsReconciler = null;
+        _workspaceRoot = "sim";
     }
 
     public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
@@ -50,6 +57,27 @@ public sealed class SimulationEngine
         _planService = new PlanService();
         _reconciler = new ProgressReconciler();
         _toolExecutor = toolExecutor;
+        _fsReconciler = null;
+        _workspaceRoot = "sim";
+    }
+
+    /// <summary>
+    /// Con conciliador de filesystem y raíz real (ADR-0004 §4): el resume puede clasificar los
+    /// efectos Started-sin-outcome contra rutas/hashes reales. <c>workspaceRoot</c> es el directorio
+    /// sobre el que operaron las tools; <c>reconciler == null</c> conserva el camino conservador.
+    /// </summary>
+    public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
+        IToolExecutor toolExecutor, IFilesystemReconciler? reconciler, string workspaceRoot)
+    {
+        _store = store;
+        _codecs = codecs;
+        _audit = audit;
+        _codecForRun = codecs.CodecFor(EventType.Of("run.started"));
+        _planService = new PlanService();
+        _reconciler = new ProgressReconciler();
+        _toolExecutor = toolExecutor;
+        _fsReconciler = reconciler;
+        _workspaceRoot = workspaceRoot;
     }
 
     /// <summary>Permite sustituir el executor (test/sim). El engine no conoce implementaciones.</summary>
@@ -314,42 +342,26 @@ public sealed class SimulationEngine
     }
 
     /// <summary>
-    /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2): detecta ToolCalls Started sin
-    /// outcome en el journal, emite ToolCallEffectUnknown y las reconcilia contra su intent
-    /// (sin duplicar el efecto). Devuelve el número de toolcalls reconciliadas.
+    /// Reanuda un run tras un crash (ADR-0004 §5, ADR-0041 §2). La lógica vive en
+    /// <c>RunResumeService</c> (idempotente, scoped por Run, rechaza Runs terminales) para que el
+    /// sim y el Host compartan la misma implementación sin duplicarla. Este overload usa la raíz
+    /// de workspace configurada en el engine.
     /// </summary>
     public int Resume(SessionId sessionId, RunId runId, EventStream stream)
     {
-        var tail = _store.ReadFrom(sessionId, 1);
-        var startedNoOutcome = new List<ToolCallId>();
-        foreach (var evt in tail)
-        {
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
-            if (payload is ToolCallStarted)
-            {
-                startedNoOutcome.Add(evt.ToolCallId!);
-            }
-        }
+        return Resume(sessionId, runId, stream, _workspaceRoot);
+    }
 
-        foreach (var outcome in tail)
-        {
-            var payload = _codecs.CodecFor(outcome.Type).Decode(outcome.Type, outcome.PayloadJson);
-            if (payload is ToolCallSucceeded || payload is ToolCallFailed || payload is ToolCallReconciled
-                || payload is ToolCallEffectUnknown)
-            {
-                startedNoOutcome.Remove(outcome.ToolCallId!);
-            }
-        }
-
-        var reconciled = 0;
-        foreach (var id in startedNoOutcome)
-        {
-            stream.Append(new ToolCallEffectUnknown(id, EffectClass.Reconcilable));
-            stream.Append(new ToolCallReconciled(id, ReconciliationOutcome.NotApplied, "resume: sin post-hash"));
-            reconciled += 1;
-        }
-
-        return reconciled;
+    /// <summary>
+    /// Variante con raíz de workspace explícita: delega en <c>RunResumeService</c>, que relee el
+    /// hash real del archivo con el reconciliador inyectado _fsReconciler para clasificar
+    /// Applied/NotApplied/Conflict contra pre/post. Sin reconciliador o sin metadatos →
+    /// Unresolvable (falla cerrado, nunca Applied). El parámetro <c>stream</c> se conserva por
+    /// compatibilidad de API; el servicio escribe su propio EventStream sobre el mismo store.
+    /// </summary>
+    public int Resume(SessionId sessionId, RunId runId, EventStream stream, string workspaceRoot)
+    {
+        return new RunResumeService(_store, _codecs, _fsReconciler, workspaceRoot).Resume(sessionId, runId);
     }
 
     private void ExecuteTurns(SimulationScenario scenario, EventStream stream, LaneId laneId,
@@ -419,7 +431,7 @@ public sealed class SimulationEngine
                 // outcome (ADR-0004 §2) y la reconcilie sin duplicar.
                 var crashIntent = new ToolIntent(callId, validated.ToolId, "{}", EffectClass.Reconcilable,
                     ResourceClaims.Empty(), ToolRisk.Low, null);
-                stream.Append(new ToolCallStarted(callId, crashIntent.Effect));
+                stream.Append(new ToolCallStarted(callId, crashIntent.Effect, null));
                 _crashed = true;
                 var crashTurn = TurnId.New();
                 stream.Append(new TurnStarted(crashTurn, laneId));
@@ -450,7 +462,7 @@ public sealed class SimulationEngine
 
         // Fallback sin pipeline (compat con tests que no inyectan executor).
         stream.Append(new ToolCallRequested(callId, "pc-" + toolName, toolName, "{}"));
-        stream.Append(new ToolCallStarted(callId, ParseEffect(action.Effect)));
+        stream.Append(new ToolCallStarted(callId, ParseEffect(action.Effect), null));
         stream.Append(new ToolCallSucceeded(callId, "{\"summary\":\"ok\"}"));
         var fallbackTurn = TurnId.New();
         stream.Append(new TurnStarted(fallbackTurn, laneId));

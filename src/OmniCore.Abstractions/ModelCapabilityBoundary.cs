@@ -63,6 +63,14 @@ public sealed class ModelCapabilityBoundary
 
     private readonly EffectiveModelPolicy _policy;
 
+    /// <summary>
+    /// Registro de lecturas efectivas por-Run (ADR-0044 §5): lo alimentan los reads exitosos y
+    /// lo consulta filesystem.patch antes de mutar. Vive EN la frontera (es el ámbito per-Run de
+    /// la política del modelo) y viaja a los tools vía <c>ToolExecutionContext.ReadRegistry</c>.
+    /// Nunca es un estado global entre sesiones.
+    /// </summary>
+    private readonly FileReadRegistry _readRegistry;
+
     public ModelCapabilityBoundary(EffectiveModelPolicy policy)
         : this(policy, CoreTools)
     {
@@ -70,10 +78,20 @@ public sealed class ModelCapabilityBoundary
 
     public ModelCapabilityBoundary(EffectiveModelPolicy policy,
         IReadOnlyDictionary<string, ModelToolCapability> toolCapabilities)
+        : this(policy, toolCapabilities, new FileReadRegistry())
+    {
+    }
+
+    public ModelCapabilityBoundary(EffectiveModelPolicy policy,
+        IReadOnlyDictionary<string, ModelToolCapability> toolCapabilities, FileReadRegistry readRegistry)
     {
         _policy = policy;
         _toolCapabilities = toolCapabilities;
+        _readRegistry = readRegistry;
     }
+
+    /// <summary>Registro de lecturas efectivas de este Run (ADR-0044 §5).</summary>
+    public FileReadRegistry ReadRegistry() => _readRegistry;
 
     /// <summary>
     /// Valida un ToolIntent contra la política efectiva. Reglas (ADR-0044 §5):
@@ -139,6 +157,29 @@ public sealed class ModelCapabilityBoundary
         }
 
         return ModelCapabilityDecision.Allow();
+    }
+
+    /// <summary>
+    /// Máximo de tools visibles de la política efectiva (ya intersectada con el harness,
+    /// ADR-0044 §4). Lo usa el ToolPlanner (<c>VisibleTools</c>) para no mostrar más tools de
+    /// las que la política concede.
+    /// </summary>
+    public int MaxVisibleTools() => _policy.ToolPolicy.MaxVisibleTools;
+
+    /// <summary>
+    /// True si la tool está clasificada Y su capacidad está dentro del techo del modelo
+    /// (ADR-0044 §5.1): el ToolPlanner oculta así las tools no permitidas, reduciendo la
+    /// superficie. Una tool oculta/inventada sigue siendo rechazada por <c>Evaluate</c> si el
+    /// modelo la emite de todos modos (defensa en profundidad).
+    /// </summary>
+    public bool IsToolVisible(string toolName)
+    {
+        if (!_toolCapabilities.TryGetValue(toolName, out var capability))
+        {
+            return false;
+        }
+
+        return _policy.ToolPolicy.Allows(capability);
     }
 
     /// <summary>Concasión del techo de mutación con la capacidad concreta de la tool.</summary>

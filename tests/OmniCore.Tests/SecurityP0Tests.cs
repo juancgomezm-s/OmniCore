@@ -93,6 +93,34 @@ public sealed class SecurityP0Tests
         Assert.Equal("original", File.ReadAllText(Path.Combine(ws, "doc.txt")));
     }
 
+    [Fact]
+    public void Patch_prepare_is_pure_and_reconciliation_is_computed_only_after_authorization()
+    {
+        // INV-013: Prepare no lee el archivo (ni siquiera para los metadatos de reconciliación).
+        var ws = TempDir();
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), "a\nb\n");
+        var version = FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes("a\nb\n"));
+        var args = "{\"path\":\"doc.txt\",\"expectedVersion\":\"" + version + "\",\"oldText\":\"b\",\"newText\":\"c\"}";
+        var tool = new FilesystemPatchTool(new PathBoundaryValidator());
+
+        var prepared = Assert.IsType<Prepared>(tool.Prepare(Call("filesystem.patch", args),
+            new ToolPreparationContext(ws, DateTimeOffset.UtcNow)));
+        Assert.Null(prepared.Intent.Reconciliation);
+
+        // Tras autorizar, el ToolCallStarted sí lleva los metadatos (calculados antes del efecto).
+        var events = new List<DomainEventPayload>();
+        var runtime = ToolRuntime.For(
+            new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+                includeMutationTools: true).Catalog(),
+            ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow),
+            e => { events.Add(e); return VoidBox.Instance; });
+        runtime.Run(Call("filesystem.patch", args), new ToolPreparationContext(ws, DateTimeOffset.UtcNow),
+            new ToolExecutionContext(ws), false, CancellationToken.None);
+        var started = Assert.Single(events.OfType<ToolCallStarted>());
+        Assert.NotNull(started.ReconciliationJson);
+        Assert.Contains(version, started.ReconciliationJson);
+    }
+
     // ── #7 Combinación de permisos ───────────────────────────────────────────────────────
 
     [Fact]

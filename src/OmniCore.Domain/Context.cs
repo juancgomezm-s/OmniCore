@@ -18,8 +18,21 @@ public sealed class ExecutionFingerprint
 
     public string Build { get; }
 
+    /// <summary>
+    /// Hash de la política efectiva del modelo (ADR-0044 §8): <c>EffectiveModelPolicy.Fingerprint()</c>
+    /// — clave + revisión + categoría + modo de mutación. Vacío cuando no hay política
+    /// cableada (p. ej. tests/sim de M1–M2). Nunca contenido: solo identidad de la política.
+    /// </summary>
+    public string ModelPolicyHash { get; }
+
     public ExecutionFingerprint(string modelKey, string harnessPolicyHash, string toolkitHash,
         string contextPolicyHash, string overridesHash, string build)
+        : this(modelKey, harnessPolicyHash, toolkitHash, contextPolicyHash, overridesHash, build, "")
+    {
+    }
+
+    public ExecutionFingerprint(string modelKey, string harnessPolicyHash, string toolkitHash,
+        string contextPolicyHash, string overridesHash, string build, string modelPolicyHash)
     {
         ModelKey = modelKey;
         HarnessPolicyHash = harnessPolicyHash;
@@ -27,12 +40,13 @@ public sealed class ExecutionFingerprint
         ContextPolicyHash = contextPolicyHash;
         OverridesHash = overridesHash;
         Build = build;
+        ModelPolicyHash = modelPolicyHash;
     }
 
     /// <summary>Hash estable del fingerprint para comparar Turns.</summary>
     public string Hash() =>
         ModelKey + "|" + HarnessPolicyHash + "|" + ToolkitHash + "|" + ContextPolicyHash + "|"
-        + OverridesHash + "|" + Build;
+        + OverridesHash + "|" + Build + "|" + ModelPolicyHash;
 }
 
 /// <summary>Snapshot del contexto exacto enviado en un Turn (spec §29, ADR-0029).</summary>

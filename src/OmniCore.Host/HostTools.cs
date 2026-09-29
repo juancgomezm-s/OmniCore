@@ -32,6 +32,10 @@ public sealed class HostTools
         _catalog = catalog
             .Add(new ReferenceResolveTool(boundary))
             .Add(_planPropose);
+        // user.ask (ADR-0045) NO se expone todavía: su ExecuteAsync devuelve éxito con el propio
+        // cuestionario y el Host aún no publica la InteractionRequest ni entrega la respuesta al
+        // Turn (QuestionnaireInteractionService sin cablear). Exponerlo haría creer al modelo que
+        // tiene respuesta (INV-025). Entra cuando el Turn pueda suspenderse y reanudarse.
     }
 
     public static HostTools Default()

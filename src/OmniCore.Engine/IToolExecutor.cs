@@ -15,6 +15,19 @@ public interface IToolExecutor
 {
     ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Variante del pipeline con escritura en vivo del journal (pipeline real de Explorer).
+    /// Cuando el intent declara una clase de efecto ≠ None, <c>ToolCallStarted</c> se persiste
+    /// sincrónicamente con <c>DurabilityClass.Barrier</c> ANTES de llamar <c>ITool.ExecuteAsync</c>
+    /// (ADR-0002 §2, ADR-0004 §2), junto con los eventos previos del pipeline (Standard, en
+    /// orden) para que la secuencia del Started nunca preceda a la de sus predecesores. Los
+    /// outcomes quedan en <c>ToolOutcome.Events</c> para que el Engine los persista (Standard)
+    /// tras la ejecución, sin duplicar lo ya escrito. Pasar <c>null</c> conserva la semántica
+    /// por defecto (el Engine persiste toda la lista después de ejecutar).
+    /// </summary>
+    ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream? stream);
 }
 
 /// <summary>Resultado compacto del pipeline de tools para el Engine.</summary>

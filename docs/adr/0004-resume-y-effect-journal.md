@@ -68,6 +68,35 @@ La **declara el `ToolIntent`** en `Prepare` (ADR-0014); no se infiere en tiempo 
    - Si la respuesta está incompleta, el Turn se abandona (evento `TurnAbandoned`) y se re-infiere desde su contexto, como en la rev. 1.
 5. **Runs terminales:** un Run solo es reanudable si su estado proyectado no es terminal.
 
+### 5bis. Raíz durable con identidad verificable (recuperación del Host)
+
+Para reconciliar efectos contra el filesystem del workspace, la recuperación del Host (ADR-0041 §2)
+usa la raíz del run como frontera y autoridad de paths. Solo acepta como origen la raíz durable
+emitida en `WorkspaceRootEstablished` — nunca el cwd de un proceso posterior ni una ruta de display
+(`WorkspaceDisplayPath`).
+
+La integridad de esa raíz se refuerza con una **identidad durable**: la ruta física de la raíz,
+con todos los symlinks/junctions resueltos, capturada al crear la sesión y persistida en
+`WorkspaceRootEstablished.DurableIdentity`. Al reabrir (arranque del Host), la verificación exige que
+la raíz siga resolviendo a esa misma ruta física, además de `Directory.Exists`. Esto cierra el hueco
+en que una ruta sustituida por symlink/junction a otro árbol pasaría el check de existencia y la
+recuperación clasificaría `Applied` contra un árbol equivocado.
+
+**Nada se escribe ni se lee dentro del workspace** (ADR-0039 §2, INV-029). Una primera versión usaba
+un marcador en `{root}/.omnicore/workspace-id`; se retiró en la integración de M3 (2026-09-29) porque
+un repo podía traer ese archivo versionado como enlace a un archivo de secretos, cuyo contenido
+acababa en el journal (INV-016).
+
+- Identidad ausente o de formato anterior en el evento, ruta movida/borrada o que resuelve a otro
+  sitio → la recuperación **falla cerrado**: bloqueada, visible (`LastRecoveryProblem`), sin
+  re-ejecutar ni clasificar `Applied`, y el Run no se continúa automáticamente.
+
+**Limitación documentada (no se declara el crash recovery “cerrado”):** la identidad detecta la
+sustitución de la ruta por un enlace, no que un directorio real se sustituya por otro directorio
+real en la misma ruta (borrar y recrear). Para eso haría falta la identidad del sistema de archivos
+(FileId en Windows, dev/inode en POSIX), pendiente. En ese caso la reconciliación sigue decidiendo
+por hashes de contenido: solo clasifica `Applied` si el archivo coincide con el post-hash.
+
 ## Clasificación
 
 | Elemento | Categoría |
