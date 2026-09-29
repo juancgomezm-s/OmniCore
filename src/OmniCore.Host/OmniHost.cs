@@ -79,6 +79,42 @@ public sealed class OmniHost
     public static ICredentialStore CreateCredentialStore(string dataDirectory) =>
         new FileCredentialStore(Path.Combine(dataDirectory, "credentials.ini"));
 
+    /// <summary>
+    /// API key de un provider: la del entorno si viene (y se guarda cifrada para las siguientes
+    /// ejecuciones) o, si no, la del credential store del usuario. Null si no hay ninguna.
+    /// </summary>
+    public static string? ResolveApiKey(ICredentialStore credentials, string secretRef, string? environmentKey,
+        CancellationToken cancellationToken)
+    {
+        if (environmentKey is not null && environmentKey.Length > 0)
+        {
+            credentials.Save(secretRef, environmentKey, cancellationToken);
+            return environmentKey;
+        }
+
+        var stored = credentials.Load(secretRef, cancellationToken);
+        return stored is not null && stored.Length > 0 ? stored : null;
+    }
+
+    /// <summary>Rutas de plataforma del usuario (datos y configuración fuera del repo, ADR-0038 §2).</summary>
+    public static IPlatformPaths CreatePlatformPaths(string? dataDirectoryOverride = null) =>
+        new DefaultPlatformPaths(dataDirectoryOverride);
+
+    /// <summary>CredentialStore del usuario, en el directorio de datos de la plataforma (nunca en el repo).</summary>
+    public static ICredentialStore CreateUserCredentialStore(IPlatformPaths paths) =>
+        CreateCredentialStore(paths.DataDirectory);
+
+    /// <summary>
+    /// Directorio de runtime del workspace: <c>(data)/workspaces/&lt;WorkspaceId&gt;/</c> (journal, blobs;
+    /// ADR-0039 §2). El id se deriva de la ruta canónica de la raíz.
+    /// </summary>
+    public static string WorkspaceDataDirectory(IPlatformPaths paths, string workspaceRoot) =>
+        paths.WorkspaceDirectory(OmniCore.Domain.WorkspaceId.Of(Path.GetFullPath(workspaceRoot)).ToString());
+
+    /// <summary>ModelRegistry desde la configuración del USUARIO, nunca desde el cwd (INV-029, ADR-0039).</summary>
+    public static ModelRegistry LoadUserModelRegistry(IPlatformPaths paths) =>
+        LoadModelRegistry(paths.ConfigDirectory);
+
     /// <summary>Store relacional de políticas de modelo en el user.db de plataforma (ADR-0044 §8).</summary>
     public static SqliteModelPolicyStore CreateModelPolicyStore() =>
         new(new DefaultPlatformPaths().UserDatabasePath);
@@ -106,15 +142,10 @@ public sealed class OmniHost
     public static HostTools CreateExplorerTools() => HostTools.Explorer();
 
     /// <summary>
-    /// Executor del pipeline real de tools + permisos para el Turn de Explorer: usa el catálogo
-    /// completo y la política con defaults por modo (Act). Ask sin cliente → Deny (los turnos
-    /// no-interactivos del CLI no pueden aprobar; solo el modo char abre InteractionRequest).
-    /// </summary>
-    /// <summary>
-    /// Executor del pipeline real de tools + permisos para el Turn de Explorer: usa el catálogo
-    /// completo y la política con defaults por modo (Act). Ask sin cliente → Deny (los turnos
-    /// no-interactivos del CLI no pueden aprobar; solo el modo char abre InteractionRequest).
-    /// El workspaceRoot fija la frontera de paths del turno (el cwd del proceso).
+    /// Executor del pipeline real de tools + permisos para la simulación: catálogo completo y
+    /// política con defaults por modo (Act). Ask sin cliente → Deny (los turnos no-interactivos
+    /// del CLI no pueden aprobar; solo el modo chat abre InteractionRequest). El workspaceRoot
+    /// fija la frontera de paths del turno (el cwd del proceso).
     /// </summary>
     public static IToolExecutor CreateSimExecutor(string workspaceRoot)
     {
@@ -125,16 +156,24 @@ public sealed class OmniHost
         return ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, workspaceRoot);
     }
 
+    /// <summary>
+    /// Executor del Turn de Explorer. Explorer es de solo lectura, así que la capa de modo es la
+    /// de PLAN: escrituras, procesos y red quedan en Deny aunque alguien meta una tool mutadora
+    /// en el catálogo (techo de seguridad, además de no exponerla). Pendiente: cablear
+    /// ModelCapabilityBoundary (ADR-0044) como capa adicional.
+    /// </summary>
     public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot)
     {
         var policy = new ScriptedPermissionPolicy(new Dictionary<string, OmniCore.Domain.PermissionDecision>())
-            .WithModeDefaults(OmniCore.Domain.RunMode.Act);
+            .WithModeDefaults(OmniCore.Domain.RunMode.Plan);
         return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot);
     }
 
     /// <summary>
     /// Carga el ModelRegistry desde providers.yaml/models.yaml de un directorio de configuración.
-    /// Si no hay archivos, devuelve el registro mínimo (provider local + local-worker).
+    /// Si no hay archivos, devuelve el registro mínimo (provider local + local-worker). El runtime
+    /// usa <see cref="LoadUserModelRegistry"/>; pasar aquí un directorio del repo permitiría que
+    /// el repo redirija la API key a otro host.
     /// </summary>
     public static ModelRegistry LoadModelRegistry(string configDirectory)
     {
@@ -149,9 +188,9 @@ public sealed class OmniHost
     }
 
     /// <summary>
-    /// Conecta un provider OpenAI Chat Completions local (M2). Acepta hosts con TLS self-signed
-    /// SIEMPRE QUE sean loopback o IP privada (Ver0+): nunca se relaja la validación para hosts
-    /// públicos (ADR-0011 §4, ADR-0038 §4). La key se provee por entorno (p. ej. OMNI_QWEN_KEY).
+    /// Conecta un provider OpenAI Chat Completions local (M2). Acepta TLS self-signed SOLO si el
+    /// host es localhost o un literal IP de loopback/red privada (<see cref="IsPrivateHost"/>):
+    /// nunca para nombres DNS ni hosts públicos (ADR-0011 §4, ADR-0038 §4). La key se provee por entorno (p. ej. OMNI_QWEN_KEY).
     /// </summary>
     public static OpenAiChatCompatibleProvider ConnectLocalChatCompletions(string baseUrl, string modelId,
         string secretRef, string apiKey)
@@ -175,47 +214,52 @@ public sealed class OmniHost
     }
 
     /// <summary>
-    /// True para loopback (127.0.0.0/8, ::1, localhost, *.local) y rangos privados RFC1918
-    /// (10/8, 172.16/12, 192.168/16) + CGN/ULA (100.64/10, fd00::/8). Los hosts públicos
-    /// nunca se marcan privados → validación TLS estricta (ADR-0038 §4).
+    /// True solo si el host de la URL es "localhost" o un LITERAL IP de loopback o de red privada:
+    /// 127.0.0.0/8, ::1, 10/8, 172.16/12, 192.168/16, 100.64/10 (CGN) y fc00::/7 (ULA). Se parsea
+    /// la dirección (no se compara por prefijo de texto), así que "10.evil.com" o
+    /// "192.168.1.1.nip.io" no cuentan como privados. Los nombres DNS, incluido "*.local", nunca se
+    /// consideran privados: pueden resolver a cualquier sitio. Con host público o nombre, la
+    /// validación TLS es estricta (ADR-0038 §4).
     /// </summary>
     internal static bool IsPrivateHost(string baseUrl)
     {
-        var lower = baseUrl.ToLowerInvariant();
-        var host = lower;
-        var scheme = lower.IndexOf("://");
-        if (scheme >= 0)
+        if (baseUrl is null || !Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri))
         {
-            host = lower.Substring(scheme + 3);
+            return false;
         }
 
-        var slash = host.IndexOf('/');
-        if (slash >= 0)
+        var host = uri.IdnHost;
+        if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
         {
-            host = host.Substring(0, slash);
+            return true;
         }
 
-        var colon = host.LastIndexOf(':');
-        if (colon > 0 && host.IndexOf(':') == colon)
+        if (!System.Net.IPAddress.TryParse(host.Trim('[', ']'), out var address))
         {
-            // host:port (IPv4); para IPv6 la última ':' separa puerto igualmente
-            if (host.Count(':') == 1)
-            {
-                host = host.Substring(0, colon);
-            }
+            return false;
         }
 
-        host = host.Trim('[', ']');
-        return host == "localhost"
-            || host == "::1"
-            || host.StartsWith("127.")
-            || host.StartsWith("10.")
-            || host.StartsWith("192.168.")
-            || host.StartsWith("172.16.") || host.StartsWith("172.17.") || host.StartsWith("172.18.")
-            || host.StartsWith("172.19.") || host.StartsWith("172.2.")
-            || (host.StartsWith("172.3") && (host.Length > 5) && host[5] < '2')
-            || host.StartsWith("100.64.") || host.StartsWith("100.65.")
-            || host.StartsWith("fd00:") || host.StartsWith("fe80:")
-            || host.EndsWith(".local");
+        if (address.IsIPv4MappedToIPv6)
+        {
+            address = address.MapToIPv4();
+        }
+
+        if (System.Net.IPAddress.IsLoopback(address))
+        {
+            return true;
+        }
+
+        var bytes = address.GetAddressBytes();
+        if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return bytes[0] == 10
+                || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                || (bytes[0] == 192 && bytes[1] == 168)
+                || (bytes[0] == 100 && bytes[1] >= 64 && bytes[1] <= 127);
+        }
+
+        // IPv6: solo ULA (fc00::/7).
+        return address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+            && (bytes[0] & 0xFE) == 0xFC;
     }
 }

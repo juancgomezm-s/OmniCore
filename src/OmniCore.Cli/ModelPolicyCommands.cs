@@ -45,9 +45,12 @@ public sealed class ModelPolicyCommands
         var reader = input ?? Console.In;
         var writer = output ?? Console.Out;
         var tty = interactive ?? (!Console.IsInputRedirected && !Console.IsOutputRedirected);
-        var service = OmniHost.CreateModelPolicyService(dataDirectoryOverride
-            ?? Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"));
-        var registry = registryOverride ?? OmniHost.LoadModelRegistry(".");
+        // null → DefaultPlatformPaths aplica OMNICORE_DATA_DIR o el directorio de la plataforma.
+        var dataDirectory = dataDirectoryOverride;
+        var service = OmniHost.CreateModelPolicyService(dataDirectory);
+        // providers.yaml/models.yaml del usuario, nunca del cwd (INV-029, ADR-0039).
+        var registry = registryOverride
+            ?? OmniHost.LoadUserModelRegistry(OmniHost.CreatePlatformPaths(dataDirectory));
         // Workspace del CLI: el directorio actual (una selección vigente por proyecto).
         var workspace = "cli|" + Path.GetFullPath(".");
         var commands = new ModelPolicyCommands(service, registry, reader, writer, tty, workspace);

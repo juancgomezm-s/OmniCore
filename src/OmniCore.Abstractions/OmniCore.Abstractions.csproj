@@ -4,4 +4,11 @@
     <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />
   </ItemGroup>
 
+  <!-- INV-018 / ADR-0009 §2.1: solo el Permission Engine puede construir un AuthorizedToolIntent.
+       Ningún otro assembly (ni los tests) recibe acceso a los internos de Abstractions; lo verifica
+       un test de arquitectura. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="OmniCore.Security" />
+  </ItemGroup>
+
 </Project>

@@ -21,4 +21,8 @@
     <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="OmniCore.Tests" />
+  </ItemGroup>
+
 </Project>

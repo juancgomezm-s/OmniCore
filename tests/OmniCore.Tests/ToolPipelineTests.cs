@@ -24,7 +24,7 @@ public sealed class ToolPipelineTests
             new Prepared(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
                 _effect, OmniCore.Domain.ResourceClaims.Empty(), ToolRisk.Low, null));
 
-        public Task<OmniCore.Domain.ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
+        public Task<OmniCore.Domain.ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
             CancellationToken cancellationToken) => throw new InvalidOperationException("boom");
     }
 

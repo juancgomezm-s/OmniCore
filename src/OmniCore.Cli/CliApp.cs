@@ -229,7 +229,10 @@ public sealed class CliApp
     private static Task<int> RunDoctor(string[] args)
     {
         Console.WriteLine("omni doctor — diagnóstico de M2");
-        var registry = OmniHost.LoadModelRegistry(".");
+        var paths = OmniHost.CreatePlatformPaths();
+        var registry = OmniHost.LoadUserModelRegistry(paths);
+        Console.WriteLine("Configuración: " + paths.ConfigDirectory);
+        WarnIgnoredRepoConfig(paths);
         Console.WriteLine("Modelos disponibles:");
         foreach (var model in registry.Models())
         {
@@ -241,9 +244,9 @@ public sealed class CliApp
         // Requisito 8: componentes de M2 cableados en el Host (no aislados ni solo en tests).
         var tokenizer = OmniHost.CreateTokenCounter();
         var resolver = OmniHost.CreateScopeResolver();
-        var creds = OmniHost.CreateCredentialStore(".");
+        var creds = OmniHost.CreateUserCredentialStore(paths);
         var localHost = OmniHost.CreateLocalModelHost();
-        var artifacts = OmniHost.CreateArtifactStore(".");
+        var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(paths, "."));
         Console.WriteLine("Runtime cableado:");
         Console.WriteLine("  tokenCounter=" + tokenizer.Id);
         Console.WriteLine("  scopeResolver=" + (resolver is null ? "?" : resolver.GetType().Name));
@@ -260,8 +263,12 @@ public sealed class CliApp
     {
         var question = args.Length >= 2 ? args[1] : "Responde solo: hola";
 
-        // Resolución desde el registro (providers.yaml/models.yaml) o variables de entorno.
-        var registry = OmniHost.LoadModelRegistry(".");
+        // Resolución desde el registro del usuario (providers.yaml/models.yaml en el directorio de
+        // configuración, nunca el cwd: INV-029) o variables de entorno.
+        var paths = OmniHost.CreatePlatformPaths();
+        var workspaceData = OmniHost.WorkspaceDataDirectory(paths, ".");
+        var registry = OmniHost.LoadUserModelRegistry(paths);
+        WarnIgnoredRepoConfig(paths);
         var modelDef = registry.Models().Count > 0 ? registry.Models()[0] : null;
         var providerDesc = modelDef is null ? null : registry.Provider(modelDef!.ProviderId);
         var authKind = providerDesc is null ? OmniCore.Abstractions.AuthKind.None : providerDesc!.Auth.Kind;
@@ -270,13 +277,23 @@ public sealed class CliApp
         var baseUrl = System.Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDesc?.BaseUrl
             ?? "http://127.0.0.1:8080/v1";
 
-        // Solo se exige la key si el provider configurado la requiere (None no la pide).
+        // Solo se exige la key si el provider configurado la requiere (None no la pide). Orden:
+        // OMNI_QWEN_KEY (y se guarda cifrada para las siguientes veces) → credential store del
+        // usuario (DPAPI en Windows). Nunca se guarda en el repo (ADR-0018).
         var secretRef = providerDesc?.Auth.SecretRef ?? "qwen";
-        var key = System.Environment.GetEnvironmentVariable("OMNI_QWEN_KEY");
-        if (authKind == OmniCore.Abstractions.AuthKind.ApiKey && (key is null || key!.Length == 0))
+        var creds = OmniHost.CreateUserCredentialStore(paths);
+        var envKey = System.Environment.GetEnvironmentVariable("OMNI_QWEN_KEY");
+        var key = envKey is not null && envKey.Length > 0 ? envKey : null;
+        if (authKind == OmniCore.Abstractions.AuthKind.ApiKey)
         {
-            Console.WriteLine("omni ask: '" + (providerDesc?.Id ?? "local") + "' requiere API key; define OMNI_QWEN_KEY. No se guardan secretos en el repo (ADR-0018).");
-            return Task.FromResult(1);
+            key = OmniHost.ResolveApiKey(creds, secretRef, key, CancellationToken.None);
+            if (key is null)
+            {
+                Console.WriteLine("omni ask: '" + (providerDesc?.Id ?? "local") + "' requiere API key '" + secretRef
+                    + "'. Define OMNI_QWEN_KEY una vez: se guarda cifrada en el almacén del usuario y no hará falta"
+                    + " volver a definirla. No se guardan secretos en el repo (ADR-0018).");
+                return Task.FromResult(1);
+            }
         }
 
         try
@@ -289,7 +306,7 @@ public sealed class CliApp
 
             // 1. Runtime real: materializa el contexto con el sim (WorkingState + plan + tokens).
             var hostTools = OmniHost.CreateExplorerTools();
-            var server = ResumeAwareServer();
+            var server = ResumeAwareServer(workspaceData);
             var wsQuery = server.Query("workingState", CancellationToken.None);
             var wsJson = wsQuery is null ? "{}" : wsQuery!.Json;
             var workingStateText = OmniCore.Protocol.JsonObj.Parse(wsJson)
@@ -339,15 +356,9 @@ public sealed class CliApp
             var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
                 usableContext, OmniCore.Domain.ToolMode.Direct, null);
 
-            // LocalModelHost/CredentialStore conectados en el flujo ask (P1): el credential
-            // store alimenta el provider; el local host confirma que no hay servidor managed huérfano.
+            // LocalModelHost conectado en el flujo ask (P1): confirma que no hay servidor managed
+            // huérfano. El credential store ya alimentó la key del provider más arriba.
             var localHost = OmniHost.CreateLocalModelHost();
-            var creds = OmniHost.CreateCredentialStore(Path.Combine(Path.GetFullPath("."), ".omnicore", "data"));
-            if (authKind == OmniCore.Abstractions.AuthKind.ApiKey && key is not null && key!.Length > 0)
-            {
-                creds.Save(secretRef, key!, CancellationToken.None);
-            }
-
             if (localHost.IsManagedRunning())
             {
                 System.Console.WriteLine("omni ask: (servidor local managed activo)");
@@ -362,7 +373,8 @@ public sealed class CliApp
                     new OmniCore.Context.WorkingStateContributor(workingStateText),
                 });
             var laneId = server.LastLaneId() ?? OmniCore.Domain.LaneId.New();
-            var artifacts = OmniHost.CreateArtifactStore("." + Path.DirectorySeparatorChar + ".omnicore-artifacts");
+            // FileArtifactStore añade blobs/sha256/ bajo el directorio del workspace (ADR-0039 §2).
+            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             var turn = new OmniCore.Host.ExplorerTurn(
                 (req, token) => provider.Complete(req, token),
                 executor, hostTools.Catalog(), materializer, fingerprint, selection,
@@ -402,12 +414,34 @@ public sealed class CliApp
             return Task.FromResult(1);
         }
     }
-    private static OmniCore.Host.OmniServer ResumeAwareServer()
+    /// <summary>
+    /// Avisa si el cwd trae providers.yaml/models.yaml: un repo nunca configura providers ni
+    /// credenciales (INV-029, ADR-0039), así que se ignoran; la configuración va en el directorio
+    /// del usuario.
+    /// </summary>
+    private static void WarnIgnoredRepoConfig(OmniCore.Abstractions.IPlatformPaths paths)
+    {
+        foreach (var name in new[] { "providers.yaml", "models.yaml" })
+        {
+            if (File.Exists(Path.Combine(".", name))
+                && !Path.GetFullPath(".").Equals(Path.GetFullPath(paths.ConfigDirectory), StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("aviso: se ignora ./" + name + " (un repo no configura providers, INV-029). "
+                    + "La configuración va en " + Path.Combine(paths.ConfigDirectory, name));
+            }
+        }
+    }
+
+    private static OmniCore.Host.OmniServer ResumeAwareServer() =>
+        ResumeAwareServer(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), "."));
+
+    private static OmniCore.Host.OmniServer ResumeAwareServer(string workspaceData)
     {
         if (_server is null)
         {
-            // Journal persistente del CLI para permitir --resume entre procesos (ADR-0041 §2).
-            var journal = ".omnicore-sim-journal.db";
+            // Journal persistente del CLI para permitir --resume entre procesos (ADR-0041 §2),
+            // en el directorio de datos del workspace, fuera del repo (ADR-0039 §2).
+            var journal = Path.Combine(workspaceData, "journal.db");
             _server = OmniHost.OpenPersistentServer(journal);
         }
 

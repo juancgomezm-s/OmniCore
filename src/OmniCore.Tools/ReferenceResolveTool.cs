@@ -47,7 +47,7 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
         return new Prepared(intent);
     }
 
-    public Task<ToolResult> ExecuteAsync(IAuthorizedToolIntent intent, ToolExecutionContext context,
+    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
         var reference = ArgsJson.Parse(intent.Intent.NormalizedArgumentsJson).TryGetValue("ref", out var r) ? r : null;
@@ -77,7 +77,9 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
         }
 
         // ADR-0018 §4: las referencias a secretos (.env, claves, credenciales) se niegan.
-        if (new OmniCore.Domain.RedactionPolicy().IsSecretPath(full))
+        // Se mira la ruta escrita y también su destino físico: un enlace puede apuntar a un secreto.
+        if (new OmniCore.Domain.RedactionPolicy().IsSecretPath(clean)
+            || SecretPathGuard.IsSecretTarget(_boundary, full, workspaceRoot))
         {
             return new ResolvedReference("invalid", clean, "ruta de secretos protegida (ADR-0018)");
         }
