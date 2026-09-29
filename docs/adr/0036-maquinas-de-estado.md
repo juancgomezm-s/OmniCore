@@ -26,6 +26,10 @@
 
 `Preparing` desaparece; la preparación ocurre dentro de `Running`. El cambio de modo se registra como `RunModeChanged` y no es un cambio de estado.
 
+`UserInputReceived` con el Run en `Running` no es una transición: es un mensaje que se añade a la conversación y lo ve el próximo Turn de la Lane raíz (ADR-0035 §1). `RunCompleted { outcome: CompletedWithIssues }` lleva al estado `CompletedWithIssues`.
+
+**Validación (M1, 2026-09-29):** `EventStream` valida cada evento contra estas tablas antes de persistirlo (`CanonicalStateTracker`); una transición inválida, o un evento sobre una entidad que no existe, lanza `InvalidStateTransitionException` y no se escribe. Las proyecciones calculan el estado con las mismas máquinas y fallan igual ante un journal inválido.
+
 ## 2. Task
 
 | Desde | Hacia | Evento |

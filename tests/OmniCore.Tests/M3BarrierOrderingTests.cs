@@ -228,7 +228,7 @@ public sealed class M3BarrierOrderingTests
             return End();
         });
 
-        turn.Ask("parchea el archivo", "sys", sessionId, RunId.New(), "ws", CancellationToken.None);
+        turn.Ask("parchea el archivo", "sys", sessionId, TestRun.OpenRun(spy, sessionId), "ws", CancellationToken.None);
 
         try
         {
@@ -268,7 +268,7 @@ public sealed class M3BarrierOrderingTests
             return End();
         });
 
-        turn.Ask("parchea el archivo", "sys", sessionId, RunId.New(), "ws", CancellationToken.None);
+        turn.Ask("parchea el archivo", "sys", sessionId, TestRun.OpenRun(spy, sessionId), "ws", CancellationToken.None);
 
         try
         {
@@ -316,7 +316,7 @@ public sealed class M3BarrierOrderingTests
             return End();
         });
 
-        var result = turn.Ask("escribe", "sys", sessionId, RunId.New(), "ws", CancellationToken.None);
+        var result = turn.Ask("escribe", "sys", sessionId, TestRun.OpenRun(spy, sessionId), "ws", CancellationToken.None);
 
         try
         {

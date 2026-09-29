@@ -118,7 +118,7 @@ public sealed class M3PolicyBoundaryTests
             new RedactionPolicy(), boundary: boundary);
 
         var sessionId = SessionId.New();
-        var result = turn.Ask("patchea el archivo", "sys {context}", sessionId, RunId.New(), "",
+        var result = turn.Ask("patchea el archivo", "sys {context}", sessionId, TestRun.OpenRun(store, sessionId), "",
             CancellationToken.None);
 
         // El modelo invocó filesystem.patch pero la frontera ObserveOnly lo rechaza.
@@ -189,7 +189,7 @@ public sealed class M3PolicyBoundaryTests
             new RedactionPolicy(), boundary: boundary);
 
         var sessionId = SessionId.New();
-        var result = turn.Ask("lee y patchea doc.txt", "sys {context}", sessionId, RunId.New(), "",
+        var result = turn.Ask("lee y patchea doc.txt", "sys {context}", sessionId, TestRun.OpenRun(store, sessionId), "",
             CancellationToken.None);
 
         Assert.True(result.ToolCalls.Count >= 2, "Lectura previa + patch (" + result.ToolCalls.Count + ")");
@@ -247,7 +247,7 @@ public sealed class M3PolicyBoundaryTests
             store, EventCodecs.Create(), new FileArtifactStore(ws + "\\.omnicore-art"), sink,
             new RedactionPolicy(), boundary: boundary);
         var sessionId = SessionId.New();
-        var result = turn.Ask("borra el archivo", "sys {context}", sessionId, RunId.New(), "",
+        var result = turn.Ask("borra el archivo", "sys {context}", sessionId, TestRun.OpenRun(store, sessionId), "",
             CancellationToken.None);
         Assert.True(result.ToolCalls.Count >= 1, "La tool inventada se intentó");
         Assert.False(result.ToolCalls[0].Succeeded, "La tool inventada se rechaza. summary=" + result.ToolCalls[0].Summary);

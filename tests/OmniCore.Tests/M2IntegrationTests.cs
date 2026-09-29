@@ -91,7 +91,7 @@ public sealed class M2IntegrationTests
             store, EventCodecs.Create(), new FileArtifactStore(TestCwd + "\\.omnicore-profile-art"),
             new InMemoryAuditSink(), new RedactionPolicy(), restricted);
 
-        turn.Ask("pregunta", "sys", sessionId, RunId.New(), "ws", CancellationToken.None);
+        turn.Ask("pregunta", "sys", sessionId, TestRun.OpenRun(store, sessionId), "ws", CancellationToken.None);
         Assert.NotNull(observed);
         Assert.True(observed!.IsError);
         Assert.Contains("toolcall.rejected", store.ReadFrom(sessionId, 1).Select(e => e.Type.ToString()));
@@ -119,6 +119,7 @@ public sealed class M2IntegrationTests
                 stream.Append(new RunCreated(item.Item1, sessionId, item.Item2, RunMode.Act,
                     ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
                     new TaskBudget(null, null, null, null), taskId, DateTimeOffset.UtcNow));
+                stream.Append(new RunStarted(item.Item1));
                 stream.Append(new PlanCreated(planId, item.Item1, root, item.Item2));
                 stream.Append(new PlanItemAdded(PlanItemId.New(), planId, item.Item2 + " item", 2,
                     null, Array.Empty<PlanItemId>(), true, new Dictionary<string, string>()));
@@ -183,8 +184,8 @@ public sealed class M2IntegrationTests
         var rootItem = PlanItemId.New();
         stream.Append(new RunCreated(runId, sessionId, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
             FailurePolicy.BlockDependents, new TaskBudget(1m, 1000L, 10, 20), CreatenRootTask(), DateTimeOffset.Now));
+        stream.Append(new RunStarted(runId));
         stream.Append(new PlanCreated(PlanId.New(), runId, rootItem, "objetivo"));
-        stream.Append(new PlanItemAdded(rootItem, PlanId.New(), "P0 raíz", 1, null, new PlanItemId[0], true, new Dictionary<string, string>()));
         var p1 = PlanItemId.New();
         stream.Append(new PlanItemAdded(p1, PlanId.New(), "P1 inspeccionar", 2, null, new PlanItemId[0], true, new Dictionary<string, string>()));
         stream.Append(new ToolCallRequested(ToolCallId.New(), "pc-1", "plan.propose", "{}"));
@@ -211,6 +212,7 @@ public sealed class M2IntegrationTests
         stream.Append(new RunCreated(runId, sessionId, "objetivo", RunMode.Act,
             ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
             new TaskBudget(null, null, null, null), TaskId.New(), DateTimeOffset.UtcNow));
+        stream.Append(new RunStarted(runId));
         stream.Append(new PlanCreated(PlanId.New(), runId, root, "objetivo"));
         stream.Append(new PlanItemStarted(root));
 
@@ -386,8 +388,8 @@ public sealed class M2IntegrationTests
         var root1 = PlanItemId.New();
         stream.Append(new RunCreated(run1, sessionId, "run1", RunMode.Act, ExecutionStrategy.Direct,
             FailurePolicy.BlockDependents, new TaskBudget(null, 1000L, 20, 20), TaskId.New(), DateTimeOffset.Now));
+        stream.Append(new RunStarted(run1));
         stream.Append(new PlanCreated(PlanId.New(), run1, root1, "objetivo run1"));
-        stream.Append(new PlanItemAdded(root1, PlanId.New(), "R1", 1, null, new PlanItemId[0], true, new Dictionary<string, string>()));
         var p1Run1 = PlanItemId.New();
         stream.Append(new PlanItemAdded(p1Run1, PlanId.New(), "R1 item", 2, null, new PlanItemId[0], true, new Dictionary<string, string>()));
         stream.Append(new PlanItemStarted(p1Run1));
@@ -397,8 +399,8 @@ public sealed class M2IntegrationTests
         var root2 = PlanItemId.New();
         stream.Append(new RunCreated(run2, sessionId, "run2", RunMode.Act, ExecutionStrategy.Direct,
             FailurePolicy.BlockDependents, new TaskBudget(null, 10L, 1, 1), TaskId.New(), DateTimeOffset.Now));
+        stream.Append(new RunStarted(run2));
         stream.Append(new PlanCreated(PlanId.New(), run2, root2, "objetivo run2"));
-        stream.Append(new PlanItemAdded(root2, PlanId.New(), "R2", 1, null, new PlanItemId[0], true, new Dictionary<string, string>()));
         var p1Run2 = PlanItemId.New();
         stream.Append(new PlanItemAdded(p1Run2, PlanId.New(), "R2 item", 2, null, new PlanItemId[0], true, new Dictionary<string, string>()));
 
@@ -452,7 +454,7 @@ public sealed class M2IntegrationTests
             store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-turn-artifacts"),
             new InMemoryAuditSink(), new RedactionPolicy());
         var sessionId = SessionId.New();
-        var runId = RunId.New();
+        var runId = TestRun.OpenRun(store, sessionId);
         var fixture = TestCwd + "\\fixture.txt";
         File.WriteAllText(fixture, "contenido fixture para el turno");
 
@@ -512,8 +514,9 @@ public sealed class M2IntegrationTests
         var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
         var selection = new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null);
         var session = SessionId.New();
-        var run = RunId.New();
-        var lane = LaneId.New();
+        var opened = TestRun.Open(store, session);
+        var run = opened.RunId;
+        var lane = opened.RootLane;
 
         var first = new ExplorerTurn((request, token) =>
             new ModelResponse(new ContentBlock[] { new TextBlock("respuesta anterior") },
@@ -566,7 +569,8 @@ public sealed class M2IntegrationTests
             store, EventCodecs.Create(), new FileArtifactStore(TestCwd + "\\.omnicore-step-artifacts"),
             new InMemoryAuditSink(), new RedactionPolicy());
 
-        var result = turn.Ask("pregunta", "sys", session, RunId.New(), LaneId.New(), "", CancellationToken.None);
+        var result = turn.Ask("pregunta", "sys", session, TestRun.OpenRun(store, session), LaneId.New(), "",
+            CancellationToken.None);
         Assert.Equal(StopReason.Error, result.StopReason);
         Assert.Equal(ExplorerTurn.MaxSteps, result.Steps);
         var types = store.ReadFrom(session, 1).Select(evt => evt.Type.ToString()).ToArray();
@@ -693,7 +697,7 @@ public sealed class M2IntegrationTests
             },
             executor, hostTools.Catalog(), materializer, fingerprint, selection);
         var sessionId = SessionId.New();
-        var runId = RunId.New();
+        var runId = TestRun.OpenRun(turn.JournalStore, sessionId);
         var fixture = TestCwd + "\\fixture.txt";
         File.WriteAllText(fixture, "contenido fixture del turno end-to-end");
 
@@ -730,7 +734,8 @@ public sealed class M2IntegrationTests
         var fixture = TestCwd + "\\fixture.txt";
         File.WriteAllText(fixture, "fixture turno historial");
 
-        turn.Ask("pregunta", "sys", SessionId.New(), RunId.New(), "", CancellationToken.None);
+        var askSession = SessionId.New();
+        turn.Ask("pregunta", "sys", askSession, TestRun.OpenRun(turn.JournalStore, askSession), "", CancellationToken.None);
         File.Delete(fixture);
 
         var second = recorded[1];
@@ -1147,7 +1152,9 @@ public sealed class M2IntegrationTests
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null));
         File.WriteAllText(TestCwd + "\\fixture.txt", "contenido real del archivo del turno");
 
-        turn.Ask("usa filesystem.read", "sys", SessionId.New(), RunId.New(), "", CancellationToken.None);
+        var askSession = SessionId.New();
+        turn.Ask("usa filesystem.read", "sys", askSession, TestRun.OpenRun(turn.JournalStore, askSession), "",
+            CancellationToken.None);
 
         var forwarded = string.Join(" ", captured.ToArray());
         Assert.False(forwarded.Contains("Ruta fuera del workspace"), "El archivo se lee dentro del workspace");

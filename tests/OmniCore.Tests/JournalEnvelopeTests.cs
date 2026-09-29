@@ -20,6 +20,16 @@ public sealed class JournalEnvelopeTests
         return Path.Combine(dir, Guid.NewGuid().ToString("N") + ".db");
     }
 
+    /// <summary>Evento sin entidad canónica (no participa en las máquinas de estado).</summary>
+    private static DomainEventPayload Neutral() => new InteractionExpired(InteractionId.New());
+
+    private static RunCreated NewRun(SessionId session, RunId run, TaskId rootTask) =>
+        new(run, session, "objetivo", RunMode.Act, ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
+            new TaskBudget(null, null, null, null), rootTask, DateTimeOffset.UtcNow);
+
+    private static TaskCreated NewTask(TaskId task, RunId run) =>
+        new(task, run, "tarea", Array.Empty<TaskDependency>(), new TaskBudget(null, null, null, null));
+
     // ── Envelope ────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -34,11 +44,11 @@ public sealed class JournalEnvelopeTests
         var call = ToolCallId.New();
 
         stream.Append(new SessionCreated(session, "ws", "/ws", ProfileId.New(), DateTimeOffset.UtcNow));
-        stream.Append(new RunCreated(run, session, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
-            FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), task, DateTimeOffset.UtcNow));
-        stream.Append(new TaskReady(task));
-        stream.Append(new LaneStarted(lane));
-        stream.Append(new ToolCallStarted(call, EffectClass.None, null));
+        stream.Append(NewRun(session, run, task));
+        stream.Append(new TaskCreated(task, run, "tarea", Array.Empty<TaskDependency>(),
+            new TaskBudget(null, null, null, null)));
+        stream.Append(new LaneCreated(lane, task, ProfileId.New()));
+        stream.Append(new ToolCallRequested(call, "pc-1", "fake.read", "{}"));
 
         var events = store.ReadFrom(session, 1);
         Assert.Null(events[0].CorrelationId); // antes del primer Run no hay correlación
@@ -46,6 +56,7 @@ public sealed class JournalEnvelopeTests
         Assert.All(events.Skip(1), e => Assert.Equal(run, e.RunId));
         Assert.Equal(task, events[2].TaskId);
         Assert.Equal(lane, events[3].LaneId);
+        Assert.Equal(task, events[3].TaskId);
         Assert.Equal(call, events[4].ToolCallId);
     }
 
@@ -57,11 +68,11 @@ public sealed class JournalEnvelopeTests
         var run = RunId.New();
         var task = TaskId.New();
         var first = new EventStream(store, EventCodecs.Create(), session);
-        first.Append(new RunCreated(run, session, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
-            FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), task, DateTimeOffset.UtcNow));
+        first.Append(NewRun(session, run, task));
+        first.Append(NewTask(task, run));
 
         var second = new EventStream(store, EventCodecs.Create(), session);
-        second.Append(new TaskReady(task));
+        second.Append(new TaskReady(task)); // valida contra lo que escribió el primero
 
         Assert.Equal(run, store.ReadFrom(session, 1)[^1].CorrelationId);
     }
@@ -72,17 +83,16 @@ public sealed class JournalEnvelopeTests
         var store = new InMemoryEventStore();
         var session = SessionId.New();
         var stream = new EventStream(store, EventCodecs.Create(), session);
-        var task = TaskId.New();
         var command = CommandId.New();
 
-        stream.Append(new TaskReady(task));
+        stream.Append(Neutral());
         using (CausationScope.Begin(new CommandCausation(command)))
         {
-            stream.Append(new TaskStarted(task, LaneId.New()));
-            stream.Append(new TaskCompleted(task, null));
+            stream.Append(Neutral());
+            stream.Append(Neutral());
         }
 
-        stream.Append(new TaskReady(task));
+        stream.Append(Neutral());
 
         var events = store.ReadFrom(session, 1);
         Assert.Null(events[0].Causation); // raíz: sin comando ni evento previo
@@ -104,9 +114,8 @@ public sealed class JournalEnvelopeTests
         var stream = new EventStream(store, EventCodecs.Create(), session);
         using (CausationScope.Begin(new CommandCausation(command)))
         {
-            stream.Append(new RunCreated(run, session, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
-                FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), task, DateTimeOffset.UtcNow));
-            stream.Append(new TaskReady(task));
+            stream.Append(NewRun(session, run, task));
+            stream.Append(NewTask(task, run));
         }
 
         var written = store.ReadFrom(session, 1);
@@ -133,7 +142,7 @@ public sealed class JournalEnvelopeTests
         {
             CultureInfo.CurrentCulture = new CultureInfo("es-MX");
             var store = new SqliteEventStore(path);
-            new EventStream(store, EventCodecs.Create(), session).Append(new TaskReady(TaskId.New()));
+            new EventStream(store, EventCodecs.Create(), session).Append(Neutral());
             var written = store.ReadFrom(session, 1)[0].Timestamp;
             store.Close();
 
@@ -156,10 +165,10 @@ public sealed class JournalEnvelopeTests
         var store = new SqliteEventStore(TempJournal());
         var stream = new EventStream(store, EventCodecs.Create(), SessionId.New());
 
-        stream.Append(new TaskReady(TaskId.New()), DurabilityClass.Barrier);
+        stream.Append(Neutral(), DurabilityClass.Barrier);
         Assert.Equal(2, store.LastCommitSynchronousLevel); // FULL
 
-        stream.Append(new TaskReady(TaskId.New()), DurabilityClass.Standard);
+        stream.Append(Neutral(), DurabilityClass.Standard);
         Assert.Equal(1, store.LastCommitSynchronousLevel); // NORMAL
         store.Close();
     }
@@ -178,7 +187,7 @@ public sealed class JournalEnvelopeTests
             var stream = new EventStream(store, EventCodecs.Create(), session);
             for (var i = 0; i < perWriter; i++)
             {
-                stream.Append(new TaskReady(TaskId.New()));
+                stream.Append(Neutral());
             }
 
             store.Close();
@@ -191,6 +200,92 @@ public sealed class JournalEnvelopeTests
         var sequences = reader.ReadFrom(session, 1).Select(e => e.Sequence).ToArray();
         reader.Close();
         Assert.Equal(Enumerable.Range(1, 2 * perWriter).Select(i => (long) i), sequences);
+    }
+
+    // ── Transiciones canónicas (EPIC-003) ──────────────────────────────────────────────
+
+    [Fact]
+    public void An_invalid_transition_is_rejected_and_nothing_is_written()
+    {
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        var stream = new EventStream(store, EventCodecs.Create(), session);
+        var run = RunId.New();
+        stream.Append(NewRun(session, run, TaskId.New()));
+
+        // Created → Completed sin pasar por Running/Validating.
+        var ex = Assert.Throws<InvalidStateTransitionException>(() =>
+            stream.Append(new RunCompleted(run, RunOutcome.Completed)));
+
+        Assert.Equal("run", ex.Entity);
+        Assert.Single(store.ReadFrom(session, 1));
+    }
+
+    [Fact]
+    public void An_event_about_an_entity_that_does_not_exist_is_rejected()
+    {
+        var store = new InMemoryEventStore();
+        var stream = new EventStream(store, EventCodecs.Create(), SessionId.New());
+
+        Assert.Throws<InvalidStateTransitionException>(() => stream.Append(new TaskReady(TaskId.New())));
+        Assert.Throws<InvalidStateTransitionException>(() =>
+            stream.Append(new ToolCallSucceeded(ToolCallId.New(), "{}")));
+    }
+
+    [Fact]
+    public void A_batch_with_one_invalid_event_writes_nothing()
+    {
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        var stream = new EventStream(store, EventCodecs.Create(), session);
+        var run = RunId.New();
+        stream.Append(NewRun(session, run, TaskId.New()));
+
+        Assert.Throws<InvalidStateTransitionException>(() => stream.AppendBatch(new DomainEventPayload[] {
+            new RunStarted(run),
+            new RunStarted(run), // Running → Running no existe
+        }, DurabilityClass.Standard));
+
+        Assert.Single(store.ReadFrom(session, 1));
+    }
+
+    [Fact]
+    public void Creating_the_same_entity_twice_is_rejected()
+    {
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        var stream = new EventStream(store, EventCodecs.Create(), session);
+        var run = RunId.New();
+        stream.Append(NewRun(session, run, TaskId.New()));
+
+        Assert.Throws<InvalidStateTransitionException>(() => stream.Append(NewRun(session, run, TaskId.New())));
+    }
+
+    [Fact]
+    public void Completed_with_issues_outcome_projects_to_its_own_state()
+    {
+        var tracker = new CanonicalStateTracker();
+        var session = SessionId.New();
+        var run = RunId.New();
+        tracker.Apply(NewRun(session, run, TaskId.New()));
+        tracker.Apply(new RunStarted(run));
+        tracker.Apply(new RunValidationStarted(run));
+        tracker.Apply(new RunCompleted(run, RunOutcome.CompletedWithIssues));
+
+        Assert.Equal(RunState.CompletedWithIssues, tracker.Run(run));
+    }
+
+    [Fact]
+    public void User_input_while_running_is_a_message_not_an_invalid_transition()
+    {
+        var tracker = new CanonicalStateTracker();
+        var session = SessionId.New();
+        var run = RunId.New();
+        tracker.Apply(NewRun(session, run, TaskId.New()));
+        tracker.Apply(new RunStarted(run));
+        tracker.Apply(new UserInputReceived(run, "[]", null)); // ADR-0035 §1
+
+        Assert.Equal(RunState.Running, tracker.Run(run));
     }
 
     // ── Upcasters ──────────────────────────────────────────────────────────────────────
