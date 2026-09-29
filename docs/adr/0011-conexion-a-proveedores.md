@@ -310,20 +310,29 @@ No se implementa en `AnthropicMessagesProvider` porque la política de Anthropic
 | M3 | Reintentos, circuit breaker, cola por endpoint |
 | M5 | `OpenAIResponsesProvider` (perfiles `api` y `codex`), **login con suscripción ChatGPT (§3.4)**, `AnthropicMessagesProvider` (§10), registro completo con alias, descubrimiento, costo/presupuesto, OAuth genérico |
 
-### Modificación formal del alcance M2 (AC-2026-09-27)
+### Modificación formal del alcance M2 (AC-2026-09-27, revisada 2026-09-29)
 
-**Decisión:** el `ICredentialStore` del milestone M2 se implementa con `FileCredentialStore`
-(Archivo + ofuscación XOR derivada por máquina + `chmod 600` en Unix, con el valor NUNCA en
-texto plano y redacción PII en todos los sinks, ADR-0018 §4). **No se implementa en M2 el
-Windows Credential Manager / DPAPI ni el Secret Service / Keychain**: la plataforma de este
-milestone (runtime JVM-based sobre .NET 10) no expone DPAPI/ProtectedData, y cada plataforma
-nativa requiere integración de enlace distinto.
+> **Revisión 2026-09-29:** la versión original de esta modificación decía que la plataforma era
+> un "runtime JVM-based sobre .NET 10" sin DPAPI y aceptaba ofuscación XOR con la clave en otro
+> archivo. Era incorrecto: el entorno es el SDK oficial de .NET 10 y `ProtectedData` funciona. La
+> ofuscación XOR se retiró en la corrección de seguridad P0 (auditoría 2026-09-28).
+
+**Decisión:** el `ICredentialStore` del milestone M2 es `FileCredentialStore`, en el directorio
+de datos del usuario (nunca en el repo, ADR-0039 §2), con cada valor cifrado:
+
+- **Windows:** DPAPI con ámbito `CurrentUser` (`System.Security.Cryptography.ProtectedData`).
+- **Linux/macOS (provisional):** AES-256-GCM con una clave aleatoria de 32 bytes en
+  `credentials.key`, creada con modo 0600. Protege frente a copiar el archivo de credenciales,
+  no frente a otro proceso del mismo usuario.
+
+Un valor que no se puede descifrar (manipulado, de otra máquina o del formato XOR antiguo) se
+trata como ausente. Redacción PII en todos los sinks (ADR-0018 §4).
 
 **Impacto:** el redactor de rutas de secretos (ADR-0018 §6) bloquea `.env`, `*.pem`, `*.key`,
-`.ssh/`, credenciales de AWS y archivos de servicio en `filesystem.read`/`reference.resolve`;
-`FileCredentialStore` ofrece `Save/Load/Delete/Purge` revocables. El Credential Manager / DPAPI
-por plataforma queda **M3 obligatorio** cuando el sandbox por plataforma (ADR-0038) aporte el
-enlace nativo.
+`.ssh/`, credenciales de AWS y archivos de servicio en `filesystem.read`/`reference.resolve`,
+evaluando el destino físico real de la ruta. `FileCredentialStore` ofrece
+`Save/Load/Delete/Purge` revocables. Windows Credential Manager, Secret Service (libsecret) y
+Keychain siguen pendientes; sustituyen al archivo cifrado cuando se integren.
 
 ## Consecuencias
 

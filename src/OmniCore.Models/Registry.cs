@@ -23,6 +23,13 @@ public sealed class ProviderDescriptor
 
     public bool SupportsNativeToolCalls { get; }
 
+    /// <summary>
+    /// Certificado raíz de confianza para el TLS de este provider (<c>caCertificate</c> en
+    /// providers.yaml, PEM o DER). Con él, el certificado del servidor se valida contra esa raíz
+    /// y el nombre del host debe coincidir; sin él rige la validación estándar del sistema.
+    /// </summary>
+    public string? TrustedCertificatePath { get; init; }
+
     public ProviderDescriptor(string id, ProviderFamily family, string baseUrl, AuthConfig auth,
         bool supportsJsonSchemaPerRequest, bool supportsGrammarPerRequest, bool supportsNativeToolCalls)
     {

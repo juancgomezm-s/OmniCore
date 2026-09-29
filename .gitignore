@@ -481,13 +481,17 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 
-# OmniCore: journal local del CLI (sim --crash/--resume) y lastsession del sim
+# OmniCore: los datos de runtime (journal, blobs, credenciales) viven fuera del repo, en
+# <data>/workspaces/<WorkspaceId>/ (ADR-0039 §2). `.omnicore/` del repo es configuración
+# versionable y NO se ignora. Estas entradas cubren restos de versiones anteriores.
 omnicore-sim-journal.db
 omnicore-sim-journal.db-journal
+.omnicore-sim-journal.db
+.omnicore-artifacts/
 lastsession.txt
 audit.jsonl
-# Credencial de test del FileCredentialStore de los tests de integración
 .omnicore-test-creds.ini
-# Datos locales del runtime (credenciales, artifacts, journal)
-.omnicore/
 .omnicore-test-creds/
+
+# Estado local de otras herramientas de agentes
+.pi/

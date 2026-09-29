@@ -188,20 +188,23 @@ public sealed class OmniHost
     }
 
     /// <summary>
-    /// Conecta un provider OpenAI Chat Completions local (M2). Acepta TLS self-signed SOLO si el
-    /// host es localhost o un literal IP de loopback/red privada (<see cref="IsPrivateHost"/>):
-    /// nunca para nombres DNS ni hosts públicos (ADR-0011 §4, ADR-0038 §4). La key se provee por entorno (p. ej. OMNI_QWEN_KEY).
+    /// Conecta un provider OpenAI Chat Completions local (M2). Validación TLS (ADR-0011 §4,
+    /// ADR-0038 §4), en este orden:
+    /// <list type="number">
+    /// <item>Con <paramref name="trustedCertificatePath"/> (<c>caCertificate</c> del provider): la
+    /// cadena del servidor debe terminar en ese certificado y el nombre del host debe coincidir.</item>
+    /// <item>Sin él, para localhost o un literal IP privado (<see cref="IsPrivateHost"/>): se acepta
+    /// cualquier certificado. Es un modo heredado y débil; <c>omni doctor</c> avisa.</item>
+    /// <item>Para cualquier otro host: validación estándar del sistema.</item>
+    /// </list>
     /// </summary>
     public static OpenAiChatCompatibleProvider ConnectLocalChatCompletions(string baseUrl, string modelId,
-        string secretRef, string apiKey)
+        string secretRef, string apiKey, string? trustedCertificatePath = null)
     {
-        var handler = new HttpClientHandler();
-        if (IsPrivateHost(baseUrl))
+        var http = new HttpClient(CreateTlsHandler(baseUrl, trustedCertificatePath))
         {
-            handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true;
-        }
-
-        var http = new HttpClient(handler) { Timeout = System.TimeSpan.FromSeconds(300) };
+            Timeout = System.TimeSpan.FromSeconds(300),
+        };
 
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
         var auth = (apiKey is not null && apiKey!.Length > 0)
@@ -211,6 +214,83 @@ public sealed class OmniHost
             "local", OmniCore.Domain.ProviderFamily.OpenAiChatCompatible, baseUrl,
             auth, false, false, false);
         return new OpenAiChatCompatibleProvider(descriptor, secrets, () => http);
+    }
+
+    /// <summary>Handler HTTP con la política TLS de <see cref="ConnectLocalChatCompletions"/>.</summary>
+    internal static HttpClientHandler CreateTlsHandler(string baseUrl, string? trustedCertificatePath)
+    {
+        var handler = new HttpClientHandler();
+        if (trustedCertificatePath is not null && trustedCertificatePath.Length > 0)
+        {
+            var trustedRoot = LoadTrustedCertificate(trustedCertificatePath);
+            handler.ServerCertificateCustomValidationCallback = (_, certificate, _, errors) =>
+                ValidateAgainstTrustedRoot(certificate, errors, trustedRoot);
+        }
+        else if (IsPrivateHost(baseUrl))
+        {
+            handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true;
+        }
+
+        return handler;
+    }
+
+    /// <summary>
+    /// Describe cómo se validará el TLS de un provider, para <c>omni doctor</c>.
+    /// </summary>
+    public static string DescribeTls(string baseUrl, string? trustedCertificatePath)
+    {
+        if (!baseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return "sin TLS (http)";
+        }
+
+        if (trustedCertificatePath is not null && trustedCertificatePath.Length > 0)
+        {
+            return File.Exists(trustedCertificatePath)
+                ? "fijado a " + trustedCertificatePath
+                : "ERROR: no existe caCertificate " + trustedCertificatePath;
+        }
+
+        return IsPrivateHost(baseUrl)
+            ? "AVISO: IP privada sin validar el certificado; añade caCertificate al provider"
+            : "validación estándar del sistema";
+    }
+
+    /// <summary>Carga un certificado de confianza en PEM o DER.</summary>
+    internal static System.Security.Cryptography.X509Certificates.X509Certificate2 LoadTrustedCertificate(string path)
+    {
+        var bytes = File.ReadAllBytes(path);
+        var text = System.Text.Encoding.ASCII.GetString(bytes);
+        return text.Contains("-----BEGIN CERTIFICATE-----", StringComparison.Ordinal)
+            ? System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPem(text)
+            : System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(bytes);
+    }
+
+    /// <summary>
+    /// Acepta el certificado del servidor solo si su cadena termina en <paramref name="trustedRoot"/>
+    /// y no hay otros errores: un nombre que no coincide o un certificado ausente siguen fallando.
+    /// </summary>
+    internal static bool ValidateAgainstTrustedRoot(
+        System.Security.Cryptography.X509Certificates.X509Certificate2? certificate,
+        System.Net.Security.SslPolicyErrors errors,
+        System.Security.Cryptography.X509Certificates.X509Certificate2 trustedRoot)
+    {
+        if (certificate is null)
+        {
+            return false;
+        }
+
+        if ((errors & ~System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors)
+            != System.Net.Security.SslPolicyErrors.None)
+        {
+            return false;
+        }
+
+        using var chain = new System.Security.Cryptography.X509Certificates.X509Chain();
+        chain.ChainPolicy.TrustMode = System.Security.Cryptography.X509Certificates.X509ChainTrustMode.CustomRootTrust;
+        chain.ChainPolicy.CustomTrustStore.Add(trustedRoot);
+        chain.ChainPolicy.RevocationMode = System.Security.Cryptography.X509Certificates.X509RevocationMode.NoCheck;
+        return chain.Build(certificate);
     }
 
     /// <summary>

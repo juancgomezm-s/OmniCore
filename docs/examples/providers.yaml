@@ -3,3 +3,6 @@ providers:
     baseUrl: "https://192.168.1.104:8080/v1"
     authRef: "local-qwen-key"
     family: "OpenAiChatCompatible"
+    # Certificado raíz de confianza del servidor (PEM o DER). Con él se valida la cadena y el
+    # nombre del host; sin él, un literal IP privado acepta cualquier certificado.
+    caCertificate: "C:/temp/omnicoder-tls/server-cert.pem"

@@ -239,6 +239,10 @@ public sealed class CliApp
             var provider = registry.Provider(model.ProviderId);
             Console.WriteLine("  " + model.Id + " → provider '" + model.ProviderId + "'"
                 + (provider is null ? "" : " (" + provider.Family + ", " + provider.BaseUrl + ")"));
+            if (provider is not null)
+            {
+                Console.WriteLine("    TLS: " + OmniHost.DescribeTls(provider.BaseUrl, provider.TrustedCertificatePath));
+            }
         }
 
         // Requisito 8: componentes de M2 cableados en el Host (no aislados ni solo en tests).
@@ -334,8 +338,10 @@ public sealed class CliApp
             var sessionId = server.LastSessionId() ?? OmniCore.Domain.SessionId.New();
             var runId = server.LastRunId() ?? OmniCore.Domain.RunId.New();
 
-            // 2. Provider conectado al modelo local (TLS relajado solo para loopback/privado).
-            var provider = OmniHost.ConnectLocalChatCompletions(baseUrl!, model!, secretRef, key ?? "");
+            // 2. Provider conectado al modelo local (TLS fijado a caCertificate si el provider lo
+            //    declara; ver OmniHost.ConnectLocalChatCompletions).
+            var provider = OmniHost.ConnectLocalChatCompletions(baseUrl!, model!, secretRef, key ?? "",
+                providerDesc?.TrustedCertificatePath);
             // Contexto NO hardcodeado: usamos los hechos reales del registro (P1: 8192 era fijo).
             var usableContext = modelDef is not null && modelDef!.RecommendedUsableContext > 0
                 ? modelDef!.RecommendedUsableContext
