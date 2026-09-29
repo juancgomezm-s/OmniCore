@@ -183,7 +183,7 @@ public sealed class QuestionnaireVerticalTests
             // Las respuestas NO aparecen en claro en ningún evento del journal.
             foreach (var evt in fx.Store!.ReadFrom(fx.Session, 1))
             {
-                var payload = fx.Codecs!.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+                var payload = fx.Codecs!.Decode(evt);
                 var json = evt.PayloadJson;
                 Assert.False(json.Contains("tests e2e"), "la respuesta no debe estar en claro en eventos");
                 Assert.False(json.Contains("notas seguras"), "la respuesta no debe estar en claro en eventos");

@@ -84,7 +84,7 @@ public sealed class M3FilesystemRecoveryTests
         var found = new List<ToolCallReconciled>();
         foreach (var evt in tail)
         {
-            var payload = codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = codecs.Decode(evt);
             if (payload is ToolCallReconciled r)
             {
                 found.Add(r);
@@ -141,7 +141,7 @@ public sealed class M3FilesystemRecoveryTests
             var callId = ToolCallId.New();
             var validated = new ValidatedToolCall(callId, new ToolId("filesystem.patch"), "pc-1",
                 PatchArgs("doc.txt", VersionOf(original)));
-            var outcome = executor.ExecuteTool(validated, true, TestContext.Current.CancellationToken);
+            var outcome = executor.ExecuteToolWithoutJournal(validated, true, TestContext.Current.CancellationToken);
             Assert.True(outcome.Succeeded, "el patch debe aplicarse con exito en el pipeline real");
             ToolCallStarted? started = null;
             foreach (var e in outcome.Events)

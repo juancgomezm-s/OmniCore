@@ -41,6 +41,12 @@ public sealed class SqliteEventStore : IEventStore
         syncDefault.CommandText = "PRAGMA synchronous=NORMAL";
         syncDefault.ExecuteNonQuery();
 
+        // Otro proceso puede tener el journal abierto (CLI + servidor): se espera al lock en vez de
+        // fallar al instante con SQLITE_BUSY.
+        var busy = _conn.CreateCommand()!;
+        busy.CommandText = "PRAGMA busy_timeout=5000";
+        busy.ExecuteNonQuery();
+
         var ddl = _conn.CreateCommand()!;
         ddl.CommandText = """
             CREATE TABLE IF NOT EXISTS events (
@@ -73,26 +79,18 @@ public sealed class SqliteEventStore : IEventStore
     }
 
     public void Append(SessionId sessionId, DomainEvent evt, DurabilityClass durability,
-        CancellationToken cancellationToken)
-    {
-        var next = CurrentSequence(sessionId) + 1;
-        InsertRows(sessionId, new[] { (evt, next) }, durability);
-    }
+        CancellationToken cancellationToken) =>
+        InsertRows(sessionId, new[] { evt }, durability, cancellationToken);
 
     public void AppendBatch(SessionId sessionId, IReadOnlyList<DomainEvent> events, DurabilityClass durability,
-        CancellationToken cancellationToken)
-    {
-        var rows = new (DomainEvent Evt, long Seq)[events.Count];
-        var seq = CurrentSequence(sessionId);
-        var i = 0;
-        foreach (var evt in events)
-        {
-            seq += 1;
-            rows[i++] = (evt, seq);
-        }
+        CancellationToken cancellationToken) =>
+        InsertRows(sessionId, events, durability, cancellationToken);
 
-        InsertRows(sessionId, rows, durability);
-    }
+    /// <summary>
+    /// Nivel de <c>PRAGMA synchronous</c> con el que se confirmó el último commit (0 OFF, 1 NORMAL,
+    /// 2 FULL, 3 EXTRA). Permite a los tests comprobar que un Barrier se confirma de verdad en FULL.
+    /// </summary>
+    internal long LastCommitSynchronousLevel { get; private set; } = -1;
 
     /// <summary>
     /// Persiste un lote en una sola transacción atómica. Para un commit Barrier conmuta la
@@ -101,9 +99,16 @@ public sealed class SqliteEventStore : IEventStore
     /// en cualquier fila revierte el lote entero y restaura synchronous=NORMAL: la conexión nunca
     /// queda en FULL.
     /// </summary>
-    private void InsertRows(SessionId sessionId, IReadOnlyList<(DomainEvent Evt, long Seq)> rows,
-        DurabilityClass durability)
+    private void InsertRows(SessionId sessionId, IReadOnlyList<DomainEvent> events,
+        DurabilityClass durability, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(events);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (events.Count == 0)
+        {
+            return;
+        }
+
         var barrier = durability == DurabilityClass.Barrier;
         try
         {
@@ -112,12 +117,17 @@ public sealed class SqliteEventStore : IEventStore
                 SetSynchronous("FULL");
             }
 
+            // BEGIN IMMEDIATE: el lock de escritura se toma ANTES de leer la última secuencia, así
+            // dos escritores (dos procesos sobre el mismo journal) nunca calculan el mismo número.
             using var tx = _conn.BeginTransaction();
-            foreach (var (evt, seq) in rows)
+            var seq = CurrentSequence(sessionId, tx);
+            foreach (var evt in events)
             {
-                InsertRow(sessionId, evt, seq);
+                seq += 1;
+                InsertRow(sessionId, evt, seq, tx);
             }
 
+            LastCommitSynchronousLevel = ReadSynchronousLevel(tx);
             tx.Commit();
         }
         finally
@@ -136,9 +146,20 @@ public sealed class SqliteEventStore : IEventStore
         cmd.ExecuteNonQuery();
     }
 
-    public long CurrentSequence(SessionId sessionId)
+    public long CurrentSequence(SessionId sessionId) => CurrentSequence(sessionId, null);
+
+    private long ReadSynchronousLevel(System.Data.Common.DbTransaction tx)
     {
         var cmd = _conn.CreateCommand()!;
+        cmd.Transaction = tx;
+        cmd.CommandText = "PRAGMA synchronous";
+        return _AsLong(cmd.ExecuteScalar()!);
+    }
+
+    private long CurrentSequence(SessionId sessionId, System.Data.Common.DbTransaction? tx)
+    {
+        var cmd = _conn.CreateCommand()!;
+        cmd.Transaction = tx;
         cmd.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = :sid";
         var p = cmd.CreateParameter()!;
         p.ParameterName = "sid";
@@ -164,7 +185,7 @@ public sealed class SqliteEventStore : IEventStore
         cmd.Parameters.Add(pf);
 
         var result = new List<DomainEvent>();
-        var reader = cmd.ExecuteReader()!;
+        using var reader = cmd.ExecuteReader()!;
         foreach (System.Data.Common.DbDataRecord row in reader)
         {
             result.Add(ReadRow(sessionId, row));
@@ -208,9 +229,10 @@ public sealed class SqliteEventStore : IEventStore
         }
     }
 
-    private void InsertRow(SessionId sessionId, DomainEvent evt, long sequence)
+    private void InsertRow(SessionId sessionId, DomainEvent evt, long sequence, System.Data.Common.DbTransaction tx)
     {
         var cmd = _conn.CreateCommand()!;
+        cmd.Transaction = tx;
         cmd.CommandText = "INSERT INTO events (session_id, seq, event_id, event_type, schema_version, " +
             "timestamp, causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, " +
             "toolcall_id, payload, artifacts) " +
@@ -220,7 +242,8 @@ public sealed class SqliteEventStore : IEventStore
         cmd.Parameters.Add(S(cmd, "eid", evt.EventId.ToString()));
         cmd.Parameters.Add(S(cmd, "etype", evt.Type.ToString()));
         cmd.Parameters.Add(S(cmd, "sver", (long) evt.SchemaVersion));
-        cmd.Parameters.Add(S(cmd, "ts", evt.Timestamp.ToString()));
+        // ISO 8601 invariante: el texto no depende de la cultura del sistema y reproduce el instante exacto.
+        cmd.Parameters.Add(S(cmd, "ts", evt.Timestamp.ToString("O", System.Globalization.CultureInfo.InvariantCulture)));
         cmd.Parameters.Add(S(cmd, "caus", evt.Causation is null ? null : Parts.Causation(evt.Causation)));
         cmd.Parameters.Add(S(cmd, "corr", evt.CorrelationId is null ? null : evt.CorrelationId.ToString()));
         cmd.Parameters.Add(S(cmd, "rid", evt.RunId is null ? null : evt.RunId.ToString()));
@@ -238,8 +261,7 @@ public sealed class SqliteEventStore : IEventStore
     {
         var p = cmd.CreateParameter()!;
         p.ParameterName = name;
-        // El driver SQLite de esta plataforma no bindea Value == null ("Value must be set").
-        p.Value = value is null ? "" : value;
+        p.Value = value ?? DBNull.Value;
         return p;
     }
 
@@ -251,7 +273,7 @@ public sealed class SqliteEventStore : IEventStore
             _AsLong(row.GetValue(1)),
             EventType.Of(_AsString(row.GetValue(2))),
             (int) _AsLong(row.GetValue(3)),
-            DateTimeOffset.Parse(_AsString(row.GetValue(4))),
+            ParseTimestamp(_AsString(row.GetValue(4))),
             Parts.ParseCausation(_AsStringOrNull(row.GetValue(5))),
             Parts.ParseRunId(_AsStringOrNull(row.GetValue(6))),
             Parts.ParseRunId(_AsStringOrNull(row.GetValue(7))),
@@ -263,6 +285,16 @@ public sealed class SqliteEventStore : IEventStore
             new ArtifactRef[0],
             _AsString(row.GetValue(13)));
     }
+
+    /// <summary>
+    /// Marca de tiempo persistida: ISO 8601 invariante; los journals anteriores la guardaban con el
+    /// formato de la cultura del sistema, que se acepta como respaldo.
+    /// </summary>
+    private static DateTimeOffset ParseTimestamp(string text) =>
+        DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind, out var value)
+            ? value
+            : DateTimeOffset.Parse(text, System.Globalization.CultureInfo.CurrentCulture);
 
     private static long _AsLong(object value)
     {

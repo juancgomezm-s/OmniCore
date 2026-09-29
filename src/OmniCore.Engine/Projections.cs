@@ -61,7 +61,7 @@ public sealed class RunProjection
 
         foreach (var evt in evts)
         {
-            var payload = registry.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = registry.Decode(evt);
             if (payload is RunCreated created)
             {
                 objective = created.Objective;
@@ -141,7 +141,7 @@ public sealed class TaskGraphProjection
         var projection = new TaskGraphProjection();
         foreach (var evt in evts)
         {
-            projection.Apply(registry.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson));
+            projection.Apply(registry.Decode(evt));
         }
 
         return projection;
@@ -222,7 +222,7 @@ public sealed class LaneProjection
         var projection = new LaneProjection();
         foreach (var evt in evts)
         {
-            projection.Apply(registry.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson));
+            projection.Apply(registry.Decode(evt));
         }
 
         return projection;

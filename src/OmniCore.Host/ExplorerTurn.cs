@@ -307,15 +307,18 @@ public sealed class ExplorerTurn
                         planEvents = proposal.Events;
                     }
 
-                    // Persistir los eventos del pipeline REAL (request/permission/auth/outcome).
+                    // Persistir los eventos del pipeline REAL (request/permission/auth/outcome) y los del
+                    // plan en un solo lote atómico: un crash nunca deja la cadena de la ToolCall a medias.
+                    var toPersist = new List<DomainEventPayload>(outcome.Events.Count + planEvents.Count);
                     foreach (var evt in outcome.Events)
                     {
-                        if (planError is not null && evt is ToolCallSucceeded)
-                            stream.Append(new ToolCallFailed(call.Id, _redaction.Redact(planError), EffectOutcome.None));
-                        else
-                            stream.Append(evt);
+                        toPersist.Add(planError is not null && evt is ToolCallSucceeded
+                            ? new ToolCallFailed(call.Id, _redaction.Redact(planError), EffectOutcome.None)
+                            : evt);
                     }
-                    foreach (var evt in planEvents) stream.Append(evt);
+
+                    toPersist.AddRange(planEvents);
+                    stream.AppendBatch(toPersist, DurabilityClass.Standard);
 
                     // Redacción obligatoria del tool result antes de dárselo al modelo.
                     var content = outcome.Preview is not null && outcome.Preview!.Length > 0
@@ -420,7 +423,7 @@ public sealed class ExplorerTurn
                 continue;
             }
 
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = _codecs.Decode(evt);
             if (payload is RunCreated runCreated)
             {
                 // P0-4: filtrar por runId — nunca el primer RunCreated de la sesión.
@@ -491,7 +494,7 @@ public sealed class ExplorerTurn
         {
             if (evt.Type.ToString().Equals("run.created", StringComparison.Ordinal))
             {
-                var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+                var payload = _codecs.Decode(evt);
                 var runCreated = payload as RunCreated;
                 capture = runCreated is not null
                     && runCreated!.RunId.ToString().Equals(runId.ToString(), StringComparison.Ordinal);
@@ -579,7 +582,7 @@ public sealed class ExplorerTurn
         {
             if (evt.Type.ToString() == "user_input.received")
             {
-                var input = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson) as UserInputReceived;
+                var input = _codecs.Decode(evt) as UserInputReceived;
                 if (input is null) continue;
                 try
                 {
@@ -593,7 +596,7 @@ public sealed class ExplorerTurn
             }
             else if (evt.Type.ToString() == "model.completed")
             {
-                var completed = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson) as ModelCompleted;
+                var completed = _codecs.Decode(evt) as ModelCompleted;
                 if (completed?.ResponseArtifact is null) continue;
                 var text = _artifacts.GetText(completed.ResponseArtifact.Hash);
                 if (!string.IsNullOrEmpty(text))
@@ -622,7 +625,7 @@ public sealed class ExplorerTurn
                 && type != "run.validation_rejected" && type != "run.completed"
                 && type != "run.failed" && type != "run.cancelled") continue;
 
-            var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+            var payload = _codecs.Decode(evt);
             var eventRun = payload switch
             {
                 RunCreated e => e.RunId,

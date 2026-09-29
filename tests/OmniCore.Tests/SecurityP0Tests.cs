@@ -85,9 +85,11 @@ public sealed class SecurityP0Tests
         var executor = OmniHost.CreateExplorerExecutor(catalog, ws);
         var version = FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes("original"));
 
+        var stream = new EventStream(new InMemoryEventStore(), EventCodecs.Create(), SessionId.New());
+
         var outcome = executor.ExecuteTool(Call("filesystem.patch",
             "{\"path\":\"doc.txt\",\"expectedVersion\":\"" + version + "\",\"oldText\":\"original\",\"newText\":\"x\"}"),
-            true, CancellationToken.None);
+            true, CancellationToken.None, stream);
 
         Assert.False(outcome.Succeeded, "Explorer usa la capa de modo PLAN: el patch es Deny. " + outcome.Summary);
         Assert.Equal("original", File.ReadAllText(Path.Combine(ws, "doc.txt")));
@@ -195,7 +197,7 @@ public sealed class SecurityP0Tests
         var executor = ScriptedToolExecutor.WithWorkspace(
             new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false).Catalog(),
             new ScriptedPermissionPolicy(new()).WithModeDefaults(RunMode.Act), ws);
-        var outcome = executor.ExecuteTool(Call("filesystem.read", "{\"path\":\"notes.txt\"}"), false,
+        var outcome = executor.ExecuteToolWithoutJournal(Call("filesystem.read", "{\"path\":\"notes.txt\"}"), false,
             CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un enlace hacia .env no se lee. " + outcome.Summary);
@@ -301,7 +303,7 @@ public sealed class SecurityP0Tests
         var executor = ScriptedToolExecutor.WithWorkspace(
             new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false).Catalog(),
             new ScriptedPermissionPolicy(new()).WithModeDefaults(RunMode.Act), ws);
-        var outcome = executor.ExecuteTool(Call("filesystem.read", "{\"path\":\"docs/config\"}"), false,
+        var outcome = executor.ExecuteToolWithoutJournal(Call("filesystem.read", "{\"path\":\"docs/config\"}"), false,
             CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "docs/ apunta a .ssh/: la lectura se niega. " + outcome.Summary);

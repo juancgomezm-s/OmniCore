@@ -260,7 +260,7 @@ public sealed class OmniServer : IOmniClient
                 continue;
             }
 
-            var established = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson)
+            var established = _codecs.Decode(evt)
                 as WorkspaceRootEstablished;
             if (established is not null && established!.CanonicalRoot is not null
                 && established!.CanonicalRoot.Length > 0)
@@ -282,7 +282,7 @@ public sealed class OmniServer : IOmniClient
         {
             if (evt.Type.ToString() == "run.created")
             {
-                var created = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson) as RunCreated;
+                var created = _codecs.Decode(evt) as RunCreated;
                 inRun = created?.RunId == runId;
             }
 
@@ -306,6 +306,14 @@ public sealed class OmniServer : IOmniClient
             return CommandAck.Ok(command.MessageId);
         }
 
+        // ADR-0013 §3: todo evento escrito mientras se atiende el comando lleva su CommandId como
+        // causa. Un messageId que no es un UUID no puede ser CommandId: el comando se rechaza.
+        if (!Guid.TryParse(command.MessageId, out var commandGuid))
+        {
+            return CommandAck.Fail(command.MessageId, "messageId no es un identificador válido");
+        }
+
+        using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
         if (commandName == "sim")
         {
@@ -436,7 +444,7 @@ public sealed class OmniServer : IOmniClient
             {
                 if (evt.Type.ToString().Equals("run.created", StringComparison.Ordinal))
                 {
-                    var payload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+                    var payload = _codecs.Decode(evt);
                     var runCreated = payload as RunCreated;
                     inOwnRun = runCreated is not null
                         && runCreated!.RunId.ToString().Equals(_lastRunId!.ToString(), StringComparison.Ordinal);
@@ -448,7 +456,7 @@ public sealed class OmniServer : IOmniClient
                     continue;
                 }
 
-                var lanePayload = _codecs.CodecFor(evt.Type).Decode(evt.Type, evt.PayloadJson);
+                var lanePayload = _codecs.Decode(evt);
                 if (lanePayload is LaneCreated lane)
                 {
                     return lane.LaneId;

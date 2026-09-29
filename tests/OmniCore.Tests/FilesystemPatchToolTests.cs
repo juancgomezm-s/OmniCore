@@ -84,7 +84,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllText(ws + "\\doc.txt", original);
         var version = VersionOf(original);
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "linea2", "LINEA2-CAMBIADA"), false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "El patch con token vigente se aplica. summary=" + outcome.Summary);
@@ -102,7 +102,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllText(ws + "\\doc.txt", "contenido original");
         var staleVersion = VersionOf("otro contenido viejo");
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", staleVersion, "contenido original", "nuevo"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un token obsoleto se rechaza (STALE_WRITE). summary=" + outcome.Summary);
@@ -124,7 +124,7 @@ public sealed class FilesystemPatchToolTests
         try
         {
             var relativeEscape = Path.GetRelativePath(ws, outsideFile).Replace('\\', '/');
-            var outcome = executor.ExecuteTool(
+            var outcome = executor.ExecuteToolWithoutJournal(
                 PatchCall(ws, relativeEscape, VersionOf("contenido fuera"), "contenido fuera", "nuevo"),
                 false, CancellationToken.None);
 
@@ -143,7 +143,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "no-existe.txt", VersionOf("x"), "a", "b"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un patch no crea archivos: se rechaza si no existe. summary=" + outcome.Summary);
@@ -160,7 +160,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllText(ws + "\\doc.txt", content);
         var version = VersionOf(content);
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "abc", "xyz"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "oldText ambiguo (varias ocurrencias) se rechaza. summary=" + outcome.Summary);
@@ -177,7 +177,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllText(ws + "\\doc.txt", content);
         var version = VersionOf(content);
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "texto que no aparece", "nuevo"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "oldText ausente se rechaza. summary=" + outcome.Summary);
@@ -193,7 +193,7 @@ public sealed class FilesystemPatchToolTests
 
         var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.patch"), "pc-notoken",
             "{\"path\":\"doc.txt\",\"oldText\":\"contenido\",\"newText\":\"nuevo\"}");
-        var outcome = executor.ExecuteTool(call, false, CancellationToken.None);
+        var outcome = executor.ExecuteToolWithoutJournal(call, false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Sin expectedVersion el patch se rechaza (token obligatorio). summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
@@ -209,7 +209,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllText(ws + "\\doc.txt", content);
         var version = VersionOf(content);
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "bloque antiguo", "bloque\nnuevo\ndos lineas"), false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "El parser JSON real soporta oldText/newText con saltos de línea. summary=" + outcome.Summary);
@@ -291,7 +291,7 @@ public sealed class FilesystemPatchToolTests
         var version = VersionOf(content);
 
         // oldText == contenido completo: se rechaza (no se permite sustituir el archivo entero).
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, content, "otro contenido"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "oldText igual al contenido completo debe rechazarse. summary=" + outcome.Summary);
@@ -317,7 +317,7 @@ public sealed class FilesystemPatchToolTests
 
         var version = FilesystemPatchTool.VersionToken(bom);
         // El texto decodificado (sin BOM) es "hola\nmundo".
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "mundo", "amigo"), false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "El patch con BOM UTF-8 debe aplicar. summary=" + outcome.Summary);
@@ -345,7 +345,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllBytes(ws + "\\doc.txt", utf16le);
 
         var version = FilesystemPatchTool.VersionToken(utf16le);
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "mundo", "amigo"), false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "El patch con BOM UTF-16 LE debe aplicar. summary=" + outcome.Summary);
@@ -380,7 +380,7 @@ public sealed class FilesystemPatchToolTests
         var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "linea1", "linea1-cambiada"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded,
@@ -404,7 +404,7 @@ public sealed class FilesystemPatchToolTests
         var version = VersionOf(content);
 
         // newText vacío: se rechaza (no se permite vaciar el archivo).
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "linea1", ""), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "newText vacío debe rechazarse. summary=" + outcome.Summary);
@@ -433,20 +433,20 @@ public sealed class FilesystemPatchToolTests
         //    token de la salida (tal como lo haría el modelo). El token vive en el Preview.
         var readCall = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"),
             "pc-read", "{\"path\":\"doc.txt\"}");
-        var readOutcome = executor.ExecuteTool(readCall, false, CancellationToken.None);
+        var readOutcome = executor.ExecuteToolWithoutJournal(readCall, false, CancellationToken.None);
         Assert.True(readOutcome.Succeeded, "La lectura debe aplicar. summary=" + readOutcome.Summary);
         var version = ExtractTokenFromReadPreview(readOutcome.Preview!);
         Assert.NotNull(version);
 
         // 2. Usar ese token en el patch: debe pasar.
-        var firstPatch = executor.ExecuteTool(
+        var firstPatch = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version!, "linea2", "linea2-cambiada"), false, CancellationToken.None);
         Assert.True(firstPatch.Succeeded, "El patch con el token vigente debe aplicar. summary=" + firstPatch.Summary);
         Assert.Equal("linea1\nlinea2-cambiada\nlinea3\n", File.ReadAllText(ws + "\\doc.txt"));
 
         // 3. El archivo ya cambió: el MISMO token viejo ahora falla (STALE_WRITE) sin mutar.
         var currentBefore = File.ReadAllText(ws + "\\doc.txt");
-        var stalePatch = executor.ExecuteTool(
+        var stalePatch = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version!, "linea3", "linea3-cambiada"), false, CancellationToken.None);
         Assert.False(stalePatch.Succeeded, "El token viejo debe rechazarse. summary=" + stalePatch.Summary);
         Assert.Equal(ToolCallState.Failed, stalePatch.FinalState);
@@ -497,7 +497,7 @@ public sealed class FilesystemPatchToolTests
         File.WriteAllBytes(ws + "\\doc.txt", raw);
         var version = FilesystemPatchTool.VersionToken(raw);
 
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall(ws, "doc.txt", version, "hol", "nuevo"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un archivo con bytes inválidos se rechaza sin decodificar. summary=" + outcome.Summary);

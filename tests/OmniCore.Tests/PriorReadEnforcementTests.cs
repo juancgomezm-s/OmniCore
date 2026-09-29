@@ -92,7 +92,7 @@ public sealed class PriorReadEnforcementTests
         var executor = PatchPipeline(ws, boundary);
 
         // El modelo emite el hash correcto directamente, SIN haber leído el archivo en este Run.
-        var outcome = executor.ExecuteTool(
+        var outcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-X"), false, CancellationToken.None);
 
         Assert.False(outcome.Succeeded, "Un patch sin lectura previa debe rechazarse. summary=" + outcome.Summary);
@@ -114,11 +114,11 @@ public sealed class PriorReadEnforcementTests
         var executor = PatchPipeline(ws, boundary);
 
         // 1. Lectura previa efectiva del archivo (registra doc.txt -> token real).
-        var readOutcome = executor.ExecuteTool(ReadCall("doc.txt"), false, CancellationToken.None);
+        var readOutcome = executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false, CancellationToken.None);
         Assert.True(readOutcome.Succeeded, "La lectura previa debe aplicar. summary=" + readOutcome.Summary);
 
         // 2. Patch con ESE token (el que la lectura expone): debe aplicar.
-        var patchOutcome = executor.ExecuteTool(
+        var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Lee + patch con ese token = éxito. summary=" + patchOutcome.Summary);
         Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(ws + "\\doc.txt"));
@@ -139,12 +139,12 @@ public sealed class PriorReadEnforcementTests
         var executor = PatchPipeline(ws, boundary);
 
         // Se lee SOLO a.txt → el registro tiene a.txt, NO b.txt.
-        var readOutcome = executor.ExecuteTool(ReadCall("a.txt"), false, CancellationToken.None);
+        var readOutcome = executor.ExecuteToolWithoutJournal(ReadCall("a.txt"), false, CancellationToken.None);
         Assert.True(readOutcome.Succeeded, "read a.txt ok. summary=" + readOutcome.Summary);
 
         // Se intenta parchear b.txt con el mismo token (hash válido y vigente para b.txt):
         // la identidad es de path/version, y b.txt NO se leyó en este Run → rechazo.
-        var patchOutcome = executor.ExecuteTool(
+        var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("b.txt", VersionOf(shared), "mismo-contenido", "otro-contenido"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El token de otra ruta no habilita el patch. summary=" + patchOutcome.Summary);
         Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
@@ -162,11 +162,11 @@ public sealed class PriorReadEnforcementTests
         var executor = PatchPipeline(ws, boundary);
 
         // Lectura FALLIDA (el archivo no existe): no registra ninguna ruta.
-        var failedRead = executor.ExecuteTool(ReadCall("no-existe.txt"), false, CancellationToken.None);
+        var failedRead = executor.ExecuteToolWithoutJournal(ReadCall("no-existe.txt"), false, CancellationToken.None);
         Assert.False(failedRead.Succeeded, "read de archivo inexistente falla. summary=" + failedRead.Summary);
 
         // Un patch del archivo real con su token vigente NO se habilita por el read fallido.
-        var patchOutcome = executor.ExecuteTool(
+        var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", VersionOf(original), "linea-uno", "linea-uno-Z"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "Un read fallido no habilita el patch. summary=" + patchOutcome.Summary);
         Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
@@ -186,7 +186,7 @@ public sealed class PriorReadEnforcementTests
         var executor = PatchPipeline(ws, boundary);
 
         // 1. Lectura previa efectiva (doc.txt -> token de 'original').
-        var readOutcome = executor.ExecuteTool(ReadCall("doc.txt"), false, CancellationToken.None);
+        var readOutcome = executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false, CancellationToken.None);
         Assert.True(readOutcome.Succeeded, "read ok. summary=" + readOutcome.Summary);
 
         // 2. Modificación EXTERNA fuera del control del modelo: el contenido cambia.
@@ -194,7 +194,7 @@ public sealed class PriorReadEnforcementTests
         File.WriteAllText(ws + "\\doc.txt", external);
 
         // 3. El modelo parchea con el token de la lectura previa (ya obsoleto): STALE_WRITE.
-        var patchOutcome = executor.ExecuteTool(
+        var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El token obsoleto tras modificación externa se rechaza. summary=" + patchOutcome.Summary);
         Assert.Contains("STALE_WRITE", patchOutcome.Summary);
@@ -214,7 +214,7 @@ public sealed class PriorReadEnforcementTests
         // Run 1: el modelo lee doc.txt (token T) en SU registro por-Run.
         var boundaryRun1 = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var run1 = PatchPipeline(ws, boundaryRun1);
-        var readOutcome = run1.ExecuteTool(ReadCall("doc.txt"), false, CancellationToken.None);
+        var readOutcome = run1.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false, CancellationToken.None);
         Assert.True(readOutcome.Succeeded, "Run1: read ok. summary=" + readOutcome.Summary);
         Assert.True(boundaryRun1.ReadRegistry().Size() == 1, "Run1 registró doc.txt");
 
@@ -225,7 +225,7 @@ public sealed class PriorReadEnforcementTests
         var run2 = PatchPipeline(ws, boundaryRun2);
         Assert.True(boundaryRun2.ReadRegistry().Size() == 0, "Run2 empieza sin lecturas");
 
-        var patchOutcome = run2.ExecuteTool(
+        var patchOutcome = run2.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-C"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El token de un Run anterior no habilita el patch. summary=" + patchOutcome.Summary);
         Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
@@ -248,7 +248,7 @@ public sealed class PriorReadEnforcementTests
 
         // 1. Read devuelve ToolResult ERROR (encoding inválido) y NO debe registrar la ruta:
         //    la lectura no fue efectiva, el modelo nunca vio contenido ni el token.
-        var readOutcome = executor.ExecuteTool(ReadCall("doc.txt"), false, CancellationToken.None);
+        var readOutcome = executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false, CancellationToken.None);
         Assert.False(readOutcome.Succeeded, "read de bytes inválidos debe fallar. summary=" + readOutcome.Summary);
         Assert.Equal(0, boundary.ReadRegistry().Size());
         Assert.False(boundary.ReadRegistry().HasRead("doc.txt"));
@@ -256,7 +256,7 @@ public sealed class PriorReadEnforcementTests
         // 2. Patch con el hash REAL de los bytes vigentes (pasaría la verificación STALE_WRITE si
         //    la lectura estuviera registrada): debe rechazarse por PRIOR_READ_REQUIRED y el
         //    archivo debe quedar intacto.
-        var patchOutcome = executor.ExecuteTool(
+        var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", FilesystemPatchTool.VersionToken(raw), "hol", "hol-camb"),
             false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El read fallido por encoding no habilita el patch. summary=" + patchOutcome.Summary);
@@ -284,7 +284,7 @@ public sealed class PriorReadEnforcementTests
 
         // 1. Read válido: registra la ruta y el marcador [version:…] llega visible en el preview
         //    (lo que el modelo realmente observa).
-        var readOutcome = executor.ExecuteTool(ReadCall("doc.txt"), false, CancellationToken.None);
+        var readOutcome = executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false, CancellationToken.None);
         Assert.True(readOutcome.Succeeded, "read válido ok. summary=" + readOutcome.Summary);
         Assert.True(boundary.ReadRegistry().HasRead("doc.txt"));
         var exposed = ExtractTokenFromReadPreview(readOutcome.Preview!);
@@ -292,7 +292,7 @@ public sealed class PriorReadEnforcementTests
         Assert.Equal(FilesystemPatchTool.VersionToken(System.Text.Encoding.UTF8.GetBytes(original)), exposed);
 
         // 2. Patch con EXACTAMENTE el token que el read expuso: debe aplicar.
-        var patchOutcome = executor.ExecuteTool(
+        var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", exposed!, "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Read válido + token visible = patch permitido. summary=" + patchOutcome.Summary);
         Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(ws + "\\doc.txt"));

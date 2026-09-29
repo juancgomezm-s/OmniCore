@@ -9,6 +9,16 @@ using System.Text.Json;
 /// Escritor de eventos del Engine: serializa un payload tipado con el codec de su EventType,
 /// construye el envelope y lo persiste asignando la secuencia (ADR-0001 §3, §5). Un solo
 /// escritor por sesión (ADR-0002 §1).
+///
+/// Envelope (ADR-0001 §3, ADR-0013 §3):
+/// <list type="bullet">
+/// <item><c>CorrelationId</c> = <c>RunId</c> del Run al que pertenece el evento: el del propio
+/// payload si lo lleva, si no el Run en curso de la sesión. Nulo solo antes del primer Run.</item>
+/// <item><c>CausationId</c> = el comando en curso (<see cref="CausationScope"/>) o, fuera de un
+/// comando, el evento anterior escrito por este stream. El primer evento sin comando es raíz.</item>
+/// <item>Ids de entidad (Run, Task, Lane, Turn, PlanItem, ToolCall) leídos del payload, para
+/// indexar sin parsearlo.</item>
+/// </list>
 /// </summary>
 public sealed class EventStream
 {
@@ -17,6 +27,12 @@ public sealed class EventStream
     private readonly IEventCodecRegistry _codecs;
 
     private readonly SessionId _sessionId;
+
+    private RunId? _runId;
+
+    private bool _runResolved;
+
+    private EventId? _lastEventId;
 
     public EventStream(IEventStore store, IEventCodecRegistry codecs, SessionId sessionId)
     {
@@ -35,18 +51,86 @@ public sealed class EventStream
     /// </summary>
     public void Append(DomainEventPayload payload, DurabilityClass durability)
     {
-        var type = payload.Type();
-        var codec = _codecs.CodecFor(type);
-        var json = RedactPayload(codec.Encode(payload));
-        var envelope = DomainEvent.Create(_sessionId, type, payload.SchemaVersion(), null, null,
-            ExtractRunId(payload), ExtractTaskId(payload), ExtractLaneId(payload), ExtractTurnId(payload),
-            ExtractPlanItemId(payload), ExtractToolCallId(payload), new ArtifactRef[0], json);
+        var envelope = BuildEnvelope(payload);
         _store.Append(_sessionId, envelope, durability, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Persiste varios eventos en un solo commit atómico (ADR-0002 §1): o se escriben todos o
+    /// ninguno, así un crash nunca deja una cadena a medias (p. ej. el outcome de una ToolCall).
+    /// </summary>
+    public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability)
+    {
+        ArgumentNullException.ThrowIfNull(payloads);
+        if (payloads.Count == 0)
+        {
+            return;
+        }
+
+        var envelopes = new DomainEvent[payloads.Count];
+        for (var i = 0; i < payloads.Count; i++)
+        {
+            envelopes[i] = BuildEnvelope(payloads[i]);
+        }
+
+        _store.AppendBatch(_sessionId, envelopes, durability, CancellationToken.None);
     }
 
     /// <summary>Replay de todos los eventos de la sesión desde la secuencia dada (1-based inclusive).</summary>
     public IReadOnlyList<DomainEvent> EventsSince(long fromSequenceInclusive) =>
         _store.ReadFrom(_sessionId, fromSequenceInclusive);
+
+    private DomainEvent BuildEnvelope(DomainEventPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        var type = payload.Type();
+        var version = payload.SchemaVersion();
+        var current = _codecs.CurrentVersion(type);
+        if (version != current)
+        {
+            throw new InvalidOperationException("el payload " + type + " declara v" + version
+                + " pero el codec registrado escribe v" + current);
+        }
+
+        var json = RedactPayload(_codecs.CodecFor(type).Encode(payload));
+        var ids = EnvelopeIds.From(json);
+        if (ids.RunId is not null)
+        {
+            _runId = ids.RunId;
+            _runResolved = true;
+        }
+
+        var run = ids.RunId ?? CurrentRun();
+        var causation = CausationScope.Current
+            ?? (_lastEventId is null ? null : new EventCausation(_lastEventId));
+        var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, ids.TaskId,
+            ids.LaneId, ids.TurnId, ids.PlanItemId, ids.ToolCallId, Array.Empty<ArtifactRef>(), json);
+        _lastEventId = envelope.EventId;
+        return envelope;
+    }
+
+    /// <summary>
+    /// Run en curso de la sesión. Un stream nuevo sobre una sesión existente lo recupera del
+    /// último evento correlacionado del journal (una sola lectura por stream).
+    /// </summary>
+    private RunId? CurrentRun()
+    {
+        if (!_runResolved)
+        {
+            _runResolved = true;
+            var events = _store.ReadFrom(_sessionId, 1);
+            for (var i = events.Count - 1; i >= 0; i--)
+            {
+                if (events[i].CorrelationId is not null)
+                {
+                    _runId = events[i].CorrelationId;
+                    break;
+                }
+            }
+        }
+
+        return _runId;
+    }
 
     private static string RedactPayload(string json)
     {
@@ -107,154 +191,85 @@ public sealed class EventStream
             return false;
         }
     }
+}
 
-    private static RunId? ExtractRunId(DomainEventPayload payload)
+/// <summary>
+/// Causación ambiental del comando en curso (ADR-0013 §3): el Host abre un scope al recibir un
+/// command y todo evento escrito mientras dura lleva ese <c>CommandId</c> como causa.
+/// </summary>
+public static class CausationScope
+{
+    private static readonly AsyncLocal<CausationId?> _current = new();
+
+    public static CausationId? Current => _current.Value;
+
+    public static IDisposable Begin(CausationId causation)
     {
-        if (payload is RunCreated r)
-        {
-            return r.RunId;
-        }
-
-        return null;
+        ArgumentNullException.ThrowIfNull(causation);
+        var previous = _current.Value;
+        _current.Value = causation;
+        return new Restore(previous);
     }
 
-    private static TaskId? ExtractTaskId(DomainEventPayload payload)
+    private sealed class Restore : IDisposable
     {
-        if (payload is TaskCreated t)
+        private readonly CausationId? _previous;
+
+        private bool _disposed;
+
+        public Restore(CausationId? previous) => _previous = previous;
+
+        public void Dispose()
         {
-            return t.TaskId;
+            if (!_disposed)
+            {
+                _disposed = true;
+                _current.Value = _previous;
+            }
+        }
+    }
+}
+
+/// <summary>
+/// Ids de entidad de un payload, leídos del JSON ya codificado (sin reflexión): propiedades de
+/// primer nivel <c>RunId</c>, <c>TaskId</c>, <c>LaneId</c>, <c>TurnId</c>, <c>PlanItemId</c> y
+/// <c>ToolCallId</c>, serializadas como <c>{"Value":"guid"}</c>.
+/// </summary>
+internal readonly record struct EnvelopeIds(RunId? RunId, TaskId? TaskId, LaneId? LaneId, TurnId? TurnId,
+    PlanItemId? PlanItemId, ToolCallId? ToolCallId)
+{
+    public static EnvelopeIds From(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return default;
         }
 
-        if (payload is TaskReady r)
+        return new EnvelopeIds(
+            Guid(root, "RunId") is { } run ? new RunId(run) : null,
+            Guid(root, "TaskId") is { } task ? new TaskId(task) : null,
+            Guid(root, "LaneId") is { } lane ? new LaneId(lane) : null,
+            Guid(root, "TurnId") is { } turn ? new TurnId(turn) : null,
+            Guid(root, "PlanItemId") is { } item ? new PlanItemId(item) : null,
+            Guid(root, "ToolCallId") is { } call ? new ToolCallId(call) : null);
+    }
+
+    private static Guid? Guid(JsonElement root, string name)
+    {
+        if (!root.TryGetProperty(name, out var value))
         {
             return null;
         }
 
-        return null;
-    }
-
-    private static LaneId? ExtractLaneId(DomainEventPayload payload)
-    {
-        if (payload is LaneCreated l)
+        if (value.ValueKind == JsonValueKind.Object && value.TryGetProperty("Value", out var inner))
         {
-            return l.LaneId;
+            value = inner;
         }
 
-        return null;
-    }
-
-    private static TurnId? ExtractTurnId(DomainEventPayload payload)
-    {
-        if (payload is TurnStarted t)
-        {
-            return t.TurnId;
-        }
-
-        if (payload is TurnCompleted c)
-        {
-            return null;
-        }
-
-        return null;
-    }
-
-    private static PlanItemId? ExtractPlanItemId(DomainEventPayload payload)
-    {
-        if (payload is PlanItemAdded a)
-        {
-            return a.PlanItemId;
-        }
-
-        if (payload is PlanItemStarted s)
-        {
-            return s.PlanItemId;
-        }
-
-        if (payload is PlanItemCompleted c)
-        {
-            return c.PlanItemId;
-        }
-
-        if (payload is PlanItemBlocked b)
-        {
-            return b.PlanItemId;
-        }
-
-        if (payload is PlanItemFailed f)
-        {
-            return f.PlanItemId;
-        }
-
-        return null;
-    }
-
-    private static ToolCallId? ExtractToolCallId(DomainEventPayload payload)
-    {
-        if (payload is ToolCallRequested r)
-        {
-            return r.ToolCallId;
-        }
-
-        if (payload is ToolCallPrepared pc)
-        {
-            return pc.ToolCallId;
-        }
-
-        if (payload is ToolCallRejected re)
-        {
-            return re.ToolCallId;
-        }
-
-        if (payload is PermissionEvaluated pe)
-        {
-            return pe.ToolCallId;
-        }
-
-        if (payload is PermissionRequested preq)
-        {
-            return preq.ToolCallId;
-        }
-
-        if (payload is PermissionGranted pg)
-        {
-            return pg.ToolCallId;
-        }
-
-        if (payload is PermissionDenied pd)
-        {
-            return pd.ToolCallId;
-        }
-
-        if (payload is ToolCallAuthorized a)
-        {
-            return a.ToolCallId;
-        }
-
-        if (payload is ToolCallStarted s)
-        {
-            return s.ToolCallId;
-        }
-
-        if (payload is ToolCallSucceeded sc)
-        {
-            return sc.ToolCallId;
-        }
-
-        if (payload is ToolCallFailed f)
-        {
-            return f.ToolCallId;
-        }
-
-        if (payload is ToolCallEffectUnknown u)
-        {
-            return u.ToolCallId;
-        }
-
-        if (payload is ToolCallReconciled rc)
-        {
-            return rc.ToolCallId;
-        }
-
-        return null;
+        return value.ValueKind == JsonValueKind.String && System.Guid.TryParse(value.GetString(), out var id)
+            ? id
+            : null;
     }
 }

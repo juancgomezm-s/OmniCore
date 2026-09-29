@@ -101,17 +101,39 @@ public sealed class CommandAck
         new(commandId, "error", error + " :: " + cause);
 }
 
-/// <summary>Genera ids de comando/evento únicos y monótonos (portables net8/net10).</summary>
+/// <summary>
+/// Genera ids de comando/evento UUIDv7 (RFC 9562 §5.7) en texto canónico. Se construye a mano
+/// porque esta librería compila también para net8, que no tiene <c>Guid.CreateVersion7</c>: 48 bits
+/// de milisegundos Unix, versión 7, variante RFC y el resto aleatorio criptográfico.
+/// </summary>
 public sealed class Ids
 {
-    private static long _counter;
-
-    private static readonly string _epoch = DateTimeOffset.Now.ToString();
-
     public static string NewV7()
     {
-        _counter += 1;
-        return "id-" + _epoch + "-" + _counter;
+        Span<byte> bytes = stackalloc byte[16];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        var millis = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        bytes[0] = (byte) (millis >> 40);
+        bytes[1] = (byte) (millis >> 32);
+        bytes[2] = (byte) (millis >> 24);
+        bytes[3] = (byte) (millis >> 16);
+        bytes[4] = (byte) (millis >> 8);
+        bytes[5] = (byte) millis;
+        bytes[6] = (byte) ((bytes[6] & 0x0F) | 0x70);
+        bytes[8] = (byte) ((bytes[8] & 0x3F) | 0x80);
+
+        var hex = new System.Text.StringBuilder(36);
+        for (var i = 0; i < 16; i++)
+        {
+            if (i == 4 || i == 6 || i == 8 || i == 10)
+            {
+                hex.Append('-');
+            }
+
+            hex.Append(bytes[i].ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return hex.ToString();
     }
 }
 

@@ -77,11 +77,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         string workspaceRoot, ModelCapabilityBoundary? boundary) =>
         new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary);
 
-    public ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
-        CancellationToken cancellationToken)
-    {
-        return ExecuteTool(validated, userApprovesAsk, cancellationToken, null);
-    }
+    /// <summary>
+    /// Pipeline sin journal, solo para tests del pipeline: nada se persiste y todos los eventos
+    /// vuelven en <c>ToolOutcome.Events</c>. No forma parte del puerto del Engine
+    /// (<see cref="IToolExecutor"/>), que exige stream para no perder el Barrier (INV-014).
+    /// </summary>
+    public ToolOutcome ExecuteToolWithoutJournal(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken) =>
+        Run(validated, userApprovesAsk, cancellationToken, null);
 
     /// <summary>
     /// Pipeline real con escritura en vivo del journal (ADR-0002 §2): cuando el intent declara un
@@ -94,6 +97,13 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// hay buffers ni callbacks compartidos entre Runs.
     /// </summary>
     public ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        return Run(validated, userApprovesAsk, cancellationToken, stream);
+    }
+
+    private ToolOutcome Run(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken, EventStream? stream)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene

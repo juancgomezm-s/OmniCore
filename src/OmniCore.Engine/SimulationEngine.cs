@@ -15,7 +15,6 @@ public sealed class SimulationEngine
 
     private readonly IEventCodecRegistry _codecs;
 
-    private readonly IDomainEventCodec _codecForRun;
 
     private readonly IAuditSink _audit;
 
@@ -39,7 +38,6 @@ public sealed class SimulationEngine
         _store = store;
         _codecs = codecs;
         _audit = audit;
-        _codecForRun = codecs.CodecFor(EventType.Of("run.started"));
         _planService = new PlanService();
         _reconciler = new ProgressReconciler();
         _toolExecutor = null;
@@ -53,7 +51,6 @@ public sealed class SimulationEngine
         _store = store;
         _codecs = codecs;
         _audit = audit;
-        _codecForRun = codecs.CodecFor(EventType.Of("run.started"));
         _planService = new PlanService();
         _reconciler = new ProgressReconciler();
         _toolExecutor = toolExecutor;
@@ -72,7 +69,6 @@ public sealed class SimulationEngine
         _store = store;
         _codecs = codecs;
         _audit = audit;
-        _codecForRun = codecs.CodecFor(EventType.Of("run.started"));
         _planService = new PlanService();
         _reconciler = new ProgressReconciler();
         _toolExecutor = toolExecutor;
@@ -439,11 +435,10 @@ public sealed class SimulationEngine
                 return;
             }
 
-            var outcome = _toolExecutor.ExecuteTool(validated, true, cancellationToken);
-            foreach (var evt in outcome.Events)
-            {
-                stream.Append(evt);
-            }
+            // Con stream: un Started con efecto se confirma con Barrier antes de ejecutar (INV-014), y
+            // los outcomes se escriben en un solo lote atómico.
+            var outcome = _toolExecutor.ExecuteTool(validated, true, cancellationToken, stream);
+            stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
 
             // plan.propose: si la tool declaró una mutación válida (JSON de la mutación en Preview,
             // no el summary legible), PlanService la aplica contra las proyecciones del run

@@ -51,10 +51,35 @@ public interface IDomainEventCodec
     string Encode(DomainEventPayload payload);
 }
 
-/// <summary>Registro de codecs por EventType, con upcasters vacíos en M1 (ADR-0013 §2).</summary>
+/// <summary>
+/// Registro de codecs por EventType con upcasters aplicados al leer (ADR-0013 §2). El store nunca
+/// se reescribe: un evento persistido en una versión anterior se sube a la actual al decodificarlo.
+/// </summary>
 public interface IEventCodecRegistry
 {
     IDomainEventCodec CodecFor(EventType type);
+
+    /// <summary>Versión de schema actual de un tipo (la que se escribe hoy).</summary>
+    int CurrentVersion(EventType type);
+
+    /// <summary>
+    /// Decodifica un evento persistido aplicando la cadena de upcasters desde su versión hasta la
+    /// actual. Es la única forma correcta de leer el journal.
+    /// </summary>
+    DomainEventPayload Decode(DomainEvent evt);
+}
+
+/// <summary>
+/// Sube el payload JSON de un tipo de evento de <see cref="FromVersion"/> a FromVersion + 1
+/// (ADR-0013 §2). Puro y determinista: se aplica en cada lectura, nunca reescribe el store.
+/// </summary>
+public interface IEventUpcaster
+{
+    EventType Type { get; }
+
+    int FromVersion { get; }
+
+    string Upcast(string payloadJson);
 }
 
 /// <summary>
