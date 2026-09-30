@@ -138,7 +138,10 @@ public record LaneHeartbeat(
 /// <summary>
 /// Resultado normalizado de una ejecución de tool (spec §40). `IsError` distingue explícitamente
 /// los fallos (Acceso denegado, no encontrado, falta path) de los éxitos: el runtime NUNCA emite
-/// toolcall.succeeded para un resultado con IsError=true (P0-2).
+/// toolcall.succeeded para un resultado con IsError=true (P0-2). Todo resultado de error lleva
+/// además un código tipado (spec §71): sin código explícito se clasifica TOOL_FAILURE; un
+/// resultado exitivo nunca lleva código. El texto visible al modelo (<see cref="Summary"/>) viaja
+/// aparte y es estable.
 /// </summary>
 public sealed class ToolResult
 {
@@ -156,6 +159,9 @@ public sealed class ToolResult
 
     public bool IsError { get; }
 
+    /// <summary>Código tipado del error (spec §71); null si el resultado es exitivo.</summary>
+    public ToolErrorCode? ErrorCode { get; }
+
     public ToolResult(string summary, string? preview, ArtifactRef? artifact, long originalSize,
         bool wasExternalized, EffectOutcome effectOutcome)
         : this(summary, preview, artifact, originalSize, wasExternalized, effectOutcome, false)
@@ -163,7 +169,7 @@ public sealed class ToolResult
     }
 
     public ToolResult(string summary, string? preview, ArtifactRef? artifact, long originalSize,
-        bool wasExternalized, EffectOutcome effectOutcome, bool isError)
+        bool wasExternalized, EffectOutcome effectOutcome, bool isError, ToolErrorCode? errorCode = null)
     {
         Summary = summary;
         Preview = preview;
@@ -172,11 +178,20 @@ public sealed class ToolResult
         WasExternalized = wasExternalized;
         EffectOutcome = effectOutcome;
         IsError = isError;
+        // Invariante (spec §71): todo error lleva código; el éxito nunca. Sin código explícito
+        // el fallo se clasifica como TOOL_FAILURE, la categoría mínima de spec §71.
+        ErrorCode = isError ? errorCode ?? ToolErrorCode.ToolFailure : null;
     }
 
-    /// <summary>Resultado de error explícito (no-exitoso): el runtime lo marca Failed/Rejected.</summary>
+    /// <summary>Resultado de error explícito (no-exitoso), clasificado TOOL_FAILURE: el runtime lo
+    /// marca Failed/Rejected.</summary>
     public static ToolResult Error(string summary) =>
         new(summary, null, null, 0, false, EffectOutcome.None, true);
+
+    /// <summary>Resultado de error con código tipado (spec §71). El summary (texto visible al
+    /// modelo) viaja aparte del código y mantiene su formato estable.</summary>
+    public static ToolResult Error(ToolErrorCode errorCode, string summary) =>
+        new(summary, null, null, 0, false, EffectOutcome.None, true, errorCode);
 
     /// <summary>Resultado de éxito.</summary>
     public static ToolResult Ok(string summary, string? preview, long originalSize, bool externalized,

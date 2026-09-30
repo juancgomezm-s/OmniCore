@@ -60,14 +60,14 @@ public sealed class UserAskTool : ITool
         {
             return new PreparationRejected("user.ask: el payload no es un cuestionario válido " +
                 "(falta title o questions, o el JSON no tiene la forma { title, description?, questions[] })",
-                null);
+                null, ToolErrorCode.InvalidArguments);
         }
 
         var validation = QuestionnaireValidator.ValidateSchema(schema!, _limits);
         if (!validation.Valid)
         {
             return new PreparationRejected("user.ask: el cuestionario no pasa la validación del Host: "
-                + Describe(validation), null);
+                + Describe(validation), null, ToolErrorCode.InvalidArguments);
         }
 
         // EffectClass.None: declaración honesta del flujo. Sin claims (no toca recursos).
