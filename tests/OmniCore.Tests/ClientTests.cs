@@ -280,4 +280,24 @@ public sealed class ClientTests
         Assert.True(result.Response!.Cancelled);
         Assert.Empty(result.Response.Answers);
     }
+
+    [Fact]
+    public void CliApp_messages_resolve_in_spanish_and_english()
+    {
+        var spanish = new Localization("es");
+        var english = new Localization("en");
+
+        Assert.Equal("omni sim: no existe el escenario escenarios/demo.yaml",
+            spanish.Resolve("cli.sim.no_scenario", "path", "escenarios/demo.yaml"));
+        Assert.Equal("omni sim: scenario does not exist: escenarios/demo.yaml",
+            english.Resolve("cli.sim.no_scenario", "path", "escenarios/demo.yaml"));
+
+        Assert.Equal("omni: intención asumida como pregunta → ask 'ayuda'",
+            spanish.Resolve("cli.ask_assumed", "command", "ayuda"));
+        Assert.Equal("omni: intent assumed as a question → ask 'ayuda'",
+            english.Resolve("cli.ask_assumed", "command", "ayuda"));
+
+        Assert.Equal("Workspace marcado como no confiable.", spanish.Resolve("cli.trust.revoked"));
+        Assert.Equal("Workspace marked as untrusted.", english.Resolve("cli.trust.revoked"));
+    }
 }
