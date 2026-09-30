@@ -37,7 +37,7 @@ public static class ScenarioLoader
     private static readonly HashSet<string> TopLevel = new(StringComparer.Ordinal)
     {
         "scenario", "name", "session", "input", "plan", "tasks", "turns", "permissions", "fault",
-        "planApproval", "expect",
+        "planApproval", "stallThresholdTurns", "expect",
     };
 
     public static SimulationScenario Parse(string yaml)
@@ -101,10 +101,20 @@ public static class ScenarioLoader
             throw new ScenarioFormatException("planApproval inválido: " + planApproval);
         }
 
+        int? stall = null;
+        if (Str(root, "stallThresholdTurns") is { } stallText)
+        {
+            stall = int.TryParse(stallText, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var n) && n >= 1
+                ? n
+                : throw new ScenarioFormatException("stallThresholdTurns debe ser un entero ≥ 1");
+        }
+
         return new SimulationScenario(name, mode, input, plan, tasks, turns, permissions,
             Str(expect, "run") ?? "Completed", expectedPlan, fault)
         {
             PlanApproval = planApproval,
+            StallThresholdTurns = stall,
         };
     }
 

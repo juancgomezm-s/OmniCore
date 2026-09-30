@@ -29,7 +29,7 @@ public sealed class RunCoupon
         var rootTask = _run.RootTask;
         var converged = false;
         var guard = 0;
-        while (!converged && guard < 128)
+        while (!converged && guard < 1024)
         {
             guard += 1;
             var tail = store.ReadFrom(sessionId, 1);
@@ -37,8 +37,21 @@ public sealed class RunCoupon
             var taskProj = TaskGraphProjection.Replay(codecs, tail);
             var laneProj = LaneProjection.Replay(codecs, tail);
 
-            var mutations = reconciler.Reconcile(planProj, taskProj, laneProj);
-            if (mutations.Count == 0)
+            var mutations = reconciler.Reconcile(planProj, taskProj, laneProj,
+                _run.FailurePolicy ?? FailurePolicy.BlockDependents);
+            var anyAccepted = false;
+            foreach (var mutation in mutations)
+            {
+                var apply = planService.Apply(planProj, taskProj, laneProj, mutation);
+                if (apply.Accepted)
+                {
+                    stream.AppendBatch(apply.Events, DurabilityClass.Standard);
+                    anyAccepted = true;
+                    break; // re-proyectar: cada mutación se valida contra el estado que dejó la anterior
+                }
+            }
+
+            if (!anyAccepted)
             {
                 // Sin mutaciones: las Tasks de trabajo que siguen Running terminan (cerrando antes
                 // sus Lanes) y se vuelve a reconciliar. La Task raíz vive hasta el final del Run.
@@ -63,16 +76,6 @@ public sealed class RunCoupon
                 }
 
                 converged = !anyRunning;
-                continue;
-            }
-
-            foreach (var mutation in mutations)
-            {
-                var apply = planService.Apply(planProj, taskProj, laneProj, mutation);
-                if (apply.Accepted)
-                {
-                    stream.AppendBatch(apply.Events, DurabilityClass.Standard);
-                }
             }
         }
 

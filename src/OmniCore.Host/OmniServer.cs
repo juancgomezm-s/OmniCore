@@ -776,6 +776,10 @@ public sealed class Scenarios
                 new SimulatedTask("T1",
                     new SimulatedLink[] { new SimulatedLink("P1", "implements") },
                     new string[0], "Inspeccionar"),
+                // Un item sin Tasks vinculadas no se completa solo (ADR-0016 §5): P2 tiene su trabajo.
+                new SimulatedTask("T2",
+                    new SimulatedLink[] { new SimulatedLink("P2", "implements") },
+                    new string[] { "T1" }, "Implementar"),
             },
             turns,
             AuthPermissions(),

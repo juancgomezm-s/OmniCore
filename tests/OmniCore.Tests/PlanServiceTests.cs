@@ -73,7 +73,10 @@ public sealed class PlanServiceTests
         var result = service.Apply(plan, TaskEmpty(), LaneProjection.Empty(), mutation);
 
         Assert.True(result.Accepted);
-        Assert.True(result.Events[0] is OmniCore.Domain.PlanItemAdded);
+        // Estructural: Plan rev.N+1 con PlanRevised y después el item (ADR-0016 §6).
+        var revised = Assert.IsType<OmniCore.Domain.PlanRevised>(result.Events[0]);
+        Assert.Equal(plan.Revision() + 1, revised.Revision);
+        Assert.True(result.Events[1] is OmniCore.Domain.PlanItemAdded);
         Assert.Equal(1, result.RevisionDelta);
     }
 

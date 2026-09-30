@@ -14,17 +14,24 @@ public sealed class ProgressReconciler
     public static readonly int DefaultStallThresholdTurns = 6;
 
     public IReadOnlyList<PlanMutation> Reconcile(PlanProjection plan, TaskGraphProjection tasks,
-        LaneProjection lanes)
+        LaneProjection lanes) => Reconcile(plan, tasks, lanes, FailurePolicy.BlockDependents);
+
+    /// <summary>
+    /// Reglas R1–R6 sobre las hojas del Plan (los contenedores se derivan de sus hijos, ADR-0036 §4).
+    /// Nunca retrocede un item terminal. <paramref name="failurePolicy"/> es la del Run (R5).
+    /// </summary>
+    public IReadOnlyList<PlanMutation> Reconcile(PlanProjection plan, TaskGraphProjection tasks,
+        LaneProjection lanes, FailurePolicy failurePolicy)
     {
         var mutations = new List<PlanMutation>();
-        foreach (var item in plan.Items())
+        foreach (var item in PlanCompletionGate.Leaves(plan))
         {
             if (StateMachines.IsPlanItemTerminal(item.State))
             {
                 continue;
             }
 
-            mutations.AddRange(RulesFor(item, plan, tasks, lanes));
+            mutations.AddRange(RulesFor(item, plan, tasks, lanes, failurePolicy));
         }
 
         return mutations.ToArray();
@@ -33,7 +40,7 @@ public sealed class ProgressReconciler
     /// <summary>Calcula el item actual tras una transición (R7).</summary>
     public PlanItemId? CurrentItem(PlanProjection plan)
     {
-        var items = plan.Items();
+        var items = PlanCompletionGate.Leaves(plan);
         var firstInProgress = MinimumByOrder(items, PlanItemState.InProgress);
         if (firstInProgress is not null)
         {
@@ -60,62 +67,52 @@ public sealed class ProgressReconciler
     }
 
     private IReadOnlyList<PlanMutation> RulesFor(PlanItem item, PlanProjection plan, TaskGraphProjection tasks,
-        LaneProjection lanes)
+        LaneProjection lanes, FailurePolicy failurePolicy)
     {
-        var mutations = new List<PlanMutation>();
-        var alreadyForwarding = false;
+        var running = HasRunningLinkedTask(item, tasks, lanes);
 
-        // R6: dependencias completadas/skpidas → Pending → Ready (via Start hacia InProgress,
-        //    que es la mutación disponible en M1; se desambiguará con PlanControl en M2).
-        if (item.State == PlanItemState.Pending && DependenciesSatisfied(item, plan)
-            && !HasRunningLinkedTask(item, tasks, lanes))
+        // R1: alguna Task vinculada pasa a Running y el item está Pending o Ready → InProgress.
+        if ((item.State == PlanItemState.Pending || item.State == PlanItemState.Ready) && running)
         {
-            mutations.Add(PlanMutation.Start(item.Id, MutationCause.Reconciler));
-            alreadyForwarding = true;
+            return new[] { PlanMutation.Start(item.Id, MutationCause.Reconciler) };
         }
 
-        // R1: alguna Task vinculada Running → InProgress (una sola vez por item).
-        if ((item.State == PlanItemState.Pending || item.State == PlanItemState.Ready)
-            && HasRunningLinkedTask(item, tasks, lanes) && !alreadyForwarding)
+        // R6: todas las dependencias Completed o Skipped → Pending → Ready. Ready no es progreso:
+        // un item sin Tasks vinculadas solo avanza más allá por mutaciones explícitas.
+        if (item.State == PlanItemState.Pending && DependenciesSatisfied(item, plan))
         {
-            mutations.Add(PlanMutation.Start(item.Id, MutationCause.Reconciler));
-            alreadyForwarding = true;
+            return new[] { PlanMutation.Ready(item.Id, MutationCause.Reconciler) };
         }
 
-        // R3: alguna Task requerida Blocked → Blocked
-        if (!alreadyForwarding && item.State == PlanItemState.InProgress && HasBlockedLinkedTask(item, tasks))
-        {
-            mutations.Add(PlanMutation.Block(item.Id, MutationCause.Reconciler, "task bloqueada"));
-        }
-
-        // R4: la Task bloqueante volvió a Ready/Running → InProgress
-        if (item.State == PlanItemState.Blocked && !HasBlockedLinkedTask(item, tasks))
-        {
-            mutations.Add(PlanMutation.Unblock(item.Id, MutationCause.Reconciler, "task desbloqueada"));
-        }
-
-        // R2: todas las Tasks requeridas Completed y Verifies pasaron → Completed
-        if (item.State == PlanItemState.InProgress && LinkedTasksSatisfied(item, tasks))
-        {
-            mutations.Add(PlanMutation.Complete(item.Id, MutationCause.Reconciler, "tasks completadas"));
-        }
-
-        // R5: alguna Task requerida Failed con política de bloqueo → Blocked; FailRun → Failed
+        // R5: una Task requerida Failed (recuperación agotada) → Failed o Blocked según la FailurePolicy.
         if ((item.State == PlanItemState.InProgress || item.State == PlanItemState.Blocked)
             && HasFailedLinkedTask(item, tasks))
         {
-            var runPolicy = PlanFailurePolicyOf(plan);
-            if (runPolicy == FailurePolicy.FailRun)
-            {
-                mutations.Add(PlanMutation.Fail(item.Id, MutationCause.Reconciler, "task requerida fallida"));
-            }
-            else
-            {
-                mutations.Add(PlanMutation.Block(item.Id, MutationCause.Reconciler, "task requerida fallida"));
-            }
+            return new[] { failurePolicy == FailurePolicy.BlockDependents
+                ? PlanMutation.Block(item.Id, MutationCause.Reconciler, "task requerida fallida")
+                : PlanMutation.Fail(item.Id, MutationCause.Reconciler, "task requerida fallida") };
         }
 
-        return mutations.ToArray();
+        // R3: una Task requerida Blocked → Blocked.
+        if (item.State == PlanItemState.InProgress && HasBlockedLinkedTask(item, tasks))
+        {
+            return new[] { PlanMutation.Block(item.Id, MutationCause.Reconciler, "task bloqueada") };
+        }
+
+        // R4: la Task que bloqueaba volvió a Ready o Running → InProgress.
+        if (item.State == PlanItemState.Blocked && !HasBlockedLinkedTask(item, tasks) && !HasFailedLinkedTask(item, tasks))
+        {
+            return new[] { PlanMutation.Unblock(item.Id, MutationCause.Reconciler, "task desbloqueada") };
+        }
+
+        // R2: todas las Tasks vinculadas requeridas Completed (las Verifies incluidas) → Completed.
+        // Sin Tasks requeridas vinculadas no hay nada que reconciliar: el item no se completa solo.
+        if (item.State == PlanItemState.InProgress && LinkedTasksSatisfied(item, tasks))
+        {
+            return new[] { PlanMutation.Complete(item.Id, MutationCause.Reconciler, "tasks completadas") };
+        }
+
+        return Array.Empty<PlanMutation>();
     }
 
     private static bool DependenciesSatisfied(PlanItem item, PlanProjection plan)
@@ -170,6 +167,11 @@ public sealed class ProgressReconciler
 
     private static bool LinkedTasksSatisfied(PlanItem item, TaskGraphProjection tasks)
     {
+        if (!item.LinkedTasks.Any(link => link.Required))
+        {
+            return false;
+        }
+
         foreach (var link in item.LinkedTasks)
         {
             if (link.Required && tasks.StateOf(link.TaskId) != TaskState.Completed)
@@ -194,5 +196,4 @@ public sealed class ProgressReconciler
         return false;
     }
 
-    private static FailurePolicy PlanFailurePolicyOf(PlanProjection plan) => FailurePolicy.BlockDependents;
 }
