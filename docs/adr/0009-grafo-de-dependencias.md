@@ -1,9 +1,11 @@
 # ADR-0009 — Grafo de dependencias entre proyectos
 
-- **Estado:** Aceptada — rev. 3 (2026-09-24)
+- **Estado:** Aceptada — rev. 5 (2026-10-19)
 - **Rev. 1:** grafo inicial de 13 proyectos.
 - **Rev. 2:** sin cambios de aristas; agrega reglas de frontera **dentro** del grafo: validación de rutas, autoridad de `AuthorizedToolIntent`, CLI desacoplado y proyectos futuros.
 - **Rev. 3:** agrega el proyecto **`OmniCore.Client`** (ADR-0030) y la regla de que los frameworks visuales solo aparecen en `OmniCore.Cli`.
+- **Rev. 4:** agrega el proyecto **`OmniCore.Qualification`** (M5): runner de la Model Qualification Suite, depende de Abstractions y Domain.
+- **Rev. 5:** la fachada de la suite (`ModelQualificationHost`, `omni model qualify`) vive en **Host**, que por tanto referencia `OmniCore.Qualification` (M5). Host ya dependía de "todos los anteriores"; la arista queda explícita.
 - **Spec:** §78–§81
 - **Diagrama:** [arquitectura §18](../architecture/arquitectura.md#18-permission-y-sandbox-boundaries)
 
@@ -23,6 +25,7 @@ Tools             ← Abstractions, Domain, Sandbox (NO Security) rev. 4: contra
 Security          ← Abstractions, Domain          (NO Sandbox)
 Execution         ← Abstractions, Domain, Sandbox
 Infrastructure    ← Abstractions, Domain
+Qualification     ← Abstractions, Domain     (M5) runner de la Model Qualification Suite; consume el runtime como un cliente, igual que el CLI
 Host              ← todos los anteriores salvo Sandbox directo (composition root)
 Client            ← Protocol       (rev. 3) ClientProjection, modelos de presentación, acciones; sin frameworks visuales
 Cli               ← Client, Host, Protocol   (Terminal.Gui y Spectre.Console solo aquí)
@@ -48,7 +51,6 @@ Cli               ← Client, Host, Protocol   (Terminal.Gui y Spectre.Console s
    - *Test nuevo en M1:* las referencias IL de `omni.dll` son solo `OmniCore.Protocol`, `OmniCore.Client` y `OmniCore.Host`, y la superficie pública de Host se limita a la fábrica del host y del cliente.
    - *Test vigente (rev. 3):* los paquetes `Terminal.Gui` y `Spectre.Console*` solo pueden aparecer en `OmniCore.Cli` (ADR-0030 §6).
 5. **Proyectos futuros previstos** (se agregan con su frontera cuando lleguen, no antes):
-   - `OmniCore.Qualification` (M5): runner de la Model Qualification Suite. Consume el runtime como un cliente, igual que el CLI.
    - `OmniCore.Extensions` (M8): host de extensiones fuera de proceso (Extension API por JSON-RPC, ADR-0023). Ejecuta tools, commands, skills, hooks y contributors de fuentes no `Core`. Depende de Abstractions y Domain.
    - `OmniCore.Memory` (M8+): implementación de `IMemoryStore` y `MemoryContextContributor` (ADR-0028). Depende solo de Abstractions y Domain. **Ningún proyecto del Core lo referencia**: lo compone Host de forma opcional.
 6. **Commands (ADR-0024):**

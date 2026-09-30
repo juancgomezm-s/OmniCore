@@ -23,10 +23,12 @@ public sealed class ProjectDependencyTests
         ["OmniCore.Security"] = ["OmniCore.Abstractions", "OmniCore.Domain"],
         ["OmniCore.Execution"] = ["OmniCore.Abstractions", "OmniCore.Domain", "OmniCore.Sandbox"],
         ["OmniCore.Infrastructure"] = ["OmniCore.Abstractions", "OmniCore.Domain"],
+        ["OmniCore.Qualification"] = ["OmniCore.Abstractions", "OmniCore.Domain"],
         ["OmniCore.Host"] =
         [
             "OmniCore.Abstractions", "OmniCore.Domain", "OmniCore.Engine", "OmniCore.Context", "OmniCore.Models",
             "OmniCore.Tools", "OmniCore.Security", "OmniCore.Execution", "OmniCore.Infrastructure", "OmniCore.Protocol",
+            "OmniCore.Qualification",
         ],
         ["OmniCore.Client"] = ["OmniCore.Protocol"],
         ["OmniCore.Cli"] = ["OmniCore.Client", "OmniCore.Host", "OmniCore.Protocol"],

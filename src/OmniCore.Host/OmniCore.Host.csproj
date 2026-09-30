@@ -17,6 +17,7 @@
     <ProjectReference Include="..\OmniCore.Execution\OmniCore.Execution.csproj" />
     <ProjectReference Include="..\OmniCore.Infrastructure\OmniCore.Infrastructure.csproj" />
     <ProjectReference Include="..\OmniCore.Protocol\OmniCore.Protocol.csproj" />
+    <ProjectReference Include="..\OmniCore.Qualification\OmniCore.Qualification.csproj" />
     <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 

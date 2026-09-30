@@ -348,7 +348,10 @@ public sealed class OmniCliRuntime
                     ? modelDefinition.ContextWindow : 8192;
             var effectiveProfile = new ModelProfileResolver().Resolve(
                 modelDefinition ?? new ModelDefinition(model, "local", usableContext, usableContext, 2048),
-                providerDescription);
+                providerDescription,
+                overrides: null,
+                empiricalTraits: EmpiricalTraits(modelDefinition, providerDescription,
+                    act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken));
             var harness = new HarnessPolicyResolver().Resolve(effectiveProfile);
             var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
                 harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
@@ -924,6 +927,32 @@ public sealed class OmniCliRuntime
     public void SetWorkspaceTrusted(bool trusted) =>
         new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).SetTrusted(_workspaceRoot, trusted);
 
+    /// <summary>
+    /// Traits empíricos de la capa Empirical (ADR-0007 §1, M5) para la configuración exacta del
+    /// modelo: solo si existe un perfil Qualified/Calibrated/Stale en el almacén de scope User.
+    /// Nunca resuelve por nombre de modelo; sin perfil utilizable devuelve null y el resolver
+    /// queda en HeuristicDefaults (M2).
+    /// </summary>
+    private static IReadOnlyDictionary<string, double>? EmpiricalTraits(ModelDefinition? model,
+        ProviderDescriptor? provider, string? dataDirectoryOverride, CancellationToken cancellationToken)
+    {
+        if (model is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var store = OmniHost.CreateModelQualificationStore(dataDirectoryOverride);
+            return ModelQualificationHost.UsableTraits(store, model, provider, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Un almacén dañado no degrada la ejecución: el perfil cae a HeuristicDefaults.
+            return null;
+        }
+    }
+
     /// <summary>Configura /tools con el perfil, límite y frontera usados por el siguiente Turn.</summary>
     public void ConfigureToolDiagnostics(CancellationToken cancellationToken)
     {
@@ -936,7 +965,9 @@ public sealed class OmniCliRuntime
         var model = Environment.GetEnvironmentVariable("OMNI_MODEL") ?? definition?.Id ?? "local";
         definition ??= registry.Model(model) ?? new ModelDefinition(model, "local", 8192, 8192, 2048);
         var provider = registry.Provider(definition.ProviderId);
-        var profile = new ModelProfileResolver().Resolve(definition, provider);
+        var profile = new ModelProfileResolver().Resolve(definition, provider,
+            empiricalTraits: EmpiricalTraits(definition, provider,
+                Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken));
         var harness = new HarnessPolicyResolver().Resolve(profile);
         var key = ModelPolicyKey.For(definition.ProviderId, model);
         EffectiveModelPolicy effective;

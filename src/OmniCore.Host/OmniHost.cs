@@ -164,6 +164,14 @@ public sealed class OmniHost
         return new ModelPolicyService(new SqliteModelPolicyStore(paths.UserDatabasePath));
     }
 
+    /// <summary>
+    /// Store relacional de perfiles de cualificación empírica (M5, ADR-0007 §6) sobre el user.db
+    /// de plataforma (tablas model_profiles/model_traits, scope User). El llamador es dueño del
+    /// ciclo de vida (IDisposable).
+    /// </summary>
+    public static SqliteModelQualificationStore CreateModelQualificationStore(string? dataDirectoryOverride) =>
+        new(new DefaultPlatformPaths(dataDirectoryOverride).UserDatabasePath);
+
     /// <summary>Token counter estimado por defecto, o exacto para providers llama.cpp declarados en config.</summary>
     public static ITokenCounter CreateTokenCounter() => new HeuristicTokenCounter();
 
