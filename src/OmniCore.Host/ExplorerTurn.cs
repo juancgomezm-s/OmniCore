@@ -15,8 +15,8 @@ using OmniCore.Tools;
 /// y PERSISTE en el journal: TurnStarted, cada evento de tool (request/permission/auth/outcome),
 /// la respuesta como artifact + ModelCompleted, y TurnCompleted. El budget del Turn se lee del
 /// RunCreated; cuando se excede se emite InteractionRequested(BudgetExceeded) y corta. Si el
-/// contexto hace overflow (WorkingState pinned mayor al presupuesto) termina con
-/// StopReason.ContextOverflow. SIN cliente interactivo → las Ask se deniegan (ADR-0003).
+/// contexto protegido no cabe tras recortar la conversación termina con StopReason.ContextOverflow.
+/// SIN cliente interactivo → las Ask se deniegan (ADR-0003).
 /// </summary>
 public sealed class ExplorerTurn
 {
@@ -165,10 +165,11 @@ public sealed class ExplorerTurn
         var stream = new EventStream(_store, _codecs, sessionId);
         var turnId = TurnId.New();
 
-        var messages = LoadConversation(stream);
-        if (question is not null && question.Length > 0)
+        var messages = LoadConversation(stream, runId);
+        var safeQuestion = _redaction.Redact(question ?? "");
+        if (safeQuestion.Length > 0)
         {
-            messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(question) }));
+            messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(safeQuestion) }));
         }
 
         var allToolCalls = new List<ToolUseTrace>();
@@ -181,29 +182,15 @@ public sealed class ExplorerTurn
 
         try
         {
-            var contributors = new List<OmniCore.Context.IContextContributor>();
-            var injected = _materializer.Contributors();
-            foreach (var c in injected)
-            {
-                contributors.Add(c);
-            }
+            var preparedContext = MaterializeTurnContext(sessionId, runId, laneId, turnId,
+                workingStateText, instruction, messages, cancellationToken);
+            var materialized = preparedContext.Snapshot;
+            var snapshotArtifact = PersistContextSnapshot(materialized);
 
-            var hasWorkingState = HasWorkingStateContributor(contributors);
-            if (workingStateText is not null && workingStateText.Length > 0 && !hasWorkingState)
-            {
-                contributors.Add(new WorkingStateContributor(workingStateText!));
-            }
-
-            var turnMaterializer = new ContextMaterializer(_materializer.Counter(), contributors);
-            var materialized = turnMaterializer.MaterializeWithinBudget(
-                new MaterializeRequest(sessionId, runId, null, laneId, turnId, 0L,
-                    _fingerprint), cancellationToken, (int) _selection.ContextBudget);
-            var contextText = RenderContext(materialized);
-
-            // ContextOverflow: el WorkingState pinned (u otro item crítico) no cabe ni truncado.
+            // ContextOverflow: el contenido protegido no cabe ni después de recortar la conversación.
             if (materialized.Overflowed)
             {
-                stream.Append(new TurnStarted(turnId, laneId, _fingerprint));
+                stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
                 started = true;
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
                 // TurnCompleted tras Abandoned (P1: transición inválida).
@@ -213,9 +200,9 @@ public sealed class ExplorerTurn
             }
 
             EnsureRunAwaitingInput(stream, runId, laneId);
-            var encodedInput = System.Text.Json.JsonEncodedText.Encode(_redaction.Redact(question ?? ""));
+            var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
             stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null));
-            stream.Append(new TurnStarted(turnId, laneId, _fingerprint));
+            stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
             started = true;
 
             string? finalText = null;
@@ -223,10 +210,24 @@ public sealed class ExplorerTurn
             for (var step = 0; step < MaxSteps; step++)
             {
                 steps = step + 1;
+                if (step > 0)
+                {
+                    preparedContext = MaterializeTurnContext(sessionId, runId, laneId, turnId,
+                        workingStateText, instruction, messages, cancellationToken);
+                    materialized = preparedContext.Snapshot;
+                    if (materialized.Overflowed)
+                    {
+                        stream.Append(new TurnAbandoned(turnId,
+                            "ContextOverflow: los resultados de tools exceden el presupuesto"));
+                        return new TurnResult("ContextOverflow: el contexto no cabe en el presupuesto del modelo",
+                            StopReason.ContextOverflow, steps, usage, allToolCalls.ToArray(), null);
+                    }
+                }
+
                 var request = new ModelRequest(
                     _selection,
-                    messages.ToArray(),
-                    instruction is not null ? instruction!.Replace("{context}", contextText) : contextText,
+                    preparedContext.Messages,
+                    RenderContext(materialized),
                     VisibleTools(),
                     ToolChoice.Auto(),
                     null, null, new CacheHints(4, "automatic"), null);
@@ -556,7 +557,6 @@ public sealed class ExplorerTurn
     public static string RenderContext(ContextSnapshot snapshot)
     {
         var parts = new List<string>();
-        parts.Add("Contexto del workspace (fuentes del run):");
         foreach (ContextItem item in snapshot.Items)
         {
             if (item.Kind == ContextItemKind.WorkingState || item.Kind == ContextItemKind.System
@@ -568,22 +568,23 @@ public sealed class ExplorerTurn
                     parts.Add("- " + item.Content.Replace("\n", " "));
                 }
             }
-            else if (item.Kind == ContextItemKind.ToolResult && item.Content.Length > 0)
-            {
-                parts.Add("- resultado: " + item.Content.Replace("\n", " "));
-            }
         }
 
-        parts.Add("Fingerprint: " + snapshot.Fingerprint.ModelKey + " · " + snapshot.Fingerprint.ContextPolicyHash);
         return string.Join("\n", parts.ToArray());
     }
 
-    private List<ModelMessage> LoadConversation(EventStream stream)
+    private List<ModelMessage> LoadConversation(EventStream stream, RunId runId)
     {
         var history = new List<ModelMessage>();
         foreach (var evt in stream.EventsSince(1))
         {
-            if (evt.Type.ToString() == "user_input.received")
+            if (evt.RunId is null || !evt.RunId.ToString().Equals(runId.ToString(), StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var type = evt.Type.ToString();
+            if (type == "user_input.received")
             {
                 var input = _codecs.Decode(evt) as UserInputReceived;
                 if (input is null) continue;
@@ -593,27 +594,287 @@ public sealed class ExplorerTurn
                     var text = parsed.RootElement.GetString();
                     if (!string.IsNullOrEmpty(text))
                         history.Add(new ModelMessage(MessageRole.User,
-                            new ContentBlock[] { new TextBlock(text) }));
+                            new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
                 }
                 catch (System.Text.Json.JsonException) { }
             }
-            else if (evt.Type.ToString() == "model.completed")
+            else if (type == "toolcall.requested")
+            {
+                var call = _codecs.Decode(evt) as ToolCallRequested;
+                if (call is not null)
+                    history.Add(new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
+                        new ToolCallBlock(call.ToolCallId, call.ProviderCallId, call.ToolName,
+                            _redaction.Redact(call.ArgumentsJson))
+                    }));
+            }
+            else if (type == "toolcall.succeeded" || type == "toolcall.failed" || type == "toolcall.rejected")
+            {
+                var payload = _codecs.Decode(evt);
+                var callId = payload switch
+                {
+                    ToolCallSucceeded e => e.ToolCallId,
+                    ToolCallFailed e => e.ToolCallId,
+                    ToolCallRejected e => e.ToolCallId,
+                    _ => (ToolCallId?)null,
+                };
+                if (callId is null) continue;
+                var content = payload switch
+                {
+                    ToolCallSucceeded e => _redaction.Redact(e.ResultJson),
+                    ToolCallFailed e => "error: " + _redaction.Redact(e.Cause),
+                    ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
+                    _ => "error",
+                };
+                history.Add(new ModelMessage(MessageRole.Tool, new ContentBlock[] {
+                    new ToolResultBlock(callId!, new ContentBlock[] { new TextBlock(content) },
+                        payload is not ToolCallSucceeded)
+                }));
+            }
+            else if (type == "model.completed")
             {
                 var completed = _codecs.Decode(evt) as ModelCompleted;
                 if (completed?.ResponseArtifact is null) continue;
                 var text = _artifacts.GetText(completed.ResponseArtifact.Hash);
                 if (!string.IsNullOrEmpty(text))
                     history.Add(new ModelMessage(MessageRole.Assistant,
-                        new ContentBlock[] { new TextBlock(text) }));
+                        new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
             }
         }
 
-        // M2 conserva el primer input de la sesión y la ventana más reciente. La política de
-        // recorte por tokens exactos y compaction llega en M4.
-        if (history.Count <= 8) return history;
-        var window = new List<ModelMessage> { history[0] };
-        window.AddRange(history.Skip(history.Count - 7));
-        return window;
+        return history;
+    }
+
+    private PreparedTurnContext MaterializeTurnContext(SessionId sessionId, RunId runId, LaneId laneId,
+        TurnId turnId, string workingStateText, string instruction, IReadOnlyList<ModelMessage> messages,
+        CancellationToken cancellationToken)
+    {
+        var contributors = new List<IContextContributor>();
+        var hasWorkingState = false;
+        foreach (var contributor in _materializer.Contributors())
+        {
+            hasWorkingState |= contributor is WorkingStateContributor;
+            contributors.Add(new RedactingContextContributor(contributor, _redaction));
+        }
+
+        if (!hasWorkingState && !string.IsNullOrWhiteSpace(workingStateText))
+        {
+            contributors.Add(new RedactingContextContributor(new WorkingStateContributor(workingStateText),
+                _redaction));
+        }
+
+        var prompt = "Contexto del workspace (fuentes del run):\n"
+            + (instruction ?? "").Replace("{context}", "", StringComparison.Ordinal).Trim()
+            + "\nFingerprint: " + _fingerprint.ModelKey + " · " + _fingerprint.ContextPolicyHash;
+        contributors.Add(new RedactingContextContributor(new SystemPromptContributor(prompt), _redaction));
+        var entries = new List<ConversationContextEntry>();
+        var messageById = new Dictionary<string, ModelMessage>(StringComparer.Ordinal);
+        var firstUser = true;
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var safe = RedactMessage(messages[i]);
+            var id = "conversation-" + i.ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
+            var kind = safe.Role switch
+            {
+                MessageRole.User => ContextItemKind.UserMessage,
+                MessageRole.Assistant => ContextItemKind.AssistantMessage,
+                _ => ContextItemKind.ToolResult,
+            };
+            var preserve = safe.Role == MessageRole.User && firstUser;
+            if (safe.Role == MessageRole.User)
+            {
+                firstUser = false;
+            }
+
+            entries.Add(new ConversationContextEntry(id, kind, RenderMessage(safe), preserve));
+            messageById.Add(id, safe);
+        }
+
+        contributors.Add(new SessionConversationContributor(entries));
+        var materializer = new ContextMaterializer(_materializer.Counter(), contributors);
+        var snapshot = materializer.MaterializeWithinBudget(
+            new MaterializeRequest(sessionId, runId, null, laneId, turnId, 0L, _fingerprint),
+            cancellationToken, (int)_selection.ContextBudget);
+        var selectedMessages = new List<ModelMessage>();
+        foreach (var item in snapshot.Items)
+        {
+            if (messageById.TryGetValue(item.Id, out var message))
+            {
+                selectedMessages.Add(message);
+            }
+        }
+
+        return new PreparedTurnContext(snapshot, selectedMessages.ToArray());
+    }
+
+    private ModelMessage RedactMessage(ModelMessage message)
+    {
+        var blocks = new List<ContentBlock>();
+        foreach (var block in message.Content)
+        {
+            switch (block)
+            {
+                case TextBlock text:
+                    blocks.Add(new TextBlock(_redaction.Redact(text.Text)));
+                    break;
+                case ToolCallBlock call:
+                    blocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
+                        _redaction.Redact(call.ArgumentsJson)));
+                    break;
+                case ToolResultBlock result:
+                    blocks.Add(new ToolResultBlock(result.Id, RedactBlocks(result.Content), result.IsError));
+                    break;
+                case ReasoningBlock reasoning:
+                    blocks.Add(new ReasoningBlock(reasoning.VisibleText is null
+                        ? null : _redaction.Redact(reasoning.VisibleText), reasoning.Visibility, null));
+                    break;
+                case CitationBlock citation:
+                    blocks.Add(new CitationBlock(_redaction.Redact(citation.Text),
+                        _redaction.Redact(citation.SourceRef)));
+                    break;
+                case ProviderOpaqueBlock:
+                    blocks.Add(new TextBlock("[estado opaco del provider omitido]"));
+                    break;
+            }
+        }
+
+        return new ModelMessage(message.Role, blocks.ToArray());
+    }
+
+    private IReadOnlyList<ContentBlock> RedactBlocks(IReadOnlyList<ContentBlock> blocks)
+    {
+        var result = new List<ContentBlock>();
+        foreach (var block in blocks)
+        {
+            var safe = RedactMessage(new ModelMessage(MessageRole.Tool, new[] { block }));
+            result.AddRange(safe.Content);
+        }
+
+        return result.ToArray();
+    }
+
+    private static string RenderMessage(ModelMessage message)
+    {
+        var parts = new List<string>();
+        foreach (var block in message.Content)
+        {
+            switch (block)
+            {
+                case TextBlock text:
+                    parts.Add(text.Text);
+                    break;
+                case ToolCallBlock call:
+                    parts.Add("tool call " + call.ToolName + " " + call.ArgumentsJson);
+                    break;
+                case ToolResultBlock result:
+                    parts.Add("tool result " + string.Join(" ", result.Content.OfType<TextBlock>()
+                        .Select(text => text.Text)));
+                    break;
+                case ReasoningBlock reasoning when reasoning.VisibleText is not null:
+                    parts.Add(reasoning.VisibleText);
+                    break;
+                case CitationBlock citation:
+                    parts.Add(citation.Text + " " + citation.SourceRef);
+                    break;
+                case ProviderOpaqueBlock:
+                    parts.Add("[estado opaco del provider]");
+                    break;
+            }
+        }
+
+        return message.Role.ToString() + ": " + string.Join(" ", parts);
+    }
+
+    private ArtifactRef PersistContextSnapshot(ContextSnapshot snapshot)
+    {
+        using var output = new System.IO.MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("snapshotId", snapshot.SnapshotId);
+            writer.WriteString("fingerprint", snapshot.Fingerprint.Hash());
+            writer.WriteNumber("tokenCount", snapshot.TokenCount);
+            writer.WriteBoolean("overflowed", snapshot.Overflowed);
+            writer.WriteStartArray("items");
+            foreach (var item in snapshot.Items)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("id", item.Id);
+                writer.WriteString("kind", item.Kind.ToString());
+                writer.WriteString("content", item.Content);
+                writer.WriteNumber("tokens", item.EstimatedTokens);
+                WriteProvenance(writer, item.Provenance);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteStartArray("diagnostics");
+            foreach (var diagnostic in snapshot.Diagnostics)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("itemId", diagnostic.ItemId);
+                writer.WriteString("decision", diagnostic.Decision.ToString());
+                writer.WriteNumber("tokens", diagnostic.Tokens);
+                WriteProvenance(writer, diagnostic.Provenance);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        var content = System.Text.Encoding.UTF8.GetString(output.ToArray());
+        return _artifacts.PutText(_redaction.Redact(content), "application/json",
+            ArtifactKind.ContextSnapshot, Sensitivity.Sensitive);
+    }
+
+    private static void WriteProvenance(System.Text.Json.Utf8JsonWriter writer, ContextProvenance provenance)
+    {
+        writer.WriteString("contributor", provenance.ContributorId);
+        writer.WriteString("category", provenance.Category.ToString());
+        writer.WriteString("source", provenance.ComponentSource);
+        writer.WriteString("scope", provenance.Scope.ToString());
+        writer.WriteBoolean("sensitive", provenance.Sensitive);
+    }
+
+    private sealed class PreparedTurnContext
+    {
+        public ContextSnapshot Snapshot { get; }
+        public IReadOnlyList<ModelMessage> Messages { get; }
+
+        public PreparedTurnContext(ContextSnapshot snapshot, IReadOnlyList<ModelMessage> messages)
+        {
+            Snapshot = snapshot;
+            Messages = messages;
+        }
+    }
+
+    private sealed class RedactingContextContributor : IContextContributor
+    {
+        private readonly IContextContributor _inner;
+        private readonly RedactionPolicy _redaction;
+
+        public RedactingContextContributor(IContextContributor inner, RedactionPolicy redaction)
+        {
+            _inner = inner;
+            _redaction = redaction;
+        }
+
+        public async Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+            CancellationToken cancellationToken)
+        {
+            var items = await _inner.GetContextAsync(request, cancellationToken).ConfigureAwait(false);
+            var result = new List<ContextItem>();
+            foreach (var item in items)
+            {
+                var content = item.Provenance.Sensitive
+                    ? "[contenido sensible omitido]"
+                    : _redaction.Redact(item.Content);
+                result.Add(new ContextItem(item.Id, item.Kind, content, item.EstimatedTokens, item.Priority,
+                    item.Retention, item.Provenance, item.PreserveWhenTrimming));
+            }
+
+            return result.ToArray();
+        }
     }
 
     private void EnsureRunAwaitingInput(EventStream stream, RunId runId, LaneId laneId)

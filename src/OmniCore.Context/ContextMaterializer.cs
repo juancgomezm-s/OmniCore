@@ -3,12 +3,7 @@ namespace OmniCore.Context;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
-/// <summary>
-/// Context Engine v1 (M2): materializa el contexto de un Turn combinando contribuidores
-/// (WorkingState, conversación, task) y produce un ContextSnapshot con fingerprint.
-/// La política provisional (ADR-0042 §2) nunca recorta el WorkingState, que va al final
-/// del contexto para no invalidar el prefijo cacheado (ADR-0011 §9).
-/// </summary>
+/// <summary>Materializa una proyección del estado con procedencia y decisiones de presupuesto.</summary>
 public sealed class ContextMaterializer
 {
     private readonly ITokenCounter _counter;
@@ -21,31 +16,23 @@ public sealed class ContextMaterializer
         _contributors = contributors;
     }
 
-    /// <summary>Contributors configurados (para que un runtime combine el WorkingState en vivo).</summary>
+    /// <summary>Contributors configurados para que el runtime combine proyecciones vivas.</summary>
     public IReadOnlyList<IContextContributor> Contributors() => _contributors;
 
-    /// <summary>El contador de tokens configurado.</summary>
+    /// <summary>Contador de tokens configurado.</summary>
     public ITokenCounter Counter() => _counter;
 
-    public ContextSnapshot Materialize(MaterializeRequest request, CancellationToken cancellationToken)
-    {
-        return MaterializeWithinBudget(request, cancellationToken, 0);
-    }
+    public ContextSnapshot Materialize(MaterializeRequest request, CancellationToken cancellationToken) =>
+        MaterializeWithinBudget(request, cancellationToken, 0);
 
-    /// <summary>
-    /// Materializa aplicando la política de overflow del contexto (ADR-0042 §3): si el total
-    /// excede `maxTokens`, se recortan primero los items volátiles de menor prioridad
-    /// (RegenerateEachTurn → ConversationWindow → KeepForever) y al final se trunca el
-    /// contenido del item menos crítico. El WorkingState (pinned) nunca se recorta hasta el
-    /// último extremo, y en ese caso se trunca su texto  — jamás se descarta entero si es la
-    /// única fuente del turno.
-    /// </summary>
+    /// <summary>Cuenta los items y aplica el recorte provisional de ADR-0042.</summary>
     public ContextSnapshot MaterializeWithinBudget(MaterializeRequest request,
         CancellationToken cancellationToken, int maxTokens)
     {
         var items = new List<ContextItem>();
         foreach (var contributor in _contributors)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var contributed = contributor.GetContextAsync(request, cancellationToken).GetAwaiter().GetResult();
             foreach (var item in contributed)
             {
@@ -54,150 +41,173 @@ public sealed class ContextMaterializer
         }
 
         var ordered = OrderItems(items);
-
-        // 1. Cuento REAL de cada item (el EstimatedTokens del contributor suele ser 0 en M2).
-        var countedOrdered = new List<ContextItem>();
+        var counted = new List<ContextItem>();
         foreach (var item in ordered)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var count = _counter.CountAsync(item, cancellationToken).GetAwaiter().GetResult();
-            countedOrdered.Add(WithTokens(item, count));
+            counted.Add(WithTokens(item, count));
         }
 
-        var budgetResult = maxTokens > 0 ? ApplyBudget(countedOrdered, maxTokens, cancellationToken) : null;
-        var budgeted = budgetResult is null ? countedOrdered : budgetResult!.Items;
-        var overflowed = budgetResult is not null && budgetResult!.Overflowed;
-        var total = 0;
-        var final = new List<ContextItem>();
-        foreach (var item in budgeted)
+        var budgetResult = maxTokens > 0 ? ApplyBudget(counted, maxTokens, cancellationToken) : null;
+        var finalItems = budgetResult is null ? counted : budgetResult.Items;
+        var diagnostics = budgetResult is null
+            ? IncludedDiagnostics(counted)
+            : budgetResult.Diagnostics;
+        var tokenCount = 0;
+        foreach (var item in finalItems)
         {
-            total += item.EstimatedTokens;
-            final.Add(item);
+            tokenCount += item.EstimatedTokens;
         }
 
         return new ContextSnapshot(Guid.NewGuid(), request.SessionId, request.RunId, request.TaskId, request.LaneId,
-            request.TurnId, request.BasedOnEventSequence, request.Fingerprint, final, total, overflowed);
+            request.TurnId, request.BasedOnEventSequence, request.Fingerprint, finalItems, tokenCount,
+            budgetResult?.Overflowed ?? false, diagnostics);
     }
 
     private sealed class BudgetResult
     {
         public IReadOnlyList<ContextItem> Items { get; }
 
+        public IReadOnlyList<ContextDiagnostic> Diagnostics { get; }
+
         public bool Overflowed { get; }
 
-        public BudgetResult(IReadOnlyList<ContextItem> items, bool overflowed)
+        public BudgetResult(IReadOnlyList<ContextItem> items, IReadOnlyList<ContextDiagnostic> diagnostics,
+            bool overflowed)
         {
             Items = items;
+            Diagnostics = diagnostics;
             Overflowed = overflowed;
         }
     }
 
-    /// <summary>Política de overflow: suelta items de menor prioridad/retention y trunca.
-    /// El WorkingState y System (pinned) se agregan UNA sola vez; el resto se ordena por
-    /// prioridad y se suelta/trunca al superar el presupuesto. Si un pinned supera el límite
-    /// incluso truncado, se marca Overflowed (ContextOverflow del Turn).</summary>
     private static BudgetResult ApplyBudget(IReadOnlyList<ContextItem> items, int maxTokens,
         CancellationToken cancellationToken)
     {
-        var kept = new List<ContextItem>();
+        var kept = new bool[items.Count];
+        var effective = new ContextItem[items.Count];
+        var decisions = new ContextDecision[items.Count];
         var total = 0;
-        var overflowed = false;
-
-        // 1. Pinned sin límite primero (WorkingState y System); se marcan para no re-agregarlos.
-        //    Si un pinned ya supera el presupuesto, se trunca y marca overflow (P: ContextOverflow
-        //    del Turn, no un snapshot por encima del límite).
-        var excluded = new List<string>();
-        foreach (var item in items)
+        var protectedTotal = 0;
+        for (var i = 0; i < items.Count; i++)
         {
-            if (item.Kind == ContextItemKind.WorkingState || item.Kind == ContextItemKind.System)
+            kept[i] = true;
+            effective[i] = items[i];
+            decisions[i] = ContextDecision.Included;
+            total += items[i].EstimatedTokens;
+            if (IsProtected(items[i]))
             {
-                var remaining = Math.Max(0, maxTokens - total);
-                if (item.EstimatedTokens > remaining)
-                {
-                    var truncated = TruncateTo(item, Math.Max(1, remaining));
-                    if (truncated is not null)
-                    {
-                        kept.Add(truncated!);
-                        total += Math.Min(item.EstimatedTokens, remaining);
-                        overflowed = true;
-                    }
-                }
-                else
-                {
-                    kept.Add(item);
-                    total += item.EstimatedTokens;
-                }
-
-                excluded.Add(item.Id);
+                protectedTotal += items[i].EstimatedTokens;
             }
         }
 
-        // 2. El resto por prioridad desc: High > Normal > Low (volátiles primero a soltar).
-        var rest = SortByPriority(items);
-        foreach (var item in rest)
+        var overflowed = protectedTotal > maxTokens;
+        if (overflowed)
         {
-            if (IsExcluded(item, excluded))
+            // No se trunca ni se omite System, Task, WorkingState, pinned o el primer input.
+            for (var i = 0; i < items.Count; i++)
             {
-                continue;
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            var next = total + item.EstimatedTokens;
-            if (next <= maxTokens)
-            {
-                kept.Add(item);
-                total = next;
-                continue;
-            }
-
-            if (item.Retention == RetentionPolicy.KeepForever || item.Priority == ContextPriority.High)
-            {
-                // crítico: se trunca el contenido del item en lugar de soltarlo.
-                var truncated = TruncateTo(item, Math.Max(0, maxTokens - total));
-                if (truncated is not null)
+                if (!IsProtected(items[i]))
                 {
-                    kept.Add(truncated!);
-                    overflowed = true;
+                    kept[i] = false;
+                    decisions[i] = ContextDecision.OmittedByBudget;
+                }
+            }
+        }
+        else
+        {
+            // ADR-0042: primero se descarta la conversación más antigua, salvo el primer input.
+            for (var i = 0; i < items.Count && total > maxTokens; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsConversation(items[i]) && !items[i].PreserveWhenTrimming)
+                {
+                    kept[i] = false;
+                    decisions[i] = ContextDecision.OmittedByBudget;
+                    total -= items[i].EstimatedTokens;
+                }
+            }
+
+            // Después se liberan contribuciones regenerables o de prioridad baja.
+            for (var i = 0; i < items.Count && total > maxTokens; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (kept[i] && !IsProtected(items[i]) && !IsConversation(items[i])
+                    && (items[i].Priority == ContextPriority.Low
+                        || items[i].Retention == RetentionPolicy.RegenerateEachTurn))
+                {
+                    kept[i] = false;
+                    decisions[i] = ContextDecision.OmittedByBudget;
+                    total -= items[i].EstimatedTokens;
+                }
+            }
+
+            // Último recurso: truncar otros items no protegidos. El orden visible se conserva.
+            for (var i = 0; i < items.Count && total > maxTokens; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!kept[i] || IsProtected(items[i]))
+                {
+                    continue;
                 }
 
-                break;
+                var available = items[i].EstimatedTokens - (total - maxTokens);
+                if (available <= 0)
+                {
+                    kept[i] = false;
+                    decisions[i] = ContextDecision.OmittedByBudget;
+                    total -= items[i].EstimatedTokens;
+                    continue;
+                }
+
+                total -= items[i].EstimatedTokens;
+                effective[i] = TruncateTo(items[i], available)!;
+                decisions[i] = ContextDecision.TruncatedByBudget;
+                total += effective[i].EstimatedTokens;
             }
 
-            // volátil: se suelta (RegenerateEachTurn vuelve a regenerarse el próximo turno).
-            if (item.Kind == ContextItemKind.WorkingState)
+            if (total > maxTokens)
             {
-                kept.Add(TruncateTo(item, Math.Max(0, maxTokens - total))!);
                 overflowed = true;
-                break;
             }
         }
 
-        return new BudgetResult(kept.ToArray(), overflowed);
+        var final = new List<ContextItem>();
+        var diagnostics = new List<ContextDiagnostic>();
+        for (var i = 0; i < items.Count; i++)
+        {
+            var item = effective[i];
+            if (kept[i])
+            {
+                final.Add(item);
+            }
+
+            diagnostics.Add(new ContextDiagnostic(items[i].Id, items[i].Provenance, decisions[i],
+                kept[i] ? item.EstimatedTokens : items[i].EstimatedTokens));
+        }
+
+        return new BudgetResult(final.ToArray(), diagnostics.ToArray(), overflowed);
     }
 
-    private static IReadOnlyList<ContextItem> SortByPriority(IReadOnlyList<ContextItem> items)
+    private static bool IsProtected(ContextItem item) => item.Kind == ContextItemKind.WorkingState
+        || item.Kind == ContextItemKind.System || item.Kind == ContextItemKind.Task
+        || item.Priority == ContextPriority.Pinned || item.PreserveWhenTrimming;
+
+    private static bool IsConversation(ContextItem item) => item.Kind == ContextItemKind.UserMessage
+        || item.Kind == ContextItemKind.AssistantMessage || item.Kind == ContextItemKind.ToolResult;
+
+    private static IReadOnlyList<ContextDiagnostic> IncludedDiagnostics(IReadOnlyList<ContextItem> items)
     {
-        var result = new List<ContextItem>();
-        result.AddRange(items);
-        for (var i = 0; i < result.Count; i++)
+        var result = new List<ContextDiagnostic>();
+        foreach (var item in items)
         {
-            for (var j = i + 1; j < result.Count; j++)
-            {
-                if (Priority(result[j]) > Priority(result[i]))
-                {
-                    var tmp = result[i];
-                    result[i] = result[j];
-                    result[j] = tmp;
-                }
-            }
+            result.Add(new ContextDiagnostic(item.Id, item.Provenance, ContextDecision.Included,
+                item.EstimatedTokens));
         }
 
         return result.ToArray();
     }
-
-    private static int Priority(ContextItem item) =>
-        item.Priority == ContextPriority.High ? 3
-            : item.Priority == ContextPriority.Normal ? 2
-                : item.Priority == ContextPriority.Pinned ? 4 : 1;
 
     private static ContextItem? TruncateTo(ContextItem item, int tokens)
     {
@@ -214,76 +224,35 @@ public sealed class ContextMaterializer
         }
 
         return new ContextItem(item.Id, item.Kind, content, tokens, item.Priority, item.Retention,
-            item.Provenance);
+            item.Provenance, item.PreserveWhenTrimming);
     }
 
-    /// <summary>Copia el item con un valor de tokens (inmutabilidad del record).</summary>
     private static ContextItem WithTokens(ContextItem item, int tokens) =>
-        new ContextItem(item.Id, item.Kind, item.Content, tokens, item.Priority, item.Retention, item.Provenance);
+        new ContextItem(item.Id, item.Kind, item.Content, tokens, item.Priority, item.Retention,
+            item.Provenance, item.PreserveWhenTrimming);
 
     private static IReadOnlyList<ContextItem> OrderItems(IReadOnlyList<ContextItem> items)
     {
-        // system → task → skills → conversación → workingState (el más volátil al final).
         var result = new List<ContextItem>();
-        result.AddRange(Pick(items, ContextItemKind.System));
-        result.AddRange(Pick(items, ContextItemKind.Task));
-        result.AddRange(Pick(items, ContextItemKind.Summary));
-        result.AddRange(Pick(items, ContextItemKind.UserMessage));
-        result.AddRange(Pick(items, ContextItemKind.AssistantMessage));
-        result.AddRange(Pick(items, ContextItemKind.ToolResult));
+        AddKind(result, items, ContextItemKind.System);
+        AddKind(result, items, ContextItemKind.Task);
+        AddKind(result, items, ContextItemKind.Summary);
         foreach (var item in items)
         {
-            if (IsWorkingState(item) || AlreadyIn(result, item))
-            {
-                continue;
-            }
-
-            result.Add(item);
-        }
-
-        // El WorkingState va al final (justo antes del turno actual).
-        foreach (var item in items)
-        {
-            if (IsWorkingState(item))
+            if (!IsWorkingState(item) && item.Kind != ContextItemKind.System && item.Kind != ContextItemKind.Task
+                && item.Kind != ContextItemKind.Summary)
             {
                 result.Add(item);
             }
         }
 
+        // WorkingState se coloca después de todo el contexto, inmediatamente antes del turno actual.
+        AddKind(result, items, ContextItemKind.WorkingState);
         return result.ToArray();
     }
 
-    private static bool IsWorkingState(ContextItem item) => item.Kind == ContextItemKind.WorkingState;
-
-    private static bool IsExcluded(ContextItem item, List<string> excluded)
+    private static void AddKind(List<ContextItem> result, IReadOnlyList<ContextItem> items, ContextItemKind kind)
     {
-        foreach (var id in excluded)
-        {
-            if (id.Equals(item.Id, StringComparison.Ordinal))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool AlreadyIn(List<ContextItem> result, ContextItem item)
-    {
-        foreach (var existing in result)
-        {
-            if (ReferenceEquals(existing, item))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static IReadOnlyList<ContextItem> Pick(IReadOnlyList<ContextItem> items, ContextItemKind kind)
-    {
-        var result = new List<ContextItem>();
         foreach (var item in items)
         {
             if (item.Kind == kind)
@@ -291,26 +260,20 @@ public sealed class ContextMaterializer
                 result.Add(item);
             }
         }
-
-        return result;
     }
+
+    private static bool IsWorkingState(ContextItem item) => item.Kind == ContextItemKind.WorkingState;
 }
 
 /// <summary>Solicitud de materialización del contexto de un Turn.</summary>
 public sealed class MaterializeRequest
 {
     public SessionId SessionId { get; }
-
     public RunId RunId { get; }
-
     public TaskId? TaskId { get; }
-
     public LaneId? LaneId { get; }
-
     public TurnId? TurnId { get; }
-
     public long BasedOnEventSequence { get; }
-
     public ExecutionFingerprint Fingerprint { get; }
 
     public MaterializeRequest(SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId, TurnId? turnId,
@@ -326,12 +289,58 @@ public sealed class MaterializeRequest
     }
 }
 
-/// <summary>Contribuidor de contexto (spec §25, ADR-0028). Cada item lleva procedencia.</summary>
+/// <summary>Contributor de contexto; cada item debe incluir procedencia (ADR-0029).</summary>
 public interface IContextContributor
 {
-    /// <summary>Aporta ContextItems para la solicitud determinista.</summary>
     Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
         CancellationToken cancellationToken);
+}
+
+/// <summary>Contribuye la conversación materializada del Run (ADR-0042).</summary>
+public sealed class SessionConversationContributor : IContextContributor
+{
+    private readonly IReadOnlyList<ConversationContextEntry> _entries;
+
+    public SessionConversationContributor(IReadOnlyList<ConversationContextEntry> entries) => _entries = entries;
+
+    public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = new List<ContextItem>();
+        var provenance = new ContextProvenance("session-conversation", ContributionCategory.Conversation,
+            "engine", ScopeLevel.Session, false);
+        foreach (var entry in _entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            result.Add(new ContextItem(entry.Id, entry.Kind, entry.Content, 0, ContextPriority.Normal,
+                RetentionPolicy.ConversationWindow, provenance, entry.PreserveWhenTrimming));
+        }
+
+        return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>(result.ToArray());
+    }
+}
+
+/// <summary>Entrada estable para contribuir y seleccionar un mensaje conversacional.</summary>
+public sealed record ConversationContextEntry(string Id, ContextItemKind Kind, string Content,
+    bool PreserveWhenTrimming = false);
+
+/// <summary>Contribuye las instrucciones del system prompt para incluirlas en el presupuesto.</summary>
+public sealed class SystemPromptContributor : IContextContributor
+{
+    private readonly string _prompt;
+
+    public SystemPromptContributor(string prompt) => _prompt = prompt;
+
+    public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var provenance = new ContextProvenance("core.system", ContributionCategory.System,
+            "engine", ScopeLevel.Run, false);
+        var item = new ContextItem("system-prompt", ContextItemKind.System, _prompt, 0,
+            ContextPriority.Pinned, RetentionPolicy.KeepForever, provenance);
+        return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>([item]);
+    }
 }
 
 /// <summary>Contribuye la proyección WorkingState renderizada (ADR-0016 §7).</summary>
@@ -344,10 +353,11 @@ public sealed class WorkingStateContributor : IContextContributor
     public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
         CancellationToken cancellationToken)
     {
-        var prov = new ContextProvenance("working-state", ContributionCategory.WorkingState, "engine",
-            ScopeLevel.Run, false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var provenance = new ContextProvenance("core.working-state", ContributionCategory.WorkingState,
+            "engine", ScopeLevel.Run, false);
         var item = new ContextItem("working-state", ContextItemKind.WorkingState, _rendered, 0,
-            ContextPriority.Pinned, RetentionPolicy.RegenerateEachTurn, prov);
+            ContextPriority.Pinned, RetentionPolicy.RegenerateEachTurn, provenance);
         return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>([item]);
     }
 }
