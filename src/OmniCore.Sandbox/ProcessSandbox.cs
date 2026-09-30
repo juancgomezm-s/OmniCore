@@ -47,7 +47,8 @@ public sealed record SandboxLaunchSpec(
     string? WorkingDirectory,
     IReadOnlyDictionary<string, string> Environment,
     IReadOnlyList<SandboxAllowedPath> AllowedPaths,
-    SandboxNetworkPolicy Network);
+    SandboxNetworkPolicy Network,
+    TimeSpan? Timeout = null);
 
 /// <summary>Reports which strengths the current Sandbox implementation can provide.</summary>
 public sealed record SandboxCapabilities(
@@ -97,7 +98,8 @@ public sealed record SandboxOutputChunk(SandboxOutputStream Stream, string Text)
 /// <summary>Captured process output and its exit code.</summary>
 public sealed record SandboxProcessOutput(
     int ExitCode,
-    IReadOnlyList<SandboxOutputChunk> Chunks);
+    IReadOnlyList<SandboxOutputChunk> Chunks,
+    bool TimedOut = false);
 
 /// <summary>Outcome of a sandbox runner operation.</summary>
 public enum SandboxResultStatus
@@ -262,6 +264,7 @@ public sealed class NoIsolationSandboxRunner
             || launch.Environment is null
             || launch.AllowedPaths is null
             || launch.Network is null
+            || launch.Timeout is { } timeout && timeout <= TimeSpan.Zero
             || launch.Network.AllowedHosts is null
             || !Enum.IsDefined(launch.RequestedStrength)
             || !Enum.IsDefined(launch.Network.Mode))

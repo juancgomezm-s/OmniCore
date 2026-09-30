@@ -14,10 +14,18 @@
     <ProjectReference Include="..\..\src\OmniCore.Models\OmniCore.Models.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Execution\OmniCore.Execution.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Security\OmniCore.Security.csproj" />
+    <ProjectReference Include="..\OmniCore.SandboxTestProcess\OmniCore.SandboxTestProcess.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="xunit.v3" />
   </ItemGroup>
+
+  <Target Name="CopySandboxTestProcess" AfterTargets="Build">
+    <ItemGroup>
+      <SandboxTestProcessFiles Include="$(MSBuildThisFileDirectory)..\OmniCore.SandboxTestProcess\bin\$(Configuration)\net10.0\OmniCore.SandboxTestProcess.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(SandboxTestProcessFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>
