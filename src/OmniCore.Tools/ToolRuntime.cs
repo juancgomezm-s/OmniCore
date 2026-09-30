@@ -93,6 +93,18 @@ public sealed class ToolRuntime
             return new Outcome(false, "tool no encontrada", ToolCallState.Rejected, EffectOutcome.None);
         }
 
+        // 0. Validación de argumentos contra el InputSchema declarado (ADR-0014 §1, INV-001):
+        // campos requeridos, tipos y sin campos desconocidos. La tool NUNCA llega a Prepare ni
+        // a ejecutarse con argumentos que no conforman su schema; el rechazo es un error tipado
+        // que alimenta el repair loop (spec §71). El estado sigue en Requested → Rejected.
+        var schemaError = ToolSchemaValidator.Validate(validated.NormalizedArgumentsJson, tool.Descriptor.InputSchema);
+        if (schemaError is not null)
+        {
+            var reason = ToolSchemaValidator.InvalidArgumentsCode + ": " + schemaError;
+            _emit(new ToolCallRejected(validated.ToolCallId, reason));
+            return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
+        }
+
         // P0-1: ciclo durable completo — Requested → Prepared → PermissionEvaluated → …
         // La state machine de ToolCall solo acepta PermissionEvaluated desde Prepared; cada
         // runtime (Engine y Explorer por igual) persiste las dos primeras etapas aquí.
