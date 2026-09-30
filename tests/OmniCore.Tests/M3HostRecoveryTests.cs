@@ -1,3 +1,4 @@
+using OmniCore.Protocol;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
@@ -156,6 +157,46 @@ public sealed class M3HostRecoveryTests
         }
 
         return found;
+    }
+
+    [Fact]
+    public void Restart_after_sim_without_workspace_root_does_not_block_recovery()
+    {
+        var dir = TempDir();
+        try
+        {
+            var storePath = Path.Combine(dir, "journal.db");
+            var stateFile = Path.Combine(dir, "lastsession.txt");
+            var store1 = new SqliteEventStore(storePath);
+            try
+            {
+                var server = new OmniServer(store1, EventCodecs.Create(), new InMemoryAuditSink(), stateFile);
+                var ack = server.Send(
+                    WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "sim")
+                        + "," + JsonObj.Field("scenario", "with-tools") + "}"),
+                    TestContext.Current.CancellationToken);
+                Assert.Equal("ok", ack.Status);
+            }
+            finally
+            {
+                store1.Close();
+            }
+
+            var store2 = new SqliteEventStore(storePath);
+            try
+            {
+                var server2 = new OmniServer(store2, EventCodecs.Create(), new InMemoryAuditSink(), stateFile);
+                Assert.Null(server2.LastRecoveryProblem());
+            }
+            finally
+            {
+                store2.Close();
+            }
+        }
+        finally
+        {
+            RmDir(dir);
+        }
     }
 
     [Fact]
