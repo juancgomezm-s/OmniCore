@@ -195,4 +195,18 @@ public sealed class SecretLeakTests
             System.Threading.Tasks.Task.FromResult(ToolResult.Ok(
                 "echoed " + _secret, _secret, _secret.Length, false, EffectOutcome.None));
     }
+
+    [Fact]
+    public void Every_event_payload_is_redacted_by_the_journal_codec()
+    {
+        _ = SecretRedactor.Shared;
+        var secret = "journal-canary-" + Guid.NewGuid().ToString("N");
+        SecretRedactorRegistry.Register(secret);
+        var input = new UserInputReceived(RunId.New(), JsonSerializer.Serialize("mi clave es " + secret), null, null);
+
+        var encoded = EventCodecs.Create().CodecFor(input.Type()).Encode(input);
+
+        Assert.DoesNotContain(secret, encoded, StringComparison.Ordinal);
+        Assert.Contains(SecretRedactor.Marker, encoded, StringComparison.Ordinal);
+    }
 }
