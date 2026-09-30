@@ -165,7 +165,8 @@ public sealed class ToolRuntime
                 interactionId,
                 InteractionKind.Permission,
                 SubjectJson(validated.ToolId.ToString()),
-                OptionsJson(_policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }),
+                OptionsJson(_policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }
+                    && IsGrantableAsk(decision.Layers)),
                 "deny",
                 null,
                 null,
@@ -406,6 +407,14 @@ public sealed class ToolRuntime
             options += ",{\"id\":\"allow_run\",\"intent\":\"allow\",\"lifetime\":\"run\"},"
                 + "{\"id\":\"allow_workspace\",\"intent\":\"allow\",\"lifetime\":\"workspace\"}";
         return options + "]";
+    }
+
+    /// <summary>Solo los Ask explícitamente grantables pueden ofrecer permisos persistentes.</summary>
+    private static bool IsGrantableAsk(IReadOnlyList<LayerDecision> layers)
+    {
+        var asks = layers.Where(layer => layer.Decision == PermissionDecision.Ask).ToArray();
+        return asks.Length > 0 && asks.All(layer => layer.Layer is "UserPolicy" or "user-policy"
+            or "profile" or "mode-defaults");
     }
 
     private static string Esc(string value) => value.Replace("\"", "\\\"").Replace("\n", "\\n");

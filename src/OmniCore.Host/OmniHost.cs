@@ -52,8 +52,9 @@ public sealed class OmniHost
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(journalFile);
         var audit = new InMemoryAuditSink();
-        return new OmniServer(store, codecs, audit, Path.Combine(Path.GetDirectoryName(journalFile)!,
-            "lastsession.txt"));
+        var workspaceData = Path.GetDirectoryName(journalFile)!;
+        return new OmniServer(store, codecs, audit, Path.Combine(workspaceData, "lastsession.txt"),
+            CreateArtifactStore(workspaceData));
     }
 
     /// <summary>
