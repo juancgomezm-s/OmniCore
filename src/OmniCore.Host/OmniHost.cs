@@ -8,6 +8,7 @@ using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Protocol;
 using OmniCore.Security;
+using OmniCore.Sandbox;
 using OmniCore.Tools;
 
 /// <summary>
@@ -71,6 +72,15 @@ public sealed class OmniHost
 
     /// <summary>LocalModelHost cableado con el SystemProcessRuntime real (attach + managed, ADR-0011 §4).</summary>
     public static LocalModelHost CreateLocalModelHost() => new LocalModelHost(SystemProcessRuntime.Instance());
+
+    /// <summary>
+    /// Crea la selección de lanzador de procesos por nivel: AppContainer cuando se solicita Strong
+    /// y la sonda lo permite; Weak/None usan el runtime normal. Un Strong no disponible falla
+    /// explícitamente para que el llamador aplique WeakSandboxConsent antes de reintentar.
+    /// </summary>
+    public static ISandboxProcessLauncher CreateProcessSandboxLauncher(IProcessRuntime runtime,
+        ISandboxCapabilitiesProbe? capabilities = null) =>
+        new PlatformSandboxProcessLauncher(runtime, capabilities);
 
     /// <summary>Resolver de configuración por scope (ADR-0022 §25) con lookup vacío por defecto.</summary>
     public static OmniCore.Domain.ScopeResolver<string> CreateScopeResolver()
