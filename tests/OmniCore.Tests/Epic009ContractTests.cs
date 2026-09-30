@@ -47,16 +47,14 @@ public sealed class Epic009ContractTests
     }
 
     [Fact]
-    public void Secret_serialization_is_always_redacted()
+    public void Secret_serialization_fails_instead_of_leaking()
     {
         const string secretValue = "credential-that-must-never-leak";
         var secret = Secret.Of(secretValue);
-        var json = JsonSerializer.Serialize(secret);
 
-        Assert.Equal("\"***\"", json);
-        Assert.DoesNotContain(secretValue, json);
+        Assert.Throws<NotSupportedException>(() => JsonSerializer.Serialize(secret));
         Assert.Equal("***", secret.ToString());
-        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<Secret>(json));
+        Assert.Throws<NotSupportedException>(() => JsonSerializer.Deserialize<Secret>("\"***\""));
     }
 
     [Fact]

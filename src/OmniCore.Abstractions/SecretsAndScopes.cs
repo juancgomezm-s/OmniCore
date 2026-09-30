@@ -34,10 +34,10 @@ public sealed class Secret
 public sealed class SecretJsonConverter : JsonConverter<Secret>
 {
     public override Secret Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-        throw new JsonException("Secret no puede deserializarse.");
+        throw new NotSupportedException("Secret no puede deserializarse (ADR-0018).");
 
     public override void Write(Utf8JsonWriter writer, Secret value, JsonSerializerOptions options) =>
-        writer.WriteStringValue("***");
+        throw new NotSupportedException("Secret no puede serializarse (ADR-0018).");
 }
 
 /// <summary>Almacén de credenciales por plataforma (Windows Credential Manager / DPAPI; ADR-0011 §3).</summary>
