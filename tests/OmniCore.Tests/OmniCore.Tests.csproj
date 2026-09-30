@@ -15,6 +15,7 @@
     <ProjectReference Include="..\..\src\OmniCore.Execution\OmniCore.Execution.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Security\OmniCore.Security.csproj" />
     <ProjectReference Include="..\OmniCore.SandboxTestProcess\OmniCore.SandboxTestProcess.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\OmniCore.Qualification\OmniCore.Qualification.csproj" />
   </ItemGroup>
 
   <ItemGroup>
