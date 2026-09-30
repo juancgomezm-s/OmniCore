@@ -162,4 +162,36 @@ public sealed class ScenarioYamlTests
         var parsed = JsonObj.Parse("{" + JsonObj.Field("k", text) + "}");
         Assert.Equal(text, parsed["k"]);
     }
+
+    [Fact]
+    public void Unknown_field_throws_with_correct_resource_key()
+    {
+        var yaml = "scenario: 1\nname: test\ninput: test\nunknown_field: {}";
+        var ex = Assert.Throws<ScenarioFormatException>(() => ScenarioLoader.Parse(yaml));
+        Assert.Equal("scenario.unknown_field", ex.UserMessage.Key);
+        Assert.Equal("unknown_field", ex.UserMessage.Args["field"]);
+    }
+
+    [Fact]
+    public void Missing_input_throws_with_correct_resource_key()
+    {
+        var yaml = "scenario: 1\nname: test";
+        var ex = Assert.Throws<ScenarioFormatException>(() => ScenarioLoader.Parse(yaml));
+        Assert.Equal("scenario.missing_input", ex.UserMessage.Key);
+    }
+
+    [Fact]
+    public void English_rendering_of_scenario_errors_is_english()
+    {
+        var loc = new OmniCore.Client.Localization("en");
+        var yaml = "scenario: 1\nname: test\ninput: test\nunknown_field: {}";
+        var ex = Assert.Throws<ScenarioFormatException>(() => ScenarioLoader.Parse(yaml));
+        var rendered = loc.Resolve(ex.UserMessage.Key, ex.UserMessage.Args);
+        Assert.Equal("Invalid scenario: unknown field: unknown_field", rendered);
+
+        yaml = "scenario: 1\nname: test";
+        ex = Assert.Throws<ScenarioFormatException>(() => ScenarioLoader.Parse(yaml));
+        rendered = loc.Resolve(ex.UserMessage.Key, ex.UserMessage.Args);
+        Assert.Equal("Invalid scenario: missing 'input'", rendered);
+    }
 }
