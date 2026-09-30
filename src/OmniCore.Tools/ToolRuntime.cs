@@ -161,12 +161,16 @@ public sealed class ToolRuntime
                 null,
                 0,
                 1));
+            // Toda interacción abierta se cierra con InteractionResolved (ADR-0034): si no, la Lane
+            // quedaría esperando un permiso ya decidido.
             if (!userApprovesAsk)
             {
-                _emit(new PermissionDenied(validated.ToolCallId, "Sin cliente interactivo → Deny (ADR-0003)"));
+                _emit(new InteractionResolved(interactionId, "deny", InteractionCause.NoClient));
+                _emit(new PermissionDenied(validated.ToolCallId, "Sin aprobación → Deny (ADR-0003)"));
                 return new Outcome(false, "denegado (sin aprobación)", ToolCallState.Rejected, EffectOutcome.None);
             }
 
+            _emit(new InteractionResolved(interactionId, "allow_once", InteractionCause.User));
             _emit(new PermissionGranted(validated.ToolCallId, null, null));
             // INV-002: la política ya quedó evaluada con la aprobación humana; el runtime
             // NO vuelve a Evaluar (eso lo rompería: Authorize re-lanzaría Ask).

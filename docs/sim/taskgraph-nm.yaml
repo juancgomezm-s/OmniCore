@@ -1,0 +1,23 @@
+# TaskGraph N:M: una Task implementa varios items y un item depende de varias Tasks (ADR-0016).
+scenario: 1
+name: taskgraph-nm
+session: { mode: act }
+input: "Migrar el cliente HTTP y actualizar sus tests"
+plan:
+  - add: { id: P1, text: "Migrar el cliente" }
+  - add: { id: P2, text: "Actualizar los llamadores", dependsOn: [P1] }
+  - add: { id: P3, text: "Actualizar los tests", dependsOn: [P1] }
+tasks:
+  # T1 cubre P1 y P2 (1:N); P2 lo cubren T1 y T2 (N:1); T3 verifica P3 y apoya P2.
+  - { id: T1, objective: "Migrar cliente y llamadores", links: [{ item: P1, role: implements }, { item: P2, role: implements }] }
+  - { id: T2, objective: "Revisar llamadores restantes", links: [{ item: P2, role: implements }], dependsOn: [T1] }
+  - { id: T3, objective: "Tests del cliente", links: [{ item: P3, role: verifies }, { item: P2, role: supports }], dependsOn: [T1] }
+turns:
+  root:
+    - { tool: fake.read, effect: read }
+    - { complete: done }
+permissions:
+  - { tool: fake.read, decision: allow }
+expect:
+  run: Completed
+  plan: { P1: Completed, P2: Completed, P3: Completed }

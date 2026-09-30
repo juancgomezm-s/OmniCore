@@ -102,7 +102,9 @@ public sealed class M3ActVerticalTests
         var stateFile = dataDir + "\\lastsession.txt";
         var store = new SqliteEventStore(journal);
         var server = new OmniServer(store, EventCodecs.Create(), new InMemoryAuditSink(), stateFile);
-        var payload = "{\"cmd\":\"act\",\"objective\":\"" + objective + "\",\"workspace\":\"" + workspace + "\"}";
+        // JsonObj escapa los valores: una ruta de Windows lleva barras invertidas.
+        var payload = "{" + JsonObj.Field("cmd", "act") + "," + JsonObj.Field("objective", objective) + ","
+            + JsonObj.Field("workspace", workspace) + "}";
         var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         Assert.True(ack.Status == "ok", "el comando act crea el Run Act. error=" + (ack.Error ?? ""));
         return new ActServer(server, store, server.LastSessionId()!, server.LastRunId()!,

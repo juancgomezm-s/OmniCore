@@ -1,0 +1,21 @@
+# PLAN → ACT en el mismo Run: el usuario aprueba el plan y el Run pasa a ACT (ADR-0035 §4).
+scenario: 1
+name: plan-approval
+session: { mode: plan }
+input: "Refactorizar el módulo de pagos"
+plan:
+  - add: { id: P1, text: "Analizar el módulo" }
+  - add: { id: P2, text: "Refactorizar", dependsOn: [P1] }
+tasks:
+  - { id: T1, objective: "Analizar", links: [{ item: P1, role: implements }] }
+  - { id: T2, objective: "Refactorizar", links: [{ item: P2, role: implements }], dependsOn: [T1] }
+turns:
+  root:
+    - { tool: fake.read, effect: read }
+    - { complete: done }
+permissions:
+  - { tool: fake.read, decision: allow }
+planApproval: approve_execute
+expect:
+  run: Completed
+  plan: { P1: Completed, P2: Completed }

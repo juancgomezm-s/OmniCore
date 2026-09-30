@@ -74,12 +74,13 @@ public sealed class M2WiringTests
         var planMode = new OmniCore.Engine.SimulationScenario(
             scenario.Name + "-plan", OmniCore.Domain.RunMode.Plan, scenario.Input,
             scenario.Plan, scenario.Tasks, scenario.Turns, scenario.Permissions,
-            "Completed", scenario.ExpectedPlan, null);
+            "Completed", scenario.ExpectedPlan, null) { PlanApproval = "approve_execute" };
 
         var result = engine.Execute(planMode, TestContext.Current.CancellationToken);
 
         var types = store.ReadFrom(result.SessionId, 1).Select(e => e.Type.ToString()).ToArray();
         Assert.Contains("interaction.requested", types);
+        Assert.Contains("interaction.resolved", types); // la aprobación la da el usuario, no el runtime
         Assert.Contains("run.mode_changed", types);
         Assert.Equal(0, result.ExitCode);
     }

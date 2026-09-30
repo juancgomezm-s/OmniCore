@@ -91,19 +91,29 @@ public sealed class CliApp
             return Task.FromResult(1);
         }
 
-        var scenarioName = args != null && args.Length >= 2 ? args[1] : null;
+        var scenarioPath = args != null && args.Length >= 2 && !args[1].StartsWith("--", StringComparison.Ordinal)
+            ? args[1]
+            : null;
         var crash = args != null && args.Any(a => a == "--crash");
-        var scenario = (scenarioName is not null && File.Exists(scenarioName!))
-            ? ScenarioYaml.Parse(File.ReadAllText(scenarioName!))
-            : (crash ? Scenarios.WithToolCrash() : Scenarios.MultiItemPlan());
+        if (scenarioPath is not null && !File.Exists(scenarioPath))
+        {
+            Console.WriteLine("omni sim: no existe el escenario " + scenarioPath);
+            return Task.FromResult(2);
+        }
 
-        // El CLI no conoce el Engine directamente: pasa por IOmniClient con payload wire (ADR-0019).
+        // El CLI no conoce el Engine: manda el escenario completo por el protocolo (ADR-0019) y el
+        // Host lo interpreta. Sin archivo, un escenario incluido por nombre.
+        var scenarioName = scenarioPath is not null
+            ? Path.GetFileNameWithoutExtension(scenarioPath)
+            : crash ? "with-tool-crash" : "multi-item-plan";
         var payload = "{" + JsonObj.Field("cmd", "sim") + ","
-            + JsonObj.Field("scenario", scenario.Name) + "}";
+            + (scenarioPath is not null
+                ? JsonObj.Field("scenarioYaml", File.ReadAllText(scenarioPath))
+                : JsonObj.Field("scenario", scenarioName)) + "}";
         var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), payload), cancellationToken);
         if (ack.Status == "ok")
         {
-            return RenderEvents(server, jsonOutput, crash ? 1 : 0, scenario.Name);
+            return RenderEvents(server, jsonOutput, crash ? 1 : 0, scenarioName);
         }
 
         Console.WriteLine("omni sim: " + (ack.Error ?? "fallo"));

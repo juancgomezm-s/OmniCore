@@ -168,7 +168,9 @@ public sealed class ToolPipelineTests
 
             Assert.IsType<OmniCore.Domain.ToolCallRequested>(sink.Events[0]);
             var state = OmniCore.Domain.ToolCallState.Requested;
-            foreach (var evt in sink.Events.Where(e => e is not OmniCore.Domain.InteractionRequested))
+            // Solo los eventos del ciclo de la ToolCall (las interacciones tienen su propio ciclo).
+            foreach (var evt in sink.Events.Where(e => e is not OmniCore.Domain.InteractionRequested
+                         and not OmniCore.Domain.InteractionResolved))
                 state = OmniCore.Domain.StateMachines.ApplyToolCall(state, evt);
             Assert.Equal(outcome.FinalState, state);
             Assert.Equal(OmniCore.Domain.ToolCallState.Rejected, state);
