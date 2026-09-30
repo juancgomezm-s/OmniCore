@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OmniCore user providers.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["providers"],
+  "properties": {
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["baseUrl"],
+        "properties": {
+          "kind": { "enum": ["openAiChatCompatible", "openAiResponses", "anthropicMessages", "llamaCpp", "ikLlama"] },
+          "family": { "enum": ["OpenAiChatCompatible", "OpenAIResponses", "AnthropicMessages"] },
+          "baseUrl": { "type": "string", "format": "uri", "pattern": "^https?://" },
+          "caCertificate": { "type": "string" },
+          "authRef": { "type": "string" }
+        }
+      }
+    }
+  }
+}

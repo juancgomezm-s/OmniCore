@@ -19,7 +19,7 @@ namespace OmniCore.Tests;
 ///  2. Tool-call roundtrip: el modelo recibe resultados de tool en el historial.
 ///  3. Ask aprobado: ejecuta EXACTAMENTE una vez (INV-002) y emite Granted.
 ///  4. Timeout de proceso: el árbol muere y Wait devuelve TimedOut sin colgar.
-///  5. YAML/auth: `auth: none` no pide key; `auth: {apiKey: ref}` la conserva; models context/maxOutput.
+///  5. YAML/auth: `authRef` conserva solo referencias de secretos; models context/maxOutput.
 ///  6. Context overflow: la política de recorte suelta volátiles, no rinde el WorkingState.
 ///  7. Secretos: `Secret.ToString()` y los credenciales nunca salen del proceso.
 /// </summary>
@@ -850,8 +850,8 @@ public sealed class M2IntegrationTests
     public async System.Threading.Tasks.Task ConfigLoader_respects_auth_and_model_facts()
     {
         var providers = "providers:\n"
-            + "  local: { baseUrl: http://127.0.0.1:8080, auth: none }\n"
-            + "  openrouter: { baseUrl: https://openrouter.ai/api/v1, auth: { apiKey: openrouter-key } }\n";
+            + "  local: { baseUrl: http://127.0.0.1:8080 }\n"
+            + "  openrouter: { baseUrl: https://openrouter.ai/api/v1, authRef: openrouter-key }\n";
         var models = "models:\n"
             + "  qwen-27b: { provider: local, context: 32768, maxOutput: 8192 }\n";
         var loader = new ConfigLoader();
@@ -859,8 +859,8 @@ public sealed class M2IntegrationTests
 
         var local = registry.Provider("local");
         var openrouter = registry.Provider("openrouter");
-        Assert.True(local!.Auth.Kind == AuthKind.None, "auth: none NO es una API key");
-        Assert.True(openrouter!.Auth.Kind == AuthKind.ApiKey, "auth: {apiKey: ref} es ApiKey");
+        Assert.True(local!.Auth.Kind == AuthKind.None, "provider sin authRef no requiere API key");
+        Assert.True(openrouter!.Auth.Kind == AuthKind.ApiKey, "authRef es una referencia a API key");
         Assert.Equal("openrouter-key", openrouter!.Auth.SecretRef);
 
         var qwen = registry.Model("qwen-27b");

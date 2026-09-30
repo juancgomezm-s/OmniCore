@@ -34,6 +34,7 @@ public sealed class CliApp
         if (command == "ask") return RunAsk(args);
         if (command == "act") return RunAct(args);
         if (command == "model") return ModelPolicyCommands.Run(args);
+        if (command == "trust") return RunTrust(args);
         if (command == "doctor") return RunDoctor(args);
         if (command is "--tui" or "tui") return RunTui(args);
         if (command is "--help" or "-h" or "help")
@@ -147,8 +148,21 @@ public sealed class CliApp
         return redacted.Length <= max ? redacted : redacted.Substring(0, max) + "…";
     }
 
+    private static Task<int> RunTrust(string[] args)
+    {
+        var revoke = args.Length > 1 && args[1] is "revoke" or "--revoke";
+        if (args.Length > 2 || args.Length == 2 && !revoke)
+        {
+            Console.WriteLine("Uso: omni trust [revoke]");
+            return Task.FromResult(2);
+        }
+        Runtime.SetWorkspaceTrusted(!revoke);
+        Console.WriteLine(revoke ? "Workspace marcado como no confiable." : "Workspace confiable guardado fuera del repo.");
+        return Task.FromResult(0);
+    }
+
     private static Task<int> RunDoctor(string[] args) => Task.FromResult(
-        OmniCliRuntime.Doctor(DoctorLocale(args), Console.WriteLine));
+        OmniCliRuntime.Doctor(DoctorLocale(args), Console.WriteLine, (key, values) => Loc().Resolve(key, values)));
 
     private static string DoctorLocale(string[] args)
     {
