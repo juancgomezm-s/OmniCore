@@ -152,4 +152,17 @@ public sealed class Epic001ProjectIdentityTests
         {
         }
     }
+
+    [Fact]
+    public void Separator_and_trailing_slash_spellings_give_the_same_canonical_workspace_path()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-canon-" + Guid.NewGuid().ToString("N"), "Repo");
+        var slashes = root.Replace('\\', '/');
+        var backslashes = root.Replace('/', '\\') + Path.DirectorySeparatorChar;
+
+        Assert.Equal(ProjectIdentity.CanonicalWorkspacePath(slashes, foldCase: true),
+            ProjectIdentity.CanonicalWorkspacePath(backslashes, foldCase: true));
+        Assert.Equal(WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(slashes, foldCase: false)).ToString(),
+            WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root + "/", foldCase: false)).ToString());
+    }
 }
