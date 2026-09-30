@@ -49,6 +49,15 @@ public sealed class WorkspaceSettingsYaml
 {
     public string? DefaultModel { get; set; }
     public Dictionary<string, string>? PermissionRestrictions { get; set; }
+    public WorkspaceGatesYaml? Gates { get; set; }
+}
+
+/// <summary>Configured completion commands. Each sequence is literal argv: element zero is executable.</summary>
+public sealed class WorkspaceGatesYaml
+{
+    public List<string>? Build { get; set; }
+    public List<string>? Test { get; set; }
+    public bool Acceptance { get; set; }
 }
 
 public sealed class TrustFileYaml
@@ -69,6 +78,7 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(ModelsFileYaml))]
 [YamlSerializable(typeof(ModelFileYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
+[YamlSerializable(typeof(WorkspaceGatesYaml))]
 [YamlSerializable(typeof(TrustFileYaml))]
 [YamlSerializable(typeof(TrustEntryYaml))]
 public sealed partial class OmniYamlStaticContext : StaticContext
