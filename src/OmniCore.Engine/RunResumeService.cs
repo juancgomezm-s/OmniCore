@@ -102,6 +102,49 @@ public sealed class RunResumeService
         return count;
     }
 
+    /// <summary>
+    /// ¿Hay algo que reconciliar con efectos laterales en la sesión? True si algún Run no terminal
+    /// tiene ToolCalls <c>Started</c>-sin-outcome con <c>EffectClass</c> distinta de None, o si algún
+    /// <c>ToolCallEffectUnknown</c> (de cualquier Run) sigue sin resolver. Consulta pura: no escribe.
+    /// Permite al Host no exigir raíz de workspace cuando no hay nada pendiente (p. ej. tras un sim).
+    /// </summary>
+    public bool HasPendingSideEffects(SessionId sessionId)
+    {
+        var tail = _store.ReadFrom(sessionId, 1);
+        var started = new Dictionary<ToolCallId, ToolCallStarted>();
+        var unknown = new HashSet<ToolCallId>();
+        var resolved = new HashSet<ToolCallId>();
+        foreach (var evt in tail)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ToolCallStarted st: started[st.ToolCallId] = st; break;
+                case ToolCallEffectUnknown u: unknown.Add(u.ToolCallId); break;
+                case ToolCallReconciled r: resolved.Add(r.ToolCallId); break;
+                case ToolCallSucceeded su: resolved.Add(su.ToolCallId); break;
+                case ToolCallFailed f: resolved.Add(f.ToolCallId); break;
+            }
+        }
+
+        foreach (var id in unknown)
+        {
+            if (!resolved.Contains(id))
+            {
+                return true;
+            }
+        }
+
+        foreach (var entry in started)
+        {
+            if (!resolved.Contains(entry.Key) && entry.Value.EffectClass != EffectClass.None)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private ToolCallReconciled ReconcileCall(ToolCallId id, string? reconciliationJson)
     {
         FilesystemReconciliation result = _fsReconciler is not null && reconciliationJson is not null

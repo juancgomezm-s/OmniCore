@@ -166,6 +166,22 @@ public sealed class OmniServer : IOmniClient
             return HostRecoveryResult.Ok(0);
         }
 
+        try
+        {
+            // Sin efectos laterales pendientes no hay nada que reconciliar: no se exige raíz
+            // (p. ej. tras un sim con tools falsas que nunca estableció workspace).
+            if (!new RunResumeService(_store, _codecs, null, "").HasPendingSideEffects(_lastSessionId!))
+            {
+                _recoveryProblem = null;
+                return HostRecoveryResult.Ok(0);
+            }
+        }
+        catch (Exception ex)
+        {
+            return BlockWith("no se pudo inspeccionar el journal del run (" + (ex.Message ?? "?") +
+                "): recuperación bloqueada, sin re-ejecutar ni clasificar Applied");
+        }
+
         string? root;
         try
         {
