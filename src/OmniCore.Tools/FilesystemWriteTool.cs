@@ -49,7 +49,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.write"),
-            "Escribe un archivo completo dentro del workspace: lo crea si no existe, o reemplaza el contenido existente verificando expectedVersion. Para cambios localizados usa filesystem.patch.",
+            "Writes a complete file within the workspace: creates it if it does not exist, or replaces existing content after verifying expectedVersion. Use filesystem.patch for localized changes.",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"expectedVersion\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"path\",\"content\"]}"),
             new[] { "write" },
             readOnly: false,

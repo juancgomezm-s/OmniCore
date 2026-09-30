@@ -20,7 +20,7 @@ public sealed class PlanProposeTool : ITool
         ArgumentNullException.ThrowIfNull(planService);
         _descriptor = new ToolDescriptor(
             new ToolId("plan.propose"),
-            "Propone una mutación del Plan; el runtime la valida y aplica (read-only para el modelo).",
+            "Proposes a Plan mutation for the runtime to validate and apply (read-only for the model).",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},"
                 + "\"itemId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}}}"),
             new string[] { "core" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);

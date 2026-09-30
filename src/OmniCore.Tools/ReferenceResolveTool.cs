@@ -19,7 +19,7 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("reference.resolve"),
-            "Resuelve una referencia @… (archivo/carpeta) dentro del workspace (read-only).",
+            "Resolves an @… reference (file/folder) within the workspace (read-only).",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"ref\":{\"type\":\"string\"}}}"),
             new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None,
             EffectClass.None);
