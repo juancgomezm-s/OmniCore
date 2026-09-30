@@ -33,6 +33,26 @@ public sealed class ProviderAuthYaml
 public sealed class ModelsFileYaml
 {
     public Dictionary<string, ModelFileYaml>? Models { get; set; }
+    public RoutingYaml? Routing { get; set; }
+}
+
+/// <summary>Routing por tipo de tarea con alias del usuario (M5, spec §21); solo en el scope User.</summary>
+public sealed class RoutingYaml
+{
+    public bool? PreferLocal { get; set; }
+    public List<string>? Meta { get; set; }
+    public List<string>? Exploration { get; set; }
+    public List<string>? Implementation { get; set; }
+    public List<string>? Reasoning { get; set; }
+    public List<string>? Architecture { get; set; }
+    public EscalationYaml? Escalation { get; set; }
+}
+
+/// <summary>Escalación explícita (spec §73): <c>auto</c>, <c>ask</c> o <c>deny</c> y la cadena de alias.</summary>
+public sealed class EscalationYaml
+{
+    public string? Mode { get; set; }
+    public List<string>? Chain { get; set; }
 }
 
 public sealed class ModelFileYaml
@@ -79,6 +99,8 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(ProviderAuthYaml))]
 [YamlSerializable(typeof(ModelsFileYaml))]
 [YamlSerializable(typeof(ModelFileYaml))]
+[YamlSerializable(typeof(RoutingYaml))]
+[YamlSerializable(typeof(EscalationYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
 [YamlSerializable(typeof(WorkspaceGatesYaml))]
 [YamlSerializable(typeof(TrustFileYaml))]

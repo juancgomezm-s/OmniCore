@@ -25,7 +25,7 @@ public sealed class ConfigLoader
             new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth",
                 "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
-            new[] { "models" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
+            new[] { "models", "routing" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
                 "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases" });
         ValidateRequiredAndRanges(providerNodes, modelNodes, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
@@ -72,6 +72,9 @@ public sealed class ConfigLoader
 
         if (providersYaml is null && modelsYaml is null)
             registry.AddModel(new ModelDefinition("local-worker", "local", 8192, 8192, 2048));
+
+        ValidateRouting(modelFile?.Routing, registry, diagnostics);
+        if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
 
         var notices = providerFile?.Providers?.Values.Any(provider => provider.Auth is not null) == true
             ? new[] { LocalizedText.Of("config.legacyAuthDeprecated") }
@@ -343,6 +346,30 @@ public sealed class ConfigLoader
     internal static void AddAtNode(List<ConfigDiagnostic> diagnostics, string file, string path, string key,
         YamlNode node) => Add(diagnostics, file, path, key, checked((int)node.Start.Line + 1),
             checked((int)node.Start.Column + 1));
+
+    /// <summary>Todo alias de <c>routing:</c> debe existir y el modo de escalación ser auto, ask o deny.</summary>
+    private static void ValidateRouting(RoutingYaml? routing, ModelRegistry registry, List<ConfigDiagnostic> diagnostics)
+    {
+        if (routing is null) return;
+        void Check(string path, List<string>? aliases)
+        {
+            if (aliases is null) return;
+            for (var i = 0; i < aliases.Count; i++)
+            {
+                try { registry.Resolve(aliases[i]); }
+                catch (UnknownModelException) { Add(diagnostics, "models.yaml", path + "[" + i + "]", "config.unknownModelAlias"); }
+                catch (AmbiguousModelAliasException) { Add(diagnostics, "models.yaml", path + "[" + i + "]", "config.unknownModelAlias"); }
+            }
+        }
+        Check("routing.meta", routing.Meta);
+        Check("routing.exploration", routing.Exploration);
+        Check("routing.implementation", routing.Implementation);
+        Check("routing.reasoning", routing.Reasoning);
+        Check("routing.architecture", routing.Architecture);
+        Check("routing.escalation.chain", routing.Escalation?.Chain);
+        if (routing.Escalation?.Mode is { } mode && mode is not ("auto" or "ask" or "deny"))
+            Add(diagnostics, "models.yaml", "routing.escalation.mode", "config.outOfRange");
+    }
 
     internal static void Add(List<ConfigDiagnostic> diagnostics, string file, string path, string key,
         int? line = null, int? column = null)
