@@ -149,7 +149,8 @@ public sealed class M3PolicyBoundaryTests
     public void PatchOnly_model_valid_patch_with_prior_read_succeeds()
     {
         var ws = TempDir();
-        var original = "linea-uno\nlinea-dos\n";
+        var original = "linea-uno\nlinea-dos\nlinea-tres\nlinea-cuatro\n"
+            + "linea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n";
         File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var token = VersionOf(original);
         var effective = EffectiveFor(ModelPolicyCategory.PatchOnly);
@@ -195,7 +196,7 @@ public sealed class M3PolicyBoundaryTests
         Assert.True(result.ToolCalls.Count >= 2, "Lectura previa + patch (" + result.ToolCalls.Count + ")");
         Assert.True(result.ToolCalls[0].Succeeded, "filesystem.read ok. summary=" + result.ToolCalls[0].Summary);
         Assert.True(result.ToolCalls[1].Succeeded, "filesystem.patch ok. summary=" + result.ToolCalls[1].Summary);
-        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+        Assert.Equal("linea-uno\nlinea-dos-B\nlinea-tres\nlinea-cuatro\nlinea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
 
         // El turno lo persiste como succeeded y audita la política.
         var types = store.ReadFrom(sessionId, 1).Select(e => e.Type.ToString()).ToArray();
@@ -263,7 +264,8 @@ public sealed class M3PolicyBoundaryTests
     public void Policy_change_flips_patch_from_reject_to_allow()
     {
         var ws = TempDir();
-        var original = "linea-uno\nlinea-dos\n";
+        var original = "linea-uno\nlinea-dos\nlinea-tres\nlinea-cuatro\n"
+            + "linea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n";
         File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var token = VersionOf(original);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
@@ -296,7 +298,7 @@ public sealed class M3PolicyBoundaryTests
         Assert.True(readOutcome.Succeeded, "PatchOnly permite la lectura previa. summary=" + readOutcome.Summary);
         var patchOutcome = patchExecutor.ExecuteToolWithoutJournal(patchCall, false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Read previo + PatchOnly permiten el patch tras la recategorización. summary=" + patchOutcome.Summary);
-        Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+        Assert.Equal("linea-uno\nlinea-dos-C\nlinea-tres\nlinea-cuatro\nlinea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 }

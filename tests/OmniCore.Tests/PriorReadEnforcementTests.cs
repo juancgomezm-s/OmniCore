@@ -108,7 +108,8 @@ public sealed class PriorReadEnforcementTests
     public void Successful_read_then_patch_with_that_token_succeeds()
     {
         var ws = TempDir();
-        var original = "linea-uno\nlinea-dos\n";
+        var original = "linea-uno\nlinea-dos\nlinea-tres\nlinea-cuatro\n"
+            + "linea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n";
         File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
@@ -121,7 +122,7 @@ public sealed class PriorReadEnforcementTests
         var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Lee + patch con ese token = éxito. summary=" + patchOutcome.Summary);
-        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+        Assert.Equal("linea-uno\nlinea-dos-B\nlinea-tres\nlinea-cuatro\nlinea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 
@@ -277,7 +278,8 @@ public sealed class PriorReadEnforcementTests
     public void Valid_read_exposed_token_is_visible_and_enables_patch()
     {
         var ws = TempDir();
-        var original = "linea-uno\nlinea-dos\n";
+        var original = "linea-uno\nlinea-dos\nlinea-tres\nlinea-cuatro\n"
+            + "linea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n";
         File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
@@ -295,7 +297,7 @@ public sealed class PriorReadEnforcementTests
         var patchOutcome = executor.ExecuteToolWithoutJournal(
             PatchCall("doc.txt", exposed!, "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Read válido + token visible = patch permitido. summary=" + patchOutcome.Summary);
-        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+        Assert.Equal("linea-uno\nlinea-dos-B\nlinea-tres\nlinea-cuatro\nlinea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 

@@ -31,6 +31,9 @@ public sealed class HostTools
         if (includeMutationTools)
         {
             catalog = catalog.Add(new FilesystemPatchTool(boundary));
+            // EPIC-021 (ADR-0044 §5): escritura completa create-only/reemplazo según el modo de
+            // mutación; la frontera de capacidad decide la exposición por categoría.
+            catalog = catalog.Add(new FilesystemWriteTool(boundary));
         }
         if (includeProcessTools)
         {

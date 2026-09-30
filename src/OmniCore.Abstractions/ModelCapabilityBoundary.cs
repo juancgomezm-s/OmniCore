@@ -98,10 +98,21 @@ public sealed class ModelCapabilityBoundary
         _policy = policy;
         _toolCapabilities = toolCapabilities;
         _readRegistry = readRegistry;
+        // La contabilidad de mutaciones por Run (EPIC-021) viaja con el registro de lecturas:
+        // ambos son el estado per-Run de la política del modelo.
+        _readRegistry.Ledger.Bind(policy.MutationPolicy);
     }
 
     /// <summary>Registro de lecturas efectivas de este Run (ADR-0044 §5).</summary>
     public FileReadRegistry ReadRegistry() => _readRegistry;
+
+    /// <summary>
+    /// Señala el inicio de un Turn en la contabilidad por Run (ADR-0044 §5): reinicia los
+    /// contadores por Turn de la política de mutación (archivos y líneas). La invoca el Engine
+    /// al abrir cada Turn. Sin esta señal, la contabilidad acumula monótonamente (conservador:
+    /// rechaza de más, nunca de menos).
+    /// </summary>
+    public void BeginTurn() => _readRegistry.Ledger.BeginTurn();
 
     /// <summary>
     /// Valida un ToolIntent contra la política efectiva. Reglas (ADR-0044 §5):
@@ -121,6 +132,26 @@ public sealed class ModelCapabilityBoundary
         {
             return ModelCapabilityDecision.Reject(
                 "tool sin clasificar en la política de capacidad: " + toolName, null);
+        }
+
+        // EPIC-021 (ADR-0044 §5): filesystem.write se declara ReplaceFile, pero lo que el modo
+        // de mutación concede depende de la política: Full → reemplazo completo; PatchAndCreate
+        // → SOLO creación de archivos (la frontera no tiene I/O para saber si el destino existe,
+        // así que deja pasar el intento como CreateFile y la TOOL rechaza el reemplazo de un
+        // existente); ningún otro modo → oculta/rechaza.
+        if (capability == ModelToolCapability.ReplaceFile)
+        {
+            var writeCapability = WriteCapabilityForMode();
+            if (writeCapability is null)
+            {
+                return ModelCapabilityDecision.Reject(
+                    "el modo de mutación " + _policy.MutationPolicy.Mode + " de la categoría "
+                    + _policy.Category + " no permite escribir archivos completos; usa filesystem.patch"
+                        + " para cambios localizados",
+                    ModelToolCapability.ReplaceFile);
+            }
+
+            capability = writeCapability.Value;
         }
 
         if (!_policy.ToolPolicy.Allows(capability))
@@ -196,13 +227,52 @@ public sealed class ModelCapabilityBoundary
             return false;
         }
 
+        // EPIC-021: la exposición de filesystem.write sigue al modo (create-only en
+        // PatchAndCreate, oculta en PatchExisting/None). Ver Evaluate para el detalle.
+        if (capability == ModelToolCapability.ReplaceFile)
+        {
+            var writeCapability = WriteCapabilityForMode();
+            if (writeCapability is not null)
+            {
+                capability = writeCapability.Value;
+            }
+        }
+
         return _policy.ToolPolicy.Allows(capability);
     }
 
     /// <summary>Concasión del techo de mutación con la capacidad concreta de la tool.</summary>
     public bool MutationAllowed(ModelToolCapability capability)
     {
+        return FileMutationRules.ModeAllows(_policy.MutationPolicy.Mode, capability);
+    }
+
+    /// <summary>
+    /// Capacidad efectiva que la frontera exige a una tool de reemplazo (filesystem.write) según
+    /// el modo de mutación: Full → ReplaceFile; PatchAndCreate → CreateFile (exposición
+    /// create-only, ADR-0044 §5); resto → null (oculta/rechazada).
+    /// </summary>
+    private ModelToolCapability? WriteCapabilityForMode()
+    {
         return _policy.MutationPolicy.Mode switch
+        {
+            FileMutationMode.Full => ModelToolCapability.ReplaceFile,
+            FileMutationMode.PatchAndCreate => ModelToolCapability.CreateFile,
+            _ => null,
+        };
+    }
+}
+
+/// <summary>
+/// Reglas modo de mutación → capacidad (ADR-0044 §5). Punto único compartido por la frontera
+/// de capacidad y la contabilidad por Run (<c>MutationLedger</c>): la defensa en profundidad
+/// de ambas usa exactamente las mismas reglas.
+/// </summary>
+public static class FileMutationRules
+{
+    public static bool ModeAllows(FileMutationMode mode, ModelToolCapability capability)
+    {
+        return mode switch
         {
             FileMutationMode.None => false,
             FileMutationMode.PatchExisting => capability == ModelToolCapability.PatchExisting,

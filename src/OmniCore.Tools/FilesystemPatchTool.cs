@@ -161,9 +161,12 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // ADR-0044 §5: exigir lectura previa EFECTIVA del MISMO path/version en este Run antes
         // de mutar. El modelo debe haber leído este archivo con éxito y usar EL token que esa
         // lectura expuso; un read fallido, un read de otra ruta, un token fabricado o un token
-        // de un Run anterior no habilitan el patch. Cuando el pipeline activa la política del
-        // modelo. (ReadRegistry != null) esto corta ANTES de leer los bytes y de mutar.
+        // de un Run anterior no habilitan el patch. Se exige POR DEFECTO cuando el pipeline
+        // activa la política del modelo (ReadRegistry != null); la política puede desactivarlo
+        // explícitamente (RequirePriorRead = false), nunca relajar otra defensa. Esto corta
+        // ANTES de leer los bytes y de mutar.
         if (context.ReadRegistry is not null
+            && (context.ReadRegistry!.Ledger.MutationPolicy?.RequirePriorRead ?? true)
             && (expectedVersion is null || !context.ReadRegistry!.Matches(path!, expectedVersion!)))
         {
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
@@ -229,6 +232,19 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         if (updated == content)
         {
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("El patch no produce ningún cambio sobre el contenido actual"));
+        }
+
+        // Presupuesto de la política del modelo (ADR-0044 §5, EPIC-021) ANTES de escribir nada:
+        // modo de mutación, MaxFilesPerTurn y MaxChangedLinesPerTurn (por Turn) y
+        // MaxRewriteRatio (por operación, sobre las líneas originales que no sobreviven). Sin
+        // política activa (frontera sin cablear) esta capa no restringe: manda el techo.
+        FileVersion.ChangedLines(content, updated, out var deletedLines, out var insertedLines);
+        var refusal = context.ReadRegistry?.Ledger.RefuseMutation(
+            ModelToolCapability.PatchExisting, path!, targetExists: true,
+            deletedLines, insertedLines, FileVersion.CountLines(content));
+        if (refusal is not null)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(refusal));
         }
 
         // Escrito atómico (M3, bloqueante 1 de auditoría): se construyen los bytes actualizados,
@@ -301,6 +317,12 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         }
 
         var summary = "Patch aplicado: " + path + " (" + oldText!.Length + "→" + newText!.Length + " caracteres)";
+
+        // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
+        // política la exige, ADR-0044 §5).
+        context.ReadRegistry?.Ledger.RecordMutation(path!, deletedLines, insertedLines,
+            intent.Intent.ToolCallId);
+
         return System.Threading.Tasks.Task.FromResult(new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied));
     }
 
