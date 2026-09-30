@@ -264,47 +264,66 @@ internal sealed class AppContainerAclLease : IDisposable
     {
         if (rights == 0)
             return;
-        var inheritance = isDirectory ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit : InheritanceFlags.None;
-        var rule = new FileSystemAccessRule(_sid, rights, inheritance, PropagationFlags.None, AccessControlType.Allow);
-        if (isDirectory)
+        WithAclPathLock(path, () =>
         {
-            var info = new DirectoryInfo(path);
-            var security = info.GetAccessControl(AccessControlSections.Access);
-            var existingRules = security.GetAccessRules(true, false, typeof(SecurityIdentifier))
-                .Cast<FileSystemAccessRule>()
-                .Where(existing => existing.IdentityReference.Equals(_sid)
-                    && existing.AccessControlType == AccessControlType.Allow).ToArray();
-            var exists = existingRules.Any(existing => existing.FileSystemRights == rights
-                && existing.InheritanceFlags == inheritance && existing.PropagationFlags == PropagationFlags.None);
-            if (existingRules.Length > 0 && !exists)
-                throw new System.Security.SecurityException("An unexpected AppContainer ACL grant already exists on " + path);
-            if (!exists)
+            var inheritance = isDirectory ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit : InheritanceFlags.None;
+            var rule = new FileSystemAccessRule(_sid, rights, inheritance, PropagationFlags.None, AccessControlType.Allow);
+            if (isDirectory)
             {
-                security.AddAccessRule(rule);
-                info.SetAccessControl(security);
-                _added.Add((path, true, rule));
+                var info = new DirectoryInfo(path);
+                var security = info.GetAccessControl(AccessControlSections.Access);
+                var existingRules = security.GetAccessRules(true, false, typeof(SecurityIdentifier))
+                    .Cast<FileSystemAccessRule>()
+                    .Where(existing => existing.IdentityReference.Equals(_sid)
+                        && existing.AccessControlType == AccessControlType.Allow).ToArray();
+                var exists = existingRules.Any(existing => existing.FileSystemRights == rights
+                    && existing.InheritanceFlags == inheritance && existing.PropagationFlags == PropagationFlags.None);
+                if (existingRules.Length > 0 && !exists)
+                    throw new System.Security.SecurityException("An unexpected AppContainer ACL grant already exists on " + path);
+                if (!exists)
+                {
+                    security.AddAccessRule(rule);
+                    info.SetAccessControl(security);
+                    _added.Add((path, true, rule));
+                }
             }
-        }
-        else
-        {
-            var info = new FileInfo(path);
-            var security = info.GetAccessControl(AccessControlSections.Access);
-            var existingRules = security.GetAccessRules(true, false, typeof(SecurityIdentifier))
-                .Cast<FileSystemAccessRule>()
-                .Where(existing => existing.IdentityReference.Equals(_sid)
-                    && existing.AccessControlType == AccessControlType.Allow).ToArray();
-            var exists = existingRules.Any(existing => existing.FileSystemRights == rights
-                && existing.InheritanceFlags == InheritanceFlags.None
-                && existing.PropagationFlags == PropagationFlags.None);
-            if (existingRules.Length > 0 && !exists)
-                throw new System.Security.SecurityException("An unexpected AppContainer ACL grant already exists on " + path);
-            if (!exists)
+            else
             {
-                security.AddAccessRule(rule);
-                info.SetAccessControl(security);
-                _added.Add((path, false, rule));
+                var info = new FileInfo(path);
+                var security = info.GetAccessControl(AccessControlSections.Access);
+                var existingRules = security.GetAccessRules(true, false, typeof(SecurityIdentifier))
+                    .Cast<FileSystemAccessRule>()
+                    .Where(existing => existing.IdentityReference.Equals(_sid)
+                        && existing.AccessControlType == AccessControlType.Allow).ToArray();
+                var exists = existingRules.Any(existing => existing.FileSystemRights == rights
+                    && existing.InheritanceFlags == InheritanceFlags.None
+                    && existing.PropagationFlags == PropagationFlags.None);
+                if (existingRules.Length > 0 && !exists)
+                    throw new System.Security.SecurityException("An unexpected AppContainer ACL grant already exists on " + path);
+                if (!exists)
+                {
+                    security.AddAccessRule(rule);
+                    info.SetAccessControl(security);
+                    _added.Add((path, false, rule));
+                }
             }
-        }
+        });
+    }
+
+    private static void WithAclPathLock(string path, Action action)
+    {
+        // ACL updates are read/modify/write operations. Distinct workspace profiles still update
+        // shared paths (notably the test/helper executable directory), so per-profile locks alone
+        // allow one launch to overwrite another launch's ACEs. A named mutex also coordinates
+        // separate OmniCore processes running under the same logon session.
+        var fullPath = Path.GetFullPath(path);
+        var lockName = "Local\\OmniCore-AppContainerAcl-" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(fullPath.ToUpperInvariant())));
+        using var mutex = new Mutex(false, lockName);
+        try { mutex.WaitOne(); }
+        catch (AbandonedMutexException) { /* The abandoned mutex is acquired by this thread. */ }
+        try { action(); }
+        finally { mutex.ReleaseMutex(); }
     }
 
     public void Dispose()
@@ -320,20 +339,23 @@ internal sealed class AppContainerAclLease : IDisposable
             var entry = _added[index];
             try
             {
-                if (entry.IsDirectory)
+                WithAclPathLock(entry.Path, () =>
                 {
-                    var info = new DirectoryInfo(entry.Path);
-                    var security = info.GetAccessControl(AccessControlSections.Access);
-                    security.RemoveAccessRuleSpecific(entry.Rule);
-                    info.SetAccessControl(security);
-                }
-                else
-                {
-                    var info = new FileInfo(entry.Path);
-                    var security = info.GetAccessControl(AccessControlSections.Access);
-                    security.RemoveAccessRuleSpecific(entry.Rule);
-                    info.SetAccessControl(security);
-                }
+                    if (entry.IsDirectory)
+                    {
+                        var info = new DirectoryInfo(entry.Path);
+                        var security = info.GetAccessControl(AccessControlSections.Access);
+                        security.RemoveAccessRuleSpecific(entry.Rule);
+                        info.SetAccessControl(security);
+                    }
+                    else
+                    {
+                        var info = new FileInfo(entry.Path);
+                        var security = info.GetAccessControl(AccessControlSections.Access);
+                        security.RemoveAccessRuleSpecific(entry.Rule);
+                        info.SetAccessControl(security);
+                    }
+                });
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException)
             {
