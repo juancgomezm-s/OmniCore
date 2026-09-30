@@ -194,33 +194,6 @@ public sealed class SqliteEventStore : IEventStore
         return result.ToArray();
     }
 
-    public void PutBlob(string contentHash, string content)
-    {
-        var cmd = _conn.CreateCommand()!;
-        cmd.CommandText = "INSERT OR IGNORE INTO blobs (hash, content) VALUES (:h, :c)";
-        var hp = cmd.CreateParameter()!;
-        hp.ParameterName = "h";
-        hp.Value = contentHash;
-        cmd.Parameters.Add(hp);
-        var cp = cmd.CreateParameter()!;
-        cp.ParameterName = "c";
-        cp.Value = content;
-        cmd.Parameters.Add(cp);
-        cmd.ExecuteNonQuery();
-    }
-
-    public string? GetBlob(string contentHash)
-    {
-        var cmd = _conn.CreateCommand()!;
-        cmd.CommandText = "SELECT content FROM blobs WHERE hash = :h";
-        var p = cmd.CreateParameter()!;
-        p.ParameterName = "h";
-        p.Value = contentHash;
-        cmd.Parameters.Add(p);
-        var scalar = cmd.ExecuteScalar();
-        return scalar is null ? null : _AsString(scalar);
-    }
-
     public void Close()
     {
         if (_conn is not null)
