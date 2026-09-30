@@ -1,20 +1,14 @@
-using OmniCore.Abstractions;
 using OmniCore.Client;
-using LocalizedText = OmniCore.Domain.LocalizedText;
-using OmniCore.Engine;
 using OmniCore.Host;
-using OmniCore.Infrastructure;
-using OmniCore.Models;
 using OmniCore.Protocol;
 
 namespace OmniCore.Cli;
 
-/// <summary>
-/// Punto de composición del CLI (ADR-0019 §3): solo conoce tipos de Protocol + la fábrica del
-/// Host. `Program.cs` es el único lugar que compone.
-/// </summary>
+/// <summary>Despacha argumentos, procesa el protocolo y delega la composición al Host.</summary>
 public sealed class CliApp
 {
+    private static readonly OmniCliRuntime Runtime = OmniCliRuntime.Create(".");
+
     public static Task<int> RunAsync(string[] args)
     {
         if (args.Length == 0)
@@ -24,660 +18,144 @@ public sealed class CliApp
         }
 
         var command = args[0];
-        if (command == "sim")
-        {
-            return RunSim(args);
-        }
-
-        if (command == "explain" || command == "explore")
-        {
-            return RunExplain(args);
-        }
-
-        if (command == "ask")
-        {
-            return RunAsk(args);
-        }
-
-        if (command == "act")
-        {
-            return RunAct(args);
-        }
-
-        if (command == "model")
-        {
-            // M3 (ADR-0044 §6): políticas de modelo + onboarding. Delegación completa a
-            // ModelPolicyCommands: aquí solo el despacho (composición mínima del CLI).
-            return ModelPolicyCommands.Run(args);
-        }
-
-        if (command == "doctor")
-        {
-            return RunDoctor(args);
-        }
-
-        if (command == "--tui" || command == "tui")
-        {
-            return RunTui(args);
-        }
-
-        if (command == "--help" || command == "-h" || command == "help")
+        if (command == "sim") return RunSim(args);
+        if (command is "explain" or "explore") return RunExplain(args);
+        if (command == "ask") return RunAsk(args);
+        if (command == "act") return RunAct(args);
+        if (command == "model") return ModelPolicyCommands.Run(args);
+        if (command == "doctor") return RunDoctor(args);
+        if (command is "--tui" or "tui") return RunTui(args);
+        if (command is "--help" or "-h" or "help")
         {
             PrintUsage();
             return Task.FromResult(0);
         }
 
-        // Default del CLI (criterio M2 `omni "explícame …"`): cualquier primer argumento que
-        // no sea un subcomando es un prompt al Explorer (omni ask con la pregunta literal).
         Console.WriteLine("omni: intención asumida como pregunta → ask '" + command + "'");
         return RunAsk(new[] { "ask", string.Join(" ", args) });
     }
 
     private static Task<int> RunSim(string[] args)
     {
-        var jsonOutput = args != null && args.Any(a => a == "--json");
-        var resume = args != null && args.Any(a => a == "--resume");
-        var server = ResumeAwareServer();
-        var cancellationToken = CancellationToken.None;
-
+        var jsonOutput = args.Any(a => a == "--json");
+        var resume = args.Any(a => a == "--resume");
+        var client = Runtime.Connect(CancellationToken.None);
         if (resume)
         {
-            var resumePayload = "{" + JsonObj.Field("cmd", "sim.resume") + "}";
-            var r = server.Send(WireEnvelope.Command(Ids.NewV7(), resumePayload), cancellationToken);
-            if (r.Status == "ok")
-            {
-                return RenderEvents(server, jsonOutput, 0, "resume");
-            }
-
-            Console.WriteLine("omni sim --resume: " + (r.Error ?? "fallo"));
+            var ack = client.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "sim.resume") + "}"),
+                CancellationToken.None);
+            if (ack.Status == "ok") return RenderEvents(client, jsonOutput, 0, "resume");
+            Console.WriteLine("omni sim --resume: " + (ack.Error ?? "fallo"));
             return Task.FromResult(1);
         }
 
-        var scenarioPath = args != null && args.Length >= 2 && !args[1].StartsWith("--", StringComparison.Ordinal)
-            ? args[1]
-            : null;
-        var crash = args != null && args.Any(a => a == "--crash");
+        var scenarioPath = args.Length >= 2 && !args[1].StartsWith("--", StringComparison.Ordinal)
+            ? args[1] : null;
+        var crash = args.Any(a => a == "--crash");
         if (scenarioPath is not null && !File.Exists(scenarioPath))
         {
             Console.WriteLine("omni sim: no existe el escenario " + scenarioPath);
             return Task.FromResult(2);
         }
 
-        // El CLI no conoce el Engine: manda el escenario completo por el protocolo (ADR-0019) y el
-        // Host lo interpreta. Sin archivo, un escenario incluido por nombre.
-        var scenarioName = scenarioPath is not null
-            ? Path.GetFileNameWithoutExtension(scenarioPath)
+        var scenarioName = scenarioPath is not null ? Path.GetFileNameWithoutExtension(scenarioPath)
             : crash ? "with-tool-crash" : "multi-item-plan";
         var payload = "{" + JsonObj.Field("cmd", "sim") + ","
             + (scenarioPath is not null
                 ? JsonObj.Field("scenarioYaml", File.ReadAllText(scenarioPath))
                 : JsonObj.Field("scenario", scenarioName)) + "}";
-        var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), payload), cancellationToken);
-        if (ack.Status == "ok")
-        {
-            return RenderEvents(server, jsonOutput, crash ? 1 : 0, scenarioName);
-        }
-
-        Console.WriteLine("omni sim: " + (ack.Error ?? "fallo"));
+        var result = client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+        if (result.Status == "ok") return RenderEvents(client, jsonOutput, crash ? 1 : 0, scenarioName);
+        Console.WriteLine("omni sim: " + (result.Error ?? "fallo"));
         return Task.FromResult(1);
     }
 
-    /// <summary>
-    /// Consume los eventos del server (implicación de IOmniClient, ADR-0019), los reduce con la
-    /// ClientProjection (ADR-0030) y los renderiza con el renderer seleccionado (flujo de M1:
-    /// --json → JsonRenderer con NDJSON + RunOutcome; si no, PlainRenderer).
-    /// </summary>
-    private static Task<int> RenderEvents(OmniCore.Host.OmniServer server, bool jsonOutput, int exitCode,
-        string scenarioName)
+    private static Task<int> RenderEvents(IOmniClient client, bool jsonOutput, int exitCode, string scenarioName)
     {
-        var events = server.SubscribeSince(0);
+        var events = client.SubscribeSince(0);
         if (jsonOutput)
         {
             var json = new JsonRenderer();
-            foreach (var envelope in events)
-            {
-                json.Emit(envelope);
-            }
-
+            foreach (var envelope in events) json.Emit(envelope);
             json.EmitOutcome(exitCode, exitCode == 0 ? "Completed" : "Interrupted", "sim");
             return Task.FromResult(exitCode);
         }
 
-        var projection = new OmniCore.Client.ClientProjection();
-        var state = OmniCore.Client.ClientState.Empty();
-        foreach (var envelope in events)
-        {
-            state = projection.Apply(state, envelope);
-        }
-
-        var renderer = new PlainRenderer("es");
-        renderer.Render(state);
-        if (events.Count == 0)
-        {
-            Console.WriteLine("omni sim: ok (sin eventos nuevos; escenario determinista)");
-        }
-
+        var projection = new ClientProjection();
+        var state = ClientState.Empty();
+        foreach (var envelope in events) state = projection.Apply(state, envelope);
+        new PlainRenderer("es").Render(state);
+        if (events.Count == 0) Console.WriteLine("omni sim: ok (sin eventos nuevos; escenario determinista)");
         return Task.FromResult(exitCode);
     }
 
-    /// <summary>
-    /// Modo TUI: renderiza el estado de la ClientProjection como un frame de 4 zonas
-    /// (header, conversación, sidebar, status line; ADR-0031). En M1 y sin Terminal.Gui
-    /// enlazable en este toolchain, la TUI usa el render ANSI propio de TuiApp.
-    /// </summary>
     private static Task<int> RunTui(string[] args)
     {
-        var server = ResumeAwareServer();
-        var simulation = args != null && args.Any(a => a == "--sim");
-        if (simulation)
+        var client = Runtime.Connect(CancellationToken.None);
+        if (args.Any(a => a == "--sim"))
         {
             var payload = "{" + JsonObj.Field("cmd", "sim") + ","
                 + JsonObj.Field("scenario", "multi-item-plan") + "}";
-            server.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+            client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         }
 
-        var events = server.SubscribeSince(0);
-        var state = OmniCore.Client.ClientState.Empty();
-        var projection = new OmniCore.Client.ClientProjection();
-        foreach (var envelope in events)
-        {
-            state = projection.Apply(state, envelope);
-        }
-
+        var state = ClientState.Empty();
+        var projection = new ClientProjection();
+        foreach (var envelope in client.SubscribeSince(0)) state = projection.Apply(state, envelope);
         Console.WriteLine(TuiApp.Render(state, "es"));
         return Task.FromResult(0);
     }
 
-    /// <summary>
-    /// `omni explain "pregunta"`: el criterio de M2 — el runtime mantiene el Plan y el Turn es
-    /// explicable por fingerprint (ADR-0017). Materializa el contexto real del último run
-    /// (WorkingState + fingerprint) y lo muestra con la pregunta del usuario.
-    /// </summary>
     private static Task<int> RunExplain(string[] args)
     {
         var question = args.Length >= 2 ? args[1] : "explícame el estado del plan";
-        var server = ResumeAwareServer();
-
-        var cancellationToken = CancellationToken.None;
-        var state = server.Query("state", cancellationToken);
-        var ws = server.Query("workingState", cancellationToken);
-
+        var client = Runtime.Connect(CancellationToken.None);
+        var state = client.Query("state", CancellationToken.None);
+        var workingState = client.Query("workingState", CancellationToken.None);
         Console.WriteLine("omni explain: contexto del run y plan mantenido por el runtime.");
         Console.WriteLine("Pregunta: " + question);
         if (state is not null)
         {
-            var milestone = OmniCore.Protocol.JsonObj.Parse(state!.Json)
-                .TryGetValue("runState", out var m) ? m! : "M2";
+            var milestone = JsonObj.Parse(state.Json).TryGetValue("runState", out var value) ? value! : "M2";
             Console.WriteLine("Run: " + milestone);
         }
 
-        if (ws is not null)
+        if (workingState is not null)
         {
-            var text = OmniCore.Protocol.JsonObj.Parse(ws!.Json)
-                .TryGetValue("workingState", out var v) ? v! : "";
+            var text = JsonObj.Parse(workingState.Json).TryGetValue("workingState", out var value) ? value! : "";
             Console.WriteLine("WorkingState (redactado):");
             Console.WriteLine(RedactJson(text, 900));
         }
-        else
-        {
-            Console.WriteLine("Contexto: ejecuta primero `omni sim` para materializar el run.");
-        }
-
+        else Console.WriteLine("Contexto: ejecuta primero `omni sim` para materializar el run.");
         return Task.FromResult(0);
     }
 
-    /// <summary>Trunca JSON de diagnóstico sin romper paréntesis (parser perezoso para shell).</summary>
     private static string RedactJson(string json, int max)
     {
-        var redacted = new OmniCore.Domain.PiiRedactor().Redact(json);
-        if (redacted.Length <= max)
-        {
-            return redacted;
-        }
-
-        return redacted.Substring(0, max) + "…";
+        var redacted = OmniCliRuntime.RedactSensitive(json);
+        return redacted.Length <= max ? redacted : redacted.Substring(0, max) + "…";
     }
 
-    /// <summary>
-    /// `omni ask "texto"`: conecta al modelo local (M2) y muestra la respuesta. La conexión JSON
-    /// del endpoint se configura aquí (base URL, modelo y key en variables): el CLI no guarda
-    /// secretos. En M2 esto demuestra el runtime real sobre ik_llama/llama.cpp.
-    /// </summary>
-    private static Task<int> RunDoctor(string[] args)
-    {
-        var localization = new Localization(DoctorLocale(args));
-        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.heading")));
-        var paths = OmniHost.CreatePlatformPaths();
-        var registry = OmniHost.LoadUserModelRegistry(paths);
-        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.config", "path", paths.ConfigDirectory)));
-        WarnIgnoredRepoConfig(paths);
-        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.models")));
-        foreach (var model in registry.Models())
-        {
-            var provider = registry.Provider(model.ProviderId);
-            Console.WriteLine("  " + model.Id + " → provider '" + model.ProviderId + "'"
-                + (provider is null ? "" : " (" + provider.Family + ", " + provider.BaseUrl + ")"));
-            if (provider is not null)
-            {
-                Console.WriteLine("    TLS: " + OmniHost.DescribeTls(provider.BaseUrl, provider.TrustedCertificatePath));
-            }
-        }
-
-        // Requisito 8: componentes de M2 cableados en el Host (no aislados ni solo en tests).
-        var tokenizer = OmniHost.CreateTokenCounter();
-        var resolver = OmniHost.CreateScopeResolver();
-        var creds = OmniHost.CreateUserCredentialStore(paths);
-        var localHost = OmniHost.CreateLocalModelHost();
-        var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(paths, "."));
-        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.runtime")));
-        Console.WriteLine("  tokenCounter=" + tokenizer.Id);
-        Console.WriteLine("  scopeResolver=" + (resolver is null ? "?" : resolver.GetType().Name));
-        Console.WriteLine("  credentialStore=" + creds.GetType().Name + " (" + creds + ")");
-        Console.WriteLine("  localModelHost=" + localHost.GetType().Name + " managed=" + localHost.IsManagedRunning());
-        Console.WriteLine("  artifactStore=" + artifacts.GetType().Name + " (" + artifacts + ")");
-
-        var configured = registry.Models().Count > 0;
-        Console.WriteLine(Resolve(localization, LocalizedText.Of(configured
-            ? "doctor.status.configured" : "doctor.status.unconfigured")));
-        return Task.FromResult(configured ? 0 : 1);
-    }
-
-    private static string Resolve(Localization localization, LocalizedText text) =>
-        localization.Resolve(text.Key, text.Args);
+    private static Task<int> RunDoctor(string[] args) => Task.FromResult(
+        OmniCliRuntime.Doctor(DoctorLocale(args), Console.WriteLine));
 
     private static string DoctorLocale(string[] args)
     {
         for (var index = 1; index < args.Length; index++)
         {
             if (args[index] == "--locale" && index + 1 < args.Length)
-            {
                 return args[index + 1] == "en" ? "en" : "es";
-            }
-
             if (args[index].StartsWith("--locale=", StringComparison.Ordinal))
-            {
                 return args[index][9..] == "en" ? "en" : "es";
-            }
         }
-
         return Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
     }
 
-    private static Task<int> RunAsk(string[] args)
-    {
-        var question = args.Length >= 2 ? args[1] : "Responde solo: hola";
+    private static Task<int> RunAsk(string[] args) => Runtime.AskAsync(
+        args.Length >= 2 ? args[1] : "Responde solo: hola", Console.WriteLine, CancellationToken.None);
 
-        // Resolución desde el registro del usuario (providers.yaml/models.yaml en el directorio de
-        // configuración, nunca el cwd: INV-029) o variables de entorno.
-        var paths = OmniHost.CreatePlatformPaths();
-        var workspaceData = OmniHost.WorkspaceDataDirectory(paths, ".");
-        var registry = OmniHost.LoadUserModelRegistry(paths);
-        WarnIgnoredRepoConfig(paths);
-        var modelDef = registry.Models().Count > 0 ? registry.Models()[0] : null;
-        var providerDesc = modelDef is null ? null : registry.Provider(modelDef!.ProviderId);
-        var authKind = providerDesc is null ? OmniCore.Abstractions.AuthKind.None : providerDesc!.Auth.Kind;
-
-        var model = System.Environment.GetEnvironmentVariable("OMNI_MODEL") ?? modelDef?.Id;
-        var baseUrl = System.Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDesc?.BaseUrl
-            ?? "http://127.0.0.1:8080/v1";
-
-        // Solo se exige la key si el provider configurado la requiere (None no la pide). Orden:
-        // OMNI_QWEN_KEY (y se guarda cifrada para las siguientes veces) → credential store del
-        // usuario (DPAPI en Windows). Nunca se guarda en el repo (ADR-0018).
-        var secretRef = providerDesc?.Auth.SecretRef ?? "qwen";
-        var creds = OmniHost.CreateUserCredentialStore(paths);
-        var envKey = System.Environment.GetEnvironmentVariable("OMNI_QWEN_KEY");
-        var key = envKey is not null && envKey.Length > 0 ? envKey : null;
-        if (authKind == OmniCore.Abstractions.AuthKind.ApiKey)
-        {
-            key = OmniHost.ResolveApiKey(creds, secretRef, key, CancellationToken.None);
-            if (key is null)
-            {
-                Console.WriteLine("omni ask: '" + (providerDesc?.Id ?? "local") + "' requiere API key '" + secretRef
-                    + "'. Define OMNI_QWEN_KEY una vez: se guarda cifrada en el almacén del usuario y no hará falta"
-                    + " volver a definirla. No se guardan secretos en el repo (ADR-0018).");
-                return Task.FromResult(1);
-            }
-        }
-
-        try
-        {
-            if (model is null)
-            {
-                Console.WriteLine("omni ask: no hay modelo configurado. Crea models.yaml o define OMNI_MODEL.");
-                return Task.FromResult(1);
-            }
-
-            // 1. Runtime real: materializa el contexto con el sim (WorkingState + plan + tokens).
-            var hostTools = OmniHost.CreateExplorerTools();
-            var server = ResumeAwareServer(workspaceData);
-            var wsQuery = server.Query("workingState", CancellationToken.None);
-            var wsJson = wsQuery is null ? "{}" : wsQuery!.Json;
-            var workingStateText = OmniCore.Protocol.JsonObj.Parse(wsJson)
-                .TryGetValue("workingState", out var wsVal) ? wsVal! : "";
-            if (workingStateText.Length == 0)
-            {
-                var start = server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
-                    + JsonObj.Field("cmd", "explore.start") + ","
-                    + JsonObj.Field("objective", question) + "}"), CancellationToken.None);
-                if (start.Status != "ok")
-                {
-                    Console.WriteLine("omni ask: " + (start.Error ?? "no se pudo iniciar el run"));
-                    return Task.FromResult(1);
-                }
-
-                wsQuery = server.Query("workingState", CancellationToken.None);
-                wsJson = wsQuery?.Json ?? "{}";
-                workingStateText = OmniCore.Protocol.JsonObj.Parse(wsJson)
-                    .TryGetValue("workingState", out wsVal) ? wsVal! : "";
-            }
-
-            var stateQuery = server.Query("state", CancellationToken.None);
-            var stateJson = stateQuery?.Json ?? "{}";
-            var runState = OmniCore.Protocol.JsonObj.Parse(stateJson).TryGetValue("runState", out var rs) ? rs! : "M2";
-            var sessionId = server.LastSessionId() ?? OmniCore.Domain.SessionId.New();
-            var runId = server.LastRunId() ?? OmniCore.Domain.RunId.New();
-
-            // 2. Provider conectado al modelo local (TLS fijado a caCertificate si el provider lo
-            //    declara; ver OmniHost.ConnectLocalChatCompletions).
-            var provider = OmniHost.ConnectLocalChatCompletions(baseUrl!, model!, secretRef, key ?? "",
-                providerDesc?.TrustedCertificatePath);
-            // Contexto NO hardcodeado: usamos los hechos reales del registro (P1: 8192 era fijo).
-            var usableContext = modelDef is not null && modelDef!.RecommendedUsableContext > 0
-                ? modelDef!.RecommendedUsableContext
-                : (modelDef is not null && modelDef!.ContextWindow > 0 ? modelDef!.ContextWindow : 8192);
-            var effectiveProfile = new OmniCore.Host.ModelProfileResolver()
-                .Resolve(modelDef ?? new OmniCore.Models.ModelDefinition(model!, "local", usableContext,
-                    usableContext, 2048), providerDesc);
-            var harness = new OmniCore.Domain.HarnessPolicyResolver().Resolve(effectiveProfile);
-            var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
-                harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
-                harness.PlanControl, harness.StallThresholdTurns);
-            var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-                System.Text.Encoding.UTF8.GetBytes(harnessValue)));
-            // M3 (ADR-0044 §1, §10): frontera de capacidad del modelo en el flujo REAL. La
-            // política efectiva es el techo del usuario ∩ harness; sin UserModelPolicy guardada
-            // cae en ObserveOnly (una configuración desconocida jamás escribe, §10.1). La
-            // categoría es un TECHO, nunca un permiso: la frontera restringe y el Permission
-            // Engine conserva la única autoridad (INV-018). Un fallo del store degrada SIN
-            // ampliar: fallback ObserveOnly (más restrictivo), nunca falla el ask desbloqueando.
-            var policyService = OmniHost.CreateModelPolicyService(
-                System.Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"));
-            var modelKey = OmniCore.Domain.ModelPolicyKey.For(modelDef?.ProviderId ?? "local", model!);
-            OmniCore.Domain.EffectiveModelPolicy effectivePolicy;
-            try
-            {
-                effectivePolicy = policyService.Effective(modelKey, harness, CancellationToken.None);
-            }
-            catch (Exception)
-            {
-                effectivePolicy = OmniCore.Domain.EffectiveModelPolicy.Resolve(modelKey, null, harness);
-            }
-
-            var boundary = new OmniCore.Abstractions.ModelCapabilityBoundary(effectivePolicy);
-            // ADR-0044 §8: el fingerprint del Turn registra el hash (clave + revisión +
-            // categoría + modo de mutación) de la política efectiva aplicada.
-            var fingerprint = new OmniCore.Domain.ExecutionFingerprint(
-                model!, harnessHash, "core-tools-1", "heuristic:chars4/1", "none", "M2",
-                effectivePolicy.Fingerprint(), "heuristic:chars4/1");
-            // M2 aún no ofrece tool.search; la disponibilidad del runtime limita la selección
-            // provisional a Direct, aunque el perfil recomiende Discovered para M5.
-            var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
-                usableContext, OmniCore.Domain.ToolMode.Direct, null);
-
-            // LocalModelHost conectado en el flujo ask (P1): confirma que no hay servidor managed
-            // huérfano. El credential store ya alimentó la key del provider más arriba.
-            var localHost = OmniHost.CreateLocalModelHost();
-            if (localHost.IsManagedRunning())
-            {
-                System.Console.WriteLine("omni ask: (servidor local managed activo)");
-            }
-
-            // 3. Turn end-to-end: contexto REAL del run + fingerprint + tools reales + permisos,
-            //    con persistencia en el journal del servidor (Turn, tools, respuesta como artifact).
-            var executor = OmniHost.CreateExplorerExecutor(hostTools.Catalog(), Path.GetFullPath("."),
-                boundary);
-            var materializer = new OmniCore.Context.ContextMaterializer(
-                new OmniCore.Infrastructure.HeuristicTokenCounter(),
-                new OmniCore.Context.IContextContributor[] {
-                    new OmniCore.Context.WorkingStateContributor(workingStateText),
-                });
-            var laneId = server.LastLaneId() ?? OmniCore.Domain.LaneId.New();
-            // FileArtifactStore añade blobs/sha256/ bajo el directorio del workspace (ADR-0039 §2).
-            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
-            var turn = new OmniCore.Host.ExplorerTurn(
-                (req, token) => provider.Complete(req, token),
-                executor, hostTools.Catalog(), materializer, fingerprint, selection,
-                server.AcquireStore(), server.AcquireCodecs(), artifacts,
-                new OmniCore.Infrastructure.InMemoryAuditSink(),
-                new OmniCore.Domain.RedactionPolicy(), harness, boundary);
-            var instruction = "Ayudas a un asistente de ingeniería. Work Thread del workspace:\n"
-                + "Contexto del run disponible ({context}).\n"
-                + "Responde en español, sé conciso y usa las tools cuando aporten.";
-            var result = turn.Ask(question, instruction, sessionId, runId, laneId, workingStateText,
-                CancellationToken.None);
-
-            foreach (OmniCore.Host.ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
-            {
-                Console.WriteLine("[tool] " + trace.ToolName + " → "
-                    + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);
-            }
-
-            if (result.FinalText is not null && result.FinalText!.Length > 0)
-            {
-                Console.WriteLine(result.FinalText);
-            }
-
-            Console.WriteLine("── " + result.StopReason + " · steps " + result.Steps
-                + " · tokens " + (result.Usage.Input + result.Usage.Output));
-            return Task.FromResult(0);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine("omni ask: error: " + new OmniCore.Domain.PiiRedactor().Redact(ex.Message ?? "?")
-                + " [" + ex.GetType().Name + "]");
-            if (ex.StackTrace is not null)
-            {
-                Console.WriteLine("  frames: " + ex.StackTrace.Length + " " + string.Join("|", ex.StackTrace.Take(6)));
-            }
-
-            return Task.FromResult(1);
-        }
-    }
-    /// <summary>
-    /// `omni act "instrucción"`: vertical REAL de acción sobre el workspace (M3, ADR-0044 §5).
-    /// Crea un Run Act por invocación (comando <c>act</c> del servidor, no sim), expone las tools
-    /// filesystem.read/filesystem.patch bajo la política efectiva y los permisos existentes, ejecuta
-    /// el Turn de Explorer con el modelo configurado, persiste turn/toolcall/outcome en el journal
-    /// del servidor y devuelve el resultado plano. NO autoaprueba Ask: sin cliente interactivo,
-    /// una decisión Ask se deniega (ADR-0003). Un modelo sin política efectiva queda ObserveOnly
-    /// (no escribe); PatchOnly no puede reemplazar/crear/borrar. No depende de process.exec/build/
-    /// test/sandbox: esos gates quedan para la siguiente vertical.
-    /// </summary>
-    private static Task<int> RunAct(string[] args)
-    {
-        // Un Run que modifica archivos nunca arranca con un objetivo inventado.
-        if (args.Length < 2 || args[1].Trim().Length == 0)
-        {
-            Console.WriteLine("omni act: falta la instrucción. Uso: omni act \"instrucción\"");
-            return Task.FromResult(2);
-        }
-
-        var objective = args[1];
-        var paths = OmniHost.CreatePlatformPaths();
-        var workspaceData = OmniHost.WorkspaceDataDirectory(paths, ".");
-        var registry = OmniHost.LoadUserModelRegistry(paths);
-        WarnIgnoredRepoConfig(paths);
-        var modelDef = registry.Models().Count > 0 ? registry.Models()[0] : null;
-        var providerDesc = modelDef is null ? null : registry.Provider(modelDef!.ProviderId);
-        var authKind = providerDesc is null ? OmniCore.Abstractions.AuthKind.None : providerDesc!.Auth.Kind;
-
-        var model = System.Environment.GetEnvironmentVariable("OMNI_MODEL") ?? modelDef?.Id;
-        var baseUrl = System.Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDesc?.BaseUrl
-            ?? "http://127.0.0.1:8080/v1";
-        var secretRef = providerDesc?.Auth.SecretRef ?? "qwen";
-        string? key = null;
-        if (authKind == OmniCore.Abstractions.AuthKind.ApiKey)
-        {
-            key = OmniHost.ResolveApiKey(OmniHost.CreateUserCredentialStore(paths), secretRef,
-                System.Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), CancellationToken.None);
-            if (key is null)
-            {
-                Console.WriteLine("omni act: '" + (providerDesc?.Id ?? "local") + "' requiere API key '" + secretRef
-                    + "'. Define OMNI_QWEN_KEY una vez: se guarda cifrada en el almacén del usuario (ADR-0018).");
-                return Task.FromResult(1);
-            }
-        }
-
-        try
-        {
-            if (model is null)
-            {
-                Console.WriteLine("omni act: no hay modelo configurado. Crea models.yaml o define OMNI_MODEL.");
-                return Task.FromResult(1);
-            }
-
-            var server = ResumeAwareServer(workspaceData);
-            // Run Act REAL por invocación (vertical, no sim): el servidor establece la sesión,
-            // la raíz durable (identidad ADR-0004 §5) y el run completo con RunMode.Act.
-            var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "act") + ","
-                + JsonObj.Field("objective", objective) + "}"), CancellationToken.None);
-            if (ack.Status != "ok")
-            {
-                Console.WriteLine("omni act: " + (ack.Error ?? "no se pudo crear el Run Act"));
-                return Task.FromResult(1);
-            }
-
-            var sessionId = server.LastSessionId() ?? OmniCore.Domain.SessionId.New();
-            var runId = server.LastRunId() ?? OmniCore.Domain.RunId.New();
-            var laneId = server.LastLaneId() ?? OmniCore.Domain.LaneId.New();
-            var workspaceRoot = Path.GetFullPath(".");
-
-            var provider = OmniHost.ConnectLocalChatCompletions(baseUrl!, model!, secretRef, key ?? "",
-                providerDesc?.TrustedCertificatePath);
-            var usableContext = modelDef is not null && modelDef!.RecommendedUsableContext > 0
-                ? modelDef!.RecommendedUsableContext
-                : (modelDef is not null && modelDef!.ContextWindow > 0 ? modelDef!.ContextWindow : 8192);
-            var effectiveProfile = new OmniCore.Host.ModelProfileResolver()
-                .Resolve(modelDef ?? new OmniCore.Models.ModelDefinition(model!, "local", usableContext,
-                    usableContext, 2048), providerDesc);
-            var harness = new OmniCore.Domain.HarnessPolicyResolver().Resolve(effectiveProfile);
-            var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
-                harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
-                harness.PlanControl, harness.StallThresholdTurns);
-            var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-                System.Text.Encoding.UTF8.GetBytes(harnessValue)));
-
-            // Política efectiva (ADR-0044 §1, §10): modelo sin UserModelPolicy guardada → ObserveOnly
-            // (tech: una configuración desconocida jamás escribe). La categoría es TECHA, nunca un
-            // permiso: la frontera restringe y el Permission Engine conserva la única autoridad. Un
-            // fallo del store degrada SIN ampliar (fallback ObserveOnly), nunca desbloquea (more
-            // restrictive).
-            var policyService = OmniHost.CreateModelPolicyService(null);
-            var modelKey = OmniCore.Domain.ModelPolicyKey.For(modelDef?.ProviderId ?? "local", model!);
-            OmniCore.Domain.EffectiveModelPolicy effectivePolicy;
-            try
-            {
-                effectivePolicy = policyService.Effective(modelKey, harness, CancellationToken.None);
-            }
-            catch (Exception)
-            {
-                effectivePolicy = OmniCore.Domain.EffectiveModelPolicy.Resolve(modelKey, null, harness);
-            }
-
-            var boundary = new OmniCore.Abstractions.ModelCapabilityBoundary(effectivePolicy);
-            var fingerprint = new OmniCore.Domain.ExecutionFingerprint(model!, harnessHash,
-                "core-tools-1", "heuristic:chars4/1", "none", "M3", effectivePolicy.Fingerprint(),
-                "heuristic:chars4/1");
-            var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
-                usableContext, OmniCore.Domain.ToolMode.Direct, null);
-
-            var hostTools = OmniHost.CreateActTools();
-            var executor = OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary);
-            var materializer = new OmniCore.Context.ContextMaterializer(
-                new OmniCore.Infrastructure.HeuristicTokenCounter(),
-                new OmniCore.Context.IContextContributor[0]);
-            // Blobs en el directorio de datos del workspace, nunca en el repo (ADR-0039 §2).
-            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
-            var turn = new OmniCore.Host.ExplorerTurn(
-                (req, token) => provider.Complete(req, token),
-                executor, hostTools.Catalog(), materializer, fingerprint, selection,
-                server.AcquireStore(), server.AcquireCodecs(), artifacts,
-                new OmniCore.Infrastructure.InMemoryAuditSink(),
-                new OmniCore.Domain.RedactionPolicy(), harness, boundary);
-            var instruction = "Eres un asistente de ingeniería operando en el workspace actual. "
-                + "Tienes filesystem.read y filesystem.patch bajo la política efectiva del modelo. "
-                + "Contexto del run disponible ({context}). Responde la instrucción y usa las tools "
-                + "cuando aporten; no inventes lecturas ni tokens [version:…]: lee antes de parchear.";
-            var result = turn.Ask(objective, instruction, sessionId, runId, laneId, "",
-                CancellationToken.None);
-
-            foreach (OmniCore.Host.ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
-            {
-                Console.WriteLine("[tool] " + trace.ToolName + " → "
-                    + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);
-            }
-
-            if (result.FinalText is not null && result.FinalText!.Length > 0)
-            {
-                Console.WriteLine(result.FinalText);
-            }
-
-            Console.WriteLine("── " + result.StopReason + " · steps " + result.Steps
-                + " · tokens " + (result.Usage.Input + result.Usage.Output));
-            var exit = result.StopReason == OmniCore.Domain.StopReason.EndTurn ? 0 : 1;
-            if (result.FinalText is null)
-            {
-                Console.WriteLine("omni act: el turno no produjo respuesta.");
-                exit = 1;
-            }
-
-            return Task.FromResult(exit);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine("omni act: error: " + new OmniCore.Domain.PiiRedactor().Redact(ex.Message ?? "?")
-                + " [" + ex.GetType().Name + "]");
-            return Task.FromResult(1);
-        }
-    }
-
-
-    /// <summary>
-    /// Avisa si el cwd trae providers.yaml/models.yaml: un repo nunca configura providers ni
-    /// credenciales (INV-029, ADR-0039), así que se ignoran; la configuración va en el directorio
-    /// del usuario.
-    /// </summary>
-    private static void WarnIgnoredRepoConfig(OmniCore.Abstractions.IPlatformPaths paths)
-    {
-        foreach (var name in new[] { "providers.yaml", "models.yaml" })
-        {
-            if (File.Exists(Path.Combine(".", name))
-                && !Path.GetFullPath(".").Equals(Path.GetFullPath(paths.ConfigDirectory), StringComparison.OrdinalIgnoreCase))
-            {
-                Console.WriteLine("aviso: se ignora ./" + name + " (un repo no configura providers, INV-029). "
-                    + "La configuración va en " + Path.Combine(paths.ConfigDirectory, name));
-            }
-        }
-    }
-
-    private static OmniCore.Host.OmniServer ResumeAwareServer() =>
-        ResumeAwareServer(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), "."));
-
-    private static OmniCore.Host.OmniServer ResumeAwareServer(string workspaceData)
-    {
-        if (_server is null)
-        {
-            // Journal persistente del CLI para permitir --resume entre procesos (ADR-0041 §2),
-            // en el directorio de datos del workspace, fuera del repo (ADR-0039 §2).
-            var journal = Path.Combine(workspaceData, "journal.db");
-            _server = OmniHost.OpenPersistentServer(journal);
-        }
-
-        return _server!;
-    }
-
-    private static OmniCore.Host.OmniServer? _server;
+    private static Task<int> RunAct(string[] args) => Runtime.ActAsync(
+        args.Length >= 2 ? args[1] : "", Console.WriteLine, CancellationToken.None);
 
     private static void PrintUsage()
     {
