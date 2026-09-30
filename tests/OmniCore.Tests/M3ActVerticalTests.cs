@@ -98,8 +98,8 @@ public sealed class M3ActVerticalTests
     /// </summary>
     private static ActServer StartActServer(string dataDir, string workspace, string objective)
     {
-        var journal = dataDir + "\\journal.db";
-        var stateFile = dataDir + "\\lastsession.txt";
+        var journal = Path.Combine(dataDir, "journal.db");
+        var stateFile = Path.Combine(dataDir, "lastsession.txt");
         var store = new SqliteEventStore(journal);
         var server = new OmniServer(store, EventCodecs.Create(), new InMemoryAuditSink(), stateFile);
         var payload = "{\"cmd\":\"act\",\"objective\":\"" + objective + "\",\"workspace\":\"" + workspace + "\"}";
@@ -122,7 +122,7 @@ public sealed class M3ActVerticalTests
         var fingerprint = new ExecutionFingerprint("fake-model", "harness-h", "core-tools-1",
             "heuristic:chars4/1", "none", "M3", effective.Fingerprint());
         var selection = new ModelSelection(new ModelIdValue("fake-model"), 8192, ToolMode.Direct, null);
-        var artifacts = new FileArtifactStore(cx.Workspace + "\\.omnicore-art");
+        var artifacts = new FileArtifactStore(Path.Combine(cx.Workspace, ".omnicore-art"));
         var turn = new ExplorerTurn(complete, executor, catalog, materializer, fingerprint, selection,
             cx.Server.AcquireStore(), cx.Server.AcquireCodecs(), artifacts, new InMemoryAuditSink(),
             new RedactionPolicy(), boundary: boundary);
@@ -134,9 +134,9 @@ public sealed class M3ActVerticalTests
         // Cerrar la sesión original y reabrir OTRO OmniServer sobre el MISMO journal: la reapertura
         // dispara la recuperación (verifica la identidad durable del workspace) y conserva los eventos.
         cx.Store.Close();
-        var store2 = new SqliteEventStore(cx.DataDir + "\\journal.db");
+        var store2 = new SqliteEventStore(Path.Combine(cx.DataDir, "journal.db"));
         var server2 = new OmniServer(store2, EventCodecs.Create(), new InMemoryAuditSink(),
-            cx.DataDir + "\\lastsession.txt");
+            Path.Combine(cx.DataDir, "lastsession.txt"));
         Assert.True(server2.LastRecoveryProblem() is null,
             "la reapertura verifica la identidad durable y no se bloquea");
         var events = store2.ReadFrom(cx.SessionId, 1);
@@ -150,10 +150,10 @@ public sealed class M3ActVerticalTests
     public void Act_observe_only_denies_write_even_after_read_and_reopens_persisting_rejection()
     {
         var dataDir = TempDir();
-        var ws = dataDir + "\\workspace";
+        var ws = Path.Combine(dataDir, "workspace");
         Directory.CreateDirectory(ws);
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var cx = StartActServer(dataDir, ws, "corrige este test");
         try
         {
@@ -175,7 +175,7 @@ public sealed class M3ActVerticalTests
             Assert.True(result.ToolCalls.Count >= 2, "read + patch intentado");
             Assert.True(result.ToolCalls[0].Succeeded, "filesystem.read ok");
             Assert.False(result.ToolCalls[1].Succeeded, "ObserveOnly deniega la escritura. summary=" + result.ToolCalls[1].Summary);
-            Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
+            Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
             Assert.DoesNotContain(result.ToolCalls, t => t.Succeeded && t.ToolName == "filesystem.patch");
 
             // Persistido: la LECTURA ok (read) + el patch RECHAZADO sobre el mismo journal; el
@@ -192,7 +192,7 @@ public sealed class M3ActVerticalTests
             var reopened = ReopenEvents(cx).Select(e => e.Type.ToString()).ToArray();
             Assert.Contains("toolcall.rejected", reopened);
             Assert.Contains("toolcall.succeeded", reopened); // la lectura previa
-            Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
+            Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
         {
@@ -205,10 +205,10 @@ public sealed class M3ActVerticalTests
     public void Act_patch_only_applies_patch_with_prior_read_and_reopens_persisting_success()
     {
         var dataDir = TempDir();
-        var ws = dataDir + "\\workspace";
+        var ws = Path.Combine(dataDir, "workspace");
         Directory.CreateDirectory(ws);
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var token = VersionOf(original);
         var cx = StartActServer(dataDir, ws, "corrige este test");
         try
@@ -230,7 +230,7 @@ public sealed class M3ActVerticalTests
             Assert.True(result.ToolCalls.Count >= 2, "read + patch (" + result.ToolCalls.Count + ")");
             Assert.True(result.ToolCalls[0].Succeeded, "filesystem.read ok");
             Assert.True(result.ToolCalls[1].Succeeded, "filesystem.patch ok. summary=" + result.ToolCalls[1].Summary);
-            Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(ws + "\\doc.txt"));
+            Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
 
             var types = cx.Store.ReadFrom(cx.SessionId, 1).Select(e => e.Type.ToString()).ToArray();
             Assert.Contains("toolcall.succeeded", types);
@@ -238,7 +238,7 @@ public sealed class M3ActVerticalTests
 
             var reopened = ReopenEvents(cx).Select(e => e.Type.ToString()).ToArray();
             Assert.Contains("toolcall.succeeded", reopened);
-            Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(ws + "\\doc.txt"));
+            Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
         {
@@ -251,9 +251,9 @@ public sealed class M3ActVerticalTests
     public void Act_patch_only_rejects_replace_and_reopens_persisting_rejection()
     {
         var dataDir = TempDir();
-        var ws = dataDir + "\\workspace";
+        var ws = Path.Combine(dataDir, "workspace");
         Directory.CreateDirectory(ws);
-        File.WriteAllText(ws + "\\doc.txt", "linea-uno\nlinea-dos\n");
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), "linea-uno\nlinea-dos\n");
         var cx = StartActServer(dataDir, ws, "corrige este test");
         try
         {

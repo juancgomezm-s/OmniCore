@@ -81,7 +81,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
         var original = "linea1\nlinea2\nlinea3\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var version = VersionOf(original);
 
         var outcome = executor.ExecuteTool(
@@ -89,7 +89,7 @@ public sealed class FilesystemPatchToolTests
 
         Assert.True(outcome.Succeeded, "El patch con token vigente se aplica. summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Succeeded, outcome.FinalState);
-        var after = File.ReadAllText(ws + "\\doc.txt");
+        var after = File.ReadAllText(Path.Combine(ws, "doc.txt"));
         Assert.True(after == "linea1\nLINEA2-CAMBIADA\nlinea3\n",
             "Solo el rango del parche cambia; el contenido no relacionado se conserva");
     }
@@ -99,7 +99,7 @@ public sealed class FilesystemPatchToolTests
     {
         var ws = TempDir();
         var executor = PatchExecutor(ws);
-        File.WriteAllText(ws + "\\doc.txt", "contenido original");
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), "contenido original");
         var staleVersion = VersionOf("otro contenido viejo");
 
         var outcome = executor.ExecuteTool(
@@ -108,7 +108,7 @@ public sealed class FilesystemPatchToolTests
         Assert.False(outcome.Succeeded, "Un token obsoleto se rechaza (STALE_WRITE). summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         // No se mutó nada.
-        Assert.Equal("contenido original", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("contenido original", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         Assert.Contains("STALE_WRITE", outcome.Summary);
     }
 
@@ -148,7 +148,7 @@ public sealed class FilesystemPatchToolTests
 
         Assert.False(outcome.Succeeded, "Un patch no crea archivos: se rechaza si no existe. summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
-        Assert.False(File.Exists(ws + "\\no-existe.txt"), "No se crea el archivo");
+        Assert.False(File.Exists(Path.Combine(ws, "no-existe.txt")), "No se crea el archivo");
     }
 
     [Fact]
@@ -157,7 +157,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
         var content = "abc\nabc\nabc\n";
-        File.WriteAllText(ws + "\\doc.txt", content);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), content);
         var version = VersionOf(content);
 
         var outcome = executor.ExecuteTool(
@@ -165,7 +165,7 @@ public sealed class FilesystemPatchToolTests
 
         Assert.False(outcome.Succeeded, "oldText ambiguo (varias ocurrencias) se rechaza. summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
-        Assert.True(File.ReadAllText(ws + "\\doc.txt") == content, "El archivo no cambia ante ambigüedad");
+        Assert.True(File.ReadAllText(Path.Combine(ws, "doc.txt")) == content, "El archivo no cambia ante ambigüedad");
     }
 
     [Fact]
@@ -174,7 +174,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
         var content = "un contenido distinto";
-        File.WriteAllText(ws + "\\doc.txt", content);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), content);
         var version = VersionOf(content);
 
         var outcome = executor.ExecuteTool(
@@ -189,7 +189,7 @@ public sealed class FilesystemPatchToolTests
     {
         var ws = TempDir();
         var executor = PatchExecutor(ws);
-        File.WriteAllText(ws + "\\doc.txt", "contenido");
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), "contenido");
 
         var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.patch"), "pc-notoken",
             "{\"path\":\"doc.txt\",\"oldText\":\"contenido\",\"newText\":\"nuevo\"}");
@@ -206,14 +206,14 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
         var content = "inicio\nbloque antiguo\nfin\n";
-        File.WriteAllText(ws + "\\doc.txt", content);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), content);
         var version = VersionOf(content);
 
         var outcome = executor.ExecuteTool(
             PatchCall(ws, "doc.txt", version, "bloque antiguo", "bloque\nnuevo\ndos lineas"), false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "El parser JSON real soporta oldText/newText con saltos de línea. summary=" + outcome.Summary);
-        Assert.Equal("inicio\nbloque\nnuevo\ndos lineas\nfin\n", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("inicio\nbloque\nnuevo\ndos lineas\nfin\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
     }
 
     // ---- Frontera de capacidad PatchOnly / ObserveOnly (ADR-0044 §5) ----
@@ -232,7 +232,7 @@ public sealed class FilesystemPatchToolTests
     public async System.Threading.Tasks.Task ObserveOnly_boundary_blocks_patch_before_permissions()
     {
         var ws = TempDir();
-        File.WriteAllText(ws + "\\doc.txt", "contenido");
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), "contenido");
         var version = VersionOf("contenido");
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var sink = new List<DomainEventPayload>();
@@ -247,7 +247,7 @@ public sealed class FilesystemPatchToolTests
 
         Assert.False(outcome.Succeeded, "ObserveOnly no permite patch: la frontera corta antes de permisos");
         Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
-        Assert.True(File.ReadAllText(ws + "\\doc.txt") == "contenido", "El archivo no se toca");
+        Assert.True(File.ReadAllText(Path.Combine(ws, "doc.txt")) == "contenido", "El archivo no se toca");
     }
 
     [Fact]
@@ -255,7 +255,7 @@ public sealed class FilesystemPatchToolTests
     {
         var ws = TempDir();
         var original = "linea1\nlinea2\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var version = VersionOf(original);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var sink = new List<DomainEventPayload>();
@@ -269,7 +269,7 @@ public sealed class FilesystemPatchToolTests
         var outcome = runtime.Run(call, prepContext, execContext, false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "PatchOnly permite el patch localizado. summary=" + outcome.Summary);
-        Assert.Equal("linea1\nlinea2-b\n", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("linea1\nlinea2-b\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
     }
 
     [Fact]
@@ -287,7 +287,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
         var content = "linea1\nlinea2\nlinea3\n";
-        File.WriteAllText(ws + "\\doc.txt", content);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), content);
         var version = VersionOf(content);
 
         // oldText == contenido completo: se rechaza (no se permite sustituir el archivo entero).
@@ -296,7 +296,7 @@ public sealed class FilesystemPatchToolTests
 
         Assert.False(outcome.Succeeded, "oldText igual al contenido completo debe rechazarse. summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
-        Assert.Equal(content, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(content, File.ReadAllText(Path.Combine(ws, "doc.txt")));
     }
 
     [Fact]
@@ -313,7 +313,7 @@ public sealed class FilesystemPatchToolTests
             0x68, 0x6F, 0x6C, 0x61, 0x0A,
             0x6D, 0x75, 0x6E, 0x64, 0x6F
         };
-        File.WriteAllBytes(ws + "\\doc.txt", bom);
+        File.WriteAllBytes(Path.Combine(ws, "doc.txt"), bom);
 
         var version = FilesystemPatchTool.VersionToken(bom);
         // El texto decodificado (sin BOM) es "hola\nmundo".
@@ -321,7 +321,7 @@ public sealed class FilesystemPatchToolTests
             PatchCall(ws, "doc.txt", version, "mundo", "amigo"), false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "El patch con BOM UTF-8 debe aplicar. summary=" + outcome.Summary);
-        var after = File.ReadAllBytes(ws + "\\doc.txt");
+        var after = File.ReadAllBytes(Path.Combine(ws, "doc.txt"));
         Assert.Equal(0xEF, after[0]);
         Assert.Equal(0xBB, after[1]);
         Assert.Equal(0xBF, after[2]);
@@ -342,14 +342,14 @@ public sealed class FilesystemPatchToolTests
             0x68, 0x00, 0x6F, 0x00, 0x6C, 0x00, 0x61, 0x00, 0x0A, 0x00,
             0x6D, 0x00, 0x75, 0x00, 0x6E, 0x00, 0x64, 0x00, 0x6F, 0x00
         };
-        File.WriteAllBytes(ws + "\\doc.txt", utf16le);
+        File.WriteAllBytes(Path.Combine(ws, "doc.txt"), utf16le);
 
         var version = FilesystemPatchTool.VersionToken(utf16le);
         var outcome = executor.ExecuteTool(
             PatchCall(ws, "doc.txt", version, "mundo", "amigo"), false, CancellationToken.None);
 
         Assert.True(outcome.Succeeded, "El patch con BOM UTF-16 LE debe aplicar. summary=" + outcome.Summary);
-        var after = File.ReadAllBytes(ws + "\\doc.txt");
+        var after = File.ReadAllBytes(Path.Combine(ws, "doc.txt"));
         Assert.Equal(0xFF, after[0]);
         Assert.Equal(0xFE, after[1]);
         // "amigo" en UTF-16 LE: 61 00 6D 00 69 00 67 00 6F 00
@@ -368,7 +368,7 @@ public sealed class FilesystemPatchToolTests
         // (TestFailureHook) sin exponer API pública nueva ni estado global compartido.
         var ws = TempDir();
         var original = "linea1\nlinea2\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var version = VersionOf(original);
 
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
@@ -386,7 +386,7 @@ public sealed class FilesystemPatchToolTests
         Assert.False(outcome.Succeeded,
             "Un fallo durante la publicación debe reportarse como error. summary=" + outcome.Summary);
         // El original debe quedar intacto (el reemplazo atómico no tocó el destino).
-        Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         // No deben quedar temporales huérfanos del patch.
         var orphans = Directory.GetFiles(ws, ".doc.txt.tmp-*", SearchOption.TopDirectoryOnly);
         // El temporal debe limpiarse cuando la publicación falla (cero temporales huérfanos).
@@ -400,7 +400,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
         var content = "linea1\nlinea2\n";
-        File.WriteAllText(ws + "\\doc.txt", content);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), content);
         var version = VersionOf(content);
 
         // newText vacío: se rechaza (no se permite vaciar el archivo).
@@ -409,7 +409,7 @@ public sealed class FilesystemPatchToolTests
 
         Assert.False(outcome.Succeeded, "newText vacío debe rechazarse. summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
-        Assert.Equal(content, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(content, File.ReadAllText(Path.Combine(ws, "doc.txt")));
     }
 
     [Fact]
@@ -417,7 +417,7 @@ public sealed class FilesystemPatchToolTests
     {
         var ws = TempDir();
         var initial = "linea1\nlinea2\nlinea3\n";
-        File.WriteAllText(ws + "\\doc.txt", initial);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), initial);
 
         // Executor que permite leer Y parchear (ambas con Allow) para simular el flujo real:
         // leer → extraer token → parchear → token obsoleto falla.
@@ -442,15 +442,15 @@ public sealed class FilesystemPatchToolTests
         var firstPatch = executor.ExecuteTool(
             PatchCall(ws, "doc.txt", version!, "linea2", "linea2-cambiada"), false, CancellationToken.None);
         Assert.True(firstPatch.Succeeded, "El patch con el token vigente debe aplicar. summary=" + firstPatch.Summary);
-        Assert.Equal("linea1\nlinea2-cambiada\nlinea3\n", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("linea1\nlinea2-cambiada\nlinea3\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
 
         // 3. El archivo ya cambió: el MISMO token viejo ahora falla (STALE_WRITE) sin mutar.
-        var currentBefore = File.ReadAllText(ws + "\\doc.txt");
+        var currentBefore = File.ReadAllText(Path.Combine(ws, "doc.txt"));
         var stalePatch = executor.ExecuteTool(
             PatchCall(ws, "doc.txt", version!, "linea3", "linea3-cambiada"), false, CancellationToken.None);
         Assert.False(stalePatch.Succeeded, "El token viejo debe rechazarse. summary=" + stalePatch.Summary);
         Assert.Equal(ToolCallState.Failed, stalePatch.FinalState);
-        Assert.Equal(currentBefore, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(currentBefore, File.ReadAllText(Path.Combine(ws, "doc.txt")));
     }
 
     // ---- Decodificación estricta (FileVersion.Decode): BOM no soportado y bytes inválidos ----
@@ -494,7 +494,7 @@ public sealed class FilesystemPatchToolTests
         var ws = TempDir();
         var executor = PatchExecutor(ws);
         var raw = new byte[] { 0x68, 0x6F, 0x6C, 0xC3, 0x28 }; // "hol" + secuencia UTF-8 inválida
-        File.WriteAllBytes(ws + "\\doc.txt", raw);
+        File.WriteAllBytes(Path.Combine(ws, "doc.txt"), raw);
         var version = FilesystemPatchTool.VersionToken(raw);
 
         var outcome = executor.ExecuteTool(
@@ -502,6 +502,6 @@ public sealed class FilesystemPatchToolTests
 
         Assert.False(outcome.Succeeded, "Un archivo con bytes inválidos se rechaza sin decodificar. summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
-        Assert.True(raw.AsSpan().SequenceEqual(File.ReadAllBytes(ws + "\\doc.txt")), "El archivo no se muta");
+        Assert.True(raw.AsSpan().SequenceEqual(File.ReadAllBytes(Path.Combine(ws, "doc.txt"))), "El archivo no se muta");
     }
 }

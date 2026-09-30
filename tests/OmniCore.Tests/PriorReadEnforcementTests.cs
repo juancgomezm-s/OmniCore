@@ -87,7 +87,7 @@ public sealed class PriorReadEnforcementTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
 
@@ -98,7 +98,7 @@ public sealed class PriorReadEnforcementTests
         Assert.False(outcome.Succeeded, "Un patch sin lectura previa debe rechazarse. summary=" + outcome.Summary);
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         Assert.Contains("PRIOR_READ_REQUIRED", outcome.Summary);
-        Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 
@@ -109,7 +109,7 @@ public sealed class PriorReadEnforcementTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
 
@@ -121,7 +121,7 @@ public sealed class PriorReadEnforcementTests
         var patchOutcome = executor.ExecuteTool(
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Lee + patch con ese token = éxito. summary=" + patchOutcome.Summary);
-        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 
@@ -133,8 +133,8 @@ public sealed class PriorReadEnforcementTests
         var ws = TempDir();
         // a.txt y b.txt tienen EXACTAMENTE el mismo contenido → token idéntico (SHAR-256 del contenido).
         var shared = "mismo-contenido\n";
-        File.WriteAllText(ws + "\\a.txt", shared);
-        File.WriteAllText(ws + "\\b.txt", shared);
+        File.WriteAllText(Path.Combine(ws, "a.txt"), shared);
+        File.WriteAllText(Path.Combine(ws, "b.txt"), shared);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
 
@@ -148,7 +148,7 @@ public sealed class PriorReadEnforcementTests
             PatchCall("b.txt", VersionOf(shared), "mismo-contenido", "otro-contenido"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El token de otra ruta no habilita el patch. summary=" + patchOutcome.Summary);
         Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
-        Assert.Equal(shared, File.ReadAllText(ws + "\\b.txt"));
+        Assert.Equal(shared, File.ReadAllText(Path.Combine(ws, "b.txt")));
         RmDir(ws);
     }
 
@@ -157,7 +157,7 @@ public sealed class PriorReadEnforcementTests
     {
         var ws = TempDir();
         var original = "linea-uno\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
 
@@ -170,7 +170,7 @@ public sealed class PriorReadEnforcementTests
             PatchCall("doc.txt", VersionOf(original), "linea-uno", "linea-uno-Z"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "Un read fallido no habilita el patch. summary=" + patchOutcome.Summary);
         Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
-        Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 
@@ -181,7 +181,7 @@ public sealed class PriorReadEnforcementTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
 
@@ -191,14 +191,14 @@ public sealed class PriorReadEnforcementTests
 
         // 2. Modificación EXTERNA fuera del control del modelo: el contenido cambia.
         var external = "linea-uno\nlinea-dos\nlinea-extra-externa\n";
-        File.WriteAllText(ws + "\\doc.txt", external);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), external);
 
         // 3. El modelo parchea con el token de la lectura previa (ya obsoleto): STALE_WRITE.
         var patchOutcome = executor.ExecuteTool(
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El token obsoleto tras modificación externa se rechaza. summary=" + patchOutcome.Summary);
         Assert.Contains("STALE_WRITE", patchOutcome.Summary);
-        Assert.Equal(external, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(external, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 
@@ -209,7 +209,7 @@ public sealed class PriorReadEnforcementTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
 
         // Run 1: el modelo lee doc.txt (token T) en SU registro por-Run.
         var boundaryRun1 = new ModelCapabilityBoundary(PatchOnlyPolicy());
@@ -229,7 +229,7 @@ public sealed class PriorReadEnforcementTests
             PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-C"), false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El token de un Run anterior no habilita el patch. summary=" + patchOutcome.Summary);
         Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
-        Assert.Equal(original, File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 
@@ -242,7 +242,7 @@ public sealed class PriorReadEnforcementTests
         // Bytes UTF-8 inválidos (0xC3 seguido de 0x28 no es una secuencia válida):
         // FileVersion.Decode los rechaza con UnsupportedEncodingException.
         var raw = new byte[] { 0x68, 0x6F, 0x6C, 0xC3, 0x28 };
-        File.WriteAllBytes(ws + "\\doc.txt", raw);
+        File.WriteAllBytes(Path.Combine(ws, "doc.txt"), raw);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
 
@@ -261,7 +261,7 @@ public sealed class PriorReadEnforcementTests
             false, CancellationToken.None);
         Assert.False(patchOutcome.Succeeded, "El read fallido por encoding no habilita el patch. summary=" + patchOutcome.Summary);
         Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
-        var after = File.ReadAllBytes(ws + "\\doc.txt");
+        var after = File.ReadAllBytes(Path.Combine(ws, "doc.txt"));
         Assert.Equal(raw.Length, after.Length);
         for (var i = 0; i < raw.Length; i++)
         {
@@ -278,7 +278,7 @@ public sealed class PriorReadEnforcementTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
         var executor = PatchPipeline(ws, boundary);
 
@@ -295,7 +295,7 @@ public sealed class PriorReadEnforcementTests
         var patchOutcome = executor.ExecuteTool(
             PatchCall("doc.txt", exposed!, "linea-dos", "linea-dos-B"), false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Read válido + token visible = patch permitido. summary=" + patchOutcome.Summary);
-        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 
