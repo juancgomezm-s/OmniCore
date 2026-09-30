@@ -365,7 +365,10 @@ public sealed class ExplorerTurn
                             ToolCallState.Rejected, new DomainEventPayload[] {
                                 new ToolCallRequested(call.Id, validated.ProviderCallId, call.ToolName,
                                     call.ArgumentsJson),
-                                new ToolCallRejected(call.Id, "tool no disponible para este modelo")
+                                // Para el modelo la tool no existe: la frontera de capacidad no
+                                // la expone, así que el rechazo se tipa UNKNOWN_TOOL (spec §71).
+                                new ToolCallRejected(call.Id, "tool no disponible para este modelo",
+                                    ToolErrorCode.UnknownTool)
                             });
 
                     string? planError = null;
@@ -403,7 +406,11 @@ public sealed class ExplorerTurn
                     {
                         if (planError is not null && evt is ToolCallSucceeded)
                         {
-                            toPersist.Add(new ToolCallFailed(call.Id, _redaction.Redact(planError), EffectOutcome.None));
+                            // La mutación (argumento de plan.propose) no identifica un item válido
+                            // de este Run o el PlanService la rechaza: INVALID_ARGUMENTS (spec §71,
+                            // familia "parche ambiguo") alimenta el repair loop del modelo.
+                            toPersist.Add(new ToolCallFailed(call.Id, _redaction.Redact(planError),
+                                EffectOutcome.None, ToolErrorCode.InvalidArguments));
                         }
                         else if (call.ToolName == "user.ask" && evt is ToolCallRequested requested)
                         {
