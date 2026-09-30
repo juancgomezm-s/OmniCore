@@ -433,7 +433,9 @@ public sealed class OmniCliRuntime
 
     private OmniServer Server(string workspaceData)
     {
-        _server ??= OmniHost.OpenPersistentServer(Path.Combine(workspaceData, "journal.db"));
+        // Auditoría en scope User (<data>/audit/, ADR-0043 §1), separada del journal del workspace.
+        _server ??= OmniHost.OpenPersistentServer(Path.Combine(workspaceData, "journal.db"),
+            OmniHost.CreatePlatformPaths().DataDirectory);
         return _server;
     }
 
