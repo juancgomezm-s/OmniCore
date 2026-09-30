@@ -5,13 +5,10 @@ using System.Net;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
-/// <summary>
-/// Redactor process-wide de valores resueltos y patrones de autenticación (ADR-0018 §2).
-/// No registra valores inferiores a 8 caracteres para evitar ocultar palabras triviales.
-/// </summary>
+/// <summary>Redactor process-wide de valores resueltos y patrones de autenticación (ADR-0018 §2).</summary>
 public sealed class SecretRedactor : ISecretRedactor
 {
-    public const int MinimumSecretLength = 8;
+    public const int MinimumSecretLength = Secret.MinimumLength;
     public const string Marker = "[REDACTED]";
 
     private readonly ConcurrentDictionary<string, byte> _known = new(StringComparer.Ordinal);
@@ -22,7 +19,8 @@ public sealed class SecretRedactor : ISecretRedactor
 
     public void RegisterSecret(string value)
     {
-        if (string.IsNullOrEmpty(value) || value.Length < MinimumSecretLength) return;
+        if (string.IsNullOrEmpty(value)) return;
+        if (value.Length < MinimumSecretLength) throw new OmniCore.Domain.SecretValueTooShortException(MinimumSecretLength);
 
         Add(value);
         Add(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(value)));

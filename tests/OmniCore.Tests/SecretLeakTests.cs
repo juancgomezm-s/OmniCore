@@ -157,7 +157,7 @@ public sealed class SecretLeakTests
     }
 
     [Fact]
-    public void Known_secret_redacts_base64_and_url_encodings_but_ignores_short_values()
+    public void Known_secret_redacts_base64_and_url_encodings_including_short_values()
     {
         var redactor = new SecretRedactor();
         const string known = "known/value with spaces-123";
@@ -168,8 +168,66 @@ public sealed class SecretLeakTests
         Assert.DoesNotContain(Uri.EscapeDataString(known), redactor.Redact(Uri.EscapeDataString(known)));
 
         redactor.RegisterSecret("brief");
-        Assert.Equal("brief", redactor.Redact("brief"));
-        Assert.Equal(8, SecretRedactor.MinimumSecretLength);
+        Assert.Equal(SecretRedactor.Marker, redactor.Redact("brief"));
+        Assert.Equal(4, SecretRedactor.MinimumSecretLength);
+    }
+
+    [Theory]
+    [InlineData("aB3!")]
+    [InlineData("cD5@x")]
+    [InlineData("eF6#yZ")]
+    [InlineData("gH7$wX9")]
+    public void Four_to_seven_character_secrets_are_redacted_by_journal_artifact_context_and_log_sinks(
+        string secret)
+    {
+        var redactor = SecretRedactor.Shared;
+        SecretRedactorRegistry.Register(secret);
+
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        new EventStream(store, EventCodecs.Create(), session).Append(new ToolCallRequested(
+            ToolCallId.New(), "short-secret", "fake.echo", "{\"value\":\"" + secret + "\"}"));
+        Assert.DoesNotContain(secret, store.ReadFrom(session, 1).Single().PayloadJson);
+
+        var artifactRoot = Path.Combine(Path.GetTempPath(), "omnicore-short-redaction-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var artifacts = new FileArtifactStore(artifactRoot, redactor);
+            var artifact = artifacts.PutText(secret, "text/plain", ArtifactKind.ContextSnapshot, Sensitivity.Normal);
+            Assert.True(artifact.Redacted);
+            Assert.Equal(SecretRedactor.Marker, artifacts.GetText(artifact.Hash));
+            Assert.DoesNotContain(secret, new RedactionPolicy().Redact("context=" + secret));
+            Assert.DoesNotContain(secret, OmniCliRuntime.RedactSensitive("log=" + secret));
+        }
+        finally
+        {
+            try { if (Directory.Exists(artifactRoot)) Directory.Delete(artifactRoot, true); }
+            catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void Three_character_credential_is_rejected_with_typed_error()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "omnicore-short-credential-" + Guid.NewGuid().ToString("N"), "credentials.ini");
+        try
+        {
+            var credentials = new FileCredentialStore(path);
+            var error = Assert.Throws<SecretValueTooShortException>(() => credentials.Save("api", "abc", CancellationToken.None));
+            Assert.Equal(4, error.MinimumLength);
+            Assert.Equal("secrets.tooShort", error.UserMessage.Key);
+            Assert.False(File.Exists(path));
+            var envError = Assert.Throws<SecretValueTooShortException>(() =>
+                OmniHost.ResolveApiKey(credentials, "api", "xyz", CancellationToken.None));
+            Assert.Equal(4, envError.MinimumLength);
+            Assert.Throws<SecretValueTooShortException>(() => Secret.Of("xyz"));
+            Assert.False(File.Exists(path));
+        }
+        finally
+        {
+            try { if (Directory.Exists(Path.GetDirectoryName(path)!)) Directory.Delete(Path.GetDirectoryName(path)!, true); }
+            catch (IOException) { }
+        }
     }
 
     private sealed class EchoSecretTool : ITool

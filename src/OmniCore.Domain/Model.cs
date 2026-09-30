@@ -7,7 +7,7 @@ public sealed class WorkspaceId
 
     private WorkspaceId(string value) => _value = value;
 
-    /// <summary>Deriva el WorkspaceId de la ruta canónica de la raíz (ADR-0022 §3, OAQ-11).</summary>
+    /// <summary>Deriva el WorkspaceId de una ruta ya canonizada por la capa Host/Identity (ADR-0038 §4).</summary>
     public static WorkspaceId Of(string canonicalRootPath) =>
         new(_Derive(canonicalRootPath));
 
@@ -24,20 +24,13 @@ public sealed class WorkspaceId
     public override int GetHashCode() => _value.GetHashCode();
 
     /// <summary>
-    /// SHA-256 (16 hex) de la ruta canónica (ADR-0022 §3). El id va en nombres de directorio
-    /// (<c>workspaces/&lt;WorkspaceId&gt;/</c>), así que nunca contiene separadores ni la ruta en
-    /// claro. Solo se ignoran mayúsculas donde el filesystem también las ignora por defecto.
+    /// SHA-256 (16 hex) de la ruta que ya canonizó la capa Host/Identity. El Domain no aplica
+    /// reglas dependientes de plataforma (ADR-0038 §4).
     /// </summary>
-    private static string _Derive(string path)
+    private static string _Derive(string canonicalPath)
     {
-        ArgumentNullException.ThrowIfNull(path);
-        var canonical = path.Trim().Replace('\\', '/').TrimEnd('/');
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS())
-        {
-            canonical = canonical.ToLowerInvariant();
-        }
-
-        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(canonical));
+        ArgumentNullException.ThrowIfNull(canonicalPath);
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(canonicalPath));
         return Convert.ToHexStringLower(hash, 0, 8);
     }
 }

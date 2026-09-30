@@ -128,6 +128,15 @@ public sealed class ClientTests
         Assert.False(result.IsValid);
         Assert.Null(result.Response);
         Assert.Equal(2, result.Errors.Count);
+        Assert.Contains(result.Errors, error => error.Code == QuestionnaireValidationErrorCode.DuplicateChoiceId);
+        Assert.Contains(result.Errors, error => error.Code == QuestionnaireValidationErrorCode.UnknownChoiceId);
+        var spanish = new Localization("es").ResolveQuestionnaireValidationError(result.Errors[0]);
+        var english = new Localization("en").ResolveQuestionnaireValidationError(result.Errors[0]);
+        Assert.NotEqual(spanish, english);
+        Assert.DoesNotContain("questionnaire.validation.", spanish);
+        var tui = QuestionnaireTuiForm.Submit(questionnaire,
+            new Dictionary<string, QuestionnairePlainFormInput> { ["q"] = new("yes,yes,No") });
+        Assert.Equal(result.Errors.Select(error => error.Code), tui.Errors.Select(error => error.Code));
     }
 
     [Fact]
