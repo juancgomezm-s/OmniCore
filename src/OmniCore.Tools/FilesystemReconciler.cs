@@ -14,6 +14,15 @@ using OmniCore.Domain;
 /// Forma canónica (JSON plano, campos siempre emitidos en este orden, hash en minúsculas):
 ///   {"kind":"filesystem.patch","path":"doc.txt","expectedPreHash":"SHA256-hex-64","expectedPostHash":"SHA256-hex-64"}
 ///
+/// El <c>kind</c> es <c>filesystem.patch</c> también para <c>filesystem.write</c> (EPIC-021): es
+/// la forma durable de todo efecto de contenido de archivo, y mantener UN solo kind evita romper
+/// journals previos (la semántica distingue por <see cref="AbsentPreHash"/>).
+///
+/// CREACIÓN de archivos (EPIC-021): un <c>filesystem.write</c> sobre un archivo inexistente no
+/// tiene pre-hash real; el campo <c>expectedPreHash</c> lleva el centinela <see cref="AbsentPreHash"/>
+/// ("absent"). En reconciliación: archivo ausente → NotApplied (el create no llegó a aplicarse y
+/// puede reintentarse sin duplicar); presente → se clasifica solo por post-hash.
+///
 /// Contrato de seguridad de Parse: devuelve null (nunca un objeto semi-inicializado) si el JSON no
 /// es la forma canónica exacta o si los campos obligatorios están ausentes o sospechosos; el
 /// reconciliador entonces FALLA CERRADO (Unresolvable) en vez de clasificar con datos inventados.
@@ -21,6 +30,13 @@ using OmniCore.Domain;
 public sealed class FilesystemReconciliationMetadata
 {
     public const string Kind = "filesystem.patch";
+
+    /// <summary>
+    /// Centinela de expectedPreHash para la CREACIÓN de un archivo (filesystem.write sobre un
+    /// destino inexistente): no hay estado previo observable. Único valor no-hex aceptado por
+    /// <see cref="Parse"/> en ese campo; cualquier otra grafía falla cerrado.
+    /// </summary>
+    public const string AbsentPreHash = "absent";
 
     public string Path { get; }
 
@@ -87,7 +103,7 @@ public sealed class FilesystemReconciliationMetadata
             return null;
         }
 
-        if (pre is null || pre!.Length == 0 || !IsSha256Hex(pre!))
+        if (pre is null || pre!.Length == 0 || (!IsSha256Hex(pre!) && pre != AbsentPreHash))
         {
             return null;
         }
@@ -210,6 +226,12 @@ public sealed class FilesystemReconciliationMetadata
 ///   - actual == pre-hash   → NotApplied     (el efecto no llegó a aplicarse)
 ///   - otro valor / ausente → Conflict       (estado inesperado: el agente relee y decide)
 ///   - metadatos ausentes o ruta sospechosa  → Unresolvable (falla cerrado: nunca Applied)
+///
+/// CREACIÓN de archivos (EPIC-021, ADR-0044): cuando expectedPreHash es el centinela
+/// <c>absent</c> (filesystem.write sobre un destino inexistente), un archivo AUSENTE ya no es
+/// Conflict sino NotApplied: el create no llegó a aplicarse y puede reintentarse sin duplicar.
+/// Un archivo PRESENTE se clasifica solo contra el post-hash (Applied si coincide; Conflict si
+/// otra cosa lo escribió concurrentemente).
 /// </summary>
 public sealed class FilesystemReconciler : IFilesystemReconciler
 {
@@ -244,9 +266,18 @@ public sealed class FilesystemReconciler : IFilesystemReconciler
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        // 3. Observar el estado actual (solo lectura).
+        // 3. Observar el estado actual (solo lectura). CREACIÓN (pre == absent): el archivo
+        //    ausente es NotApplied, no Conflict: el create no llegó a aplicarse y puede
+        //    reintentarse sin duplicar (EPIC-021).
+        var isCreation = meta.ExpectedPreHash == FilesystemReconciliationMetadata.AbsentPreHash;
         if (!File.Exists(full))
         {
+            if (isCreation)
+            {
+                return FilesystemReconciliation.NotApplied(
+                    "el archivo no existe y la mutación era una creación: el efecto no llegó a aplicarse; puede reintentarse");
+            }
+
             return FilesystemReconciliation.Conflict(
                 "el archivo esperado no existe: estado inesperado desde pre/post conocidos");
         }
@@ -267,7 +298,9 @@ public sealed class FilesystemReconciler : IFilesystemReconciler
             return FilesystemReconciliation.Applied("el hash actual coincide con el post-hash esperado: el efecto quedó aplicado");
         }
 
-        if (current == meta.ExpectedPreHash)
+        // En una creación no hay pre-hash observable con el que comparar: todo lo que no es el
+        // post-hash esperado es Conflict (otro proceso escribió el destino), nunca NotApplied.
+        if (!isCreation && current == meta.ExpectedPreHash)
         {
             return FilesystemReconciliation.NotApplied("el archivo sigue en su estado previo (pre-hash): el efecto no se aplicó");
         }
