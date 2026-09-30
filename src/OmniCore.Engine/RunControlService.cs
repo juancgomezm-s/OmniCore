@@ -38,6 +38,31 @@ public sealed class RunControlService
     }
 
     /// <summary>
+    /// ToolCalls de la sesión que bloquean un Run nuevo (ADR-0004 §5): siguen en EffectUnknown, o su
+    /// reconciliación terminó en Unresolvable/Conflict (falla cerrado: bloqueada, visible; requiere
+    /// resolución humana). Applied/NotApplied desbloquean.
+    /// </summary>
+    public IReadOnlyList<ToolCallId> UnreconciledEffects(SessionId session)
+    {
+        var blocking = new Dictionary<ToolCallId, bool>();
+        foreach (var evt in _store.ReadFrom(session, 1))
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ToolCallEffectUnknown u: blocking[u.ToolCallId] = true; break;
+                case ToolCallReconciled r when blocking.ContainsKey(r.ToolCallId):
+                    blocking[r.ToolCallId] = r.Outcome is ReconciliationOutcome.Unresolvable
+                        or ReconciliationOutcome.Conflict;
+                    break;
+                case ToolCallSucceeded s when blocking.ContainsKey(s.ToolCallId): blocking[s.ToolCallId] = false; break;
+                case ToolCallFailed f when blocking.ContainsKey(f.ToolCallId): blocking[f.ToolCallId] = false; break;
+            }
+        }
+
+        return blocking.Where(kv => kv.Value).Select(kv => kv.Key).ToList();
+    }
+
+    /// <summary>
     /// Abre un Run nuevo en la sesión con su Task y Lane raíz y el Plan rev.1 de un item
     /// (ADR-0035 §2-3). Falla con <see cref="RunAlreadyActiveException"/> si ya hay uno activo.
     /// </summary>
@@ -47,6 +72,13 @@ public sealed class RunControlService
         if (ActiveRun(session) is { } active)
         {
             throw new RunAlreadyActiveException(active);
+        }
+
+        // ADR-0004 §5: un efecto desconocido debe reconciliarse antes de seguir; un Run nuevo no lo pierde.
+        var pending = UnreconciledEffects(session);
+        if (pending.Count > 0)
+        {
+            throw new UnreconciledEffectException(pending);
         }
 
         var run = RunId.New();
@@ -383,5 +415,17 @@ public sealed class InvalidInteractionOptionException : InvalidOperationExceptio
     {
         Interaction = interaction;
         OptionId = optionId;
+    }
+}
+
+/// <summary>Hay ToolCalls con efecto desconocido sin reconciliar: hay que reconciliarlas antes de un Run nuevo (ADR-0004 §5).</summary>
+public sealed class UnreconciledEffectException : InvalidOperationException
+{
+    public IReadOnlyList<ToolCallId> ToolCalls { get; }
+
+    public UnreconciledEffectException(IReadOnlyList<ToolCallId> toolCalls)
+        : base("efectos desconocidos sin reconciliar o con reconciliación Unresolvable/Conflict que requieren resolución humana antes de un Run nuevo: " + string.Join(", ", toolCalls))
+    {
+        ToolCalls = toolCalls;
     }
 }
