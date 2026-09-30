@@ -99,7 +99,7 @@ public sealed class M3PolicyBoundaryTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var effective = EffectiveFor(ModelPolicyCategory.ObserveOnly);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var boundary = new ModelCapabilityBoundary(effective);
@@ -114,7 +114,7 @@ public sealed class M3PolicyBoundaryTests
                 ? ToolCall("filesystem.patch", PatchArgs("doc.txt", VersionOf(original), "linea-dos", "linea-dos-X"))
                 : End(),
             executor, hostTools.Catalog(), materializer, fingerprint, selection,
-            store, EventCodecs.Create(), new FileArtifactStore(ws + "\\.omnicore-art"), sink,
+            store, EventCodecs.Create(), new FileArtifactStore(Path.Combine(ws, ".omnicore-art")), sink,
             new RedactionPolicy(), boundary: boundary);
 
         var sessionId = SessionId.New();
@@ -125,7 +125,7 @@ public sealed class M3PolicyBoundaryTests
         Assert.True(result.ToolCalls.Count >= 1, "El turno intentó la tool");
         Assert.False(result.ToolCalls[0].Succeeded,
             "ObserveOnly rechaza el patch incluso invocado directamente. summary=" + result.ToolCalls[0].Summary);
-        Assert.True(File.ReadAllText(ws + "\\doc.txt") == original, "El archivo no se toca");
+        Assert.True(File.ReadAllText(Path.Combine(ws, "doc.txt")) == original, "El archivo no se toca");
 
         // El journal registra el rechazo; NUNCA un succeeded.
         var types = store.ReadFrom(sessionId, 1).Select(e => e.Type.ToString()).ToArray();
@@ -150,7 +150,7 @@ public sealed class M3PolicyBoundaryTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var token = VersionOf(original);
         var effective = EffectiveFor(ModelPolicyCategory.PatchOnly);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
@@ -185,7 +185,7 @@ public sealed class M3PolicyBoundaryTests
                 return End();
             },
             executor, hostTools.Catalog(), materializer, fingerprint, selection,
-            store, EventCodecs.Create(), new FileArtifactStore(ws + "\\.omnicore-art"), sink,
+            store, EventCodecs.Create(), new FileArtifactStore(Path.Combine(ws, ".omnicore-art")), sink,
             new RedactionPolicy(), boundary: boundary);
 
         var sessionId = SessionId.New();
@@ -195,7 +195,7 @@ public sealed class M3PolicyBoundaryTests
         Assert.True(result.ToolCalls.Count >= 2, "Lectura previa + patch (" + result.ToolCalls.Count + ")");
         Assert.True(result.ToolCalls[0].Succeeded, "filesystem.read ok. summary=" + result.ToolCalls[0].Summary);
         Assert.True(result.ToolCalls[1].Succeeded, "filesystem.patch ok. summary=" + result.ToolCalls[1].Summary);
-        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("linea-uno\nlinea-dos-B\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
 
         // El turno lo persiste como succeeded y audita la política.
         var types = store.ReadFrom(sessionId, 1).Select(e => e.Type.ToString()).ToArray();
@@ -244,7 +244,7 @@ public sealed class M3PolicyBoundaryTests
                 ? ToolCall("filesystem.purge", "{\"path\":\"doc.txt\"}")
                 : End(),
             executor, hostTools.Catalog(), materializer, fingerprint, selection,
-            store, EventCodecs.Create(), new FileArtifactStore(ws + "\\.omnicore-art"), sink,
+            store, EventCodecs.Create(), new FileArtifactStore(Path.Combine(ws, ".omnicore-art")), sink,
             new RedactionPolicy(), boundary: boundary);
         var sessionId = SessionId.New();
         var result = turn.Ask("borra el archivo", "sys {context}", sessionId, TestRun.OpenRun(store, sessionId), "",
@@ -264,7 +264,7 @@ public sealed class M3PolicyBoundaryTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var token = VersionOf(original);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var patchCall = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.patch"), "pc-p",
@@ -277,7 +277,7 @@ public sealed class M3PolicyBoundaryTests
         var obsOutcome = obsExecutor.ExecuteToolWithoutJournal(patchCall, false, CancellationToken.None);
         Assert.False(obsOutcome.Succeeded, "ObserveOnly rechaza el patch");
         Assert.Equal(ToolCallState.Rejected, obsOutcome.FinalState);
-        Assert.True(File.ReadAllText(ws + "\\doc.txt") == original, "intacto tras ObserveOnly");
+        Assert.True(File.ReadAllText(Path.Combine(ws, "doc.txt")) == original, "intacto tras ObserveOnly");
 
         // PatchOnly (política guardada para la misma clave): el MISMO patch aplica. Requiere la
         // lectura previa efectiva del archivo en el mismo Run (ADR-0044 §5): sin ella el patch se
@@ -296,7 +296,7 @@ public sealed class M3PolicyBoundaryTests
         Assert.True(readOutcome.Succeeded, "PatchOnly permite la lectura previa. summary=" + readOutcome.Summary);
         var patchOutcome = patchExecutor.ExecuteToolWithoutJournal(patchCall, false, CancellationToken.None);
         Assert.True(patchOutcome.Succeeded, "Read previo + PatchOnly permiten el patch tras la recategorización. summary=" + patchOutcome.Summary);
-        Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(ws + "\\doc.txt"));
+        Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         RmDir(ws);
     }
 }

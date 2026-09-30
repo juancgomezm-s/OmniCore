@@ -88,7 +88,7 @@ public sealed class M2IntegrationTests
             new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
             new ExecutionFingerprint("small", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("small"), 4096, ToolMode.Direct, null),
-            store, EventCodecs.Create(), new FileArtifactStore(TestCwd + "\\.omnicore-profile-art"),
+            store, EventCodecs.Create(), new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-profile-art")),
             new InMemoryAuditSink(), new RedactionPolicy(), restricted);
 
         turn.Ask("pregunta", "sys", sessionId, TestRun.OpenRun(store, sessionId), "ws", CancellationToken.None);
@@ -160,7 +160,7 @@ public sealed class M2IntegrationTests
     public async System.Threading.Tasks.Task Explorer_applies_plan_propose_via_projection()
     {
         // Requisito 2: plan.propose se aplica DESDE ExplorerTurn con las proyecciones del Run.
-        var journal = TestCwd + "\\.omnicore-plan-journal-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db";
+        var journal = Path.Combine(TestCwd, ".omnicore-plan-journal-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db");
         if (File.Exists(journal)) File.Delete(journal);
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(journal);
@@ -177,7 +177,7 @@ public sealed class M2IntegrationTests
         var turn = new ExplorerTurn(
             (request, token) => FakeResponses.PlanThenEnd(request),
             executor, hostTools.Catalog(), materializer, fingerprint, selection,
-            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-plan-artifacts"),
+            store, codecs, new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-plan-artifacts")),
             new InMemoryAuditSink(), new RedactionPolicy());
         // El journal necesita un Run con Plan (P0 como item) para que plan.propose (start P1) aplique.
         var stream = new EventStream(store, codecs, sessionId);
@@ -229,7 +229,7 @@ public sealed class M2IntegrationTests
             new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
             new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null),
-            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-rejected-plan-art"),
+            store, codecs, new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-rejected-plan-art")),
             new InMemoryAuditSink(), new RedactionPolicy());
 
         turn.Ask("inicia el plan", "sys", sessionId, runId, "ws", CancellationToken.None);
@@ -253,13 +253,13 @@ public sealed class M2IntegrationTests
         // contenido con Bearer llega redactado al tool result.
         var plan = new PlanService();
         var hostTools = new HostTools(new PathBoundaryValidator(), plan);
-        var wsDir = TestCwd + "\\.omnicore-secrets-test";
+        var wsDir = Path.Combine(TestCwd, ".omnicore-secrets-test");
         if (!Directory.Exists(wsDir)) Directory.CreateDirectory(wsDir);
         var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow), wsDir);
 
         // 1. .env se rechaza en Prepare → Rejected, NUNCA toolcall.succeeded.
-        File.WriteAllText(wsDir + "\\.env", "API_KEY=sk-test123secret\nPASSWORD=hunter2");
+        File.WriteAllText(Path.Combine(wsDir, ".env"), "API_KEY=sk-test123secret\nPASSWORD=hunter2");
         var secretCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-env", "{\"path\":\".env\"}");
         var outcomeSecret = executor.ExecuteToolWithoutJournal(secretCall, false, CancellationToken.None);
@@ -271,10 +271,10 @@ public sealed class M2IntegrationTests
         Assert.True(secretTypes.Contains("toolcall.rejected"),
             "la ruta secreta produce ToolCallRejected (no toolcall.succeeded)");
         Assert.False(secretTypes.Contains("toolcall.succeeded"), "nunca toolcall.succeeded para un secreto");
-        File.Delete(wsDir + "\\.env");
+        File.Delete(Path.Combine(wsDir, ".env"));
 
         // 2. Archivo normal (dentro del workspace) con Bearer: se lee REAL y se redacta.
-        File.WriteAllText(wsDir + "\\normal.txt", "Bearer VOtOkEn123secret contenido normal");
+        File.WriteAllText(Path.Combine(wsDir, "normal.txt"), "Bearer VOtOkEn123secret contenido normal");
         var okCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-ok", "{\"path\":\"normal.txt\"}");
         var outcomeOk = executor.ExecuteToolWithoutJournal(okCall, false, CancellationToken.None);
@@ -282,7 +282,7 @@ public sealed class M2IntegrationTests
         Assert.True(outcomeOk.Preview is not null, "El content leído vuelve como Preview (no es un fallo silencioso)");
         Assert.True(outcomeOk.Preview!.Contains("contenido normal"), "El contenido del archivo se leyó de verdad");
         Assert.False(outcomeOk.Preview!.Contains("VOtOkEn123secret"), "El tool result va redactado (sin Bearer/keys)");
-        File.Delete(wsDir + "\\normal.txt");
+        File.Delete(Path.Combine(wsDir, "normal.txt"));
 
         // 3. Archivo inexistente no es un éxito.
         var missingCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
@@ -363,7 +363,7 @@ public sealed class M2IntegrationTests
         var tokenizer = OmniHost.CreateTokenCounter();
         Assert.True(tokenizer.Id.ToString() != "fake:words/1", "tokenizer real (no el Fake de tests)");
 
-        var artifacts = OmniHost.CreateArtifactStore(TestCwd + "\\.omnicore-host-artifacts");
+        var artifacts = OmniHost.CreateArtifactStore(Path.Combine(TestCwd, ".omnicore-host-artifacts"));
         var refArtifact = artifacts.PutText("Bearer VOtOkEnSecret123", "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
         var stored = artifacts.GetText(refArtifact.Hash);
         Assert.True(stored is not null, "GetText devolvió contenido (hash=" + refArtifact.Hash + ")");
@@ -376,7 +376,7 @@ public sealed class M2IntegrationTests
     {
         // P0-4: con DOS runs en la MISMA session, plan.propose del run2 debe operar sobre el
         // plan del run2 (no el run1), y el budget se lee del run2 (no del primero).
-        var journal = TestCwd + "\\.omnicore-2runs-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db";
+        var journal = Path.Combine(TestCwd, ".omnicore-2runs-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db");
         if (File.Exists(journal)) File.Delete(journal);
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(journal);
@@ -418,7 +418,7 @@ public sealed class M2IntegrationTests
             executor, hostTools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]),
             new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null),
-            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-2runs-art"),
+            store, codecs, new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-2runs-art")),
             new InMemoryAuditSink(), new RedactionPolicy());
 
         var result = turn.Ask("pregunta run2", "sys", sessionId, run2, "ws|R2", CancellationToken.None);
@@ -436,7 +436,7 @@ public sealed class M2IntegrationTests
     {
         // Requisito 1: el Turn del Explorer PERSISTE en el journal (turn.started, tool calls/
         // permisos/outcomes, model.completed, turn.completed) y se reelige tras reiniciar.
-        var journal = TestCwd + "\\.omnicore-turn-journal-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db";
+        var journal = Path.Combine(TestCwd, ".omnicore-turn-journal-" + Guid.NewGuid().ToString().Substring(0, 8) + ".db");
         if (File.Exists(journal)) File.Delete(journal);
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(journal);
@@ -451,11 +451,11 @@ public sealed class M2IntegrationTests
         var turn = new ExplorerTurn(
             (request, token) => FakeResponses.ToolThenText(request),
             executor, hostTools.Catalog(), materializer, fingerprint, selection,
-            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-turn-artifacts"),
+            store, codecs, new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-turn-artifacts")),
             new InMemoryAuditSink(), new RedactionPolicy());
         var sessionId = SessionId.New();
         var runId = TestRun.OpenRun(store, sessionId);
-        var fixture = TestCwd + "\\fixture.txt";
+        var fixture = Path.Combine(TestCwd, "fixture.txt");
         File.WriteAllText(fixture, "contenido fixture para el turno");
 
         var result = turn.Ask("usa la tool", "sys {context}", sessionId, runId, "ws-state", CancellationToken.None);
@@ -504,7 +504,7 @@ public sealed class M2IntegrationTests
     {
         var store = new InMemoryEventStore();
         var codecs = EventCodecs.Create();
-        var artifactPath = TestCwd + "\\.omnicore-conversation-" + Guid.NewGuid().ToString("N");
+        var artifactPath = Path.Combine(TestCwd, ".omnicore-conversation-" + Guid.NewGuid().ToString("N"));
         var artifacts = new FileArtifactStore(artifactPath);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
         var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
@@ -566,7 +566,7 @@ public sealed class M2IntegrationTests
             executor, hostTools.Catalog(), materializer,
             new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null),
-            store, EventCodecs.Create(), new FileArtifactStore(TestCwd + "\\.omnicore-step-artifacts"),
+            store, EventCodecs.Create(), new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-step-artifacts")),
             new InMemoryAuditSink(), new RedactionPolicy());
 
         var result = turn.Ask("pregunta", "sys", session, TestRun.OpenRun(store, session), LaneId.New(), "",
@@ -605,7 +605,7 @@ public sealed class M2IntegrationTests
             new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]),
             new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null),
-            store, codecs, new FileArtifactStore(TestCwd + "\\.omnicore-run-artifacts"),
+            store, codecs, new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-run-artifacts")),
             new InMemoryAuditSink(), new RedactionPolicy());
 
         Assert.Equal(StopReason.EndTurn,
@@ -669,7 +669,7 @@ public sealed class M2IntegrationTests
     {
         try
         {
-            var full = dir + "\\" + prefix;
+            var full = Path.Combine(dir, prefix);
             if (Directory.Exists(full)) Directory.Delete(full, true);
         }
         catch (Exception)
@@ -698,7 +698,7 @@ public sealed class M2IntegrationTests
             executor, hostTools.Catalog(), materializer, fingerprint, selection);
         var sessionId = SessionId.New();
         var runId = TestRun.OpenRun(turn.JournalStore, sessionId);
-        var fixture = TestCwd + "\\fixture.txt";
+        var fixture = Path.Combine(TestCwd, "fixture.txt");
         File.WriteAllText(fixture, "contenido fixture del turno end-to-end");
 
         var result = turn.Ask("usa la tool y explica", "instruccion {context}", sessionId, runId, "ws-state",
@@ -731,7 +731,7 @@ public sealed class M2IntegrationTests
         }, executor, hostTools.Catalog(), materializer,
             new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null));
-        var fixture = TestCwd + "\\fixture.txt";
+        var fixture = Path.Combine(TestCwd, "fixture.txt");
         File.WriteAllText(fixture, "fixture turno historial");
 
         var askSession = SessionId.New();
@@ -913,7 +913,7 @@ public sealed class M2IntegrationTests
         var secret = Secret.Of("supersecreto-abc");
         Assert.Equal("***", secret.ToString());
 
-        var path = TestCwd + "\\.omnicore-test-creds.ini";
+        var path = Path.Combine(TestCwd, ".omnicore-test-creds.ini");
         if (File.Exists(path))
         {
             File.Delete(path);
@@ -940,8 +940,8 @@ public sealed class M2IntegrationTests
     {
         // P0-3: una nueva invocación recupera el snapshot del journal sin re-ejecutar sim.
         var stamp = OmniserverNewStamp();
-        var journal = TestCwd + "\\.omnicore-journal-restore-" + stamp + ".db";
-        var stateFile = TestCwd + "\\lastsession-restore-" + stamp + ".txt";
+        var journal = Path.Combine(TestCwd, ".omnicore-journal-restore-" + stamp + ".db");
+        var stateFile = Path.Combine(TestCwd, "lastsession-restore-" + stamp + ".txt");
         if (File.Exists(journal)) File.Delete(journal);
         if (File.Exists(stateFile)) File.Delete(stateFile);
 
@@ -1008,12 +1008,12 @@ public sealed class M2IntegrationTests
     {
         // P1-12 + Req7: un symlink de DIRECTORIO intermediario que apunta fuera del workspace
         // se rechaza. La prueba es OBLIGATORIA: si el entorno no puede crear el enlace, falla.
-        var baseDir = TestCwd + "\\.omnicore-boundary-" + Guid.NewGuid().ToString().Substring(0, 8);
-        var ws = baseDir + "\\ws";
-        var outside = baseDir + "\\outside";
+        var baseDir = Path.Combine(TestCwd, ".omnicore-boundary-" + Guid.NewGuid().ToString().Substring(0, 8));
+        var ws = Path.Combine(baseDir, "ws");
+        var outside = Path.Combine(baseDir, "outside");
         if (!Directory.Exists(ws)) Directory.CreateDirectory(ws);
         if (!Directory.Exists(outside)) Directory.CreateDirectory(outside);
-        var link = ws + "\\escape";
+        var link = Path.Combine(ws, "escape");
 
         // Creación OBLIGATORIA del enlace (requisito 7: no hay skip). Primero symlink; si el
         // entorno lo rechaza (sin Developer Mode), se crea un JUNCTION de directorio vía
@@ -1025,7 +1025,7 @@ public sealed class M2IntegrationTests
         try
         {
             var v = new PathBoundaryValidator();
-            var insideFile = link + "\\secret.txt";
+            var insideFile = Path.Combine(link, "secret.txt");
             Assert.False(v.IsWithin(insideFile, ws),
                 "Un symlink de directorio intermedio que escapa NO debe considerarse dentro. insideFile="
                 + insideFile + " ws=" + ws + " result=" + v.IsWithin(insideFile, ws));
@@ -1150,7 +1150,7 @@ public sealed class M2IntegrationTests
         }, executor, hostTools.Catalog(), materializer,
             new ExecutionFingerprint("m", "h", "t", "c", "o", "M2"),
             new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null));
-        File.WriteAllText(TestCwd + "\\fixture.txt", "contenido real del archivo del turno");
+        File.WriteAllText(Path.Combine(TestCwd, "fixture.txt"), "contenido real del archivo del turno");
 
         var askSession = SessionId.New();
         turn.Ask("usa filesystem.read", "sys", askSession, TestRun.OpenRun(turn.JournalStore, askSession), "",
@@ -1159,7 +1159,7 @@ public sealed class M2IntegrationTests
         var forwarded = string.Join(" ", captured.ToArray());
         Assert.False(forwarded.Contains("Ruta fuera del workspace"), "El archivo se lee dentro del workspace");
         Assert.True(forwarded.Length > 5, "El contenido REAL del archivo se propagó al modelo: {" + forwarded + "}");
-        File.Delete(TestCwd + "\\fixture.txt");
+        File.Delete(Path.Combine(TestCwd, "fixture.txt"));
     }
 
     [Fact]

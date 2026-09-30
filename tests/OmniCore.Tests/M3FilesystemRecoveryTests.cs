@@ -132,7 +132,7 @@ public sealed class M3FilesystemRecoveryTests
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
         var updated = "linea-uno\nlinea-dos-C\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         try
         {
             var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
@@ -202,14 +202,14 @@ public sealed class M3FilesystemRecoveryTests
     private static void RunCrashClassification(string caseName, bool appliedFlag, bool outsidePathFlag, bool noMetaFlag)
     {
         var root = TempDir();
-        var ws = root + "\\ws";
+        var ws = Path.Combine(root, "ws");
         Directory.CreateDirectory(ws);
-        var storePath = root + "\\journal.db";
+        var storePath = Path.Combine(root, "journal.db");
         var original = "linea-uno\nlinea-dos\n";
         var updated = "linea-uno\nlinea-dos-C\n";
         var pre = VersionOf(original);
         var post = VersionOf(updated);
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var sessionId = SessionId.New();
         var runId = RunId.New();
         var callId = ToolCallId.New();
@@ -234,11 +234,11 @@ public sealed class M3FilesystemRecoveryTests
             var store = new SqliteEventStore(storePath);
             if (appliedFlag)
             {
-                File.WriteAllText(ws + "\\doc.txt", updated);
+                File.WriteAllText(Path.Combine(ws, "doc.txt"), updated);
             }
             else if (caseName == "conflict")
             {
-                File.WriteAllText(ws + "\\doc.txt", "contenido ajeno al pre y al post");
+                File.WriteAllText(Path.Combine(ws, "doc.txt"), "contenido ajeno al pre y al post");
             }
 
             var engine = new SimulationEngine(store, EventCodecs.Create(), new InMemoryAuditSink(), ScriptedToolExecutor.Default(),
@@ -327,14 +327,14 @@ public sealed class M3FilesystemRecoveryTests
     private static void RunCrashBetweenUnknownAndReconciled(string caseName, bool outsidePathFlag, bool noMetaFlag)
     {
         var root = TempDir();
-        var ws = root + "\\ws";
+        var ws = Path.Combine(root, "ws");
         Directory.CreateDirectory(ws);
-        var storePath = root + "\\journal.db";
+        var storePath = Path.Combine(root, "journal.db");
         var original = "linea-uno\nlinea-dos\n";
         var updated = "linea-uno\nlinea-dos-C\n";
         var pre = VersionOf(original);
         var post = VersionOf(updated);
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var sessionId = SessionId.New();
         var runId = RunId.New();
         var callId = ToolCallId.New();
@@ -357,7 +357,7 @@ public sealed class M3FilesystemRecoveryTests
 
             if (caseName == "conflict")
             {
-                File.WriteAllText(ws + "\\doc.txt", "contenido ajeno al pre y al post");
+                File.WriteAllText(Path.Combine(ws, "doc.txt"), "contenido ajeno al pre y al post");
             }
             else
             {
