@@ -13,6 +13,7 @@ public sealed class CliApp
     {
         var runtime = OmniCliRuntime.Create(".");
         runtime.Localize = (key, args) => Loc().Resolve(key, args);
+        runtime.QuestionnaireInput = Console.IsInputRedirected ? null : PlainQuestionnaireForm.Read;
         return runtime;
     }
 
