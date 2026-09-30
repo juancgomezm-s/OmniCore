@@ -14,6 +14,7 @@ public sealed class ProviderFileYaml
     public string? Family { get; set; }
     public string? BaseUrl { get; set; }
     public string? CaCertificate { get; set; }
+    public string? Profile { get; set; }
     public string? AuthRef { get; set; }
     public decimal? InputPricePerMillionUsd { get; set; }
     public decimal? OutputPricePerMillionUsd { get; set; }

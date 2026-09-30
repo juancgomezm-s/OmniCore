@@ -128,6 +128,14 @@ public sealed class OmniCliRuntime
                 var unsupported = new ProviderFamilyNotSupportedException(provider.Family);
                 writeLine("    " + Resolve(unsupported.UserMessage, localize));
             }
+            if (provider is not null && string.Equals(provider.Profile, "codex", StringComparison.Ordinal))
+            {
+                var session = OmniHost.CreateChatGptAuth(paths).Status(CancellationToken.None);
+                writeLine(Resolve(!session.LoggedIn ? LocalizedText.Of("doctor.chatgpt.none")
+                    : session.Expired ? Localized("doctor.chatgpt.expired", ("account", session.AccountIdMasked ?? ""))
+                    : Localized("doctor.chatgpt.active", ("account", session.AccountIdMasked ?? ""),
+                        ("expires", session.ExpiresAt?.ToString("u", System.Globalization.CultureInfo.InvariantCulture) ?? "")), localize));
+            }
             if (provider is not null)
             {
                 writeLine(Resolve(Localized("doctor.tls",
@@ -304,7 +312,9 @@ public sealed class OmniCliRuntime
             var laneId = server.LastLaneId() ?? LaneId.New();
             IModelProvider provider = providerDescription is null
                 ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")
-                : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "");
+                : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "",
+                    string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
+                        ? OmniHost.CreateChatGptAuth(paths) : null);
             var usableContext = modelDefinition is not null && modelDefinition.RecommendedUsableContext > 0
                 ? modelDefinition.RecommendedUsableContext
                 : modelDefinition is not null && modelDefinition.ContextWindow > 0
@@ -792,6 +802,33 @@ public sealed class OmniCliRuntime
 
     public bool IsWorkspaceTrusted() =>
         new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).IsTrusted(_workspaceRoot);
+
+    /// <summary>Login con la cuenta de ChatGPT (navegador + loopback, o device code). Nunca imprime tokens.</summary>
+    public async System.Threading.Tasks.Task<int> LoginChatGptAsync(bool deviceCode, Action<string> writeLine,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(writeLine);
+        var auth = OmniHost.CreateChatGptAuth(OmniHost.CreatePlatformPaths());
+        try
+        {
+            var status = deviceCode
+                ? await auth.LoginWithDeviceCodeAsync((url, code) => writeLine(Text(Localized("cli.login.device",
+                    ("url", url), ("code", code)))), cancellationToken).ConfigureAwait(false)
+                : await auth.LoginWithBrowserAsync(url => writeLine(Text(Localized("cli.login.browser", ("url", url)))),
+                    cancellationToken).ConfigureAwait(false);
+            writeLine(Text(Localized("cli.login.ok", ("account", status.AccountIdMasked ?? ""))));
+            return 0;
+        }
+        catch (ChatGptAuthException ex)
+        {
+            writeLine(Text(ex.UserMessage));
+            return 1;
+        }
+    }
+
+    /// <summary>Borra la sesión de ChatGPT del credential store.</summary>
+    public static void LogoutChatGpt() =>
+        OmniHost.CreateChatGptAuth(OmniHost.CreatePlatformPaths()).Logout(CancellationToken.None);
 
     public void SetWorkspaceTrusted(bool trusted) =>
         new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).SetTrusted(_workspaceRoot, trusted);

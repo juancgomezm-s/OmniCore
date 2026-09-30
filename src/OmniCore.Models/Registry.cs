@@ -30,6 +30,9 @@ public sealed class ProviderDescriptor
     /// </summary>
     public string? TrustedCertificatePath { get; init; }
 
+    /// <summary>Perfil dentro de la familia (p. ej. <c>codex</c> en OpenAIResponses: suscripción ChatGPT, ADR-0011 §3.4).</summary>
+    public string? Profile { get; init; }
+
     public ProviderDescriptor(string id, ProviderFamily family, string baseUrl, AuthConfig auth,
         bool supportsJsonSchemaPerRequest, bool supportsGrammarPerRequest, bool supportsNativeToolCalls)
     {
