@@ -218,9 +218,20 @@ public sealed class OmniServer : IOmniClient
 
         if (root is null)
         {
-            // Raíz ausente/inválida: nunca cwd ni display path. Bloqueado y visible.
+            // Sin autoridad de paths no se inspecciona el workspace. Se cierra conservadoramente
+            // como Unresolvable y se publica la InteractionRequest humana; nunca se clasifica
+            // Applied ni se re-ejecuta, conforme a ADR-0004 §5bis.
+            try
+            {
+                new RunResumeService(_store, _codecs, null, "").Resume(_lastSessionId!, _lastRunId!);
+            }
+            catch (Exception)
+            {
+                // El diagnóstico de bloqueo de raíz sigue siendo válido; el journal tampoco se
+                // puede avanzar con seguridad si la publicación/consolidación falla.
+            }
             return BlockWith("sin raíz de workspace durable y verificada: recuperación bloqueada," +
-                " el run NO se continúa automáticamente y no se re-ejecuta ni clasifica");
+                " el run NO se continúa automáticamente; el efecto no verificable queda para resolución humana");
         }
 
         var service = new RunResumeService(_store, _codecs,
@@ -1065,8 +1076,12 @@ public sealed class OmniServer : IOmniClient
                     }
                     else
                     {
-                        control.Respond(RequireSession(), interaction,
+                        var session = RequireSession();
+                        var sequenceBeforeResponse = _store.CurrentSequence(session);
+                        control.Respond(session, interaction,
                             fields.TryGetValue("optionId", out var o) ? o : "");
+                        AuditEffectResolutions(session, sequenceBeforeResponse, interaction);
+                        if (control.UnreconciledEffects(session).Count == 0) _recoveryProblem = null;
                     }
                     break;
                 }
@@ -1075,11 +1090,44 @@ public sealed class OmniServer : IOmniClient
             SaveLastSession();
             return CommandAck.Ok(command.MessageId);
         }
+        catch (UnreconciledEffectException ex)
+        {
+            var interactionId = ex.Interactions.FirstOrDefault()?.ToString() ?? "none";
+            return CommandAck.Fail(command.MessageId, "effects.unresolved(interactionId=" + interactionId + ")");
+        }
         catch (Exception ex) when (ex is RunAlreadyActiveException or RunNotActiveException
             or InteractionNotPendingException or InvalidInteractionOptionException or InvalidStateTransitionException
             or FormatException or ArgumentException)
         {
             return CommandAck.Fail(command.MessageId, ex.Message);
+        }
+    }
+
+    private void AuditEffectResolutions(SessionId session, long sequenceBeforeResponse, InteractionId interaction)
+    {
+        WorkspaceId? workspace = null;
+        foreach (var evt in _store.ReadFrom(session, 1))
+        {
+            if (_codecs.Decode(evt) is SessionCreated created)
+            {
+                try { workspace = WorkspaceId.Parse(created.WorkspaceId); }
+                catch (FormatException) { workspace = null; }
+                break;
+            }
+        }
+
+        foreach (var evt in _store.ReadFrom(session, sequenceBeforeResponse + 1))
+        {
+            if (_codecs.Decode(evt) is not ToolCallReconciled { Cause: InteractionCause.User } resolved)
+                continue;
+            _audit.Record(new AuditRecord("effect.human_resolution", workspace, session, evt.CorrelationId,
+                evt.Timestamp, "session:" + session + ":" + evt.Sequence,
+                new Dictionary<string, string>
+                {
+                    ["interactionId"] = interaction.ToString(),
+                    ["toolCallId"] = resolved.ToolCallId.ToString(),
+                    ["outcome"] = resolved.Outcome.ToString(),
+                }), CancellationToken.None);
         }
     }
 

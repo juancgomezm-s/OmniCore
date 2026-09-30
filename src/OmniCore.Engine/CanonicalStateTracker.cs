@@ -22,22 +22,27 @@ public sealed class CanonicalStateTracker
 
     private readonly Dictionary<ToolCallId, ToolCallState> _toolCalls;
 
+    private readonly Dictionary<ToolCallId, ReconciliationOutcome> _toolCallReconciliationOutcomes;
+
     private readonly Dictionary<PlanItemId, PlanItemState> _planItems;
 
     public CanonicalStateTracker()
-        : this(new(), new(), new(), new(), new(), new())
+        : this(new(), new(), new(), new(), new(), new(), new())
     {
     }
 
     private CanonicalStateTracker(Dictionary<RunId, RunState> runs, Dictionary<TaskId, TaskState> tasks,
         Dictionary<LaneId, LaneState> lanes, Dictionary<TurnId, TurnState> turns,
-        Dictionary<ToolCallId, ToolCallState> toolCalls, Dictionary<PlanItemId, PlanItemState> planItems)
+        Dictionary<ToolCallId, ToolCallState> toolCalls,
+        Dictionary<ToolCallId, ReconciliationOutcome> toolCallReconciliationOutcomes,
+        Dictionary<PlanItemId, PlanItemState> planItems)
     {
         _runs = runs;
         _tasks = tasks;
         _lanes = lanes;
         _turns = turns;
         _toolCalls = toolCalls;
+        _toolCallReconciliationOutcomes = toolCallReconciliationOutcomes;
         _planItems = planItems;
     }
 
@@ -55,7 +60,7 @@ public sealed class CanonicalStateTracker
 
     /// <summary>Copia independiente (para validar un lote sin tocar el estado si falla).</summary>
     public CanonicalStateTracker Clone() => new(new(_runs), new(_tasks), new(_lanes), new(_turns),
-        new(_toolCalls), new(_planItems));
+        new(_toolCalls), new(_toolCallReconciliationOutcomes), new(_planItems));
 
     /// <summary>
     /// Foto canónica y ordenada de todos los estados ("entidad:id=estado"), para comparar dos
@@ -160,7 +165,7 @@ public sealed class CanonicalStateTracker
             case ToolCallSucceeded e: ToolCallTransition(e.ToolCallId, payload); break;
             case ToolCallFailed e: ToolCallTransition(e.ToolCallId, payload); break;
             case ToolCallEffectUnknown e: ToolCallTransition(e.ToolCallId, payload); break;
-            case ToolCallReconciled e: ToolCallTransition(e.ToolCallId, payload); break;
+            case ToolCallReconciled e: ApplyToolCallReconciled(e, payload); break;
             case ToolCallCancelled e: ToolCallTransition(e.ToolCallId, payload); break;
 
             // ── PlanItem (ADR-0036 §4) ──
@@ -191,6 +196,22 @@ public sealed class CanonicalStateTracker
 
     private void ToolCallTransition(ToolCallId id, DomainEventPayload payload) =>
         Transition(_toolCalls, id, "toolcall", payload, StateMachines.ApplyToolCall);
+
+    private void ApplyToolCallReconciled(ToolCallReconciled reconciled, DomainEventPayload payload)
+    {
+        var currentState = Require(_toolCalls, reconciled.ToolCallId, "toolcall", payload);
+        if (currentState == ToolCallState.Reconciled
+            && (!_toolCallReconciliationOutcomes.TryGetValue(reconciled.ToolCallId, out var priorOutcome)
+                || priorOutcome is not (ReconciliationOutcome.Conflict or ReconciliationOutcome.Unresolvable)
+                || reconciled.Cause != InteractionCause.User))
+        {
+            throw new InvalidStateTransitionException("toolcall", currentState, payload.Type().ToString());
+        }
+
+        var next = StateMachines.ApplyToolCall(currentState, payload);
+        _toolCalls[reconciled.ToolCallId] = next;
+        _toolCallReconciliationOutcomes[reconciled.ToolCallId] = reconciled.Outcome;
+    }
 
     private void PlanItemTransition(PlanItemId id, DomainEventPayload payload) =>
         Transition(_planItems, id, "plan_item", payload, StateMachines.ApplyPlanItem);

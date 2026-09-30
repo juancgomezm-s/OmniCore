@@ -34,6 +34,23 @@ public sealed class OmniCliRuntime
 
     private string Text(LocalizedText text) => Localize is null ? text.Render() : Localize(text.Key, text.Args);
 
+    private string ResolveWire(string text)
+    {
+        var open = text.IndexOf('(');
+        var key = open < 0 ? text : text[..open];
+        if (Localize is null) return text;
+        var args = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (open >= 0 && text.EndsWith(')'))
+        {
+            foreach (var part in text[(open + 1)..^1].Split(','))
+            {
+                var equals = part.IndexOf('=');
+                if (equals > 0) args[part[..equals]] = part[(equals + 1)..];
+            }
+        }
+        return Localize(key, args);
+    }
+
     /// <summary>Abre el cliente in-process del workspace sin exponer OmniServer al consumidor.</summary>
     public IOmniClient Connect(CancellationToken cancellationToken)
     {
@@ -230,7 +247,7 @@ public sealed class OmniCliRuntime
                         + JsonObj.Field("objective", prompt) + "}"), cancellationToken);
                     if (start.Status != "ok")
                     {
-                        writeLine("omni ask: " + (start.Error ?? "no se pudo iniciar el run"));
+                        writeLine("omni ask: " + (start.Error is null ? "no se pudo iniciar el run" : ResolveWire(start.Error)));
                         return 1;
                     }
 
@@ -243,7 +260,7 @@ public sealed class OmniCliRuntime
                     + JsonObj.Field("objective", prompt) + "}"), cancellationToken);
                 if (ack.Status != "ok")
                 {
-                    writeLine("omni act: " + (ack.Error ?? "no se pudo crear el Run Act"));
+                    writeLine("omni act: " + (ack.Error is null ? "no se pudo crear el Run Act" : ResolveWire(ack.Error)));
                     return 1;
                 }
             }

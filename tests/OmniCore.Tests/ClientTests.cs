@@ -1,4 +1,5 @@
 using OmniCore.Client;
+using OmniCore.Cli;
 using OmniCore.Protocol;
 
 namespace OmniCore.Tests;
@@ -20,6 +21,35 @@ public sealed class ClientTests
         var block = next.Conversation.Blocks[0];
         Assert.Equal(ConversationRole.System, block.Role);
         Assert.Contains("Completed", block.Text);
+    }
+
+    [Fact]
+    public void Plain_renderer_shows_effect_resolution_options_and_no_tty_guidance()
+    {
+        var projection = new ClientProjection(Localization.Spanish());
+        var interactionId = Guid.CreateVersion7().ToString();
+        var envelope = WireEnvelope.Event(Ids.NewV7(), "{" + JsonObj.Field("type", "interaction.requested") + ","
+            + JsonObj.Field("interactionId", interactionId) + ","
+            + JsonObj.Field("kind", "ReconciliationConflict") + ","
+            + JsonObj.Field("options", "resolution_applied,resolution_not_applied") + ","
+            + JsonObj.Field("subject", "{\"toolOrExecutable\":\"filesystem.patch\",\"target\":\"src/file.txt\"}") + "}");
+        var state = projection.Apply(ClientState.Empty(), envelope);
+        var original = Console.Out;
+        using var output = new StringWriter();
+        try
+        {
+            Console.SetOut(output);
+            new PlainRenderer("es").Render(state);
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        Assert.Contains("filesystem.patch", output.ToString());
+        Assert.Contains("src/file.txt", output.ToString());
+        Assert.Contains("resolution_applied", output.ToString());
+        Assert.Contains("omni resolve " + interactionId, output.ToString());
     }
 
     [Fact]

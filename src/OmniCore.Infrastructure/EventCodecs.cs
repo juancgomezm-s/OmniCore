@@ -100,7 +100,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.requested"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -527,7 +528,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.effect_unknown"), EventJsonContext.Default.ToolCallEffectUnknown);
 
     public static CodecPair ToolCallReconciled() =>
-        Of(EventType.Of("toolcall.reconciled"), EventJsonContext.Default.ToolCallReconciled);
+        Of(EventType.Of("toolcall.reconciled"), EventJsonContext.Default.ToolCallReconciled, currentVersion: 2);
 
     public static CodecPair ToolCallCancelled() =>
         Of(EventType.Of("toolcall.cancelled"), EventJsonContext.Default.ToolCallCancelled);

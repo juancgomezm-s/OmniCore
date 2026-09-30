@@ -206,10 +206,13 @@ public sealed class StateMachines
         }
 
         if (evt is ToolCallEffectUnknown && from == ToolCallState.Started) return ToolCallState.EffectUnknown;
-        if (evt is ToolCallReconciled
-            && (from == ToolCallState.EffectUnknown || from == ToolCallState.Started))
+        if (evt is ToolCallReconciled reconciled)
         {
-            return ToolCallState.Reconciled;
+            var recoveryResult = (from == ToolCallState.EffectUnknown || from == ToolCallState.Started)
+                && reconciled.Cause != InteractionCause.User;
+            var humanRefinement = from == ToolCallState.Reconciled
+                && reconciled.Cause == InteractionCause.User;
+            if (recoveryResult || humanRefinement) return ToolCallState.Reconciled;
         }
 
         if (evt is ToolCallCancelled

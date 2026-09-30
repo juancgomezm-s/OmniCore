@@ -234,7 +234,9 @@ public sealed class ProcessExecToolsTests
         var workspace = TempDir();
         try
         {
-            SecretRedactorRegistry.Install(new SecretRedactor());
+            // Use the process-wide redactor rather than replacing its registry while other tests
+            // exercise secret redaction concurrently.
+            _ = SecretRedactor.Shared;
             SecretRedactorRegistry.Register("known-secret-value-123");
             var runtime = new RecordingRuntime { Output = "known-secret-value-123" + new string('x', 20_000) };
             var tool = new ProcessExecTool(Launcher(runtime), new PathBoundaryValidator(), SandboxStrength.Weak);
