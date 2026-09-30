@@ -28,7 +28,7 @@ public sealed class AnthropicProviderOptions
 /// se conservan intactos en <see cref="ProviderState"/> y solo se reenvían al MISMO modelo, como
 /// exige la API para continuar un turno con tools (ProviderOpaque, replay SameModel).
 /// </summary>
-public sealed class AnthropicMessagesProvider : IModelProvider
+public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimits
 {
     private const string OpaqueKindPrefix = "anthropic.messages.ProviderOpaque/";
     private readonly ProviderDescriptor _descriptor;
@@ -55,7 +55,10 @@ public sealed class AnthropicMessagesProvider : IModelProvider
     }
 
     /// <summary>La API informa tokens (incluidos los de caché); no informa costo ni cuota.</summary>
-    public ProviderCapabilities Capabilities { get; } = new(true, false, false);
+    public ProviderCapabilities Capabilities { get; } = new(true, false, true);
+
+    /// <summary>Ventanas de rate limit de la última respuesta (cuota informada, nunca estimada).</summary>
+    public IReadOnlyList<RateLimitWindow> LastRateLimits { get; private set; } = [];
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -65,6 +68,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider
         var (response, http) = await _resilience.SendWithRetryAsync(_httpFactory,
             () => CreateHttpRequest(body, cancellationToken), ProviderResilience.ErrorFromBody,
             static status => status is 408 or 429 or 529 || status >= 500, cancellationToken).ConfigureAwait(false);
+        LastRateLimits = RateLimitQuotaParser.Parse(response.Headers, DateTimeOffset.UtcNow);
         var completed = false;
         try
         {
