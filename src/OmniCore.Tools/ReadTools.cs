@@ -501,7 +501,7 @@ public sealed class ListDirectoryTool : ITool
         return sb.ToString();
     }
 
-    private static string EscapeJsonString(string s)
+    internal static string EscapeJsonString(string s)
     {
         var sb = new System.Text.StringBuilder();
         foreach (var c in s)
@@ -542,6 +542,475 @@ public sealed class ListDirectoryTool : ITool
             Kind = kind;
             Size = size;
         }
+    }
+}
+
+/// <summary>
+/// Tool para buscar texto dentro de archivos del workspace (read-only).
+/// Args: pattern (required string), regex (bool, default false — if true use `RegexOptions.NonBacktracking`,
+/// and reject patterns that fail to compile with an error result), path (default "."), glob (optional, e.g. `*.cs`,
+/// matched against the file name), maxResults (default 100, hard cap 1000), caseSensitive (default false).
+/// Output JSON: matches = [{ path (relative, forward slashes), line (1-based), text (trimmed to 300 chars) }],
+/// truncated. Skip .git/, skip binary files (a NUL byte in the first 8 KB), skip secret files (never return
+/// their content), read-only effect class.
+/// </summary>
+public sealed class SearchTextTool : ITool
+{
+    private readonly ToolDescriptor _descriptor;
+    private readonly IPathBoundaryValidator _boundary;
+
+    public SearchTextTool(IPathBoundaryValidator boundary)
+    {
+        _boundary = boundary;
+        _descriptor = new ToolDescriptor(
+            new ToolId("search.text"),
+            "Busca coincidencias de un patrón de texto dentro de archivos del workspace (read-only).",
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"regex\":{\"type\":\"boolean\"},\"path\":{\"type\":\"string\"},\"glob\":{\"type\":\"string\"},\"maxResults\":{\"type\":\"integer\"},\"caseSensitive\":{\"type\":\"boolean\"}},\"required\":[\"pattern\"],\"additionalProperties\":false}"),
+            new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
+    }
+
+    public ToolDescriptor Descriptor => _descriptor;
+
+    public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
+    {
+        // Prepare es puro: declara las claims de lectura de la ruta concreta pedida (ADR-0014 §3),
+        // para que Security evalúe la resource path real (no vacío). La lectura ocurre en Execute.
+        var path = ExtractPath(call.NormalizedArgumentsJson) ?? ".";
+
+        // ADR-0018 §4: rutas de secretos (.env, PEM/SSH, credenciales) se REJECT en Prepare:
+        // nunca se llega a ejecutar la tool (el journal termina en ToolCallRejected, sin
+        // toolcall.succeeded). P0-2.
+        if (path.Length > 0 && new OmniCore.Domain.RedactionPolicy().IsSecretPath(path))
+        {
+            return new PreparationRejected(
+                "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
+                null);
+        }
+
+        var claims = new ResourceClaims(new string[] { path }, new string[0], new NetworkGrant[0], null, new string[0]);
+        var intent = new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson, EffectClass.None,
+            claims, ToolRisk.Low, null);
+        return new Prepared(intent);
+    }
+
+    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var pattern = ExtractPattern(intent.Intent.NormalizedArgumentsJson);
+        if (pattern is null)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'pattern' en los argumentos"));
+        }
+
+        var regex = ExtractBool(intent.Intent.NormalizedArgumentsJson, "regex", false);
+        var path = ExtractPath(intent.Intent.NormalizedArgumentsJson) ?? ".";
+        var glob = ExtractGlob(intent.Intent.NormalizedArgumentsJson);
+        var maxResults = ExtractInt(intent.Intent.NormalizedArgumentsJson, "maxResults", 100);
+        const int HardCap = 1000;
+        if (maxResults > HardCap) maxResults = HardCap;
+        var caseSensitive = ExtractBool(intent.Intent.NormalizedArgumentsJson, "caseSensitive", false);
+
+        var full = JoinPath(context.WorkspaceRoot, path);
+        if (!_boundary.IsWithin(full, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+        }
+
+        // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
+        if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
+        }
+
+        // Check if the path exists
+        if (!File.Exists(full) && !Directory.Exists(full))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta no encontrada: " + path));
+        }
+
+        var matches = new List<Match>();
+        var truncated = false;
+
+        if (File.Exists(full))
+        {
+            // Single file case
+            ProcessFile(full, context.WorkspaceRoot, pattern, regex, glob, maxResults, caseSensitive, matches, ref truncated);
+        }
+        else if (Directory.Exists(full))
+        {
+            // Directory case: non-recursive search
+            ProcessDirectory(full, context.WorkspaceRoot, pattern, regex, glob, maxResults, caseSensitive, matches, ref truncated);
+        }
+
+        // Sort matches by path, then line
+        matches.Sort((a, b) =>
+        {
+            int pathCompare = string.Compare(a.Path, b.Path, StringComparison.Ordinal);
+            if (pathCompare != 0) return pathCompare;
+            return a.Line.CompareTo(b.Line);
+        });
+
+        // Truncate if we exceeded maxResults (though we should have stopped earlier)
+        if (matches.Count > maxResults)
+        {
+            matches.RemoveRange(maxResults, matches.Count - maxResults);
+            truncated = true;
+        }
+
+        var json = SerializeMatches(matches, truncated);
+        return System.Threading.Tasks.Task.FromResult(new ToolResult(
+            truncated ? $"truncated ({matches.Count} matches)" : $"ok ({matches.Count} matches)",
+            json, null, json.Length, truncated, EffectOutcome.None));
+    }
+
+    private void ProcessFile(string filePath, string workspaceRoot, string pattern, bool regex, string? glob, int maxResults, bool caseSensitive, List<Match> matches, ref bool truncated)
+    {
+        // Check if the file is a symlink and resolve if necessary, while checking boundary and secrets
+        string? fileToRead = null;
+        var fileInfo = new FileInfo(filePath);
+
+        // Check boundary for the file path itself (symlink or regular)
+        if (!_boundary.IsWithin(filePath, workspaceRoot))
+            return;
+
+        // Check secret for the file path (resolving links)
+        if (SecretPathGuard.IsSecretTarget(_boundary, filePath, workspaceRoot))
+            return;
+
+        // Handle symlinks/junctions
+        var isLink = fileInfo.LinkTarget is not null || fileInfo.Attributes.HasFlag(FileAttributes.ReparsePoint);
+        if (isLink)
+        {
+            string? target;
+            try
+            {
+                target = fileInfo.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+            }
+            catch (IOException)
+            {
+                target = null;
+            }
+
+            if (target is null || !_boundary.IsWithin(target, workspaceRoot))
+                return;
+
+            // Check if target is a directory (skip if so)
+            var targetAttrs = File.GetAttributes(target);
+            if ((targetAttrs & FileAttributes.Directory) == FileAttributes.Directory)
+                return;
+
+            fileToRead = target;
+        }
+        else
+        {
+            // Regular file
+            // Check if it's a directory (shouldn't happen because we checked File.Exists, but just in case)
+            if ((fileInfo.Attributes & FileAttributes.Directory) == FileAttributes.Directory)
+                return;
+
+            fileToRead = filePath;
+        }
+
+        // Check glob against file name only
+        if (!string.IsNullOrEmpty(glob))
+        {
+            var fileName = Path.GetFileName(fileToRead);
+            if (!MatchesGlob(fileName, glob))
+                return;
+        }
+
+        // Search the file
+        SearchFile(fileToRead, workspaceRoot, pattern, regex, maxResults, caseSensitive, matches, ref truncated);
+    }
+
+    private void ProcessDirectory(string dirPath, string workspaceRoot, string pattern, bool regex, string? glob, int maxResults, bool caseSensitive, List<Match> matches, ref bool truncated)
+    {
+        var dirInfo = new DirectoryInfo(dirPath);
+        foreach (var entry in dirInfo.EnumerateFileSystemInfos())
+        {
+            // Skip .git/
+            if (entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var fullEntryPath = entry.FullName;
+
+            // Check boundary for the entry (symlink or regular file/dir)
+            if (!_boundary.IsWithin(fullEntryPath, workspaceRoot))
+                continue;
+
+            // Check secret for the entry (resolving links)
+            if (SecretPathGuard.IsSecretTarget(_boundary, fullEntryPath, workspaceRoot))
+                continue;
+
+            // Handle symlinks/junctions for directories: we skip symlinks to directories (non-recursive)
+            var isLink = entry.LinkTarget is not null || entry.Attributes.HasFlag(FileAttributes.ReparsePoint);
+            if (isLink)
+            {
+                string? target;
+                try
+                {
+                    target = entry.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+                }
+                catch (IOException)
+                {
+                    target = null;
+                }
+
+                if (target is null || !_boundary.IsWithin(target, workspaceRoot))
+                    continue;
+
+                // If target is a directory, skip (non-recursive)
+                var targetAttrs = File.GetAttributes(target);
+                if ((targetAttrs & FileAttributes.Directory) == FileAttributes.Directory)
+                    continue;
+
+                // If target is a file, we will process it below
+                // Note: we fall through to the file processing below
+            }
+            else
+            {
+                // Not a link
+                var attrs = entry.Attributes;
+                if ((attrs & FileAttributes.Directory) == FileAttributes.Directory)
+                {
+                    // Skip directories (non-recursive)
+                    continue;
+                }
+                // Otherwise, it's a file
+            }
+
+            // At this point, we have a file (or a symlink to a file) that is not a directory
+            // Resolve the symlink to get the actual file to read (if needed)
+            string? fileToRead = null;
+            if (isLink)
+            {
+                // We already resolved the target above and checked it's a file and within workspace
+                // We need to get the target again (or we could have saved it)
+                try
+                {
+                    var info = new FileInfo(fullEntryPath);
+                    fileToRead = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+                }
+                catch (IOException)
+                {
+                    continue;
+                }
+
+                if (fileToRead is null)
+                    continue;
+            }
+            else
+            {
+                fileToRead = fullEntryPath;
+            }
+
+            // Check glob against file name only
+            if (!string.IsNullOrEmpty(glob))
+            {
+                var fileName = Path.GetFileName(fileToRead);
+                if (!MatchesGlob(fileName, glob))
+                    continue;
+            }
+
+            // Search the file
+            SearchFile(fileToRead, workspaceRoot, pattern, regex, maxResults, caseSensitive, matches, ref truncated);
+
+            // If we've reached maxResults, break out of the directory loop
+            if (matches.Count >= maxResults)
+            {
+                truncated = true;
+                break;
+            }
+        }
+    }
+
+    private void SearchFile(string filePath, string workspaceRoot, string pattern, bool regex, int maxResults, bool caseSensitive, List<Match> matches, ref bool truncated)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(filePath);
+            // Check for binary: if there's a null byte in the first 8KB, skip
+            int checkLength = Math.Min(bytes.Length, 8000);
+            for (int i = 0; i < checkLength; i++)
+            {
+                if (bytes[i] == 0)
+                {
+                    // Binary file, skip
+                    return;
+                }
+            }
+
+            // Decode the file content
+            FileVersion.DecodedFile decoded;
+            try
+            {
+                decoded = FileVersion.Decode(bytes);
+            }
+            catch (UnsupportedEncodingException)
+            {
+                // Unsupported encoding, skip
+                return;
+            }
+
+            var content = decoded.Text;
+            var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.None);
+
+            Regex? regexPattern = null;
+            if (regex)
+            {
+                try
+                {
+                    regexPattern = new Regex(pattern, RegexOptions.NonBacktracking);
+                }
+                catch (ArgumentException)
+                {
+                    // Invalid regex, skip this file
+                    return;
+                }
+            }
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i];
+                bool matchesPattern = false;
+
+                if (regex)
+                {
+                    matchesPattern = regexPattern!.IsMatch(line);
+                }
+                else
+                {
+                    if (caseSensitive)
+                    {
+                        matchesPattern = line.Contains(pattern);
+                    }
+                    else
+                    {
+                        matchesPattern = line.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0;
+                    }
+                }
+
+                if (matchesPattern)
+                {
+                    // Trim line to 300 characters (take first 300 chars)
+                    var text = line.Length > 300 ? line.Substring(0, 300) : line;
+                    var relativePath = MakeRelativePath(filePath, workspaceRoot);
+                    matches.Add(new Match
+                    {
+                        Path = relativePath,
+                        Line = i + 1, // 1-based line number
+                        Text = text
+                    });
+
+                    if (matches.Count >= maxResults)
+                    {
+                        truncated = true;
+                        return;
+                    }
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // Ignore file access errors and skip the file
+        }
+    }
+
+    private static string? ExtractPattern(string argsJson)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        return map.TryGetValue("pattern", out var p) ? p : null;
+    }
+
+    private static string? ExtractGlob(string argsJson)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        return map.TryGetValue("glob", out var g) ? g : null;
+    }
+
+    private static bool ExtractBool(string argsJson, string key, bool defaultValue)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        if (map.TryGetValue(key, out var v) && bool.TryParse(v, out var parsed))
+            return parsed;
+        return defaultValue;
+    }
+
+    private static int ExtractInt(string argsJson, string key, int defaultValue)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        if (map.TryGetValue(key, out var v) && int.TryParse(v, out var parsed))
+            return parsed;
+        return defaultValue;
+    }
+
+    private static string JoinPath(string root, string relative)
+    {
+        if (relative is null) return root;
+        var norm = relative.Replace("\\", "/");
+        return root.TrimEnd('/') + "/" + norm;
+    }
+
+    private static string MakeRelativePath(string fullPath, string workspaceRoot)
+    {
+        // Ensure workspaceRoot ends with a separator for correct subtraction
+        if (!workspaceRoot.EndsWith("/") && !workspaceRoot.EndsWith("\\"))
+        {
+            workspaceRoot = workspaceRoot + "/";
+        }
+
+        var relative = fullPath.Substring(workspaceRoot.Length);
+        return relative.Replace('\\', '/');
+    }
+
+    private static bool MatchesGlob(string input, string pattern)
+    {
+        // Convert simple glob to regex: .* -> .*, ? -> .
+        // We'll escape the pattern except for * and ?
+        var escaped = Regex.Escape(pattern)
+            .Replace(@"\*", ".*")
+            .Replace(@"\?", ".");
+        return Regex.IsMatch(input, $"^{escaped}$", RegexOptions.None);
+    }
+
+    private static string SerializeMatches(List<Match> matches, bool truncated)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append('{');
+        sb.Append("\"matches\":[");
+        for (var i = 0; i < matches.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var m = matches[i];
+            sb.Append("{\"path\":\"");
+            sb.Append(ListDirectoryTool.EscapeJsonString(m.Path));
+            sb.Append("\",\"line\":");
+            sb.Append(m.Line);
+            sb.Append(",\"text\":\"");
+            sb.Append(ListDirectoryTool.EscapeJsonString(m.Text));
+            sb.Append('}');
+        }
+        sb.Append(']');
+        if (truncated)
+        {
+            sb.Append(",\"truncated\":true");
+        }
+        sb.Append('}');
+        return sb.ToString();
+    }
+
+    private static string? ExtractPath(string argsJson)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        return map.TryGetValue("path", out var p) ? p : null;
+    }
+
+    private sealed class Match
+    {
+        public string Path { get; set; } = "";
+        public int Line { get; set; }
+        public string Text { get; set; } = "";
     }
 }
 
