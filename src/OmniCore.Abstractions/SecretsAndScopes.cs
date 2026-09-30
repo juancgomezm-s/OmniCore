@@ -49,6 +49,7 @@ public static class SecretRedactorRegistry
     public static void Register(string value)
     {
         if (string.IsNullOrEmpty(value)) return;
+        if (value.Length < Secret.MinimumLength) throw new SecretValueTooShortException(Secret.MinimumLength);
         lock (Gate)
         {
             Registered.Add(value);
@@ -61,6 +62,8 @@ public static class SecretRedactorRegistry
 [JsonConverter(typeof(SecretJsonConverter))]
 public sealed class Secret
 {
+    public const int MinimumLength = 4;
+
     private readonly string _value;
 
     private Secret(string value) => _value = value;
@@ -68,6 +71,7 @@ public sealed class Secret
     public static Secret Of(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
+        if (value.Length < MinimumLength) throw new SecretValueTooShortException(MinimumLength);
         SecretRedactorRegistry.Register(value);
         return new Secret(value);
     }

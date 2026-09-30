@@ -164,9 +164,13 @@ public static class ProjectIdentity
         return host + "/" + path;
     }
 
-    private static string CanonicalPath(string path)
+    /// <summary>Ruta canonical para identidades locales: solo Windows ignora mayúsculas (ADR-0038 §4).</summary>
+    public static string CanonicalWorkspacePath(string path, bool? foldCase = null)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var canonical = Path.GetFullPath(path).Replace('\\', '/').TrimEnd('/');
-        return OperatingSystem.IsWindows() ? canonical.ToLowerInvariant() : canonical;
+        return (foldCase ?? OperatingSystem.IsWindows()) ? canonical.ToLowerInvariant() : canonical;
     }
+
+    private static string CanonicalPath(string path) => CanonicalWorkspacePath(path);
 }

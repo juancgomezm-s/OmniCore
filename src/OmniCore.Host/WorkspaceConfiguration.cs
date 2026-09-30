@@ -49,8 +49,8 @@ public sealed class WorkspaceTrustStore
         catch (YamlException ex) { throw new InvalidDataException("trust.yaml inválido.", ex); }
     }
 
-    internal static string Canonical(string path) => ProjectIdentity.ResolvePhysicalWorkspaceRoot(path)
-        .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    internal static string Canonical(string path) => ProjectIdentity.CanonicalWorkspacePath(
+        ProjectIdentity.ResolvePhysicalWorkspaceRoot(path));
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 }

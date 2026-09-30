@@ -108,13 +108,20 @@ public sealed class OmniHost
     {
         if (environmentKey is not null && environmentKey.Length > 0)
         {
+            if (environmentKey.Length < Secret.MinimumLength)
+                throw new SecretValueTooShortException(Secret.MinimumLength);
             SecretRedactorRegistry.Register(environmentKey);
             credentials.Save(secretRef, environmentKey, cancellationToken);
             return environmentKey;
         }
 
         var stored = credentials.Load(secretRef, cancellationToken);
-        if (stored is not null && stored.Length > 0) SecretRedactorRegistry.Register(stored);
+        if (stored is not null && stored.Length > 0)
+        {
+            if (stored.Length < Secret.MinimumLength)
+                throw new SecretValueTooShortException(Secret.MinimumLength);
+            SecretRedactorRegistry.Register(stored);
+        }
         return stored is not null && stored.Length > 0 ? stored : null;
     }
 
@@ -131,8 +138,8 @@ public sealed class OmniHost
     /// ADR-0039 §2). El id se deriva de la ruta canónica de la raíz.
     /// </summary>
     public static string WorkspaceDataDirectory(IPlatformPaths paths, string workspaceRoot) =>
-        paths.WorkspaceDirectory(OmniCore.Domain.WorkspaceId.Of(
-            ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot)).ToString());
+        paths.WorkspaceDirectory(OmniCore.Domain.WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(
+            ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot))).ToString());
 
     /// <summary>ModelRegistry desde la configuración del USUARIO, nunca desde el cwd (INV-029, ADR-0039).</summary>
     public static ModelRegistry LoadUserModelRegistry(IPlatformPaths paths) =>
@@ -276,8 +283,8 @@ public sealed class OmniHost
         RunId? runId, IAuditSink? audit = null)
     {
         var paths = CreatePlatformPaths();
-        var workspace = OmniCore.Domain.WorkspaceId.Of(
-            ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot));
+        var workspace = OmniCore.Domain.WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(
+            ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot)));
         var store = new OmniCore.Security.FilePermissionGrantStore(
             WorkspaceDataDirectory(paths, workspaceRoot), audit ?? new FileAuditSink(paths.DataDirectory));
         return CreateProjectRestrictionPolicy(mode, restrictions).WithGrantStore(store, workspace, runId);
@@ -345,19 +352,38 @@ public sealed class OmniHost
     public static OpenAiChatCompatibleProvider ConnectLocalChatCompletions(string baseUrl, string modelId,
         string secretRef, string apiKey, string? trustedCertificatePath = null)
     {
-        var http = new HttpClient(CreateTlsHandler(baseUrl, trustedCertificatePath))
+        var descriptor = new ProviderDescriptor("local", ProviderFamily.OpenAiChatCompatible, baseUrl,
+            apiKey.Length > 0 ? AuthConfig.ApiKey(secretRef) : AuthConfig.None(), false, false, false)
+        { TrustedCertificatePath = trustedCertificatePath };
+        return (OpenAiChatCompatibleProvider)ConnectProvider(descriptor, baseUrl, secretRef, apiKey);
+    }
+
+    /// <summary>Conecta la implementación que corresponde a la familia declarada (ADR-0005, M5).</summary>
+    public static OpenAiChatCompatibleProvider ConnectProvider(ProviderDescriptor descriptor, string baseUrl,
+        string secretRef, string apiKey)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        return descriptor.Family switch
+        {
+            ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey),
+            ProviderFamily.AnthropicMessages => throw new ProviderFamilyNotSupportedException(descriptor.Family),
+            ProviderFamily.OpenAIResponses => throw new ProviderFamilyNotSupportedException(descriptor.Family),
+            _ => throw new ProviderFamilyNotSupportedException(descriptor.Family),
+        };
+    }
+
+    private static OpenAiChatCompatibleProvider ConnectOpenAiChatCompatible(ProviderDescriptor descriptor,
+        string baseUrl, string secretRef, string apiKey)
+    {
+        var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
+            descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
+            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath };
+        var http = new HttpClient(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
         {
             Timeout = System.TimeSpan.FromSeconds(300),
         };
-
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
-        var auth = (apiKey is not null && apiKey!.Length > 0)
-            ? AuthConfig.ApiKey(secretRef)
-            : AuthConfig.None();
-        var descriptor = new ProviderDescriptor(
-            "local", OmniCore.Domain.ProviderFamily.OpenAiChatCompatible, baseUrl,
-            auth, false, false, false);
-        return new OpenAiChatCompatibleProvider(descriptor, secrets, () => http);
+        return new OpenAiChatCompatibleProvider(configured, secrets, () => http);
     }
 
     /// <summary>Handler HTTP con la política TLS de <see cref="ConnectLocalChatCompletions"/>.</summary>

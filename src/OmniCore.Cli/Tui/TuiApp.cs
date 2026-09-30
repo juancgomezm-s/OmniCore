@@ -15,6 +15,7 @@ public sealed class TuiApp
 {
     private readonly IOmniClient _client;
     private readonly string _locale;
+    private readonly Localization _localization;
     private readonly ClientProjection _projection;
     private readonly ModelPolicyHost _policies;
     private ClientState _state = ClientState.Empty();
@@ -35,7 +36,8 @@ public sealed class TuiApp
     {
         _client = client;
         _locale = locale == "en" ? "en" : "es";
-        _projection = new ClientProjection(_locale == "en" ? Localization.English() : Localization.Spanish());
+        _localization = _locale == "en" ? Localization.English() : Localization.Spanish();
+        _projection = new ClientProjection(_localization);
         _policies = policies ?? ModelPolicyHost.Create();
         _state = RefreshState();
     }
@@ -336,7 +338,11 @@ public sealed class TuiApp
                             ? other.Text?.ToString() : null);
             }
             var result = QuestionnaireTuiForm.Submit(model, inputs);
-            if (!result.IsValid) { error.Text = string.Join("; ", result.Errors); return; }
+            if (!result.IsValid)
+            {
+                error.Text = string.Join("; ", result.Errors.Select(_localization.ResolveQuestionnaireValidationError));
+                return;
+            }
             RespondQuestionnaire(interaction, result.Response!);
         };
         cancel.Accepted += (_, _) => RespondQuestionnaire(interaction,
