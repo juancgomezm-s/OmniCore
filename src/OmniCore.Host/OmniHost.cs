@@ -360,7 +360,7 @@ public sealed class OmniHost
 
     /// <summary>Familias con adapter nativo implementado (ADR-0005 §1); el resto falla tipado.</summary>
     public static bool IsProviderFamilySupported(ProviderFamily family) =>
-        family is ProviderFamily.OpenAiChatCompatible or ProviderFamily.AnthropicMessages;
+        family is ProviderFamily.OpenAiChatCompatible or ProviderFamily.AnthropicMessages or ProviderFamily.OpenAIResponses;
 
     /// <summary>Conecta la implementación que corresponde a la familia declarada (ADR-0005, M5).</summary>
     public static IModelProvider ConnectProvider(ProviderDescriptor descriptor, string baseUrl,
@@ -371,9 +371,27 @@ public sealed class OmniHost
         {
             ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey),
             ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey),
-            ProviderFamily.OpenAIResponses => throw new ProviderFamilyNotSupportedException(descriptor.Family),
+            ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey),
             _ => throw new ProviderFamilyNotSupportedException(descriptor.Family),
         };
+    }
+
+    /// <summary>
+    /// Perfil <c>api</c> de la Responses API. El perfil <c>codex</c> (suscripción ChatGPT) necesita la
+    /// sesión OAuth de ChatGptSubscriptionAuthProvider y se conecta aparte (ADR-0011 §3.4).
+    /// </summary>
+    private static OpenAIResponsesProvider ConnectOpenAIResponses(ProviderDescriptor descriptor,
+        string baseUrl, string secretRef, string apiKey)
+    {
+        var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
+            descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
+            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath };
+        HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
+        {
+            Timeout = System.TimeSpan.FromSeconds(600),
+        };
+        var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
+        return new OpenAIResponsesProvider(configured, secrets, CreateClient);
     }
 
     private static AnthropicMessagesProvider ConnectAnthropicMessages(ProviderDescriptor descriptor,

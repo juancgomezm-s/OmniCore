@@ -83,11 +83,20 @@ public sealed class M2WiringTests
         Assert.True(OmniHost.IsProviderFamilySupported(OmniCore.Domain.ProviderFamily.AnthropicMessages));
     }
 
-    [Theory]
-    [InlineData(OmniCore.Domain.ProviderFamily.OpenAIResponses)]
-    public void Provider_factory_rejects_unimplemented_families_with_typed_error(
-        OmniCore.Domain.ProviderFamily family)
+    [Fact]
+    public void Provider_factory_connects_the_native_responses_adapter()
     {
+        var descriptor = new ProviderDescriptor("openai", OmniCore.Domain.ProviderFamily.OpenAIResponses,
+            "https://api.example.test/v1", OmniCore.Abstractions.AuthConfig.ApiKey("openai"), false, false, true);
+
+        Assert.IsType<OmniCore.Models.OpenAIResponsesProvider>(
+            OmniHost.ConnectProvider(descriptor, descriptor.BaseUrl, "openai", "sk-test"));
+    }
+
+    [Fact]
+    public void Provider_factory_rejects_an_unknown_family_with_typed_error()
+    {
+        var family = (OmniCore.Domain.ProviderFamily)99;
         var descriptor = new ProviderDescriptor("p", family, "https://example.test/v1",
             OmniCore.Abstractions.AuthConfig.None(), false, false, false);
 
@@ -101,7 +110,7 @@ public sealed class M2WiringTests
     }
 
     [Fact]
-    public void Doctor_marks_unimplemented_provider_family()
+    public void Doctor_lists_native_provider_families_without_the_unimplemented_mark()
     {
         var config = Path.Combine(Path.GetTempPath(), "omnicore-doctor-config-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(config);
@@ -119,7 +128,7 @@ public sealed class M2WiringTests
 
             Assert.True(exit == 0, string.Join(Environment.NewLine, output));
             Assert.Contains(output, line => line.Contains("OpenAIResponses", StringComparison.Ordinal));
-            Assert.Contains(output, line => line.Contains("not implemented yet", StringComparison.Ordinal));
+            Assert.DoesNotContain(output, line => line.Contains("not implemented yet", StringComparison.Ordinal));
         }
         finally
         {
