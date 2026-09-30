@@ -523,9 +523,11 @@ public sealed class FilesystemWriteToolTests
         registry.Ledger.Bind(patchOnly);
 
         Assert.StartsWith("MUTATION_REFUSED:",
-            registry.Ledger.RefuseMutation(ModelToolCapability.ReplaceFile, "a.txt", true, 1, 1, 8));
+            registry.Ledger.RefuseMutation(ModelToolCapability.ReplaceFile, "a.txt", true, 1, 1, 8)!.Message);
+        Assert.Equal(ToolErrorCode.MutationRefused,
+            registry.Ledger.RefuseMutation(ModelToolCapability.ReplaceFile, "a.txt", true, 1, 1, 8)!.Code);
         Assert.StartsWith("MUTATION_REFUSED:",
-            registry.Ledger.RefuseMutation(ModelToolCapability.CreateFile, "a.txt", false, 0, 1, 0));
+            registry.Ledger.RefuseMutation(ModelToolCapability.CreateFile, "a.txt", false, 0, 1, 0)!.Message);
         Assert.Null(registry.Ledger.RefuseMutation(ModelToolCapability.PatchExisting, "a.txt", true, 1, 1, 8));
 
         var scoped = Mutation(FileMutationMode.PatchAndCreate, 5, 600, 0.50);
@@ -533,7 +535,7 @@ public sealed class FilesystemWriteToolTests
         registry2.Ledger.Bind(scoped);
         Assert.Null(registry2.Ledger.RefuseMutation(ModelToolCapability.CreateFile, "a.txt", false, 0, 1, 0));
         Assert.StartsWith("MUTATION_REFUSED:",
-            registry2.Ledger.RefuseMutation(ModelToolCapability.ReplaceFile, "a.txt", true, 1, 1, 8));
+            registry2.Ledger.RefuseMutation(ModelToolCapability.ReplaceFile, "a.txt", true, 1, 1, 8)!.Message);
 
         // Sin política vinculada esta capa no restringe (manda el techo de la frontera).
         var registry3 = new FileReadRegistry();

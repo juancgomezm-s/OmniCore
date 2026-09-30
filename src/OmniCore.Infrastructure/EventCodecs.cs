@@ -105,7 +105,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -506,7 +508,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.prepared"), EventJsonContext.Default.ToolCallPrepared);
 
     public static CodecPair ToolCallRejected() =>
-        Of(EventType.Of("toolcall.rejected"), EventJsonContext.Default.ToolCallRejected);
+        Of(EventType.Of("toolcall.rejected"), EventJsonContext.Default.ToolCallRejected, currentVersion: 2);
 
     public static CodecPair PermissionEvaluated() =>
         Of(EventType.Of("toolcall.permission_evaluated"), EventJsonContext.Default.PermissionEvaluated);
@@ -530,7 +532,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded);
 
     public static CodecPair ToolCallFailed() =>
-        Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed);
+        Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 2);
 
     public static CodecPair ToolCallEffectUnknown() =>
         Of(EventType.Of("toolcall.effect_unknown"), EventJsonContext.Default.ToolCallEffectUnknown);

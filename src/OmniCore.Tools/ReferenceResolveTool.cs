@@ -36,7 +36,8 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
         if (reference is not null && reference!.Length > 0
             && new OmniCore.Domain.RedactionPolicy().IsSecretPath(reference!.TrimStart('@')))
         {
-            return new PreparationRejected("Acceso denegado: la referencia contiene secretos (ADR-0018)", null);
+            return new PreparationRejected("Acceso denegado: la referencia contiene secretos (ADR-0018)", null,
+                ToolErrorCode.PermissionDenied);
         }
 
         var claims = reference is null || reference!.Length == 0
@@ -54,13 +55,16 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
         var reference = ArgsJson.Parse(intent.Intent.NormalizedArgumentsJson).TryGetValue("ref", out var r) ? r : null;
         if (reference is null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'ref'"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Falta 'ref'"));
         }
 
         var resolved = Resolve(reference!, context.WorkspaceRoot);
         if (resolved.Kind != "file" && resolved.Kind != "folder")
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(resolved.Summary));
+            // Kind tipado del resolver ("invalid"/"missing"), nunca parseo del texto.
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                resolved.Summary));
         }
 
         var summary = resolved.Kind + " " + resolved.TargetPath + ": " + resolved.Summary;
