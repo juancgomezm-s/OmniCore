@@ -57,10 +57,17 @@ public sealed class M2WiringTests
     }
 
     [Fact]
-    public async Task ConfigLoader_throws_no_model_configured()
+    public void Registry_without_models_throws_NoModelConfigured()
     {
-        var registry = new ModelRegistry();
-        Assert.True(registry.Model("ninguno") is null);
+        var ex = Assert.Throws<NoModelConfiguredException>(() => new ModelRegistry().ResolveDefault());
+        Assert.Equal("models.noneConfigured", ex.UserMessage.Key);
+    }
+
+    [Fact]
+    public void Registry_with_one_model_resolves_it()
+    {
+        var registry = new ModelRegistry().AddModel(new ModelDefinition("m1", "p", 8192, 8192, 4096));
+        Assert.Equal("m1", registry.ResolveDefault().Id);
     }
 
     [Fact]
