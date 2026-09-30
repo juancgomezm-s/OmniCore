@@ -74,7 +74,8 @@ public record LaneHeartbeatRecorded(LaneId LaneId, LaneHeartbeat Heartbeat) : Do
 }
 
 /// <summary>TurnStarted: un Turn de la Lane arranca y registra su fingerprint de ejecución (ADR-0017).</summary>
-public record TurnStarted(TurnId TurnId, LaneId LaneId, ExecutionFingerprint? Fingerprint = null) : DomainEventPayload
+public record TurnStarted(TurnId TurnId, LaneId LaneId, ExecutionFingerprint? Fingerprint = null,
+    ArtifactRef? ContextSnapshotRef = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("turn.started");
 

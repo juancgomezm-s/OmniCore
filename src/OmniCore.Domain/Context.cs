@@ -77,6 +77,21 @@ public sealed class ExecutionFingerprint
     }
 }
 
+/// <summary>Decisión del materializer para un item de contexto (ADR-0029).</summary>
+public enum ContextDecision
+{
+    Included,
+    OmittedByBudget,
+    TruncatedByBudget,
+}
+
+/// <summary>Diagnóstico por item, con procedencia para explicar inclusión y omisiones.</summary>
+public sealed record ContextDiagnostic(
+    string ItemId,
+    ContextProvenance Provenance,
+    ContextDecision Decision,
+    int Tokens);
+
 /// <summary>Snapshot del contexto exacto enviado en un Turn (spec §29, ADR-0029).</summary>
 public sealed class ContextSnapshot
 {
@@ -100,8 +115,11 @@ public sealed class ContextSnapshot
 
     public int TokenCount { get; }
 
-    /// <summary>True si la política de presupuesto recortó el contexto (ContextOverflow, ADR-0042 §3).</summary>
+    /// <summary>True si la política de presupuesto no pudo respetar el límite sin cortar contenido protegido.</summary>
     public bool Overflowed { get; }
+
+    /// <summary>Decisiones del presupuesto, incluidas las omisiones y su procedencia (ADR-0029).</summary>
+    public IReadOnlyList<ContextDiagnostic> Diagnostics { get; }
 
     public ContextSnapshot(Guid snapshotId, SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId,
         TurnId? turnId, long basedOnEventSequence, ExecutionFingerprint fingerprint,
@@ -114,6 +132,15 @@ public sealed class ContextSnapshot
     public ContextSnapshot(Guid snapshotId, SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId,
         TurnId? turnId, long basedOnEventSequence, ExecutionFingerprint fingerprint,
         IReadOnlyList<ContextItem> items, int tokenCount, bool overflowed)
+        : this(snapshotId, sessionId, runId, taskId, laneId, turnId, basedOnEventSequence, fingerprint,
+            items, tokenCount, overflowed, Array.Empty<ContextDiagnostic>())
+    {
+    }
+
+    public ContextSnapshot(Guid snapshotId, SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId,
+        TurnId? turnId, long basedOnEventSequence, ExecutionFingerprint fingerprint,
+        IReadOnlyList<ContextItem> items, int tokenCount, bool overflowed,
+        IReadOnlyList<ContextDiagnostic> diagnostics)
     {
         SnapshotId = snapshotId;
         SessionId = sessionId;
@@ -126,6 +153,7 @@ public sealed class ContextSnapshot
         Items = items;
         TokenCount = tokenCount;
         Overflowed = overflowed;
+        Diagnostics = diagnostics;
     }
 }
 
@@ -146,8 +174,12 @@ public sealed class ContextItem
 
     public ContextProvenance Provenance { get; }
 
+    /// <summary>El primer mensaje del Run se conserva durante el recorte de conversación (ADR-0042).</summary>
+    public bool PreserveWhenTrimming { get; }
+
     public ContextItem(string id, ContextItemKind kind, string content, int estimatedTokens,
-        ContextPriority priority, RetentionPolicy retention, ContextProvenance provenance)
+        ContextPriority priority, RetentionPolicy retention, ContextProvenance provenance,
+        bool preserveWhenTrimming = false)
     {
         Id = id;
         Kind = kind;
@@ -156,6 +188,7 @@ public sealed class ContextItem
         Priority = priority;
         Retention = retention;
         Provenance = provenance;
+        PreserveWhenTrimming = preserveWhenTrimming;
     }
 }
 
