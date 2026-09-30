@@ -55,7 +55,7 @@ public sealed class ConfigLoader
                 };
                 registry.Add(new ProviderDescriptor(pair.Key, family, values.BaseUrl!,
                     auth,
-                    true, true, true) { TrustedCertificatePath = values.CaCertificate });
+                    true, true, true) { TrustedCertificatePath = values.CaCertificate, Profile = values.Profile });
             }
         }
 

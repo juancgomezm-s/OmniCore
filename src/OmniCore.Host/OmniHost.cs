@@ -130,6 +130,10 @@ public sealed class OmniHost
         new DefaultPlatformPaths(dataDirectoryOverride);
 
     /// <summary>CredentialStore del usuario, en el directorio de datos de la plataforma (nunca en el repo).</summary>
+    /// <summary>Sesión de la suscripción ChatGPT del usuario (scope User, tokens cifrados en el credential store).</summary>
+    public static ChatGptSubscriptionAuthProvider CreateChatGptAuth(IPlatformPaths paths) =>
+        new(CreateUserCredentialStore(paths), static () => new HttpClient { Timeout = System.TimeSpan.FromSeconds(60) });
+
     public static ICredentialStore CreateUserCredentialStore(IPlatformPaths paths) =>
         CreateCredentialStore(paths.DataDirectory);
 
@@ -364,14 +368,14 @@ public sealed class OmniHost
 
     /// <summary>Conecta la implementación que corresponde a la familia declarada (ADR-0005, M5).</summary>
     public static IModelProvider ConnectProvider(ProviderDescriptor descriptor, string baseUrl,
-        string secretRef, string apiKey)
+        string secretRef, string apiKey, ISubscriptionCredentialSource? subscription = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         return descriptor.Family switch
         {
             ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey),
             ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey),
-            ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey),
+            ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey, subscription),
             _ => throw new ProviderFamilyNotSupportedException(descriptor.Family),
         };
     }
@@ -381,17 +385,22 @@ public sealed class OmniHost
     /// sesión OAuth de ChatGptSubscriptionAuthProvider y se conecta aparte (ADR-0011 §3.4).
     /// </summary>
     private static OpenAIResponsesProvider ConnectOpenAIResponses(ProviderDescriptor descriptor,
-        string baseUrl, string secretRef, string apiKey)
+        string baseUrl, string secretRef, string apiKey, ISubscriptionCredentialSource? subscription)
     {
+        var codex = string.Equals(descriptor.Profile, "codex", StringComparison.Ordinal);
+        if (codex && subscription is null)
+            throw new ChatGptAuthException("notLoggedIn", "El perfil codex necesita la sesión de ChatGPT: ejecuta omni login chatgpt.");
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
-            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath };
+            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile };
         HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
         {
             Timeout = System.TimeSpan.FromSeconds(600),
         };
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
-        return new OpenAIResponsesProvider(configured, secrets, CreateClient);
+        return new OpenAIResponsesProvider(configured, secrets, CreateClient,
+            new OpenAIResponsesOptions { Profile = codex ? ResponsesProfile.Codex : ResponsesProfile.Api },
+            codex ? subscription : null);
     }
 
     private static AnthropicMessagesProvider ConnectAnthropicMessages(ProviderDescriptor descriptor,
