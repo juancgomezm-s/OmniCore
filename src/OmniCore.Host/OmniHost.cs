@@ -1,5 +1,6 @@
 namespace OmniCore.Host;
 
+using System.Collections.Concurrent;
 using OmniCore.Abstractions;
 using OmniCore.Engine;
 using OmniCore.Domain;
@@ -18,6 +19,8 @@ using OmniCore.Tools;
 /// </summary>
 public sealed class OmniHost
 {
+    private static readonly ConcurrentDictionary<RunId, WeakReference<WeakSandboxConsentState>> RunSandboxConsents = new();
+
     static OmniHost() => _ = SecretRedactor.Shared;
 
     private readonly string[] _args;
@@ -243,9 +246,9 @@ public sealed class OmniHost
     /// Catálogo de <c>omni act</c> (M3): tools Core de lectura + <c>filesystem.patch</c>, sin
     /// FakeTools de simulación. Es la única composición real que expone mutaciones.
     /// </summary>
-    public static HostTools CreateActTools() =>
+    public static HostTools CreateActTools(SandboxStrength processSandboxStrength = SandboxStrength.Strong) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
-            includeMutationTools: true, includeProcessTools: true);
+            includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength);
 
     /// <summary>
     /// Executor de <c>omni act</c>: capa de modo ACT (escrituras dentro del workspace permitidas por
@@ -261,7 +264,7 @@ public sealed class OmniHost
         ArgumentNullException.ThrowIfNull(boundary);
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
         return new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary, audit,
-            interactionResponder, isInteractive);
+            interactionResponder, isInteractive, GetWeakSandboxConsentState(runId));
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>
@@ -275,6 +278,27 @@ public sealed class OmniHost
         var store = new OmniCore.Security.FilePermissionGrantStore(
             WorkspaceDataDirectory(paths, workspaceRoot), audit ?? new FileAuditSink(paths.DataDirectory));
         return CreateProjectRestrictionPolicy(mode, restrictions).WithGrantStore(store, workspace, runId);
+    }
+
+    internal static WeakSandboxConsentState GetWeakSandboxConsentState(RunId? runId)
+    {
+        if (runId is null) return new WeakSandboxConsentState();
+        foreach (var entry in RunSandboxConsents)
+            if (!entry.Value.TryGetTarget(out _) && RunSandboxConsents.TryRemove(entry.Key, out _)) { }
+        while (true)
+        {
+            if (RunSandboxConsents.TryGetValue(runId, out var existing))
+            {
+                if (existing.TryGetTarget(out var state)) return state;
+                var replacementState = new WeakSandboxConsentState();
+                if (RunSandboxConsents.TryUpdate(runId,
+                    new WeakReference<WeakSandboxConsentState>(replacementState), existing)) return replacementState;
+                continue;
+            }
+
+            var created = new WeakSandboxConsentState();
+            if (RunSandboxConsents.TryAdd(runId, new WeakReference<WeakSandboxConsentState>(created))) return created;
+        }
     }
 
     public static OmniCore.Security.FilePermissionGrantStore CreatePermissionGrantStore(

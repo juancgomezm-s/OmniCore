@@ -8,6 +8,7 @@ using OmniCore.Execution;
 using OmniCore.Protocol;
 using OmniCore.Infrastructure;
 using OmniCore.Security;
+using OmniCore.Sandbox;
 using OmniCore.Tools;
 
 /// <summary>Executes trusted workspace Build/Test argv via the same process.exec permission pipeline.</summary>
@@ -23,6 +24,7 @@ internal sealed class ConfiguredCompletionGates
     private readonly IArtifactStore _artifacts;
     private readonly Func<InteractionRequested, string?>? _interactionResponder;
     private readonly bool _interactive;
+    private readonly WeakSandboxConsentState _weakSandboxConsent;
 
     public ConfiguredCompletionGates(WorkspaceGatesYaml configuration, string workspaceRoot,
         RunId runId, LaneId laneId, TaskId? taskId,
@@ -39,6 +41,7 @@ internal sealed class ConfiguredCompletionGates
         _artifacts = artifacts;
         _interactionResponder = interactionResponder;
         _interactive = interactive;
+        _weakSandboxConsent = OmniHost.GetWeakSandboxConsentState(runId);
     }
 
     public IReadOnlyList<ExternalCompletionGateResult> Run(EventStream stream, CancellationToken cancellationToken)
@@ -67,11 +70,12 @@ internal sealed class ConfiguredCompletionGates
         var callId = ToolCallId.New();
         var argsJson = ProcessArguments(executable, arguments, _workspaceRoot,
             RequiresBuildNetwork(executable, arguments));
-        var tool = new ProcessExecTool(SystemProcessRuntime.Instance(), new PathBoundaryValidator());
+        var processLauncher = OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
+        var tool = new ProcessExecTool(processLauncher, new PathBoundaryValidator());
         var catalog = new FakeCatalog().Add(tool);
         var policy = OmniHost.CreateGrantAwarePolicy(RunMode.Act, _restrictions, _workspaceRoot, _runId, _audit);
         var executor = new ScriptedToolExecutor(catalog, policy, _workspaceRoot, boundary: null,
-            _audit, _interactionResponder, _interactive);
+            _audit, _interactionResponder, _interactive, _weakSandboxConsent);
         var outcome = executor.ExecuteTool(new ValidatedToolCall(callId, new ToolId("process.exec"),
             "completion-gate:" + key + ":" + callId, argsJson), false, cancellationToken, stream);
         if (outcome.Events.Count > 0)
@@ -99,8 +103,7 @@ internal sealed class ConfiguredCompletionGates
         for (var i = 0; i < arguments.Count; i++)
             encoded[i] = "\"" + JsonEncodedText.Encode(arguments[i]).ToString() + "\"";
         json += string.Join(",", encoded) + "]," + JsonObj.Field("cwd", cwd)
-            + ",\"timeoutSeconds\":3600,\"networkRequired\":" + (networkRequired ? "true" : "false")
-            + ",\"sandboxLevel\":\"Strong\"}";
+            + ",\"timeoutSeconds\":3600,\"networkRequired\":" + (networkRequired ? "true" : "false") + "}";
         return json;
     }
 

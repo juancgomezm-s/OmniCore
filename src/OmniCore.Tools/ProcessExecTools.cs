@@ -3,21 +3,26 @@ namespace OmniCore.Tools;
 using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+using OmniCore.Sandbox;
 
 /// <summary>process.exec: argv literal, nunca interpretado por un shell (ADR-0015).</summary>
 public sealed class ProcessExecTool : ITool
 {
     private readonly ToolDescriptor _descriptor;
-    private readonly IProcessRuntime _processes;
+    private readonly ISandboxProcessLauncher _processLauncher;
     private readonly IPathBoundaryValidator _boundary;
+    private readonly SandboxStrength _requestedStrength;
 
-    public ProcessExecTool(IProcessRuntime processes, IPathBoundaryValidator boundary)
+    public ProcessExecTool(ISandboxProcessLauncher processLauncher, IPathBoundaryValidator boundary,
+        SandboxStrength requestedStrength = SandboxStrength.Strong)
     {
-        _processes = processes;
+        _processLauncher = processLauncher ?? throw new ArgumentNullException(nameof(processLauncher));
         _boundary = boundary;
+        _requestedStrength = requestedStrength == SandboxStrength.Weak
+            ? SandboxStrength.Weak : SandboxStrength.Strong;
         _descriptor = ProcessToolJson.Descriptor("process.exec",
             "Ejecuta un proceso con argv literal; no usa shell. El cwd debe estar dentro del workspace.",
-            "{\"type\":\"object\",\"properties\":{\"executable\":{\"type\":\"string\"},\"argv\":{\"type\":\"array\"},\"cwd\":{\"type\":\"string\"},\"timeoutSeconds\":{\"type\":\"integer\"},\"networkRequired\":{\"type\":\"boolean\"},\"sandboxLevel\":{\"type\":\"string\"}},\"required\":[\"executable\",\"argv\",\"cwd\",\"timeoutSeconds\"],\"additionalProperties\":false}");
+            "{\"type\":\"object\",\"properties\":{\"executable\":{\"type\":\"string\"},\"argv\":{\"type\":\"array\"},\"cwd\":{\"type\":\"string\"},\"timeoutSeconds\":{\"type\":\"integer\"},\"networkRequired\":{\"type\":\"boolean\"}},\"required\":[\"executable\",\"argv\",\"cwd\",\"timeoutSeconds\"],\"additionalProperties\":false}");
     }
 
     public ToolDescriptor Descriptor => _descriptor;
@@ -44,11 +49,9 @@ public sealed class ProcessExecTool : ITool
             context.WorkspaceRoot);
         if (cwd is null || !_boundary.IsWithin(cwd, context.WorkspaceRoot) || !Directory.Exists(cwd))
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("cwd fuera del workspace o no existe"));
-        var sandbox = ProcessToolJson.GetSandboxLevel(intent.Intent.NormalizedArgumentsJson);
-        if (!ProcessToolJson.EnsureSandboxConsent(context, sandbox, process.Executable))
-            throw new WeakSandboxConsentRequiredException();
-        return System.Threading.Tasks.Task.FromResult(ProcessToolJson.Run(_processes, process.Executable, process.Args, cwd,
-            timeout, cancellationToken));
+        return ProcessToolJson.RunAsync(_processLauncher, process.Executable, process.Args, cwd,
+            context.WorkspaceRoot, timeout, process.NetworkRequired,
+            _requestedStrength, context, cancellationToken);
     }
 }
 
@@ -56,16 +59,20 @@ public sealed class ProcessExecTool : ITool
 public sealed class ShellExecTool : ITool
 {
     private readonly ToolDescriptor _descriptor;
-    private readonly IProcessRuntime _processes;
+    private readonly ISandboxProcessLauncher _processLauncher;
     private readonly IPathBoundaryValidator _boundary;
+    private readonly SandboxStrength _requestedStrength;
 
-    public ShellExecTool(IProcessRuntime processes, IPathBoundaryValidator boundary)
+    public ShellExecTool(ISandboxProcessLauncher processLauncher, IPathBoundaryValidator boundary,
+        SandboxStrength requestedStrength = SandboxStrength.Strong)
     {
-        _processes = processes;
+        _processLauncher = processLauncher ?? throw new ArgumentNullException(nameof(processLauncher));
         _boundary = boundary;
+        _requestedStrength = requestedStrength == SandboxStrength.Weak
+            ? SandboxStrength.Weak : SandboxStrength.Strong;
         _descriptor = ProcessToolJson.Descriptor("shell.exec",
             "Ejecuta un comando raw mediante el shell de plataforma. Superficie de alto riesgo; requiere autorización.",
-            "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeoutSeconds\":{\"type\":\"integer\"},\"sandboxLevel\":{\"type\":\"string\"}},\"required\":[\"command\",\"cwd\",\"timeoutSeconds\"],\"additionalProperties\":false}");
+            "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeoutSeconds\":{\"type\":\"integer\"}},\"required\":[\"command\",\"cwd\",\"timeoutSeconds\"],\"additionalProperties\":false}");
     }
 
     public ToolDescriptor Descriptor => _descriptor;
@@ -95,11 +102,9 @@ public sealed class ShellExecTool : ITool
         if (cwd is null || !_boundary.IsWithin(cwd, context.WorkspaceRoot) || !Directory.Exists(cwd))
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error("cwd fuera del workspace o no existe"));
         var (_, args) = ProcessToolJson.ShellInvocation(command);
-        var sandbox = ProcessToolJson.GetSandboxLevel(intent.Intent.NormalizedArgumentsJson);
-        if (!ProcessToolJson.EnsureSandboxConsent(context, sandbox, intent.Intent.Claims.Process!.Executable))
-            throw new WeakSandboxConsentRequiredException();
-        return System.Threading.Tasks.Task.FromResult(ProcessToolJson.Run(_processes, intent.Intent.Claims.Process!.Executable,
-            args, cwd, TimeSpan.FromSeconds(timeout), cancellationToken));
+        return ProcessToolJson.RunAsync(_processLauncher, intent.Intent.Claims.Process!.Executable,
+            args, cwd, context.WorkspaceRoot, TimeSpan.FromSeconds(timeout), networkRequired: false,
+            _requestedStrength, context, cancellationToken);
     }
 }
 
@@ -196,23 +201,8 @@ internal static class ProcessToolJson
         return (ResolveCwd(workspaceRoot, parsed.Cwd), TimeSpan.FromSeconds(parsed.TimeoutSeconds));
     }
 
-    internal static string GetSandboxLevel(string json)
+    internal static bool EnsureSandboxConsent(ToolExecutionContext context, string executable)
     {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("sandboxLevel", out var value)) return "Strong";
-            var level = value.GetString();
-            return level is "Strong" or "Weak" or "None" ? level : "Strong"; // valores ambiguos, fail closed
-        }
-        catch (JsonException) { return "Strong"; }
-    }
-
-    internal static bool EnsureSandboxConsent(ToolExecutionContext context, string requestedLevel,
-        string executable)
-    {
-        // Strong no está disponible en este milestone. Nunca se degrada silenciosamente.
-        if (requestedLevel != "Strong") return true;
         if (context.WeakSandboxConsent?.GrantedForRun == true) return true;
 
         var id = InteractionId.New();
@@ -220,7 +210,7 @@ internal static class ProcessToolJson
             "{\"operation\":\"Ejecutar proceso sin confinamiento fuerte\",\"toolOrExecutable\":\""
                 + executable.Replace("\\", "\\\\").Replace("\"", "\\\"")
                 + "\",\"risk\":\"high\",\"reason\":\"sandbox.strong_unavailable\"}",
-            "[{\"id\":\"consent_once\",\"intent\":\"allow\",\"lifetime\":\"once\"},{\"id\":\"consent_run\",\"intent\":\"allow\",\"lifetime\":\"run\"},{\"id\":\"deny\",\"intent\":\"deny\"}]", 
+            "[{\"id\":\"consent_once\",\"intent\":\"allow\",\"lifetime\":\"once\"},{\"id\":\"consent_run\",\"intent\":\"allow\",\"lifetime\":\"run\"},{\"id\":\"deny\",\"intent\":\"deny\"}]",
             "deny", null, null, null, null, 0, 1);
         context.EmitEvent?.Invoke(request);
         var option = context.IsInteractive ? context.ResolveInteraction?.Invoke(request) : null;
@@ -233,53 +223,84 @@ internal static class ProcessToolJson
         context.Audit?.Record(new AuditRecord("WeakSandboxConsentGranted", null, null, null,
             DateTimeOffset.UtcNow, null, new Dictionary<string, string>
             {
-                ["requestedLevel"] = "Strong", ["effectiveLevel"] = "Weak", ["lifetime"] = option == "consent_run" ? "Run" : "Once",
+                ["requestedLevel"] = "Strong", ["effectiveLevel"] = "Weak",
+                ["lifetime"] = option == "consent_run" ? "Run" : "Once",
             }), CancellationToken.None);
         return true;
     }
 
-    internal static ToolResult Run(IProcessRuntime runtime, string executable, IReadOnlyList<string> args,
-        string cwd, TimeSpan timeout, CancellationToken cancellationToken)
+    internal static async Task<ToolResult> RunAsync(ISandboxProcessLauncher launcher, string executable,
+        IReadOnlyList<string> args, string cwd, string workspaceRoot, TimeSpan timeout, bool networkRequired,
+        SandboxStrength requestedStrength, ToolExecutionContext context, CancellationToken cancellationToken)
     {
-        ProcessHandle? handle = null;
+        var network = new SandboxNetworkPolicy(networkRequired ? SandboxNetworkMode.AllowAll
+            : SandboxNetworkMode.Deny, Array.Empty<string>());
+        var launch = new SandboxLaunchSpec(requestedStrength, executable, args, cwd,
+            new Dictionary<string, string>(), new[]
+            {
+                new SandboxAllowedPath(Path.GetFullPath(workspaceRoot), SandboxPathAccess.Read | SandboxPathAccess.Write),
+            }, network, timeout);
+        ISandboxProcessControl? process = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            handle = runtime.Launch(new ProcessLaunch(executable, args, cwd,
-                new Dictionary<string, string>(), captureOutput: true), cancellationToken);
-            var result = runtime.Wait(handle, timeout, cancellationToken);
-            var stdout = result.Stdout ?? string.Empty;
-            var stderr = result.Stderr ?? string.Empty;
+            try
+            {
+                process = await launcher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+            }
+            catch (NotSupportedException) when (requestedStrength == SandboxStrength.Strong)
+            {
+                if (!EnsureSandboxConsent(context, executable))
+                    throw new WeakSandboxConsentRequiredException();
+                launch = launch with { RequestedStrength = SandboxStrength.Weak };
+                process = await launcher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+            }
+
+            var output = await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            var stdout = string.Concat(output.Chunks.Where(chunk => chunk.Stream == SandboxOutputStream.StandardOutput)
+                .Select(chunk => chunk.Text));
+            var stderr = string.Concat(output.Chunks.Where(chunk => chunk.Stream == SandboxOutputStream.StandardError)
+                .Select(chunk => chunk.Text));
             var combined = stdout.Length == 0 ? stderr : stderr.Length == 0 ? stdout : stdout + "\n" + stderr;
             var truncated = combined.Length > 16_384;
             if (truncated) combined = combined[..16_384] + "\n[output capped]";
             combined = new RedactionPolicy().Redact(combined);
             var redactor = SecretRedactorRegistry.Current;
             if (redactor is not null) combined = redactor.Redact(combined);
-            var originalSize = (result.Stdout?.Length ?? 0) + (result.Stderr?.Length ?? 0);
-            if (result.TimedOut)
+            var originalSize = stdout.Length + stderr.Length;
+            if (output.TimedOut)
                 return new ToolResult("Proceso agotó timeout o fue cancelado. " + combined, combined, null,
                     originalSize, false, EffectOutcome.Unknown, true);
-            return new ToolResult("Proceso terminó con código " + result.ExitCode
+            return new ToolResult("Proceso terminó con código " + output.ExitCode
                 + (truncated ? " (salida truncada)" : ""), combined, null, originalSize, false,
-                result.ExitCode == 0 ? EffectOutcome.Applied : EffectOutcome.Partial,
-                result.ExitCode != 0);
+                output.ExitCode == 0 ? EffectOutcome.Applied : EffectOutcome.Partial, output.ExitCode != 0);
         }
+        catch (WeakSandboxConsentRequiredException) { throw; }
         catch (ExecutableNotFoundException ex) { return ToolResult.Error(ex.Message); }
         catch (ExecutableRequiresShellException ex) { return ToolResult.Error(ex.Message); }
         catch (OperationCanceledException)
         {
-            if (handle is not null) runtime.CancelTree(handle);
-            return handle is null ? ToolResult.Error("Proceso cancelado")
+            if (process is not null) await TerminateSafelyAsync(process).ConfigureAwait(false);
+            return process is null ? ToolResult.Error("Proceso cancelado")
                 : new ToolResult("Proceso cancelado; el efecto puede ser parcial", null, null, 0, false,
                     EffectOutcome.Unknown, true);
         }
         catch (Exception ex)
         {
-            if (handle is not null) runtime.CancelTree(handle);
-            return handle is null ? ToolResult.Error("No se pudo iniciar el proceso: " + ex.GetType().Name)
+            if (process is not null) await TerminateSafelyAsync(process).ConfigureAwait(false);
+            return process is null ? ToolResult.Error("No se pudo iniciar el proceso: " + ex.GetType().Name)
                 : new ToolResult("Falló la espera del proceso; el efecto puede ser parcial: " + ex.GetType().Name,
                     null, null, 0, false, EffectOutcome.Unknown, true);
         }
+        finally
+        {
+            if (process is not null) await process.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async ValueTask TerminateSafelyAsync(ISandboxProcessControl process)
+    {
+        try { await process.TerminateAsync(CancellationToken.None).ConfigureAwait(false); }
+        catch (Exception) { }
     }
 }
