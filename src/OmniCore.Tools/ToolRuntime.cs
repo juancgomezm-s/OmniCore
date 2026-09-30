@@ -127,7 +127,11 @@ public sealed class ToolRuntime
         }
         if (preparation is PreparationRejected rejected)
         {
-            _emit(new ToolCallRejected(validated.ToolCallId, rejected.Reason, rejected.ErrorCode));
+            // Invariante de código tipado (spec §71): todo rechazo persistido lleva código. Una
+            // tool que no fijó el suyo se clasifica TOOL_FAILURE al persistir, igual que
+            // ToolResult.Error normaliza a falta de código.
+            _emit(new ToolCallRejected(validated.ToolCallId, rejected.Reason,
+                rejected.ErrorCode ?? ToolErrorCode.ToolFailure));
             return new Outcome(false, rejected.Reason, ToolCallState.Rejected, EffectOutcome.None);
         }
 

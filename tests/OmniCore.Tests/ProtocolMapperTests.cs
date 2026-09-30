@@ -74,6 +74,51 @@ public sealed class ProtocolMapperTests
     }
 
     [Fact]
+    public void Failure_events_carry_their_typed_error_code_to_the_wire()
+    {
+        var (store, session, run, stream) = Journal();
+        var failed = ToolCallId.New();
+        var rejected = ToolCallId.New();
+        var legacy = ToolCallId.New();
+        stream.AppendBatch(new DomainEventPayload[] {
+            new ToolCallRequested(failed, "pc", "filesystem.patch", "{}"),
+            new ToolCallPrepared(failed, "{}"),
+            new PermissionEvaluated(failed, PermissionDecision.Allow, "[]", null),
+            new ToolCallAuthorized(failed),
+            new ToolCallStarted(failed, EffectClass.Reconcilable, null),
+            new ToolCallFailed(failed, "STALE_WRITE: versión obsoleta", EffectOutcome.Applied,
+                ToolErrorCode.StaleWrite),
+            new ToolCallRequested(rejected, "pc", "nope.tool", "{}"),
+            new ToolCallRejected(rejected, "tool no encontrada", ToolErrorCode.UnknownTool),
+            // Evento v1 (sin campo): el wire preserva la ausencia con "", no inventa un código.
+            new ToolCallRequested(legacy, "pc", "legacy.tool", "{}"),
+            new ToolCallRejected(legacy, "rechazo de un journal v1"),
+        }, DurabilityClass.Standard);
+
+        var wire = new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1));
+
+        var failedWire = JsonObj.Parse(wire.Single(w =>
+        {
+            var f = JsonObj.Parse(w.PayloadJson);
+            return f["type"] == "toolcall.failed" && f["toolCallId"] == failed.ToString();
+        }).PayloadJson);
+        Assert.Equal("STALE_WRITE", failedWire["errorCode"]);
+        Assert.Equal("Applied", failedWire["effect"]);
+        var rejectedWire = JsonObj.Parse(wire.Single(w =>
+        {
+            var f = JsonObj.Parse(w.PayloadJson);
+            return f["type"] == "toolcall.rejected" && f["toolCallId"] == rejected.ToString();
+        }).PayloadJson);
+        Assert.Equal("UNKNOWN_TOOL", rejectedWire["errorCode"]);
+        var legacyWire = JsonObj.Parse(wire.Single(w =>
+        {
+            var f = JsonObj.Parse(w.PayloadJson);
+            return f["type"] == "toolcall.rejected" && f["toolCallId"] == legacy.ToString();
+        }).PayloadJson);
+        Assert.Equal("", legacyWire["errorCode"]);
+    }
+
+    [Fact]
     public void A_pending_interaction_is_an_overlay_until_it_is_resolved()
     {
         var (store, session, run, stream) = Journal();

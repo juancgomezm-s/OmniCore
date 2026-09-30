@@ -149,7 +149,7 @@ public sealed class Prepared : ToolPreparation
 
 /// <summary>Prepare rechazó por esquema o semántica (alimenta el repair loop).
 /// <c>ErrorCode</c> es el código tipado del rechazo (spec §71): null si el productor no lo fijó
-/// (el runtime lo persiste como código ausente, no como TOOL_FAILURE implícito).</summary>
+/// (el runtime lo normaliza a TOOL_FAILURE al persistir: todo evento de rechazo lleva código).</summary>
 public sealed class PreparationRejected : ToolPreparation
 {
     public string Reason { get; }
