@@ -6,6 +6,35 @@ namespace OmniCore.Qualification;
 /// </summary>
 
 /// <summary>
+/// Suite de cualificación pedida que no existe (solo `quick` está implementada en M5).
+/// </summary>
+public sealed class UnsupportedQualificationSuiteException : Exception
+{
+    public string Suite { get; }
+
+    public UnsupportedQualificationSuiteException(string suite)
+        : base("suite de cualificación no soportada: " + suite)
+    {
+        Suite = suite;
+    }
+}
+
+/// <summary>
+/// La suite no se completó: algún probe terminó en Error/Timeout/NotRun. No se persiste nada:
+/// una cualificación parcial no existe (ADR-0007 §4).
+/// </summary>
+public sealed class QualificationSuiteFailedException : Exception
+{
+    public IReadOnlyList<string> Failures { get; }
+
+    public QualificationSuiteFailedException(IReadOnlyList<string> failures)
+        : base("la suite de cualificación no se completó: " + string.Join("; ", failures))
+    {
+        Failures = failures;
+    }
+}
+
+/// <summary>
 /// El runner no tiene consentimiento explícito para ejecutar la suite. La suite nunca corre
 /// automáticamente al descubrir un modelo (ADR-0007 §6, M5).
 /// </summary>

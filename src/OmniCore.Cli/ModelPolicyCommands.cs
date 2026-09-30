@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text;
+using OmniCore.Client;
 using OmniCore.Host;
 
 namespace OmniCore.Cli;
@@ -8,10 +10,17 @@ namespace OmniCore.Cli;
 /// configuración nueva abre el onboarding mínimo (TTY) o aplica ObserveOnly efímero (no
 /// TTY). Consultar/cambiar/eliminar operan sobre la clave exacta; eliminar la política hace
 /// reaparecer el onboarding en la siguiente selección. El frame TUI de cuestionarios es M4.
+/// `omni model qualify` (M5) ejecuta la suite de cualificación con consentimiento explícito
+/// (--yes o aviso interactivo) y muestra la recomendación resultante, que jamás se aplica
+/// sola: aplicarla exige el flujo explícito `omni model policy set` (ADR-0044 §9).
 /// </summary>
 public sealed class ModelPolicyCommands
 {
     private readonly ModelPolicyHost _host;
+
+    private readonly ModelQualificationHost _qualification;
+
+    private readonly Localization _loc;
 
     private readonly TextReader _input;
 
@@ -23,10 +32,13 @@ public sealed class ModelPolicyCommands
 
     private readonly CancellationToken _cancellationToken;
 
-    private ModelPolicyCommands(ModelPolicyHost host, TextReader input, TextWriter output,
+    private ModelPolicyCommands(ModelPolicyHost host, ModelQualificationHost qualification,
+        Localization loc, TextReader input, TextWriter output,
         bool interactive, string workspaceId, CancellationToken cancellationToken)
     {
         _host = host;
+        _qualification = qualification;
+        _loc = loc;
         _input = input;
         _output = output;
         _interactive = interactive;
@@ -46,9 +58,15 @@ public sealed class ModelPolicyCommands
         // null → DefaultPlatformPaths aplica OMNICORE_DATA_DIR o el directorio de la plataforma.
         // providers.yaml/models.yaml del usuario, nunca del cwd (INV-029, ADR-0039).
         var host = ModelPolicyHost.Create(dataDirectoryOverride, registryOverride);
+        // Mismo data dir y registro: la cualificación comparte el user.db del usuario (M5).
+        var qualification = ModelQualificationHost.Create(dataDirectoryOverride, registryOverride);
+        var loc = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
+            ? Localization.English()
+            : Localization.Spanish();
         // Workspace del CLI: el directorio actual (una selección vigente por proyecto).
         var workspace = "cli|" + Path.GetFullPath(".");
-        var commands = new ModelPolicyCommands(host, reader, writer, tty, workspace, cancellationToken);
+        var commands = new ModelPolicyCommands(host, qualification, loc, reader, writer, tty,
+            workspace, cancellationToken);
         return System.Threading.Tasks.Task.FromResult(commands.Dispatch(args));
     }
 
@@ -69,6 +87,8 @@ public sealed class ModelPolicyCommands
                 return Select(args);
             case "policy":
                 return Policy(args);
+            case "qualify":
+                return Qualify(args);
             default:
                 Usage();
                 return 1;
@@ -405,6 +425,192 @@ public sealed class ModelPolicyCommands
         return 0;
     }
 
+    // ---- omni model qualify <modelo> [--suite quick] [--yes] [--max-cost USD] ----
+
+    /// <summary>
+    /// Ejecuta la suite de cualificación (M5, ADR-0007 §6–§7) con consentimiento explícito:
+    /// --yes o aviso interactivo; sin TTY y sin --yes se rechaza. Muestra la transición de
+    /// estado, los probes, los traits guardados y la recomendación de política operativa
+    /// (ADR-0044 §6), que NO se aplica: aplicarla exige `omni model policy set`.
+    /// </summary>
+    private int Qualify(string[] args)
+    {
+        string? modelId = null;
+        var suite = "quick";
+        var consentGiven = false;
+        var maxCost = 1.00m;
+        for (var i = 2; i < args.Length; i++)
+        {
+            if (args[i] == "--suite" && i + 1 < args.Length)
+            {
+                suite = args[++i];
+            }
+            else if (args[i] == "--yes")
+            {
+                consentGiven = true;
+            }
+            else if (args[i] == "--max-cost" && i + 1 < args.Length)
+            {
+                if (!decimal.TryParse(args[++i], NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                    || parsed < 0)
+                {
+                    _output.WriteLine(_loc.Resolve("cli.model.qualify.invalid_cost", "value", args[i]));
+                    return 1;
+                }
+
+                maxCost = parsed;
+            }
+            else if (modelId is null)
+            {
+                modelId = args[i];
+            }
+        }
+
+        if (modelId is null)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.usage"));
+            return 1;
+        }
+
+        var model = FindModel(modelId);
+        if (model is null)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.unknown_model", "model", modelId));
+            return 2;
+        }
+
+        decimal estimatedCost;
+        try
+        {
+            estimatedCost = ModelQualificationHost.EstimateSuiteCostUsd(suite);
+        }
+        catch (ModelQualificationUnsupportedSuiteException ex)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.suite.unsupported", "suite", ex.Suite));
+            return 2;
+        }
+
+        // Consentimiento explícito (ADR-0007 §7): la suite gasta dinero real y nunca corre sola.
+        // Sin TTY no hay forma de preguntar: sin --yes se rechaza (nada se ejecuta).
+        if (!consentGiven)
+        {
+            if (!_interactive)
+            {
+                _output.WriteLine(_loc.Resolve("cli.model.qualify.consent.required"));
+                return 1;
+            }
+
+            _output.Write(_loc.Resolve("cli.model.qualify.consent.prompt",
+                "cost", estimatedCost.ToString("0.00", CultureInfo.InvariantCulture)));
+            _output.Flush();
+            _cancellationToken.ThrowIfCancellationRequested();
+            var answer = _input.ReadLine()?.Trim().ToLowerInvariant();
+            if (answer is not ("s" or "si" or "sí" or "y" or "yes"))
+            {
+                _output.WriteLine(_loc.Resolve("cli.model.qualify.consent.declined"));
+                return 1;
+            }
+        }
+
+        _output.WriteLine(_loc.Resolve("cli.model.qualify.running", "suite", suite));
+        QualificationRunResult result;
+        try
+        {
+            result = _qualification.QualifyAsync(modelId, new QualificationOptions
+            {
+                Suite = suite,
+                ConsentGiven = true,
+                MaxTotalCostUsd = maxCost,
+            }, _cancellationToken).GetAwaiter().GetResult();
+        }
+        catch (ModelQualificationCostCapException ex)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.cost.exceeded",
+                new Dictionary<string, string>
+                {
+                    ["estimated"] = ex.EstimatedUsd.ToString("0.00", CultureInfo.InvariantCulture),
+                    ["cap"] = ex.CapUsd.ToString("0.00", CultureInfo.InvariantCulture),
+                }));
+            return 2;
+        }
+        catch (ModelQualificationSuiteIncompleteException ex)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.suite.failed",
+                "failures", string.Join("; ", ex.Failures)));
+            return 2;
+        }
+        catch (ModelQualificationUnsupportedSuiteException ex)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.suite.unsupported", "suite", ex.Suite));
+            return 2;
+        }
+        catch (ModelQualificationConsentException)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.consent.required"));
+            return 1;
+        }
+
+        // Estado (ADR-0007 §4): Unknown → Declared → ProvisionallyClassified → Qualified.
+        _output.WriteLine(_loc.Resolve("cli.model.qualify.state", new Dictionary<string, string>
+        {
+            ["previous"] = result.PreviousState,
+            ["state"] = result.NewState,
+            ["revision"] = result.ProfileRevision.ToString(CultureInfo.InvariantCulture),
+            ["key"] = result.KeyHash[..12] + "…",
+        }));
+
+        _output.WriteLine(_loc.Resolve("cli.model.qualify.probe.header"));
+        foreach (var probe in result.Probes)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.probe.line", new Dictionary<string, string>
+            {
+                ["id"] = probe.Id,
+                ["kind"] = probe.Kind,
+                ["status"] = probe.Status,
+                ["score"] = probe.Score.ToString("0.00", CultureInfo.InvariantCulture),
+                ["cost"] = probe.CostUsd.ToString("0.0000", CultureInfo.InvariantCulture),
+            }));
+        }
+
+        _output.WriteLine(_loc.Resolve("cli.model.qualify.trait.header"));
+        foreach (var trait in result.Traits)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.trait.line", new Dictionary<string, string>
+            {
+                ["trait"] = trait.Trait,
+                ["value"] = trait.Value.ToString("0.00", CultureInfo.InvariantCulture),
+                ["confidence"] = trait.Confidence.ToString("0.0", CultureInfo.InvariantCulture),
+                ["samples"] = trait.Samples.ToString(CultureInfo.InvariantCulture),
+                ["source"] = trait.Source,
+            }));
+        }
+
+        // Recomendación (ADR-0044 §6): evidencia → categoría recomendada, nunca auto-ampliada.
+        _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.header",
+            "category", result.RecommendedCategory));
+        _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.mutation", new Dictionary<string, string>
+        {
+            ["mode"] = result.RecommendedMutationMode,
+            ["delete"] = result.RecommendedDeletePolicy,
+            ["move"] = result.RecommendedMoveOrRenamePolicy,
+            ["files"] = result.RecommendedMaxFilesPerTurn.ToString(CultureInfo.InvariantCulture),
+            ["lines"] = result.RecommendedMaxChangedLinesPerTurn.ToString(CultureInfo.InvariantCulture),
+            ["ratio"] = result.RecommendedMaxRewriteRatio.ToString("0.00", CultureInfo.InvariantCulture),
+        }));
+        foreach (var note in result.RecommendationNotes)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.note", "note", note));
+        }
+
+        _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.apply_hint",
+            new Dictionary<string, string>
+            {
+                ["model"] = modelId,
+                ["category"] = result.RecommendedCategory,
+            }));
+        return 0;
+    }
+
     private ModelPolicyKeyDto? ResolveKeyOrError(string modelId, out int exitCode)
     {
         var model = FindModel(modelId);
@@ -438,9 +644,10 @@ public sealed class ModelPolicyCommands
 
     private void Usage()
     {
-        _output.WriteLine("uso: omni model list | select <modelo> | policy show|set|delete|history <modelo>");
+        _output.WriteLine("uso: omni model list | select <modelo> | policy show|set|delete|history <modelo> | qualify <modelo>");
         _output.WriteLine("  omni model select <m>       selecciona y abre onboarding si no hay política");
         _output.WriteLine("  omni model policy set <m> --category <c> [--revision N] [--note \"t\"]");
         _output.WriteLine("  omni model policy delete <m> [--revision N]");
+        _output.WriteLine("  omni model qualify <m> [--suite quick] [--yes] [--max-cost USD]  ejecuta la suite y recomienda");
     }
 }
