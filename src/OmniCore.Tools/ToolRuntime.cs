@@ -19,8 +19,10 @@ public sealed class ToolRuntime
 
     private readonly ModelCapabilityBoundary? _boundary;
 
+    private readonly IExecutableResolver? _executableResolver;
+
     public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit)
-        : this(catalog, policy, emit, null)
+        : this(catalog, policy, emit, null, null)
     {
     }
 
@@ -31,11 +33,18 @@ public sealed class ToolRuntime
     /// </summary>
     public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit,
         ModelCapabilityBoundary? boundary)
+        : this(catalog, policy, emit, boundary, null)
+    {
+    }
+
+    public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit,
+        ModelCapabilityBoundary? boundary, IExecutableResolver? executableResolver)
     {
         _catalog = catalog;
         _policy = policy;
         _emit = emit;
         _boundary = boundary;
+        _executableResolver = executableResolver;
     }
 
     /// <summary>Resultado de ejecutar o rechazar una raw tool call del modelo.</summary>
@@ -107,6 +116,32 @@ public sealed class ToolRuntime
 
         var intent = ((Prepared) preparation).Intent;
 
+        // La resolución se realiza entre Prepare (puro) y la evaluación del Permission Engine,
+        // para que Security autorice el ejecutable real, nunca el nombre solicitado (ADR-0015).
+        if (intent.Claims.Process is { } processClaim)
+        {
+            if (_executableResolver is null)
+            {
+                const string reason = "No hay resolver de ejecutables configurado; proceso rechazado por seguridad";
+                _emit(new ToolCallRejected(validated.ToolCallId, reason));
+                return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
+            }
+            try
+            {
+                var resolved = _executableResolver.Resolve(processClaim.Executable, prepContext.WorkspaceRoot);
+                var claims = new ResourceClaims(intent.Claims.Reads, intent.Claims.Writes, intent.Claims.Network,
+                    new ProcessClaim(resolved.ResolvedPath, processClaim.Args, processClaim.EffectClass,
+                        processClaim.NetworkRequired), intent.Claims.Secrets);
+                intent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
+                    intent.Effect, claims, intent.Risk, intent.Reconciliation);
+            }
+            catch (ExecutableNotFoundException ex)
+            {
+                _emit(new ToolCallRejected(validated.ToolCallId, ex.Message));
+                return new Outcome(false, ex.Message, ToolCallState.Rejected, EffectOutcome.None);
+            }
+        }
+
         // 1b. Frontera de capacidad del modelo (ADR-0044 §5): antes del Permission Engine. Con
         // el estado aún en Requested el rechazo es Rejected en el ciclo durable (ADR-0036 §5).
         // La frontera restringe; jamás autoriza (INV-018): una tool fuera del techo de la
@@ -161,44 +196,42 @@ public sealed class ToolRuntime
             _emit(new PermissionRequested(validated.ToolCallId, interactionId));
             // ADR-0034/0036 §5: el Ask abre un InteractionRequest con sujeto y opciones del
             // servidor. El default es Deny (más restrictiva, ADR-0034 §1).
-            _emit(new InteractionRequested(
-                interactionId,
-                InteractionKind.Permission,
+            var interaction = new InteractionRequested(interactionId, InteractionKind.Permission,
                 SubjectJson(validated.ToolId.ToString()),
                 OptionsJson(_policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }
                     && IsGrantableAsk(decision.Layers)),
-                "deny",
-                null,
-                null,
-                null,
-                null,
-                0,
-                1));
-            // Toda interacción abierta se cierra con InteractionResolved (ADR-0034): si no, la Lane
-            // quedaría esperando un permiso ya decidido.
-            if (!userApprovesAsk)
+                "deny", null, null, null, null, 0, 1);
+            _emit(interaction);
+            // El host resuelve la InteractionRequest; sin cliente interactivo se deniega (ADR-0003).
+            var selectedOption = userApprovesAsk
+                ? approvalLifetime switch
+                {
+                    GrantLifetime.Once => "allow_once",
+                    GrantLifetime.Run => "allow_run",
+                    GrantLifetime.Workspace => "allow_workspace",
+                    _ => "deny",
+                }
+                : execContext.IsInteractive ? execContext.ResolveInteraction?.Invoke(interaction) : null;
+            if (selectedOption is not ("allow_once" or "allow_run" or "allow_workspace"))
             {
-                _emit(new InteractionResolved(interactionId, "deny", InteractionCause.NoClient));
+                _emit(new InteractionResolved(interactionId, "deny",
+                    selectedOption is null
+                        ? (execContext.IsInteractive ? InteractionCause.Timeout : InteractionCause.NoClient)
+                        : InteractionCause.User));
                 _emit(new PermissionDenied(validated.ToolCallId, "Sin aprobación → Deny (ADR-0003)"));
                 return new Outcome(false, "denegado (sin aprobación)", ToolCallState.Rejected, EffectOutcome.None);
             }
 
-            var optionId = approvalLifetime switch
+            var optionId = selectedOption;
+            var effectiveLifetime = optionId switch
             {
-                GrantLifetime.Once => "allow_once",
-                GrantLifetime.Run => "allow_run",
-                GrantLifetime.Workspace => "allow_workspace",
-                _ => "deny",
+                "allow_once" => GrantLifetime.Once,
+                "allow_run" => GrantLifetime.Run,
+                "allow_workspace" => GrantLifetime.Workspace,
+                _ => GrantLifetime.Once,
             };
-            if (optionId == "deny")
-            {
-                _emit(new InteractionResolved(interactionId, "deny", InteractionCause.User));
-                _emit(new PermissionDenied(validated.ToolCallId, "lifetime no permitido"));
-                return new Outcome(false, "denegado", ToolCallState.Rejected, EffectOutcome.None);
-            }
-
-            GrantId? approvedGrant = GrantId.New();
-            if (approvalLifetime != GrantLifetime.Once)
+            GrantId? approvedGrant = effectiveLifetime == GrantLifetime.Once ? null : GrantId.New();
+            if (effectiveLifetime != GrantLifetime.Once)
             {
                 if (_policy is not IGrantablePermissionPolicy grantable)
                 {
@@ -208,7 +241,7 @@ public sealed class ToolRuntime
                 }
                 try
                 {
-                    approvedGrant = grantable.RecordApprovedGrant(intent, approvalLifetime, cancellationToken);
+                    approvedGrant = grantable.RecordApprovedGrant(intent, effectiveLifetime, cancellationToken);
                 }
                 catch (Exception ex)
                 {
@@ -219,7 +252,7 @@ public sealed class ToolRuntime
             }
 
             _emit(new InteractionResolved(interactionId, optionId, InteractionCause.User));
-            _emit(new PermissionGranted(validated.ToolCallId, approvedGrant, approvalLifetime));
+            _emit(new PermissionGranted(validated.ToolCallId, approvedGrant, effectiveLifetime));
             // INV-002: la política ya quedó evaluada con la aprobación humana; no se pide un
             // nuevo permiso. La política de Security comprueba de nuevo que no exista Deny.
             try
@@ -291,6 +324,11 @@ public sealed class ToolRuntime
         {
             result = tool.ExecuteAsync(authorized, execContext, cancellationToken).GetAwaiter().GetResult();
         }
+        catch (WeakSandboxConsentRequiredException ex)
+        {
+            _emit(new ToolCallFailed(call.ToolCallId, ex.Message, EffectOutcome.None));
+            return new Outcome(false, ex.Message, null, ToolCallState.Failed, EffectOutcome.None);
+        }
         catch (Exception ex)
         {
             var cause = "tool lanzó " + ex.GetType().Name + ": " + ex.Message;
@@ -305,10 +343,16 @@ public sealed class ToolRuntime
         }
         if (result.IsError)
         {
-            // P0-2: los fallos de la tool (acceso denegado, no encontrado, falta path, ref
-            // inválida) NUNCA producen toolcall.succeeded; terminan Failed/Rejected.
-            _emit(new ToolCallFailed(call.ToolCallId, result.Summary, EffectOutcome.None));
-            return new Outcome(false, result.Summary, result.Preview, ToolCallState.Failed, EffectOutcome.None);
+            // Un proceso que llegó a arrancar puede haber producido efectos parciales antes de
+            // fallar o agotar timeout: no fingir que no hubo efecto (ADR-0004).
+            if (result.EffectOutcome == EffectOutcome.Unknown)
+            {
+                _emit(new ToolCallEffectUnknown(call.ToolCallId, intent.Effect));
+                return new Outcome(false, result.Summary, result.Preview, ToolCallState.EffectUnknown,
+                    EffectOutcome.Unknown);
+            }
+            _emit(new ToolCallFailed(call.ToolCallId, result.Summary, result.EffectOutcome));
+            return new Outcome(false, result.Summary, result.Preview, ToolCallState.Failed, result.EffectOutcome);
         }
 
         var effect = result.EffectOutcome;

@@ -3,6 +3,7 @@ namespace OmniCore.Host;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Execution;
 using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
@@ -27,12 +28,23 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// </summary>
     private readonly ModelCapabilityBoundary? _boundary;
 
+    private readonly IExecutableResolver _executableResolver;
+
+    private readonly WeakSandboxConsentState _weakSandboxConsent = new();
+
+    private readonly IAuditSink? _audit;
+
+    private readonly Func<InteractionRequested, string?>? _interactionResponder;
+
+    private readonly bool _isInteractive;
+
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy)
     {
         _catalog = catalog;
         _policy = policy;
         _workspaceRoot = "sim";
         _boundary = null;
+        _executableResolver = new SystemExecutableResolver();
     }
 
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot)
@@ -41,6 +53,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _policy = policy;
         _workspaceRoot = workspaceRoot;
         _boundary = null;
+        _executableResolver = new SystemExecutableResolver();
     }
 
     /// <summary>
@@ -50,11 +63,22 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// </summary>
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
         ModelCapabilityBoundary? boundary)
+        : this(catalog, policy, workspaceRoot, boundary, null, null, false)
+    {
+    }
+
+    public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
+        ModelCapabilityBoundary? boundary, IAuditSink? audit,
+        Func<InteractionRequested, string?>? interactionResponder, bool isInteractive)
     {
         _catalog = catalog;
         _policy = policy;
         _workspaceRoot = workspaceRoot;
         _boundary = boundary;
+        _executableResolver = new SystemExecutableResolver();
+        _audit = audit;
+        _interactionResponder = interactionResponder;
+        _isInteractive = isInteractive;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -112,6 +136,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
         Func<DomainEventPayload, VoidBox> emit = payload =>
         {
+            if (stream is not null && payload is InteractionRequested or InteractionResolved)
+            {
+                foreach (var evt in buffered) stream.Append(evt);
+                buffered.Clear();
+                stream.Append(payload);
+                return VoidBox.Instance;
+            }
+
             if (stream is not null && payload is ToolCallStarted started
                 && started.EffectClass != EffectClass.None)
             {
@@ -133,11 +165,12 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             return VoidBox.Instance;
         };
 
-        var runtime = ToolRuntime.For(_catalog, _policy, emit, _boundary);
+        var runtime = new ToolRuntime(_catalog, _policy, emit, _boundary, _executableResolver);
         var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now);
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
-        var execContext = new ToolExecutionContext(_workspaceRoot, _boundary?.ReadRegistry());
+        var execContext = new ToolExecutionContext(_workspaceRoot, _boundary?.ReadRegistry(),
+            payload => emit(payload), _interactionResponder, _audit, _isInteractive, _weakSandboxConsent);
         var outcome = runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken);
         var events = buffered.ToArray();
 

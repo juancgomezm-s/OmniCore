@@ -132,7 +132,7 @@ public sealed class ResourceClaims
 public record NetworkGrant(string Host, int? Port) { }
 
 /// <summary>Reclamación de proceso con su clase de efecto (ADR-0015 §1).</summary>
-public record ProcessClaim(string Executable, IReadOnlyList<string> Args, string EffectClass) { }
+public record ProcessClaim(string Executable, IReadOnlyList<string> Args, string EffectClass, bool NetworkRequired = false) { }
 
 /// <summary>Reclamación de un recurso de red.</summary>
 public record NetworkClaim(string Host, int? Port) { }
