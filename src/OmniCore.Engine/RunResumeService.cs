@@ -352,8 +352,12 @@ public sealed class RunResumeService
                 // ADR-0004 §3: una tool sin efectos (EffectClass.None) se reejecuta siempre: no hay
                 // nada que reconciliar ni que bloquee el Run. Se cierra como fallida-sin-efecto
                 // (Started → Failed, ADR-0036) para que el modelo pueda reintentarla.
+                // Código tipado CANCELLATION (spec §71): la ejecución se interrumpió por el crash.
+                // No es UNKNOWN_EFFECT porque el efecto NO es desconocido (None, sin efecto
+                // parcial); ese código queda para la reconciliación conservadora (ADR-0004 §2).
                 stream.Append(new ToolCallFailed(id,
-                    "interrupted by crash before completion; no side effects, safe to retry", EffectOutcome.None));
+                    "interrupted by crash before completion; no side effects, safe to retry", EffectOutcome.None,
+                    ToolErrorCode.Cancellation));
                 reconciled += 1;
                 continue;
             }

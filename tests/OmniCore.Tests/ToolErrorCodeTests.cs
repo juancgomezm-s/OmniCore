@@ -16,8 +16,11 @@ namespace OmniCore.Tests;
 /// al modelo), el summary mantiene su texto estable y el código viaja aparte en el
 /// <c>ToolResult</c> y en los eventos de fallo <c>ToolCallRejected</c>/<c>ToolCallFailed</c>
 /// (v2, campo opcional). Cubre: validación del tipo, un productor por código, el round-trip
-/// del código por el journal real (SQLite cerrado y reabierto, sobre el JSON persistido) y el
-/// decode de eventos v1 sin el campo (upcaster identidad → ErrorCode null).
+/// del código por el journal real (SQLite cerrado y reabierto, sobre el JSON persistido), el
+/// decode de eventos v1 sin el campo (upcaster identidad → ErrorCode null) y los productores
+/// de fallo que quedaban: Prepare que lanza, rechazo de Prepare sin código (normalizado),
+/// interrupción de una llamada Started (RunControlService) y cierre por recuperación de una
+/// lectura interrumpida (RunResumeService) — todos con el código persistido en el journal.
 /// </summary>
 public sealed class ToolErrorCodeTests
 {
@@ -720,6 +723,268 @@ public sealed class ToolErrorCodeTests
         }
     }
 
+    // ---------------------- 5b. Fallos restantes: Prepare, cancel y recuperación
+
+    [Fact]
+    public void Prepare_throw_yields_rejected_with_tool_failure_code()
+    {
+        var ws = TempDir();
+        try
+        {
+            var events = new List<DomainEventPayload>();
+            var runtime = new ToolRuntime(new FakeCatalog().Add(new PrepareThrowsTool()),
+                ScriptedPermissionPolicy.WithTool("prepare.boom", PermissionDecision.Allow),
+                payload => { events.Add(payload); return VoidBox.Instance; });
+
+            var outcome = runtime.Run(
+                new ValidatedToolCall(ToolCallId.New(), new ToolId("prepare.boom"), "p1", "{}"),
+                new ToolPreparationContext(ws, DateTimeOffset.Now), new ToolExecutionContext(ws),
+                false, CancellationToken.None);
+
+            Assert.False(outcome.Succeeded);
+            var rejected = RejectedOf(events);
+            Assert.Equal(ToolErrorCode.ToolFailure, rejected.ErrorCode);
+            Assert.StartsWith("prepare falló:", rejected.Reason); // texto estable, sin el código dentro
+        }
+        finally
+        {
+            RmDir(ws);
+        }
+    }
+
+    [Fact]
+    public void Codeless_preparation_rejection_is_normalized_to_tool_failure_code()
+    {
+        var ws = TempDir();
+        try
+        {
+            // Una tool que rechaza en Prepare sin fijar código (p. ej. código v1): el runtime no
+            // persiste un rechazo huérfano — lo clasifica TOOL_FAILURE (spec §71, invariante:
+            // todo evento de rechazo persistido lleva código).
+            var events = new List<DomainEventPayload>();
+            var runtime = new ToolRuntime(new FakeCatalog().Add(new CodelessRejectingTool()),
+                ScriptedPermissionPolicy.WithTool("codeless.read", PermissionDecision.Allow),
+                payload => { events.Add(payload); return VoidBox.Instance; });
+
+            var outcome = runtime.Run(
+                new ValidatedToolCall(ToolCallId.New(), new ToolId("codeless.read"), "p1", "{}"),
+                new ToolPreparationContext(ws, DateTimeOffset.Now), new ToolExecutionContext(ws),
+                false, CancellationToken.None);
+
+            Assert.False(outcome.Succeeded);
+            var rejected = RejectedOf(events);
+            Assert.Equal(ToolErrorCode.ToolFailure, rejected.ErrorCode);
+            Assert.Equal("motivo de rechazo de la tool", rejected.Reason); // el texto viaja intacto
+        }
+        finally
+        {
+            RmDir(ws);
+        }
+    }
+
+    [Fact]
+    public void Interrupt_closing_a_started_call_persists_cancellation_code()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = TestRun.Open(store, session);
+        var stream = new EventStream(store, codecs, session);
+        var started = ToolCallId.New();
+        stream.Append(new TurnStarted(TurnId.New(), run.RootLane));
+        stream.AppendBatch(new DomainEventPayload[] {
+            new ToolCallRequested(started, "pc", "fake.read", "{}"),
+            new ToolCallPrepared(started, "{}"),
+            new PermissionEvaluated(started, PermissionDecision.Allow, "[]", null),
+            new ToolCallAuthorized(started),
+            new ToolCallStarted(started, EffectClass.None, null),
+        }, DurabilityClass.Standard);
+
+        new RunControlService(store, codecs).Interrupt(session, run.RunId);
+
+        // El evento PERSISTIDO (decode del journal) lleva el código de interrupción, no solo Cause.
+        var journal = store.ReadFrom(session, 1);
+        var failed = journal.Select(codecs.Decode).OfType<ToolCallFailed>().Single();
+        Assert.Equal(started, failed.ToolCallId);
+        Assert.Equal(ToolErrorCode.Cancellation, failed.ErrorCode);
+        Assert.Equal(EffectOutcome.Unknown, failed.EffectOutcome);
+        CanonicalStateTracker.Replay(codecs, journal); // Started → Failed es una transición válida
+    }
+
+    [Fact]
+    public void Recovery_close_of_an_interrupted_read_persists_cancellation_code()
+    {
+        var ws = TempDir();
+        try
+        {
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session);
+            var call = ToolCallId.New();
+            var stream = new EventStream(store, codecs, session);
+            // Crash justo tras el Barrier: la lectura quedó Started sin outcome.
+            stream.AppendBatch(new DomainEventPayload[] {
+                new ToolCallRequested(call, "pc", "filesystem.read", "{}"),
+                new ToolCallPrepared(call, "{}"),
+                new PermissionEvaluated(call, PermissionDecision.Allow, "[]", null),
+                new ToolCallAuthorized(call),
+                new ToolCallStarted(call, EffectClass.None, null),
+            }, DurabilityClass.Barrier);
+
+            var resumed = new RunResumeService(store, codecs, null, ws).Resume(session, run.RunId);
+            Assert.Equal(1, resumed);
+
+            var journal = store.ReadFrom(session, 1);
+            var failed = journal.Select(codecs.Decode).OfType<ToolCallFailed>().Single();
+            Assert.Equal(call, failed.ToolCallId);
+            // El crash INTERRUMPIÓ la ejecución (spec §71 CANCELLATION); con efecto None no hay
+            // efecto parcial que reconciliar, así que no es UNKNOWN_EFFECT.
+            Assert.Equal(ToolErrorCode.Cancellation, failed.ErrorCode);
+            Assert.Equal(EffectOutcome.None, failed.EffectOutcome);
+            CanonicalStateTracker.Replay(codecs, journal); // Started → Failed válida tras recovery
+        }
+        finally
+        {
+            RmDir(ws);
+        }
+    }
+
+    /// <summary>
+    /// Sweep de las rutas principales de fallo (spec §71): cada una deja en el JOURNAL su evento
+    /// de fallo/rechazo con SU código — unknown tool, schema inválido, permiso denegado,
+    /// prepare que lanza, excepción de tool, interrupción de una Started y cierre por
+    /// recuperación de una lectura interrumpida. Regla: ningún evento de fallo sin código.
+    /// </summary>
+    [Fact]
+    public void Main_failure_paths_persist_their_expected_code()
+    {
+        var ws = TempDir();
+        try
+        {
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session);
+            var stream = new EventStream(store, codecs, session);
+            var executor = Pipeline(ws);
+
+            void Persist(ToolOutcome outcome)
+            {
+                foreach (var evt in outcome.Events)
+                {
+                    stream.Append(evt);
+                }
+            }
+
+            ValidatedToolCall Call(ToolCallId id, string tool, string argsJson) =>
+                new(id, new ToolId(tool), "pc", argsJson);
+
+            // 1) unknown tool → UNKNOWN_TOOL.
+            var unknown = ToolCallId.New();
+            Persist(executor.ExecuteTool(Call(unknown, "nope.tool", "{}"), true,
+                CancellationToken.None, stream));
+
+            // 2) schema inválido (filesystem.patch sin oldText/newText) → INVALID_ARGUMENTS.
+            var schema = ToolCallId.New();
+            Persist(executor.ExecuteTool(
+                Call(schema, "filesystem.patch", "{\"path\":\"doc.txt\"}"),
+                true, CancellationToken.None, stream));
+
+            // 3) permiso denegado (ruta de secretos en Prepare) → PERMISSION_DENIED.
+            var denied = ToolCallId.New();
+            Persist(executor.ExecuteTool(
+                Call(denied, "filesystem.read", "{\"path\":\".env\"}"),
+                true, CancellationToken.None, stream));
+
+            // 4) prepare que lanza → TOOL_FAILURE (productor del ToolRuntime, no de la tool).
+            var prepare = ToolCallId.New();
+            var prepareEvents = new List<DomainEventPayload>();
+            new ToolRuntime(new FakeCatalog().Add(new PrepareThrowsTool()),
+                ScriptedPermissionPolicy.WithTool("prepare.boom", PermissionDecision.Allow),
+                payload => { prepareEvents.Add(payload); return VoidBox.Instance; })
+                .Run(Call(prepare, "prepare.boom", "{}"),
+                    new ToolPreparationContext(ws, DateTimeOffset.Now), new ToolExecutionContext(ws),
+                    false, CancellationToken.None);
+            foreach (var evt in prepareEvents)
+            {
+                stream.Append(evt);
+            }
+
+            // 5) excepción de tool (ExecuteAsync lanza) → TOOL_FAILURE.
+            var boom = ToolCallId.New();
+            var boomEvents = new List<DomainEventPayload>();
+            new ToolRuntime(new FakeCatalog().Add(new ExplodingTool()),
+                ScriptedPermissionPolicy.WithTool("boom.none", PermissionDecision.Allow),
+                payload => { boomEvents.Add(payload); return VoidBox.Instance; })
+                .Run(Call(boom, "boom.none", "{}"),
+                    new ToolPreparationContext(ws, DateTimeOffset.Now), new ToolExecutionContext(ws),
+                    false, CancellationToken.None);
+            foreach (var evt in boomEvents)
+            {
+                stream.Append(evt);
+            }
+
+            // 6) interrupción de una llamada Started → CANCELLATION (RunControlService).
+            var cancelled = ToolCallId.New();
+            stream.AppendBatch(new DomainEventPayload[] {
+                new ToolCallRequested(cancelled, "pc", "fake.read", "{}"),
+                new ToolCallPrepared(cancelled, "{}"),
+                new PermissionEvaluated(cancelled, PermissionDecision.Allow, "[]", null),
+                new ToolCallAuthorized(cancelled),
+                new ToolCallStarted(cancelled, EffectClass.None, null),
+            }, DurabilityClass.Standard);
+            new RunControlService(store, codecs).Interrupt(session, run.RunId);
+
+            // 7) cierre por recuperación de una lectura interrumpida → CANCELLATION
+            //    (RunResumeService, en su propia sesión: el crash dejó Started sin outcome).
+            var crashSession = SessionId.New();
+            var crashRun = TestRun.Open(store, crashSession);
+            var recovered = ToolCallId.New();
+            var crashStream = new EventStream(store, codecs, crashSession);
+            crashStream.AppendBatch(new DomainEventPayload[] {
+                new ToolCallRequested(recovered, "pc", "filesystem.read", "{}"),
+                new ToolCallPrepared(recovered, "{}"),
+                new PermissionEvaluated(recovered, PermissionDecision.Allow, "[]", null),
+                new ToolCallAuthorized(recovered),
+                new ToolCallStarted(recovered, EffectClass.None, null),
+            }, DurabilityClass.Barrier);
+            Assert.Equal(1, new RunResumeService(store, codecs, null, ws).Resume(crashSession,
+                crashRun.RunId));
+
+            // Asertos sobre el journal persistido (decode), no sobre los objetos en memoria.
+            var persisted = store.ReadFrom(session, 1).Select(codecs.Decode).ToList();
+            ToolCallRejected Rejected(ToolCallId id) =>
+                Assert.Single(persisted.OfType<ToolCallRejected>(), r => r.ToolCallId.Equals(id));
+            ToolCallFailed Failed(ToolCallId id) =>
+                Assert.Single(persisted.OfType<ToolCallFailed>(), f => f.ToolCallId.Equals(id));
+
+            Assert.Equal(ToolErrorCode.UnknownTool, Rejected(unknown).ErrorCode);
+            Assert.Equal(ToolErrorCode.InvalidArguments, Rejected(schema).ErrorCode);
+            Assert.Equal(ToolErrorCode.PermissionDenied, Rejected(denied).ErrorCode);
+            Assert.Equal(ToolErrorCode.ToolFailure, Rejected(prepare).ErrorCode);
+            Assert.Equal(ToolErrorCode.ToolFailure, Failed(boom).ErrorCode);
+            Assert.Equal(ToolErrorCode.Cancellation, Failed(cancelled).ErrorCode);
+            Assert.Equal(EffectOutcome.Unknown, Failed(cancelled).EffectOutcome);
+
+            var crashPersisted = store.ReadFrom(crashSession, 1).Select(codecs.Decode).ToList();
+            var recoveredFailed = Assert.Single(crashPersisted.OfType<ToolCallFailed>(),
+                f => f.ToolCallId.Equals(recovered));
+            Assert.Equal(ToolErrorCode.Cancellation, recoveredFailed.ErrorCode);
+            Assert.Equal(EffectOutcome.None, recoveredFailed.EffectOutcome);
+
+            // Invariante del sweep: ningún fallo/rechazo persistido queda sin código.
+            foreach (var failure in persisted.OfType<ToolCallFailed>()) Assert.NotNull(failure.ErrorCode);
+            foreach (var rejection in persisted.OfType<ToolCallRejected>()) Assert.NotNull(rejection.ErrorCode);
+            CanonicalStateTracker.Replay(codecs, store.ReadFrom(session, 1));
+            CanonicalStateTracker.Replay(codecs, store.ReadFrom(crashSession, 1));
+        }
+        finally
+        {
+            RmDir(ws);
+        }
+    }
+
     // ------------------------------------- 6. Journals v1: campo ausente → null
 
     [Fact]
@@ -771,6 +1036,38 @@ public sealed class ToolErrorCodeTests
 
             throw new InvalidOperationException("el consentimiento debe denegarse antes de lanzar");
         }
+    }
+
+    /// <summary>Tool cuyo Prepare lanza: el ToolRuntime tipa el rechazo TOOL_FAILURE.</summary>
+    private sealed class PrepareThrowsTool : ITool
+    {
+        private readonly ToolDescriptor _descriptor = new(new ToolId("prepare.boom"),
+            "Prepare lanza siempre (test)", new InputSchema("{}"), new string[0], true, false,
+            ToolRisk.Low, ComponentSource.Core(), ToolProtection.None, EffectClass.None);
+
+        public ToolDescriptor Descriptor => _descriptor;
+
+        public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context) =>
+            throw new InvalidOperationException("prepare boom");
+
+        public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("nunca llega a ejecutar");
+    }
+
+    /// <summary>Tool que rechaza en Prepare SIN fijar código: el runtime lo normaliza TOOL_FAILURE.</summary>
+    private sealed class CodelessRejectingTool : ITool
+    {
+        private readonly ToolDescriptor _descriptor = new(new ToolId("codeless.read"),
+            "Rechaza en Prepare sin código (test)", new InputSchema("{}"), new string[0], true, false,
+            ToolRisk.Low, ComponentSource.Core(), ToolProtection.None, EffectClass.None);
+
+        public ToolDescriptor Descriptor => _descriptor;
+
+        public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context) =>
+            new PreparationRejected("motivo de rechazo de la tool", null);
+
+        public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("nunca llega a ejecutar");
     }
 
     /// <summary>Tool EffectClass.None que lanza en ExecuteAsync: el runtime lo tipa TOOL_FAILURE.</summary>

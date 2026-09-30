@@ -76,8 +76,14 @@ public sealed class ProtocolMapper
         {
             ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Cause),
             ["effect"] = e.EffectOutcome.ToString(),
+            // Código tipado (spec §71) al wire; "" preserva los journals v1 sin campo.
+            ["errorCode"] = e.ErrorCode?.Value ?? "",
         },
-        ToolCallRejected e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Reason) },
+        ToolCallRejected e => new()
+        {
+            ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Reason),
+            ["errorCode"] = e.ErrorCode?.Value ?? "",
+        },
         PermissionDenied e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Cause) },
         ToolCallCancelled e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Cause) },
         ToolCallReconciled e => new()
