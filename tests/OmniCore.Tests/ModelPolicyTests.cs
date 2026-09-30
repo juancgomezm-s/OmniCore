@@ -322,13 +322,13 @@ public sealed class ModelPolicyTests
     {
         // La frontera restringe, no autoriza (INV-002): Allow significa solo "no corta aquí" y
         // el Permission Engine sigue siendo obligatorio. Se verifica por contrato del tipo:
-        // ModelCapabilityDecision no abre AuthorizedToolIntent en ningún caso.
+        // ModelCapabilityDecision no abre AuthorizedToolIntent en ningún caso (RequiresAsk solo baja a Ask).
         var boundary = new ModelCapabilityBoundary(EffectiveFor(ModelPolicyPresets.FullAgent()));
         var decision = boundary.Evaluate(BoundaryTests.Intent("filesystem.read"));
 
         Assert.True(decision.Allowed);
         Assert.Null(decision.Reason);
-        Assert.False(typeof(ModelCapabilityDecision).GetProperties().Length > 3,
+        Assert.False(typeof(ModelCapabilityDecision).GetProperties().Length > 4,
             "la decisión de frontera no puede portar autorización");
     }
 
