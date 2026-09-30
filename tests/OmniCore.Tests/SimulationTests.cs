@@ -25,7 +25,7 @@ public sealed class SimulationTests
         var tail = store.ReadFrom(result.SessionId, 1);
         var types = tail.Select(e => e.Type.ToString()).ToArray();
         Assert.True(types.Contains("plan_item.started"), "plan.propose emite PlanItemStarted");
-        Assert.Equal(0, result.ExitCode);
+        Assert.True(result.ExitCode == 0, string.Join(" | ", result.Diagnostics));
     }
 
     [Fact]

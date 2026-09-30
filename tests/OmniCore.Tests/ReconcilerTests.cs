@@ -77,7 +77,8 @@ public sealed class ReconcilerTests
 
         Console.WriteLine("mutations=[" + string.Join(",", kinds) + "]");
         Assert.True(mutations.Count > 0);
-        Assert.Equal(OmniCore.Domain.PlanMutationKind.Start, mutations[0].Kind);
+        // R6 lleva Pending → Ready (ADR-0016 §5); Ready no es progreso ni arranca el item.
+        Assert.Equal(OmniCore.Domain.PlanMutationKind.Ready, mutations[0].Kind);
         Assert.True(mutations[0].ItemId!.Equals(bId));
     }
 

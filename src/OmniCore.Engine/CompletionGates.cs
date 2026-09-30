@@ -126,8 +126,13 @@ public sealed class ObjectConversions
 }
 
 /// <summary>
-/// Watchdog de progreso (ADR-0036 §7, ADR-0016 §9): si un item lleva N Turns en InProgress
-/// sin señal de progreso, emite ProgressStalled. En M1 N es constante (6).
+/// Watchdog de progreso (ADR-0036 §7, ADR-0016 §9): si el item actual lleva N Turns en InProgress
+/// sin ninguna señal de progreso, se emite <c>ProgressStalled</c>. N es el umbral configurado (en M1
+/// una constante, 6; desde M2 sale de <c>HarnessPolicy.StallThresholdTurns</c>).
+/// <para>Señales de progreso: transición de una Task, Lane o PlanItem; una ToolCall con efecto
+/// aplicado; una ToolCall que termina bien sobre un recurso no visto antes (explorar cuenta); un
+/// resultado de validación. Solo cuentan los Turns de las Lanes vinculadas al item o, si no tiene
+/// vínculos, los de la Lane raíz.</para>
 /// </summary>
 public sealed class ProgressWatchdog
 {
@@ -135,12 +140,71 @@ public sealed class ProgressWatchdog
 
     public ProgressWatchdog() => _thresholdTurns = ProgressReconciler.DefaultStallThresholdTurns;
 
-    public ProgressWatchdog(int thresholdTurns) => _thresholdTurns = thresholdTurns;
+    public ProgressWatchdog(int thresholdTurns)
+    {
+        if (thresholdTurns < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(thresholdTurns), "el umbral debe ser al menos 1 Turn");
+        }
+
+        _thresholdTurns = thresholdTurns;
+    }
 
     public int ThresholdTurns() => _thresholdTurns;
 
     public bool IsStalled(int turnsInProgressSinceSignal) => turnsInProgressSinceSignal >= _thresholdTurns;
 
-    /// <summary>Señal de progreso según la taxonomía de ADR-0036 §7.</summary>
-    public static bool IsProgressSignal(ProgressSignalKind kind) => true;
+    /// <summary>Turns de las Lanes dadas desde la última señal de progreso (ADR-0036 §7).</summary>
+    public static int TurnsWithoutProgress(IEventCodecRegistry codecs, IReadOnlyList<DomainEvent> events,
+        IReadOnlyCollection<LaneId> lanes)
+    {
+        var turns = 0;
+        var effects = new Dictionary<ToolCallId, EffectClass>();
+        var resourceOf = new Dictionary<ToolCallId, string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var evt in events)
+        {
+            var payload = codecs.Decode(evt);
+            switch (payload)
+            {
+                case TurnStarted started when lanes.Contains(started.LaneId):
+                    turns += 1;
+                    break;
+                case ToolCallRequested requested:
+                    resourceOf[requested.ToolCallId] = requested.ToolName + "|" + requested.ArgumentsJson;
+                    break;
+                case ToolCallStarted started:
+                    effects[started.ToolCallId] = started.EffectClass;
+                    break;
+                case ToolCallSucceeded succeeded:
+                    var applied = effects.TryGetValue(succeeded.ToolCallId, out var effect) && effect != EffectClass.None;
+                    var fresh = resourceOf.TryGetValue(succeeded.ToolCallId, out var resource) && seen.Add(resource);
+                    if (applied || fresh)
+                    {
+                        turns = 0;
+                    }
+
+                    break;
+                case ToolCallReconciled { Outcome: ReconciliationOutcome.Applied }:
+                case RunValidationRejected or RunValidationStarted:
+                    turns = 0;
+                    break;
+                default:
+                    if (IsTransition(payload))
+                    {
+                        turns = 0;
+                    }
+
+                    break;
+            }
+        }
+
+        return turns;
+    }
+
+    private static bool IsTransition(DomainEventPayload payload) => payload is
+        TaskReady or TaskStarted or TaskBlocked or TaskUnblocked or TaskCompleted or TaskFailed or TaskSkipped
+        or TaskCancelled or LaneStarted or LaneBlocked or LaneUnblocked or LaneCompleted or LaneFailed
+        or LaneCancelled or PlanItemReady or PlanItemStarted or PlanItemBlocked or PlanItemUnblocked
+        or PlanItemCompleted or PlanItemFailed or PlanItemSkipped or PlanItemCancelled or PlanItemReopened;
 }

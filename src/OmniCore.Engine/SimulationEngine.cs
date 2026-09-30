@@ -36,6 +36,9 @@ public sealed class SimulationEngine
     /// <summary>Respuesta al PlanApproval del escenario en curso (null = nadie responde).</summary>
     private string? _planApproval;
 
+    /// <summary>Umbral del watchdog del escenario en curso (ADR-0036 §7).</summary>
+    private int _stallThreshold = ProgressReconciler.DefaultStallThresholdTurns;
+
     public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit)
     {
         _store = store;
@@ -122,6 +125,7 @@ public sealed class SimulationEngine
     public RunResult Execute(SimulationScenario scenario, CancellationToken cancellationToken)
     {
         _planApproval = scenario.PlanApproval;
+        _stallThreshold = scenario.StallThresholdTurns ?? ProgressReconciler.DefaultStallThresholdTurns;
         var sessionId = SessionId.New();
         var runId = RunId.New();
         var rootTaskId = TaskId.New();
@@ -161,6 +165,14 @@ public sealed class SimulationEngine
         var rootItemId = PlanItemId.New();
         stream.Append(new PlanCreated(planId, runId, rootItemId, scenario.Input));
 
+        // El "modelo" divide el objetivo en pasos: Plan rev.2 (ADR-0016 §6) con los pasos como
+        // hijos del item raíz, que pasa a ser un contenedor derivado (ADR-0035 §3, ADR-0036 §4).
+        if (scenario.Plan.Count > 0)
+        {
+            stream.Append(new PlanRevised(planId, runId, 2,
+                "[{\"kind\":\"Split\",\"cause\":\"Model\",\"item\":\"" + rootItemId + "\"}]", MutationImpact.Minor));
+        }
+
         var itemIds = new Dictionary<string, PlanItemId>();
         itemIds["P0"] = rootItemId;
         var order = 2;
@@ -181,7 +193,7 @@ public sealed class SimulationEngine
                 deps.Add(Entities.PlanItem(itemIds, d));
             }
 
-            stream.Append(new PlanItemAdded(pid, planId, m.Text, order++, null, deps.ToArray(), true,
+            stream.Append(new PlanItemAdded(pid, planId, m.Text, order++, rootItemId, deps.ToArray(), true,
                 new Dictionary<string, string>()));
         }
 
@@ -256,72 +268,35 @@ public sealed class SimulationEngine
     }
 
     /// <summary>
-    /// Watchdog de progreso (ADR-0016 §9): si el item actual lleva el umbral de Turns en
-    /// InProgress sin señal de progreso, emite ProgressStalled en el journal.
+    /// Watchdog de progreso (ADR-0016 §9, ADR-0036 §7): si el item actual (R7) lleva el umbral de
+    /// Turns en InProgress sin señal de progreso —contando solo los Turns de sus Lanes vinculadas o,
+    /// sin vínculos, de la Lane raíz— emite ProgressStalled.
     /// </summary>
     private void EmitStallIfNeeded(EventStream stream, SessionId sessionId, RunId runId)
     {
         var tail = stream.EventsSince(1);
         var plan = PlanProjection.Replay(_codecs, tail);
-        var turns = CountTurns(tail);
-        if (turns <= 0)
-        {
-            return;
-        }
-
-        var watchdog = new ProgressWatchdog(HarnessThreshold());
         var current = _reconciler.CurrentItem(plan);
-        if (current is null || !watchdog.IsStalled(turns))
+        var item = current is null ? null : plan.Item(current);
+        if (item is null || item.State != PlanItemState.InProgress)
         {
             return;
         }
 
-        stream.Append(new ProgressStalled(current!, turns, DateTimeOffset.Now));
-    }
-
-    /// <summary>
-    /// El umbral del watchdog viene del HarnessPolicy del modelo efectivo (ADR-0007 §3): se
-    /// alimenta con el perfil simulado (MultiStepExecutionReliability de un worker local).
-    /// </summary>
-    private int HarnessThreshold()
-    {
-        var profile = new EffectiveModelProfile(
-            "qwen38-27b-local", 8192, 8192, 2048, ["text"],
-            [ToolCallFormat.Native, ToolCallFormat.PromptedJson], false,
-            new Dictionary<string, double>
-            {
-                ["MultiStepExecutionReliability"] = 0.6,
-                ["PlanTrackingReliability"] = 0.6,
-                ["ToolCallReliability"] = 0.7,
-                ["ToolErrorRecovery"] = 0.5,
-                ["InstructionFollowing"] = 0.6,
-            });
-        return new HarnessPolicyResolver().Resolve(profile).StallThresholdTurns;
-    }
-
-    private static int CountTurns(IReadOnlyList<DomainEvent> events)
-    {
-        var started = 0;
-        var completed = 0;
-        foreach (var evt in events)
+        var lanes = LaneProjection.Replay(_codecs, tail);
+        var relevant = item.LinkedTasks.SelectMany(link => lanes.ForTask(link.TaskId)).Select(lane => lane.Id).ToHashSet();
+        if (relevant.Count == 0 && RunProjection.Replay(sessionId, runId, _codecs, tail).RootTask is { } root)
         {
-            if (evt.Type.ToString() == "turn.started")
-            {
-                started += 1;
-            }
-            else if (evt.Type.ToString() == "turn.completed")
-            {
-                completed += 1;
-            }
+            relevant = lanes.ForTask(root).Select(lane => lane.Id).ToHashSet();
         }
 
-        return started - completed;
+        var turns = ProgressWatchdog.TurnsWithoutProgress(_codecs, tail, relevant);
+        if (new ProgressWatchdog(_stallThreshold).IsStalled(turns))
+        {
+            stream.Append(new ProgressStalled(item.Id, turns, DateTimeOffset.Now));
+        }
     }
 
-    /// <summary>
-    /// Proyecta el estado y pasa por los gates de completado (run sin crash). Si el run era
-    /// modo Plan, primero se aprueba el plan y el run pasa a Act en el mismo Run (ADR-0035 §4).
-    /// </summary>
     private void ContinueToCompletion(SessionId sessionId, RunId runId, EventStream stream, RunMode mode)
     {
         if (mode == RunMode.Plan && !EmitPlanApproval(sessionId, runId, stream, _planApproval))
@@ -574,14 +549,18 @@ public sealed class SimulationEngine
         return "{\"kind\":\"start\",\"itemId\":\"" + first + "\"}";
     }
 
+    /// <summary>Primer paso real del plan (el raíz, P0, es un contenedor si el escenario lo dividió).</summary>
     private string FirstSymbolicItem()
     {
         foreach (var kv in _symbolicItems)
         {
-            return kv.Key;
+            if (kv.Key != "P0")
+            {
+                return kv.Key;
+            }
         }
 
-        return "P1";
+        return "P0";
     }
 
     /// <summary>

@@ -47,6 +47,12 @@ public sealed class SimulationScenario
     /// </summary>
     public string? PlanApproval { get; init; }
 
+    /// <summary>
+    /// Turns sin progreso tras los que el watchdog emite <c>ProgressStalled</c> (ADR-0036 §7).
+    /// null = el valor de M1 (<see cref="ProgressReconciler.DefaultStallThresholdTurns"/>).
+    /// </summary>
+    public int? StallThresholdTurns { get; init; }
+
     public SimulationScenario(string name, RunMode mode, string input,
         IReadOnlyList<SimulatedPlanMutation> plan, IReadOnlyList<SimulatedTask> tasks,
         Dictionary<string, IReadOnlyList<SimulatedTurnAction>> turns,

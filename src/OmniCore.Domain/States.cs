@@ -226,6 +226,9 @@ public enum PlanMutationKind
     Update,
     Link,
     Unlink,
+
+    /// <summary>Pending → Ready (R6); solo lo emite el reconciler. Al final: los valores previos no cambian.</summary>
+    Ready,
 }
 
 /// <summary>Política de respuesta ante un item estancado (ADR-0016 §9).</summary>
