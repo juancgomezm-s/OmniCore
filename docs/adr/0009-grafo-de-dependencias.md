@@ -19,7 +19,7 @@ Sandbox           ← (nada)        compartida con OmniCoder (ADR-0008)
 Engine            ← Abstractions, Domain
 Context           ← Abstractions, Domain
 Models            ← Abstractions, Domain
-Tools             ← Abstractions, Domain          (NO Security)
+Tools             ← Abstractions, Domain, Sandbox (NO Security) rev. 4: contratos del sandbox para process.exec/shell.exec
 Security          ← Abstractions, Domain          (NO Sandbox)
 Execution         ← Abstractions, Domain, Sandbox
 Infrastructure    ← Abstractions, Domain
