@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OmniCore user models.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["models"],
+  "properties": {
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider"],
+        "properties": {
+          "provider": { "type": "string", "minLength": 1 },
+          "context": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+          "recommendedUsableContext": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+          "maxOutput": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+          "parametersBillions": { "type": "number", "exclusiveMinimum": 0, "maximum": 100000 }
+        }
+      }
+    }
+  }
+}
