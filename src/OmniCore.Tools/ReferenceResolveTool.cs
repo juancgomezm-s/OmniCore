@@ -21,7 +21,8 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
             new ToolId("reference.resolve"),
             "Resuelve una referencia @… (archivo/carpeta) dentro del workspace (read-only).",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"ref\":{\"type\":\"string\"}}}"),
-            new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
+            new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None,
+            EffectClass.None);
     }
 
     public ToolDescriptor Descriptor => _descriptor;

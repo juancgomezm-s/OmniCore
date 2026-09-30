@@ -51,8 +51,12 @@ public sealed class ToolDescriptor
 
     public ToolProtection Protection { get; }
 
+    /// <summary>Clase máxima de efecto que la tool puede declarar (ADR-0004).</summary>
+    public EffectClass EffectClass { get; }
+
     public ToolDescriptor(ToolId id, string description, InputSchema inputSchema, IReadOnlyList<string> tags,
-        bool readOnly, bool destructive, ToolRisk risk, ComponentSource source, ToolProtection protection)
+        bool readOnly, bool destructive, ToolRisk risk, ComponentSource source, ToolProtection protection,
+        EffectClass effectClass = EffectClass.None)
     {
         Id = id;
         Description = description;
@@ -63,6 +67,7 @@ public sealed class ToolDescriptor
         Risk = risk;
         Source = source;
         Protection = protection;
+        EffectClass = effectClass;
     }
 }
 

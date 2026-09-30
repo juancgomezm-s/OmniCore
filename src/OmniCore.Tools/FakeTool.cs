@@ -26,7 +26,8 @@ public sealed class FakeTool : ITool
             false,
             ToolRisk.Low,
             ComponentSource.Core(),
-            ToolProtection.None);
+            ToolProtection.None,
+            _effect);
     }
 
     public static FakeTool Read(string id) => new(id, "Lectura simulada (M1)", EffectClass.None, true);

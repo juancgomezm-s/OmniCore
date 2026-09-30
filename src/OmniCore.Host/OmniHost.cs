@@ -17,6 +17,8 @@ using OmniCore.Tools;
 /// </summary>
 public sealed class OmniHost
 {
+    static OmniHost() => _ = SecretRedactor.Shared;
+
     private readonly string[] _args;
 
     private OmniHost(string[] args) => _args = args;
@@ -90,11 +92,13 @@ public sealed class OmniHost
     {
         if (environmentKey is not null && environmentKey.Length > 0)
         {
+            SecretRedactorRegistry.Register(environmentKey);
             credentials.Save(secretRef, environmentKey, cancellationToken);
             return environmentKey;
         }
 
         var stored = credentials.Load(secretRef, cancellationToken);
+        if (stored is not null && stored.Length > 0) SecretRedactorRegistry.Register(stored);
         return stored is not null && stored.Length > 0 ? stored : null;
     }
 

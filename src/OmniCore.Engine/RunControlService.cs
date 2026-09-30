@@ -103,12 +103,12 @@ public sealed class RunControlService
     /// <c>SendInput</c> (ADR-0035 §1): sin Run activo, el texto es el objetivo de un Run nuevo; con
     /// Run activo, se añade como mensaje del usuario (y reactiva la Lane raíz si esperaba input).
     /// </summary>
-    public RunId SendInput(SessionId session, string text, RunMode defaultMode)
+    public RunId SendInput(SessionId session, string text, RunMode defaultMode, string? origin = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(text);
         var run = ActiveRun(session) ?? StartRun(session, text, defaultMode);
         var parts = "[" + System.Text.Json.JsonSerializer.Serialize(text, JsonStrings.Default.String) + "]";
-        new EventStream(_store, _codecs, session).Append(new UserInputReceived(run, parts, null));
+        new EventStream(_store, _codecs, session).Append(new UserInputReceived(run, parts, null, origin));
         return run;
     }
 
@@ -211,12 +211,23 @@ public sealed class RunControlService
         RunId run, string optionId)
     {
         var projection = RunProjection.Replay(session, run, _codecs, events);
+        // Responder una InteractionRequest es input humano. ADR-0036 define que la única
+        // transición AwaitingInput → Running es UserInputReceived; el optionId se conserva
+        // como input canónico además de InteractionResolved.
+        var resume = projection.State == RunState.AwaitingInput
+            ? new UserInputReceived(run, InputParts("PlanApproval: " + optionId), null,
+                "InteractionResponse(PlanApproval)")
+            : null;
         switch (optionId)
         {
             case "approve_execute":
-                return new DomainEventPayload[] { new RunModeChanged(run, RunMode.Plan, RunMode.Act, "PlanApproved") };
+                return resume is null
+                    ? new DomainEventPayload[] { new RunModeChanged(run, RunMode.Plan, RunMode.Act, "PlanApproved") }
+                    : new DomainEventPayload[] { resume, new RunModeChanged(run, RunMode.Plan, RunMode.Act, "PlanApproved") };
             case "approve_only":
-                var close = new List<DomainEventPayload> { new RunValidationStarted(run) };
+                var close = new List<DomainEventPayload>();
+                if (resume is not null) close.Add(resume);
+                close.Add(new RunValidationStarted(run));
 
                 // EPIC-007: cerrar la Lane raíz pasa antes por el Lane Completion Pipeline. Si un
                 // gate falla, el Run vuelve a Running con el rechazo (no existe evento de rechazo a
@@ -245,9 +256,13 @@ public sealed class RunControlService
                 close.Add(new RunCompleted(run, RunOutcome.Planned));
                 return close;
             default:
-                // "Seguir planificando": el Run continúa en Plan esperando al usuario.
+                // "Seguir planificando" (o rechazo): registra la respuesta humana, vuelve a
+                // Running por UserInputReceived y deja la Lane raíz esperando de nuevo.
                 var rootLane = RootLane(events, projection);
-                return rootLane is not null && projection.State == RunState.Running
+                if (rootLane is null) return Array.Empty<DomainEventPayload>();
+                if (resume is not null)
+                    return new DomainEventPayload[] { resume, new RunAwaitingInput(run, rootLane) };
+                return projection.State == RunState.Running
                     ? new DomainEventPayload[] { new RunAwaitingInput(run, rootLane) }
                     : Array.Empty<DomainEventPayload>();
         }
@@ -359,6 +374,9 @@ public sealed class RunControlService
 
         return pending.Values.ToList();
     }
+
+    private static string InputParts(string text) => "["
+        + System.Text.Json.JsonSerializer.Serialize(text, JsonStrings.Default.String) + "]";
 
     private static IReadOnlyList<string> OptionIds(string optionsJson)
     {
