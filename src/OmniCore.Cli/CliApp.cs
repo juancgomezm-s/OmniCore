@@ -1,4 +1,6 @@
 using OmniCore.Abstractions;
+using OmniCore.Client;
+using LocalizedText = OmniCore.Domain.LocalizedText;
 using OmniCore.Engine;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
@@ -243,12 +245,13 @@ public sealed class CliApp
     /// </summary>
     private static Task<int> RunDoctor(string[] args)
     {
-        Console.WriteLine("omni doctor — diagnóstico de M2");
+        var localization = new Localization(DoctorLocale(args));
+        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.heading")));
         var paths = OmniHost.CreatePlatformPaths();
         var registry = OmniHost.LoadUserModelRegistry(paths);
-        Console.WriteLine("Configuración: " + paths.ConfigDirectory);
+        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.config", "path", paths.ConfigDirectory)));
         WarnIgnoredRepoConfig(paths);
-        Console.WriteLine("Modelos disponibles:");
+        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.models")));
         foreach (var model in registry.Models())
         {
             var provider = registry.Provider(model.ProviderId);
@@ -266,7 +269,7 @@ public sealed class CliApp
         var creds = OmniHost.CreateUserCredentialStore(paths);
         var localHost = OmniHost.CreateLocalModelHost();
         var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(paths, "."));
-        Console.WriteLine("Runtime cableado:");
+        Console.WriteLine(Resolve(localization, LocalizedText.Of("doctor.runtime")));
         Console.WriteLine("  tokenCounter=" + tokenizer.Id);
         Console.WriteLine("  scopeResolver=" + (resolver is null ? "?" : resolver.GetType().Name));
         Console.WriteLine("  credentialStore=" + creds.GetType().Name + " (" + creds + ")");
@@ -274,8 +277,30 @@ public sealed class CliApp
         Console.WriteLine("  artifactStore=" + artifacts.GetType().Name + " (" + artifacts + ")");
 
         var configured = registry.Models().Count > 0;
-        Console.WriteLine(configured ? "Estado: modelo configurado ✓" : "Estado: sin modelo configurado (ejecuta omni ask para ver la guía)");
+        Console.WriteLine(Resolve(localization, LocalizedText.Of(configured
+            ? "doctor.status.configured" : "doctor.status.unconfigured")));
         return Task.FromResult(configured ? 0 : 1);
+    }
+
+    private static string Resolve(Localization localization, LocalizedText text) =>
+        localization.Resolve(text.Key, text.Args);
+
+    private static string DoctorLocale(string[] args)
+    {
+        for (var index = 1; index < args.Length; index++)
+        {
+            if (args[index] == "--locale" && index + 1 < args.Length)
+            {
+                return args[index + 1] == "en" ? "en" : "es";
+            }
+
+            if (args[index].StartsWith("--locale=", StringComparison.Ordinal))
+            {
+                return args[index][9..] == "en" ? "en" : "es";
+            }
+        }
+
+        return Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
     }
 
     private static Task<int> RunAsk(string[] args)
@@ -394,7 +419,7 @@ public sealed class CliApp
             // categoría + modo de mutación) de la política efectiva aplicada.
             var fingerprint = new OmniCore.Domain.ExecutionFingerprint(
                 model!, harnessHash, "core-tools-1", "heuristic:chars4/1", "none", "M2",
-                effectivePolicy.Fingerprint());
+                effectivePolicy.Fingerprint(), "heuristic:chars4/1");
             // M2 aún no ofrece tool.search; la disponibilidad del runtime limita la selección
             // provisional a Direct, aunque el perfil recomiende Discovered para M5.
             var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
@@ -562,7 +587,8 @@ public sealed class CliApp
 
             var boundary = new OmniCore.Abstractions.ModelCapabilityBoundary(effectivePolicy);
             var fingerprint = new OmniCore.Domain.ExecutionFingerprint(model!, harnessHash,
-                "core-tools-1", "heuristic:chars4/1", "none", "M3", effectivePolicy.Fingerprint());
+                "core-tools-1", "heuristic:chars4/1", "none", "M3", effectivePolicy.Fingerprint(),
+                "heuristic:chars4/1");
             var selection = new OmniCore.Domain.ModelSelection(new OmniCore.Domain.ModelIdValue(model!),
                 usableContext, OmniCore.Domain.ToolMode.Direct, null);
 

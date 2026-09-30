@@ -473,6 +473,10 @@ public sealed class M2IntegrationTests
         var tail = store2.ReadFrom(sessionId, 1);
         var types = tail.Select(e => e.Type.ToString()).ToArray();
         Assert.True(types.Contains("turn.started"), "turn.started? types=" + string.Join(",", types));
+        var startedEvent = tail.First(evt => evt.Type.ToString() == "turn.started");
+        var startedPayload = Assert.IsType<TurnStarted>(codecs.Decode(startedEvent));
+        Assert.NotNull(startedPayload.Fingerprint);
+        Assert.Equal(fingerprint.Hash(), startedPayload.Fingerprint!.Hash());
         Assert.True(types.Contains("turn.completed"), "turn.completed? types=" + string.Join(",", types));
         Assert.True(types.Contains("toolcall.requested"), "requested? types=" + string.Join(",", types));
         Assert.True(types.Contains("toolcall.prepared"), "prepared? types=" + string.Join(",", types));
