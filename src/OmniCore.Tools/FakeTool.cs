@@ -30,9 +30,9 @@ public sealed class FakeTool : ITool
             _effect);
     }
 
-    public static FakeTool Read(string id) => new(id, "Lectura simulada (M1)", EffectClass.None, true);
+    public static FakeTool Read(string id) => new(id, "Simulated read (M1)", EffectClass.None, true);
 
-    public static FakeTool Write(string id) => new(id, "Escritura simulada (M1)", EffectClass.Reconcilable, false);
+    public static FakeTool Write(string id) => new(id, "Simulated write (M1)", EffectClass.Reconcilable, false);
 
     public ToolDescriptor Descriptor => _descriptor;
 
@@ -55,14 +55,36 @@ public sealed class FakeTool : ITool
     }
 }
 
-/// <summary>Catálogo de tools de la simulación (ADR-0041 §2: FakeTools).</summary>
+/// <summary>Registration rejection diagnostic required by ADR-0027 §§1 and 5.</summary>
+public sealed class ToolRegistrationRejected : InvalidOperationException
+{
+    public ToolId ToolId { get; }
+
+    public ToolRegistrationRejected(ToolId toolId, string message)
+        : base("ToolRegistrationRejected: " + toolId + ": " + message)
+    {
+        ToolId = toolId;
+    }
+}
+
+/// <summary>Simulation tool catalog (ADR-0041 §2: FakeTools).</summary>
 public sealed class FakeCatalog
 {
     private readonly Dictionary<ToolId, ITool> _tools = new();
 
+    /// <summary>Adds a tool only when its canonical id is not already registered (ADR-0027).</summary>
+    /// <exception cref="ToolRegistrationRejected">The id is already registered.</exception>
     public FakeCatalog Add(ITool tool)
     {
-        _tools[tool.Descriptor.Id] = tool;
+        ArgumentNullException.ThrowIfNull(tool);
+        var descriptor = tool.Descriptor;
+        if (_tools.ContainsKey(descriptor.Id))
+        {
+            throw new ToolRegistrationRejected(descriptor.Id,
+                "A tool with this canonical id is already registered; replacement is not supported.");
+        }
+
+        _tools.Add(descriptor.Id, tool);
         return this;
     }
 

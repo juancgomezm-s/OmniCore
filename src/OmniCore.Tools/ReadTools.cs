@@ -24,7 +24,7 @@ public sealed class ReadFileTool : ITool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.read"),
-            "Lee el contenido de un archivo dentro del workspace (read-only).",
+            "Reads the contents of a file within the workspace (read-only).",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}"),
             new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
     }
@@ -181,7 +181,7 @@ public sealed class ListDirectoryTool : ITool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.list"),
-            "Lista entradas de un directorio dentro del workspace (read-only).",
+            "Lists entries in a directory within the workspace (read-only).",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"recursive\":{\"type\":\"boolean\"},\"maxEntries\":{\"type\":\"integer\"}},\"additionalProperties\":false}"),
             new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
     }
@@ -459,7 +459,7 @@ public sealed class SearchTextTool : ITool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("search.text"),
-            "Busca un patrón de texto en los archivos del workspace (read-only, recursivo) y devuelve las coincidencias con su línea.",
+            "Searches workspace files recursively for a text pattern (read-only) and returns matching lines.",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"regex\":{\"type\":\"boolean\"},\"path\":{\"type\":\"string\"},\"glob\":{\"type\":\"string\"},\"maxResults\":{\"type\":\"integer\"},\"caseSensitive\":{\"type\":\"boolean\"}},\"required\":[\"pattern\"],\"additionalProperties\":false}"),
             new string[] { "read" },
             true,

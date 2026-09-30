@@ -21,7 +21,7 @@ public sealed class ProcessExecTool : ITool
         _requestedStrength = requestedStrength == SandboxStrength.Weak
             ? SandboxStrength.Weak : SandboxStrength.Strong;
         _descriptor = ProcessToolJson.Descriptor("process.exec",
-            "Ejecuta un proceso con argv literal; no usa shell. El cwd debe estar dentro del workspace.",
+            "Runs a process with literal argv without using a shell. The cwd must be within the workspace.",
             "{\"type\":\"object\",\"properties\":{\"executable\":{\"type\":\"string\"},\"argv\":{\"type\":\"array\"},\"cwd\":{\"type\":\"string\"},\"timeoutSeconds\":{\"type\":\"integer\"},\"networkRequired\":{\"type\":\"boolean\"}},\"required\":[\"executable\",\"argv\",\"cwd\",\"timeoutSeconds\"],\"additionalProperties\":false}");
     }
 
@@ -71,7 +71,7 @@ public sealed class ShellExecTool : ITool
         _requestedStrength = requestedStrength == SandboxStrength.Weak
             ? SandboxStrength.Weak : SandboxStrength.Strong;
         _descriptor = ProcessToolJson.Descriptor("shell.exec",
-            "Ejecuta un comando raw mediante el shell de plataforma. Superficie de alto riesgo; requiere autorización.",
+            "Runs a raw command through the platform shell. This is a high-risk surface and requires authorization.",
             "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"cwd\":{\"type\":\"string\"},\"timeoutSeconds\":{\"type\":\"integer\"}},\"required\":[\"command\",\"cwd\",\"timeoutSeconds\"],\"additionalProperties\":false}");
     }
 

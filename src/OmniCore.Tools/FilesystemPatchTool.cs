@@ -27,7 +27,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.patch"),
-            "Aplica un parche localizado (oldText->newText) sobre un archivo existente dentro del workspace, verificando expectedVersion.",
+            "Applies a localized patch (oldText->newText) to an existing file within the workspace, verifying expectedVersion.",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"expectedVersion\":{\"type\":\"string\"},\"oldText\":{\"type\":\"string\"},\"newText\":{\"type\":\"string\"}},\"required\":[\"path\",\"expectedVersion\",\"oldText\",\"newText\"]}"),
             new[] { "write" },
             readOnly: false,
