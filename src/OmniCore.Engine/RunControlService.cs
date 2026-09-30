@@ -185,6 +185,30 @@ public sealed class RunControlService
                 return new DomainEventPayload[] { new RunModeChanged(run, RunMode.Plan, RunMode.Act, "PlanApproved") };
             case "approve_only":
                 var close = new List<DomainEventPayload> { new RunValidationStarted(run) };
+
+                // EPIC-007: cerrar la Lane raíz pasa antes por el Lane Completion Pipeline. Si un
+                // gate falla, el Run vuelve a Running con el rechazo (no existe evento de rechazo a
+                // nivel de Lane): la conversación sigue abierta con su trabajo en vuelo.
+                var laneMissing = new List<string>();
+                if (projection.RootTask is not null)
+                {
+                    var lanes = LaneProjection.Replay(_codecs, events);
+                    foreach (var lane in lanes.ForTask(projection.RootTask).Where(l => l.State == LaneState.Running))
+                    {
+                        var laneResult = new LaneCompletionPipeline().Check(_codecs, events, lane.Id);
+                        if (!laneResult.Passed)
+                        {
+                            laneMissing.AddRange(laneResult.Missing);
+                        }
+                    }
+                }
+
+                if (laneMissing.Count > 0)
+                {
+                    close.Add(new RunValidationRejected(run, ["lane"], laneMissing));
+                    return close;
+                }
+
                 close.AddRange(CloseRoot(events, projection));
                 close.Add(new RunCompleted(run, RunOutcome.Planned));
                 return close;
