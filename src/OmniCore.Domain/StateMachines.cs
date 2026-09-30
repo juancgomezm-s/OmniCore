@@ -151,8 +151,15 @@ public sealed class StateMachines
             return TurnState.Completed;
         }
 
-        if (evt is TurnInterrupted && from == TurnState.Started) return TurnState.Interrupted;
-        if (evt is TurnAbandoned && (from == TurnState.Started || from == TurnState.Interrupted))
+        // ADR-0036 §6: TurnStarted → ModelCompleted → (TurnCompleted | TurnInterrupted | TurnAbandoned);
+        // la interrupción también puede llegar antes de que el modelo responda.
+        if (evt is TurnInterrupted && (from == TurnState.Started || from == TurnState.ModelCompleted))
+        {
+            return TurnState.Interrupted;
+        }
+
+        if (evt is TurnAbandoned
+            && (from == TurnState.Started || from == TurnState.ModelCompleted || from == TurnState.Interrupted))
         {
             return TurnState.Abandoned;
         }
