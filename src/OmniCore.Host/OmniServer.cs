@@ -325,6 +325,12 @@ public sealed class OmniServer : IOmniClient
             return ResumeSim(command);
         }
 
+        // Conversación ↔ Run, interrupción, cancelación e interacciones (ADR-0035, ADR-0034).
+        if (commandName is "session.input" or "run.interrupt" or "run.cancel" or "interaction.respond")
+        {
+            return RunControl(command, commandName, fields);
+        }
+
         if (commandName == "explore.start")
         {
             return StartExplorerRun(command, fields);
@@ -626,6 +632,77 @@ public sealed class OmniServer : IOmniClient
                     new Dictionary<string, string>()), CancellationToken.None);
             }
         }
+    }
+
+    /// <summary>
+    /// Comandos de control del Run sobre la sesión en curso del servidor. Los errores de dominio
+    /// vuelven como <c>CommandAck</c> fallido con su motivo (nunca se inventa un estado).
+    /// </summary>
+    private CommandAck RunControl(WireEnvelope command, string commandName, Dictionary<string, string> fields)
+    {
+        var control = new RunControlService(_store, _codecs);
+        try
+        {
+            switch (commandName)
+            {
+                case "session.input":
+                {
+                    var text = fields.TryGetValue("text", out var t) ? t : "";
+                    if (text.Length == 0)
+                    {
+                        return CommandAck.Fail(command.MessageId, "falta 'text'");
+                    }
+
+                    var session = _lastSessionId ?? StartSession();
+                    var mode = fields.TryGetValue("mode", out var m) && m == "plan" ? RunMode.Plan : RunMode.Act;
+                    _lastRunId = control.SendInput(session, text, mode);
+                    _lastSessionId = session;
+                    break;
+                }
+
+                case "run.interrupt":
+                    control.Interrupt(RequireSession(), RunFrom(fields));
+                    break;
+                case "run.cancel":
+                    control.CancelRun(RequireSession(), RunFrom(fields));
+                    break;
+                case "interaction.respond":
+                {
+                    var interaction = fields.TryGetValue("interactionId", out var i) && Guid.TryParse(i, out var g)
+                        ? new InteractionId(g)
+                        : throw new FormatException("interactionId inválido");
+                    control.Respond(RequireSession(), interaction, fields.TryGetValue("optionId", out var o) ? o : "");
+                    break;
+                }
+            }
+
+            SaveLastSession();
+            return CommandAck.Ok(command.MessageId);
+        }
+        catch (Exception ex) when (ex is RunAlreadyActiveException or RunNotActiveException
+            or InteractionNotPendingException or InvalidInteractionOptionException or InvalidStateTransitionException
+            or FormatException or ArgumentException)
+        {
+            return CommandAck.Fail(command.MessageId, ex.Message);
+        }
+    }
+
+    private SessionId RequireSession() =>
+        _lastSessionId ?? throw new FormatException("no hay una sesión activa");
+
+    private RunId RunFrom(Dictionary<string, string> fields) =>
+        fields.TryGetValue("runId", out var r) && Guid.TryParse(r, out var g)
+            ? new RunId(g)
+            : _lastRunId ?? throw new FormatException("falta runId y no hay un Run en curso");
+
+    /// <summary>Crea una sesión nueva en el journal (primer input sin sesión previa).</summary>
+    private SessionId StartSession()
+    {
+        var session = SessionId.New();
+        var workspace = Path.GetFullPath(".");
+        new EventStream(_store, _codecs, session).Append(new SessionCreated(session,
+            WorkspaceId.Of(workspace).ToString(), workspace, ProfileId.New(), DateTimeOffset.UtcNow));
+        return session;
     }
 
     private CommandAck ResumeSim(WireEnvelope command)
