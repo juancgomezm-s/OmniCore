@@ -89,6 +89,11 @@ public sealed class ModelRegistry
     }
 
     public IReadOnlyList<ModelDefinition> Models() => _models.ToArray();
+
+    /// <summary>Modelo por defecto (el primero configurado). Lanza si no hay ninguno.</summary>
+    /// <exception cref="NoModelConfiguredException">No hay ningún modelo configurado.</exception>
+    public ModelDefinition ResolveDefault() =>
+        _models.Count > 0 ? _models[0] : throw new NoModelConfiguredException();
 }
 
 /// <summary>Definición de un modelo: provider + hechos (ADR-0007 §1).</summary>
@@ -121,7 +126,10 @@ public sealed class ModelDefinition
 /// <summary>Error tipado cuando no hay modelo configurado (ADR-0011 §2; spec §71).</summary>
 public sealed class NoModelConfiguredException : InvalidOperationException
 {
+    public LocalizedText UserMessage { get; } = LocalizedText.Of("models.noneConfigured");
+
     public NoModelConfiguredException()
+        : base("No model is configured.")
     {
     }
 }
