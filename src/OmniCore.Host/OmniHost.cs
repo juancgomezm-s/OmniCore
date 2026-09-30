@@ -378,12 +378,14 @@ public sealed class OmniHost
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
             descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath };
-        var http = new HttpClient(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
+        HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
         {
             Timeout = System.TimeSpan.FromSeconds(300),
         };
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
-        return new OpenAiChatCompatibleProvider(configured, secrets, () => http);
+        // StreamAsync owns and disposes each HttpClient returned by the factory; a shared instance
+        // works for the first completion only, then every follow-up Turn fails as disposed.
+        return new OpenAiChatCompatibleProvider(configured, secrets, CreateClient);
     }
 
     /// <summary>Handler HTTP con la política TLS de <see cref="ConnectLocalChatCompletions"/>.</summary>

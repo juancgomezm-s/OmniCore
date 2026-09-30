@@ -421,7 +421,7 @@ public sealed class OmniCliRuntime
             }
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
             {
-                writeLine("[tool] " + trace.ToolName + " → " + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);
+                writeLine(FormatToolTrace(trace));
             }
 
             if (!string.IsNullOrEmpty(result.FinalText))
@@ -518,7 +518,7 @@ public sealed class OmniCliRuntime
                 return 3;
             }
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
-                WriteToolTrace(writeLine, trace);
+                writeLine(FormatToolTrace(trace));
             if (!string.IsNullOrEmpty(result.FinalText)) writeLine(result.FinalText);
             writeLine("── " + result.StopReason + " · steps " + result.Steps
                 + " · tokens " + (result.Usage.Input + result.Usage.Output));
@@ -626,9 +626,11 @@ public sealed class OmniCliRuntime
             : "omni act: no se satisficieron los gates dentro del límite; el Run puede reanudarse.");
         return 1;
 
-        static void WriteToolTrace(Action<string> output, ExplorerTurn.ToolUseTrace trace) => output(
-            "[tool] " + trace.ToolName + " → " + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);
     }
+
+    private string FormatToolTrace(ExplorerTurn.ToolUseTrace trace) =>
+        Text(LocalizedText.Of("cli.tool.activity", "tool", trace.ToolName)) + " → "
+        + Text(LocalizedText.Of(trace.Succeeded ? "cli.tool.ok" : "cli.tool.failed")) + ": " + trace.Summary;
 
     private static InteractionRequested? FindPendingInteraction(IReadOnlyList<DomainEvent> events,
         IEventCodecRegistry codecs, InteractionKind kind)
@@ -734,12 +736,14 @@ public sealed class OmniCliRuntime
                     question.Other.Placeholder, question.Other.TextRequired, question.Other.MaxTextLength),
                 question.Required, question.MinSelections, question.MaxSelections, question.MaxTextLength)).ToArray());
 
-    private static string InputRequiredJson(InteractionId interactionId, string kind = "PlanApproval")
+    private string InputRequiredJson(InteractionId interactionId, string kind = "PlanApproval")
     {
         var outcome = new InputRequiredOutcome(interactionId.ToString(), kind);
+        var guidance = Text(LocalizedText.Of("interaction.input_required.guidance", "interactionId", outcome.InteractionId));
         return "{\"outcome\":\"InputRequired\","
             + JsonObj.Field("interactionId", outcome.InteractionId) + ","
-            + JsonObj.Field("kind", outcome.Kind) + "}";
+            + JsonObj.Field("kind", outcome.Kind) + ","
+            + JsonObj.Field("guidance", guidance) + "}";
     }
 
     private static ArtifactReadTool CreateArtifactReadTool(OmniServer server, IArtifactStore artifacts)

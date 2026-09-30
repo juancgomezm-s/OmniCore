@@ -41,10 +41,13 @@ public sealed class ToolOutcome
 
     public ToolCallState FinalState { get; }
 
+    public InteractionId? PendingInteractionId { get; }
+
     public IReadOnlyList<DomainEventPayload> Events { get; }
 
     public ToolOutcome(bool succeeded, string? summary, string? preview, EffectOutcome? effect,
-        ToolCallState finalState, IReadOnlyList<DomainEventPayload> events)
+        ToolCallState finalState, IReadOnlyList<DomainEventPayload> events,
+        InteractionId? pendingInteractionId = null)
     {
         Succeeded = succeeded;
         Summary = summary;
@@ -52,6 +55,7 @@ public sealed class ToolOutcome
         Effect = effect;
         FinalState = finalState;
         Events = events;
+        PendingInteractionId = pendingInteractionId;
     }
 
     public static ToolOutcome Ok(string summary, string? preview, EffectOutcome effect, ToolCallState state,
