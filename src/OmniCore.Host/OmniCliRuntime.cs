@@ -274,6 +274,22 @@ public sealed class OmniCliRuntime
 
             // Un boundary (y su registro de lecturas) por Run, canonizado contra la raíz del workspace.
             var boundary = CreateBoundary(effectivePolicy, _workspaceRoot);
+            if (!act && server.RequestPlanApprovalIfNeeded() is { } pendingApproval)
+            {
+                var selected = ReadPlanApprovalOption(writeLine, locale);
+                if (selected is null)
+                {
+                    writeLine(InputRequiredJson(pendingApproval));
+                    return 3;
+                }
+                var ack = server.RespondToInteraction(pendingApproval, selected);
+                if (ack.Status != "ok")
+                {
+                    writeLine("PlanApproval: " + (ack.Error ?? "no se pudo registrar la respuesta"));
+                    return 1;
+                }
+                if (selected is "approve_only" or "reject") return 0;
+            }
             var fingerprint = new ExecutionFingerprint(model, harnessHash, "core-tools-1", tokenCounter.Id.Value,
                 "none", act ? "M3" : "M2", effectivePolicy.Fingerprint(), tokenCounter.Id.Value);
             var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null);
@@ -283,13 +299,16 @@ public sealed class OmniCliRuntime
                 writeLine("omni ask: (servidor local managed activo)");
             }
 
-            var hostTools = act ? OmniHost.CreateActTools() : OmniHost.CreateExplorerTools();
+            var executingAct = act || server.CurrentRunMode() == RunMode.Act;
+            var hostTools = executingAct ? OmniHost.CreateActTools() : OmniHost.CreateExplorerTools();
+            server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary,
+                executingAct ? RunMode.Act : RunMode.Plan);
             var workspaceRoot = _workspaceRoot;
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
-            var executor = act
+            var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId);
-            var contributors = act
+            var contributors = executingAct
                 ? Array.Empty<IContextContributor>()
                 : new IContextContributor[] { new WorkingStateContributor(workingState) };
             var materializer = new ContextMaterializer(tokenCounter, contributors);
@@ -298,9 +317,9 @@ public sealed class OmniCliRuntime
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
                 server.AcquireCodecs(), artifacts, new InMemoryAuditSink(), new RedactionPolicy(), harness, boundary,
                 loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey);
-            var instruction = act
-                ? "Eres un asistente de ingeniería operando en el workspace actual. Tienes filesystem.read y filesystem.patch bajo la política efectiva del modelo. Contexto del run disponible ({context}). Responde la instrucción y usa las tools cuando aporten; no inventes lecturas ni tokens [version:…]: lee antes de parchear."
-                : "Ayudas a un asistente de ingeniería. Work Thread del workspace:\nContexto del run disponible ({context}).\nResponde en español, sé conciso y usa las tools cuando aporten.";
+            var instruction = executingAct
+                ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
+                : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.";
             var result = turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, cancellationToken);
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
             {
@@ -314,6 +333,51 @@ public sealed class OmniCliRuntime
 
             writeLine("── " + result.StopReason + " · steps " + result.Steps
                 + " · tokens " + (result.Usage.Input + result.Usage.Output));
+
+            if (!executingAct && server.RequestPlanApprovalIfNeeded() is { } approvalId)
+            {
+                if (Console.IsInputRedirected)
+                {
+                    writeLine(InputRequiredJson(approvalId));
+                    return 3;
+                }
+
+                var optionId = ReadPlanApprovalOption(writeLine, locale);
+                if (optionId is null)
+                {
+                    writeLine(InputRequiredJson(approvalId));
+                    return 3;
+                }
+                var response = server.RespondToInteraction(approvalId, optionId);
+                if (response.Status != "ok")
+                {
+                    writeLine("PlanApproval: " + (response.Error ?? "no se pudo registrar la respuesta"));
+                    return 1;
+                }
+                if (optionId == "approve_execute")
+                {
+                    var actTools = OmniHost.CreateActTools();
+                    var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
+                        boundary, restrictions, runId);
+                    var actTurn = new ExplorerTurn((request, token) => provider.Complete(request, token),
+                        actExecutor, actTools.Catalog(), materializer, fingerprint, selection,
+                        server.AcquireStore(), server.AcquireCodecs(), artifacts, new InMemoryAuditSink(),
+                        new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
+                        providerDescription?.Auth.Kind == AuthKind.ApiKey);
+                    var approvedState = ReadWorkingState(server, cancellationToken);
+                    var continued = actTurn.Ask("Execute the approved plan for: " + prompt,
+                        "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",
+                        sessionId, runId, laneId, approvedState, cancellationToken);
+                    foreach (var trace in continued.ToolCalls)
+                        writeLine("[tool] " + trace.ToolName + " → " + (trace.Succeeded ? "ok" : "FALLO")
+                            + ": " + trace.Summary);
+                    if (!string.IsNullOrEmpty(continued.FinalText)) writeLine(continued.FinalText);
+                    writeLine("── " + continued.StopReason + " · steps " + continued.Steps
+                        + " · tokens " + (continued.Usage.Input + continued.Usage.Output));
+                    return continued.StopReason == StopReason.EndTurn && continued.FinalText is not null ? 0 : 1;
+                }
+            }
+
             if (act && result.FinalText is null)
             {
                 writeLine("omni act: el turno no produjo respuesta.");
@@ -332,6 +396,33 @@ public sealed class OmniCliRuntime
 
             return 1;
         }
+    }
+
+    private string? ReadPlanApprovalOption(Action<string> writeLine, string locale)
+    {
+        if (Console.IsInputRedirected) return null;
+        writeLine(Text(LocalizedText.Of("interaction.plan_approval.title")));
+        writeLine("[1] " + Text(LocalizedText.Of("interaction.plan_approval.approve_execute")));
+        writeLine("[2] " + Text(LocalizedText.Of("interaction.plan_approval.approve_only")));
+        writeLine("[3] " + Text(LocalizedText.Of("interaction.plan_approval.continue_planning")));
+        writeLine("[4] " + (locale == "en" ? "Reject" : "Rechazar"));
+        writeLine(locale == "en" ? "Choose an option: " : "Elige una opción: ");
+        return Console.ReadLine() switch
+        {
+            "1" or "approve_execute" => "approve_execute",
+            "2" or "approve_only" => "approve_only",
+            "3" or "continue_planning" => "continue_planning",
+            "4" or "reject" => "reject",
+            _ => null,
+        };
+    }
+
+    private static string InputRequiredJson(InteractionId interactionId)
+    {
+        var outcome = new InputRequiredOutcome(interactionId.ToString(), "PlanApproval");
+        return "{\"outcome\":\"InputRequired\","
+            + JsonObj.Field("interactionId", outcome.InteractionId) + ","
+            + JsonObj.Field("kind", outcome.Kind) + "}";
     }
 
     private OmniServer Server() => Server(OmniHost.WorkspaceDataDirectory(
@@ -354,6 +445,36 @@ public sealed class OmniCliRuntime
 
     public void SetWorkspaceTrusted(bool trusted) =>
         new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).SetTrusted(_workspaceRoot, trusted);
+
+    /// <summary>Configura /tools con el perfil, límite y frontera usados por el siguiente Turn.</summary>
+    public void ConfigureToolDiagnostics(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var paths = OmniHost.CreatePlatformPaths();
+        var loaded = OmniHost.LoadUserConfiguration(paths);
+        var registry = loaded.Registry;
+        ModelDefinition? definition = null;
+        try { definition = registry.ResolveDefault(); } catch (NoModelConfiguredException) { }
+        var model = Environment.GetEnvironmentVariable("OMNI_MODEL") ?? definition?.Id ?? "local";
+        definition ??= registry.Model(model) ?? new ModelDefinition(model, "local", 8192, 8192, 2048);
+        var provider = registry.Provider(definition.ProviderId);
+        var profile = new ModelProfileResolver().Resolve(definition, provider);
+        var harness = new HarnessPolicyResolver().Resolve(profile);
+        var key = ModelPolicyKey.For(definition.ProviderId, model);
+        EffectiveModelPolicy effective;
+        try
+        {
+            effective = OmniHost.CreateModelPolicyService(null).Effective(key, harness, cancellationToken);
+        }
+        catch (Exception)
+        {
+            effective = EffectiveModelPolicy.Resolve(key, null, harness);
+        }
+        var server = Server();
+        var mode = server.CurrentRunMode();
+        var catalog = (mode == RunMode.Act ? OmniHost.CreateActTools() : OmniHost.CreateExplorerTools()).Catalog();
+        server.ConfigureToolDiagnostics(catalog, CreateBoundary(effective, _workspaceRoot), mode);
+    }
 
     /// <summary>Ejecuta un comando tipado de permisos para el WorkspaceId del cliente actual.</summary>
     public PermissionGrantCommandResult Permissions(PermissionGrantCommand command,

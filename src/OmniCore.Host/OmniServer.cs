@@ -35,6 +35,14 @@ public sealed class OmniServer : IOmniClient
 
     private string _lastWorkingStateText = "";
 
+    private PromptExpanded? _lastPromptExpanded;
+
+    private FakeCatalog? _diagnosticCatalog;
+
+    private ModelCapabilityBoundary? _diagnosticBoundary;
+
+    private RunMode _diagnosticMode = RunMode.Plan;
+
     /// <summary>
     /// Motivo de un bloqueo de la recuperación del Run real al arrancar (null = recuperación ok o
     /// no aplicable). Visible vía <c>LastRecoveryProblem()</c> y <c>Query("state")</c>. NUNCA se
@@ -45,11 +53,15 @@ public sealed class OmniServer : IOmniClient
 
     private readonly string? _stateFile;
 
-    public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit)
+    private readonly IArtifactStore? _artifacts;
+
+    public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
+        IArtifactStore? artifacts = null)
     {
         _store = store;
         _codecs = codecs;
         _audit = audit;
+        _artifacts = artifacts;
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = null;
         LoadLastSession();
@@ -57,11 +69,13 @@ public sealed class OmniServer : IOmniClient
         RecoverPendingEffects();
     }
 
-    public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile)
+    public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
+        IArtifactStore? artifacts = null)
     {
         _store = store;
         _codecs = codecs;
         _audit = audit;
+        _artifacts = artifacts;
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = stateFile;
         LoadLastSession();
@@ -335,6 +349,29 @@ public sealed class OmniServer : IOmniClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == "command.invoke")
+        {
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(command.PayloadJson);
+                var root = document.RootElement;
+                var name = root.GetProperty("name").GetString() ?? "";
+                var args = root.TryGetProperty("arguments", out var argumentArray)
+                    ? argumentArray.EnumerateArray().Select(value => value.GetString() ?? "").ToArray()
+                    : Array.Empty<string>();
+                var origin = root.TryGetProperty("origin", out var originValue)
+                    ? originValue.GetString() ?? "Typed" : "Typed";
+                _lastPromptExpanded = new CommandService().Expand(
+                    new CommandInvocation(name, args, origin));
+                return CommandAck.Ok(command.MessageId);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or KeyNotFoundException)
+            {
+                return CommandAck.Fail(command.MessageId, ex.Message);
+            }
+        }
+
         if (commandName == "sim")
         {
             return RunSim(command, fields);
@@ -381,6 +418,79 @@ public sealed class OmniServer : IOmniClient
         return result;
     }
 
+    /// <summary>Publica PlanApproval tras una propuesta aceptada de plan.propose; no contesta por el usuario.</summary>
+    public InteractionId? RequestPlanApprovalIfNeeded()
+    {
+        if (_lastSessionId is null || _lastRunId is null) return null;
+        var all = _store.ReadFrom(_lastSessionId, 1);
+        var own = EventsForRun(all, _lastRunId);
+        var projection = RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, own);
+        if (projection.Mode != RunMode.Plan || projection.State != RunState.Running
+            || projection.RootTask is null) return null;
+
+        var requested = new HashSet<ToolCallId>();
+        long acceptedProposalSequence = 0;
+        long lastApprovalResolutionSequence = 0;
+        var pendingApproval = new Dictionary<InteractionId, InteractionRequested>();
+        foreach (var evt in own)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ToolCallRequested call when call.ToolName == "plan.propose": requested.Add(call.ToolCallId); break;
+                case ToolCallSucceeded succeeded when requested.Contains(succeeded.ToolCallId):
+                    acceptedProposalSequence = evt.Sequence;
+                    break;
+                case InteractionRequested approvalRequest when approvalRequest.Kind == InteractionKind.PlanApproval:
+                    pendingApproval[approvalRequest.InteractionId] = approvalRequest;
+                    break;
+                case InteractionResolved resolved when pendingApproval.ContainsKey(resolved.InteractionId):
+                    pendingApproval.Remove(resolved.InteractionId);
+                    lastApprovalResolutionSequence = evt.Sequence;
+                    break;
+            }
+        }
+        if (pendingApproval.Count > 0) return pendingApproval.Keys.Last();
+        if (acceptedProposalSequence <= lastApprovalResolutionSequence) return null;
+        var rootLane = LaneProjection.Replay(_codecs, own).ForTask(projection.RootTask!)
+            .FirstOrDefault(lane => lane.State == LaneState.Running)?.Id;
+        if (rootLane is null) return null;
+
+        var interaction = InteractionId.New();
+        var request = new InteractionRequested(interaction, InteractionKind.PlanApproval,
+            "{\"operation\":\"plan.approval\",\"reason\":\"El plan fue propuesto por el modelo y requiere aprobación\"}",
+            "[{\"id\":\"approve_execute\",\"intent\":\"allow\"},"
+                + "{\"id\":\"approve_only\",\"intent\":\"allow\"},"
+                + "{\"id\":\"continue_planning\",\"intent\":\"allow\"},"
+                + "{\"id\":\"reject\",\"intent\":\"deny\"}]",
+            "reject", null, rootLane, projection.RootTask, null, 0, 1);
+        // PlanApproval bloquea la continuación mediante una InteractionRequest durable. No se
+        // escribe RunAwaitingInput aquí porque el Engine PlanApprovalEffect inicia RunValidation
+        // desde Running al responder (ADR-0035 §4); la respuesta seguirá pasando por IOmniClient.
+        new EventStream(_store, _codecs, _lastSessionId).Append(request, DurabilityClass.Standard);
+        return interaction;
+    }
+
+    /// <summary>Resuelve una interacción usando el protocolo tipado del servidor.</summary>
+    public CommandAck RespondToInteraction(InteractionId interaction, string optionId) => Send(
+        WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "interaction.respond") + ","
+            + JsonObj.Field("interactionId", interaction.ToString()) + ","
+            + JsonObj.Field("optionId", optionId) + "}"), CancellationToken.None);
+
+    /// <summary>Proyección diagnóstica de la misma catalog/boundary que recibió ExplorerTurn.</summary>
+    public void ConfigureToolDiagnostics(FakeCatalog catalog, ModelCapabilityBoundary boundary, RunMode mode)
+    {
+        _diagnosticCatalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+        _diagnosticBoundary = boundary ?? throw new ArgumentNullException(nameof(boundary));
+        _diagnosticMode = mode;
+    }
+
+    public RunMode CurrentRunMode()
+    {
+        if (_lastSessionId is null || _lastRunId is null) return RunMode.Plan;
+        var events = EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId);
+        return RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, events).Mode ?? RunMode.Plan;
+    }
+
     public SessionId? LastSessionId() => _lastSessionId;
 
     public RunId? LastRunId() => _lastRunId;
@@ -399,7 +509,7 @@ public sealed class OmniServer : IOmniClient
             return CommandAck.Fail(command.MessageId, "falta el objetivo del Explorer");
         }
 
-        return StartRunAct(command, objective!, Path.GetFullPath("."));
+        return StartRunAct(command, objective!, Path.GetFullPath("."), RunMode.Plan);
     }
 
     /// <summary>
@@ -426,7 +536,8 @@ public sealed class OmniServer : IOmniClient
     }
 
     /// <summary>Creación compartida de un Run Act real con raíz durable y verificable.</summary>
-    private CommandAck StartRunAct(WireEnvelope command, string objective, string workspacePath)
+    private CommandAck StartRunAct(WireEnvelope command, string objective, string workspacePath,
+        RunMode mode = RunMode.Act)
     {
         var sessionId = SessionId.New();
         var runId = RunId.New();
@@ -446,7 +557,7 @@ public sealed class OmniServer : IOmniClient
         // que la ruta no fue sustituida por symlink/junction.
         var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
         stream.Append(new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity));
-        stream.Append(new RunCreated(runId, sessionId, objective, RunMode.Act,
+        stream.Append(new RunCreated(runId, sessionId, objective, mode,
             ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, taskId, now));
         stream.Append(new RunStarted(runId));
         stream.Append(new TaskCreated(taskId, runId, objective, Array.Empty<TaskDependency>(), budget));
@@ -514,6 +625,89 @@ public sealed class OmniServer : IOmniClient
         return null;
     }
 
+    private string? ReadPersistedContextSnapshot()
+    {
+        if (_artifacts is null || _lastSessionId is null || _lastRunId is null) return null;
+        try
+        {
+            var events = EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId);
+            ArtifactRef? snapshotRef = null;
+            foreach (var evt in events)
+            {
+                if (_codecs.Decode(evt) is TurnStarted started && started.ContextSnapshotRef is not null)
+                    snapshotRef = started.ContextSnapshotRef;
+            }
+            if (snapshotRef is null) return null;
+
+            var snapshotJson = _artifacts.GetText(snapshotRef.Hash);
+            if (snapshotJson is null) return null;
+            using var source = System.Text.Json.JsonDocument.Parse(snapshotJson);
+            using var output = new System.IO.MemoryStream();
+            using (var writer = new System.Text.Json.Utf8JsonWriter(output))
+            {
+                var root = source.RootElement;
+                writer.WriteStartObject();
+                writer.WriteString("snapshotId", root.GetProperty("snapshotId").GetString());
+                writer.WriteString("fingerprint", root.GetProperty("fingerprint").GetString());
+                writer.WriteNumber("tokenCount", root.GetProperty("tokenCount").GetInt32());
+                if (root.TryGetProperty("tokenAccuracy", out var accuracy))
+                {
+                    writer.WritePropertyName("tokenAccuracy");
+                    accuracy.WriteTo(writer);
+                }
+                if (root.TryGetProperty("tokenBudget", out var budget))
+                {
+                    writer.WritePropertyName("tokenBudget");
+                    budget.WriteTo(writer);
+                }
+                if (root.TryGetProperty("overflowed", out var overflowed))
+                {
+                    writer.WritePropertyName("overflowed");
+                    overflowed.WriteTo(writer);
+                }
+                writer.WriteStartArray("items");
+                foreach (var item in root.GetProperty("items").EnumerateArray())
+                {
+                    writer.WriteStartObject();
+                    Copy(item, writer, "id", "kind", "tokens", "tokenAccuracy", "priority", "contributor",
+                        "category", "source", "scope", "sensitive");
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+                writer.WriteStartArray("diagnostics");
+                if (root.TryGetProperty("diagnostics", out var diagnostics))
+                {
+                    foreach (var diagnostic in diagnostics.EnumerateArray())
+                    {
+                        writer.WriteStartObject();
+                        Copy(diagnostic, writer, "itemId", "decision", "tokens", "reason", "contributor",
+                            "category", "source", "scope", "sensitive");
+                        writer.WriteEndObject();
+                    }
+                }
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            return System.Text.Encoding.UTF8.GetString(output.ToArray());
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or KeyNotFoundException
+            or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static void Copy(System.Text.Json.JsonElement source, System.Text.Json.Utf8JsonWriter writer,
+        params string[] properties)
+    {
+        foreach (var name in properties)
+            if (source.TryGetProperty(name, out var value))
+            {
+                writer.WritePropertyName(name);
+                value.WriteTo(writer);
+            }
+    }
+
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         if (name == "state")
@@ -524,8 +718,67 @@ public sealed class OmniServer : IOmniClient
                 + "," + JsonObj.Field("recovery", _recoveryProblem is null ? "ok" : "blocked") + "}");
         }
 
+        if (name == "commandOutcome")
+        {
+            if (_lastPromptExpanded is null) return new SessionQueryResult("commandOutcome", "{\"outcome\":null}");
+            return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
+                + JsonObj.Field("text", _lastPromptExpanded.Text) + ","
+                + JsonObj.Field("origin", _lastPromptExpanded.Origin) + "}}");
+        }
+
+        if (name == "tools")
+        {
+            var catalog = _diagnosticCatalog ?? OmniHost.CreateExplorerTools().Catalog();
+            var boundary = _diagnosticBoundary;
+            var entries = new List<string>();
+            foreach (var definition in catalog.Definitions())
+            {
+                var tool = catalog.Find(new ToolId(definition.Name));
+                if (tool is null) continue;
+                var descriptor = tool.Descriptor;
+                var effect = descriptor.ReadOnly ? EffectClass.None
+                    : descriptor.Id.ToString() == "fake.write" ? EffectClass.Reconcilable
+                    : EffectClass.NonIdempotent;
+                var claims = descriptor.ReadOnly ? ResourceClaims.Empty()
+                    : new ResourceClaims(Array.Empty<string>(), new[] { "diagnostic-target" },
+                        Array.Empty<NetworkGrant>(), null, Array.Empty<string>());
+                var intent = new ToolIntent(ToolCallId.New(), descriptor.Id, "{}", effect, claims,
+                    descriptor.Risk, null);
+                var boundaryVisible = boundary is null || boundary.IsToolVisible(definition.Name);
+                var boundaryDecision = boundary?.Evaluate(intent);
+                var modeRejected = _diagnosticMode == RunMode.Plan && !descriptor.ReadOnly;
+                var decision = modeRejected ? "reject:PLAN mode"
+                    : boundaryDecision is { Allowed: false } ? "reject:ModelCapabilityBoundary"
+                    : boundaryDecision is { RequiresAsk: true } ? "ask:ModelCapabilityBoundary"
+                    : descriptor.Destructive ? "ask:permission policy"
+                    : "permission policy";
+                entries.Add("{" + JsonObj.Field("visibleName", definition.Name) + ","
+                    + JsonObj.Field("toolId", descriptor.Id.ToString()) + ","
+                    + JsonObj.Field("source", descriptor.Source.Kind + ":" + descriptor.Source.Scope
+                        + ":" + descriptor.Source.Trust + ":" + descriptor.Source.Owner
+                        + "@" + descriptor.Source.Version) + ","
+                    + JsonObj.Field("effectClass", effect.ToString()) + ","
+                    + JsonObj.Field("decision", decision) + ","
+                    + JsonObj.FieldBool("visible", boundaryVisible && !modeRejected) + "}");
+            }
+            return new SessionQueryResult("tools", "{" + JsonObj.Field("mode", _diagnosticMode.ToString())
+                + ",\"tools\":[" + string.Join(",", entries) + "]}");
+        }
+
         if (name == "workingState")
         {
+            if (_lastSessionId is not null && _lastRunId is not null)
+            {
+                try
+                {
+                    var own = EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId);
+                    var run = RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, own);
+                    var plan = PlanProjection.Replay(_codecs, own);
+                    var projected = WorkingStateProjector.Project(run, plan);
+                    if (projected is not null) _lastWorkingStateText = WorkingStateProjector.Render(projected);
+                }
+                catch (Exception) { }
+            }
             var safe = _lastWorkingStateText is null || _lastWorkingStateText.Length == 0 ? "{}"
                 : "{" + JsonObj.Field("workingState", RedactPii(_lastWorkingStateText)) + "}";
             return new SessionQueryResult("workingState", safe);
@@ -533,50 +786,17 @@ public sealed class OmniServer : IOmniClient
 
         if (name == "context")
         {
-            if (_lastSnapshot is null)
-            {
-                return new SessionQueryResult("context", "{\"snapshot\":null}");
-            }
-
-            var items = new List<string>();
-            foreach (ContextItem item in _lastSnapshot!.Items)
-            {
-                items.Add("{\"id\":" + JsonObj.Field("id", item.Id)
-                    + ",\"kind\":" + JsonObj.Field("kind", item.Kind.ToString())
-                    + ",\"tokens\":" + JsonObj.Field("tokens", item.EstimatedTokens.ToString())
-                    + ",\"content\":" + JsonObj.Field("content", Redact(item.Content, 80)) + "}");
-            }
-
-            return new SessionQueryResult("context",
-                "{\"snapshot\":{" + JsonObj.Field("tokens", _lastSnapshot!.TokenCount.ToString())
-                + ",\"fingerprint\":" + JsonObj.Field("fingerprint", _lastSnapshot!.Fingerprint.Hash())
-                + ",\"workingState\":" + JsonObj.Field("workingState", RedactPii(_lastWorkingStateText))
-                + ",\"items\":[" + string.Join(",", items.ToArray()) + "]}}");
+            var persisted = ReadPersistedContextSnapshot();
+            return new SessionQueryResult("context", persisted is null
+                ? "{\"snapshot\":null}" : "{\"snapshot\":" + persisted + "}");
         }
 
         return null;
     }
 
-    /// <summary>
-    /// Redacción de PII para diagnóstico (/context y /permissions son supervisors del runtime;
-    /// nunca vuelcan contenido completo del workspace, solo cabeceras, ADR-0018).
-    /// </summary>
-    /// <summary>Redacta PII (keys/bearer/JWT) del WorkingState antes de exponerlo en queries.</summary>
+    /// <summary>Redacta PII del WorkingState antes de exponerlo en queries.</summary>
     private static string RedactPii(string content) =>
         new OmniCore.Domain.PiiRedactor().Redact(content);
-
-    private static string Redact(string content, int max)
-    {
-        // Redacción real: quita secretos (keys, bearer, JWT, cookies) y luego trunca.
-        var redacted = new OmniCore.Domain.PiiRedactor().Redact(content);
-        var safe = redacted is null ? "" : redacted!;
-        if (safe.Length <= max)
-        {
-            return safe;
-        }
-
-        return safe.Substring(0, max) + "…(" + safe.Length + ")";
-    }
 
     private CommandAck RunSim(WireEnvelope command, Dictionary<string, string> fields)
     {
