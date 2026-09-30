@@ -72,7 +72,8 @@ public sealed class ToolRuntime
     /// Pipeline completo para una raw tool call propuesta por el modelo.
     /// </summary>
     public Outcome Run(ValidatedToolCall validated, ToolPreparationContext prepContext,
-        ToolExecutionContext execContext, bool userApprovesAsk, CancellationToken cancellationToken)
+        ToolExecutionContext execContext, bool userApprovesAsk, CancellationToken cancellationToken,
+        GrantLifetime approvalLifetime = GrantLifetime.Once)
     {
         _emit(new ToolCallRequested(validated.ToolCallId, validated.ProviderCallId,
             validated.ToolId.ToString(), validated.NormalizedArgumentsJson));
@@ -164,7 +165,7 @@ public sealed class ToolRuntime
                 interactionId,
                 InteractionKind.Permission,
                 SubjectJson(validated.ToolId.ToString()),
-                OptionsJson(),
+                OptionsJson(_policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }),
                 "deny",
                 null,
                 null,
@@ -181,13 +182,48 @@ public sealed class ToolRuntime
                 return new Outcome(false, "denegado (sin aprobación)", ToolCallState.Rejected, EffectOutcome.None);
             }
 
-            _emit(new InteractionResolved(interactionId, "allow_once", InteractionCause.User));
-            _emit(new PermissionGranted(validated.ToolCallId, null, null));
-            // INV-002: la política ya quedó evaluada con la aprobación humana; el runtime
-            // NO vuelve a Evaluar (eso lo rompería: Authorize re-lanzaría Ask).
+            var optionId = approvalLifetime switch
+            {
+                GrantLifetime.Once => "allow_once",
+                GrantLifetime.Run => "allow_run",
+                GrantLifetime.Workspace => "allow_workspace",
+                _ => "deny",
+            };
+            if (optionId == "deny")
+            {
+                _emit(new InteractionResolved(interactionId, "deny", InteractionCause.User));
+                _emit(new PermissionDenied(validated.ToolCallId, "lifetime no permitido"));
+                return new Outcome(false, "denegado", ToolCallState.Rejected, EffectOutcome.None);
+            }
+
+            GrantId? approvedGrant = GrantId.New();
+            if (approvalLifetime != GrantLifetime.Once)
+            {
+                if (_policy is not IGrantablePermissionPolicy grantable)
+                {
+                    _emit(new InteractionResolved(interactionId, "deny", InteractionCause.User));
+                    _emit(new PermissionDenied(validated.ToolCallId, "la política no permite grants persistentes"));
+                    return new Outcome(false, "denegado", ToolCallState.Rejected, EffectOutcome.None);
+                }
+                try
+                {
+                    approvedGrant = grantable.RecordApprovedGrant(intent, approvalLifetime, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    _emit(new InteractionResolved(interactionId, "deny", InteractionCause.User));
+                    _emit(new PermissionDenied(validated.ToolCallId, "grant rechazado: " + ex.GetType().Name));
+                    return new Outcome(false, "grant rechazado", ToolCallState.Rejected, EffectOutcome.None);
+                }
+            }
+
+            _emit(new InteractionResolved(interactionId, optionId, InteractionCause.User));
+            _emit(new PermissionGranted(validated.ToolCallId, approvedGrant, approvalLifetime));
+            // INV-002: la política ya quedó evaluada con la aprobación humana; no se pide un
+            // nuevo permiso. La política de Security comprueba de nuevo que no exista Deny.
             try
             {
-                var approved = _policy.AuthorizeApproved(intent, null);
+                var approved = _policy.AuthorizeApproved(intent, approvedGrant);
                 _emit(new ToolCallAuthorized(validated.ToolCallId));
                 return Execute(validated, approved, intent, tool, execContext, cancellationToken);
             }
@@ -362,9 +398,14 @@ public sealed class ToolRuntime
     }
 
     /// <summary>Opciones decididas por el servidor; el default (más restrictiva) es Deny.</summary>
-    private static string OptionsJson()
+    private static string OptionsJson(bool grantsAvailable)
     {
-        return "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_once\",\"intent\":\"allow\",\"lifetime\":\"once\"}]";
+        var options = "[{\"id\":\"deny\",\"intent\":\"deny\"},"
+            + "{\"id\":\"allow_once\",\"intent\":\"allow\",\"lifetime\":\"once\"}";
+        if (grantsAvailable)
+            options += ",{\"id\":\"allow_run\",\"intent\":\"allow\",\"lifetime\":\"run\"},"
+                + "{\"id\":\"allow_workspace\",\"intent\":\"allow\",\"lifetime\":\"workspace\"}";
+        return options + "]";
     }
 
     private static string Esc(string value) => value.Replace("\"", "\\\"").Replace("\n", "\\n");

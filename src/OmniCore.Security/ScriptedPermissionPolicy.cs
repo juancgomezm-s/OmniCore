@@ -11,13 +11,21 @@ using OmniCore.Domain;
 /// aquí Ask se trata como Deny salvo que el escenario tenga una respuesta; eso lo gestiona el
 /// Engine (ADR-0034).
 /// </summary>
-public sealed class ScriptedPermissionPolicy : IPermissionPolicy
+public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy
 {
     private readonly Dictionary<string, PermissionDecision> _toolDecisions = new();
+
+    private readonly Dictionary<string, PermissionDecision> _userDecisions = new(StringComparer.Ordinal);
 
     private RunMode _modeForDefaults;
 
     private bool _useModeDefaults;
+
+    private IPermissionGrantStore? _grantStore;
+
+    private WorkspaceId? _grantWorkspace;
+
+    private RunId? _grantRun;
 
     public ScriptedPermissionPolicy(Dictionary<string, PermissionDecision> toolDecisions)
     {
@@ -32,6 +40,22 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy
     {
         _useModeDefaults = true;
         _modeForDefaults = mode;
+        return this;
+    }
+
+    /// <summary>Conecta grants del usuario, aislados por workspace y Run (ADR-0037 §5).</summary>
+    public ScriptedPermissionPolicy WithGrantStore(IPermissionGrantStore store, WorkspaceId workspace, RunId? run)
+    {
+        _grantStore = store ?? throw new ArgumentNullException(nameof(store));
+        _grantWorkspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _grantRun = run;
+        return this;
+    }
+
+    /// <summary>Configura una regla UserPolicy (distinta de restricciones de repo/escenario).</summary>
+    public ScriptedPermissionPolicy WithUserPolicyTool(string tool, PermissionDecision decision)
+    {
+        _userDecisions[tool] = decision;
         return this;
     }
 
@@ -61,6 +85,11 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy
         var layers = new List<LayerDecision>();
         layers.Add(new LayerDecision("scripted-policy", toolDecision, "scenario"));
         var final = toolDecision;
+        if (_userDecisions.TryGetValue(intent.ToolId.ToString(), out var userDecision))
+        {
+            layers.Add(new LayerDecision("UserPolicy", userDecision, "user-policy"));
+            final = Min(final, userDecision);
+        }
 
         if (_useModeDefaults)
         {
@@ -70,7 +99,52 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy
             final = Min(final, mode);
         }
 
+        if (final == PermissionDecision.Ask && _grantStore is not null && _grantWorkspace is not null
+            && IsGrantableAsk(layers))
+        {
+            var grant = _grantStore.Find(_grantWorkspace!, _grantRun, intent.ToolId.ToString(),
+                FilePermissionGrantStore.ClaimsKey(intent));
+            if (grant is not null)
+            {
+                layers.Add(new LayerDecision("permission-grant", PermissionDecision.Allow,
+                    grant.Lifetime + ":" + grant.Id));
+                final = PermissionDecision.Allow;
+                return new PermissionDecisionRecord(final, layers.ToArray(), grant.Id);
+            }
+        }
+
         return new PermissionDecisionRecord(final, layers.ToArray(), null);
+    }
+
+    /// <summary>Guarda una aprobación persistente solo cuando los Ask originales provienen de política/grupo.</summary>
+    public bool CanCreatePersistentGrants => _grantStore is not null && _grantWorkspace is not null;
+
+    public GrantId? RecordApprovedGrant(ToolIntent intent, GrantLifetime lifetime,
+        CancellationToken cancellationToken)
+    {
+        if (lifetime == GrantLifetime.Once) return null;
+        if (_grantStore is null || _grantWorkspace is null)
+            throw new InvalidOperationException("La política no tiene conectado un almacén de grants.");
+        if (lifetime is not (GrantLifetime.Run or GrantLifetime.Workspace))
+            throw new ArgumentOutOfRangeException(nameof(lifetime));
+        var evaluated = Evaluate(intent);
+        if (evaluated.Final != PermissionDecision.Ask || !IsGrantableAsk(evaluated.Layers))
+            throw new PermissionDeniedException(intent.ToolId.ToString(),
+                "solo se puede guardar un grant para Ask de UserPolicy o del perfil");
+        if (lifetime == GrantLifetime.Run && _grantRun is null)
+            throw new InvalidOperationException("No hay RunId para crear un grant de Run.");
+        var grant = new PermissionGrantRecord(GrantId.New(), intent.ToolId.ToString(),
+            FilePermissionGrantStore.ClaimsKey(intent), lifetime, _grantWorkspace!,
+            lifetime == GrantLifetime.Run ? _grantRun : null, DateTimeOffset.UtcNow);
+        _grantStore.Add(grant, cancellationToken);
+        return grant.Id;
+    }
+
+    private static bool IsGrantableAsk(IReadOnlyList<LayerDecision> layers)
+    {
+        var asks = layers.Where(layer => layer.Decision == PermissionDecision.Ask).ToArray();
+        return asks.Length > 0 && asks.All(layer => layer.Layer is "UserPolicy" or "user-policy"
+            or "profile" or "mode-defaults");
     }
 
     private static PermissionDecision Min(PermissionDecision a, PermissionDecision b)

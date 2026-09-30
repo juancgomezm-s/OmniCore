@@ -15,6 +15,8 @@ public sealed class ProviderFileYaml
     public string? BaseUrl { get; set; }
     public string? CaCertificate { get; set; }
     public string? AuthRef { get; set; }
+    public decimal? InputPricePerMillionUsd { get; set; }
+    public decimal? OutputPricePerMillionUsd { get; set; }
 
     /// <summary>Legacy auth syntax, parsed explicitly from YAML nodes to support scalar/map forms AOT-safely.</summary>
     public ProviderAuthYaml? Auth { get; set; }
@@ -39,6 +41,8 @@ public sealed class ModelFileYaml
     public long? RecommendedUsableContext { get; set; }
     public long? MaxOutput { get; set; }
     public double? ParametersBillions { get; set; }
+    public decimal? InputPricePerMillionUsd { get; set; }
+    public decimal? OutputPricePerMillionUsd { get; set; }
 }
 
 public sealed class WorkspaceSettingsYaml

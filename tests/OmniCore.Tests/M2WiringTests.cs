@@ -151,6 +151,46 @@ public sealed class M2WiringTests
     }
 
     [Fact]
+    public void System_process_runtime_does_not_inherit_canary_environment_and_accepts_explicit_extras()
+    {
+        const string canary = "OMNICORE_TEST_CANARY_SECRET";
+        const string extra = "OMNICORE_TEST_CONFIGURED_EXTRA";
+        const string explicitVariable = "OMNICORE_TEST_EXPLICIT_LAUNCH";
+        var oldCanary = Environment.GetEnvironmentVariable(canary);
+        var oldExtra = Environment.GetEnvironmentVariable(extra);
+        try
+        {
+            Environment.SetEnvironmentVariable(canary, "must-not-cross-boundary");
+            Environment.SetEnvironmentVariable(extra, "configured-extra-value");
+            var executable = OperatingSystem.IsWindows() ? "cmd.exe" : "env";
+            var args = OperatingSystem.IsWindows() ? new[] { "/c", "set" } : Array.Empty<string>();
+            var launch = new ProcessLaunch(executable, args, "",
+                new Dictionary<string, string> { [explicitVariable] = "explicit-value" }, true);
+
+            var baseline = new SystemProcessRuntime();
+            var noExtras = baseline.Launch(launch, CancellationToken.None);
+            var baselineResult = baseline.Wait(noExtras, TimeSpan.FromSeconds(10), CancellationToken.None);
+            Assert.False(baselineResult.TimedOut);
+            Assert.DoesNotContain(canary + "=", baselineResult.Stdout ?? "", StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(extra + "=", baselineResult.Stdout ?? "", StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(explicitVariable + "=explicit-value", baselineResult.Stdout ?? "",
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("PATH=", baselineResult.Stdout ?? "", StringComparison.OrdinalIgnoreCase);
+
+            var configured = new SystemProcessRuntime(new[] { extra });
+            var withExtra = configured.Launch(launch, CancellationToken.None);
+            var configuredResult = configured.Wait(withExtra, TimeSpan.FromSeconds(10), CancellationToken.None);
+            Assert.Contains(extra + "=configured-extra-value", configuredResult.Stdout ?? "",
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(canary, oldCanary);
+            Environment.SetEnvironmentVariable(extra, oldExtra);
+        }
+    }
+
+    [Fact]
     public async Task LocalModelHost_attach_ready_and_managed_start_stop()
     {
         // ADR-0011 §4: attach verifica salud; managed lanza con IProcessRuntime y se cancela.
