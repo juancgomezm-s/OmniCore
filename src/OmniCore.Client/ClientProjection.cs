@@ -168,17 +168,36 @@ public sealed class StatusLineModel
     public static StatusLineModel Empty() => new(null, null, "act");
 }
 
-/// <summary>Overlay de interacción pendiente (ADR-0034).</summary>
+/// <summary>Overlay de interacción pendiente (ADR-0034): opciones decididas por el servidor.</summary>
 public sealed class InteractionOverlayModel
 {
+    /// <summary>Id de la interacción (para responderla y quitar el overlay al resolverse).</summary>
+    public string Id { get; }
+
+    /// <summary>Tipo de interacción tal como lo envía el servidor (Permission, PlanApproval…).</summary>
+    public string Kind { get; }
+
     public string Title { get; }
 
+    /// <summary>Etiquetas localizadas de las opciones, en el orden del servidor.</summary>
     public IReadOnlyList<string> Options { get; }
 
+    /// <summary>Ids de las opciones (lo que se envía en <c>interaction.respond</c>).</summary>
+    public IReadOnlyList<string> OptionIds { get; }
+
     public InteractionOverlayModel(string title, IReadOnlyList<string> options)
+        : this(string.Empty, string.Empty, title, options, options)
     {
+    }
+
+    public InteractionOverlayModel(string id, string kind, string title, IReadOnlyList<string> options,
+        IReadOnlyList<string> optionIds)
+    {
+        Id = id;
+        Kind = kind;
         Title = title;
         Options = options;
+        OptionIds = optionIds;
     }
 }
 
@@ -201,12 +220,22 @@ public sealed class LocalAction
 }
 
 /// <summary>
-/// Reducer puro del cliente (ADR-0030 §3): consume eventos wire y acciones locales y produce
-/// el siguiente <c>ClientState</c>. Testeable sin terminal. Traduce los eventos del server a
-/// bloques de conversación semánticos (ADR-0033).
+/// Reducer puro del cliente (ADR-0030 §3): consume eventos del protocolo y acciones locales y
+/// produce el siguiente <c>ClientState</c>. Testeable sin terminal. Traduce los eventos del
+/// servidor (los de dominio mapeados por el Host y sus notificaciones) a bloques de conversación
+/// semánticos, overlays de interacción y status line (ADR-0033, ADR-0034, ADR-0031). Los textos
+/// visibles salen de <see cref="Localization"/> (ADR-0040).
 /// </summary>
 public sealed class ClientProjection
 {
+    private readonly Localization _text;
+
+    public ClientProjection() : this(Localization.Spanish())
+    {
+    }
+
+    public ClientProjection(Localization text) => _text = text;
+
     public ClientState Apply(ClientState state, WireEnvelope evt)
     {
         if (evt.MessageType != OmniCore.Protocol.MessageTypes.Event)
@@ -214,25 +243,52 @@ public sealed class ClientProjection
             return state;
         }
 
-        var fields = OmniCore.Protocol.JsonObj.Parse(evt.PayloadJson);
-        var type = fields.TryGetValue("type", out var t) ? t : null;
-        var block = ToBlock(type, fields);
-        if (block is null)
+        var f = OmniCore.Protocol.JsonObj.Parse(evt.PayloadJson);
+        var type = Get(f, "type");
+        switch (type)
         {
-            return state;
+            case "run.created":
+                return WithStatus(Append(state, Block(evt, ConversationRole.System,
+                    _text.Resolve("run.created", "objective", Get(f, "objective")))), Get(f, "mode"), null);
+            case "run.mode_changed":
+                return WithStatus(Append(state, Block(evt, ConversationRole.System,
+                    _text.Resolve("run.mode_changed", "mode", _text.Resolve("status.mode." + Get(f, "to"), null, null)))),
+                    Get(f, "to"), null);
+            case "run.awaiting_input":
+                return Append(state, Block(evt, ConversationRole.System, _text.Resolve("run.awaiting_input", null, null)));
+            case "run.completed":
+                return Append(state, Block(evt, ConversationRole.System,
+                    _text.Resolve("run.completed." + Get(f, "outcome").ToLowerInvariant(), null, null)));
+            case "run.failed":
+                return Append(state, Block(evt, ConversationRole.System, _text.Resolve("run.failed", "cause", Get(f, "cause"))));
+            case "run.cancelled":
+                return Append(state, Block(evt, ConversationRole.System, _text.Resolve("run.cancelled", null, null)));
+            case "user_input.received":
+                return Append(state, Block(evt, ConversationRole.User, Get(f, "text")));
+            case "assistant_message.recorded":
+                return Get(f, "text").Length == 0 ? state : Append(state, Block(evt, ConversationRole.Assistant, Get(f, "text")));
+            case "toolcall.requested":
+                return Append(state, new ConversationBlock(evt.MessageId, ConversationRole.Tool,
+                    _text.Resolve("tool.requested", "tool", Get(f, "tool")), Get(f, "tool")));
+            case "toolcall.failed":
+            case "toolcall.rejected":
+            case "toolcall.permission_denied":
+            case "toolcall.cancelled":
+                return Append(state, Block(evt, ConversationRole.Tool, _text.Resolve("tool.failed", "cause", Get(f, "cause"))));
+            case "interaction.requested":
+                return WithOverlays(state, state.Overlays.Append(Overlay(f)).ToArray());
+            case "interaction.resolved":
+            case "interaction.expired":
+                return WithOverlays(state, state.Overlays.Where(o => o.Id != Get(f, "interactionId")).ToArray());
+            case "sim.events":
+                return Append(state, new ConversationBlock("sim.events", ConversationRole.System,
+                    _text.Resolve("sim.finished", "run", Get(f, "run")).Replace("{exit}", Get(f, "exitCode")), null));
+            case "sim.resumed":
+                return Append(state, new ConversationBlock("sim.resumed", ConversationRole.System,
+                    _text.Resolve("sim.resumed", "count", Get(f, "reconciled")), null));
+            default:
+                return state;
         }
-
-        var existing = state.Conversation.Blocks;
-        var next = new ConversationBlock[existing.Count + 1];
-        for (var i = 0; i < existing.Count; i++)
-        {
-            next[i] = existing[i];
-        }
-
-        next[existing.Count] = block;
-        var conversation = new ConversationModel(next);
-        return new ClientState(state.Header, conversation, state.Sidebar, state.Composer, state.StatusLine,
-            state.Overlays, state.Connection);
     }
 
     public ClientState ApplyLocal(ClientState state, LocalAction action)
@@ -247,23 +303,57 @@ public sealed class ClientProjection
         return state;
     }
 
-    private static ConversationBlock? ToBlock(string? type, Dictionary<string, string> fields)
+    private InteractionOverlayModel Overlay(Dictionary<string, string> f)
     {
-        if (type == "sim.events")
-        {
-            var run = fields.TryGetValue("run", out var r) ? r! : "?";
-            var exit = fields.TryGetValue("exitCode", out var e) ? e! : "?";
-            return new ConversationBlock("sim.events", ConversationRole.System,
-                "Simulación: Run terminó en " + run + " (exit " + exit + ")", null);
-        }
-
-        if (type == "sim.resumed")
-        {
-            var reconciled = fields.TryGetValue("reconciled", out var n) ? n! : "0";
-            return new ConversationBlock("sim.resumed", ConversationRole.System,
-                "Resume: toolcall reconciliada sin duplicar efecto (" + reconciled + ")", null);
-        }
-
-        return null;
+        var kind = Get(f, "kind");
+        var prefix = "interaction." + Snake(kind) + ".";
+        var ids = Get(f, "options").Split(',', StringSplitOptions.RemoveEmptyEntries);
+        var labels = ids.Select(id => Label(prefix + id, id)).ToArray();
+        return new InteractionOverlayModel(Get(f, "interactionId"), kind, Label(prefix + "title", kind), labels, ids);
     }
+
+    /// <summary>Texto localizado de una clave; si no existe, el valor técnico (nunca la clave cruda).</summary>
+    private string Label(string key, string fallback)
+    {
+        var text = _text.Resolve(key, null, null);
+        return text == key ? fallback : text;
+    }
+
+    private static string Snake(string pascal)
+    {
+        var builder = new System.Text.StringBuilder();
+        for (var i = 0; i < pascal.Length; i++)
+        {
+            if (char.IsUpper(pascal[i]) && i > 0)
+            {
+                builder.Append('_');
+            }
+
+            builder.Append(char.ToLowerInvariant(pascal[i]));
+        }
+
+        return builder.ToString();
+    }
+
+    private static string Get(Dictionary<string, string> fields, string key) =>
+        fields.TryGetValue(key, out var value) ? value : string.Empty;
+
+    private static ConversationBlock Block(WireEnvelope evt, ConversationRole role, string text) =>
+        new(evt.MessageId, role, text, null);
+
+    private static ClientState Append(ClientState state, ConversationBlock block) =>
+        new(state.Header, new ConversationModel(state.Conversation.Blocks.Append(block).ToArray()), state.Sidebar,
+            state.Composer, state.StatusLine, state.Overlays, state.Connection);
+
+    private static ClientState WithStatus(ClientState state, string? mode, int? pending) =>
+        new(state.Header, state.Conversation, state.Sidebar, state.Composer,
+            new StatusLineModel(state.StatusLine.Quota, pending ?? state.StatusLine.PendingInteractions,
+                string.IsNullOrEmpty(mode) ? state.StatusLine.Mode : mode!),
+            state.Overlays, state.Connection);
+
+    /// <summary>Los overlays y el contador de pendientes de la status line cambian juntos.</summary>
+    private static ClientState WithOverlays(ClientState state, IReadOnlyList<InteractionOverlayModel> overlays) =>
+        new(state.Header, state.Conversation, state.Sidebar, state.Composer,
+            new StatusLineModel(state.StatusLine.Quota, overlays.Count, state.StatusLine.Mode),
+            overlays, state.Connection);
 }

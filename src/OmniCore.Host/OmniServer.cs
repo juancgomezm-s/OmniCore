@@ -338,7 +338,22 @@ public sealed class OmniServer : IOmniClient
         return CommandAck.Fail(command.MessageId, "comando desconocido en M1");
     }
 
-    public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => _events.ToArray();
+    /// <summary>
+    /// Eventos del protocolo de la sesión en curso desde la secuencia dada (ADR-0013 §1): los eventos
+    /// de dominio del journal traducidos por <see cref="ProtocolMapper"/>, seguidos de las
+    /// notificaciones del servidor (resumen de una simulación o de un resume).
+    /// </summary>
+    public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence)
+    {
+        var result = new List<WireEnvelope>();
+        if (_lastSessionId is not null)
+        {
+            result.AddRange(new ProtocolMapper(_codecs).Map(_store.ReadFrom(_lastSessionId, Math.Max(1, fromSequence))));
+        }
+
+        result.AddRange(_events);
+        return result;
+    }
 
     public SessionId? LastSessionId() => _lastSessionId;
 
