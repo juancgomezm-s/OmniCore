@@ -19,4 +19,15 @@ public static class Sha256
 
     /// <summary>Hash SHA-256 en hex minúscula de una secuencia de bytes.</summary>
     public static string Hex(ReadOnlySpan<byte> bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
+
+    /// <summary>Digest de ocho palabras de 32 bits, en orden big-endian (uso diagnóstico/tests).</summary>
+    public static int[] Bytes(string content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(content));
+        var words = new int[8];
+        for (var index = 0; index < words.Length; index++)
+            words[index] = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(digest.AsSpan(index * 4, 4));
+        return words;
+    }
 }

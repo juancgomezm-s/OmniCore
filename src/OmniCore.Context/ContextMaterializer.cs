@@ -63,8 +63,8 @@ public sealed class ContextMaterializer
                 var artifact = _artifacts.PutText(safeOutput, "text/plain", ArtifactKind.ToolOutput,
                     candidate.Provenance.Sensitive ? Sensitivity.Sensitive : Sensitivity.Normal);
                 var preview = safeOutput[..Math.Min(240, safeOutput.Length)];
-                var stub = "[tool output externalized; ref=artifact=" + artifact.Hash
-                    + "; re-read by CAS hash with IArtifactStore.GetText or ContextArtifactReferenceResolver.Read(ref)]\\nPreview: " + preview;
+                var stub = "[tool output externalized; re-read with artifact.read using hash=\""
+                    + artifact.Hash.Value + "\" (offset=0, limit=4096); repeat with next offset for more.]\\nPreview: " + preview;
                 var provenance = candidate.Provenance with
                 {
                     Refs = (candidate.Provenance.Refs ?? Array.Empty<string>()).Append("artifact=" + artifact.Hash)

@@ -21,7 +21,7 @@ public sealed class HostTools
 
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
         bool includeMutationTools = false, bool includeProcessTools = false,
-        SandboxStrength processSandboxStrength = SandboxStrength.Strong)
+        SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null)
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
@@ -42,9 +42,9 @@ public sealed class HostTools
                 .Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength));
         }
 
-        _catalog = catalog
-            .Add(new ReferenceResolveTool(boundary))
-            .Add(_planPropose);
+        catalog = catalog.Add(new ReferenceResolveTool(boundary));
+        if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);
+        _catalog = catalog.Add(_planPropose);
     }
 
     public static HostTools Default()
@@ -54,9 +54,9 @@ public sealed class HostTools
         return new HostTools(boundary, planService, includeSimulationTools: true, includeMutationTools: true);
     }
 
-    public static HostTools Explorer() =>
+    public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
-            includeMutationTools: false, includeProcessTools: false);
+            includeMutationTools: false, includeProcessTools: false, artifactReadTool: artifactReadTool);
 
     public FakeCatalog Catalog() => _catalog;
 
