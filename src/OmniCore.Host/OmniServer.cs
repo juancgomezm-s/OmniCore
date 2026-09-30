@@ -655,23 +655,113 @@ public sealed class OmniServer : IOmniClient
     /// </summary>
     private void AuditRun(SimulationEngine.RunResult result)
     {
-        var events = _store.ReadFrom(result.SessionId, 1);
-        foreach (var evt in events)
+        // Consumidor de eventos para auditoría (INV-012, ADR-0043 §1): el Engine no escribe
+        // auditoría; aquí se leen los eventos canónicos de permisos del run y cada decisión
+        // (Allow/Ask/Deny, incluida la resolución de cada Ask) se registra como metadata con
+        // WorkspaceId, SessionId, RunId, timestamp y referencia al evento original (sesión + seq).
+        // El sink redacta secretos (ADR-0018 §4): aquí no entra contenido ni credenciales.
+        WorkspaceId? workspace = null;
+        var toolNames = new Dictionary<ToolCallId, string>();
+        foreach (var evt in _store.ReadFrom(result.SessionId, 1))
         {
-            if (evt.Type.ToString() == "toolcall.permission_evaluated"
-                || evt.Type.ToString() == "toolcall.permission_granted"
-                || evt.Type.ToString() == "toolcall.permission_denied")
+            var payload = _codecs.Decode(evt);
+            switch (payload)
             {
-                _audit.Record(new AuditRecord(
-                    evt.Type.ToString(),
-                    null,
-                    result.SessionId,
-                    result.RunId,
-                    evt.Timestamp,
-                    "session:" + result.SessionId + ":" + evt.Sequence,
-                    new Dictionary<string, string>()), CancellationToken.None);
+                case SessionCreated created:
+                    workspace = WorkspaceId.Parse(created.WorkspaceId);
+                    continue;
+                case ToolCallRequested requested:
+                    toolNames[requested.ToolCallId] = requested.ToolName;
+                    continue;
             }
+
+            var details = PermissionAuditDetails(payload, toolNames);
+            if (details is null)
+            {
+                continue;
+            }
+
+            _audit.Record(new AuditRecord(
+                evt.Type.ToString(),
+                workspace,
+                result.SessionId,
+                result.RunId,
+                evt.Timestamp,
+                "session:" + result.SessionId + ":" + evt.Sequence,
+                details), CancellationToken.None);
         }
+    }
+
+    /// <summary>
+    /// Metadata de decisión por evento de permiso (null = no auditable): tool, decisión y
+    /// resolución de cada Ask —granted/denied con su causa—, capas evaluadas y grant aplicado.
+    /// </summary>
+    private static Dictionary<string, string>? PermissionAuditDetails(DomainEventPayload payload,
+        Dictionary<ToolCallId, string> toolNames)
+    {
+        switch (payload)
+        {
+            case PermissionEvaluated evaluated:
+            {
+                var details = ToolDetails(toolNames, evaluated.ToolCallId);
+                details["decision"] = evaluated.Decision.ToString();
+                details["layers"] = evaluated.LayersJson;
+                if (evaluated.AppliedGrant is not null)
+                {
+                    details["grant"] = evaluated.AppliedGrant.ToString();
+                }
+
+                return details;
+            }
+
+            case PermissionRequested ask:
+            {
+                var details = ToolDetails(toolNames, ask.ToolCallId);
+                details["decision"] = "Ask";
+                details["interaction"] = ask.InteractionId.ToString();
+                return details;
+            }
+
+            case PermissionGranted granted:
+            {
+                var details = ToolDetails(toolNames, granted.ToolCallId);
+                details["decision"] = "Allow";
+                if (granted.GrantId is not null)
+                {
+                    details["grant"] = granted.GrantId.ToString();
+                }
+
+                if (granted.Lifetime.HasValue)
+                {
+                    details["lifetime"] = granted.Lifetime.Value.ToString();
+                }
+
+                return details;
+            }
+
+            case PermissionDenied denied:
+            {
+                var details = ToolDetails(toolNames, denied.ToolCallId);
+                details["decision"] = "Deny";
+                details["cause"] = denied.Cause;
+                return details;
+            }
+
+            default:
+                return null;
+        }
+    }
+
+    private static Dictionary<string, string> ToolDetails(Dictionary<ToolCallId, string> toolNames,
+        ToolCallId callId)
+    {
+        var details = new Dictionary<string, string>();
+        if (toolNames.TryGetValue(callId, out var tool))
+        {
+            details["tool"] = tool;
+        }
+
+        return details;
     }
 
     /// <summary>
