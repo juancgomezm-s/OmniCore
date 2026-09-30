@@ -74,6 +74,9 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
     private static StringComparer EnvironmentComparer => OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
+    private static StringComparison EnvironmentComparison => OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     private static bool IsValidEnvironmentName(string name) => !string.IsNullOrWhiteSpace(name)
         && !name.Contains('=') && !name.Any(char.IsControl);
 
@@ -81,26 +84,18 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
     {
         var allowed = new HashSet<string>(EnvironmentComparer)
         {
-            "PATH",
+            "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LANG",
         };
-        if (OperatingSystem.IsWindows())
-        {
-            allowed.Add("SystemRoot");
-            allowed.Add("WINDIR");
-            allowed.Add("TEMP");
-            allowed.Add("TMP");
-        }
-        else
-        {
-            allowed.Add("HOME");
-            allowed.Add("LANG");
-            allowed.Add("TMPDIR");
-        }
         foreach (var extra in _additionalEnvironmentAllowlist) allowed.Add(extra);
 
         foreach (System.Collections.DictionaryEntry pair in Environment.GetEnvironmentVariables())
         {
-            if (pair.Key is not string name || pair.Value is not string value || !allowed.Contains(name)) continue;
+            if (pair.Key is not string name || pair.Value is not string value) continue;
+            var configured = allowed.Contains(name)
+                || name.StartsWith("LC_", EnvironmentComparison)
+                || name.StartsWith("DOTNET_", EnvironmentComparison)
+                || name.StartsWith("NUGET_", EnvironmentComparison);
+            if (!configured) continue;
             target[name] = value;
         }
     }
@@ -149,8 +144,8 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         }
 
         // 1. Drenaje CONCURRENTE (no bloqueante): leer en dos tasks paralelos.
-        var stdoutTask = System.Threading.Tasks.Task.Run<string?>(() => SafeRead(process.StandardOutput));
-        var stderrTask = System.Threading.Tasks.Task.Run<string?>(() => SafeRead(process.StandardError));
+        var stdoutTask = System.Threading.Tasks.Task.Run<string?>(() => SafeRead(process.StandardOutput, 1_048_576));
+        var stderrTask = System.Threading.Tasks.Task.Run<string?>(() => SafeRead(process.StandardError, 1_048_576));
 
         // 2. Espera del proceso real con timeout y cancelación.
         var completed = WaitForExitOrCancel(process, timeout, cancellationToken);
@@ -232,23 +227,26 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         }
     }
 
-    private static string? SafeRead(object reader)
+    private static string? SafeRead(object reader, int cap)
     {
         var sr = reader as System.IO.StreamReader;
-        if (sr is null)
-        {
-            return null;
-        }
-
+        if (sr is null) return null;
         try
         {
-            var text = sr!.ReadToEnd();
-            return text is null ? null : text!.Trim();
+            // Keep draining after reaching the cap so the child cannot block on a full pipe,
+            // while bounding memory regardless of how much it writes.
+            var buffer = new char[8192];
+            var output = new System.Text.StringBuilder(Math.Min(cap, 8192));
+            while (true)
+            {
+                var read = sr.Read(buffer, 0, buffer.Length);
+                if (read == 0) break;
+                var keep = Math.Min(read, Math.Max(0, cap - output.Length));
+                if (keep > 0) output.Append(buffer, 0, keep);
+            }
+            return output.ToString();
         }
-        catch (Exception)
-        {
-            return null;
-        }
+        catch (Exception) { return null; }
     }
 
     private static string? WaitOrNull(System.Threading.Tasks.Task<string?> task)

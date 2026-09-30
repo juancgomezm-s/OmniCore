@@ -208,12 +208,32 @@ public sealed class ToolExecutionContext
 
     public FileReadRegistry? ReadRegistry { get; }
 
+    /// <summary>Emite eventos canónicos durante herramientas que requieren interacción.</summary>
+    public Action<DomainEventPayload>? EmitEvent { get; }
+
+    /// <summary>Resolver de una interacción publicada; null significa que no hay cliente.</summary>
+    public Func<InteractionRequested, string?>? ResolveInteraction { get; }
+
+    public IAuditSink? Audit { get; }
+
+    public WeakSandboxConsentState? WeakSandboxConsent { get; }
+
+    public bool IsInteractive { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
-    public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry)
+    public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
+        Action<DomainEventPayload>? emitEvent = null, Func<InteractionRequested, string?>? resolveInteraction = null,
+        IAuditSink? audit = null, bool isInteractive = false,
+        WeakSandboxConsentState? weakSandboxConsent = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
+        EmitEvent = emitEvent;
+        ResolveInteraction = resolveInteraction;
+        Audit = audit;
+        IsInteractive = isInteractive;
+        WeakSandboxConsent = weakSandboxConsent;
     }
 }
 

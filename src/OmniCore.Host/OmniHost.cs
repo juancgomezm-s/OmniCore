@@ -234,7 +234,8 @@ public sealed class OmniHost
     /// FakeTools de simulación. Es la única composición real que expone mutaciones.
     /// </summary>
     public static HostTools CreateActTools() =>
-        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false, includeMutationTools: true);
+        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            includeMutationTools: true, includeProcessTools: true);
 
     /// <summary>
     /// Executor de <c>omni act</c>: capa de modo ACT (escrituras dentro del workspace permitidas por
@@ -244,11 +245,13 @@ public sealed class OmniHost
     /// </summary>
     public static IToolExecutor CreateActExecutor(FakeCatalog catalog, string workspaceRoot,
         ModelCapabilityBoundary boundary, IReadOnlyDictionary<string, string>? projectRestrictions = null,
-        RunId? runId = null)
+        RunId? runId = null, IAuditSink? audit = null,
+        Func<InteractionRequested, string?>? interactionResponder = null, bool isInteractive = false)
     {
         ArgumentNullException.ThrowIfNull(boundary);
-        var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId);
-        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
+        var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
+        return new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary, audit,
+            interactionResponder, isInteractive);
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>
