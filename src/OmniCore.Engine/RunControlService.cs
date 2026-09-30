@@ -89,7 +89,7 @@ public sealed class RunControlService
     {
         var events = _store.ReadFrom(session, 1);
         var projection = RunProjection.Replay(session, run, _codecs, events);
-        RequireActive(projection);
+        RequireActive(projection, events);
         if (projection.State == RunState.AwaitingInput)
         {
             CancelRun(session, run);
@@ -115,7 +115,7 @@ public sealed class RunControlService
     {
         var events = _store.ReadFrom(session, 1);
         var projection = RunProjection.Replay(session, run, _codecs, events);
-        RequireActive(projection);
+        RequireActive(projection, events);
 
         var batch = CutInFlightWork(events, "run cancelado");
         foreach (var lane in LaneProjection.Replay(_codecs, events).Lanes())
@@ -199,9 +199,11 @@ public sealed class RunControlService
 
     // ── Auxiliares ─────────────────────────────────────────────────────────────────────────
 
-    private static void RequireActive(RunProjection run)
+    /// <summary>El Run debe existir en la sesión y no ser terminal (un Run inexistente tampoco está activo).</summary>
+    private void RequireActive(RunProjection run, IReadOnlyList<DomainEvent> events)
     {
-        if (run.IsTerminal())
+        var exists = events.Any(evt => _codecs.Decode(evt) is RunCreated created && created.RunId.Equals(run.Id));
+        if (!exists || run.IsTerminal())
         {
             throw new RunNotActiveException(run.Id);
         }
