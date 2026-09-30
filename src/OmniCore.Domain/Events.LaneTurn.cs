@@ -83,13 +83,13 @@ public record LaneHeartbeatRecorded(LaneId LaneId, LaneHeartbeat Heartbeat) : Do
     public int SchemaVersion() => 1;
 }
 
-/// <summary>TurnStarted: un Turn de la Lane arranca (ADR-0036 §6).</summary>
+/// <summary>TurnStarted: un Turn de la Lane arranca y registra su fingerprint de ejecución (ADR-0017).</summary>
 [JsonSerializable(typeof(TurnStarted))]
-public record TurnStarted(TurnId TurnId, LaneId LaneId) : DomainEventPayload
+public record TurnStarted(TurnId TurnId, LaneId LaneId, ExecutionFingerprint? Fingerprint = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("turn.started");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>ModelCompleted: el modelo terminó su respuesta completa (ADR-0036 §6).</summary>

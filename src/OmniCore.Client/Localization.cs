@@ -21,10 +21,21 @@ public sealed class Localization
     /// <summary>Resuelve una clave con argumentos al texto del locale activo.</summary>
     public string Resolve(string key, string? argName, string? argValue)
     {
+        var args = new Dictionary<string, string>();
+        if (argName is not null && argValue is not null) args[argName] = argValue;
+        return Resolve(key, args);
+    }
+
+    /// <summary>Resuelve una clave y todos sus argumentos.</summary>
+    public string Resolve(string key, IReadOnlyDictionary<string, string>? args = null)
+    {
         var text = Resources(key);
-        if (argName is not null && argValue is not null)
+        if (args is not null)
         {
-            text = text.Replace("{" + argName + "}", argValue!);
+            foreach (var pair in args)
+            {
+                text = text.Replace("{" + pair.Key + "}", pair.Value, StringComparison.Ordinal);
+            }
         }
 
         return text;
@@ -74,6 +85,13 @@ public sealed class Localization
         ["interaction.plan_approval.title"] = "Aprobar el plan",
         ["interaction.plan_approval.reject"] = "Seguir planificando",
         ["interaction.budget_exceeded.title"] = "Presupuesto agotado",
+        ["doctor.heading"] = "omni doctor — diagnóstico de M2",
+        ["doctor.config"] = "Configuración: {path}",
+        ["doctor.models"] = "Modelos disponibles:",
+        ["doctor.runtime"] = "Runtime cableado:",
+        ["doctor.status.configured"] = "Estado: modelo configurado ✓",
+        ["doctor.status.unconfigured"] = "Estado: sin modelo configurado (ejecuta omni ask para ver la guía)",
+        ["scenario.invalid"] = "Escenario inválido: {detail}",
     };
 
     private static readonly Dictionary<string, string> _en = new()
@@ -108,5 +126,12 @@ public sealed class Localization
         ["interaction.plan_approval.title"] = "Approve the plan",
         ["interaction.plan_approval.reject"] = "Continue planning",
         ["interaction.budget_exceeded.title"] = "Budget exhausted",
+        ["doctor.heading"] = "omni doctor — M2 diagnostics",
+        ["doctor.config"] = "Configuration: {path}",
+        ["doctor.models"] = "Available models:",
+        ["doctor.runtime"] = "Wired runtime:",
+        ["doctor.status.configured"] = "Status: model configured ✓",
+        ["doctor.status.unconfigured"] = "Status: no model configured (run omni ask for guidance)",
+        ["scenario.invalid"] = "Invalid scenario: {detail}",
     };
 }
