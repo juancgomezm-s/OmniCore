@@ -6,6 +6,15 @@
   "properties": {
     "defaultModel": { "type": "string", "description": "Must name a user-defined model alias." },
     "permissionRestrictions": { "type": "object", "additionalProperties": { "enum": ["deny", "ask"] } },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "build": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Literal argv; first item is executable." },
+        "test": { "type": "array", "minItems": 1, "items": { "type": "string" }, "description": "Literal argv; first item is executable." },
+        "acceptance": { "type": "boolean" }
+      }
+    },
     "providers": false,
     "credentials": false,
     "permissions": false,

@@ -3,6 +3,7 @@ namespace OmniCore.Host;
 using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
+using OmniCore.Engine;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Protocol;
@@ -277,6 +278,8 @@ public sealed class OmniCliRuntime
 
             // Un boundary (y su registro de lecturas) por Run, canonizado contra la raíz del workspace.
             var boundary = CreateBoundary(effectivePolicy, _workspaceRoot);
+            if (act && effectivePolicy.IsFallback)
+                writeLine(Text(LocalizedText.Of("coder.policy.observeOnly")));
             if (!act && server.RequestPlanApprovalIfNeeded() is { } pendingApproval)
             {
                 var selected = ReadPlanApprovalOption(writeLine, locale);
@@ -327,6 +330,11 @@ public sealed class OmniCliRuntime
             var instruction = executingAct
                 ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
                 : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.";
+            if (act)
+                return RunActLoop(turn, writeLine, prompt, instruction, sessionId, runId, laneId, workingState,
+                    workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
+                    interactionResponder, interactive, locale, cancellationToken, server.ConsumePromptOrigin());
+
             var result = turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, cancellationToken,
                 server.ConsumePromptOrigin());
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
@@ -373,16 +381,10 @@ public sealed class OmniCliRuntime
                         new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
                         providerDescription?.Auth.Kind == AuthKind.ApiKey);
                     var approvedState = ReadWorkingState(server, cancellationToken);
-                    var continued = actTurn.Ask("Execute the approved plan for: " + prompt,
+                    return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",
-                        sessionId, runId, laneId, approvedState, cancellationToken);
-                    foreach (var trace in continued.ToolCalls)
-                        writeLine("[tool] " + trace.ToolName + " → " + (trace.Succeeded ? "ok" : "FALLO")
-                            + ": " + trace.Summary);
-                    if (!string.IsNullOrEmpty(continued.FinalText)) writeLine(continued.FinalText);
-                    writeLine("── " + continued.StopReason + " · steps " + continued.Steps
-                        + " · tokens " + (continued.Usage.Input + continued.Usage.Output));
-                    return continued.StopReason == StopReason.EndTurn && continued.FinalText is not null ? 0 : 1;
+                        sessionId, runId, laneId, approvedState, workspaceConfig.Settings?.Gates, restrictions,
+                        server, artifacts, audit, interactionResponder, interactive, locale, cancellationToken);
                 }
             }
 
@@ -404,6 +406,175 @@ public sealed class OmniCliRuntime
 
             return 1;
         }
+    }
+
+    internal int RunActLoop(ExplorerTurn turn, Action<string> writeLine, string objective, string instruction,
+        SessionId sessionId,
+        RunId runId, LaneId laneId, string workingState, WorkspaceGatesYaml? gateConfiguration,
+        IReadOnlyDictionary<string, string>? restrictions, OmniServer server, IArtifactStore artifacts,
+        IAuditSink audit, Func<InteractionRequested, string?>? interactionResponder, bool interactive,
+        string locale, CancellationToken cancellationToken, string? origin = null,
+        Func<InteractionRequested, string?>? acceptanceResponder = null)
+    {
+        var hasExternalGates = gateConfiguration is { Build: not null } or { Test: not null };
+        var hasAcceptance = gateConfiguration?.Acceptance == true;
+        var hasAnyGate = hasExternalGates || hasAcceptance;
+        var nextPrompt = objective;
+        IReadOnlyList<ExternalCompletionGateResult>? acceptedResults = null;
+        const int maxTurns = 16;
+
+        for (var attempt = 0; attempt < maxTurns; attempt++)
+        {
+            var result = turn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
+                cancellationToken, origin);
+            origin = null;
+            foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
+                WriteToolTrace(writeLine, trace);
+            if (!string.IsNullOrEmpty(result.FinalText)) writeLine(result.FinalText);
+            writeLine("── " + result.StopReason + " · steps " + result.Steps
+                + " · tokens " + (result.Usage.Input + result.Usage.Output));
+            if (result.StopReason != StopReason.EndTurn || result.FinalText is null)
+            {
+                writeLine(Text(LocalizedText.Of("coder.completion.invalid")));
+                return 1;
+            }
+
+            var events = server.AcquireStore().ReadFrom(sessionId, 1);
+            var run = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), events);
+            var tasks = TaskGraphProjection.Replay(server.AcquireCodecs(), events);
+            var plan = PlanProjection.Replay(server.AcquireCodecs(), events);
+            IReadOnlyList<ExternalCompletionGateResult> checkResults = Array.Empty<ExternalCompletionGateResult>();
+            var stream = new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId);
+            var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
+                new ProgressReconciler(), server.AcquireStore(), server.AcquireCodecs(), sessionId, stream,
+                () =>
+                {
+                    if (acceptedResults is not null)
+                    {
+                        checkResults = acceptedResults;
+                    }
+                    else if (gateConfiguration is not null && hasAnyGate)
+                    {
+                        var runner = new ConfiguredCompletionGates(gateConfiguration, _workspaceRoot, runId,
+                            laneId, run.RootTask, restrictions, audit, artifacts,
+                            interactionResponder, interactive);
+                        checkResults = runner.Run(stream, cancellationToken);
+                    }
+                    return checkResults;
+                });
+            foreach (var gate in checkResults)
+                writeLine("[gate] " + gate.Key + " → " + (gate.Passed ? "ok" : "FALLO") + ": " + gate.Summary);
+            if (completed)
+            {
+                if (!hasExternalGates)
+                    writeLine(Text(LocalizedText.Of("completion.gates.none")));
+                return 0;
+            }
+
+            var pendingAcceptance = FindPendingInteraction(server.AcquireStore().ReadFrom(sessionId, 1),
+                server.AcquireCodecs(), InteractionKind.AcceptanceConfirmation);
+            if (pendingAcceptance is not null)
+            {
+                if (!interactive)
+                {
+                    writeLine(InputRequiredJson(pendingAcceptance.InteractionId, "AcceptanceConfirmation"));
+                    return 3;
+                }
+
+                var selected = acceptanceResponder is null
+                    ? ReadAcceptanceOption(writeLine, locale) : acceptanceResponder(pendingAcceptance);
+                if (selected is null)
+                {
+                    writeLine(InputRequiredJson(pendingAcceptance.InteractionId, "AcceptanceConfirmation"));
+                    return 3;
+                }
+                var response = server.RespondToInteraction(pendingAcceptance.InteractionId, selected);
+                if (response.Status != "ok")
+                {
+                    writeLine("AcceptanceConfirmation: " + (response.Error ?? "no se pudo registrar la respuesta"));
+                    return 1;
+                }
+                if (selected == "accept")
+                {
+                    acceptedResults = checkResults.Where(gate => gate.Key != "acceptance").ToList();
+                    acceptedResults = acceptedResults.Append(new ExternalCompletionGateResult("acceptance", true,
+                        "confirmado por el usuario")).ToArray();
+                    var resumedEvents = server.AcquireStore().ReadFrom(sessionId, 1);
+                    var resumedRun = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), resumedEvents);
+                    var resumed = new RunCoupon(resumedRun, TaskGraphProjection.Replay(server.AcquireCodecs(), resumedEvents),
+                        PlanProjection.Replay(server.AcquireCodecs(), resumedEvents)).CheckCompletionAndGate(
+                            new PlanService(), new ProgressReconciler(), server.AcquireStore(), server.AcquireCodecs(),
+                            sessionId, new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
+                            () => acceptedResults);
+                    if (resumed) return 0;
+                    acceptedResults = null; // cualquier trabajo posterior requiere volver a validar y aceptar
+                }
+                else
+                {
+                    acceptedResults = null;
+                    nextPrompt = "The user rejected acceptance. Continue the work, address the feedback, and propose completion only when ready.";
+                    continue;
+                }
+            }
+
+            var rejection = server.AcquireStore().ReadFrom(sessionId, 1).Select(server.AcquireCodecs().Decode)
+                .OfType<RunValidationRejected>().LastOrDefault(item => item.RunId.Equals(runId));
+            var feedback = new List<string>();
+            if (rejection is null)
+                feedback.Add("Completion was rejected by a runtime gate.");
+            else
+            {
+                feedback.AddRange(rejection.Missing);
+                foreach (var artifact in rejection.OutputArtifacts ?? Array.Empty<ArtifactRef>())
+                    feedback.Add("Gate output:\n" + RedactSensitive(artifacts.GetText(artifact.Hash) ?? ""));
+            }
+            nextPrompt = "Runtime completion validation failed. Fix the following feedback, then propose completion again:\n"
+                + string.Join("\n", feedback);
+        }
+
+        writeLine(locale == "en"
+            ? "omni act: completion gates were not satisfied within the turn limit; Run remains resumable."
+            : "omni act: no se satisficieron los gates dentro del límite; el Run puede reanudarse.");
+        return 1;
+
+        static void WriteToolTrace(Action<string> output, ExplorerTurn.ToolUseTrace trace) => output(
+            "[tool] " + trace.ToolName + " → " + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);
+    }
+
+    private static InteractionRequested? FindPendingInteraction(IReadOnlyList<DomainEvent> events,
+        IEventCodecRegistry codecs, InteractionKind kind)
+    {
+        var pending = new Dictionary<InteractionId, InteractionRequested>();
+        foreach (var evt in events)
+        {
+            switch (codecs.Decode(evt))
+            {
+                case InteractionRequested requested when requested.Kind == kind:
+                    pending[requested.InteractionId] = requested;
+                    break;
+                case InteractionResolved resolved:
+                    pending.Remove(resolved.InteractionId);
+                    break;
+                case InteractionExpired expired:
+                    pending.Remove(expired.InteractionId);
+                    break;
+            }
+        }
+        return pending.Values.LastOrDefault();
+    }
+
+    private string? ReadAcceptanceOption(Action<string> writeLine, string locale)
+    {
+        writeLine(Text(LocalizedText.Of("interaction.acceptance.title")));
+        writeLine("[1] " + Text(LocalizedText.Of("interaction.acceptance.accept")));
+        writeLine("[2] " + Text(LocalizedText.Of("interaction.acceptance.revise")));
+        writeLine(Text(LocalizedText.Of("interaction.acceptance.choose")));
+        return Console.ReadLine() switch
+        {
+            "1" or "accept" => "accept",
+            "2" or "revise" => "revise",
+            _ => null,
+        };
     }
 
     private Func<InteractionRequested, string?> CreateInteractionResponder(Action<string> writeLine, string locale) => request =>
@@ -465,9 +636,9 @@ public sealed class OmniCliRuntime
         };
     }
 
-    private static string InputRequiredJson(InteractionId interactionId)
+    private static string InputRequiredJson(InteractionId interactionId, string kind = "PlanApproval")
     {
-        var outcome = new InputRequiredOutcome(interactionId.ToString(), "PlanApproval");
+        var outcome = new InputRequiredOutcome(interactionId.ToString(), kind);
         return "{\"outcome\":\"InputRequired\","
             + JsonObj.Field("interactionId", outcome.InteractionId) + ","
             + JsonObj.Field("kind", outcome.Kind) + "}";

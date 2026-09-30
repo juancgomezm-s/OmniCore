@@ -16,6 +16,9 @@ using OmniCore.Domain;
 /// <c>Failed</c> nunca da un <c>Completed</c> limpio: el Run termina <c>Failed</c>, o
 /// <c>CompletedWithIssues</c> si la <c>FailurePolicy</c> es <c>AllowPartial</c>.
 /// </summary>
+public sealed record ExternalCompletionGateResult(string Key, bool Passed, string Summary,
+    InteractionRequested? PendingInteraction = null, ArtifactRef? OutputArtifact = null);
+
 public sealed class RunCoupon
 {
     private readonly RunProjection _run;
@@ -26,7 +29,8 @@ public sealed class RunCoupon
     }
 
     public bool CheckCompletionAndGate(PlanService planService, ProgressReconciler reconciler,
-        IEventStore store, IEventCodecRegistry codecs, SessionId sessionId, EventStream stream)
+        IEventStore store, IEventCodecRegistry codecs, SessionId sessionId, EventStream stream,
+        Func<IReadOnlyList<ExternalCompletionGateResult>>? runExternalGates = null)
     {
         var rootTask = _run.RootTask;
         var pipeline = new LaneCompletionPipeline();
@@ -97,8 +101,13 @@ public sealed class RunCoupon
 
         stream.Append(new RunValidationStarted(_run.Id));
 
+        // Host-owned gates execute only after validation starts. They return evidence, never
+        // authorization; process effects must already have crossed the normal Security pipeline.
+        var externalResults = runExternalGates?.Invoke() ?? Array.Empty<ExternalCompletionGateResult>();
+        var failedExternal = externalResults.Where(result => !result.Passed).ToArray();
+        var pendingExternal = failedExternal.Where(result => result.PendingInteraction is not null).ToArray();
+
         var pendingResult = new PendingTaskGate().Check(finalTasks, finalPlan, rootTask);
-        var gateResult = new PlanCompletionGate().Check(finalPlan);
 
         // EPIC-007: las Lanes de la Task raíz (la conversación) pasan su Lane Completion Pipeline
         // antes de cerrarse con el Run. Si falla no hay evento de rechazo a nivel de Lane
@@ -116,10 +125,32 @@ public sealed class RunCoupon
             }
         }
 
-        if (!pendingResult.Passed || !gateResult.Passed || laneMissing.Count > 0)
+        // El Plan v1 crea un único item raíz que representa el objetivo del Run. Cuando ese
+        // objetivo no se descompuso en hojas ni tiene Tasks vinculadas, una propuesta de fin
+        // aceptada por todos los gates permite al PlanService cerrarlo explícitamente.
+        if (pendingResult.Passed && laneMissing.Count == 0 && failedExternal.Length == 0)
+        {
+            finalPlan = CompleteUnlinkedRunObjective(finalPlan, finalTasks, finalLanes, stream, planService, codecs);
+        }
+        var gateResult = new PlanCompletionGate().Check(finalPlan);
+
+        if (!pendingResult.Passed || !gateResult.Passed || laneMissing.Count > 0 || failedExternal.Length > 0)
         {
             var gates = new List<string>();
             var missing = new List<string>();
+            foreach (var pending in pendingExternal)
+            {
+                stream.Append(pending.PendingInteraction!);
+            }
+            var outputArtifacts = new List<ArtifactRef>();
+            foreach (var failed in failedExternal)
+            {
+                gates.Add(failed.Key);
+                if (failed.OutputArtifact is not null) outputArtifacts.Add(failed.OutputArtifact);
+                var evidence = failed.OutputArtifact is null ? "" : " [artifact:"
+                    + failed.OutputArtifact.Hash + "]";
+                missing.Add(failed.Key + ": " + failed.Summary + evidence);
+            }
             if (!pendingResult.Passed)
             {
                 gates.Add("tasks");
@@ -138,7 +169,7 @@ public sealed class RunCoupon
                 missing.AddRange(laneMissing);
             }
 
-            stream.Append(new RunValidationRejected(_run.Id, gates, missing));
+            stream.Append(new RunValidationRejected(_run.Id, gates, missing, outputArtifacts));
             if (rootLane is not null)
             {
                 // La Lane raíz queda esperando al usuario (ADR-0035 §1).
@@ -164,6 +195,34 @@ public sealed class RunCoupon
 
         stream.Append(new RunFailed(_run.Id, "items requeridos fallidos: " + string.Join(", ", failedRequired)));
         return false;
+    }
+
+    private PlanProjection CompleteUnlinkedRunObjective(PlanProjection plan, TaskGraphProjection tasks,
+        LaneProjection lanes, EventStream stream, PlanService planService, IEventCodecRegistry codecs)
+    {
+        if (string.IsNullOrWhiteSpace(_run.Objective)) return plan;
+        var candidate = PlanCompletionGate.Leaves(plan).FirstOrDefault(item => item.ParentId is null
+            && item.Description.Equals(_run.Objective, StringComparison.Ordinal)
+            && item.LinkedTasks.Count == 0
+            && item.State is PlanItemState.Pending or PlanItemState.Ready or PlanItemState.InProgress);
+        if (candidate is null) return plan;
+
+        if (candidate.State is PlanItemState.Pending or PlanItemState.Ready)
+        {
+            var start = planService.Apply(plan, tasks, lanes,
+                PlanMutation.Start(candidate.Id, MutationCause.Policy));
+            if (!start.Accepted) return plan;
+            stream.AppendBatch(start.Events, DurabilityClass.Standard);
+            var events = stream.EventsSince(1);
+            plan = PlanProjection.Replay(codecs, events);
+            tasks = TaskGraphProjection.Replay(codecs, events);
+            lanes = LaneProjection.Replay(codecs, events);
+        }
+
+        var complete = planService.Apply(plan, tasks, lanes,
+            PlanMutation.Complete(candidate.Id, MutationCause.Policy, "Run completion gates passed"));
+        if (complete.Accepted) stream.AppendBatch(complete.Events, DurabilityClass.Standard);
+        return PlanProjection.Replay(codecs, stream.EventsSince(1));
     }
 
     /// <summary>Cierra la Lane raíz y la Task raíz cuando el Run termina (ADR-0035 §2).</summary>
