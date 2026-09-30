@@ -42,7 +42,76 @@ public sealed class RunResumeService
     /// resuelta (Succeeded/Failed/Reconciled) no se vuelve a tocar. No resuelve un Run terminal
     /// ni toolcalls de otro Run.
     /// </summary>
-    public int Resume(SessionId sessionId, RunId runId)
+    public int Resume(SessionId sessionId, RunId runId) =>
+        ResumeRun(sessionId, runId) + ReconcileTerminalRuns(sessionId);
+
+    /// <summary>
+    /// Reconcilia los <c>ToolCallEffectUnknown</c> sin resolver de los Runs TERMINALES de la sesión
+    /// (p. ej. cancelados tras un crash), con el mismo reconciliador y resultados que en un Run
+    /// activo, sin tocar el estado del Run. Sin esto quedarían pendientes para siempre (ADR-0004 §5).
+    /// Idempotente: una ToolCall ya resuelta no se vuelve a tocar.
+    /// </summary>
+    public int ReconcileTerminalRuns(SessionId sessionId)
+    {
+        var tail = _store.ReadFrom(sessionId, 1);
+        var starts = new List<int>();
+        for (var i = 0; i < tail.Count; i++)
+        {
+            if (_codecs.Decode(tail[i]) is RunCreated)
+            {
+                starts.Add(i);
+            }
+        }
+
+        var stream = new EventStream(_store, _codecs, sessionId);
+        var count = 0;
+        for (var k = 0; k < starts.Count; k++)
+        {
+            var from = starts[k];
+            var to = k + 1 < starts.Count ? starts[k + 1] : tail.Count;
+            var runId = ((RunCreated)_codecs.Decode(tail[from])).RunId;
+            var slice = OwnEvents(tail, new[] { from, to });
+            if (!RunProjection.Replay(sessionId, runId, _codecs, slice).IsTerminal())
+            {
+                continue;
+            }
+
+            var started = new Dictionary<ToolCallId, ToolCallStarted>();
+            var unknown = new List<ToolCallId>();
+            var resolved = new HashSet<ToolCallId>();
+            foreach (var evt in slice)
+            {
+                switch (_codecs.Decode(evt))
+                {
+                    case ToolCallStarted st: started[st.ToolCallId] = st; break;
+                    case ToolCallEffectUnknown u: unknown.Add(u.ToolCallId); break;
+                    case ToolCallReconciled r: resolved.Add(r.ToolCallId); break;
+                    case ToolCallSucceeded su: resolved.Add(su.ToolCallId); break;
+                    case ToolCallFailed f: resolved.Add(f.ToolCallId); break;
+                }
+            }
+
+            foreach (var id in unknown.Where(id => !resolved.Contains(id)))
+            {
+                var json = started.TryGetValue(id, out var st) ? st.ReconciliationJson : null;
+                stream.Append(ReconcileCall(id, json));
+                count += 1;
+            }
+        }
+
+        return count;
+    }
+
+    private ToolCallReconciled ReconcileCall(ToolCallId id, string? reconciliationJson)
+    {
+        FilesystemReconciliation result = _fsReconciler is not null && reconciliationJson is not null
+            ? _fsReconciler!.Reconcile(_workspaceRoot, reconciliationJson!, CancellationToken.None)
+            : FilesystemReconciliation.Unresolvable(
+                "metadatos de reconciliación ausentes o sin reconciliador: falla cerrado, sin re-ejecutar");
+        return new ToolCallReconciled(id, result.Outcome, result.Detail);
+    }
+
+    private int ResumeRun(SessionId sessionId, RunId runId)
     {
         var tail = _store.ReadFrom(sessionId, 1);
         var range = RunEventRange(tail, _codecs, runId);
