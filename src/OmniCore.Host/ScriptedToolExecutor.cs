@@ -30,7 +30,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     private readonly IExecutableResolver _executableResolver;
 
-    private readonly WeakSandboxConsentState _weakSandboxConsent = new();
+    private readonly WeakSandboxConsentState _weakSandboxConsent;
 
     private readonly IAuditSink? _audit;
 
@@ -45,6 +45,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _workspaceRoot = "sim";
         _boundary = null;
         _executableResolver = new SystemExecutableResolver();
+        _weakSandboxConsent = new WeakSandboxConsentState();
     }
 
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot)
@@ -54,6 +55,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _workspaceRoot = workspaceRoot;
         _boundary = null;
         _executableResolver = new SystemExecutableResolver();
+        _weakSandboxConsent = new WeakSandboxConsentState();
     }
 
     /// <summary>
@@ -69,13 +71,15 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
         ModelCapabilityBoundary? boundary, IAuditSink? audit,
-        Func<InteractionRequested, string?>? interactionResponder, bool isInteractive)
+        Func<InteractionRequested, string?>? interactionResponder, bool isInteractive,
+        WeakSandboxConsentState? weakSandboxConsent = null)
     {
         _catalog = catalog;
         _policy = policy;
         _workspaceRoot = workspaceRoot;
         _boundary = boundary;
         _executableResolver = new SystemExecutableResolver();
+        _weakSandboxConsent = weakSandboxConsent ?? new WeakSandboxConsentState();
         _audit = audit;
         _interactionResponder = interactionResponder;
         _isInteractive = isInteractive;

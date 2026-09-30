@@ -27,14 +27,14 @@ public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher
             : null);
     }
 
-    public ValueTask<ISandboxProcessControl> StartAsync(
+    public async ValueTask<ISandboxProcessControl> StartAsync(
         SandboxLaunchSpec launch,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(launch);
         cancellationToken.ThrowIfCancellationRequested();
         if (launch.RequestedStrength != SandboxStrength.Strong)
-            return _basicLauncher.StartAsync(launch, cancellationToken);
+            return await _basicLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
 
         var capabilities = _capabilities.Probe();
         if (!capabilities.StrongAvailable || _strongLauncher is null)
@@ -43,6 +43,19 @@ public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher
             throw new NotSupportedException(reason);
         }
 
-        return _strongLauncher.StartAsync(launch, cancellationToken);
+        try
+        {
+            return await _strongLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new NotSupportedException(
+                "Strong process isolation cannot grant the required filesystem access on this system.", exception);
+        }
+        catch (System.Security.SecurityException exception)
+        {
+            throw new NotSupportedException(
+                "Strong process isolation cannot grant the required filesystem access on this system.", exception);
+        }
     }
 }
