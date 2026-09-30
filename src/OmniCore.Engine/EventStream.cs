@@ -37,6 +37,9 @@ public sealed class EventStream
     /// <summary>Eventos propios ya aplicados al estado: al releerlos del store se saltan.</summary>
     private readonly HashSet<EventId> _appliedLocally = new();
 
+    /// <summary>Payloads escritos por este stream, en orden, tal como se crearon en memoria.</summary>
+    private readonly List<DomainEventPayload> _written = new();
+
     private long _trackedThrough;
 
     private RunId? _runId;
@@ -66,7 +69,17 @@ public sealed class EventStream
         _store.Append(_sessionId, envelope, durability, CancellationToken.None);
         _tracker.Apply(payload);
         _appliedLocally.Add(envelope.EventId);
+        _written.Add(payload);
     }
+
+    /// <summary>
+    /// Estado vivo: el que este stream fue aplicando en memoria a medida que escribía, sin releer
+    /// ni decodificar el journal. La golden rule lo compara con la reconstrucción desde el journal.
+    /// </summary>
+    public CanonicalStateTracker LiveState() => _tracker.Clone();
+
+    /// <summary>Payloads escritos por este stream, en orden (objetos en memoria, no decodificados).</summary>
+    public IReadOnlyList<DomainEventPayload> WrittenPayloads => _written;
 
     /// <summary>
     /// Persiste varios eventos en un solo commit atómico (ADR-0002 §1): o se escriben todos o
@@ -98,6 +111,7 @@ public sealed class EventStream
         {
             _tracker.Apply(payloads[i]);
             _appliedLocally.Add(envelopes[i].EventId);
+            _written.Add(payloads[i]);
         }
     }
 

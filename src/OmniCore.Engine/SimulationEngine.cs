@@ -235,7 +235,16 @@ public sealed class SimulationEngine
             diagnostics.Add("crash inyectado; el Run queda interrumpido (usa --resume)");
         }
 
-        var exit = VerifyExpectations(scenario, finalRun, diagnostics);
+        var exit = VerifyExpectations(scenario, finalRun, planProj, diagnostics);
+
+        // Golden rule (ADR-0041 §2): el journal reconstruye exactamente el estado vivo. Este stream
+        // es el único escritor de la sesión durante la simulación.
+        var golden = GoldenRule.Check(_codecs, finalTail, stream);
+        if (golden.Count > 0)
+        {
+            diagnostics.AddRange(golden);
+            exit = exit == 0 ? 3 : exit;
+        }
 
         var workingState = _crashed ? null : WorkingStateProjector.Project(finalRun, planProj);
         return new RunResult(sessionId, runId, exit, diagnostics.ToArray(), finalRun, planProj, tasksProj,
@@ -538,16 +547,34 @@ public sealed class SimulationEngine
         }
     }
 
-    private int VerifyExpectations(SimulationScenario scenario, RunProjection run, List<string> diagnostics)
+    private int VerifyExpectations(SimulationScenario scenario, RunProjection run, PlanProjection plan,
+        List<string> diagnostics)
     {
+        var exit = 0;
         var expected = scenario.ExpectedRunState;
         if (expected.Length > 0 && run.State != ParseRunState(expected))
         {
             diagnostics.Add("Run esperado " + expected + ", real " + run.State);
-            return 1;
+            exit = 1;
         }
 
-        return 0;
+        // Estado esperado por item, con los ids simbólicos del escenario (P1, P2…).
+        foreach (var kv in scenario.ExpectedPlan)
+        {
+            var item = _symbolicItems.TryGetValue(kv.Key, out var id) ? plan.Item(id) : null;
+            if (item is null)
+            {
+                diagnostics.Add("PlanItem " + kv.Key + " esperado " + kv.Value + ", no existe");
+                exit = 1;
+            }
+            else if (!item.State.ToString().Equals(kv.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                diagnostics.Add("PlanItem " + kv.Key + " esperado " + kv.Value + ", real " + item.State);
+                exit = 1;
+            }
+        }
+
+        return exit;
     }
 
     private static RunState ParseRunState(string text)

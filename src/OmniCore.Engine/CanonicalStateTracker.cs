@@ -57,6 +57,23 @@ public sealed class CanonicalStateTracker
     public CanonicalStateTracker Clone() => new(new(_runs), new(_tasks), new(_lanes), new(_turns),
         new(_toolCalls), new(_planItems));
 
+    /// <summary>
+    /// Foto canónica y ordenada de todos los estados ("entidad:id=estado"), para comparar dos
+    /// reconstrucciones del mismo journal (golden rule, ADR-0041 §2).
+    /// </summary>
+    public IReadOnlyList<string> Snapshot()
+    {
+        var lines = new List<string>();
+        lines.AddRange(_runs.Select(kv => "run:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_tasks.Select(kv => "task:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_lanes.Select(kv => "lane:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_turns.Select(kv => "turn:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_toolCalls.Select(kv => "toolcall:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_planItems.Select(kv => "plan_item:" + kv.Key + "=" + kv.Value));
+        lines.Sort(StringComparer.Ordinal);
+        return lines;
+    }
+
     public RunState? Run(RunId id) => _runs.TryGetValue(id, out var s) ? s : null;
 
     public TaskState? Task(TaskId id) => _tasks.TryGetValue(id, out var s) ? s : null;

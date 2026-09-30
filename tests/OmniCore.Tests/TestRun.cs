@@ -15,13 +15,17 @@ internal static class TestRun
     public sealed record Opened(SessionId SessionId, RunId RunId, TaskId RootTask, LaneId RootLane);
 
     public static Opened Open(IEventStore store, SessionId sessionId, string objective = "objetivo de test",
+        RunMode mode = RunMode.Act) =>
+        Open(new EventStream(store, EventCodecs.Create(), sessionId), sessionId, objective, mode);
+
+    /// <summary>Igual, escribiendo con un stream dado (p. ej. para que sea el único escritor).</summary>
+    public static Opened Open(EventStream stream, SessionId sessionId, string objective = "objetivo de test",
         RunMode mode = RunMode.Act)
     {
         var run = RunId.New();
         var task = TaskId.New();
         var lane = LaneId.New();
         var budget = new TaskBudget(null, null, null, null);
-        var stream = new EventStream(store, EventCodecs.Create(), sessionId);
         stream.AppendBatch(new DomainEventPayload[] {
             new RunCreated(run, sessionId, objective, mode, ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
                 budget, task, DateTimeOffset.UtcNow),

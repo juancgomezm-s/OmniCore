@@ -141,6 +141,18 @@ public sealed class TaskGraphProjection
 
     private TaskGraphProjection() { }
 
+    /// <summary>Proyección desde payloads en memoria (estado vivo, sin journal).</summary>
+    public static TaskGraphProjection FromPayloads(IEnumerable<DomainEventPayload> payloads)
+    {
+        var projection = new TaskGraphProjection();
+        foreach (var payload in payloads)
+        {
+            projection.Apply(payload);
+        }
+
+        return projection;
+    }
+
     public static TaskGraphProjection Replay(IEventCodecRegistry registry, IReadOnlyList<DomainEvent> evts)
     {
         var projection = new TaskGraphProjection();
@@ -200,6 +212,18 @@ public sealed class LaneProjection
     private LaneProjection() { }
 
     public static LaneProjection Empty() => new LaneProjection();
+
+    /// <summary>Proyección desde payloads en memoria (estado vivo, sin journal).</summary>
+    public static LaneProjection FromPayloads(IEnumerable<DomainEventPayload> payloads)
+    {
+        var projection = new LaneProjection();
+        foreach (var payload in payloads)
+        {
+            projection.Apply(payload);
+        }
+
+        return projection;
+    }
 
     public static LaneProjection Replay(IEventCodecRegistry registry, IReadOnlyList<DomainEvent> evts)
     {

@@ -54,19 +54,34 @@ public sealed class SimulationTests
 
         var result = engine.Execute(scenario, TestContext.Current.CancellationToken);
 
-        // Reconstruir desde el journal como haría omni sim.
-        var tail = store.ReadFrom(result.SessionId, 1);
-        var replayRun = RunProjection.Replay(result.SessionId, result.RunId, codecs, tail);
-        var replayTasks = TaskGraphProjection.Replay(codecs, tail);
-        var replayLanes = LaneProjection.Replay(codecs, tail);
-        var replayPlan = PlanProjection.Replay(codecs, tail);
+        // El motor compara el estado vivo (payloads aplicados en memoria) con el reconstruido
+        // desde el journal; una diferencia daría exit code 3 y un diagnóstico "golden rule".
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain(result.Diagnostics, d => d.Contains("golden rule", StringComparison.Ordinal));
+    }
 
-        Assert.Equal(result.Run.State, replayRun.State);
-        Assert.Equal(result.Run.Objective, replayRun.Objective);
-        Assert.Equal(result.Plan.Revision(), replayPlan.Revision());
-        Assert.Equal(result.Plan.Items().Count, replayPlan.Items().Count);
-        Assert.Equal(result.Tasks.Tasks().Count, replayTasks.Tasks().Count);
-        Assert.Equal(result.Lanes.Lanes().Count, replayLanes.Lanes().Count);
+    [Fact]
+    public void Golden_rule_detects_a_journal_that_lost_an_event()
+    {
+        // La regla no es tautológica: si el journal no reproduce lo vivo, lo dice.
+        var codecs = EventCodecs.Create();
+        var store = new InMemoryEventStore();
+        var session = OmniCore.Domain.SessionId.New();
+        var stream = new EventStream(store, codecs, session);
+        var opened = TestRun.Open(stream, session); // el mismo stream: único escritor
+        var plan = OmniCore.Domain.PlanId.New();
+        var root = OmniCore.Domain.PlanItemId.New();
+        stream.Append(new OmniCore.Domain.PlanCreated(plan, opened.RunId, root, "objetivo"));
+        stream.Append(new OmniCore.Domain.PlanItemStarted(root));
+        stream.Append(new OmniCore.Domain.PlanItemCompleted(root, null));
+
+        var journal = store.ReadFrom(session, 1);
+        Assert.Empty(GoldenRule.Check(codecs, journal, stream));
+
+        var lossy = journal.Where(e => e.Type.ToString() != "plan_item.completed").ToArray();
+        var diffs = GoldenRule.Check(codecs, lossy, stream);
+        Assert.NotEmpty(diffs);
+        Assert.Contains(diffs, d => d.Contains("Completed", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -32,6 +32,18 @@ public sealed class PlanProjection
         return projection;
     }
 
+    /// <summary>Proyección desde payloads en memoria (estado vivo, sin journal).</summary>
+    public static PlanProjection FromPayloads(IEnumerable<DomainEventPayload> payloads)
+    {
+        var projection = new PlanProjection(null, null);
+        foreach (var payload in payloads)
+        {
+            projection.Apply(payload);
+        }
+
+        return projection;
+    }
+
     public static PlanProjection Replay(IEventCodecRegistry registry, IReadOnlyList<DomainEvent> evts)
     {
         var projection = new PlanProjection(null, null);
