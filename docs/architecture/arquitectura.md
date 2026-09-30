@@ -716,6 +716,13 @@ El contrato (`Metric<QuotaInfo>` con `NotSupported` → `—`) ya está congelad
 Hay que verificar si Terminal.Gui v2 y el generador estático de YamlDotNet publican sin warnings con Native AOT.
 
 - **Si no lo hacen:** el binario se publica self-contained sin AOT, que es el camino por defecto; AOT es una opción, no un requisito (ADR-0038 §5).
+- **Spike 2026-09-29 (Windows x64):** Terminal.Gui 2.6.0-develop.61, YamlDotNet 18.1.0 y Vecc.YamlDotNet.Analyzers.StaticGenerator 18.1.0 publican con `PublishAot` e `IsAotCompatible` con **0 warnings IL2xxx/IL3xxx**. El exe resultante ocupa unos 10,5 MB y va acompañado de `libonigwrap.dll`; arranca e inicializa. Veredicto: **AOT viable**, con cuatro condiciones:
+  - fijar la versión exacta de Terminal.Gui, porque es un prerrelease `develop` y su API cambia entre builds;
+  - repetir la prueba en Linux y confirmar que se empaqueta el `.so` nativo;
+  - un job de CI que publique con AOT y falle ante cualquier IL2xxx/IL3xxx;
+  - ampliar la prueba a `OptionSelector`/`RadioGroup` y al binding de `ListView`, que quedaron sin probar.
+
+  Para enlazar en Windows, `vswhere.exe` tiene que estar en el PATH.
 
 ### OAQ-16 — Sandbox fuerte en macOS · DEFERABLE (v1.x)
 
