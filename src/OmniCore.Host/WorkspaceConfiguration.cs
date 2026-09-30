@@ -66,7 +66,7 @@ public static class WorkspaceConfigurationLoader
 {
     private static readonly IDeserializer Deserializer = new StaticDeserializerBuilder(new OmniYamlStaticContext())
         .WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
-    private static readonly string[] Allowed = ["defaultModel", "permissionRestrictions"];
+    private static readonly string[] Allowed = ["defaultModel", "permissionRestrictions", "gates"];
     private static readonly string[] Forbidden = ["providers", "credentials", "permissions", "sandbox", "baseUrl",
         "auth", "authRef", "projectId", "network", "environmentAllowlist", "grants", "userPolicy"];
 
@@ -122,7 +122,11 @@ public static class WorkspaceConfigurationLoader
                                     "config.permissionCanOnlyRestrict", rule.Value);
                         }
                     }
-                    else if (key != "permissionRestrictions" && !ConfigLoader.IsYamlString(pair.Value))
+                    else if (key == "gates")
+                    {
+                        ValidateGates(pair.Value, diagnostics);
+                    }
+                    else if (key != "permissionRestrictions" && key != "gates" && !ConfigLoader.IsYamlString(pair.Value))
                         ConfigLoader.AddAtNode(diagnostics, "settings.yaml", path, "config.wrongType", pair.Value);
                 }
             }
@@ -139,6 +143,49 @@ public static class WorkspaceConfigurationLoader
             ConfigLoader.Add(diagnostics, "settings.yaml", "defaultModel", "config.unknownModelAlias");
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
         return new(true, hasConfig, settings, diagnostics);
+    }
+
+    private static void ValidateGates(YamlNode node, List<ConfigDiagnostic> diagnostics)
+    {
+        if (node is not YamlMappingNode gates)
+        {
+            ConfigLoader.AddAtNode(diagnostics, "settings.yaml", "gates", "config.wrongType", node);
+            return;
+        }
+
+        foreach (var entry in gates.Children)
+        {
+            var key = (entry.Key as YamlScalarNode)?.Value ?? "?";
+            var path = "gates." + key;
+            if (key is not ("build" or "test" or "acceptance"))
+            {
+                ConfigLoader.AddAtNode(diagnostics, "settings.yaml", path, "config.unknownKey", entry.Key);
+                continue;
+            }
+
+            if (key == "acceptance")
+            {
+                if (entry.Value is not YamlScalarNode acceptance
+                    || acceptance.Value is not ("true" or "false"))
+                    ConfigLoader.AddAtNode(diagnostics, "settings.yaml", path, "config.wrongType", entry.Value);
+                continue;
+            }
+
+            if (entry.Value is not YamlSequenceNode argv || argv.Children.Count == 0)
+            {
+                ConfigLoader.AddAtNode(diagnostics, "settings.yaml", path, "config.expectedArgv", entry.Value);
+                continue;
+            }
+
+            var valid = true;
+            foreach (var argument in argv.Children)
+            {
+                if (!ConfigLoader.IsYamlString(argument)) valid = false;
+            }
+            if (!valid || argv.Children[0] is not YamlScalarNode executable
+                || string.IsNullOrWhiteSpace(executable.Value))
+                ConfigLoader.AddAtNode(diagnostics, "settings.yaml", path, "config.expectedArgv", entry.Value);
+        }
     }
 }
 

@@ -43,8 +43,8 @@ public record RunValidationStarted(RunId RunId) : DomainEventPayload
 }
 
 /// <summary>RunValidationRejected: Validating → Running con gates fallidos.</summary>
-public record RunValidationRejected(RunId RunId, IReadOnlyList<string> Gates, IReadOnlyList<string> Missing)
-    : DomainEventPayload
+public record RunValidationRejected(RunId RunId, IReadOnlyList<string> Gates, IReadOnlyList<string> Missing,
+    IReadOnlyList<ArtifactRef>? OutputArtifacts = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("run.validation_rejected");
 

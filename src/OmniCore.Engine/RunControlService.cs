@@ -202,6 +202,13 @@ public sealed class RunControlService
         {
             batch.AddRange(PlanApprovalEffect(events, session, run, optionId));
         }
+        else if (request.Kind == InteractionKind.AcceptanceConfirmation && ActiveRun(session) is { } acceptanceRun)
+        {
+            var projection = RunProjection.Replay(session, acceptanceRun, _codecs, events);
+            if (projection.State == RunState.AwaitingInput && RootLane(events, projection) is not null)
+                batch.Add(new UserInputReceived(acceptanceRun, InputParts("AcceptanceConfirmation: " + optionId), null,
+                    "InteractionResponse(AcceptanceConfirmation)"));
+        }
 
         new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard);
     }
