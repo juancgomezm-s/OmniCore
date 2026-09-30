@@ -18,6 +18,14 @@ public sealed class OmniCliRuntime
 
     public static OmniCliRuntime Create(string workspaceRoot) => new(workspaceRoot);
 
+    /// <summary>
+    /// Resolución de texto localizado que aporta el cliente (clave + argumentos → frase, ADR-0040).
+    /// El Host no traduce: sin resolver, escribe el formato estable <c>clave(arg=valor)</c>.
+    /// </summary>
+    public Func<string, IReadOnlyDictionary<string, string>, string>? Localize { get; set; }
+
+    private string Text(LocalizedText text) => Localize is null ? text.Render() : Localize(text.Key, text.Args);
+
     /// <summary>Abre el cliente in-process del workspace sin exponer OmniServer al consumidor.</summary>
     public IOmniClient Connect(CancellationToken cancellationToken)
     {
@@ -135,7 +143,7 @@ public sealed class OmniCliRuntime
             if (model is null)
             {
                 writeLine("omni " + (act ? "act" : "ask") + ": "
-                    + (noModel?.UserMessage ?? LocalizedText.Of("models.noneConfigured")).Render());
+                    + Text(noModel?.UserMessage ?? LocalizedText.Of("models.noneConfigured")));
                 return 1;
             }
 

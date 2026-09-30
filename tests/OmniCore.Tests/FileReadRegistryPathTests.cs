@@ -64,6 +64,16 @@ public class FileReadRegistryPathTests
         Assert.NotSame(a.ReadRegistry(), b.ReadRegistry());
         Assert.False(b.ReadRegistry().HasRead("src/a.cs"));
     }
+}
+
+/// <summary>Cambia variables de entorno del proceso: no corre en paralelo con otros tests.</summary>
+[CollectionDefinition(nameof(ProcessEnvironmentCollection), DisableParallelization = true)]
+public sealed class ProcessEnvironmentCollection;
+
+[Collection(nameof(ProcessEnvironmentCollection))]
+public class NoConfiguredModelTests
+{
+    private static readonly string Root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "omni-noconfig-root"));
 
     [Fact]
     public async Task NoConfiguredModelSurfacesTheLocalizedKey()
@@ -80,7 +90,9 @@ public class FileReadRegistryPathTests
         {
             Environment.SetEnvironmentVariable(OmniCore.Infrastructure.DefaultPlatformPaths.ConfigDirVariable, emptyConfig);
             Environment.SetEnvironmentVariable("OMNI_MODEL", null);
-            code = await OmniCore.Host.OmniCliRuntime.Create(Root).AskAsync("hola", lines.Add, CancellationToken.None);
+            var runtime = OmniCore.Host.OmniCliRuntime.Create(Root);
+            runtime.Localize = (key, args) => OmniCore.Client.Localization.Spanish().Resolve(key, args);
+            code = await runtime.AskAsync("hola", lines.Add, CancellationToken.None);
         }
         finally
         {
@@ -89,6 +101,6 @@ public class FileReadRegistryPathTests
         }
 
         Assert.Equal(1, code);
-        Assert.Contains(lines, l => l.Contains("models.noneConfigured"));
+        Assert.Contains(lines, l => l.Contains("No hay ningún modelo configurado."));
     }
 }

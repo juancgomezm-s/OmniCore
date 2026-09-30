@@ -207,4 +207,14 @@ public sealed class ScenarioYamlTests
         Assert.Equal("error", ack.Status);
         Assert.StartsWith("scenario.unknown_field(", ack.Error);
     }
+
+    [Fact]
+    public void The_client_resolves_the_wire_form_of_a_scenario_error()
+    {
+        Assert.Equal("Escenario inválido: campo desconocido: foo",
+            OmniCore.Client.Localization.Spanish().ResolveWire("scenario.unknown_field(field=foo)"));
+        Assert.Equal("Invalid scenario: unknown field: foo",
+            OmniCore.Client.Localization.English().ResolveWire("scenario.unknown_field(field=foo)"));
+        Assert.Equal("texto libre (sin clave)", OmniCore.Client.Localization.Spanish().ResolveWire("texto libre (sin clave)"));
+    }
 }
