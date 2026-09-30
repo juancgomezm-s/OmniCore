@@ -457,7 +457,8 @@ public sealed class SecurityP0Tests
                 {
                     client = await listener.AcceptTcpClientAsync(cts.Token);
                 }
-                catch (OperationCanceledException)
+                catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException
+                    or System.Net.Sockets.SocketException)
                 {
                     return;
                 }

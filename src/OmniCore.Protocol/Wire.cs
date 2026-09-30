@@ -148,56 +148,88 @@ public sealed class JsonObj
 
     public static string FieldRaw(string key, string rawValue) => "\"" + key + "\":" + rawValue;
 
-    /// <summary>Parsea un objeto plano a un mapa de strings (valores no-string se omiten).</summary>
+    /// <summary>
+    /// Parsea un objeto JSON plano a un mapa de strings: los valores string se devuelven
+    /// decodificados; el resto (números, booleanos, objetos) como su texto JSON. Un JSON que no es un
+    /// objeto devuelve un mapa vacío. Usa System.Text.Json: las comillas y escapes dentro de los
+    /// valores se respetan.
+    /// </summary>
     public static Dictionary<string, string> Parse(string json)
     {
         var result = new Dictionary<string, string>();
-        var trimmed = json.Trim();
-        var s = trimmed.Length >= 2 && trimmed[0] == '{' ? trimmed.Substring(1, trimmed.Length - 2) : trimmed;
-        var i = 0;
-        while (i < s.Length)
+        if (json is null || json.Trim().Length == 0)
         {
-            var colon = s.IndexOf(':', i);
-            if (colon < 0)
+            return result;
+        }
+
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
             {
-                break;
+                return result;
             }
 
-            var key = Unquote(s.Substring(i, colon - i).Trim());
-            var valueStart = colon + 1;
-            while (valueStart < s.Length && s[valueStart] == ' ')
+            foreach (var property in document.RootElement.EnumerateObject())
             {
-                valueStart += 1;
+                result[property.Name] = property.Value.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? property.Value.GetString() ?? ""
+                    : property.Value.GetRawText();
             }
-
-            if (valueStart >= s.Length || s[valueStart] != '"')
-            {
-                var commaAfter = s.IndexOf(',', valueStart);
-                i = commaAfter < 0 ? s.Length : commaAfter + 1;
-                continue;
-            }
-
-            var valueEnd = s.IndexOf('"', valueStart + 1);
-            if (valueEnd < 0)
-            {
-                break;
-            }
-
-            result[key] = Unescape(s.Substring(valueStart + 1, valueEnd - valueStart - 1));
-            var next = s.IndexOf(',', valueEnd);
-            i = next < 0 ? s.Length : next + 1;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // JSON inválido: mapa vacío (el llamador trata la ausencia de campos).
         }
 
         return result;
     }
 
-    private static string Unquote(string token) => token.Length >= 2 ? Unescape(token.Substring(1, token.Length - 2)) : token;
+    /// <summary>Escapa un texto para meterlo entre comillas en JSON (RFC 8259).</summary>
+    public static string Escape(string value)
+    {
+        var builder = new System.Text.StringBuilder(value.Length + 8);
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '\\': builder.Append("\\\\"); break;
+                case '"': builder.Append("\\\""); break;
+                case '\n': builder.Append("\\n"); break;
+                case '\r': builder.Append("\\r"); break;
+                case '\t': builder.Append("\\t"); break;
+                case '\b': builder.Append("\\b"); break;
+                case '\f': builder.Append("\\f"); break;
+                default:
+                    if (c < 0x20)
+                    {
+                        builder.Append("\\u").Append(((int) c).ToString("x4", System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        builder.Append(c);
+                    }
 
-    public static string Escape(string value) =>
-        value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r").Replace("\t", "\\t");
+                    break;
+            }
+        }
 
-    public static string Unescape(string value) =>
-        value.Replace("\\t", "\t").Replace("\\r", "\r").Replace("\\n", "\n").Replace("\\\"", "\"").Replace("\\\\", "\\");
+        return builder.ToString();
+    }
+
+    /// <summary>Decodifica el contenido de un string JSON (sin las comillas externas).</summary>
+    public static string Unescape(string value)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse("\"" + value + "\"");
+            return document.RootElement.GetString() ?? "";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return value;
+        }
+    }
 }
 
 /// <summary>Codificador de wire envelopes a JSON.</summary>

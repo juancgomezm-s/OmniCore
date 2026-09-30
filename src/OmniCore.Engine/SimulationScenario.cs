@@ -40,6 +40,13 @@ public sealed class SimulationScenario
     /// </summary>
     public string? FaultAtTool { get; }
 
+    /// <summary>
+    /// Respuesta del usuario simulado al <c>PlanApproval</c> de un Run en modo PLAN (ADR-0035 §4):
+    /// <c>approve_execute</c> (pasa a ACT en el mismo Run), <c>approve_only</c> (termina como
+    /// <c>Planned</c>) o <c>reject</c>. null = nadie responde: el Run queda esperando al usuario.
+    /// </summary>
+    public string? PlanApproval { get; init; }
+
     public SimulationScenario(string name, RunMode mode, string input,
         IReadOnlyList<SimulatedPlanMutation> plan, IReadOnlyList<SimulatedTask> tasks,
         Dictionary<string, IReadOnlyList<SimulatedTurnAction>> turns,
@@ -129,15 +136,26 @@ public sealed class SimulatedTurnAction
 
     public string? Complete { get; }
 
-    private SimulatedTurnAction(string? tool, string? result, string? effect, string? complete)
+    /// <summary>
+    /// Respuesta del usuario simulado si la política pide <c>Ask</c> para esta tool: <c>approve</c>
+    /// o <c>deny</c>. null = sin respuesta, y sin cliente un Ask se deniega (ADR-0003).
+    /// </summary>
+    public string? Answer { get; }
+
+    private SimulatedTurnAction(string? tool, string? result, string? effect, string? complete, string? answer = null)
     {
         Tool = tool;
         Result = result;
         Effect = effect;
         Complete = complete;
+        Answer = answer;
     }
 
     public static SimulatedTurnAction ToolCall(string tool, string effect) => new(tool, "ok", effect, null);
+
+    /// <summary>Tool call con la respuesta del usuario a un posible <c>Ask</c>.</summary>
+    public static SimulatedTurnAction ToolCall(string tool, string effect, string? answer) =>
+        new(tool, "ok", effect, null, answer);
 
     public static SimulatedTurnAction ToolCallResult(string tool, string result) => new(tool, result, null, null);
 

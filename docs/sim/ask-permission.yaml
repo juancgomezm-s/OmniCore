@@ -1,0 +1,21 @@
+# Ask: la política pide confirmación; el usuario aprueba una escritura y rechaza otra.
+# Sin respuesta, un Ask se deniega (ADR-0003); nunca se aprueba solo.
+scenario: 1
+name: ask-permission
+session: { mode: act }
+input: "Escribir la configuración"
+plan:
+  - add: { id: P1, text: "Escribir config" }
+tasks:
+  - { id: T1, objective: "Escribir config", links: [{ item: P1, role: implements }] }
+turns:
+  root:
+    - { tool: fake.write, effect: applied, answer: approve }
+    - { tool: fake.write, effect: applied, answer: deny }
+    - { tool: fake.write, effect: applied }
+    - { complete: done }
+permissions:
+  - { tool: fake.write, decision: ask }
+expect:
+  run: Completed
+  plan: { P1: Completed }

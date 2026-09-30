@@ -540,10 +540,17 @@ public sealed class OmniServer : IOmniClient
     {
         try
         {
+            // El escenario viaja completo en el comando (ADR-0041 §1); sin él, uno incluido por nombre.
             var scenarioName = fields.TryGetValue("scenario", out var s) ? s : null;
-            var scenario = "with-tool-crash" == scenarioName
-                ? Scenarios.WithToolCrash()
-                : Scenarios.MultiItemPlan();
+            var scenario = fields.TryGetValue("scenarioYaml", out var yaml) && yaml.Length > 0
+                ? ScenarioLoader.Parse(yaml)
+                : "with-tool-crash" == scenarioName
+                    ? Scenarios.WithToolCrash()
+                    : Scenarios.MultiItemPlan();
+
+            // Permisos del escenario + capa del modo del Run (ADR-0037 §4): el executor de esta simulación.
+            _engine.SetToolExecutor(ScriptedToolExecutor.WithCoreTools(HostTools.Default().Catalog(),
+                new ScriptedPermissionPolicy(scenario.Permissions).WithModeDefaults(scenario.Mode)));
             var result = _engine.Execute(scenario, CancellationToken.None);
             _lastSessionId = result.SessionId;
             _lastRunId = result.RunId;

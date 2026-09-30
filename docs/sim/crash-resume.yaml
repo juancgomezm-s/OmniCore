@@ -1,0 +1,19 @@
+# Crash tras el Started de una escritura: el Run queda interrumpido y `omni sim --resume`
+# reconcilia la ToolCall huérfana sin re-ejecutar el efecto (ADR-0004, ADR-0041 §2).
+scenario: 1
+name: crash-resume
+session: { mode: act }
+input: "Escribir un archivo"
+plan:
+  - add: { id: P1, text: "Escribir" }
+tasks:
+  - { id: T1, objective: "Escribir", links: [{ item: P1, role: implements }] }
+turns:
+  root:
+    - { tool: fake.write, effect: applied }
+    - { complete: done }
+permissions:
+  - { tool: fake.write, decision: allow }
+fault: { atTool: fake.write }
+expect:
+  run: Running

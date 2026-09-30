@@ -1,17 +1,23 @@
+# Plan de varios items con dependencias en cadena (criterio de salida de M1, ADR-0041).
 scenario: 1
-name: yaml-multi-item-plan
-session:
-  mode: act
+name: multi-item-plan
+session: { mode: act }
 input: "Corregir el test de autenticación"
 plan:
   - add: { id: P1, text: "Inspeccionar auth" }
   - add: { id: P2, text: "Aplicar fix", dependsOn: [P1] }
   - add: { id: P3, text: "Validar", dependsOn: [P2] }
 tasks:
-  - { id: T1, links: [{ item: P1, role: implements }] }
-  - { id: T2, links: [{ item: P2, role: implements }], dependsOn: [T1] }
-  - { id: T3, links: [{ item: P3, role: verifies }], dependsOn: [T2] }
+  - { id: T1, objective: "Explorar el flujo de auth", links: [{ item: P1, role: implements }] }
+  - { id: T2, objective: "Aplicar el fix", links: [{ item: P2, role: implements }], dependsOn: [T1] }
+  - { id: T3, objective: "Validar el fix", links: [{ item: P3, role: verifies }], dependsOn: [T2] }
+turns:
+  root:
+    - { tool: fake.read, effect: read }
+    - { complete: done }
 permissions:
+  - { tool: fake.read, decision: allow }
   - { tool: fake.write, decision: allow }
 expect:
   run: Completed
+  plan: { P1: Completed, P2: Completed, P3: Completed }

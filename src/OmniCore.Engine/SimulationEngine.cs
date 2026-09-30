@@ -33,6 +33,9 @@ public sealed class SimulationEngine
 
     private readonly Dictionary<string, PlanItemId> _symbolicItems = new();
 
+    /// <summary>Respuesta al PlanApproval del escenario en curso (null = nadie responde).</summary>
+    private string? _planApproval;
+
     public SimulationEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit)
     {
         _store = store;
@@ -118,6 +121,7 @@ public sealed class SimulationEngine
 
     public RunResult Execute(SimulationScenario scenario, CancellationToken cancellationToken)
     {
+        _planApproval = scenario.PlanApproval;
         var sessionId = SessionId.New();
         var runId = RunId.New();
         var rootTaskId = TaskId.New();
@@ -320,9 +324,9 @@ public sealed class SimulationEngine
     /// </summary>
     private void ContinueToCompletion(SessionId sessionId, RunId runId, EventStream stream, RunMode mode)
     {
-        if (mode == RunMode.Plan)
+        if (mode == RunMode.Plan && !EmitPlanApproval(sessionId, runId, stream, _planApproval))
         {
-            EmitPlanApproval(sessionId, runId, stream);
+            return; // el Run queda esperando al usuario o cerrado como Planned
         }
 
         var tail = stream.EventsSince(1);
@@ -334,25 +338,86 @@ public sealed class SimulationEngine
     }
 
     /// <summary>
-    /// PLAN → ACT (ADR-0035 §4): se emite el InteractionRequested de PlanApproval y, al aprobar
-    /// (opción "Aprobar y ejecutar"), el Run pasa a Act con RunModeChanged. En M1/sim se aprueba
-    /// automáticamente; en M2 el primer cliente interactivo lo conecta a la interacción.
+    /// PLAN → ACT (ADR-0035 §4): el Run pide PlanApproval con opciones decididas por el servidor
+    /// y la respuesta del usuario (en la sim, la del escenario) la resuelve:
+    /// <list type="bullet">
+    /// <item><c>approve_execute</c>: InteractionResolved + RunModeChanged(Plan → Act); sigue el Run.</item>
+    /// <item><c>approve_only</c>: InteractionResolved; el Run termina como <c>Planned</c>.</item>
+    /// <item><c>reject</c> o sin respuesta: el Run queda esperando al usuario en su Lane raíz.</item>
+    /// </list>
+    /// Devuelve true si el Run debe continuar hacia sus gates.
     /// </summary>
-    private void EmitPlanApproval(SessionId sessionId, RunId runId, EventStream stream)
+    private bool EmitPlanApproval(SessionId sessionId, RunId runId, EventStream stream, string? answer)
     {
+        var interaction = InteractionId.New();
+        var tail = stream.EventsSince(1);
+        var run = RunProjection.Replay(sessionId, runId, _codecs, tail);
+        var rootLane = run.RootTask is null ? null
+            : LaneProjection.Replay(_codecs, tail).ForTask(run.RootTask).FirstOrDefault()?.Id;
         stream.Append(new InteractionRequested(
-            InteractionId.New(),
+            interaction,
             InteractionKind.PlanApproval,
             "{\"operation\":\"plan.approval\"}",
-            "[{\"id\":\"approve_execute\",\"intent\":\"allow\"},{\"id\":\"approve_only\",\"intent\":\"allow\"}]",
-            "approve_only",
+            "[{\"id\":\"approve_execute\",\"intent\":\"allow\"},{\"id\":\"approve_only\",\"intent\":\"allow\"},"
+                + "{\"id\":\"reject\",\"intent\":\"deny\"}]",
+            "reject",
             null,
-            null,
-            null,
+            rootLane,
+            run.RootTask,
             null,
             0,
             1));
-        stream.Append(new RunModeChanged(runId, RunMode.Plan, RunMode.Act, "PlanApproved"));
+
+        switch (answer)
+        {
+            case "approve_execute":
+                stream.Append(new InteractionResolved(interaction, "approve_execute", InteractionCause.User));
+                stream.Append(new RunModeChanged(runId, RunMode.Plan, RunMode.Act, "PlanApproved"));
+                return true;
+            case "approve_only":
+                stream.Append(new InteractionResolved(interaction, "approve_only", InteractionCause.User));
+                stream.Append(new RunValidationStarted(runId));
+                CloseRootAs(stream, sessionId, runId, completed: true);
+                stream.Append(new RunCompleted(runId, RunOutcome.Planned));
+                return false;
+            default:
+                if (answer == "reject")
+                {
+                    stream.Append(new InteractionResolved(interaction, "reject", InteractionCause.User));
+                }
+
+                if (rootLane is not null)
+                {
+                    stream.Append(new RunAwaitingInput(runId, rootLane));
+                }
+
+                return false;
+        }
+    }
+
+    /// <summary>Cierra la Lane y la Task raíz del Run (fin del Run sin pasar por RunCoupon).</summary>
+    private void CloseRootAs(EventStream stream, SessionId sessionId, RunId runId, bool completed)
+    {
+        var tail = stream.EventsSince(1);
+        var run = RunProjection.Replay(sessionId, runId, _codecs, tail);
+        if (run.RootTask is null)
+        {
+            return;
+        }
+
+        foreach (var lane in LaneProjection.Replay(_codecs, tail).ForTask(run.RootTask))
+        {
+            if (lane.State == LaneState.Running)
+            {
+                stream.Append(completed ? new LaneCompleted(lane.Id, null) : new LaneFailed(lane.Id, "run cerrado"));
+            }
+        }
+
+        var tasks = TaskGraphProjection.Replay(_codecs, tail);
+        if (tasks.StateOf(run.RootTask) == TaskState.Running)
+        {
+            stream.Append(completed ? new TaskCompleted(run.RootTask, null) : new TaskFailed(run.RootTask, "run cerrado"));
+        }
     }
 
     /// <summary>
@@ -456,7 +521,9 @@ public sealed class SimulationEngine
 
             // Con stream: un Started con efecto se confirma con Barrier antes de ejecutar (INV-014), y
             // los outcomes se escriben en un solo lote atómico.
-            var outcome = _toolExecutor.ExecuteTool(validated, true, cancellationToken, stream);
+            // Un Ask solo se aprueba si el escenario lo responde; si no, se deniega (ADR-0003).
+            var approves = string.Equals(action.Answer, "approve", StringComparison.OrdinalIgnoreCase);
+            var outcome = _toolExecutor.ExecuteTool(validated, approves, cancellationToken, stream);
             stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
 
             // plan.propose: si la tool declaró una mutación válida (JSON de la mutación en Preview,

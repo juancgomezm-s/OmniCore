@@ -134,7 +134,13 @@ public sealed class SimulationTests
         var store = new InMemoryEventStore();
         var executor = new OmniCore.Host.ScriptedToolExecutor(catalog, policy);
         var engine = new SimulationEngine(store, codecs, new InMemoryAuditSink(), executor);
-        var scenario = Scenarios.WithTools();
+        var tools = Scenarios.WithTools();
+        // El usuario simulado aprueba el Ask; sin respuesta se denegaría (ADR-0003).
+        var turns = new Dictionary<string, IReadOnlyList<SimulatedTurnAction>> {
+            ["root"] = [SimulatedTurnAction.ToolCall("fake.write", "applied", "approve"), SimulatedTurnAction.DoneMarker()],
+        };
+        var scenario = new SimulationScenario(tools.Name, tools.Mode, tools.Input, tools.Plan, tools.Tasks, turns,
+            tools.Permissions, tools.ExpectedRunState, tools.ExpectedPlan);
 
         var result = engine.Execute(scenario, TestContext.Current.CancellationToken);
 
@@ -142,6 +148,7 @@ public sealed class SimulationTests
         var types = tail.Select(e => e.Type.ToString()).ToArray();
         Assert.Contains("toolcall.permission_requested", types);
         Assert.Contains("interaction.requested", types);
+        Assert.Contains("interaction.resolved", types);
         Assert.Contains("toolcall.permission_granted", types);
         Assert.Contains("toolcall.succeeded", types);
         Assert.False(types.Contains("toolcall.permission_denied"), "el Ask aprobado NO re-deniega");
