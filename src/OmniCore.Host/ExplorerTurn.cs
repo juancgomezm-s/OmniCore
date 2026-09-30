@@ -107,6 +107,9 @@ public sealed class ExplorerTurn
     /// <summary>Journal del Turn (tests: para abrir en él el Run al que pertenece el Turn).</summary>
     internal IEventStore JournalStore => _store;
 
+    /// <summary>Ledger de mutaciones del Run activo, compartido con las tools del boundary.</summary>
+    internal MutationLedger? MutationLedger => _boundary?.ReadRegistry().Ledger;
+
     /// <summary>Constructor de conveniencia: en-memoria (tests, sin persistencia durable).</summary>
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
