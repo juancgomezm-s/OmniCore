@@ -203,7 +203,7 @@ public sealed class ExplorerTurn
             // ContextOverflow: el WorkingState pinned (u otro item crítico) no cabe ni truncado.
             if (materialized.Overflowed)
             {
-                stream.Append(new TurnStarted(turnId, laneId));
+                stream.Append(new TurnStarted(turnId, laneId, _fingerprint));
                 started = true;
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
                 // TurnCompleted tras Abandoned (P1: transición inválida).
@@ -215,7 +215,7 @@ public sealed class ExplorerTurn
             EnsureRunAwaitingInput(stream, runId, laneId);
             var encodedInput = System.Text.Json.JsonEncodedText.Encode(_redaction.Redact(question ?? ""));
             stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null));
-            stream.Append(new TurnStarted(turnId, laneId));
+            stream.Append(new TurnStarted(turnId, laneId, _fingerprint));
             started = true;
 
             string? finalText = null;

@@ -1,5 +1,10 @@
 namespace OmniCore.Domain;
 
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Serialization;
+
 /// <summary>
 /// Fingerprint del Turn: qué configuración recibió (ADR-0017, ADR-0007 §1). Se registra en
 /// TurnStarted y permite explicar un Turn (`omni turn explain`).
@@ -12,41 +17,64 @@ public sealed class ExecutionFingerprint
 
     public string ToolkitHash { get; }
 
+    public string TokenizerHash { get; }
+
     public string ContextPolicyHash { get; }
 
     public string OverridesHash { get; }
 
     public string Build { get; }
 
-    /// <summary>
-    /// Hash de la política efectiva del modelo (ADR-0044 §8): <c>EffectiveModelPolicy.Fingerprint()</c>
-    /// — clave + revisión + categoría + modo de mutación. Vacío cuando no hay política
-    /// cableada (p. ej. tests/sim de M1–M2). Nunca contenido: solo identidad de la política.
-    /// </summary>
+    /// <summary>Hash de la política efectiva del modelo (ADR-0044 §8).</summary>
     public string ModelPolicyHash { get; }
 
     public ExecutionFingerprint(string modelKey, string harnessPolicyHash, string toolkitHash,
         string contextPolicyHash, string overridesHash, string build)
-        : this(modelKey, harnessPolicyHash, toolkitHash, contextPolicyHash, overridesHash, build, "")
+        : this(modelKey, harnessPolicyHash, toolkitHash, contextPolicyHash, overridesHash, build, "", "")
     {
     }
 
     public ExecutionFingerprint(string modelKey, string harnessPolicyHash, string toolkitHash,
         string contextPolicyHash, string overridesHash, string build, string modelPolicyHash)
+        : this(modelKey, harnessPolicyHash, toolkitHash, contextPolicyHash, overridesHash, build,
+            modelPolicyHash, "")
     {
-        ModelKey = modelKey;
-        HarnessPolicyHash = harnessPolicyHash;
-        ToolkitHash = toolkitHash;
-        ContextPolicyHash = contextPolicyHash;
-        OverridesHash = overridesHash;
-        Build = build;
-        ModelPolicyHash = modelPolicyHash;
     }
 
-    /// <summary>Hash estable del fingerprint para comparar Turns.</summary>
-    public string Hash() =>
-        ModelKey + "|" + HarnessPolicyHash + "|" + ToolkitHash + "|" + ContextPolicyHash + "|"
-        + OverridesHash + "|" + Build + "|" + ModelPolicyHash;
+    [JsonConstructor]
+    public ExecutionFingerprint(string modelKey, string harnessPolicyHash, string toolkitHash,
+        string contextPolicyHash, string overridesHash, string build, string modelPolicyHash,
+        string tokenizerHash)
+    {
+        ModelKey = modelKey ?? throw new ArgumentNullException(nameof(modelKey));
+        HarnessPolicyHash = harnessPolicyHash ?? throw new ArgumentNullException(nameof(harnessPolicyHash));
+        ToolkitHash = toolkitHash ?? throw new ArgumentNullException(nameof(toolkitHash));
+        TokenizerHash = tokenizerHash ?? throw new ArgumentNullException(nameof(tokenizerHash));
+        ContextPolicyHash = contextPolicyHash ?? throw new ArgumentNullException(nameof(contextPolicyHash));
+        OverridesHash = overridesHash ?? throw new ArgumentNullException(nameof(overridesHash));
+        Build = build ?? throw new ArgumentNullException(nameof(build));
+        ModelPolicyHash = modelPolicyHash ?? throw new ArgumentNullException(nameof(modelPolicyHash));
+    }
+
+    /// <summary>SHA-256 estable de todos los componentes, codificados con longitud para evitar colisiones.</summary>
+    public string Hash()
+    {
+        var canonical = new StringBuilder();
+        Append(canonical, ModelKey);
+        Append(canonical, HarnessPolicyHash);
+        Append(canonical, ToolkitHash);
+        Append(canonical, TokenizerHash);
+        Append(canonical, ContextPolicyHash);
+        Append(canonical, OverridesHash);
+        Append(canonical, Build);
+        Append(canonical, ModelPolicyHash);
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString())));
+    }
+
+    private static void Append(StringBuilder target, string value)
+    {
+        target.Append(value.Length.ToString(CultureInfo.InvariantCulture)).Append(':').Append(value).Append(';');
+    }
 }
 
 /// <summary>Snapshot del contexto exacto enviado en un Turn (spec §29, ADR-0029).</summary>

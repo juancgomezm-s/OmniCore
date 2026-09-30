@@ -98,7 +98,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.requested"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -465,7 +466,7 @@ public sealed class Typed
         Of(EventType.Of("lane.cancelled"), EventJsonContext.Default.LaneCancelled);
 
     public static CodecPair TurnStarted() =>
-        Of(EventType.Of("turn.started"), EventJsonContext.Default.TurnStarted);
+        Of(EventType.Of("turn.started"), EventJsonContext.Default.TurnStarted, currentVersion: 2);
 
     public static CodecPair ModelCompleted() =>
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
