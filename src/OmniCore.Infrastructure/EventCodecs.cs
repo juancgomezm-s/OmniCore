@@ -225,7 +225,16 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
         }
     }
 
-    public string Encode(DomainEventPayload payload) => JsonSerializer.Serialize((T) payload, _info);
+    /// <summary>
+    /// Serializa el payload y redacta los secretos conocidos del proceso (ADR-0018 §3): el payload
+    /// redactado es lo único que llega al journal, venga del camino que venga.
+    /// </summary>
+    public string Encode(DomainEventPayload payload)
+    {
+        var json = JsonSerializer.Serialize((T) payload, _info);
+        var redactor = OmniCore.Abstractions.SecretRedactorRegistry.Current;
+        return redactor is null ? json : redactor.Redact(json);
+    }
 
     public string DebugType() => _type.ToString();
 }
