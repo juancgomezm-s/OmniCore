@@ -238,6 +238,9 @@ public sealed class ExplorerTurn
                 var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
                 stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
                 stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+                // Límites de mutación por Turn (ADR-0044 §5): un Turn nuevo reinicia el contador del
+                // Turn; los totales del Run se conservan. Un Turn reanudado sigue con su contador.
+                _boundary?.BeginTurn();
             }
             started = true;
 

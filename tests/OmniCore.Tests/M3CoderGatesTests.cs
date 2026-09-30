@@ -30,6 +30,10 @@ public sealed class M3CoderGatesTests
     private static string Version(string content) => FilesystemPatchTool.VersionToken(
         System.Text.Encoding.UTF8.GetBytes(content));
 
+    // Líneas estables para que un patch de una línea no supere el MaxRewriteRatio por defecto
+    // (0.25, ADR-0044 §5), como en el resto de fixtures PatchOnly.
+    private const string Padding = "// 2\n// 3\n// 4\n// 5\n// 6\n// 7\n// 8\n";
+
     private static string Patch(string path, string version, string oldText, string newText) =>
         "{\"path\":" + System.Text.Json.JsonSerializer.Serialize(path) + ",\"expectedVersion\":"
         + System.Text.Json.JsonSerializer.Serialize(version) + ",\"oldText\":"
@@ -159,8 +163,8 @@ public sealed class M3CoderGatesTests
         if (OperatingSystem.IsMacOS()) return;
         var root = TempDir();
         var context = StartRun(root);
-        var original = "class Program { BROKEN }\n";
-        var firstPatch = "class Program { static void Main() { } }\n";
+        var original = "class Program { BROKEN }\n" + Padding;
+        var firstPatch = "class Program { static void Main() { } }\n" + Padding;
         File.WriteAllText(Path.Combine(context.Workspace, "Program.cs"), original);
         try
         {
@@ -199,9 +203,9 @@ public sealed class M3CoderGatesTests
         if (OperatingSystem.IsMacOS()) return;
         var root = TempDir();
         var context = StartRun(root);
-        var original = "class Program { BROKEN }  \n";
-        var rejectedPatch = "class Program { STILL_BROKEN }  \n";
-        var fixedContent = "class Program { static void Main() { } }\n";
+        var original = "class Program { BROKEN }  \n" + Padding;
+        var rejectedPatch = "class Program { STILL_BROKEN }  \n" + Padding;
+        var fixedContent = "class Program { static void Main() { } }\n" + Padding;
         File.WriteAllText(Path.Combine(context.Workspace, "Program.cs"), original);
         try { Run("git", ["--version"], context.Workspace); }
         catch (Exception) { context.Store.Close(); Remove(root); return; }
