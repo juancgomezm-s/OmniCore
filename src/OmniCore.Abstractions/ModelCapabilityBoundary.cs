@@ -5,7 +5,12 @@ using OmniCore.Domain;
 /// <summary>Decisión de la frontera de capacidad para un ToolIntent (ADR-0044 §5).</summary>
 public sealed class ModelCapabilityDecision
 {
+    /// <summary>True si la frontera no rechaza (Allow o Ask). Un Ask no autoriza: solo baja un Allow.</summary>
     public bool Allowed { get; }
+
+    /// <summary>True cuando la política destructiva es Ask: el pipeline debe pedir confirmación
+    /// (mínimo Deny &lt; Ask &lt; Allow, INV-028); jamás sube un Deny.</summary>
+    public bool RequiresAsk { get; }
 
     /// <summary>Razón legible cuando rechaza; null cuando permite.</summary>
     public string? Reason { get; }
@@ -13,14 +18,19 @@ public sealed class ModelCapabilityDecision
     /// <summary>Capacidad que la tool requiere; null si la tool no está clasificada.</summary>
     public ModelToolCapability? Capability { get; }
 
-    public ModelCapabilityDecision(bool allowed, string? reason, ModelToolCapability? capability)
+    public ModelCapabilityDecision(bool allowed, string? reason, ModelToolCapability? capability,
+        bool requiresAsk = false)
     {
         Allowed = allowed;
+        RequiresAsk = requiresAsk;
         Reason = reason;
         Capability = capability;
     }
 
     public static ModelCapabilityDecision Allow() => new(true, null, null);
+
+    public static ModelCapabilityDecision Ask(string reason, ModelToolCapability? capability) =>
+        new(true, reason, capability, true);
 
     public static ModelCapabilityDecision Reject(string reason, ModelToolCapability? capability) =>
         new(false, reason, capability);
@@ -152,6 +162,13 @@ public sealed class ModelCapabilityBoundary
             {
                 return ModelCapabilityDecision.Reject(
                     "acción destructiva " + capability + " en Deny por la categoría " + _policy.Category,
+                    capability);
+            }
+
+            if (rule == DestructiveActionPolicy.Ask)
+            {
+                return ModelCapabilityDecision.Ask(
+                    "acción destructiva " + capability + " en Ask por la categoría " + _policy.Category,
                     capability);
             }
         }

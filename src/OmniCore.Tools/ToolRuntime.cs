@@ -110,9 +110,11 @@ public sealed class ToolRuntime
         // el estado aún en Requested el rechazo es Rejected en el ciclo durable (ADR-0036 §5).
         // La frontera restringe; jamás autoriza (INV-018): una tool fuera del techo de la
         // categoría muere aquí aunque el Permission Engine la permitiría.
+        var boundaryAsk = false;
         if (_boundary is not null)
         {
             var boundaryDecision = _boundary!.Evaluate(intent);
+            boundaryAsk = boundaryDecision.RequiresAsk;
             if (!boundaryDecision.Allowed)
             {
                 _emit(new ToolCallRejected(validated.ToolCallId,
@@ -135,6 +137,15 @@ public sealed class ToolRuntime
             _emit(new ToolCallRejected(validated.ToolCallId, "política falló: " + ex.Message));
             return new Outcome(false, "política falló: " + ex.Message,
                 ToolCallState.Rejected, EffectOutcome.None);
+        }
+        if (boundaryAsk && decision.Final == PermissionDecision.Allow)
+        {
+            // Mínimo entre capas (INV-028): el Ask de la frontera baja un Allow; nunca sube un Deny.
+            var layers = new List<LayerDecision>(decision.Layers)
+            {
+                new("ModelCapabilityBoundary", PermissionDecision.Ask, "destructive-action-ask"),
+            };
+            decision = new PermissionDecisionRecord(PermissionDecision.Ask, layers, null);
         }
         _emit(new PermissionEvaluated(validated.ToolCallId, decision.Final, LayersToJson(decision), null));
         if (decision.Final == PermissionDecision.Deny)
