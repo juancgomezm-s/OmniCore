@@ -171,12 +171,12 @@ public sealed class QuestionnaireVerticalTests
                 Answer("multi", new[] { "x", "otro" }, null, "tests e2e"),
                 Answer("text", null, "notas seguras"),
             };
-            var result = service.Resolve(Stream(), id, Schema, answers, false, "{\"toolCall\":\"tc-1\"}");
+            var result = service.Resolve(Stream(), id, answers, false, "{\"toolCall\":\"tc-1\"}");
 
             Assert.True(result.Accepted);
             Assert.False(result.AlreadyResolved);
             // Exactamente una resolución: un segundo envío (duplicado) se rechaza.
-            var dup = service.Resolve(Stream(), id, Schema, answers, false, "{\"toolCall\":\"tc-1\"}");
+            var dup = service.Resolve(Stream(), id, answers, false, "{\"toolCall\":\"tc-1\"}");
             Assert.False(dup.Accepted);
             Assert.True(dup.AlreadyResolved);
 
@@ -207,18 +207,18 @@ public sealed class QuestionnaireVerticalTests
             var id = Publish();
             var service = Service();
 
-            var unknown = service.Resolve(Stream(), id, Schema,
+            var unknown = service.Resolve(Stream(), id,
                 new QuestionAnswer[] { Answer("single", new[] { "zzz" }), Answer("multi", new[] { "x" }) },
                 false, null);
             Assert.False(unknown.Accepted);
             Assert.True(Has(unknown.Errors ?? Array.Empty<QuestionnaireError>(),
                 QuestionnaireErrorCode.UnknownOptionId, "single"));
 
-            var dupOption = service.Resolve(Stream(), id, Schema,
+            var dupOption = service.Resolve(Stream(), id,
                 new QuestionAnswer[] { Answer("multi", new[] { "x", "x" }) }, false, null);
             Assert.False(dupOption.Accepted);
 
-            var dupAnswer = service.Resolve(Stream(), id, Schema,
+            var dupAnswer = service.Resolve(Stream(), id,
                 new QuestionAnswer[] { Answer("single", new[] { "a" }), Answer("single", new[] { "b" }) },
                 false, null);
             Assert.False(dupAnswer.Accepted);
@@ -241,14 +241,14 @@ public sealed class QuestionnaireVerticalTests
             var id = Publish();
             var service = Service();
             // Otro con TextRequired exige texto no vacío.
-            var noText = service.Resolve(Stream(), id, Schema,
+            var noText = service.Resolve(Stream(), id,
                 new QuestionAnswer[] { Answer("single", new[] { "a" }), Answer("multi", new[] { "otro" }) },
                 false, null);
             Assert.False(noText.Accepted);
             Assert.True(Has(noText.Errors ?? Array.Empty<QuestionnaireError>(),
                 QuestionnaireErrorCode.OtherTextRequired, "multi"));
 
-            var withText = service.Resolve(Stream(), id, Schema,
+            var withText = service.Resolve(Stream(), id,
                 new QuestionAnswer[] { Answer("single", new[] { "a" }),
                     Answer("multi", new[] { "otro" }, null, "contexto propio") },
                 false, null);
@@ -269,11 +269,11 @@ public sealed class QuestionnaireVerticalTests
         {
             var id = Publish();
             var service = Service();
-            var result = service.Resolve(Stream(), id, Schema, Array.Empty<QuestionAnswer>(), true, null);
+            var result = service.Resolve(Stream(), id, Array.Empty<QuestionAnswer>(), true, null);
 
             Assert.True(result.Accepted);
             // Resuelto: no se puede responder de nuevo.
-            var again = service.Resolve(Stream(), id, Schema,
+            var again = service.Resolve(Stream(), id,
                 new QuestionAnswer[] { Answer("single", new[] { "a" }) }, false, null);
             Assert.True(again.AlreadyResolved);
         }
@@ -317,13 +317,13 @@ public sealed class QuestionnaireVerticalTests
             var service = Service();
             var answers = new QuestionAnswer[] { Answer("single", new[] { "a" }),
                 Answer("multi", new[] { "x" }) };
-            Assert.True(service.Resolve(Stream(), id, Schema, answers, false, null).Accepted);
+            Assert.True(service.Resolve(Stream(), id, answers, false, null).Accepted);
 
             fx.Reopen(); // crash tras responder
 
             Assert.Empty(Service().Pending(fx.Session));
             // Enviar una respuesta al reabrir se rechaza como duplicado.
-            var late = Service().Resolve(Stream(), id, Schema, answers, false, null);
+            var late = Service().Resolve(Stream(), id, answers, false, null);
             Assert.False(late.Accepted);
             Assert.True(late.AlreadyResolved);
         }
@@ -345,6 +345,54 @@ public sealed class QuestionnaireVerticalTests
             var schema = Service().SchemaFor(Stream(), id);
             Assert.NotNull(schema);
             Assert.False(schema!.Title.Contains(SecretLike), "secreto en claro en el schema del artifact");
+        }
+        finally
+        {
+            TearDown();
+        }
+    }
+
+    /// <summary>La respuesta se valida contra el schema PUBLICADO, no contra uno del llamador.</summary>
+    [Fact]
+    public void Resolve_validates_against_published_schema()
+    {
+        SetUp();
+        try
+        {
+            var id = Publish();
+            // La API ya no acepta schema del llamador: una opción fuera del publicado se rechaza.
+            var result = Service().Resolve(Stream(), id,
+                new QuestionAnswer[] { Answer("single", new[] { "zzz" }), Answer("multi", new[] { "x" }) },
+                false, null);
+
+            Assert.False(result.Accepted);
+            Assert.True(Has(result.Errors ?? Array.Empty<QuestionnaireError>(),
+                QuestionnaireErrorCode.UnknownOptionId, "single"));
+        }
+        finally
+        {
+            TearDown();
+        }
+    }
+
+    /// <summary>Resolver una interacción que no es Question no cuenta como cuestionario resuelto.</summary>
+    [Fact]
+    public void Non_question_resolution_does_not_resolve_questionnaire()
+    {
+        SetUp();
+        try
+        {
+            var id = InteractionId.New();
+            var stream = Stream();
+            stream.Append(new InteractionRequested(id, InteractionKind.Permission, "{}", "[]", "", null, null,
+                null, null, 0, 1, null, null));
+            stream.Append(new InteractionResolved(id, "allow", InteractionCause.User));
+
+            var result = Service().Resolve(Stream(), id,
+                new QuestionAnswer[] { Answer("single", new[] { "a" }) }, false, null);
+
+            Assert.False(result.AlreadyResolved);
+            Assert.True(result.UnknownInteraction);
         }
         finally
         {
