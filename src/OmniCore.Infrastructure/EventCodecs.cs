@@ -59,6 +59,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.LaneFailed())
             .Plus(Typed.LaneCancelled())
             .Plus(Typed.TurnStarted())
+            .Plus(Typed.ModelEscalationRequested())
+            .Plus(Typed.ModelEscalationApproved())
+            .Plus(Typed.ModelEscalationCompleted())
             .Plus(Typed.ModelCompleted())
             .Plus(Typed.TurnCompleted())
             .Plus(Typed.TurnInterrupted())
@@ -318,6 +321,10 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(LaneFailed))]
 [JsonSerializable(typeof(LaneCancelled))]
 [JsonSerializable(typeof(TurnStarted))]
+[JsonSerializable(typeof(ModelEscalationRequested))]
+[JsonSerializable(typeof(ModelEscalationApproved))]
+[JsonSerializable(typeof(ModelEscalationCompleted))]
+[JsonSerializable(typeof(EscalationCause))]
 [JsonSerializable(typeof(ModelCompleted))]
 [JsonSerializable(typeof(TurnCompleted))]
 [JsonSerializable(typeof(TurnInterrupted))]
@@ -488,6 +495,15 @@ public sealed class Typed
 
     public static CodecPair TurnStarted() =>
         Of(EventType.Of("turn.started"), EventJsonContext.Default.TurnStarted, currentVersion: 2);
+
+    public static CodecPair ModelEscalationRequested() =>
+        Of(EventType.Of("model.escalation_requested"), EventJsonContext.Default.ModelEscalationRequested);
+
+    public static CodecPair ModelEscalationApproved() =>
+        Of(EventType.Of("model.escalation_approved"), EventJsonContext.Default.ModelEscalationApproved);
+
+    public static CodecPair ModelEscalationCompleted() =>
+        Of(EventType.Of("model.escalation_completed"), EventJsonContext.Default.ModelEscalationCompleted);
 
     public static CodecPair ModelCompleted() =>
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
