@@ -123,7 +123,7 @@ public sealed class OmniCliRuntime
             writeLine(Resolve(Localized("doctor.model", ("name", model.Id), ("provider", model.ProviderId)), localize)
                 + (provider is null ? "" : Resolve(Localized("doctor.model.details", ("family", provider.Family.ToString()),
                     ("baseUrl", provider.BaseUrl)), localize)));
-            if (provider is not null && provider.Family != ProviderFamily.OpenAiChatCompatible)
+            if (provider is not null && !OmniHost.IsProviderFamilySupported(provider.Family))
             {
                 var unsupported = new ProviderFamilyNotSupportedException(provider.Family);
                 writeLine("    " + Resolve(unsupported.UserMessage, localize));
@@ -223,7 +223,7 @@ public sealed class OmniCliRuntime
             ?? modelDefinition?.Id;
         var baseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDescription?.BaseUrl
             ?? "http://127.0.0.1:8080/v1";
-        if (providerDescription is not null && providerDescription.Family != ProviderFamily.OpenAiChatCompatible)
+        if (providerDescription is not null && !OmniHost.IsProviderFamilySupported(providerDescription.Family))
         {
             var unsupported = new ProviderFamilyNotSupportedException(providerDescription.Family);
             writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
@@ -302,7 +302,7 @@ public sealed class OmniCliRuntime
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = server.LastLaneId() ?? LaneId.New();
-            var provider = providerDescription is null
+            IModelProvider provider = providerDescription is null
                 ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")
                 : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "");
             var usableContext = modelDefinition is not null && modelDefinition.RecommendedUsableContext > 0
