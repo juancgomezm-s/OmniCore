@@ -386,4 +386,283 @@ public sealed class M2ReadToolsTests
             return false;
         }
     }
+
+    private static ScriptedToolExecutor SearchExecutor(string wsDir)
+    {
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false, includeMutationTools: false);
+        var policy = ScriptedPermissionPolicy.WithTool("search.text", PermissionDecision.Allow);
+        return ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, wsDir);
+    }
+
+    private static ValidatedToolCall SearchCall(string pattern, bool? regex = null, string? path = null, string? glob = null, int? maxResults = null, bool? caseSensitive = null)
+    {
+        var args = new Dictionary<string, object> { ["pattern"] = pattern };
+        if (regex.HasValue) args["regex"] = regex.Value;
+        if (path != null) args["path"] = path;
+        if (glob != null) args["glob"] = glob;
+        if (maxResults.HasValue) args["maxResults"] = maxResults.Value;
+        if (caseSensitive.HasValue) args["caseSensitive"] = caseSensitive.Value;
+
+        var json = JsonSerializer.Serialize(args);
+        return new ValidatedToolCall(ToolCallId.New(), new ToolId("search.text"),
+            "pc-" + Guid.NewGuid().ToString("N").Substring(0, 6), json);
+    }
+
+    // ---------------------------------------------------------------- search.text (M2 EPIC-018)
+
+    [Fact]
+    public void Search_literal_match_returns_relative_path_line_and_text()
+    {
+        var ws = TempDir();
+        // Subdirectorio creado ANTES de escribir el archivo: la búsqueda es recursiva.
+        Directory.CreateDirectory(Path.Combine(ws, "docs"));
+        File.WriteAllText(Path.Combine(ws, "docs", "notes.md"), "first line\nthe needle is here\nlast line\n");
+        File.WriteAllText(Path.Combine(ws, "other.txt"), "nothing relevant\n");
+
+        var outcome = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle"), false, CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "La búsqueda debe tener éxito. summary=" + outcome.Summary);
+        Assert.Equal(ToolCallState.Succeeded, outcome.FinalState);
+
+        var doc = ParseJson(outcome.Preview!);
+        var matches = doc.RootElement.GetProperty("matches").EnumerateArray().ToArray();
+
+        Assert.Single(matches);
+        Assert.Equal("docs/notes.md", matches[0].GetProperty("path").GetString());
+        Assert.Equal(2, matches[0].GetProperty("line").GetInt32());
+        Assert.Equal("the needle is here", matches[0].GetProperty("text").GetString());
+        Assert.False(doc.RootElement.GetProperty("truncated").GetBoolean(), "Sin tope no hay truncado");
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_single_file_path_reports_workspace_relative_path()
+    {
+        var ws = TempDir();
+        Directory.CreateDirectory(Path.Combine(ws, "sub"));
+        File.WriteAllText(Path.Combine(ws, "root.txt"), "needle root\n");
+        File.WriteAllText(Path.Combine(ws, "sub", "target.txt"), "needle sub\n");
+        File.WriteAllText(Path.Combine(ws, "sub", "other.txt"), "nothing\n");
+
+        var outcome = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle", path: "sub/target.txt"), false,
+            CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
+
+        var matches = ParseJson(outcome.Preview!).RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Single(matches);
+        Assert.Equal("sub/target.txt", matches[0].GetProperty("path").GetString());
+        Assert.Equal("needle sub", matches[0].GetProperty("text").GetString());
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_is_case_insensitive_by_default_and_caseSensitive_restricts()
+    {
+        var ws = TempDir();
+        File.WriteAllText(Path.Combine(ws, "mix.txt"), "Hello NEEDLE here\nneedle again\n");
+
+        var insensitive = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle"), false,
+            CancellationToken.None);
+
+        Assert.True(insensitive.Succeeded, "summary=" + insensitive.Summary);
+        var matches = ParseJson(insensitive.Preview!).RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Equal(2, matches.Length);
+
+        var sensitive = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle", caseSensitive: true), false,
+            CancellationToken.None);
+
+        Assert.True(sensitive.Succeeded, "summary=" + sensitive.Summary);
+        var strict = ParseJson(sensitive.Preview!).RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Single(strict);
+        Assert.Equal(2, strict[0].GetProperty("line").GetInt32()); // solo "needle again"
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_regex_mode_matches_and_invalid_pattern_fails_the_tool()
+    {
+        var ws = TempDir();
+        File.WriteAllText(Path.Combine(ws, "r.txt"), "alpha-123\nbeta-456\ngamma\n");
+
+        // Regex válida: los escapes JSON (\\d) deben llegar a la tool como \d reales.
+        var ok = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall(@"\w+-(\d+)", regex: true), false,
+            CancellationToken.None);
+
+        Assert.True(ok.Succeeded, "summary=" + ok.Summary);
+        var matches = ParseJson(ok.Preview!).RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Equal(2, matches.Length);
+        Assert.Equal(1, matches[0].GetProperty("line").GetInt32());
+        Assert.Equal("alpha-123", matches[0].GetProperty("text").GetString());
+
+        // Regex inválida: ToolResult fallido (spec §71), nunca una excepción ni un falso ok.
+        var invalid = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("(unclosed", regex: true), false,
+            CancellationToken.None);
+
+        Assert.False(invalid.Succeeded, "Un patrón regex inválido debe fallar la tool. summary=" + invalid.Summary);
+        Assert.Equal(ToolCallState.Failed, invalid.FinalState);
+        Assert.Contains("regex", invalid.Summary, StringComparison.OrdinalIgnoreCase);
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_glob_filters_matches_by_file_name()
+    {
+        var ws = TempDir();
+        File.WriteAllText(Path.Combine(ws, "a.txt"), "needle one\n");
+        File.WriteAllText(Path.Combine(ws, "b.cs"), "needle two\n");
+
+        var outcome = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle", glob: "*.cs"), false,
+            CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
+        var matches = ParseJson(outcome.Preview!).RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Single(matches);
+        Assert.Equal("b.cs", matches[0].GetProperty("path").GetString());
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_skips_binary_files_with_nul_in_first_8kb()
+    {
+        var ws = TempDir();
+        // "needle\0needle": si no se detectara como binario, el patrón aparecería.
+        File.WriteAllBytes(Path.Combine(ws, "blob.bin"), new byte[]
+        {
+            (byte)'n', (byte)'e', (byte)'e', (byte)'d', (byte)'l', (byte)'e', 0, (byte)'n', (byte)'e',
+            (byte)'e', (byte)'d', (byte)'l', (byte)'e',
+        });
+        File.WriteAllText(Path.Combine(ws, "text.txt"), "needle here\n");
+
+        var outcome = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle"), false,
+            CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
+        var matches = ParseJson(outcome.Preview!).RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Single(matches);
+        Assert.Equal("text.txt", matches[0].GetProperty("path").GetString());
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_maxResults_cap_marks_the_result_truncated()
+    {
+        var ws = TempDir();
+        var lines = Enumerable.Range(0, 10).Select(i => "hit " + i).ToArray();
+        File.WriteAllText(Path.Combine(ws, "many.txt"), string.Join("\n", lines) + "\n");
+
+        var outcome = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("hit", maxResults: 4), false,
+            CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
+        var doc = ParseJson(outcome.Preview!);
+        Assert.True(doc.RootElement.GetProperty("truncated").GetBoolean(), "El tope corta la búsqueda: truncated");
+
+        var matches = doc.RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Equal(4, matches.Length);
+        for (var i = 0; i < matches.Length; i++)
+        {
+            Assert.Equal(i + 1, matches[i].GetProperty("line").GetInt32());
+        }
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_never_returns_secret_or_git_content()
+    {
+        var ws = TempDir();
+        File.WriteAllText(Path.Combine(ws, "readme.txt"), "needle visible\n");
+        File.WriteAllText(Path.Combine(ws, ".env"), "needle SECRET=abc\n");
+        Directory.CreateDirectory(Path.Combine(ws, ".git"));
+        File.WriteAllText(Path.Combine(ws, ".git", "config"), "needle in git\n");
+
+        // Recursivo: .env y .git/ no se buscan; su contenido nunca se devuelve.
+        var listing = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle"), false,
+            CancellationToken.None);
+
+        Assert.True(listing.Succeeded, "summary=" + listing.Summary);
+        var matches = ParseJson(listing.Preview!).RootElement.GetProperty("matches").EnumerateArray().ToArray();
+        Assert.Single(matches);
+        Assert.Equal("readme.txt", matches[0].GetProperty("path").GetString());
+
+        // Ruta de secretos directa: rechazo en Prepare (ToolCallRejected, nunca se ejecuta).
+        var direct = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle", path: ".env"), false,
+            CancellationToken.None);
+
+        Assert.False(direct.Succeeded, "Un path de secretos debe rechazarse. summary=" + direct.Summary);
+        Assert.Equal(ToolCallState.Rejected, direct.FinalState);
+        Assert.Contains("secreto", direct.Summary, StringComparison.OrdinalIgnoreCase);
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_path_escape_is_rejected()
+    {
+        var ws = TempDir();
+        var outsideDir = Path.Combine(Path.GetTempPath(), "omnicore-m2-search-outside-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(outsideDir);
+        File.WriteAllText(Path.Combine(outsideDir, "outside.txt"), "needle outside\n");
+        try
+        {
+            var relativeEscape = Path.GetRelativePath(ws, outsideDir).Replace('\\', '/');
+            var outcome = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle", path: relativeEscape),
+                false, CancellationToken.None);
+
+            Assert.False(outcome.Succeeded, "Un path que escapa del workspace debe fallar. summary=" + outcome.Summary);
+            Assert.Equal(ToolCallState.Failed, outcome.FinalState);
+            Assert.Contains("fuera del workspace", outcome.Summary, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Cleanup(outsideDir);
+        }
+
+        Cleanup(ws);
+    }
+
+    [Fact]
+    public void Search_does_not_traverse_a_directory_link_outside_the_workspace()
+    {
+        var ws = TempDir();
+        var outside = TempDir();
+        Directory.CreateDirectory(Path.Combine(ws, "sub"));
+        File.WriteAllText(Path.Combine(ws, "sub", "inside.txt"), "needle inside\n");
+        File.WriteAllText(Path.Combine(outside, "leak.txt"), "needle outside\n");
+        if (!TryCreateDirectoryLink(Path.Combine(ws, "escape"), outside))
+        {
+            Cleanup(ws);
+            Cleanup(outside);
+            Assert.Skip("El entorno no permite crear enlaces de directorio.");
+        }
+
+        try
+        {
+            var outcome = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle"), false,
+                CancellationToken.None);
+
+            Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
+            var doc = ParseJson(outcome.Preview!);
+            var matches = doc.RootElement.GetProperty("matches").EnumerateArray().ToArray();
+            var paths = matches.Select(m => m.GetProperty("path").GetString()).ToArray();
+
+            Assert.Contains("sub/inside.txt", paths);
+            Assert.DoesNotContain(paths, p => p!.Contains("escape", StringComparison.Ordinal));
+            Assert.DoesNotContain(paths, p => p!.Contains("leak", StringComparison.Ordinal));
+            Assert.False(doc.RootElement.GetProperty("truncated").GetBoolean());
+        }
+        finally
+        {
+            Directory.Delete(Path.Combine(ws, "escape"));
+            Cleanup(ws);
+            Cleanup(outside);
+        }
+    }
 }

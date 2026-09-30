@@ -9,127 +9,6 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 
 /// <summary>
-/// Valida argumentos de tool contra su InputSchema declarado (ADR-0014 §1, INV-001).
-/// Sin reflexión (AOT): usa System.Text.Json para parsear y validar tipos básicos.
-/// </summary>
-internal static class ToolSchemaValidator
-{
-    /// <summary>
-    /// Valida los argumentos contra el schema. Devuelve null si es válido, o un mensaje de error.
-    /// </summary>
-    public static string? Validate(string argumentsJson, InputSchema schema)
-    {
-        if (argumentsJson is null || argumentsJson.Length == 0)
-        {
-            argumentsJson = "{}";
-        }
-
-        using var doc = JsonDocument.Parse(argumentsJson);
-        var root = doc.RootElement;
-        if (root.ValueKind != JsonValueKind.Object)
-        {
-            return "Los argumentos deben ser un objeto JSON";
-        }
-
-        // Parsear el schema (JSON string) para extraer properties, required, additionalProperties
-        var schemaJson = schema.ToString();
-        using var schemaDoc = JsonDocument.Parse(schemaJson);
-        var schemaRoot = schemaDoc.RootElement;
-
-        // Obtener required fields
-        var required = new HashSet<string>();
-        if (schemaRoot.TryGetProperty("required", out var reqElem) && reqElem.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in reqElem.EnumerateArray())
-            {
-                if (item.ValueKind == JsonValueKind.String)
-                {
-                    required.Add(item.GetString()!);
-                }
-            }
-        }
-
-        // Obtener properties
-        var properties = new Dictionary<string, JsonElement>();
-        if (schemaRoot.TryGetProperty("properties", out var propsElem) && propsElem.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var prop in propsElem.EnumerateObject())
-            {
-                properties[prop.Name] = prop.Value.Clone();
-            }
-        }
-
-        // Verificar additionalProperties (por defecto false para seguridad)
-        var allowAdditional = true;
-        if (schemaRoot.TryGetProperty("additionalProperties", out var addProps))
-        {
-            allowAdditional = addProps.ValueKind == JsonValueKind.True;
-        }
-        else
-        {
-            // Por seguridad, si no se declara, no permitir campos extra
-            allowAdditional = false;
-        }
-
-        // Validar campos requeridos
-        foreach (var req in required)
-        {
-            if (!root.TryGetProperty(req, out _))
-            {
-                return $"Campo requerido faltante: '{req}'";
-            }
-        }
-
-        // Validar cada propiedad presente
-        foreach (var prop in root.EnumerateObject())
-        {
-            var key = prop.Name;
-            var value = prop.Value;
-
-            if (!properties.TryGetValue(key, out var propSchema))
-            {
-                if (!allowAdditional)
-                {
-                    return $"Campo desconocido: '{key}'";
-                }
-                continue;
-            }
-
-            // Validar tipo
-            var typeError = ValidateType(key, value, propSchema);
-            if (typeError is not null)
-            {
-                return typeError;
-            }
-        }
-
-        return null;
-    }
-
-    private static string? ValidateType(string key, JsonElement value, JsonElement propSchema)
-    {
-        if (!propSchema.TryGetProperty("type", out var typeElem))
-        {
-            return null; // sin tipo declarado, no validar
-        }
-
-        var expectedType = typeElem.GetString();
-        if (expectedType is null) return null;
-
-        return expectedType switch
-        {
-            "string" when value.ValueKind != JsonValueKind.String => $"Campo '{key}': se esperaba string",
-            "integer" when value.ValueKind != JsonValueKind.Number => $"Campo '{key}': se esperaba integer",
-            "number" when value.ValueKind != JsonValueKind.Number => $"Campo '{key}': se esperaba number",
-            "boolean" when value.ValueKind != JsonValueKind.True && value.ValueKind != JsonValueKind.False => $"Campo '{key}': se esperaba boolean",
-            "array" when value.ValueKind != JsonValueKind.Array => $"Campo '{key}': se esperaba array",
-            "object" when value.ValueKind != JsonValueKind.Object => $"Campo '{key}': se esperaba object",
-            _ => null
-        };
-    }
-}
-
-/// <summary>
 /// Tools de lectura reales de M2 (ADR-0038 §2: sin APIs de plataforma fuera de las
 /// abstracciones; aquí el acceso a filesystem se hace a través de la raíz del workspace
 /// validada, sin salidas por path traversal). Frontera de paths congeb aplicada por Security.
@@ -541,6 +420,566 @@ public sealed class ListDirectoryTool : ITool
             RelativePath = relativePath;
             Kind = kind;
             Size = size;
+        }
+    }
+}
+
+/// <summary>
+/// Tool Core `search.text` (M2 EPIC-018): búsqueda de texto read-only dentro del workspace.
+/// Args: pattern (requerido), regex (bool, default false; compila con RegexOptions.NonBacktracking
+/// y un patrón inválido produce un ToolResult fallido, nunca una excepción), path (default ".",
+/// raíz de una búsqueda RECURSIVA estilo ripgrep), glob (opcional, contra el nombre de archivo),
+/// maxResults (default 100, tope 1000) y caseSensitive (default false).
+///
+/// Reglas de frontera (misma política que filesystem.list / ADR-0024):
+///  - salta `.git/` y nunca recorre enlaces de directorio (symlink o junction), evita salir de
+///    la frontera física y los ciclos;
+///  - un enlace de archivo solo se busca si su destino físico queda dentro del workspace, y la
+///    coincidencia se reporta en la ruta relativa del enlace;
+///  - salta archivos de secretos (ADR-0018): su contenido nunca se devuelve;
+///  - salta archivos binarios (byte NUL en los primeros 8 KB) y encodings no soportados;
+///  - el texto de cada coincidencia se trunca a 300 caracteres y se redacta (ADR-0018 §4).
+///
+/// Output JSON serializado con Utf8JsonWriter (nunca concatenación de strings):
+/// {"matches":[{"path":...,"line":...,"text":...}],"truncated":bool}, con path relativo al
+/// workspace (barras '/'), line 1-based y truncated=true si se cortó la búsqueda por el tope.
+/// </summary>
+public sealed class SearchTextTool : ITool
+{
+    private const int DefaultMaxResults = 100;
+    private const int HardCapMaxResults = 1000;
+    private const int MaxMatchTextChars = 300;
+    private const int BinaryCheckBytes = 8 * 1024;
+
+    private readonly ToolDescriptor _descriptor;
+    private readonly IPathBoundaryValidator _boundary;
+
+    public SearchTextTool(IPathBoundaryValidator boundary)
+    {
+        _boundary = boundary;
+        _descriptor = new ToolDescriptor(
+            new ToolId("search.text"),
+            "Busca un patrón de texto en los archivos del workspace (read-only, recursivo) y devuelve las coincidencias con su línea.",
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"regex\":{\"type\":\"boolean\"},\"path\":{\"type\":\"string\"},\"glob\":{\"type\":\"string\"},\"maxResults\":{\"type\":\"integer\"},\"caseSensitive\":{\"type\":\"boolean\"}},\"required\":[\"pattern\"],\"additionalProperties\":false}"),
+            new string[] { "read" },
+            true,
+            false,
+            ToolRisk.Low,
+            ComponentSource.Core(),
+            ToolProtection.None);
+    }
+
+    public ToolDescriptor Descriptor => _descriptor;
+
+    public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
+    {
+        // Prepare es puro (ADR-0014 §3): solo declara la claim de lectura de la ruta pedida.
+        // La búsqueda ocurre en Execute. ADR-0018 §4: una ruta de secretos (.env, claves,
+        // credenciales) se rechaza aquí, antes de ejecutar nada (journal → ToolCallRejected).
+        var path = ParseArguments(call.NormalizedArgumentsJson).Path ?? ".";
+
+        if (path.Length > 0 && new RedactionPolicy().IsSecretPath(path))
+        {
+            return new PreparationRejected(
+                "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
+                null);
+        }
+
+        var claims = new ResourceClaims(new string[] { path }, new string[0], new NetworkGrant[0], null, new string[0]);
+        var intent = new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson, EffectClass.None,
+            claims, ToolRisk.Low, null);
+        return new Prepared(intent);
+    }
+
+    public System.Threading.Tasks.Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var args = ParseArguments(intent.Intent.NormalizedArgumentsJson);
+        var pattern = args.Pattern;
+        if (pattern is null)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'pattern' en los argumentos"));
+        }
+
+        if (pattern.Length == 0)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("'pattern' no puede estar vacío"));
+        }
+
+        var maxResults = args.MaxResults ?? DefaultMaxResults;
+        if (maxResults > HardCapMaxResults)
+        {
+            maxResults = HardCapMaxResults;
+        }
+
+        // El patrón regex se compila UNA sola vez, antes de tocar el filesystem: un patrón
+        // inválido es un resultado fallido de la tool (spec §71), nunca una excepción ni un
+        // falso "0 coincidencias".
+        Regex? regex = null;
+        if (args.Regex)
+        {
+            var options = RegexOptions.NonBacktracking
+                | (args.CaseSensitive ? RegexOptions.None : RegexOptions.IgnoreCase);
+            try
+            {
+                regex = new Regex(pattern, options);
+            }
+            catch (ArgumentException ex)
+            {
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Patrón regex inválido: " + ex.Message));
+            }
+            catch (NotSupportedException ex)
+            {
+                // NonBacktracking no soporta algunas construcciones (p. ej. backreferences):
+                // mismo tratamiento que un patrón inválido.
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Patrón regex no soportado: " + ex.Message));
+            }
+        }
+
+        var path = args.Path ?? ".";
+        var full = JoinPath(context.WorkspaceRoot, path);
+        if (!_boundary.IsWithin(full, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+        }
+
+        // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos;
+        // IsSecretTarget resuelve el destino físico antes de decidir.
+        if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
+        }
+
+        if (!File.Exists(full) && !Directory.Exists(full))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta no encontrada: " + path));
+        }
+
+        var matches = new List<SearchMatch>();
+        var truncated = false;
+
+        try
+        {
+            if (File.Exists(full))
+            {
+                // Archivo concreto: se busca respetando el glob como filtro adicional.
+                var target = ResolveFileTarget(full, context.WorkspaceRoot);
+                if (target is not null && MatchesGlob(Path.GetFileName(full), args.Glob))
+                {
+                    SearchFile(target, RelativePath(context.WorkspaceRoot, full), pattern, regex,
+                        args.CaseSensitive, maxResults, matches, ref truncated);
+                }
+            }
+            else
+            {
+                // Directorio: búsqueda recursiva. Un directorio que es un enlace (symlink o
+                // junction) no se recorre NUNCA, aunque su destino quede dentro (misma regla
+                // que filesystem.list: evita salir de la frontera y los ciclos).
+                if (!IsLink(full))
+                {
+                    SearchDirectory(full, NormalizeRelativeBase(path), pattern, regex, args.CaseSensitive,
+                        args.Glob, maxResults, matches, context.WorkspaceRoot, ref truncated);
+                }
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Acceso denegado durante la búsqueda: " + path));
+        }
+        catch (IOException)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Error de E/S durante la búsqueda: " + path));
+        }
+
+        // Orden determinista: por ruta y, dentro de cada archivo, por línea.
+        matches.Sort(static (a, b) =>
+        {
+            var byPath = string.Compare(a.Path, b.Path, StringComparison.Ordinal);
+            return byPath != 0 ? byPath : a.Line.CompareTo(b.Line);
+        });
+
+        var json = SerializeMatches(matches, truncated);
+        return System.Threading.Tasks.Task.FromResult(new ToolResult(
+            truncated ? "truncated (" + matches.Count + " matches)" : "ok (" + matches.Count + " matches)",
+            json,
+            null,
+            json.Length,
+            truncated,
+            EffectOutcome.None));
+    }
+
+    // ---------------------------------------------------------------- búsqueda
+
+    private void SearchDirectory(string fullDir, string relativeDir, string pattern, Regex? regex,
+        bool caseSensitive, string? glob, int maxResults, List<SearchMatch> matches, string workspaceRoot,
+        ref bool truncated)
+    {
+        if (truncated)
+        {
+            return;
+        }
+
+        FileSystemInfo[] entries;
+        try
+        {
+            // Orden alfabético ordinal por directorio: recorrido determinista.
+            entries = new DirectoryInfo(fullDir)
+                .EnumerateFileSystemInfos()
+                .OrderBy(static e => e.Name, StringComparer.Ordinal)
+                .ToArray();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return; // subdirectorio ilegible: se omite y se sigue con el resto
+        }
+        catch (IOException)
+        {
+            return;
+        }
+
+        foreach (var entry in entries)
+        {
+            if (truncated || matches.Count >= maxResults)
+            {
+                // Quedan entradas por buscar: el resultado se marca truncado.
+                truncated = true;
+                return;
+            }
+
+            if (entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var fullEntryPath = entry.FullName;
+
+            // ADR-0018 §3: entries que apuntan (directa o vía enlace) a secretos no se buscan.
+            if (SecretPathGuard.IsSecretTarget(_boundary, fullEntryPath, workspaceRoot))
+            {
+                continue;
+            }
+
+            // Frontera: el entry (sin resolver) debe quedar dentro del workspace.
+            if (!_boundary.IsWithin(fullEntryPath, workspaceRoot))
+            {
+                continue;
+            }
+
+            var relPath = relativeDir == "." ? entry.Name : relativeDir.TrimEnd('/') + "/" + entry.Name;
+
+            var isLink = entry.LinkTarget is not null || entry.Attributes.HasFlag(FileAttributes.ReparsePoint);
+            if (isLink)
+            {
+                // Regla de filesystem.list: un enlace solo se sigue si su destino físico queda
+                // dentro del workspace; los enlaces de DIRECTORIO no se recorren nunca.
+                if (entry is not FileInfo)
+                {
+                    continue;
+                }
+
+                string? target;
+                try
+                {
+                    target = entry.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+                }
+                catch (IOException)
+                {
+                    target = null;
+                }
+
+                if (target is null || !_boundary.IsWithin(target, workspaceRoot))
+                {
+                    continue;
+                }
+
+                if (Directory.Exists(target))
+                {
+                    continue;
+                }
+
+                if (!MatchesGlob(entry.Name, glob))
+                {
+                    continue;
+                }
+
+                SearchFile(target, relPath, pattern, regex, caseSensitive, maxResults, matches,
+                    ref truncated);
+                continue;
+            }
+
+            if (entry is DirectoryInfo sub)
+            {
+                SearchDirectory(sub.FullName, relPath, pattern, regex, caseSensitive, glob, maxResults, matches,
+                    workspaceRoot, ref truncated);
+                continue;
+            }
+
+            if (!MatchesGlob(entry.Name, glob))
+            {
+                continue;
+            }
+
+            SearchFile(fullEntryPath, relPath, pattern, regex, caseSensitive, maxResults, matches,
+                ref truncated);
+        }
+    }
+
+    private static void SearchFile(string filePath, string reportPath, string pattern, Regex? regex,
+        bool caseSensitive, int maxResults, List<SearchMatch> matches, ref bool truncated)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(filePath);
+        }
+        catch (IOException)
+        {
+            return; // el archivo desapareció entre enumeración y lectura: se omite
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        // Binario: un byte NUL en los primeros 8 KB descarta el archivo.
+        var checkLength = Math.Min(bytes.Length, BinaryCheckBytes);
+        for (var i = 0; i < checkLength; i++)
+        {
+            if (bytes[i] == 0)
+            {
+                return;
+            }
+        }
+
+        string content;
+        try
+        {
+            content = FileVersion.Decode(bytes).Text;
+        }
+        catch (UnsupportedEncodingException)
+        {
+            return; // encoding no soportado o bytes corruptos: se omite
+        }
+
+        var lines = SplitLines(content);
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (matches.Count >= maxResults)
+            {
+                // Techo alcanzado y quedan líneas: el resultado se marca truncado.
+                truncated = true;
+                return;
+            }
+
+            var line = lines[i];
+            var hit = regex is not null
+                ? regex.IsMatch(line)
+                : caseSensitive
+                    ? line.Contains(pattern, StringComparison.Ordinal)
+                    : line.Contains(pattern, StringComparison.OrdinalIgnoreCase);
+            if (!hit)
+            {
+                continue;
+            }
+
+            var text = line.Length > MaxMatchTextChars ? line.Substring(0, MaxMatchTextChars) : line;
+
+            // ADR-0018 §4: el texto expuesto al modelo se redacta igual que en filesystem.read.
+            text = new RedactionPolicy().Redact(text);
+            matches.Add(new SearchMatch(reportPath, i + 1, text));
+        }
+    }
+
+    private static string[] SplitLines(string content)
+    {
+        var lines = content.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
+
+        // Un salto de línea final no crea una línea fantasma vacía al final.
+        if (lines.Length > 0 && lines[lines.Length - 1].Length == 0
+            && (content.EndsWith('\n') || content.EndsWith('\r')))
+        {
+            Array.Resize(ref lines, lines.Length - 1);
+        }
+
+        return lines;
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    private static string JoinPath(string root, string relative)
+    {
+        var normalized = relative.Replace('\\', '/');
+        var trimmedRoot = root.TrimEnd('/').TrimEnd('\\');
+        if (normalized.Length > 0 && normalized[0] == '/')
+        {
+            return trimmedRoot + normalized;
+        }
+
+        return trimmedRoot + "/" + normalized;
+    }
+
+    private static string RelativePath(string workspaceRoot, string fullPath)
+        => Path.GetRelativePath(workspaceRoot, fullPath).Replace('\\', '/');
+
+    private static string NormalizeRelativeBase(string path)
+    {
+        var norm = path.Replace('\\', '/').TrimEnd('/');
+        if (norm.StartsWith("./", StringComparison.Ordinal))
+        {
+            norm = norm.Substring(2);
+        }
+
+        return norm.Length == 0 ? "." : norm;
+    }
+
+    private static bool IsLink(string dirPath)
+    {
+        var info = new DirectoryInfo(dirPath);
+        return info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint);
+    }
+
+    /// <summary>Resuelve el destino de un posible enlace de archivo; null si está roto o fuera del workspace.</summary>
+    private string? ResolveFileTarget(string filePath, string workspaceRoot)
+    {
+        var info = new FileInfo(filePath);
+        var isLink = info.LinkTarget is not null || info.Attributes.HasFlag(FileAttributes.ReparsePoint);
+        if (!isLink)
+        {
+            return filePath;
+        }
+
+        string? target;
+        try
+        {
+            target = info.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+        }
+        catch (IOException)
+        {
+            target = null;
+        }
+
+        if (target is null || !_boundary.IsWithin(target, workspaceRoot))
+        {
+            return null;
+        }
+
+        return target;
+    }
+
+    /// <summary>Comprueba el nombre de archivo contra un glob simple (* y ?); null o vacío acepta todo.</summary>
+    private static bool MatchesGlob(string fileName, string? glob)
+    {
+        if (glob is null || glob.Length == 0)
+        {
+            return true;
+        }
+
+        var pattern = "^" + Regex.Escape(glob).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
+        return Regex.IsMatch(fileName, pattern, RegexOptions.CultureInvariant);
+    }
+
+    private static string SerializeMatches(List<SearchMatch> matches, bool truncated)
+    {
+        // Serializador real (Utf8JsonWriter): escapado correcto, sin concatenación de strings.
+        using var output = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteStartArray("matches");
+            foreach (var match in matches)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("path", match.Path);
+                writer.WriteNumber("line", match.Line);
+                writer.WriteString("text", match.Text);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteBoolean("truncated", truncated);
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(output.ToArray());
+    }
+
+    // ---------------------------------------------------------------- argumentos
+
+    private readonly struct SearchArguments
+    {
+        public string? Pattern { get; init; }
+        public bool Regex { get; init; }
+        public bool CaseSensitive { get; init; }
+        public string? Path { get; init; }
+        public string? Glob { get; init; }
+        public int? MaxResults { get; init; }
+    }
+
+    /// <summary>
+    /// Parse con System.Text.Json (no ArgsJson): los patrones regex suelen contener barras
+    /// invertidas y comillas, y el mini parser no decodifica escapes JSON.
+    /// </summary>
+    private static SearchArguments ParseArguments(string json)
+    {
+        if (json is null || json.Length == 0)
+        {
+            return default;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return default;
+            }
+
+            var root = doc.RootElement;
+            return new SearchArguments
+            {
+                Pattern = GetString(root, "pattern"),
+                Regex = GetBool(root, "regex", fallback: false),
+                CaseSensitive = GetBool(root, "caseSensitive", fallback: false),
+                Path = GetString(root, "path"),
+                Glob = GetString(root, "glob"),
+                MaxResults = GetInt(root, "maxResults"),
+            };
+        }
+        catch (JsonException)
+        {
+            return default; // sin pattern → error tipado de la tool
+        }
+    }
+
+    private static string? GetString(JsonElement root, string key)
+        => root.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static bool GetBool(JsonElement root, string key, bool fallback)
+        => root.TryGetProperty(key, out var value)
+            && (value.ValueKind == JsonValueKind.True || value.ValueKind == JsonValueKind.False)
+            ? value.GetBoolean()
+            : fallback;
+
+    private static int? GetInt(JsonElement root, string key)
+        => root.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number
+            && value.TryGetInt32(out var number)
+            ? number
+            : null;
+
+    private readonly struct SearchMatch
+    {
+        public string Path { get; }
+        public int Line { get; }
+        public string Text { get; }
+
+        public SearchMatch(string path, int line, string text)
+        {
+            Path = path;
+            Line = line;
+            Text = text;
         }
     }
 }
