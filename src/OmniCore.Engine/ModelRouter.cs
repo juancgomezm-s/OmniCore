@@ -159,17 +159,8 @@ public static class ModelRouter
         // 4. PreferLocal: locales primero (estable), luego remotos (estable)
         if (policy.PreferLocal)
         {
-            // Crear mapa de índice original para orden estable
-            var originalIndex = new Dictionary<RouteCandidate, int>();
-            for (var i = 0; i < candidates.Count; i++)
-            {
-                originalIndex[candidates[i]] = i;
-            }
-
-            survivors = survivors
-                .OrderByDescending(c => c.IsLocal)
-                .ThenBy(c => originalIndex[c]) // stable: mantener orden original entre iguales
-                .ToList();
+            // OrderBy es estable: entre locales (y entre remotos) se conserva el orden de preferencia.
+            survivors = survivors.OrderByDescending(c => c.IsLocal).ToList();
         }
 
         // 5. Elegir el primero o lanzar

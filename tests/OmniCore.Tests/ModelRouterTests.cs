@@ -448,4 +448,24 @@ public sealed class ModelRouterTests
         Assert.Contains(decision.Rejected, r => r.Alias == "local-unavail" && r.Reason == RouteRejection.Unavailable);
         Assert.DoesNotContain(decision.Rejected, r => r.Reason == RouteRejection.NotLocal);
     }
+
+    [Fact]
+    public void Prefer_local_keeps_the_preference_order_among_local_candidates()
+    {
+        // Orden de entrada distinto del de preferencia: gana la preferencia, no el orden de la lista.
+        var candidates = new[]
+        {
+            CreateCandidate("local-b", isLocal: true),
+            CreateCandidate("remote", isLocal: false),
+            CreateCandidate("local-a", isLocal: true),
+        };
+        var policy = CreatePolicy(new Dictionary<RoutingTaskKind, string[]>
+        {
+            [RoutingTaskKind.Implementation] = ["remote", "local-a", "local-b"],
+        }, preferLocal: true);
+
+        var decision = ModelRouter.Select(CreateRequest(), candidates, policy);
+
+        Assert.Equal("local-a", decision.Chosen.Alias);
+    }
 }
