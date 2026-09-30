@@ -92,10 +92,17 @@ public sealed class M3CoderGatesTests
             server.LastLaneId()!, run.RootTask!, workspace, data);
     }
 
-    private static EffectiveModelPolicy PatchOnlyPolicy()
+    private static EffectiveModelPolicy PatchOnlyPolicy(bool requirePostEditValidation = true)
     {
         var key = ModelPolicyKey.For("scripted", "coder");
-        var stored = new StoredModelPolicy(key, 1, ModelPolicyPresets.PatchOnly(),
+        var preset = ModelPolicyPresets.PatchOnly();
+        var policy = new UserModelPolicy(preset.Category, preset.ToolPolicy,
+            new FileMutationPolicy(preset.MutationPolicy.Mode, preset.MutationPolicy.Delete,
+                preset.MutationPolicy.MoveOrRename, preset.MutationPolicy.MaxFilesPerTurn,
+                preset.MutationPolicy.MaxChangedLinesPerTurn, preset.MutationPolicy.MaxRewriteRatio,
+                preset.MutationPolicy.RequirePriorRead, preset.MutationPolicy.RequireExpectedVersionToken,
+                requirePostEditValidation, preset.MutationPolicy.AllowParallelMutations), "test", null);
+        var stored = new StoredModelPolicy(key, 1, policy,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
         var harness = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 8, GuidanceLevel.Full, 3,
             PlanControl.ModelDriven, 8);
@@ -103,16 +110,18 @@ public sealed class M3CoderGatesTests
     }
 
     private static ExplorerTurn CreateTurn(RunContext context,
-        Func<ModelRequest, CancellationToken, ModelResponse> complete, out ModelCapabilityBoundary boundary)
+        Func<ModelRequest, CancellationToken, ModelResponse> complete, out ModelCapabilityBoundary boundary,
+        bool requirePostEditValidation = true)
     {
+        var policy = PatchOnlyPolicy(requirePostEditValidation);
         var catalog = OmniHost.CreateActTools().Catalog();
-        boundary = new ModelCapabilityBoundary(PatchOnlyPolicy(), ModelCapabilityBoundary.CoreTools,
+        boundary = new ModelCapabilityBoundary(policy, ModelCapabilityBoundary.CoreTools,
             new FileReadRegistry(context.Workspace));
         var executor = OmniHost.CreateActExecutor(catalog, context.Workspace, boundary);
         return new ExplorerTurn(complete, executor, catalog,
             new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
             new ExecutionFingerprint("scripted-coder", "harness", "core-tools-1", "fake", "none", "M3",
-                PatchOnlyPolicy().Fingerprint()),
+                policy.Fingerprint()),
             new ModelSelection(new ModelIdValue("scripted-coder"), 8192, ToolMode.Direct, null),
             context.Server.AcquireStore(), context.Server.AcquireCodecs(),
             new FileArtifactStore(Path.Combine(context.Data, "artifacts")), new InMemoryAuditSink(),
@@ -120,7 +129,8 @@ public sealed class M3CoderGatesTests
     }
 
     private static bool Complete(RunContext context,
-        Func<EventStream, IReadOnlyList<ExternalCompletionGateResult>>? external = null)
+        Func<EventStream, IReadOnlyList<ExternalCompletionGateResult>>? external = null,
+        MutationLedger? mutationLedger = null)
     {
         var events = context.Store.ReadFrom(context.Session, 1);
         var codecs = context.Server.AcquireCodecs();
@@ -128,7 +138,7 @@ public sealed class M3CoderGatesTests
         var stream = new EventStream(context.Store, codecs, context.Session);
         return new RunCoupon(run, TaskGraphProjection.Replay(codecs, events), PlanProjection.Replay(codecs, events))
             .CheckCompletionAndGate(new PlanService(), new ProgressReconciler(), context.Store, codecs,
-                context.Session, stream, external is null ? null : () => external(stream));
+                context.Session, stream, external is null ? null : () => external(stream), mutationLedger);
     }
 
     private ConfiguredCompletionGates GateRunner(RunContext context, WorkspaceGatesYaml gates,
@@ -173,7 +183,7 @@ public sealed class M3CoderGatesTests
                 0 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
                 1 => Call("filesystem.patch", Patch("Program.cs", Version(original), "BROKEN", "static void Main() { }")),
                 _ => End(),
-            }, out _);
+            }, out var boundary);
             var first = turn.Ask("corrige el test", "Coder instructions", context.Session, context.Run,
                 context.Lane, "", CancellationToken.None);
             Assert.Contains(first.ToolCalls, call => call.ToolName == "filesystem.read" && call.Succeeded);
@@ -182,7 +192,8 @@ public sealed class M3CoderGatesTests
 
             var gates = new WorkspaceGatesYaml { Build = ["dotnet", "--version"] };
             var runner = GateRunner(context, gates);
-            var completed = Complete(context, stream => runner.Run(stream, CancellationToken.None));
+            var completed = Complete(context, stream => runner.Run(stream, CancellationToken.None),
+                boundary.ReadRegistry().Ledger);
             Assert.True(completed, string.Join("; ", context.Store.ReadFrom(context.Session, 1)
                 .Select(context.Server.AcquireCodecs().Decode).OfType<RunValidationRejected>()
                 .SelectMany(rejection => rejection.Missing)));
@@ -193,6 +204,119 @@ public sealed class M3CoderGatesTests
             Assert.Contains(decoded.OfType<PermissionEvaluated>(), permission => permission.Decision == PermissionDecision.Allow);
             Assert.Contains(decoded.OfType<RunCompleted>(), completed => completed.RunId.Equals(context.Run));
             Assert.DoesNotContain(decoded.OfType<ToolCallRequested>(), call => call.ToolName == "shell.exec");
+        }
+        finally { context.Store.Close(); Remove(root); }
+    }
+
+    [Fact]
+    public void Pending_edit_without_build_or_test_gate_rejects_completion_with_localized_guidance()
+    {
+        var root = TempDir();
+        var context = StartRun(root);
+        var original = "class Program { BROKEN }\n" + Padding;
+        File.WriteAllText(Path.Combine(context.Workspace, "Program.cs"), original);
+        try
+        {
+            var turn = CreateTurn(context, (request, _) => ToolResultCount(request) switch
+            {
+                0 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
+                1 => Call("filesystem.patch", Patch("Program.cs", Version(original), "BROKEN", "static void Main() { }")),
+                _ => End(),
+            }, out var boundary);
+            var result = turn.Ask("corrige", "Coder instructions", context.Session, context.Run,
+                context.Lane, "", CancellationToken.None);
+            Assert.Contains(result.ToolCalls, call => call.ToolName == "filesystem.patch" && call.Succeeded);
+
+            Assert.False(Complete(context, mutationLedger: boundary.ReadRegistry().Ledger));
+            var rejected = context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode)
+                .OfType<RunValidationRejected>().Last();
+            Assert.Contains("post-edit-validation", rejected.Gates);
+            Assert.Contains(rejected.Missing, missing => missing == "coder.postEditValidation.required");
+            var localized = new Localization("es").ResolveWire(
+                rejected.Missing.Single(missing => missing == "coder.postEditValidation.required"));
+            Assert.Contains("ediciones pendientes de validar", localized, StringComparison.Ordinal);
+            Assert.Contains(".omnicore/settings.yaml", localized, StringComparison.Ordinal);
+            Assert.Equal(RunState.AwaitingInput, RunProjection.Replay(context.Session, context.Run,
+                context.Server.AcquireCodecs(), context.Store.ReadFrom(context.Session, 1)).State);
+            Assert.NotEmpty(PlanProjection.Replay(context.Server.AcquireCodecs(), context.Store.ReadFrom(context.Session, 1)).Items());
+        }
+        finally { context.Store.Close(); Remove(root); }
+    }
+
+    [Fact]
+    public void Edit_after_successful_test_gate_requires_another_gate_before_completion()
+    {
+        var root = TempDir();
+        var context = StartRun(root);
+        var original = "class Program { BROKEN }\n" + Padding;
+        var secondOriginal = "class Other { OLD }\n" + Padding;
+        File.WriteAllText(Path.Combine(context.Workspace, "Program.cs"), original);
+        File.WriteAllText(Path.Combine(context.Workspace, "Other.cs"), secondOriginal);
+        try
+        {
+            var responseStep = 0;
+            var turn = CreateTurn(context, (_, _) => responseStep++ switch
+            {
+                0 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
+                1 => Call("filesystem.patch", Patch("Program.cs", Version(original), "BROKEN", "static void Main() { }")),
+                2 => End(),
+                3 => Call("filesystem.read", "{\"path\":\"Other.cs\"}"),
+                4 => Call("filesystem.patch", Patch("Other.cs", Version(secondOriginal), "OLD", "NEW")),
+                _ => End(),
+            }, out var boundary);
+            _ = turn.Ask("corrige", "Coder instructions", context.Session, context.Run,
+                context.Lane, "", CancellationToken.None);
+
+            // El gate Test pasa, pero Acceptance mantiene el Run abierto para permitir otra edición.
+            Assert.False(Complete(context, _ => [
+                new ExternalCompletionGateResult("test", true, "ok"),
+                new ExternalCompletionGateResult("acceptance", false, "pendiente"),
+            ], boundary.ReadRegistry().Ledger));
+            Assert.Empty(boundary.ReadRegistry().Ledger.PendingValidations());
+
+            var next = turn.Ask("edita el otro archivo", "Coder instructions", context.Session, context.Run,
+                context.Lane, "", CancellationToken.None);
+            Assert.Contains(next.ToolCalls, call => call.ToolName == "filesystem.patch" && call.Succeeded);
+            Assert.Equal(secondOriginal.Replace("OLD", "NEW", StringComparison.Ordinal),
+                File.ReadAllText(Path.Combine(context.Workspace, "Other.cs")));
+
+            Assert.False(Complete(context, mutationLedger: boundary.ReadRegistry().Ledger));
+            var rejected = context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode)
+                .OfType<RunValidationRejected>().Last();
+            Assert.Contains("post-edit-validation", rejected.Gates);
+            _ = turn.Ask("ejecuta validación", "Coder instructions", context.Session, context.Run,
+                context.Lane, "", CancellationToken.None);
+
+            Assert.True(Complete(context, _ => [new ExternalCompletionGateResult("test", true, "ok")],
+                boundary.ReadRegistry().Ledger));
+            Assert.Equal(RunState.Completed, RunProjection.Replay(context.Session, context.Run,
+                context.Server.AcquireCodecs(), context.Store.ReadFrom(context.Session, 1)).State);
+        }
+        finally { context.Store.Close(); Remove(root); }
+    }
+
+    [Fact]
+    public void Disabled_post_edit_validation_does_not_block_completion_without_a_gate()
+    {
+        var root = TempDir();
+        var context = StartRun(root);
+        var original = "class Program { BROKEN }\n" + Padding;
+        File.WriteAllText(Path.Combine(context.Workspace, "Program.cs"), original);
+        try
+        {
+            var turn = CreateTurn(context, (request, _) => ToolResultCount(request) switch
+            {
+                0 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
+                1 => Call("filesystem.patch", Patch("Program.cs", Version(original), "BROKEN", "static void Main() { }")),
+                _ => End(),
+            }, out var boundary, requirePostEditValidation: false);
+            var result = turn.Ask("corrige", "Coder instructions", context.Session, context.Run,
+                context.Lane, "", CancellationToken.None);
+            Assert.Contains(result.ToolCalls, call => call.ToolName == "filesystem.patch" && call.Succeeded);
+            Assert.Empty(boundary.ReadRegistry().Ledger.PendingValidations());
+            Assert.True(Complete(context, mutationLedger: boundary.ReadRegistry().Ledger));
+            Assert.Equal(RunState.Completed, RunProjection.Replay(context.Session, context.Run,
+                context.Server.AcquireCodecs(), context.Store.ReadFrom(context.Session, 1)).State);
         }
         finally { context.Store.Close(); Remove(root); }
     }
@@ -229,7 +353,7 @@ public sealed class M3CoderGatesTests
                         "static void Main() { } }")),
                     _ => End(),
                 };
-            }, out _);
+            }, out var boundary);
 
             var first = turn.Ask("corrige el test", "Coder instructions", context.Session, context.Run,
                 context.Lane, "", CancellationToken.None);
@@ -238,7 +362,8 @@ public sealed class M3CoderGatesTests
             {
                 Test = ["git", "diff", "--check"],
             });
-            Assert.False(Complete(context, stream => failing.Run(stream, CancellationToken.None)));
+            Assert.False(Complete(context, stream => failing.Run(stream, CancellationToken.None),
+                boundary.ReadRegistry().Ledger));
             var rejected = context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode)
                 .OfType<RunValidationRejected>().Last();
             Assert.Contains("test", rejected.Gates);
@@ -257,7 +382,8 @@ public sealed class M3CoderGatesTests
             {
                 Test = ["git", "diff", "--check"],
             });
-            var completed = Complete(context, stream => passing.Run(stream, CancellationToken.None));
+            var completed = Complete(context, stream => passing.Run(stream, CancellationToken.None),
+                boundary.ReadRegistry().Ledger);
             Assert.True(completed, string.Join("; ", context.Store.ReadFrom(context.Session, 1)
                 .Select(context.Server.AcquireCodecs().Decode).OfType<RunValidationRejected>()
                 .SelectMany(rejection => rejection.Missing)));
