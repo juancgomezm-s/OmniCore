@@ -28,21 +28,56 @@ public sealed class M2IntegrationTests
     private static readonly string TestCwd = Path.GetFullPath(".");
 
     [Fact]
-    public async System.Threading.Tasks.Task Explorer_starts_from_a_fresh_workspace_without_sim()
+    public async System.Threading.Tasks.Task Explorer_explain_criterion_requires_model_turn_runtime_plan_and_persisted_fingerprint()
     {
         var server = OmniHost.CreateInMemoryServer();
         var objective = "explícame este repositorio";
         var command = WireEnvelope.Command(Ids.NewV7(), "{"
             + JsonObj.Field("cmd", "explore.start") + ","
             + JsonObj.Field("objective", objective) + "}");
-        var ack = server.Send(command, CancellationToken.None);
+        Assert.Equal("ok", server.Send(command, CancellationToken.None).Status);
+        var session = Assert.IsType<SessionId>(server.LastSessionId());
+        var run = Assert.IsType<RunId>(server.LastRunId());
+        var lane = Assert.IsType<LaneId>(server.LastLaneId());
 
-        Assert.Equal("ok", ack.Status);
-        Assert.NotNull(server.LastSessionId());
-        Assert.NotNull(server.LastRunId());
-        var workingState = server.Query("workingState", CancellationToken.None)?.Json ?? "";
-        Assert.Contains(objective, workingState);
-        Assert.Contains("Plan rev.", workingState);
+        var tools = OmniHost.CreateExplorerTools();
+        var executor = ScriptedToolExecutor.WithCoreTools(tools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("plan.propose", PermissionDecision.Allow)
+                .WithModeDefaults(RunMode.Plan));
+        var fingerprint = new ExecutionFingerprint("scripted-explain", "harness", "tools", "context", "overrides", "M2");
+        var artifactsPath = Path.Combine(TestCwd, ".omnicore-explain-criterion-artifacts");
+        var artifacts = new FileArtifactStore(artifactsPath);
+        var turn = new ExplorerTurn((request, token) => FakeResponses.PlanThenEnd(request), executor,
+            tools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+            fingerprint, new ModelSelection(new ModelIdValue("scripted-explain"), 4096, ToolMode.Direct, null),
+            server.AcquireStore(), server.AcquireCodecs(), artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+
+        var result = turn.Ask(objective, "Explain the repository. {context}", session, run, lane,
+            "runtime-owned-plan", CancellationToken.None);
+
+        Assert.Equal(StopReason.EndTurn, result.StopReason);
+        Assert.False(string.IsNullOrWhiteSpace(result.FinalText));
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        var types = events.Select(evt => evt.Type.ToString()).ToArray();
+        Assert.Contains("plan_item.started", types);
+        Assert.Contains("turn.completed", types);
+        var turnStarted = Assert.IsType<TurnStarted>(server.AcquireCodecs().Decode(
+            events.Last(evt => evt.Type.ToString() == "turn.started")));
+        Assert.NotNull(turnStarted.Fingerprint);
+        Assert.Equal(fingerprint.Hash(), turnStarted.Fingerprint!.Hash());
+        Assert.NotNull(turnStarted.ContextSnapshotRef);
+        Assert.Equal(ArtifactKind.ContextSnapshot, turnStarted.ContextSnapshotRef!.Kind);
+        var snapshot = artifacts.GetText(turnStarted.ContextSnapshotRef.Hash);
+        Assert.Contains(fingerprint.Hash(), snapshot!);
+        Assert.Contains("working-state", snapshot!);
+
+        var approvalId = server.RequestPlanApprovalIfNeeded();
+        Assert.NotNull(approvalId);
+        var requested = events = server.AcquireStore().ReadFrom(session, 1);
+        Assert.Contains(requested, evt => evt.Type.ToString() == "interaction.requested"
+            && server.AcquireCodecs().Decode(evt) is InteractionRequested interaction
+            && interaction.Kind == InteractionKind.PlanApproval);
+        TryDeleteFiles(TestCwd, Path.GetFileName(artifactsPath));
     }
 
     [Fact]

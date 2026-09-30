@@ -145,13 +145,34 @@ public sealed class PermissionGrantsTests
         Assert.Contains(audit.Records(), r => r.EventName == "permission.grant.created");
     }
 
-    private sealed class BoundaryAskPolicy : IPermissionPolicy
+    private sealed class BoundaryAskPolicy : IPermissionPolicy, IGrantablePermissionPolicy
     {
+        public bool CanCreatePersistentGrants => true;
         public PermissionDecisionRecord Evaluate(ToolIntent intent) => new(PermissionDecision.Ask,
             new[] { new LayerDecision("ModelCapabilityBoundary", PermissionDecision.Ask, "destructive-action-ask") }, null);
         public AuthorizedToolIntent Authorize(ToolIntent intent) => throw new NotSupportedException();
         public AuthorizedToolIntent AuthorizeApproved(ToolIntent intent, GrantId? approvedGrant) =>
             throw new NotSupportedException();
+        public GrantId? RecordApprovedGrant(ToolIntent intent, GrantLifetime lifetime,
+            CancellationToken cancellationToken) => GrantId.New();
+    }
+
+    [Fact]
+    public void Boundary_ask_offers_only_once_and_deny_even_if_policy_supports_grants()
+    {
+        var events = new List<DomainEventPayload>();
+        var runtime = ToolRuntime.For(new FakeCatalog().Add(new TestProcessTool()), new BoundaryAskPolicy(),
+            payload => { events.Add(payload); return VoidBox.Instance; });
+
+        var outcome = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "p1", "{}"),
+            new ToolPreparationContext("test", DateTimeOffset.UtcNow), new ToolExecutionContext("test"), false,
+            CancellationToken.None);
+
+        Assert.False(outcome.Succeeded);
+        var interaction = Assert.IsType<InteractionRequested>(events.Single(e => e is InteractionRequested));
+        Assert.Contains("allow_once", interaction.OptionsJson);
+        Assert.DoesNotContain("allow_run", interaction.OptionsJson);
+        Assert.DoesNotContain("allow_workspace", interaction.OptionsJson);
     }
 
     [Fact]

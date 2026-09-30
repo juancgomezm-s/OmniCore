@@ -198,7 +198,7 @@ public sealed class ExplorerTurn
             var preparedContext = MaterializeTurnContext(sessionId, runId, laneId, turnId,
                 workingStateText, instruction, messages, cancellationToken);
             var materialized = preparedContext.Snapshot;
-            var snapshotArtifact = PersistContextSnapshot(materialized);
+            var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
 
             // ContextOverflow: el contenido protegido no cabe ni después de recortar la conversación.
             if (materialized.Overflowed)
@@ -884,7 +884,7 @@ public sealed class ExplorerTurn
         return message.Role.ToString() + ": " + string.Join(" ", parts);
     }
 
-    private ArtifactRef PersistContextSnapshot(ContextSnapshot snapshot)
+    private ArtifactRef PersistContextSnapshot(ContextSnapshot snapshot, long tokenBudget)
     {
         using var output = new System.IO.MemoryStream();
         using (var writer = new System.Text.Json.Utf8JsonWriter(output))
@@ -893,6 +893,9 @@ public sealed class ExplorerTurn
             writer.WriteString("snapshotId", snapshot.SnapshotId);
             writer.WriteString("fingerprint", snapshot.Fingerprint.Hash());
             writer.WriteNumber("tokenCount", snapshot.TokenCount);
+            writer.WriteNumber("tokenBudget", tokenBudget);
+            var accuracy = _materializer.Counter().Accuracy.ToString().ToLowerInvariant();
+            writer.WriteString("tokenAccuracy", accuracy);
             writer.WriteBoolean("overflowed", snapshot.Overflowed);
             writer.WriteStartArray("items");
             foreach (var item in snapshot.Items)
@@ -902,6 +905,8 @@ public sealed class ExplorerTurn
                 writer.WriteString("kind", item.Kind.ToString());
                 writer.WriteString("content", item.Content);
                 writer.WriteNumber("tokens", item.EstimatedTokens);
+                writer.WriteString("tokenAccuracy", accuracy);
+                writer.WriteString("priority", item.Priority.ToString());
                 WriteProvenance(writer, item.Provenance);
                 writer.WriteEndObject();
             }
@@ -914,6 +919,9 @@ public sealed class ExplorerTurn
                 writer.WriteString("itemId", diagnostic.ItemId);
                 writer.WriteString("decision", diagnostic.Decision.ToString());
                 writer.WriteNumber("tokens", diagnostic.Tokens);
+                writer.WriteString("reason", diagnostic.Decision == ContextDecision.OmittedByBudget
+                    ? "omitted by context budget" : diagnostic.Decision == ContextDecision.TruncatedByBudget
+                        ? "trimmed by context budget" : "included");
                 WriteProvenance(writer, diagnostic.Provenance);
                 writer.WriteEndObject();
             }
