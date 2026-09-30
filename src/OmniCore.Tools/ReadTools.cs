@@ -1,7 +1,133 @@
 namespace OmniCore.Tools;
 
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+
+/// <summary>
+/// Valida argumentos de tool contra su InputSchema declarado (ADR-0014 §1, INV-001).
+/// Sin reflexión (AOT): usa System.Text.Json para parsear y validar tipos básicos.
+/// </summary>
+internal static class ToolSchemaValidator
+{
+    /// <summary>
+    /// Valida los argumentos contra el schema. Devuelve null si es válido, o un mensaje de error.
+    /// </summary>
+    public static string? Validate(string argumentsJson, InputSchema schema)
+    {
+        if (argumentsJson is null || argumentsJson.Length == 0)
+        {
+            argumentsJson = "{}";
+        }
+
+        using var doc = JsonDocument.Parse(argumentsJson);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return "Los argumentos deben ser un objeto JSON";
+        }
+
+        // Parsear el schema (JSON string) para extraer properties, required, additionalProperties
+        var schemaJson = schema.ToString();
+        using var schemaDoc = JsonDocument.Parse(schemaJson);
+        var schemaRoot = schemaDoc.RootElement;
+
+        // Obtener required fields
+        var required = new HashSet<string>();
+        if (schemaRoot.TryGetProperty("required", out var reqElem) && reqElem.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in reqElem.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    required.Add(item.GetString()!);
+                }
+            }
+        }
+
+        // Obtener properties
+        var properties = new Dictionary<string, JsonElement>();
+        if (schemaRoot.TryGetProperty("properties", out var propsElem) && propsElem.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var prop in propsElem.EnumerateObject())
+            {
+                properties[prop.Name] = prop.Value.Clone();
+            }
+        }
+
+        // Verificar additionalProperties (por defecto false para seguridad)
+        var allowAdditional = true;
+        if (schemaRoot.TryGetProperty("additionalProperties", out var addProps))
+        {
+            allowAdditional = addProps.ValueKind == JsonValueKind.True;
+        }
+        else
+        {
+            // Por seguridad, si no se declara, no permitir campos extra
+            allowAdditional = false;
+        }
+
+        // Validar campos requeridos
+        foreach (var req in required)
+        {
+            if (!root.TryGetProperty(req, out _))
+            {
+                return $"Campo requerido faltante: '{req}'";
+            }
+        }
+
+        // Validar cada propiedad presente
+        foreach (var prop in root.EnumerateObject())
+        {
+            var key = prop.Name;
+            var value = prop.Value;
+
+            if (!properties.TryGetValue(key, out var propSchema))
+            {
+                if (!allowAdditional)
+                {
+                    return $"Campo desconocido: '{key}'";
+                }
+                continue;
+            }
+
+            // Validar tipo
+            var typeError = ValidateType(key, value, propSchema);
+            if (typeError is not null)
+            {
+                return typeError;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ValidateType(string key, JsonElement value, JsonElement propSchema)
+    {
+        if (!propSchema.TryGetProperty("type", out var typeElem))
+        {
+            return null; // sin tipo declarado, no validar
+        }
+
+        var expectedType = typeElem.GetString();
+        if (expectedType is null) return null;
+
+        return expectedType switch
+        {
+            "string" when value.ValueKind != JsonValueKind.String => $"Campo '{key}': se esperaba string",
+            "integer" when value.ValueKind != JsonValueKind.Number => $"Campo '{key}': se esperaba integer",
+            "number" when value.ValueKind != JsonValueKind.Number => $"Campo '{key}': se esperaba number",
+            "boolean" when value.ValueKind != JsonValueKind.True && value.ValueKind != JsonValueKind.False => $"Campo '{key}': se esperaba boolean",
+            "array" when value.ValueKind != JsonValueKind.Array => $"Campo '{key}': se esperaba array",
+            "object" when value.ValueKind != JsonValueKind.Object => $"Campo '{key}': se esperaba object",
+            _ => null
+        };
+    }
+}
 
 /// <summary>
 /// Tools de lectura reales de M2 (ADR-0038 §2: sin APIs de plataforma fuera de las
@@ -157,6 +283,246 @@ public sealed class ReadFileTool : ITool
         var end = text.IndexOf(']', idx + start.Length);
         if (end < 0) return null;
         return text.Substring(idx + start.Length, end - idx - start.Length);
+    }
+}
+
+/// <summary>
+/// Tool para listar directorios dentro del workspace (read-only).
+/// Args: path (relative, default "."), recursive (bool, default false), maxEntries (int, default 200, hard cap 2000).
+/// Output: entries sorted by path, each with relative path (forward slashes), kind (file/dir) and size for files;
+/// truncated: true when the cap was hit. Skips .git/; secret paths hidden via SecretPathGuard.
+/// </summary>
+public sealed class ListDirectoryTool : ITool
+{
+    private readonly ToolDescriptor _descriptor;
+    private readonly IPathBoundaryValidator _boundary;
+
+    public ListDirectoryTool(IPathBoundaryValidator boundary)
+    {
+        _boundary = boundary;
+        _descriptor = new ToolDescriptor(
+            new ToolId("filesystem.list"),
+            "Lista entradas de un directorio dentro del workspace (read-only).",
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"recursive\":{\"type\":\"boolean\"},\"maxEntries\":{\"type\":\"integer\"}},\"additionalProperties\":false}"),
+            new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
+    }
+
+    public ToolDescriptor Descriptor => _descriptor;
+
+    public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
+    {
+        // Prepare es puro: declara las claims de lectura de la ruta concreta pedida (ADR-0014 §3),
+        // para que Security evalúe la resource path real (no vacío). La lectura ocurre en Execute.
+        var path = ExtractPath(call.NormalizedArgumentsJson) ?? ".";
+
+        // ADR-0018 §4: rutas de secretos (.env, PEM/SSH, credenciales) se REJECT en Prepare:
+        // nunca se llega a ejecutar la tool (el journal termina en ToolCallRejected, sin
+        // toolcall.succeeded). P0-2.
+        if (path.Length > 0 && new OmniCore.Domain.RedactionPolicy().IsSecretPath(path))
+        {
+            return new PreparationRejected(
+                "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
+                null);
+        }
+
+        var claims = new ResourceClaims(new string[] { path }, new string[0], new NetworkGrant[0], null, new string[0]);
+        var intent = new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson, EffectClass.None,
+            claims, ToolRisk.Low, null);
+        return new Prepared(intent);
+    }
+
+    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        var path = ExtractPath(intent.Intent.NormalizedArgumentsJson) ?? ".";
+        var recursive = ExtractBool(intent.Intent.NormalizedArgumentsJson, "recursive", false);
+        var maxEntries = ExtractInt(intent.Intent.NormalizedArgumentsJson, "maxEntries", 200);
+        const int HardCap = 2000;
+        if (maxEntries > HardCap) maxEntries = HardCap;
+
+        var full = JoinPath(context.WorkspaceRoot, path);
+        if (!_boundary.IsWithin(full, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+        }
+
+        // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
+        if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
+        }
+
+        if (!Directory.Exists(full))
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Directorio no encontrado: " + path));
+        }
+
+        var entries = new List<DirectoryEntry>();
+        var truncated = false;
+        try
+        {
+            CollectEntries(full, context.WorkspaceRoot, path, recursive, entries, maxEntries, ref truncated);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Acceso denegado al directorio: " + path));
+        }
+
+        // Ordenar por ruta relativa
+        entries.Sort((a, b) => string.Compare(a.RelativePath, b.RelativePath, StringComparison.Ordinal));
+
+        var json = SerializeEntries(entries, truncated);
+        return System.Threading.Tasks.Task.FromResult(new ToolResult(
+            truncated ? "truncated (" + entries.Count + " entries)" : "ok (" + entries.Count + " entries)",
+            json, null, json.Length, truncated, EffectOutcome.None));
+    }
+
+    private void CollectEntries(string fullDir, string workspaceRoot, string relativeDir,
+        bool recursive, List<DirectoryEntry> entries, int maxEntries, ref bool truncated)
+    {
+        if (truncated || entries.Count >= maxEntries) return;
+
+        var dirInfo = new DirectoryInfo(fullDir);
+        foreach (var entry in dirInfo.EnumerateFileSystemInfos())
+        {
+            if (truncated || entries.Count >= maxEntries) break;
+
+            // Saltar .git/
+            if (entry.Name.Equals(".git", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var relPath = relativeDir == "." ? entry.Name : relativeDir.TrimEnd('/') + "/" + entry.Name;
+            var fullEntryPath = entry.FullName;
+
+            // ADR-0018 §3: comprobar si el entry apunta a un secreto
+            if (SecretPathGuard.IsSecretTarget(_boundary, fullEntryPath, workspaceRoot))
+                continue;
+
+            if (entry is FileInfo fileInfo)
+            {
+                entries.Add(new DirectoryEntry(relPath.Replace("\\", "/"), "file", fileInfo.Length));
+            }
+            else if (entry is DirectoryInfo dirInfoEntry)
+            {
+                entries.Add(new DirectoryEntry(relPath.Replace("\\", "/"), "dir", null));
+                if (recursive)
+                {
+                    CollectEntries(fullEntryPath, workspaceRoot, relPath, recursive, entries, maxEntries, ref truncated);
+                }
+            }
+        }
+
+        if (entries.Count >= maxEntries)
+        {
+            truncated = true;
+            if (entries.Count > maxEntries)
+            {
+                entries.RemoveRange(maxEntries, entries.Count - maxEntries);
+            }
+        }
+    }
+
+    private static string? ExtractPath(string argsJson)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        return map.TryGetValue("path", out var p) ? p : null;
+    }
+
+    private static bool ExtractBool(string argsJson, string key, bool defaultValue)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        if (map.TryGetValue(key, out var v) && bool.TryParse(v, out var parsed))
+            return parsed;
+        return defaultValue;
+    }
+
+    private static int ExtractInt(string argsJson, string key, int defaultValue)
+    {
+        var map = ArgsJson.Parse(argsJson);
+        if (map.TryGetValue(key, out var v) && int.TryParse(v, out var parsed))
+            return parsed;
+        return defaultValue;
+    }
+
+    private static string JoinPath(string root, string relative)
+    {
+        if (relative is null) return root;
+        var norm = relative.Replace("\\", "/");
+        return root.TrimEnd('/') + "/" + norm;
+    }
+
+    private static string SerializeEntries(List<DirectoryEntry> entries, bool truncated)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.Append('{');
+        sb.Append("\"entries\":[");
+        for (var i = 0; i < entries.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var e = entries[i];
+            sb.Append("{\"path\":\"");
+            sb.Append(EscapeJsonString(e.RelativePath));
+            sb.Append("\",\"kind\":\"");
+            sb.Append(e.Kind);
+            sb.Append('"');
+            if (e.Size.HasValue)
+            {
+                sb.Append(",\"size\":");
+                sb.Append(e.Size.Value);
+            }
+            sb.Append('}');
+        }
+        sb.Append(']');
+        if (truncated)
+        {
+            sb.Append(",\"truncated\":true");
+        }
+        sb.Append('}');
+        return sb.ToString();
+    }
+
+    private static string EscapeJsonString(string s)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var c in s)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20)
+                    {
+                        sb.AppendFormat("\\u{0:X4}", (int)c);
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private sealed class DirectoryEntry
+    {
+        public string RelativePath { get; }
+        public string Kind { get; }
+        public long? Size { get; }
+
+        public DirectoryEntry(string relativePath, string kind, long? size)
+        {
+            RelativePath = relativePath;
+            Kind = kind;
+            Size = size;
+        }
     }
 }
 

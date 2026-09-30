@@ -23,7 +23,8 @@ public sealed class HostTools
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
-            .Add(new ReadFileTool(boundary));
+            .Add(new ReadFileTool(boundary))
+            .Add(new ListDirectoryTool(boundary));
         if (includeMutationTools)
         {
             catalog = catalog.Add(new FilesystemPatchTool(boundary));
