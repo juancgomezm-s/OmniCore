@@ -91,6 +91,7 @@ public sealed class ProtocolMapper
             ["options"] = string.Join(",", OptionIds(e.OptionsJson)), ["defaultOption"] = e.DefaultOptionId,
             ["subject"] = _redaction.Redact(e.SubjectJson),
             ["questionnaireSchemaHash"] = e.QuestionnaireSchemaRef?.Hash.ToString() ?? "",
+            ["questionnaire"] = QuestionnaireText(e.QuestionnaireSchemaRef),
         },
         InteractionResolved e => new()
         {
@@ -138,6 +139,13 @@ public sealed class ProtocolMapper
         }
 
         return partsJson;
+    }
+
+    private string QuestionnaireText(ArtifactRef? content)
+    {
+        if (content is null || _artifacts is null) return "";
+        try { return _redaction.Redact(_artifacts.GetText(content.Hash) ?? ""); }
+        catch (InvalidDataException) { return ""; }
     }
 
     private string ArtifactText(ArtifactRef? content)

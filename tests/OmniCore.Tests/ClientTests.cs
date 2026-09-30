@@ -131,6 +131,130 @@ public sealed class ClientTests
     }
 
     [Fact]
+    public void Tui_layout_collapses_sidebar_at_configured_breakpoints()
+    {
+        Assert.Equal(TuiLayoutMode.Stacked, TuiLayoutModel.ForWidth(120).Mode);
+        Assert.Equal(40, TuiLayoutModel.ForWidth(120).SidebarWidth);
+        Assert.Equal(TuiLayoutMode.Tabbed, TuiLayoutModel.ForWidth(100).Mode);
+        Assert.Equal(26, TuiLayoutModel.ForWidth(100).SidebarWidth);
+        Assert.Equal(TuiLayoutMode.Overlay, TuiLayoutModel.ForWidth(80, false).Mode);
+        Assert.False(TuiLayoutModel.ForWidth(80, false).SidebarVisible);
+        Assert.True(TuiLayoutModel.ForWidth(80, true).SidebarVisible);
+    }
+
+    [Fact]
+    public void Autocomplete_uses_command_catalog_and_workspace_paths()
+    {
+        var commands = ComposerAutocomplete.Complete("/pla", new[] { "plan", "cancel", "play" }, Array.Empty<string>());
+        Assert.Equal(new[] { "/plan", "/play" }, commands.Select(item => item.Value));
+        var files = ComposerAutocomplete.Complete("@src/", Array.Empty<string>(), new[] { "src/A.cs", "tests/A.cs" });
+        Assert.Equal(new[] { "@src/A.cs" }, files.Select(item => item.Value));
+    }
+
+    [Fact]
+    public void Status_line_never_invents_unknown_quota()
+    {
+        var status = StatusLinePresentation.From(StatusLineModel.Empty());
+        Assert.Equal("—", status.Right);
+    }
+
+    [Fact]
+    public void Deleting_policy_makes_exact_model_require_onboarding_again()
+    {
+        var key = new OmniCore.Host.ModelPolicyKeyDto("local", "model");
+        var host = OmniCore.Host.ModelPolicyHost.Create(
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+            new[] { new OmniCore.Host.ModelRegistryModelDescriptor("model", "local", 4096, 3072, 1024) });
+        Assert.Null(host.Get(key, CancellationToken.None));
+        var draft = host.Draft(key, CancellationToken.None);
+        var setup = ModelPolicySetupModel.From(key.ToString(), draft.RecommendedCategory, draft.Warnings);
+        Assert.Contains(setup.Choices, choice => choice.Category == draft.RecommendedCategory && choice.Recommended);
+        var policy = host.Set(key, 0, "ObserveOnly", null, CancellationToken.None);
+        Assert.NotNull(host.Get(key, CancellationToken.None));
+        host.Delete(key, policy.Revision, CancellationToken.None);
+        Assert.Null(host.Get(key, CancellationToken.None));
+        Assert.Equal("ObserveOnly", host.Draft(key, CancellationToken.None).RecommendedCategory);
+    }
+
+    [Fact]
+    public void Host_autocomplete_query_returns_only_prefix_matched_workspace_files_and_host_commands()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-tui-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "src"));
+        Directory.CreateDirectory(Path.Combine(root, ".git"));
+        File.WriteAllText(Path.Combine(root, "src", "Alpha.cs"), "");
+        File.WriteAllText(Path.Combine(root, "src", "Beta.cs"), "");
+        File.WriteAllText(Path.Combine(root, ".git", "Alpha.secret"), "");
+        try
+        {
+            var server = OmniCore.Host.OmniHost.CreateInMemoryServer();
+            server.ConfigureWorkspaceRoot(root);
+            var commands = server.Query("commands", CancellationToken.None)!.Json;
+            Assert.Contains("explain", commands);
+            var completion = server.Query("complete:src/Al", CancellationToken.None)!.Json;
+            Assert.Contains("src/Alpha.cs", completion);
+            Assert.DoesNotContain("Beta.cs", completion);
+            Assert.DoesNotContain("Alpha.secret", completion);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Questionnaire_factory_builds_the_shared_plain_and_tui_presentation_model()
+    {
+        const string schema = "{\"title\":\"Question\",\"questions\":[{\"id\":\"q\",\"prompt\":\"Pick\",\"kind\":\"SingleChoice\",\"options\":[{\"id\":\"a\",\"label\":\"A\"}],\"other\":{\"optionId\":\"other\",\"label\":\"Otro\",\"textRequired\":true,\"maxTextLength\":20},\"required\":true}]}";
+        var model = QuestionnairePresentationFactory.FromJson(schema);
+        Assert.NotNull(model);
+        Assert.Equal(QuestionnaireQuestionKind.SingleChoice, model!.Questions[0].Kind);
+        Assert.Equal("other", model.Questions[0].Other!.OptionId);
+        Assert.Equal("Enviar", model.SubmitLabel);
+    }
+
+    [Fact]
+    public void Tui_sidebar_host_builds_session_plan_and_files_as_framework_free_models()
+    {
+        var state = ClientState.Empty();
+        var widgets = new SidebarHost(new ISidebarWidget[]
+        {
+            new SessionSidebarWidget(new SessionWidgetData("session", "act")),
+            new PlanSidebarWidget(new PlanWidgetData("PLAN 1/1", new[] { new WidgetRowModel("Work", ThemeRole.Active) })),
+            new ChangedFilesSidebarWidget(new ChangedFileWidgetData(new[] { new WidgetRowModel("M A.cs", ThemeRole.Info) })),
+        }).Build(state, WidgetSize.Normal);
+        Assert.Equal(new[] { "core.session", "core.plan", "core.files" }, widgets.Select(item => item.Widget.Id));
+        Assert.Equal("→", ThemeGlyphs.For(ThemeRole.Active));
+    }
+
+    [Fact]
+    public void Tui_questionnaire_submission_matches_plain_typed_response()
+    {
+        var questionnaire = new QuestionnaireOverlayModel("Preferencias", null,
+            new QuestionnaireQuestionModel[]
+            {
+                new("single", "Una", null, QuestionnaireQuestionKind.SingleChoice,
+                    new[] { new QuestionnaireChoiceModel("a", "A") }, null, true),
+                new("multi", "Varias", null, QuestionnaireQuestionKind.MultipleChoice,
+                    new[] { new QuestionnaireChoiceModel("b", "B"), new QuestionnaireChoiceModel("c", "C") }, null, false),
+                new("text", "Texto", null, QuestionnaireQuestionKind.FreeText,
+                    Array.Empty<QuestionnaireChoiceModel>(), null, false),
+                new("other", "Otro", null, QuestionnaireQuestionKind.SingleChoice,
+                    new[] { new QuestionnaireChoiceModel("yes", "Sí") },
+                    new QuestionnaireOtherModel("other-id", "Otro", null, true, 30), true),
+            }, "Enviar", "Cancelar");
+        var input = new Dictionary<string, QuestionnairePlainFormInput>
+        {
+            ["single"] = new("a"), ["multi"] = new("b c"), ["text"] = new(text: "respuesta"),
+            ["other"] = new("other-id", otherText: "propia"),
+        };
+        var plain = QuestionnairePlainFormParser.Parse(questionnaire, input);
+        var tui = QuestionnaireTuiForm.Submit(questionnaire, input);
+        Assert.True(plain.IsValid);
+        Assert.True(tui.IsValid);
+        Assert.Equal(plain.Response!.Cancelled, tui.Response!.Cancelled);
+        Assert.Equal(plain.Response.Answers.Select(a => (a.QuestionId, string.Join(",", a.SelectedOptionIds), a.Text, a.OtherText)),
+            tui.Response.Answers.Select(a => (a.QuestionId, string.Join(",", a.SelectedOptionIds), a.Text, a.OtherText)));
+    }
+
+    [Fact]
     public void Questionnaire_parser_returns_structured_cancellation_without_answers()
     {
         var questionnaire = new QuestionnaireOverlayModel("Q", null,
