@@ -92,6 +92,7 @@ public sealed class Localization
         ["doctor.status.configured"] = "Estado: modelo configurado ✓",
         ["doctor.status.unconfigured"] = "Estado: sin modelo configurado (ejecuta omni ask para ver la guía)",
         ["scenario.invalid"] = "Escenario inválido: {detail}",
+        ["models.noneConfigured"] = "No hay ningún modelo configurado.",
     };
 
     private static readonly Dictionary<string, string> _en = new()
@@ -133,5 +134,6 @@ public sealed class Localization
         ["doctor.status.configured"] = "Status: model configured ✓",
         ["doctor.status.unconfigured"] = "Status: no model configured (run omni ask for guidance)",
         ["scenario.invalid"] = "Invalid scenario: {detail}",
+        ["models.noneConfigured"] = "No model is configured.",
     };
 }
