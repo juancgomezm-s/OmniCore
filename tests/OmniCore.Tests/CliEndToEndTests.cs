@@ -275,7 +275,7 @@ public sealed class CliEndToEndTests
 
             var help = await Run("--help");
             Assert.Equal(0, help.Code);
-            Assert.Contains("Uso:", help.Output);
+            Assert.Contains("Usage:", help.Output);
             AssertNoLeaks(help.Output);
         }
         finally
