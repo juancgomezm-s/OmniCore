@@ -109,6 +109,7 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
         {
             Add("process.executable", claims.Process.Executable);
             Add("process.effect", claims.Process.EffectClass);
+            Add("process.network", claims.Process.NetworkRequired ? "true" : "false");
             foreach (var arg in claims.Process.Args) Add("process.arg", arg);
         }
         foreach (var value in claims.Secrets.OrderBy(v => v, StringComparer.Ordinal)) Add("secret", value);

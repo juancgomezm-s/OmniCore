@@ -19,7 +19,7 @@ public sealed class HostTools
     private readonly PlanProposeTool _planPropose;
 
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
-        bool includeMutationTools = false)
+        bool includeMutationTools = false, bool includeProcessTools = false)
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
@@ -28,6 +28,12 @@ public sealed class HostTools
         if (includeMutationTools)
         {
             catalog = catalog.Add(new FilesystemPatchTool(boundary));
+        }
+        if (includeProcessTools)
+        {
+            var processes = SystemProcessRuntime.Instance();
+            catalog = catalog.Add(new ProcessExecTool(processes, boundary))
+                .Add(new ShellExecTool(processes, boundary));
         }
 
         _catalog = catalog
@@ -48,7 +54,7 @@ public sealed class HostTools
 
     public static HostTools Explorer() =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
-            includeMutationTools: false);
+            includeMutationTools: false, includeProcessTools: false);
 
     public FakeCatalog Catalog() => _catalog;
 

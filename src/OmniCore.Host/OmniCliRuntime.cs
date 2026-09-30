@@ -8,6 +8,7 @@ using OmniCore.Models;
 using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
+using System.Text.Json;
 
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
 public sealed class OmniCliRuntime
@@ -307,8 +308,12 @@ public sealed class OmniCliRuntime
                 executingAct ? RunMode.Act : RunMode.Plan);
             var workspaceRoot = _workspaceRoot;
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
+            var audit = new FileAuditSink(paths.DataDirectory);
+            var interactive = !Console.IsInputRedirected;
+            var interactionResponder = CreateInteractionResponder(writeLine, locale);
             var executor = executingAct
-                ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId)
+                ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
+                    audit, interactionResponder, interactive)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId);
             var contributors = executingAct
                 ? Array.Empty<IContextContributor>()
@@ -317,7 +322,7 @@ public sealed class OmniCliRuntime
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             var turn = new ExplorerTurn((request, token) => provider.Complete(request, token), executor,
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
-                server.AcquireCodecs(), artifacts, new InMemoryAuditSink(), new RedactionPolicy(), harness, boundary,
+                server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
                 loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey);
             var instruction = executingAct
                 ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
@@ -361,10 +366,10 @@ public sealed class OmniCliRuntime
                 {
                     var actTools = OmniHost.CreateActTools();
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
-                        boundary, restrictions, runId);
+                        boundary, restrictions, runId, audit, interactionResponder, interactive);
                     var actTurn = new ExplorerTurn((request, token) => provider.Complete(request, token),
                         actExecutor, actTools.Catalog(), materializer, fingerprint, selection,
-                        server.AcquireStore(), server.AcquireCodecs(), artifacts, new InMemoryAuditSink(),
+                        server.AcquireStore(), server.AcquireCodecs(), artifacts, audit,
                         new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
                         providerDescription?.Auth.Kind == AuthKind.ApiKey);
                     var approvedState = ReadWorkingState(server, cancellationToken);
@@ -400,6 +405,46 @@ public sealed class OmniCliRuntime
             return 1;
         }
     }
+
+    private Func<InteractionRequested, string?> CreateInteractionResponder(Action<string> writeLine, string locale) => request =>
+    {
+        if (Console.IsInputRedirected) return null;
+        var titleKey = request.Kind == InteractionKind.WeakSandboxConsent
+            ? "interaction.weak_sandbox.title" : "interaction.permission.title";
+        writeLine(Text(LocalizedText.Of(titleKey)));
+        if (request.Kind == InteractionKind.WeakSandboxConsent)
+            writeLine(Text(LocalizedText.Of("interaction.weak_sandbox.warning")));
+        var choices = new List<(string Id, string Label)>();
+        try
+        {
+            using var document = JsonDocument.Parse(request.OptionsJson);
+            foreach (var option in document.RootElement.EnumerateArray())
+            {
+                var id = option.GetProperty("id").GetString();
+                if (string.IsNullOrEmpty(id)) continue;
+                var key = id switch
+                {
+                    "consent_once" => "interaction.weak_sandbox.once",
+                    "consent_run" => "interaction.weak_sandbox.run",
+                    "allow_once" => "interaction.permission.allow_once",
+                    "allow_run" => "interaction.permission.allow_run",
+                    "allow_workspace" => "interaction.permission.allow_workspace",
+                    _ => request.Kind == InteractionKind.WeakSandboxConsent
+                        ? "interaction.weak_sandbox.deny" : "interaction.permission.deny",
+                };
+                choices.Add((id, Text(LocalizedText.Of(key))));
+            }
+        }
+        catch (JsonException) { return request.DefaultOptionId; }
+        for (var index = 0; index < choices.Count; index++)
+            writeLine("[" + (index + 1) + "] " + choices[index].Label);
+        writeLine(locale == "en" ? "Choose an option (default: deny): " : "Elige una opción (por defecto: denegar): ");
+        var input = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(input)) return request.DefaultOptionId;
+        if (int.TryParse(input, out var choice) && choice >= 1 && choice <= choices.Count)
+            return choices[choice - 1].Id;
+        return choices.FirstOrDefault(choice => choice.Id == input).Id ?? request.DefaultOptionId;
+    };
 
     private string? ReadPlanApprovalOption(Action<string> writeLine, string locale)
     {

@@ -147,6 +147,31 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
             or "profile" or "mode-defaults");
     }
 
+    /// <summary>Clasificación estructurada del ejecutable resuelto y argv; nunca analiza shell.</summary>
+    private static string ClassifyStructuredProcess(ProcessClaim process)
+    {
+        var name = Path.GetFileName(process.Executable);
+        if (OperatingSystem.IsWindows() && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            name = name[..^4];
+        var first = process.Args.Count == 0 ? string.Empty : process.Args[0];
+        if ((name.Equals("dotnet", StringComparison.OrdinalIgnoreCase)
+                && first is "--version" or "--info")
+            || (name.Equals("git", StringComparison.OrdinalIgnoreCase)
+                && first is "status" or "diff" or "log"))
+            return "Observational";
+        if ((name.Equals("dotnet", StringComparison.OrdinalIgnoreCase)
+                && first is "build" or "test" or "restore")
+            || (name.Equals("npm", StringComparison.OrdinalIgnoreCase)
+                && (first is "test" or "build" or "install"
+                    || first == "run" && process.Args.Count > 1 && process.Args[1] is "test" or "build"))
+            || (name.Equals("pnpm", StringComparison.OrdinalIgnoreCase)
+                && (first is "test" or "build" or "install"
+                    || first == "run" && process.Args.Count > 1 && process.Args[1] is "test" or "build"))
+            || process.EffectClass is "Rerunnable" or "WorkspaceEffect")
+            return "WorkspaceEffect";
+        return process.EffectClass == "Observational" ? "Observational" : "External";
+    }
+
     private static PermissionDecision Min(PermissionDecision a, PermissionDecision b)
     {
         if (a == PermissionDecision.Deny || b == PermissionDecision.Deny) return PermissionDecision.Deny;
@@ -188,7 +213,10 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
 
         if (claims.Process is not null)
         {
-            return claims.Process.EffectClass switch
+            var processKind = ClassifyStructuredProcess(claims.Process);
+            if (claims.Process.NetworkRequired && processKind is not ("WorkspaceEffect" or "Rerunnable"))
+                return PermissionResource.OtherNetwork;
+            return processKind switch
             {
                 "Observational" => PermissionResource.ObservationalProcess,
                 "Rerunnable" or "WorkspaceEffect" => PermissionResource.BuildTestProcess,

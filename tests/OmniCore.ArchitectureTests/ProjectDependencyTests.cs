@@ -65,6 +65,19 @@ public sealed class ProjectDependencyTests
     }
 
     [Fact]
+    public void Sandbox_has_no_OmniCore_assembly_or_package_references()
+    {
+        var project = XDocument.Load(SourceProjects()["OmniCore.Sandbox"]);
+        var references = project.Descendants("Reference")
+            .Select(element => (string?)element.Attribute("Include") ?? string.Empty)
+            .Concat(project.Descendants("PackageReference")
+                .Select(element => (string?)element.Attribute("Include") ?? string.Empty))
+            .Where(value => value.StartsWith("OmniCore.", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        Assert.Empty(references);
+    }
+
+    [Fact]
     public void Every_declared_boundary_has_a_project()
     {
         var missing = Allowed.Keys.Except(SourceProjects().Keys, StringComparer.Ordinal).ToArray();
