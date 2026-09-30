@@ -448,10 +448,12 @@ public sealed class M2IntegrationTests
         var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
         var selection = new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null);
         var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
+        var artifactPath = Path.Combine(TestCwd, ".omnicore-turn-artifacts");
+        var artifacts = new FileArtifactStore(artifactPath);
         var turn = new ExplorerTurn(
             (request, token) => FakeResponses.ToolThenText(request),
             executor, hostTools.Catalog(), materializer, fingerprint, selection,
-            store, codecs, new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-turn-artifacts")),
+            store, codecs, artifacts,
             new InMemoryAuditSink(), new RedactionPolicy());
         var sessionId = SessionId.New();
         var runId = TestRun.OpenRun(store, sessionId);
@@ -477,7 +479,14 @@ public sealed class M2IntegrationTests
         var startedPayload = Assert.IsType<TurnStarted>(codecs.Decode(startedEvent));
         Assert.NotNull(startedPayload.Fingerprint);
         Assert.Equal(fingerprint.Hash(), startedPayload.Fingerprint!.Hash());
-        Assert.True(types.Contains("turn.completed"), "turn.completed? types=" + string.Join(",", types));
+        Assert.Equal(startedPayload.Fingerprint.Hash(), Assert.IsType<TurnStarted>(codecs.Decode(startedEvent)).Fingerprint!.Hash());
+        Assert.NotNull(startedPayload.ContextSnapshotRef);
+        Assert.Equal(ArtifactKind.ContextSnapshot, startedPayload.ContextSnapshotRef!.Kind);
+        var snapshotJson = artifacts.GetText(startedPayload.ContextSnapshotRef.Hash);
+        Assert.NotNull(snapshotJson);
+        Assert.Contains("working-state", snapshotJson!);
+        Assert.Contains("session-conversation", snapshotJson!);
+        Assert.True(types.Contains("turn.completed"),  "turn.completed? types=" + string.Join(",", types));
         Assert.True(types.Contains("toolcall.requested"), "requested? types=" + string.Join(",", types));
         Assert.True(types.Contains("toolcall.prepared"), "prepared? types=" + string.Join(",", types));
         Assert.True(types.Contains("toolcall.permission_evaluated"), "perm_eval? types=" + string.Join(",", types));
@@ -500,7 +509,7 @@ public sealed class M2IntegrationTests
         }
 
         TryDelete(journal);
-        TryDeleteFiles(TestCwd, ".omnicore-turn-artifacts");
+        TryDeleteFiles(TestCwd, Path.GetFileName(artifactPath));
     }
 
     [Fact]
@@ -862,8 +871,7 @@ public sealed class M2IntegrationTests
     [Fact]
     public async System.Threading.Tasks.Task Context_overlow_pinned_greater_than_budget_flows()
     {
-        // Requisito 6: WorkingState pinned MAYOR al presupuesto produce producción de
-        // ContextOverflow (snapshot.Overflowed), nunca un snapshot por encima del límite.
+        // WorkingState protegido permanece íntegro incluso cuando su coste excede el límite.
         var counter = new FakeTokenCounter();
         var big = new string[1] { "" };
         var hugeWorkingState = new string[1000];
@@ -880,12 +888,51 @@ public sealed class M2IntegrationTests
         var request = new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 1,
             new ExecutionFingerprint("k", "h", "t", "c", "o", "M2"));
 
-        // Presupuesto menor que el WorkingState (que es pinned y va primero).
+        // Presupuesto menor que el WorkingState protegido, que permanece íntegro.
         var snapshot = materializer.MaterializeWithinBudget(request, CancellationToken.None, 10);
 
-        Assert.True(snapshot.Overflowed, "WorkingState pinned mayor al presupuesto → ContextOverflow");
-        Assert.True(snapshot.TokenCount <= 10, "Nunca un snapshot por encima del límite (real " + snapshot.TokenCount + ")");
-        Assert.True(snapshot.Items.Count >= 1, "El WorkingState truncado permanece (items " + snapshot.Items.Count + ")");
+        Assert.True(snapshot.Overflowed, "WorkingState protegido mayor al presupuesto → ContextOverflow");
+        Assert.True(snapshot.TokenCount > 10, "El contenido protegido no se trunca para fingir que cabe");
+        Assert.Equal(big[0], snapshot.Items.Single().Content);
+    }
+
+    [Fact]
+    public void Context_budget_trims_oldest_conversation_first_and_keeps_working_state_last()
+    {
+        var entries = new[]
+        {
+            new ConversationContextEntry("conversation-0", ContextItemKind.UserMessage, "first run input", true),
+            new ConversationContextEntry("conversation-1", ContextItemKind.UserMessage, "oldest old input"),
+            new ConversationContextEntry("conversation-2", ContextItemKind.AssistantMessage, "old assistant answer"),
+            new ConversationContextEntry("conversation-3", ContextItemKind.ToolResult, "recent tool result"),
+            new ConversationContextEntry("conversation-4", ContextItemKind.UserMessage, "current input"),
+        };
+        var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[] {
+            new SystemPromptContributor("system"),
+            new SessionConversationContributor(entries),
+            new WorkingStateContributor("working state"),
+        });
+        var request = new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 1,
+            new ExecutionFingerprint("model", "harness", "tools", "context", "overrides", "build"));
+
+        // Coste total 17; al límite 11 se omiten los dos items conversacionales más antiguos.
+        var snapshot = materializer.MaterializeWithinBudget(request, CancellationToken.None, 11);
+
+        Assert.False(snapshot.Overflowed);
+        Assert.True(snapshot.TokenCount <= 11);
+        Assert.Equal("working-state", snapshot.Items[^1].Id);
+        Assert.Contains(snapshot.Items, item => item.Id == "system-prompt");
+        Assert.Contains(snapshot.Items, item => item.Id == "conversation-0");
+        Assert.DoesNotContain(snapshot.Items, item => item.Id == "conversation-1");
+        Assert.DoesNotContain(snapshot.Items, item => item.Id == "conversation-2");
+        Assert.Contains(snapshot.Items, item => item.Id == "conversation-3");
+        var omissions = snapshot.Diagnostics.Where(d => d.Decision == ContextDecision.OmittedByBudget).ToArray();
+        Assert.Equal(new[] { "conversation-1", "conversation-2" }, omissions.Select(d => d.ItemId));
+        Assert.All(omissions, diagnostic =>
+        {
+            Assert.Equal(ContributionCategory.Conversation, diagnostic.Provenance.Category);
+            Assert.Equal("session-conversation", diagnostic.Provenance.ContributorId);
+        });
     }
 
     [Fact]
