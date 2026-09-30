@@ -115,14 +115,139 @@ public sealed class PendingTaskGate
             }
         }
 
-        return missing.Count == 0 ? GateResult.Ok() : GateResult.Fail(string.Join(", ", ObjectConversions.Strings(missing)));
+        return missing.Count == 0 ? GateResult.Ok() : GateResult.Fail(string.Join(", ", missing));
     }
 }
 
-/// <summary>Conversiones utilitarias de colecciones.</summary>
-public sealed class ObjectConversions
+/// <summary>
+/// Lane Completion Pipeline (ADR-0016 §10, ADR-0035 §5, EPIC-007): antes de marcar una Lane como
+/// <c>Completed</c> pasan los gates de Lane. Los mínimos, todos estructurales:
+/// <list type="bullet">
+/// <item><b>ToolCalls</b>: ninguna ToolCall de la Lane sin resolver. Terminal es
+/// <c>Succeeded</c>, <c>Failed</c>, <c>Rejected</c>, <c>Cancelled</c> o <c>Reconciled</c>;
+/// <c>EffectUnknown</c> sigue siendo intermedio (ADR-0004 §2).</item>
+/// <item><b>Turns</b>: ningún Turn de la Lane abierto (<c>Started</c> o <c>ModelCompleted</c>).</item>
+/// <item><b>Task</b>: la Task de la Lane está en vuelo (<c>Running</c> o <c>Blocked</c>), nunca
+/// terminal ni sin empezar: el cierre de la Lane tiene que ser coherente con su Task.</item>
+/// </list>
+/// <para>Los eventos de ToolCall no llevan Lane ni Turn, así que la pertenencia se atribuye por el
+/// journal: una ToolCall pertenece a la Lane si se pidió con un Turn de esa Lane abierto (pipeline
+/// real) o si se pidió sin ningún Turn abierto y el Turn que la envuelve llega después (el journal
+/// de la simulación escribe la cadena antes del <c>TurnStarted</c>).</para>
+/// <para>Si un gate falla, la Lane NO se completa y se queda <c>Running</c>. ADR-0016 §10 y
+/// ADR-0036 §3 no definen ningún evento de rechazo a nivel de Lane (la actividad
+/// <c>Validating</c> de una Lane es derivada y no se persiste, INV-027): el rechazo se expresa con
+/// el evento que sí existe, <c>RunValidationRejected</c>, en la validación del Run.</para>
+/// </summary>
+public sealed class LaneCompletionPipeline
 {
-    public static IReadOnlyList<string> Strings(IReadOnlyList<string> source) => source;
+    /// <summary>
+    /// Ejecuta los gates de Lane sobre el journal tal cual está: devuelve qué falta para que la
+    /// Lane pueda completarse (los estados canónicos salen de <see cref="CanonicalStateTracker"/>).
+    /// </summary>
+    public GateResult Check(IEventCodecRegistry codecs, IReadOnlyList<DomainEvent> events, LaneId lane)
+    {
+        ArgumentNullException.ThrowIfNull(codecs);
+        ArgumentNullException.ThrowIfNull(events);
+        ArgumentNullException.ThrowIfNull(lane);
+
+        var tracker = CanonicalStateTracker.Replay(codecs, events);
+
+        var laneTask = (TaskId?)null;
+        var turns = new HashSet<TurnId>();                       // Turns de esta Lane
+        var calls = new HashSet<ToolCallId>();                  // ToolCalls de esta Lane
+        var unattributed = new HashSet<ToolCallId>();            // pedidas sin Turn abierto
+        var openTurnLane = new Dictionary<TurnId, LaneId>();     // Turns abiertos y su Lane
+        foreach (var evt in events)
+        {
+            switch (codecs.Decode(evt))
+            {
+                case LaneCreated created when created.LaneId.Equals(lane):
+                    laneTask = created.TaskId;
+                    break;
+                case TurnStarted started:
+                    openTurnLane[started.TurnId] = started.LaneId;
+                    if (started.LaneId.Equals(lane))
+                    {
+                        turns.Add(started.TurnId);
+
+                        // La cadena escrita antes del Turn pertenece al Turn que la envuelve.
+                        calls.UnionWith(unattributed);
+                    }
+
+                    unattributed.Clear();
+                    break;
+                case TurnCompleted completed:
+                    openTurnLane.Remove(completed.TurnId);
+                    break;
+                case TurnInterrupted interrupted:
+                    openTurnLane.Remove(interrupted.TurnId);
+                    break;
+                case TurnAbandoned abandoned:
+                    openTurnLane.Remove(abandoned.TurnId);
+                    break;
+                case ToolCallRequested requested:
+                    if (openTurnLane.Values.Any(owner => owner.Equals(lane)))
+                    {
+                        calls.Add(requested.ToolCallId); // pedida con un Turn de esta Lane abierto
+                    }
+                    else if (openTurnLane.Count == 0)
+                    {
+                        unattributed.Add(requested.ToolCallId); // espera al Turn que la envuelve
+                    }
+
+                    break;
+            }
+        }
+
+        if (laneTask is not { } task)
+        {
+            return GateResult.Fail("Lane " + lane + " no existe en el journal");
+        }
+
+        var laneState = tracker.Lane(lane);
+        if (laneState != LaneState.Running)
+        {
+            return GateResult.Fail("Lane " + lane + " en " + (laneState?.ToString() ?? "inexistente")
+                + ": solo una Lane Running pasa los gates");
+        }
+
+        var missing = new List<string>();
+
+        // Gate de ToolCalls: ninguna sin resolver (ADR-0004 §2).
+        foreach (var call in calls)
+        {
+            var state = tracker.ToolCall(call) ?? ToolCallState.Requested;
+            if (!IsToolCallTerminal(state))
+            {
+                missing.Add("ToolCall " + call + " de la Lane en " + state);
+            }
+        }
+
+        // Gate de Turns: ninguno abierto.
+        foreach (var turn in turns)
+        {
+            var state = tracker.Turn(turn) ?? TurnState.Started;
+            if (state is TurnState.Started or TurnState.ModelCompleted)
+            {
+                missing.Add("Turn " + turn + " de la Lane abierto (" + state + ")");
+            }
+        }
+
+        // Gate de Task: su resultado tiene que poder aceptar el cierre de la Lane.
+        var taskState = tracker.Task(task);
+        if (taskState is not (TaskState.Running or TaskState.Blocked))
+        {
+            missing.Add("Task " + task + " de la Lane en " + (taskState?.ToString() ?? "inexistente"));
+        }
+
+        return missing.Count == 0 ? GateResult.Ok() : GateResult.Fail(string.Join(", ", missing));
+    }
+
+    /// <summary>Terminal del ciclo durable de una ToolCall (ADR-0004 §2): <c>EffectUnknown</c> aún no lo es.</summary>
+    private static bool IsToolCallTerminal(ToolCallState state) => state is
+        ToolCallState.Succeeded or ToolCallState.Failed or ToolCallState.Rejected
+        or ToolCallState.Cancelled or ToolCallState.Reconciled;
 }
 
 /// <summary>
