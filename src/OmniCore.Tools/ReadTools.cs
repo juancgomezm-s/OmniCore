@@ -399,6 +399,25 @@ public sealed class ListDirectoryTool : ITool
             if (SecretPathGuard.IsSecretTarget(_boundary, fullEntryPath, workspaceRoot))
                 continue;
 
+            // Un enlace (symlink o junction) solo se lista si su destino físico sigue dentro del
+            // workspace, y nunca se recorre: evita salir de la frontera y los ciclos.
+            var isLink = entry.LinkTarget is not null || entry.Attributes.HasFlag(FileAttributes.ReparsePoint);
+            if (isLink)
+            {
+                string? target;
+                try
+                {
+                    target = entry.ResolveLinkTarget(returnFinalTarget: true)?.FullName;
+                }
+                catch (IOException)
+                {
+                    target = null;
+                }
+
+                if (target is null || !_boundary.IsWithin(target, workspaceRoot))
+                    continue;
+            }
+
             if (entry is FileInfo fileInfo)
             {
                 entries.Add(new DirectoryEntry(relPath.Replace("\\", "/"), "file", fileInfo.Length));
@@ -406,7 +425,7 @@ public sealed class ListDirectoryTool : ITool
             else if (entry is DirectoryInfo dirInfoEntry)
             {
                 entries.Add(new DirectoryEntry(relPath.Replace("\\", "/"), "dir", null));
-                if (recursive)
+                if (recursive && !isLink)
                 {
                     CollectEntries(fullEntryPath, workspaceRoot, relPath, recursive, entries, maxEntries, ref truncated);
                 }
