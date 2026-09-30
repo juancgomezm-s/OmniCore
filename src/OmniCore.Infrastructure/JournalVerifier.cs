@@ -526,13 +526,13 @@ public sealed class JournalVerifier
             return;
         }
 
-        // El payload persistido debe ser el JSON canónico del objeto que decodifica: el runtime
-        // SIEMPRE persiste payloads via codecs (ADR-0013 §2) y la redacción ocurre ANTES de
-        // persistir (ADR-0018 §4), así que lo almacenado ya ES la forma canónica. Un payload
-        // mutado o de otro tipo decodifica de forma leniente (nulls) y re-serializa distinto:
-        // se detecta comparando contra el re-encode canónico, sin metadatos por evento.
+        // Compare the decoded payload with its canonical encoding structurally, not as raw text.
+        // EventStream's mandatory redaction pass rewrites JSON string escaping (for example,
+        // DateTimeOffset's '+' may become \\u002B) even when no value is redacted. Escapes and
+        // whitespace do not alter JSON meaning; property order, array order, scalar kinds and
+        // exact number lexemes remain checked so mutations still fail closed.
         var canonical = codec.Encode(payload);
-        if (!string.Equals(canonical, row.Payload, StringComparison.Ordinal))
+        if (!PayloadJsonEquivalent(canonical, row.Payload ?? ""))
         {
             result.Add(scan, row, JournalIssueCode.PayloadTampered, "payload",
                 "el payload persistido no es el JSON canónico de '" + row.EventType
@@ -747,6 +747,50 @@ public sealed class JournalVerifier
     }
 
     // ---- Validaciones de formato, contra los mismos contratos del escritor.
+
+    private static bool PayloadJsonEquivalent(string left, string right)
+    {
+        try
+        {
+            using var expected = System.Text.Json.JsonDocument.Parse(left);
+            using var actual = System.Text.Json.JsonDocument.Parse(right);
+            return Equivalent(expected.RootElement, actual.RootElement);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+
+        static bool Equivalent(System.Text.Json.JsonElement expected, System.Text.Json.JsonElement actual)
+        {
+            if (expected.ValueKind != actual.ValueKind) return false;
+            switch (expected.ValueKind)
+            {
+                case System.Text.Json.JsonValueKind.Object:
+                    var expectedProperties = expected.EnumerateObject().ToArray();
+                    var actualProperties = actual.EnumerateObject().ToArray();
+                    if (expectedProperties.Length != actualProperties.Length) return false;
+                    for (var index = 0; index < expectedProperties.Length; index++)
+                        if (!string.Equals(expectedProperties[index].Name, actualProperties[index].Name,
+                                StringComparison.Ordinal)
+                            || !Equivalent(expectedProperties[index].Value, actualProperties[index].Value))
+                            return false;
+                    return true;
+                case System.Text.Json.JsonValueKind.Array:
+                    var expectedItems = expected.EnumerateArray().ToArray();
+                    var actualItems = actual.EnumerateArray().ToArray();
+                    return expectedItems.Length == actualItems.Length
+                        && expectedItems.Zip(actualItems).All(pair => Equivalent(pair.First, pair.Second));
+                case System.Text.Json.JsonValueKind.String:
+                    return string.Equals(expected.GetString(), actual.GetString(), StringComparison.Ordinal);
+                case System.Text.Json.JsonValueKind.Number:
+                    return string.Equals(expected.GetRawText(), actual.GetRawText(), StringComparison.Ordinal);
+                case System.Text.Json.JsonValueKind.True:
+                case System.Text.Json.JsonValueKind.False:
+                case System.Text.Json.JsonValueKind.Null:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+    }
 
     private static bool IsGuid(string? text)
     {
