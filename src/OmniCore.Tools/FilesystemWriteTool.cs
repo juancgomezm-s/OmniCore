@@ -175,68 +175,74 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     /// </summary>
 #pragma warning disable CS0649
     internal Action<string, string>? TestFailureHook;
+
+    internal Action<string, string>? TestAfterPublishHook;
 #pragma warning restore CS0649
 
-    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+    public async Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var (path, expectedVersion, content) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("No se pudo interpretar el JSON de argumentos del write"));
+            return ToolResult.Error("No se pudo interpretar el JSON de argumentos del write");
         }
 
         if (path.Length == 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'path' en los argumentos"));
+            return ToolResult.Error("Falta 'path' en los argumentos");
         }
 
         if (content is null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'content' en los argumentos"));
+            return ToolResult.Error("Falta 'content' en los argumentos");
         }
 
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+            return ToolResult.Error("Ruta fuera del workspace");
         }
 
         // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
         if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
-                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
+            return ToolResult.Error(
+                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)");
         }
 
         // Un write opera sobre un ARCHIVO: una ruta que nombra un directorio (existente o con
         // grafía de directorio) nunca es un destino válido.
         if (Directory.Exists(full) || Path.GetFileName(full).Length == 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("La ruta es un directorio, no un archivo: " + path));
+            return ToolResult.Error("La ruta es un directorio, no un archivo: " + path);
         }
 
         var ledger = context.ReadRegistry?.Ledger;
 
         if (File.Exists(full))
         {
-            return ReplaceFile(path, full, expectedVersion, content!, ledger, intent, context);
+            return await ReplaceFile(path, full, expectedVersion, content!, ledger, intent, context,
+                cancellationToken).ConfigureAwait(false);
         }
 
-        return CreateFile(path, full, content!, ledger, intent, context);
+        return await CreateFile(path, full, content!, ledger, intent, context, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>REEMPLAZO de un archivo existente: token obligatorio + STALE_WRITE + política de mutación.</summary>
-    private Task<ToolResult> ReplaceFile(string path, string full, string? expectedVersion, string content,
-        MutationLedger? ledger, AuthorizedToolIntent intent, ToolExecutionContext context)
+    private async Task<ToolResult> ReplaceFile(string path, string full, string? expectedVersion, string content,
+        MutationLedger? ledger, AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
     {
         // El reemplazo completo exige SIEMPRE el token de versión (ADR-0044 §5): es la única
         // defensa contra pisar un estado que el modelo no vio.
         if (expectedVersion is null || expectedVersion.Length == 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+            return ToolResult.Error(
                 "Falta 'expectedVersion': el token de versión es obligatorio para reemplazar un archivo existente (ADR-0044 §5). "
-                + "Lee el archivo y usa el token [version:…], o usa filesystem.patch para un cambio localizado."));
+                + "Lee el archivo y usa el token [version:…], o usa filesystem.patch para un cambio localizado.");
         }
 
         // ADR-0044 §5 (RequirePriorRead): lectura previa EFECTIVA del MISMO path/version en este
@@ -245,19 +251,20 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         if (context.ReadRegistry is not null && (ledger?.MutationPolicy?.RequirePriorRead ?? true)
             && !context.ReadRegistry.Matches(path, expectedVersion))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+            return ToolResult.Error(
                 "PRIOR_READ_REQUIRED: no se puede reemplazar " + path
                 + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
-                + " Lee el archivo y usa el token [version:…] que la lectura devuelva."));
+                + " Lee el archivo y usa el token [version:…] que la lectura devuelva.");
         }
 
         // Se opera sobre los BYTES REALES: token SHA-256 del contenido vigente, encoding
         // detectado y conservado al reescribir (ADR-0044 §5).
-        var bytes = File.ReadAllBytes(full);
+        cancellationToken.ThrowIfCancellationRequested();
+        var bytes = await File.ReadAllBytesAsync(full, cancellationToken).ConfigureAwait(false);
         var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion != actualVersion)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(FileVersion.StaleWriteMessage(actualVersion)));
+            return ToolResult.Error(FileVersion.StaleWriteMessage(actualVersion));
         }
 
         FileVersion.DecodedFile decoded;
@@ -268,19 +275,19 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         catch (UnsupportedEncodingException ex)
         {
             // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ex.Message));
+            return ToolResult.Error(ex.Message);
         }
 
         if (decoded.Text == content)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
-                "El contenido es idéntico al actual: no hay cambio que aplicar (un reemplazo sin cambio no es un efecto válido)"));
+            return ToolResult.Error(
+                "El contenido es idéntico al actual: no hay cambio que aplicar (un reemplazo sin cambio no es un efecto válido)");
         }
 
         if (content.Length == 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
-                "No se permite vaciar un archivo existente con filesystem.write: conserva contenido o usa filesystem.patch"));
+            return ToolResult.Error(
+                "No se permite vaciar un archivo existente con filesystem.write: conserva contenido o usa filesystem.patch");
         }
 
         // Presupuesto de la política (ADR-0044 §5) ANTES de escribir nada: modo (el reemplazo
@@ -291,19 +298,20 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             deleted, inserted, originalLines);
         if (refusal is not null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(refusal));
+            return ToolResult.Error(refusal);
         }
 
         var newBytes = FileVersion.Encode(content, decoded.Encoding);
-        return Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: false,
-            deletedLines: deleted, insertedLines: inserted,
+        return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: false,
+            expectedVersion, deletedLines: deleted, insertedLines: inserted,
             summaryPrefix: "Archivo reemplazado: " + path + " (" + originalLines + "→"
-                + FileVersion.CountLines(content) + " líneas)");
+                + FileVersion.CountLines(content) + " líneas)", cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>CREACIÓN de un archivo nuevo (directorios padre incluidos), UTF-8 sin BOM.</summary>
-    private Task<ToolResult> CreateFile(string path, string full, string content,
-        MutationLedger? ledger, AuthorizedToolIntent intent, ToolExecutionContext context)
+    private async Task<ToolResult> CreateFile(string path, string full, string content,
+        MutationLedger? ledger, AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
     {
         // Presupuesto de la política (ADR-0044 §5) ANTES de escribir nada: modo (la creación
         // exige al menos PatchAndCreate) y archivos/líneas por Turn. Una creación no reescribe
@@ -313,12 +321,14 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             deletedLines: 0, insertedLines: lines, originalLines: 0);
         if (refusal is not null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(refusal));
+            return ToolResult.Error(refusal);
         }
 
         var newBytes = FileVersion.Encode(content, FileVersion.FileEncoding.Utf8NoBom);
-        return Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: true,
-            deletedLines: 0, insertedLines: lines, summaryPrefix: "Archivo creado: " + path + " (" + lines + " líneas)");
+        return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: true,
+            expectedVersion: null, deletedLines: 0, insertedLines: lines,
+            summaryPrefix: "Archivo creado: " + path + " (" + lines + " líneas)", cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -328,9 +338,9 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     /// ausente justo antes de publicar (TOCTOU): si apareció, se niega sin pisarlo. La
     /// contabilidad del ledger SOLO se actualiza tras publicar con éxito.
     /// </summary>
-    private Task<ToolResult> Publish(string path, string full, byte[] newBytes, MutationLedger? ledger,
-        AuthorizedToolIntent intent, string workspaceRoot, bool created, int deletedLines, int insertedLines,
-        string summaryPrefix)
+    private async Task<ToolResult> Publish(string path, string full, byte[] newBytes, MutationLedger? ledger,
+        AuthorizedToolIntent intent, string workspaceRoot, bool created, string? expectedVersion,
+        int deletedLines, int insertedLines, string summaryPrefix, CancellationToken cancellationToken)
     {
         var tempPath = Path.Combine(
             Path.GetDirectoryName(full)!,
@@ -339,54 +349,112 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // symlink/junction hacia fuera del workspace).
         if (!_boundary.IsWithin(tempPath, workspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Temporal fuera del workspace"));
+            return ToolResult.Error("Temporal fuera del workspace");
         }
 
         var createdTemp = false;
         try
         {
             // Directorios padre: la creación puede anidar bajo un árbol aún inexistente.
+            cancellationToken.ThrowIfCancellationRequested();
             var parent = Path.GetDirectoryName(full);
             if (!string.IsNullOrEmpty(parent) && !Directory.Exists(parent))
             {
                 Directory.CreateDirectory(parent);
             }
 
-            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
-                FileShare.None, 4096, FileOptions.WriteThrough))
+            cancellationToken.ThrowIfCancellationRequested();
+            await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
                 createdTemp = true;
-                stream.Write(newBytes);
+                await stream.WriteAsync(newBytes, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
 
             // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
             if (!_boundary.IsWithin(full, workspaceRoot))
             {
-                return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)"));
+                return ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)");
             }
 
-            if (created && File.Exists(full))
-            {
-                // TOCTOU de creación: el archivo apareció entre la verificación y la publicación.
-                // No se pisa: el modelo debe releer y decidir (reemplazo o patch).
-                return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
-                    "El archivo ya existe (apareció tras verificar su ausencia): no se escribió nada. Reléelo y usa expectedVersion para reemplazarlo."));
-            }
-
-            // Costura de test: fallo determinista DESPUÉS de escribir el temporal y antes de
-            // publicar, para forzar el camino de fallo (original intacto + temporal limpio).
+            // Costura de test: permite que otro actor modifique el destino justo antes del
+            // compare-and-publish protegido (o cancelar antes del commit).
             TestFailureHook?.Invoke(tempPath, full);
 
-            File.Move(tempPath, full, overwrite: !created);
+            // El commit barrier está en el lock por ruta: el re-chequeo final y el rename quedan
+            // serializados entre writers cooperantes. No hay API portable de rename condicional
+            // por hash; un writer no cooperante aún puede cambiar el destino entre el hash y move.
+            using (FilePublishLock.Acquire(full, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (created)
+                {
+                    if (File.Exists(full))
+                    {
+                        return ToolResult.Error(
+                            "El archivo ya existe (apareció tras verificar su ausencia): no se escribió nada. Reléelo y usa expectedVersion para reemplazarlo.");
+                    }
+                }
+                else
+                {
+                    if (!File.Exists(full))
+                    {
+                        return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                    }
+
+                    byte[] currentBytes;
+                    try
+                    {
+                        currentBytes = File.ReadAllBytes(full);
+                    }
+                    catch (FileNotFoundException)
+                    {
+                        return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                    }
+                    catch (DirectoryNotFoundException)
+                    {
+                        return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                    }
+
+                    var currentVersion = FileVersion.VersionToken(currentBytes);
+                    if (expectedVersion != currentVersion)
+                    {
+                        return ToolResult.Error(FileVersion.StaleWriteMessage(currentVersion));
+                    }
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                if (created)
+                {
+                    File.Move(tempPath, full, overwrite: false);
+                }
+                else if (OperatingSystem.IsWindows())
+                {
+                    // File.Replace publishes by an atomic filesystem replacement on Windows.
+                    // It cannot condition the replacement on the hash just checked above.
+                    File.Replace(tempPath, full, destinationBackupFileName: null);
+                }
+                else
+                {
+                    File.Move(tempPath, full, overwrite: true);
+                }
+
+                TestAfterPublishHook?.Invoke(tempPath, full);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (System.IO.IOException ex)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Error de I/O al publicar el write: " + ex.Message));
+            return ToolResult.Error("Error de I/O al publicar el write: " + ex.Message);
         }
         catch (System.Exception ex)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Error al publicar el write: " + ex.Message));
+            return ToolResult.Error("Error al publicar el write: " + ex.Message);
         }
         finally
         {
@@ -412,7 +480,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
         var newVersion = FileVersion.VersionToken(newBytes);
         var summary = summaryPrefix + " [version:" + newVersion + "]";
-        return System.Threading.Tasks.Task.FromResult(new ToolResult(summary, null, null, newBytes.Length, false, EffectOutcome.Applied));
+        return new ToolResult(summary, null, null, newBytes.Length, false, EffectOutcome.Applied);
     }
 
     /// <summary>

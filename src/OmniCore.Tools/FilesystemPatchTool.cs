@@ -123,39 +123,42 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
     /// </summary>
 #pragma warning disable CS0649
     internal Action<string, string>? TestFailureHook;
+
+    internal Action<string, string>? TestAfterPublishHook;
 #pragma warning restore CS0649
 
-    public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+    public async Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var (path, expectedVersion, oldText, newText) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("No se pudo interpretar el JSON de argumentos del patch"));
+            return ToolResult.Error("No se pudo interpretar el JSON de argumentos del patch");
         }
 
         if (path is null || path!.Length == 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'path' en los argumentos"));
+            return ToolResult.Error("Falta 'path' en los argumentos");
         }
 
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+            return ToolResult.Error("Ruta fuera del workspace");
         }
 
         // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
         if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
-                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
+            return ToolResult.Error(
+                "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)");
         }
 
         if (!File.Exists(full))
         {
             // No se crea: un patch solo aplica sobre un archivo existente (ADR-0044 §3).
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Archivo no encontrado (un patch no crea archivos): " + path));
+            return ToolResult.Error("Archivo no encontrado (un patch no crea archivos): " + path);
         }
 
         // ADR-0044 §5: exigir lectura previa EFECTIVA del MISMO path/version en este Run antes
@@ -169,16 +172,17 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             && (context.ReadRegistry!.Ledger.MutationPolicy?.RequirePriorRead ?? true)
             && (expectedVersion is null || !context.ReadRegistry!.Matches(path!, expectedVersion!)))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+            return ToolResult.Error(
                 "PRIOR_READ_REQUIRED: no se puede parchear " + path
                 + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
-                + " Lee el archivo y usa el token [version:…] que la lectura devuelva."));
+                + " Lee el archivo y usa el token [version:…] que la lectura devuelva.");
         }
 
         // El patch opera sobre los BYTES REALES: se lee el contenido crudo, se calcula el token
         // de versión SHA-256 sobre esos bytes (no sobre el string decodificado) y se conserva el
         // encoding/BOM al reescribir (ADR-0044 §5).
-        var bytes = File.ReadAllBytes(full);
+        cancellationToken.ThrowIfCancellationRequested();
+        var bytes = await File.ReadAllBytesAsync(full, cancellationToken).ConfigureAwait(false);
         FileVersion.DecodedFile decoded;
         try
         {
@@ -187,7 +191,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         catch (UnsupportedEncodingException ex)
         {
             // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ex.Message));
+            return ToolResult.Error(ex.Message);
         }
         var content = decoded.Text;
 
@@ -196,19 +200,19 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion is null || expectedVersion != actualVersion)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(FileVersion.StaleWriteMessage(actualVersion)));
+            return ToolResult.Error(FileVersion.StaleWriteMessage(actualVersion));
         }
 
         // Bloqueante 2: no se permite un oldText que sea el contenido completo del archivo, ni un
         // newText que vacíe el archivo (un parche localizado nunca sustituye el archivo completo).
         if (oldText! == content)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("oldText es el contenido completo del archivo: no se permite sustituir el archivo entero con un patch localizado"));
+            return ToolResult.Error("oldText es el contenido completo del archivo: no se permite sustituir el archivo entero con un patch localizado");
         }
 
         if (newText!.Length == 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("newText vacío: no se permite vaciar el archivo con un patch"));
+            return ToolResult.Error("newText vacío: no se permite vaciar el archivo con un patch");
         }
 
         // Localización: oldText debe aparecer exactamente una vez. Cero ocurrencias → no se
@@ -216,12 +220,12 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var first = content.IndexOf(oldText!, StringComparison.Ordinal);
         if (first < 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("oldText no encontrado en el archivo: el patch no se aplicó"));
+            return ToolResult.Error("oldText no encontrado en el archivo: el patch no se aplicó");
         }
 
         if (content.IndexOf(oldText!, first + oldText!.Length, StringComparison.Ordinal) >= 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("oldText es ambiguo: aparece más de una vez en el archivo"));
+            return ToolResult.Error("oldText es ambiguo: aparece más de una vez en el archivo");
         }
 
         var updated = content.Substring(0, first) + newText! + content.Substring(first + oldText!.Length);
@@ -231,7 +235,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // original (cero cambios), para no generar un efecto sin razón.
         if (updated == content)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("El patch no produce ningún cambio sobre el contenido actual"));
+            return ToolResult.Error("El patch no produce ningún cambio sobre el contenido actual");
         }
 
         // Presupuesto de la política del modelo (ADR-0044 §5, EPIC-021) ANTES de escribir nada:
@@ -244,7 +248,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             deletedLines, insertedLines, FileVersion.CountLines(content));
         if (refusal is not null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(refusal));
+            return ToolResult.Error(refusal);
         }
 
         // Escrito atómico (M3, bloqueante 1 de auditoría): se construyen los bytes actualizados,
@@ -264,39 +268,77 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // apunta fuera, el temporal podría crearse fuera del workspace.
         if (!_boundary.IsWithin(tempPath, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Temporal fuera del workspace"));
+            return ToolResult.Error("Temporal fuera del workspace");
         }
         var createdTemp = false;
         try
         {
-            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            cancellationToken.ThrowIfCancellationRequested();
+            await using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
                 createdTemp = true;
-                stream.Write(newBytes);
+                await stream.WriteAsync(newBytes, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
 
             // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
             if (!_boundary.IsWithin(full, context.WorkspaceRoot))
             {
-                return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)"));
+                return ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)");
             }
 
-            // Costura de test: si está configurada, lanza una excepción aquí — DESPUÉS de
-            // escribir el temporal y antes de publicar — para forzar el camino de fallo.
+            // Costura de test: permite mutar el destino después de la comprobación inicial y
+            // antes de la comparación final protegida (o cancelar antes del commit).
             TestFailureHook?.Invoke(tempPath, full);
 
-            PublishAtomic(tempPath, full);
+            using (FilePublishLock.Acquire(full, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!File.Exists(full))
+                {
+                    return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                }
+
+                // Recomparar los bytes inmediatamente antes de publicar bajo el lock por ruta.
+                // Un writer no cooperante aún tiene una ventana entre esta lectura y el rename.
+                byte[] currentBytes;
+                try
+                {
+                    currentBytes = File.ReadAllBytes(full);
+                }
+                catch (FileNotFoundException)
+                {
+                    return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                }
+
+                var currentVersion = FileVersion.VersionToken(currentBytes);
+                if (expectedVersion != currentVersion)
+                {
+                    return ToolResult.Error(FileVersion.StaleWriteMessage(currentVersion));
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                PublishAtomic(tempPath, full);
+                TestAfterPublishHook?.Invoke(tempPath, full);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (System.IO.IOException ex)
         {
-            return System.Threading.Tasks.Task.FromResult(
-                ToolResult.Error("Error de I/O al publicar el patch: " + ex.Message));
+            return ToolResult.Error("Error de I/O al publicar el patch: " + ex.Message);
         }
         catch (System.Exception ex)
         {
-            return System.Threading.Tasks.Task.FromResult(
-                ToolResult.Error("Error al publicar el patch: " + ex.Message));
+            return ToolResult.Error("Error al publicar el patch: " + ex.Message);
         }
         finally
         {
@@ -323,7 +365,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         context.ReadRegistry?.Ledger.RecordMutation(path!, deletedLines, insertedLines,
             intent.Intent.ToolCallId);
 
-        return System.Threading.Tasks.Task.FromResult(new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied));
+        return new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied);
     }
 
     /// <summary>
@@ -430,18 +472,21 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
     }
 
     /// <summary>
-    /// Publica el archivo temporal sobre el destino mediante System.IO.File.Move con
-    /// overwrite=true. En Windows, cuando ambos están en la misma unidad, .NET lo implementa
-    /// con MoveFileEx + REPLACE_EXISTING, que es una operación atómica a nivel de sistema de
-    /// archivos (el rename reemplaza el destino en un solo paso). Esto NO es una garantía
-    /// absoluta de atomicidad documentada por Microsoft para todos los sistemas operativos:
-    /// en plataformas o configuraciones donde el reemplazo no pueda ser atómico (unidades
-    /// cruzadas, redes), el resultado depende de la implementación de la plataforma y no
-    /// debe asumirse como atómico. Si la operación no es atómica, es la responsabilidad del
-    /// caller (ExecuteAsync) de limpiar el temporal si el destino no quedó correctamente.
+    /// Publica el temporal con reemplazo atómico cuando la plataforma lo ofrece. En Windows se
+    /// prefiere File.Replace; en otras plataformas se usa rename-overwrite. Ninguna API
+    /// disponible ofrece compare-and-swap condicionado por el hash, de modo que un writer
+    /// no cooperante aún puede cambiar el destino después de la última lectura/hash y antes del
+    /// rename. Writers OmniCore cooperantes se serializan mediante FilePublishLock.
     /// </summary>
     private static void PublishAtomic(string tempPath, string destPath)
     {
-        System.IO.File.Move(tempPath, destPath, overwrite: true);
+        if (OperatingSystem.IsWindows())
+        {
+            System.IO.File.Replace(tempPath, destPath, destinationBackupFileName: null);
+        }
+        else
+        {
+            System.IO.File.Move(tempPath, destPath, overwrite: true);
+        }
     }
 }
