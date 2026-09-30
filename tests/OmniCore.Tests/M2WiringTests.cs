@@ -6,6 +6,7 @@ using OmniCore.Models;
 
 namespace OmniCore.Tests;
 
+[Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class M2WiringTests
 {
     [Fact]
