@@ -8,10 +8,9 @@ using OmniCore.Domain;
 /// cuestionario estructurado. <c>EffectClass.None</c>: no toca filesystem, procesos ni red.
 ///
 /// <para>El modelo nunca emite el evento: esta tool valida el formato del schema (puro, en
-/// <c>Prepare</c>) y, si es válido, devuelve el schema codificado para que el Host publique la
-/// interacción durable (<c>InteractionRequested</c> con el schema como artifact). El Host es la
-/// autoridad: re-valida el schema contra los límites configurables (ADR-0045 §4) y valida la
-/// respuesta contra el schema vigente. Esta tool no decide si su propia respuesta es válida.</para>
+/// <c>Prepare</c>). El Host publica la interacción durable (<c>InteractionRequested</c> con el
+/// schema como artifact), re-valida los límites (ADR-0045 §4) y valida la respuesta contra el
+/// schema vigente. Esta tool no decide si su propia respuesta es válida.</para>
 /// </summary>
 public sealed class UserAskTool : ITool
 {
@@ -29,9 +28,24 @@ public sealed class UserAskTool : ITool
         _limits = limits;
         _descriptor = new ToolDescriptor(
             new ToolId("user.ask"),
-            "Pide información al usuario mediante un cuestionario estructurado (single/multi/texto/Otro).",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},"
-                + "\"description\":{\"type\":\"string\"},\"questions\":{\"type\":\"array\"}},"
+            "Ask the user for information with a structured questionnaire (single/multiple choice, free text, or other).",
+            new InputSchema("{\"type\":\"object\",\"additionalProperties\":false,\"properties\":{"
+                + "\"title\":{\"type\":\"string\",\"maxLength\":500},"
+                + "\"description\":{\"type\":\"string\",\"maxLength\":500},"
+                + "\"questions\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":5,\"items\":{"
+                + "\"type\":\"object\",\"additionalProperties\":false,\"properties\":{"
+                + "\"id\":{\"type\":\"string\"},\"prompt\":{\"type\":\"string\"},"
+                + "\"helpText\":{\"type\":\"string\"},\"kind\":{\"type\":\"string\","
+                + "\"enum\":[\"SingleChoice\",\"MultipleChoice\",\"FreeText\"]},"
+                + "\"options\":{\"type\":\"array\",\"maxItems\":8,\"items\":{\"type\":\"object\","
+                + "\"properties\":{\"id\":{\"type\":\"string\"},\"label\":{\"type\":\"string\"},"
+                + "\"description\":{\"type\":\"string\"}},\"required\":[\"id\",\"label\"]}},"
+                + "\"other\":{\"type\":\"object\",\"properties\":{\"optionId\":{\"type\":\"string\"},"
+                + "\"label\":{\"type\":\"string\"},\"placeholder\":{\"type\":\"string\"},"
+                + "\"textRequired\":{\"type\":\"boolean\"},\"maxTextLength\":{\"type\":\"integer\"}},"
+                + "\"required\":[\"optionId\",\"label\"]},\"required\":{\"type\":\"boolean\"},"
+                + "\"minSelections\":{\"type\":\"integer\"},\"maxSelections\":{\"type\":\"integer\"},"
+                + "\"maxTextLength\":{\"type\":\"integer\"}},\"required\":[\"id\",\"prompt\",\"kind\"]}}},"
                 + "\"required\":[\"title\",\"questions\"]}"),
             new string[] { "interaction" }, true, false, ToolRisk.Low, ComponentSource.Core(),
             ToolProtection.None, EffectClass.None);
@@ -65,12 +79,10 @@ public sealed class UserAskTool : ITool
     public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
-        // El Host captura el schema publicado (Preview) para crear el artifact y emitir la
-        // interacción. No hay I/O aquí: ExecuteAsync devuelve el questionnaire listo para un
-        // cliente interactivo; la publicación la hace el Host (ADR-0045 §3, §7).
-        var schemaJson = intent.Intent.NormalizedArgumentsJson;
-        var result = new ToolResult("user.ask: solicitud de información", schemaJson, null,
-            (long) schemaJson.Length, false, EffectOutcome.None);
+        // El Host conserva el schema directamente desde el ToolCall y lo publica como artifact.
+        // El resultado de la tool no duplica el texto del cuestionario en el journal (ADR-0045 §7).
+        var result = new ToolResult("user.ask: solicitud de información", "cuestionario publicado por el Host",
+            null, 0, false, EffectOutcome.None);
         return System.Threading.Tasks.Task.FromResult(result);
     }
 

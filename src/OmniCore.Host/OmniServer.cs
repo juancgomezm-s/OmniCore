@@ -482,6 +482,15 @@ public sealed class OmniServer : IOmniClient
             + JsonObj.Field("interactionId", interaction.ToString()) + ","
             + JsonObj.Field("optionId", optionId) + "}"), CancellationToken.None);
 
+    /// <summary>Envía respuesta tipada del cuestionario por IOmniClient (ADR-0034/0045).</summary>
+    public CommandAck RespondToQuestionnaire(InteractionId interaction,
+        IReadOnlyList<QuestionAnswer> answers, bool cancelled) => Send(
+        WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "interaction.respond") + ","
+            + JsonObj.Field("responseType", "questionnaire") + ","
+            + JsonObj.Field("interactionId", interaction.ToString()) + ","
+            + JsonObj.FieldRaw("answers", QuestionnaireCodec.EncodeAnswers(answers)) + ","
+            + JsonObj.FieldRaw("cancelled", cancelled ? "true" : "false") + "}"), CancellationToken.None);
+
     /// <summary>Proyección diagnóstica de la misma catalog/boundary que recibió ExplorerTurn.</summary>
     public void ConfigureToolDiagnostics(FakeCatalog catalog, ModelCapabilityBoundary boundary, RunMode mode)
     {
@@ -1033,7 +1042,32 @@ public sealed class OmniServer : IOmniClient
                     var interaction = fields.TryGetValue("interactionId", out var i) && Guid.TryParse(i, out var g)
                         ? new InteractionId(g)
                         : throw new FormatException("interactionId inválido");
-                    control.Respond(RequireSession(), interaction, fields.TryGetValue("optionId", out var o) ? o : "");
+                    if (fields.TryGetValue("responseType", out var responseType) && responseType == "questionnaire")
+                    {
+                        if (_artifacts is null) throw new FormatException("artifact store no disponible");
+                        var session = RequireSession();
+                        var questionnaire = new QuestionnaireInteractionService(_store, _codecs, _artifacts);
+                        var answers = QuestionnaireCodec.DecodeAnswers(fields.TryGetValue("answers", out var a) ? a : "[]");
+                        var cancelled = fields.TryGetValue("cancelled", out var c) && c == "true";
+                        var stream = new EventStream(_store, _codecs, session);
+                        DomainEventPayload? transition = null;
+                        if (_lastRunId is { } activeRun
+                            && RunProjection.Replay(session, activeRun, _codecs, _store.ReadFrom(session, 1)).State
+                                == RunState.AwaitingInput)
+                            transition = new UserInputReceived(activeRun, "[\"QuestionnaireResponse\"]", null,
+                                "InteractionResponse(Questionnaire)");
+                        var result = questionnaire.Resolve(stream, interaction, answers, cancelled, null, transition);
+                        if (!result.Accepted)
+                            throw new FormatException(result.AlreadyResolved ? "interacción ya resuelta"
+                                : result.UnknownInteraction ? "interacción desconocida"
+                                : "respuesta inválida: " + string.Join(",", (result.Errors ?? Array.Empty<QuestionnaireError>())
+                                    .Select(e => e.Code.ToString())));
+                    }
+                    else
+                    {
+                        control.Respond(RequireSession(), interaction,
+                            fields.TryGetValue("optionId", out var o) ? o : "");
+                    }
                     break;
                 }
             }

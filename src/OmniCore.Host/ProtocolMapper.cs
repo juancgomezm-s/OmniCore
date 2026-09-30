@@ -85,8 +85,13 @@ public sealed class ProtocolMapper
         {
             ["interactionId"] = e.InteractionId.ToString(), ["kind"] = e.Kind.ToString(),
             ["options"] = string.Join(",", OptionIds(e.OptionsJson)), ["defaultOption"] = e.DefaultOptionId,
+            ["questionnaireSchemaHash"] = e.QuestionnaireSchemaRef?.Hash.ToString() ?? "",
         },
-        InteractionResolved e => new() { ["interactionId"] = e.InteractionId.ToString(), ["optionId"] = e.OptionId },
+        InteractionResolved e => new()
+        {
+            ["interactionId"] = e.InteractionId.ToString(), ["optionId"] = e.OptionId,
+            ["state"] = e.State ?? "", ["answerHash"] = e.AnswerRef?.Hash.ToString() ?? "",
+        },
         InteractionExpired e => new() { ["interactionId"] = e.InteractionId.ToString() },
         PlanItemAdded e => new() { ["planItemId"] = e.PlanItemId.ToString(), ["description"] = e.Description },
         PlanItemStarted e => new() { ["planItemId"] = e.PlanItemId.ToString() },

@@ -62,14 +62,22 @@ public sealed class QuestionnaireInteractionService
 
         public IReadOnlyList<QuestionnaireError>? Errors { get; }
 
-        private PublishResult(bool published, InteractionId? id, IReadOnlyList<QuestionnaireError>? errors)
+        public ArtifactRef? SchemaArtifact { get; }
+
+        public DomainEventPayload? RequestEvent { get; }
+
+        private PublishResult(bool published, InteractionId? id, IReadOnlyList<QuestionnaireError>? errors,
+            ArtifactRef? schemaArtifact = null, DomainEventPayload? requestEvent = null)
         {
             Published = published;
             InteractionId = id;
             Errors = errors;
+            SchemaArtifact = schemaArtifact;
+            RequestEvent = requestEvent;
         }
 
-        public static PublishResult Ok(InteractionId id) => new(true, id, null);
+        public static PublishResult Ok(InteractionId id, ArtifactRef artifact, DomainEventPayload requestEvent) =>
+            new(true, id, null, artifact, requestEvent);
 
         public static PublishResult Invalid(IReadOnlyList<QuestionnaireError> errors) =>
             new(false, null, errors);
@@ -83,18 +91,23 @@ public sealed class QuestionnaireInteractionService
     public PublishResult Publish(EventStream stream, QuestionnaireSchema schema,
         InteractionId interactionId, LaneId? lane, string? toolCallJson)
     {
-        var validation = QuestionnaireValidator.ValidateSchema(schema, _limits);
-        if (!validation.Valid)
-        {
-            return PublishResult.Invalid(validation.Errors);
-        }
+        var prepared = PreparePublish(schema, interactionId, lane, toolCallJson);
+        if (prepared.Published) stream.Append(prepared.RequestEvent!);
+        return prepared;
+    }
 
+    /// <summary>Prepara el artifact y evento sin escribirlo; el Turn los añade a su commit atómico.</summary>
+    public PublishResult PreparePublish(QuestionnaireSchema schema, InteractionId interactionId,
+        LaneId? lane, string? toolCallJson)
+    {
+        var validation = QuestionnaireValidator.ValidateSchema(schema, _limits);
+        if (!validation.Valid) return PublishResult.Invalid(validation.Errors);
         var safe = _redaction.Redact(QuestionnaireCodec.EncodeSchema(schema));
         var artifact = _artifacts.PutText(safe, "application/json", ArtifactKind.Other, Sensitivity.Sensitive);
-        stream.Append(new InteractionRequested(interactionId, InteractionKind.Question,
+        var request = new InteractionRequested(interactionId, InteractionKind.Question,
             "{\"operation\":\"user.ask.questionnaire\"}", "[]", "", null, lane, null, null, 0, 1,
-            artifact, toolCallJson));
-        return PublishResult.Ok(interactionId);
+            artifact, toolCallJson);
+        return PublishResult.Ok(interactionId, artifact, request);
     }
 
     /// <summary>Resultado de resolver una interacción de cuestionario.</summary>
@@ -136,7 +149,8 @@ public sealed class QuestionnaireInteractionService
     /// escoge ni se aplica Deny.
     /// </summary>
     public ResolveResult Resolve(EventStream stream, InteractionId interactionId,
-        IReadOnlyList<QuestionAnswer> answers, bool cancelled, string? toolCallJson)
+        IReadOnlyList<QuestionAnswer> answers, bool cancelled, string? toolCallJson,
+        DomainEventPayload? transitionAfterResolution = null)
     {
         var already = IsResolved(stream, interactionId);
         if (already == ResolutionStatus.Resolved)
@@ -165,8 +179,12 @@ public sealed class QuestionnaireInteractionService
         var safe = _redaction.Redact(QuestionnaireCodec.EncodeAnswers(answers));
         var artifact = _artifacts.PutText(safe, "application/json", ArtifactKind.Other, Sensitivity.Sensitive);
         var state = cancelled ? "cancelled" : "submitted";
-        stream.Append(new InteractionResolved(interactionId, "", InteractionCause.User, artifact, state,
-            toolCallJson));
+        var resolved = new InteractionResolved(interactionId, "", InteractionCause.User, artifact, state,
+            toolCallJson);
+        if (transitionAfterResolution is null)
+            stream.Append(resolved);
+        else
+            stream.AppendBatch(new DomainEventPayload[] { resolved, transitionAfterResolution }, DurabilityClass.Standard);
         return ResolveResult.Ok();
     }
 
@@ -254,6 +272,30 @@ public sealed class QuestionnaireInteractionService
         }
 
         return result.ToArray();
+    }
+
+    /// <summary>Respuesta ya persistida; permite reanudar el mismo ToolCall tras un restart.</summary>
+    public QuestionnaireAskOutcome? ResolvedOutcome(SessionId sessionId, InteractionId interactionId)
+    {
+        ArtifactRef? answerRef = null;
+        string? state = null;
+        foreach (var evt in _store.ReadFrom(sessionId, 1))
+        {
+            if (_codecs.Decode(evt) is InteractionResolved resolved
+                && resolved.InteractionId.Equals(interactionId) && resolved.IsQuestionnaire)
+            {
+                answerRef = resolved.AnswerRef;
+                state = resolved.State;
+                break;
+            }
+        }
+
+        if (state is null) return null;
+        if (state.Equals("cancelled", StringComparison.OrdinalIgnoreCase))
+            return QuestionnaireAskOutcome.CancelledOutcome();
+        if (answerRef is null) return null;
+        var json = _artifacts.GetText(answerRef.Hash);
+        return json is null ? null : QuestionnaireAskOutcome.Answered(QuestionnaireCodec.DecodeAnswers(json));
     }
 
     /// <summary>Recupera el schema (artifact) de una interacción; null si no se encuentra.</summary>
