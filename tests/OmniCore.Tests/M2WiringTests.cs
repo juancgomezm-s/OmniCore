@@ -45,13 +45,15 @@ public sealed class M2WiringTests
     [Fact]
     public async Task ConfigLoader_reads_providers_yaml()
     {
-        var providers = "providers:\n  local: { baseUrl: http://127.0.0.1:8080 }\n"
-            + "  openrouter: { baseUrl: https://openrouter.ai/api/v1, authRef: openrouter-key }\n";
+        var providers = "providers:\n  local: { baseUrl: http://127.0.0.1:8080, auth: none }\n"
+            + "  openrouter: { baseUrl: https://openrouter.ai/api/v1, auth: { apiKey: openrouter-key } }\n";
         var models = "models:\n  qwen-27b: { provider: local }\n  sonnet: { provider: openrouter }\n";
         var loader = new ConfigLoader();
         var registry = loader.BuildRegistry(providers, models);
 
-        Assert.True(registry.Provider("openrouter") is not null);
+        Assert.Equal(AuthKind.None, registry.Provider("local")!.Auth.Kind);
+        Assert.Equal(AuthKind.ApiKey, registry.Provider("openrouter")!.Auth.Kind);
+        Assert.Equal("openrouter-key", registry.Provider("openrouter")!.Auth.SecretRef);
         Assert.True(registry.Model("qwen-27b") is not null);
         Assert.True(registry.Model("sonnet") is not null);
     }

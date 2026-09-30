@@ -1,4 +1,5 @@
 using OmniCore.Abstractions;
+using OmniCore.Client;
 using OmniCore.Domain;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
@@ -24,9 +25,44 @@ public sealed class Epic013ConfigurationTests
 
         Assert.Equal("llamaCpp", loaded.ProviderKind("local"));
         Assert.Equal("local-key", loaded.Registry.Provider("local")!.Auth.SecretRef);
+        Assert.Empty(loaded.DeprecationNotices!);
         Assert.Equal(16384, loaded.Registry.Model("worker")!.ContextWindow);
         Assert.Equal(12000, loaded.Registry.Model("worker")!.RecommendedUsableContext);
         Assert.Equal(7, loaded.Registry.Model("worker")!.ParameterCountBillions);
+    }
+
+    [Fact]
+    public void Legacy_provider_auth_forms_load_and_emit_one_localized_generic_deprecation_notice()
+    {
+        var loaded = new ConfigLoader().Load(
+            "providers:\n  local: { baseUrl: http://127.0.0.1:8080, auth: none }\n"
+                + "  openrouter: { baseUrl: https://openrouter.ai/api/v1, auth: { apiKey: openrouter-key } }\n",
+            null);
+
+        Assert.Equal(AuthKind.None, loaded.Registry.Provider("local")!.Auth.Kind);
+        Assert.Equal(AuthKind.ApiKey, loaded.Registry.Provider("openrouter")!.Auth.Kind);
+        Assert.Equal("openrouter-key", loaded.Registry.Provider("openrouter")!.Auth.SecretRef);
+        var notices = Assert.IsAssignableFrom<IReadOnlyList<LocalizedText>>(loaded.DeprecationNotices);
+        var notice = Assert.Single(notices);
+        Assert.Equal("config.legacyAuthDeprecated", notice.Key);
+        var spanish = new Localization("es").Resolve(notice.Key, notice.Args);
+        var english = new Localization("en").Resolve(notice.Key, notice.Args);
+        Assert.Contains("authRef", spanish, StringComparison.Ordinal);
+        Assert.Contains("authRef", english, StringComparison.Ordinal);
+        Assert.DoesNotContain("openrouter-key", spanish, StringComparison.Ordinal);
+        Assert.DoesNotContain("openrouter-key", english, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Provider_auth_and_auth_ref_cannot_be_specified_together()
+    {
+        var error = Assert.Throws<ConfigValidationException>(() => new ConfigLoader().Load(
+            "providers:\n  local:\n    baseUrl: http://127.0.0.1:8080\n"
+                + "    auth: none\n    authRef: local-key\n", null));
+
+        var diagnostic = Assert.Single(error.Diagnostics);
+        Assert.Equal("providers.local.auth", diagnostic.KeyPath);
+        Assert.Equal("config.conflictingAuth", diagnostic.Message.Key);
     }
 
     [Fact]
