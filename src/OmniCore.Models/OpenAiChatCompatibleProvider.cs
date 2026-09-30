@@ -1,479 +1,609 @@
 namespace OmniCore.Models;
 
 using System.Collections.Generic;
+using System.Globalization;
+using System.Net;
 using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
+/// <summary>Opciones de resiliencia para un endpoint Chat Completions.</summary>
+public sealed class OpenAiProviderOptions
+{
+    public int CircuitFailureThreshold { get; init; } = 5;
+    public int MaxRetries { get; init; } = 2;
+    public TimeSpan CircuitCooldown { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan BaseRetryDelay { get; init; } = TimeSpan.FromMilliseconds(250);
+    public TimeSpan MaxRetryDelay { get; init; } = TimeSpan.FromSeconds(30);
+    public Func<TimeSpan, CancellationToken, ValueTask> DelayAsync { get; init; } = TaskDelay;
+    public Func<DateTimeOffset> UtcNow { get; init; } = static () => DateTimeOffset.UtcNow;
+    public Func<double> Jitter { get; init; } = static () => Random.Shared.NextDouble();
+
+    private static ValueTask TaskDelay(TimeSpan delay, CancellationToken cancellationToken) =>
+        new(System.Threading.Tasks.Task.Delay(delay, cancellationToken));
+}
+
 /// <summary>
-/// Provider de la familia OpenAI Chat Completions (ADR-0005/0011): ik_llama/llama.cpp,
-/// OpenRouter y otros endpoints /v1/chat/completions realmente compatibles. Cliente HTTP
-/// delgado; en M2 hace peticiones síncronas y normaliza la respuesta. El streaming SSE es
-/// una mejora posterior sobre el mismo mapeo.
+/// Adaptador nativo de la familia OpenAI Chat Completions. El transporte consume SSE de forma
+/// incremental y usa DTOs generados por System.Text.Json; los campos no modelados se conservan
+/// en ProviderState para replay exclusivo en el mismo modelo/familia.
 /// </summary>
 public sealed class OpenAiChatCompatibleProvider : IModelProvider
 {
     private readonly ProviderDescriptor _descriptor;
-
     private readonly ISecretProvider _secrets;
-
     private readonly Func<HttpClient> _httpFactory;
+    private readonly OpenAiProviderOptions _options;
+    private readonly object _breakerLock = new();
+    private int _consecutiveFailures;
+    private DateTimeOffset? _openUntil;
+    private bool _halfOpenProbe;
 
     public OpenAiChatCompatibleProvider(ProviderDescriptor descriptor, ISecretProvider secrets)
-    {
-        _descriptor = descriptor;
-        _secrets = secrets;
-        _httpFactory = () => new HttpClient();
-    }
+        : this(descriptor, secrets, static () => new HttpClient(), null, null) { }
 
-    /// <summary>
-    /// Provider con un factory de HttpClient configurable (tests o hosts locales con TLS
-    /// self-signed, ADR-0038). M2 usa esto para conectar ik_llama en 127.0.0.1/IP local.
-    /// </summary>
     public OpenAiChatCompatibleProvider(ProviderDescriptor descriptor, ISecretProvider secrets,
         Func<HttpClient> httpFactory)
+        : this(descriptor, secrets, httpFactory, null, null) { }
+
+    public OpenAiChatCompatibleProvider(ProviderDescriptor descriptor, ISecretProvider secrets,
+        Func<HttpClient> httpFactory, OpenAiProviderOptions? options)
+        : this(descriptor, secrets, httpFactory, options, null) { }
+
+    public OpenAiChatCompatibleProvider(ProviderDescriptor descriptor, ISecretProvider secrets,
+        Func<HttpClient> httpFactory, OpenAiProviderOptions? options, string? providerKey)
     {
         _descriptor = descriptor;
         _secrets = secrets;
         _httpFactory = httpFactory;
+        _options = options ?? new OpenAiProviderOptions();
+        ProviderKey = providerKey ?? descriptor.Id;
+        if (_options.CircuitFailureThreshold < 1 || _options.MaxRetries < 0 || _options.CircuitCooldown < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options), "Los límites de resiliencia no pueden ser negativos y el umbral debe ser mayor que cero.");
     }
 
+    public string ProviderKey { get; }
     public ProviderCapabilities Capabilities => ProviderCapabilities.Local();
 
-    /// <summary>CompleteAsync normalizado (no-streaming en M2).</summary>
+    /// <summary>Agrega el stream para los consumidores síncronos heredados.</summary>
     public ModelResponse Complete(ModelRequest request, CancellationToken cancellationToken)
     {
-        var http = _httpFactory();
-        var url = _descriptor.BaseUrl.TrimEnd('/') + "/chat/completions";
-        var body = BuildBody(request);
-
-        using var httpReq = new HttpRequestMessage(HttpMethod.Post, url)
+        var enumerator = StreamAsync(request, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        try
         {
-            // Content-Type explícito: StringContent sin segundo arg produce text/plain (P1-9).
-            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
-        };
-        if (_descriptor.Auth.Kind == AuthKind.ApiKey && _descriptor.Auth.SecretRef is not null)
-        {
-            var secret = _secrets.GetSecret(_descriptor.Auth.SecretRef!, cancellationToken);
-            httpReq.Headers.Add("Authorization", "Bearer " + secret.Value());
+            ModelResponse? response = null;
+            while (enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult())
+                if (enumerator.Current is ResponseCompleted completed) response = completed.Response;
+            return response ?? throw new ModelProviderException("ProviderUnavailable", "El stream terminó sin una respuesta completa.");
         }
-
-        var resp = http.Send(httpReq, cancellationToken);
-        var text = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult();
-        if (!resp.IsSuccessStatusCode)
-        {
-            // El body del servidor se conserva (no se descarta): el diagnóstico tipa la causa.
-            throw ErrorFromBody((int) resp.StatusCode, text);
-        }
-
-        return ParseChatCompletion(text);
+        finally { enumerator.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
     }
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var response = Complete(request, cancellationToken);
-        yield return new ResponseStarted(0);
-        foreach (var block in response.Content)
+        EnterCircuit();
+        var (response, http) = await SendWithRetryAsync(BuildBody(request), cancellationToken).ConfigureAwait(false);
+        var completed = false;
+        try
         {
-            yield return new BlockCompleted(0, block);
+            yield return new ResponseStarted(0);
+            await foreach (var item in ReadSseAsync(response, request, cancellationToken).ConfigureAwait(false))
+            {
+                if (item is ResponseCompleted) { completed = true; MarkSuccess(); }
+                yield return item;
+            }
+            if (!completed) throw new ModelProviderException("ProviderUnavailable", "El stream terminó sin completar la respuesta.");
         }
+        finally
+        {
+            response.Dispose();
+            http.Dispose();
+            if (!completed && !cancellationToken.IsCancellationRequested) MarkFailure();
+        }
+    }
 
-        yield return new ResponseCompleted(response);
+    private async System.Threading.Tasks.Task<(HttpResponseMessage Response, HttpClient Client)> SendWithRetryAsync(
+        string requestJson, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var http = _httpFactory();
+            try
+            {
+                using var httpRequest = CreateHttpRequest(requestJson, cancellationToken);
+                var response = await http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode) return (response, http);
+                var status = (int)response.StatusCode;
+                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (IsRetryableStatus(status) && attempt < _options.MaxRetries)
+                {
+                    var delay = ComputeDelay(attempt, RetryAfter(response));
+                    response.Dispose();
+                    http.Dispose();
+                    await _options.DelayAsync(delay, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                response.Dispose();
+                http.Dispose();
+                MarkFailure();
+                throw ErrorFromBody(status, body);
+            }
+            catch (HttpRequestException ex)
+            {
+                http.Dispose();
+                if (attempt < _options.MaxRetries)
+                {
+                    await _options.DelayAsync(ComputeDelay(attempt, null), cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                MarkFailure();
+                throw new ModelProviderException("ProviderUnavailable", ex.Message, null, ex);
+            }
+            catch
+            {
+                http.Dispose();
+                throw;
+            }
+        }
     }
 
     public static ModelResponse ParseChatCompletion(string json)
     {
-        var map = MiniJson.ParseObject(json);
-        var choices = MiniJson.ReadArray(map.TryGetValue("choices", out var c) ? c : null);
-        var content = new List<ContentBlock>();
-        var stop = StopReason.EndTurn;
-        if (choices.Count > 0)
+        ChatCompletionResponse response;
+        try
         {
-            var first = choices[0];
-            var fmsg = MiniJson.Field(first, "message");
-            var finish = MiniJson.Field(first, "finish_reason");
-            if (finish == "tool_calls")
-            {
-                stop = StopReason.ToolUse;
-            }
-            else if (finish == "length")
-            {
-                stop = StopReason.MaxOutputTokens;
-            }
-            else if (finish == "content_filter")
-            {
-                stop = StopReason.ContentFilter;
-            }
-
-            // Modelos tipo Qwen con thinking exponen `reasoning_content` (no texto final).
-            var reasoning = MiniJson.Field(fmsg, "reasoning_content");
-            if (reasoning is not null && reasoning.Length > 0)
-            {
-                content.Add(new ReasoningBlock(reasoning, ReasoningVisibility.Full, null));
-            }
-
-            var txt = MiniJson.Field(fmsg, "content");
-            if (txt is not null && txt.Length > 0)
-            {
-                content.Add(new TextBlock(txt));
-            }
-
-            var tcs = MiniJson.ReadArray(MiniJson.Field(fmsg, "tool_calls"));
-            if (tcs.Count > 0)
-            {
-                foreach (var tc in tcs)
-                {
-                    var fn = MiniJson.Field(tc, "function");
-                    content.Add(new ToolCallBlock(
-                        ToolCallId.New(),
-                        MiniJson.Field(tc, "id"),
-                        MiniJson.Field(fn, "name") ?? "",
-                        MiniJson.Field(fn, "arguments") ?? "{}"));
-                }
-            }
+            response = JsonSerializer.Deserialize(json, OpenAiJsonContext.Default.ChatCompletionResponse)
+                ?? throw new ModelProviderException("ProviderError", "Respuesta JSON vacía o inválida.");
         }
+        catch (JsonException ex) { throw new ModelProviderException("ProviderError", "Respuesta JSON inválida: " + ex.Message, null, ex); }
+        return ToModelResponse(response, "", "");
+    }
 
+    private async IAsyncEnumerable<ModelStreamEvent> ReadSseAsync(HttpResponseMessage response,
+        ModelRequest request, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var text = new StringBuilder();
+        var reasoning = new StringBuilder();
+        var tools = new SortedDictionary<int, ToolAccumulator>();
+        var opaqueFields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         var usage = new TokenUsage(0, 0, 0, 0, 0);
-        var u = map.TryGetValue("usage", out var ujson) ? ujson : null;
-        if (u is not null)
+        var stop = StopReason.EndTurn;
+        var sawChunk = false;
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var reader = new StreamReader(stream, Encoding.UTF8, true, 1024, leaveOpen: true);
+        string? line;
+        var data = new StringBuilder();
+        while ((line = await ReadSseLineAsync(reader, cancellationToken).ConfigureAwait(false)) is not null)
         {
-            usage = new TokenUsage(
-                AsLong(MiniJson.Field(u, "prompt_tokens")),
-                AsLong(MiniJson.Field(u, "completion_tokens")),
-                0, 0, 0);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (line.Length == 0)
+            {
+                if (data.Length == 0) continue;
+                var payload = data.ToString().TrimEnd('\n'); data.Clear();
+                if (payload == "[DONE]") break;
+                var chunk = DeserializeChunk(payload);
+                if (chunk is null) continue;
+                sawChunk = true;
+                if (chunk.Usage is not null)
+                {
+                    usage = new TokenUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, 0, 0, 0);
+                    yield return new UsageUpdated(usage);
+                }
+                foreach (var choice in chunk.Choices ?? [])
+                {
+                    if (choice.Delta is not null)
+                    {
+                        if (!string.IsNullOrEmpty(choice.Delta.Content))
+                        {
+                            text.Append(choice.Delta.Content);
+                            yield return new TextDelta(0, choice.Delta.Content);
+                        }
+                        if (!string.IsNullOrEmpty(choice.Delta.ReasoningContent))
+                        {
+                            reasoning.Append(choice.Delta.ReasoningContent);
+                            yield return new ReasoningDelta(1, choice.Delta.ReasoningContent);
+                        }
+                        foreach (var delta in choice.Delta.ToolCalls ?? [])
+                        {
+                            if (!tools.TryGetValue(delta.Index, out var tool))
+                            {
+                                tool = new ToolAccumulator(delta.Index);
+                                tools.Add(delta.Index, tool);
+                            }
+                            tool.Id ??= delta.Id;
+                            tool.Name.Append(delta.Function?.Name);
+                            var args = delta.Function?.Arguments;
+                            tool.Arguments.Append(args);
+                            if (!string.IsNullOrEmpty(args)) yield return new ToolArgumentsDelta(100 + delta.Index, args);
+                        }
+                        foreach (var (key, value) in choice.Delta.Extra ?? []) opaqueFields[key] = value.Clone();
+                    }
+                    if (choice.FinishReason is not null) stop = MapFinishReason(choice.FinishReason);
+                }
+                continue;
+            }
+            if (line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                if (data.Length > 0) data.Append('\n');
+                data.Append(line.AsSpan(5).TrimStart());
+            }
         }
+        if (!sawChunk) throw new ModelProviderException("ProviderUnavailable", "El servidor cerró el stream antes de enviar eventos.");
+        var content = new List<ContentBlock>();
+        if (reasoning.Length > 0)
+        {
+            var block = new ReasoningBlock(reasoning.ToString(), ReasoningVisibility.Full, null);
+            content.Add(block);
+            opaqueFields["reasoning_content"] = JsonSerializer.SerializeToElement(reasoning.ToString(), OpenAiJsonContext.Default.String);
+            yield return new BlockCompleted(1, block);
+        }
+        if (text.Length > 0)
+        {
+            var block = new TextBlock(text.ToString());
+            content.Add(block);
+            yield return new BlockCompleted(0, block);
+        }
+        foreach (var tool in tools.Values)
+        {
+            var block = new ToolCallBlock(ToolCallId.New(), tool.Id, tool.Name.ToString(), tool.Arguments.Length == 0 ? "{}" : tool.Arguments.ToString());
+            content.Add(block);
+            yield return new BlockCompleted(100 + tool.Index, block);
+        }
+        if (tools.Count > 0 && stop == StopReason.EndTurn) stop = StopReason.ToolUse;
+        var state = opaqueFields.Count == 0 ? null : new ProviderState("openai.chat.ProviderOpaque/" + request.Model.Model,
+            JsonSerializer.Serialize(opaqueFields, OpenAiJsonContext.Default.DictionaryStringJsonElement));
+        var finalResponse = new ModelResponse(content, stop, usage, state,
+            new ProviderMetadata(response.Headers.TryGetValues("x-request-id", out var ids) ? ids.FirstOrDefault() ?? "" : "",
+                request.Model.Model.ToString(), null));
+        yield return new ResponseCompleted(finalResponse);
+    }
 
-        return new ModelResponse(content, stop, usage, null, new ProviderMetadata("", "", null));
+    private static async System.Threading.Tasks.Task<string?> ReadSseLineAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        try { return await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is IOException or HttpRequestException)
+        { throw new ModelProviderException("ProviderUnavailable", ex.Message, null, ex); }
+    }
+
+    private static ChatChunk? DeserializeChunk(string payload)
+    {
+        try { return JsonSerializer.Deserialize(payload, OpenAiJsonContext.Default.ChatChunk); }
+        catch (JsonException ex) { throw new ModelProviderException("ProviderError", "SSE JSON inválido: " + ex.Message, null, ex); }
+    }
+
+    private HttpRequestMessage CreateHttpRequest(string requestJson, CancellationToken cancellationToken)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, _descriptor.BaseUrl.TrimEnd('/') + "/chat/completions")
+        {
+            Content = new StringContent(requestJson, Encoding.UTF8, "application/json"),
+        };
+        if (_descriptor.Auth.Kind == AuthKind.ApiKey && _descriptor.Auth.SecretRef is not null)
+        {
+            var secret = _secrets.GetSecret(_descriptor.Auth.SecretRef, cancellationToken);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", secret.Value());
+        }
+        return request;
     }
 
     private string BuildBody(ModelRequest request)
     {
-        var msgs = new List<string>();
-        if (request.Instructions is not null && request.Instructions!.Length > 0)
-        {
-            msgs.Add("{\"role\":\"system\",\"content\":" + Eq(request.Instructions!) + "}");
-        }
-
-        // Correlación id canónico → ProviderCallId del servidor para el roundtrip de resultados.
+        var messages = new List<ChatRequestMessage>();
+        if (!string.IsNullOrEmpty(request.Instructions))
+            messages.Add(new ChatRequestMessage { Role = "system", Content = request.Instructions });
         var serverIds = CollectServerCallIds(request.Messages);
-        foreach (var msg in request.Messages)
+        foreach (var message in request.Messages)
+            messages.AddRange(MapMessage(message, serverIds));
+
+        // ProviderState is the existing durable opaque-continuation carrier: this adapter stores
+        // ProviderOpaque message fields here because artifact payload creation belongs to the runtime.
+        // Replay is restricted to the exact original model, and credentials are never included.
+        if (request.Continuation is { Kind: var kind } continuation &&
+            kind == "openai.chat.ProviderOpaque/" + request.Model.Model.ToString())
         {
-            msgs.AddRange(MessageToJson(msg, serverIds));
+            try
+            {
+                var extra = JsonSerializer.Deserialize(continuation.PayloadJson, OpenAiJsonContext.Default.DictionaryStringJsonElement);
+                if (extra is not null)
+                {
+                    var lastAssistant = messages.FindLast(m => m.Role == "assistant");
+                    if (lastAssistant is null)
+                    {
+                        lastAssistant = new ChatRequestMessage { Role = "assistant" };
+                        messages.Add(lastAssistant);
+                    }
+                    foreach (var field in extra) lastAssistant.Extra[field.Key] = field.Value;
+                }
+            }
+            catch (JsonException) { /* invalid opaque state is ignored rather than corrupting the request */ }
         }
 
-        var tools = new List<string>();
-        foreach (var tool in request.Tools)
+        var tools = request.Tools.Select(tool => new ChatRequestTool
         {
-            tools.Add("{\"type\":\"function\",\"function\":{\"name\":" + Eq(tool.Name)
-                + ",\"description\":" + Eq(tool.Description)
-                + ",\"parameters\":" + (tool.InputSchemaJson.Length == 0 ? "{}" : tool.InputSchemaJson) + "}}");
-        }
-
-        var parts = new List<string>();
-        parts.Add("\"model\":" + Eq(request.Model.Model.ToString()));
-        parts.Add("\"messages\":[" + string.Join(",", msgs.ToArray()) + "]");
-        if (tools.Count > 0)
+            Function = new ChatRequestFunction
+            {
+                Name = tool.Name,
+                Description = tool.Description,
+                Parameters = ParseJsonElementOrEmpty(tool.InputSchemaJson),
+            },
+        }).ToList();
+        var dto = new ChatRequestDto
         {
-            parts.Add("\"tools\":[" + string.Join(",", tools.ToArray()) + "]");
-        }
-
-        return "{" + string.Join(",", parts.ToArray()) + "}";
+            Model = request.Model.Model.ToString(),
+            Messages = messages,
+            Tools = tools.Count == 0 ? null : tools,
+            Stream = true,
+            ToolChoice = request.ToolChoice.Mode switch
+            {
+                "none" => JsonSerializer.SerializeToElement("none", OpenAiJsonContext.Default.String),
+                "exact" => JsonSerializer.SerializeToElement(
+                    new ChatToolChoice { Type = "function", Function = new ChatToolChoiceFunction { Name = request.ToolChoice.ToolName ?? "" } },
+                    OpenAiJsonContext.Default.ChatToolChoice),
+                _ => JsonSerializer.SerializeToElement("auto", OpenAiJsonContext.Default.String),
+            },
+        };
+        return JsonSerializer.Serialize(dto, OpenAiJsonContext.Default.ChatRequestDto);
     }
 
-    private static IReadOnlyList<string> MessageToJson(ModelMessage msg,
-        Dictionary<string, string> serverCallIds)
+    private static IEnumerable<ChatRequestMessage> MapMessage(ModelMessage message, Dictionary<string, string> ids)
     {
-        var result = new List<string>();
-        foreach (var block in msg.Content)
+        foreach (var block in message.Content)
         {
-            if (block is TextBlock text)
+            switch (block)
             {
-                result.Add("{\"role\":" + Eq(Role(msg.Role)) + ",\"content\":" + Eq(text.Text) + "}");
-            }
-            else if (block is ToolCallBlock call)
-            {
-                // El id del call del provider (si se preservó) es el que el servidor conoce;
-                // `arguments` debe ser STRING JSON (no un objeto) según el protocolo.
-                var serverId = ServerCallId(call, serverCallIds);
-                result.Add("{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":"
-                    + Eq(serverId) + ",\"type\":\"function\",\"function\":{\"name\":"
-                    + Eq(call.ToolName) + ",\"arguments\":" + Eq(call.ArgumentsJson) + "}}]}");
-            }
-            else if (block is ToolResultBlock toolResult)
-            {
-                result.Add("{\"role\":\"tool\",\"tool_call_id\":"
-                    + Eq(LookupServerId(toolResult.Id, serverCallIds)) + ",\"content\":"
-                    + Eq(TextOf(toolResult.Content)) + "}");
+                case TextBlock text:
+                    yield return new ChatRequestMessage { Role = Role(message.Role), Content = text.Text };
+                    break;
+                case ToolCallBlock call:
+                    yield return new ChatRequestMessage
+                    {
+                        Role = "assistant", Content = null,
+                        ToolCalls = [new ChatRequestToolCall
+                        {
+                            Id = ids.GetValueOrDefault(call.Id.ToString(), call.ProviderCallId ?? call.Id.ToString()),
+                            Type = "function",
+                            Function = new ChatRequestFunctionCall { Name = call.ToolName, Arguments = call.ArgumentsJson },
+                        }],
+                    };
+                    break;
+                case ToolResultBlock result:
+                    yield return new ChatRequestMessage
+                    {
+                        Role = "tool", ToolCallId = ids.GetValueOrDefault(result.Id.ToString(), result.Id.ToString()),
+                        Content = result.Content.OfType<TextBlock>().FirstOrDefault()?.Text ?? "",
+                    };
+                    break;
+                case ProviderOpaqueBlock opaque when opaque.Opaque.Family == ProviderFamily.OpenAiChatCompatible &&
+                    opaque.Opaque.Replay != ReplayPolicy.Never:
+                    // Payload loading belongs to ArtifactStore; without it the opaque block is not replayable here.
+                    break;
             }
         }
-
-        return result;
     }
 
-    /// <summary>
-    /// Rastrea los tool_call ids del servidor en todo el historial: el ToolResultBlock solo
-    /// conoce el id canónico OmniCore, así que la correlación con el id del provider se hace
-    /// contra los bloques ToolCallBlock previos (roundtrip correcto del tool_call_id).
-    /// </summary>
     private static Dictionary<string, string> CollectServerCallIds(IReadOnlyList<ModelMessage> messages)
     {
-        var map = new Dictionary<string, string>();
-        foreach (var msg in messages)
+        var ids = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var call in messages.SelectMany(m => m.Content).OfType<ToolCallBlock>())
+            ids[call.Id.ToString()] = string.IsNullOrEmpty(call.ProviderCallId) ? call.Id.ToString() : call.ProviderCallId!;
+        return ids;
+    }
+
+    private static ModelResponse ToModelResponse(ChatCompletionResponse response, string model, string requestId)
+    {
+        var content = new List<ContentBlock>();
+        var choice = response.Choices?.FirstOrDefault();
+        var message = choice?.Message;
+        if (message is not null)
         {
-            foreach (var block in msg.Content)
-            {
-                if (block is ToolCallBlock call)
-                {
-                    map[call.Id.ToString()] = call.ProviderCallId is not null && call.ProviderCallId!.Length > 0
-                        ? call.ProviderCallId!
-                        : call.Id.ToString();
-                }
-            }
+            if (!string.IsNullOrEmpty(message.ReasoningContent)) content.Add(new ReasoningBlock(message.ReasoningContent, ReasoningVisibility.Full, null));
+            if (!string.IsNullOrEmpty(message.Content)) content.Add(new TextBlock(message.Content));
+            foreach (var tool in message.ToolCalls ?? [])
+                content.Add(new ToolCallBlock(ToolCallId.New(), tool.Id, tool.Function?.Name ?? "", tool.Function?.Arguments ?? "{}"));
         }
-
-        return map;
+        var usage = response.Usage is null ? new TokenUsage(0, 0, 0, 0, 0) :
+            new TokenUsage(response.Usage.PromptTokens, response.Usage.CompletionTokens, 0, 0, 0);
+        var opaque = message?.Extra is null
+            ? new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            : new Dictionary<string, JsonElement>(message.Extra, StringComparer.Ordinal);
+        if (!string.IsNullOrEmpty(message?.ReasoningContent))
+            opaque["reasoning_content"] = JsonSerializer.SerializeToElement(message.ReasoningContent, OpenAiJsonContext.Default.String);
+        var state = opaque.Count == 0 ? null :
+            new ProviderState("openai.chat.ProviderOpaque/" + (string.IsNullOrEmpty(model) ? response.Model ?? "" : model),
+                JsonSerializer.Serialize(opaque, OpenAiJsonContext.Default.DictionaryStringJsonElement));
+        return new ModelResponse(content, MapFinishReason(choice?.FinishReason), usage, state,
+            new ProviderMetadata(requestId, response.Model ?? model, null));
     }
 
-    private static string ServerCallId(ToolCallBlock call, Dictionary<string, string> serverCallIds)
+    private static StopReason MapFinishReason(string? finish) => finish switch
     {
-        return serverCallIds.TryGetValue(call.Id.ToString(), out var v) ? v! : call.Id.ToString();
+        "tool_calls" or "function_call" => StopReason.ToolUse,
+        "length" => StopReason.MaxOutputTokens,
+        "content_filter" => StopReason.ContentFilter,
+        "stop" or null => StopReason.EndTurn,
+        _ => StopReason.EndTurn,
+    };
+
+    private static string Role(MessageRole role) => role switch
+    {
+        MessageRole.System => "system",
+        MessageRole.Assistant => "assistant",
+        MessageRole.Tool => "tool",
+        _ => "user",
+    };
+
+    private static JsonElement ParseJsonElementOrEmpty(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return JsonDocument.Parse("{}").RootElement.Clone();
+        try { return JsonDocument.Parse(json).RootElement.Clone(); }
+        catch (JsonException) { return JsonDocument.Parse("{}").RootElement.Clone(); }
     }
 
-    private static string LookupServerId(ToolCallId canonicalId, Dictionary<string, string> serverCallIds)
+    private void EnterCircuit()
     {
-        var key = canonicalId.ToString();
-        return serverCallIds.TryGetValue(key, out var v) ? v! : key;
-    }
-
-    private static string Role(MessageRole role)
-    {
-        if (role == MessageRole.System) return "system";
-        if (role == MessageRole.Assistant) return "assistant";
-        if (role == MessageRole.Tool) return "tool";
-        return "user";
-    }
-
-    private static string Eq(string value)
-    {
-        var esc = value.Replace("\\", "\\\\")
-            .Replace("\"", "\\\"")
-            .Replace("\n", "\\n")
-            .Replace("\r", "\\r")
-            .Replace("\t", "\\t")
-            .Replace("\b", "\\b")
-            .Replace("\f", "\\f");
-        return "\"" + esc + "\"";
-    }
-
-    private static string TextOf(IReadOnlyList<ContentBlock> blocks)
-    {
-        foreach (var b in blocks)
+        lock (_breakerLock)
         {
-            if (b is TextBlock t) return t.Text;
+            if (_openUntil is null) return;
+            if (_options.UtcNow() < _openUntil.Value)
+                throw new ModelProviderException("ProviderUnavailable", "Circuit breaker abierto para " + ProviderKey + ".");
+            if (_halfOpenProbe)
+                throw new ModelProviderException("ProviderUnavailable", "Circuit breaker en prueba para " + ProviderKey + ".");
+            _halfOpenProbe = true;
         }
-
-        return "";
     }
 
-    private static long AsLong(string? v)
+    private void MarkSuccess()
     {
-        if (v is null) return 0;
-        return long.TryParse(v.Trim(), out var n) ? n : 0;
+        lock (_breakerLock)
+        {
+            _consecutiveFailures = 0;
+            _openUntil = null;
+            _halfOpenProbe = false;
+        }
     }
 
-    /// <summary>
-    /// Clasifica el error conservando el body del servidor: si el body es JSON con
-    /// error.message se usa ese texto; si no, el primer segmento. Nunca descarta el detalle
-    /// (el diagnóstico del provider depende de él, ADR-0011 §6).
-    /// </summary>
+    private void MarkFailure()
+    {
+        lock (_breakerLock)
+        {
+            _halfOpenProbe = false;
+            _consecutiveFailures++;
+            if (_consecutiveFailures >= _options.CircuitFailureThreshold)
+                _openUntil = _options.UtcNow() + _options.CircuitCooldown;
+        }
+    }
+
+    private TimeSpan ComputeDelay(int attempt, TimeSpan? retryAfter)
+    {
+        if (retryAfter is not null) return retryAfter.Value < TimeSpan.Zero ? TimeSpan.Zero : retryAfter.Value;
+        var multiplier = Math.Pow(2, attempt);
+        var raw = TimeSpan.FromMilliseconds(_options.BaseRetryDelay.TotalMilliseconds * multiplier);
+        var jitter = Math.Clamp(_options.Jitter(), 0, 1);
+        var jittered = raw.TotalMilliseconds * (0.75 + jitter * 0.5);
+        return TimeSpan.FromMilliseconds(Math.Min(_options.MaxRetryDelay.TotalMilliseconds, jittered));
+    }
+
+    private TimeSpan? RetryAfter(HttpResponseMessage response)
+    {
+        var delta = response.Headers.RetryAfter?.Delta;
+        if (delta is not null) return delta;
+        var date = response.Headers.RetryAfter?.Date;
+        return date is null ? null : date.Value - _options.UtcNow();
+    }
+
+    private static bool IsRetryableStatus(int status) => status is 408 or 429 || status >= 500;
+
     internal static ModelProviderException ErrorFromBody(int status, string body)
     {
-        var kind = "ProviderUnavailable";
-        var message = body is null || body!.Length == 0 ? "(sin body)" : body!;
+        var kind = status switch
+        {
+            401 or 403 => "AuthenticationFailed",
+            408 or 429 => "RateLimited",
+            >= 500 => "ProviderUnavailable",
+            _ => "ProviderError",
+        };
+        var message = string.IsNullOrWhiteSpace(body) ? "(sin body)" : body;
         try
         {
-            var map = MiniJson.ParseObject(message);
-            var nested = MiniJson.Field(message, "error");
-            if (nested is not null)
-            {
-                var detail = MiniJson.Field(nested!, "message");
-                if (detail is not null && detail!.Length > 0)
-                {
-                    kind = "ProviderError";
-                    message = "#" + status + ": " + detail!;
-                }
-            }
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var detail))
+                message = "#" + status.ToString(CultureInfo.InvariantCulture) + ": " + detail.GetString();
         }
-        catch (Exception)
-        {
-            // no es JSON; usamos el body plano
-        }
-
-        return new ModelProviderException(kind, message);
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException) { }
+        return new ModelProviderException(kind, message, status);
     }
 
-    private static string TextHead(string s) => s.Length <= 80 ? s : s.Substring(0, 80);
+    private sealed class ToolAccumulator(int index)
+    {
+        public int Index { get; } = index;
+        public string? Id { get; set; }
+        public StringBuilder Name { get; } = new();
+        public StringBuilder Arguments { get; } = new();
+    }
 }
 
-/// <summary>Error tipado del provider (spec §71; ADR-0011 §5).</summary>
+/// <summary>Error tipado del provider.</summary>
 public sealed class ModelProviderException : InvalidOperationException
 {
-    public string Kind { get; }
-
     private readonly string _detail;
+    public string Kind { get; }
+    public int? StatusCode { get; }
 
-    public ModelProviderException(string kind, string message)
+    public ModelProviderException(string kind, string message, int? statusCode = null, Exception? innerException = null)
+        : base("provider " + kind + ": " + message, innerException)
     {
         Kind = kind;
-        _detail = message is null ? "" : message!;
+        StatusCode = statusCode;
+        _detail = message;
     }
 
-    /// <summary>El mensaje del proveedor se conserva (base(message) no es alcanzable; override).</summary>
     public override string Message => "provider " + Kind + ": " + _detail;
 }
 
-/// <summary>Mini parser JSON plano para respuestas de chat.completions (no streaming).</summary>
-internal sealed class MiniJson
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+[JsonSerializable(typeof(ChatRequestDto))]
+[JsonSerializable(typeof(ChatCompletionResponse))]
+[JsonSerializable(typeof(ChatChunk))]
+[JsonSerializable(typeof(ChatToolChoice))]
+[JsonSerializable(typeof(Dictionary<string, JsonElement>))]
+[JsonSerializable(typeof(string))]
+internal partial class OpenAiJsonContext : JsonSerializerContext;
+
+internal sealed class ChatRequestDto
 {
-    public static Dictionary<string, string> ParseObject(string json)
-    {
-        var map = new Dictionary<string, string>();
-        var s = json.Trim();
-        var body = s.Length >= 2 && s[0] == '{' ? s.Substring(1, s.Length - 2) : s;
-        var i = 0;
-        while (i < body.Length)
-        {
-            var colon = body.IndexOf(':', i);
-            if (colon < 0) break;
-            var key = Unquote(body.Substring(i, colon - i).Trim());
-            var after = colon + 1;
-            while (after < body.Length && (body[after] == ' ')) after += 1;
-            if (after >= body.Length) break;
-            if (body[after] == '"' || body[after] == '{' || body[after] == '[')
-            {
-                var end = FindValueEnd(body, after);
-                map[key] = body.Substring(after, end - after + 1);
-                var comma = body.IndexOf(',', end);
-                i = comma < 0 ? body.Length : comma + 1;
-            }
-            else
-            {
-                var comma = body.IndexOf(',', after);
-                var end = comma < 0 ? body.Length : comma;
-                map[key] = body.Substring(after, end - after);
-                i = comma < 0 ? body.Length : comma + 1;
-            }
-        }
-
-        return map;
-    }
-
-    private static int FindValueEnd(string s, int start)
-    {
-        var quote = s[start] == '"';
-        var depth = 0;
-        var from = quote ? start + 1 : start;
-        for (var i = from; i < s.Length; i++)
-        {
-            if (quote)
-            {
-                var c = s[i];
-                if (c == '\\' && i + 1 < s.Length)
-                {
-                    i += 1;
-                    continue;
-                }
-
-                if (c == '"') return i;
-            }
-            else
-            {
-                if (s[i] == '{' || s[i] == '[') depth += 1;
-                else if (s[i] == '}' || s[i] == ']')
-                {
-                    depth -= 1;
-                    if (depth <= 0) return i;
-                }
-                else if (s[i] == ',' && depth == 0)
-                {
-                    return i;
-                }
-            }
-        }
-
-        return s.Length;
-    }
-
-    public static IReadOnlyList<string> ReadArray(string? arr)
-    {
-        var result = new List<string>();
-        if (arr is null || arr == "null") return result;
-        var s = arr.Trim();
-        var body = s.Length >= 2 && s[0] == '[' ? s.Substring(1, s.Length - 2) : s;
-        var i = 0;
-        while (i < body.Length)
-        {
-            var skip = body[i] == ' ' || body[i] == ',';
-            if (skip)
-            {
-                i += 1;
-                continue;
-            }
-
-            var end = FindValueEnd(body, i);
-            if (end >= body.Length)
-            {
-                result.Add(body.Substring(i));
-                break;
-            }
-
-            result.Add(body.Substring(i, end - i + (body[end] == ',' ? 1 : 1)).TrimStart(',', ' '));
-            i = end + 1;
-        }
-
-        return result;
-    }
-
-    public static string? Field(string? obj, string name)
-    {
-        if (obj is null || obj!.Length == 0) return null;
-        var idx = obj!.IndexOf("\"" + name + "\"", StringComparison.Ordinal);
-        if (idx < 0) return null;
-        var colon = obj.IndexOf(':', idx);
-        if (colon < 0) return null;
-        var after = colon + 1;
-        while (after < obj.Length && obj[after] == ' ') after += 1;
-        if (after >= obj.Length) return null;
-        if (obj[after] == '"')
-        {
-            var end = FindValueEnd(obj, after);
-            return end < 0 ? null : Unquote(obj.Substring(after, end - after + 1));
-        }
-
-        if (obj[after] == '{' || obj[after] == '[')
-        {
-            var end = FindValueEnd(obj, after);
-            return obj.Substring(after, end - after + 1);
-        }
-
-        var comma = obj.IndexOf(',', after);
-        var bracket = obj.IndexOf('}', after);
-        var br = obj.IndexOf(']', after);
-        var endIdx = comma < 0 ? (bracket < 0 ? (br < 0 ? obj.Length : br) : bracket) : Math.Min(comma,
-            bracket < 0 ? (br < 0 ? obj.Length : br) : bracket);
-        return obj.Substring(after, endIdx - after).Trim();
-    }
-
-    private static string Unquote(string t)
-    {
-        var v = t.Trim();
-        if (v.Length >= 2 && v[0] == '"' && v[v.Length - 1] == '"')
-        {
-            var inner = v.Substring(1, v.Length - 2);
-            return inner.Replace("\\\"", "\"").Replace("\\n", "\n").Replace("\\t", "\t").Replace("\\\\", "\\");
-        }
-
-        return v;
-    }
+    public string Model { get; set; } = "";
+    public List<ChatRequestMessage> Messages { get; set; } = [];
+    public List<ChatRequestTool>? Tools { get; set; }
+    [JsonPropertyName("tool_choice")] public JsonElement? ToolChoice { get; set; }
+    public bool Stream { get; set; }
 }
+internal sealed class ChatRequestMessage
+{
+    public string Role { get; set; } = "";
+    public string? Content { get; set; }
+    [JsonPropertyName("tool_calls")] public List<ChatRequestToolCall>? ToolCalls { get; set; }
+    [JsonPropertyName("tool_call_id")] public string? ToolCallId { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement> Extra { get; } = new(StringComparer.Ordinal);
+}
+internal sealed class ChatRequestTool { public string Type { get; set; } = "function"; public ChatRequestFunction Function { get; set; } = new(); }
+internal sealed class ChatRequestFunction { public string Name { get; set; } = ""; public string Description { get; set; } = ""; public JsonElement Parameters { get; set; } }
+internal sealed class ChatRequestToolCall { public string Id { get; set; } = ""; public string Type { get; set; } = "function"; public ChatRequestFunctionCall Function { get; set; } = new(); }
+internal sealed class ChatRequestFunctionCall { public string Name { get; set; } = ""; public string Arguments { get; set; } = "{}"; }
+internal sealed class ChatToolChoice { public string Type { get; set; } = "function"; public ChatToolChoiceFunction Function { get; set; } = new(); }
+internal sealed class ChatToolChoiceFunction { public string Name { get; set; } = ""; }
+internal sealed class ChatCompletionResponse
+{
+    public string? Model { get; set; }
+    public List<ChatChoice>? Choices { get; set; }
+    public ChatUsage? Usage { get; set; }
+}
+internal sealed class ChatChoice { public ChatMessageDto? Message { get; set; } [JsonPropertyName("finish_reason")] public string? FinishReason { get; set; } }
+internal sealed class ChatMessageDto
+{
+    public string? Content { get; set; }
+    [JsonPropertyName("reasoning_content")] public string? ReasoningContent { get; set; }
+    [JsonPropertyName("tool_calls")] public List<ChatToolCallDto>? ToolCalls { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+}
+internal sealed class ChatToolCallDto { public string? Id { get; set; } public ChatFunctionCallDto? Function { get; set; } }
+internal sealed class ChatFunctionCallDto { public string? Name { get; set; } public string? Arguments { get; set; } }
+internal sealed class ChatUsage { [JsonPropertyName("prompt_tokens")] public long PromptTokens { get; set; } [JsonPropertyName("completion_tokens")] public long CompletionTokens { get; set; } }
+internal sealed class ChatChunk
+{
+    public List<ChatChunkChoice>? Choices { get; set; }
+    public ChatUsage? Usage { get; set; }
+}
+internal sealed class ChatChunkChoice { public ChatDelta? Delta { get; set; } [JsonPropertyName("finish_reason")] public string? FinishReason { get; set; } }
+internal sealed class ChatDelta
+{
+    public string? Content { get; set; }
+    [JsonPropertyName("reasoning_content")] public string? ReasoningContent { get; set; }
+    [JsonPropertyName("tool_calls")] public List<ChatToolDelta>? ToolCalls { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; set; }
+}
+internal sealed class ChatToolDelta { public int Index { get; set; } public string? Id { get; set; } public ChatFunctionDelta? Function { get; set; } }
+internal sealed class ChatFunctionDelta { public string? Name { get; set; } public string? Arguments { get; set; } }

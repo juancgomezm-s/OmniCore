@@ -121,6 +121,8 @@ public sealed class LocalModelHost
         if (!alive)
         {
             _server = null;
+            _generatedApiKey = "";
+            _chosenPort = -1;
         }
 
         return alive;
@@ -168,13 +170,24 @@ public sealed class ManagedServerSpec
         Port = port;
     }
 
-    /// <summary>Arma el ProcessLaunch reemplazando {port} y {apiKey} en los args template.</summary>
+    /// <summary>Arma ProcessLaunch; la API key solo se entrega por el entorno del proceso.</summary>
     public ProcessLaunch ToLaunch(int port, string apiKey)
     {
         var outArgs = new List<string>();
-        foreach (var arg in Args)
+        for (var i = 0; i < Args.Count; i++)
         {
-            outArgs.Add(arg.Replace("{port}", port.ToString()).Replace("{apiKey}", apiKey));
+            var arg = Args[i];
+            if (arg == "--api-key")
+            {
+                if (i + 1 < Args.Count) i++; // La API key siempre viaja solo en el entorno del proceso.
+                continue;
+            }
+            if (arg.StartsWith("--api-key=", StringComparison.Ordinal) || arg.Contains("{apiKey}", StringComparison.Ordinal))
+            {
+                // Omite tanto el placeholder como formas --api-key={apiKey}; el servidor lee env.
+                continue;
+            }
+            outArgs.Add(arg.Replace("{port}", port.ToString(System.Globalization.CultureInfo.InvariantCulture)));
         }
 
         var env = new Dictionary<string, string>();
