@@ -25,8 +25,8 @@ public sealed record TuiLayoutModel(TuiLayoutMode Mode, bool SidebarVisible, int
 {
     public static TuiLayoutModel ForWidth(int width, bool sidebarRequested = true)
     {
-        if (width >= 120) return new(TuiLayoutMode.Stacked, sidebarRequested, Math.Clamp(width / 3, 32, 40));
-        if (width >= 90) return new(TuiLayoutMode.Tabbed, sidebarRequested, 26);
+        if (width >= 120) return new(TuiLayoutMode.Stacked, sidebarRequested, sidebarRequested ? Math.Clamp(width / 3, 32, 40) : 0);
+        if (width >= 90) return new(TuiLayoutMode.Tabbed, sidebarRequested, sidebarRequested ? 26 : 0);
         return new(TuiLayoutMode.Overlay, sidebarRequested,
             sidebarRequested ? Math.Max(20, Math.Min(44, width - 4)) : 0);
     }

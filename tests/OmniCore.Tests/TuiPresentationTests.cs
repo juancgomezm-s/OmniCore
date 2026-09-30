@@ -206,7 +206,7 @@ public sealed class TuiPresentationTests
         Assert.Equal(0, model.SidebarWidth);
     }
 
-    [Fact(Skip = "posible bug: Stacked/Tabbed mode calcula SidebarWidth aunque SidebarVisible=false; el ancho debería ser 0 cuando no hay sidebar")]
+    [Fact]
     public void Layout_SidebarRequestedFalse_HidesSidebarInAllModes()
     {
         var stacked = TuiLayoutModel.ForWidth(120, sidebarRequested: false);
