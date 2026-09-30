@@ -117,6 +117,12 @@ public sealed class PermissionGrantsTests
                 EffectOutcome.Applied));
     }
 
+    private sealed class TestExecutableResolver : IExecutableResolver
+    {
+        public ExecutableResolution Resolve(string executable, string workspaceRoot) =>
+            new(executable, Path.Combine(workspaceRoot, "test-child"));
+    }
+
     [Fact]
     public void Persistent_interaction_choice_records_grant_and_permission_event()
     {
@@ -128,8 +134,8 @@ public sealed class PermissionGrantsTests
         var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>())
             .WithModeDefaults(RunMode.Act).WithGrantStore(store, workspace, run);
         var events = new List<DomainEventPayload>();
-        var runtime = ToolRuntime.For(new FakeCatalog().Add(new TestProcessTool()), policy,
-            payload => { events.Add(payload); return VoidBox.Instance; });
+        var runtime = new ToolRuntime(new FakeCatalog().Add(new TestProcessTool()), policy,
+            payload => { events.Add(payload); return VoidBox.Instance; }, null, new TestExecutableResolver());
 
         var outcome = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "p1", "{}"),
             new ToolPreparationContext("test", DateTimeOffset.UtcNow), new ToolExecutionContext("test"), true,
@@ -161,8 +167,8 @@ public sealed class PermissionGrantsTests
     public void Boundary_ask_offers_only_once_and_deny_even_if_policy_supports_grants()
     {
         var events = new List<DomainEventPayload>();
-        var runtime = ToolRuntime.For(new FakeCatalog().Add(new TestProcessTool()), new BoundaryAskPolicy(),
-            payload => { events.Add(payload); return VoidBox.Instance; });
+        var runtime = new ToolRuntime(new FakeCatalog().Add(new TestProcessTool()), new BoundaryAskPolicy(),
+            payload => { events.Add(payload); return VoidBox.Instance; }, null, new TestExecutableResolver());
 
         var outcome = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "p1", "{}"),
             new ToolPreparationContext("test", DateTimeOffset.UtcNow), new ToolExecutionContext("test"), false,
