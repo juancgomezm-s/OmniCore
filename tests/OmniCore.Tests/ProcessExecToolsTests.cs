@@ -25,10 +25,18 @@ public sealed class ProcessExecToolsTests
     }
 
     private static string ProcessArgs(string executable, IReadOnlyList<string> argv, string cwd,
-        int timeout = 5, string sandbox = "Weak") => JsonSerializer.Serialize(new
+        int timeout = 5) => JsonSerializer.Serialize(new
         {
-            executable, argv, cwd, timeoutSeconds = timeout, sandboxLevel = sandbox,
+            executable, argv, cwd, timeoutSeconds = timeout,
         });
+
+    private static ISandboxProcessLauncher Launcher(IProcessRuntime runtime) =>
+        new PlatformSandboxProcessLauncher(runtime, new UnavailableStrongProbe());
+
+    private sealed class UnavailableStrongProbe : ISandboxCapabilitiesProbe
+    {
+        public SandboxCapabilities Probe() => new(false, true, true, "test: Strong unavailable");
+    }
 
     private static ToolRuntime Runtime(ProcessExecTool tool, IExecutableResolver resolver,
         IPermissionPolicy? policy = null) => new(
@@ -112,7 +120,7 @@ public sealed class ProcessExecToolsTests
         try
         {
             var runtime = new RecordingRuntime();
-            var tool = new ProcessExecTool(runtime, new PathBoundaryValidator());
+            var tool = new ProcessExecTool(Launcher(runtime), new PathBoundaryValidator(), SandboxStrength.Weak);
             var quoted = "an argument with spaces and \"quotes\"";
             var executable = OperatingSystem.IsWindows() ? "dotnet" : "/bin/echo";
             var argv = OperatingSystem.IsWindows() ? new[] { quoted, "--version" } : new[] { quoted };
@@ -136,7 +144,7 @@ public sealed class ProcessExecToolsTests
         try
         {
             var runtime = new SystemProcessRuntime();
-            var tool = new ProcessExecTool(runtime, new PathBoundaryValidator());
+            var tool = new ProcessExecTool(Launcher(runtime), new PathBoundaryValidator(), SandboxStrength.Weak);
             var executable = OperatingSystem.IsWindows() ? "dotnet" : "/bin/echo";
             var argv = OperatingSystem.IsWindows() ? new[] { "--version" } : new[] { "process exec ok" };
             var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "real-process",
@@ -159,7 +167,7 @@ public sealed class ProcessExecToolsTests
         try
         {
             var runtime = new RecordingRuntime();
-            var tool = new ProcessExecTool(runtime, new PathBoundaryValidator());
+            var tool = new ProcessExecTool(Launcher(runtime), new PathBoundaryValidator(), SandboxStrength.Weak);
             var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "p1",
                 ProcessArgs(OperatingSystem.IsWindows() ? "dotnet" : "/bin/echo", Array.Empty<string>(), outside));
             var outcome = Runtime(tool, new SystemExecutableResolver()).Run(call,
@@ -204,7 +212,7 @@ public sealed class ProcessExecToolsTests
             var runtime = new RecordingRuntime(() =>
                 sawBarrierAtLaunch = store.Writes.Any(write => write.Type == "toolcall.started"
                     && write.Durability == DurabilityClass.Barrier));
-            var tool = new ProcessExecTool(runtime, new PathBoundaryValidator());
+            var tool = new ProcessExecTool(Launcher(runtime), new PathBoundaryValidator(), SandboxStrength.Weak);
             var catalog = new FakeCatalog().Add(tool);
             var executor = new OmniCore.Host.ScriptedToolExecutor(catalog,
                 ScriptedPermissionPolicy.WithTool("process.exec", PermissionDecision.Allow), workspace, null);
@@ -229,7 +237,7 @@ public sealed class ProcessExecToolsTests
             SecretRedactorRegistry.Install(new SecretRedactor());
             SecretRedactorRegistry.Register("known-secret-value-123");
             var runtime = new RecordingRuntime { Output = "known-secret-value-123" + new string('x', 20_000) };
-            var tool = new ProcessExecTool(runtime, new PathBoundaryValidator());
+            var tool = new ProcessExecTool(Launcher(runtime), new PathBoundaryValidator(), SandboxStrength.Weak);
             var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "p1",
                 ProcessArgs(OperatingSystem.IsWindows() ? "dotnet" : "/bin/echo", Array.Empty<string>(), "."));
             var outcome = Runtime(tool, new SystemExecutableResolver()).Run(call,
@@ -250,7 +258,7 @@ public sealed class ProcessExecToolsTests
         try
         {
             var runtime = new SystemProcessRuntime();
-            var tool = new ProcessExecTool(runtime, new PathBoundaryValidator());
+            var tool = new ProcessExecTool(Launcher(runtime), new PathBoundaryValidator(), SandboxStrength.Weak);
             var executable = OperatingSystem.IsWindows()
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "ping.exe")
                 : "/bin/sleep";
@@ -274,7 +282,7 @@ public sealed class ProcessExecToolsTests
         var workspace = TempDir();
         try
         {
-            var tool = new ShellExecTool(new RecordingRuntime(), new PathBoundaryValidator());
+            var tool = new ShellExecTool(Launcher(new RecordingRuntime()), new PathBoundaryValidator(), SandboxStrength.Weak);
             const string raw = "echo 'one; two' && touch x";
             var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("shell.exec"), "p1",
                 JsonSerializer.Serialize(new { command = raw, cwd = ".", timeoutSeconds = 5 }));
@@ -289,13 +297,58 @@ public sealed class ProcessExecToolsTests
     }
 
     [Fact]
+    public void Weak_sandbox_consent_state_is_scoped_to_the_run()
+    {
+        var run = RunId.New();
+        Assert.Same(OmniCore.Host.OmniHost.GetWeakSandboxConsentState(run),
+            OmniCore.Host.OmniHost.GetWeakSandboxConsentState(new RunId(run.Value)));
+        Assert.NotSame(OmniCore.Host.OmniHost.GetWeakSandboxConsentState(run),
+            OmniCore.Host.OmniHost.GetWeakSandboxConsentState(RunId.New()));
+    }
+
+    [Fact]
+    public void Strong_process_exec_uses_AppContainer_and_cannot_read_outside_workspace()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Skip("La integración Strong de process.exec es Windows-specific.");
+        if (!new WindowsAppContainerCapabilitiesProbe().Probe().StrongAvailable)
+            Assert.Skip("AppContainer no está disponible en este entorno.");
+
+        var workspace = TempDir();
+        var outside = Path.Combine(Path.GetTempPath(), "omnicore-process-outside-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            File.WriteAllText(outside, "must-not-be-readable");
+            var helper = Path.Combine(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.exe");
+            var tool = new ProcessExecTool(OmniCore.Host.OmniHost.CreateProcessSandboxLauncher(new SystemProcessRuntime()),
+                new PathBoundaryValidator(), SandboxStrength.Strong);
+            var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "strong-read",
+                ProcessArgs(helper, new[] { "read", outside }, "."));
+            var events = new List<DomainEventPayload>();
+            var outcome = Runtime(tool, new SystemExecutableResolver()).Run(call,
+                new ToolPreparationContext(workspace, DateTimeOffset.UtcNow),
+                new ToolExecutionContext(workspace, null, events.Add, isInteractive: false), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.False(outcome.Succeeded);
+            Assert.Contains("DENIED", outcome.Preview);
+            Assert.DoesNotContain(events, evt => evt is InteractionRequested { Kind: InteractionKind.WeakSandboxConsent });
+        }
+        finally
+        {
+            Cleanup(workspace);
+            try { File.Delete(outside); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public void Strong_fallback_refuses_without_client_and_requests_audited_consent_with_interaction()
     {
         var workspace = TempDir();
         try
         {
-            var tool = new ProcessExecTool(new RecordingRuntime(), new PathBoundaryValidator());
-            var args = ProcessArgs(OperatingSystem.IsWindows() ? "dotnet" : "/bin/echo", Array.Empty<string>(), ".", sandbox: "Strong");
+            var fallbackLauncher = new RecordingFallbackLauncher(new RecordingRuntime());
+            var tool = new ProcessExecTool(fallbackLauncher, new PathBoundaryValidator(), SandboxStrength.Strong);
+            var args = ProcessArgs(OperatingSystem.IsWindows() ? "dotnet" : "/bin/echo", Array.Empty<string>(), ".");
             var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "p1", args);
 
             var noClientEvents = new List<DomainEventPayload>();
@@ -307,18 +360,42 @@ public sealed class ProcessExecToolsTests
             Assert.Equal(WeakSandboxConsentRequiredException.Code, noClient.Summary);
             Assert.Contains(noClientEvents, e => e is InteractionRequested { Kind: InteractionKind.WeakSandboxConsent });
             Assert.Contains(noClientEvents, e => e is InteractionResolved { Cause: InteractionCause.NoClient });
+            Assert.Equal(new[] { SandboxStrength.Strong }, fallbackLauncher.RequestedStrengths);
 
             var events = new List<DomainEventPayload>();
             var audit = new InMemoryAuditSink();
+            var state = new WeakSandboxConsentState();
             var context = new ToolExecutionContext(workspace, null, e => events.Add(e),
-                _ => "consent_once", audit, isInteractive: true, new WeakSandboxConsentState());
-            var granted = Runtime(tool, new SystemExecutableResolver()).Run(call,
-                new ToolPreparationContext(workspace, DateTimeOffset.UtcNow), context, false, CancellationToken.None);
+                _ => "consent_run", audit, isInteractive: true, state);
+            var executor = Runtime(tool, new SystemExecutableResolver());
+            var preparation = new ToolPreparationContext(workspace, DateTimeOffset.UtcNow);
+            var granted = executor.Run(call, preparation, context, false, CancellationToken.None);
             Assert.True(granted.Succeeded, granted.Summary);
-            Assert.Contains(events, e => e is InteractionResolved { OptionId: "consent_once" });
+            Assert.Contains(events, e => e is InteractionResolved { OptionId: "consent_run" });
             Assert.Contains(audit.Records(), r => r.EventName == "WeakSandboxConsentGranted");
+            var beforeReuse = events.Count(e => e is InteractionRequested { Kind: InteractionKind.WeakSandboxConsent });
+            var reused = executor.Run(call, preparation, context, false, CancellationToken.None);
+            Assert.True(reused.Succeeded, reused.Summary);
+            Assert.Equal(beforeReuse, events.Count(e => e is InteractionRequested { Kind: InteractionKind.WeakSandboxConsent }));
+            Assert.Equal(new[] { SandboxStrength.Strong, SandboxStrength.Strong, SandboxStrength.Weak,
+                SandboxStrength.Strong, SandboxStrength.Weak }, fallbackLauncher.RequestedStrengths);
         }
         finally { Cleanup(workspace); }
+    }
+
+    private sealed class RecordingFallbackLauncher(IProcessRuntime runtime) : ISandboxProcessLauncher
+    {
+        public List<SandboxStrength> RequestedStrengths { get; } = new();
+        private readonly RuntimeSandboxProcessLauncher _weak = new(runtime);
+
+        public ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch,
+            CancellationToken cancellationToken)
+        {
+            RequestedStrengths.Add(launch.RequestedStrength);
+            if (launch.RequestedStrength == SandboxStrength.Strong)
+                throw new NotSupportedException("test: Strong unavailable");
+            return _weak.StartAsync(launch, cancellationToken);
+        }
     }
 
     private sealed class FakeSandboxLauncher : ISandboxProcessLauncher

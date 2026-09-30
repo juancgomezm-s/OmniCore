@@ -3,6 +3,7 @@ namespace OmniCore.Host;
 using OmniCore.Abstractions;
 using OmniCore.Engine;
 using OmniCore.Execution;
+using OmniCore.Sandbox;
 using OmniCore.Tools;
 
 /// <summary>
@@ -19,7 +20,8 @@ public sealed class HostTools
     private readonly PlanProposeTool _planPropose;
 
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
-        bool includeMutationTools = false, bool includeProcessTools = false)
+        bool includeMutationTools = false, bool includeProcessTools = false,
+        SandboxStrength processSandboxStrength = SandboxStrength.Strong)
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
@@ -32,9 +34,9 @@ public sealed class HostTools
         }
         if (includeProcessTools)
         {
-            var processes = SystemProcessRuntime.Instance();
-            catalog = catalog.Add(new ProcessExecTool(processes, boundary))
-                .Add(new ShellExecTool(processes, boundary));
+            var processLauncher = OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
+            catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength))
+                .Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength));
         }
 
         _catalog = catalog
