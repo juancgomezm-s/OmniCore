@@ -7,7 +7,15 @@ namespace OmniCore.Cli;
 /// <summary>Despacha argumentos, procesa el protocolo y delega la composición al Host.</summary>
 public sealed class CliApp
 {
-    private static readonly OmniCliRuntime Runtime = CreateRuntime();
+    private static OmniCliRuntime Runtime = CreateRuntime();
+
+    // Internal injection point for end-to-end tests. Production always uses CreateRuntime().
+    internal static OmniCliRuntime UseRuntimeForTests(OmniCliRuntime runtime)
+    {
+        var previous = Runtime;
+        Runtime = runtime;
+        return previous;
+    }
 
     private static OmniCliRuntime CreateRuntime()
     {
@@ -236,6 +244,12 @@ public sealed class CliApp
                 : JsonObj.Field("scenario", scenarioName)) + "}";
         var result = client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         if (result.Status == "ok") return RenderEvents(client, jsonOutput, crash ? 1 : 0, scenarioName);
+        if (jsonOutput)
+        {
+            // A simulated crash is a command failure, but its committed events are still useful
+            // output: preserve the JSON-lines contract and report an interrupted outcome.
+            return RenderEvents(client, jsonOutput: true, exitCode: 1, scenarioName: scenarioName);
+        }
         Console.WriteLine("omni sim: " + (result.Error is null ? "fallo" : Loc().ResolveWire(result.Error)));
         return Task.FromResult(1);
     }
@@ -266,7 +280,16 @@ public sealed class CliApp
         {
             var payload = "{" + JsonObj.Field("cmd", "sim") + ","
                 + JsonObj.Field("scenario", "multi-item-plan") + "}";
-            client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+            var result = client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+            if (result.Status != "ok")
+            {
+                Console.WriteLine("omni tui --sim: " + (result.Error is null ? "fallo" : Loc().ResolveWire(result.Error)));
+                return Task.FromResult(1);
+            }
+
+            // --sim is explicitly headless: never initialize Terminal.Gui or wait for a TTY.
+            Console.WriteLine(TuiApp.RenderNonInteractive(client, Loc().Locale));
+            return Task.FromResult(0);
         }
 
         return Task.FromResult(TuiApp.Run(client, Loc().Locale));

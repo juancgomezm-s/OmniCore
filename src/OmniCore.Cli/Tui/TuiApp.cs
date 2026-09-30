@@ -42,6 +42,26 @@ public sealed class TuiApp
         _state = RefreshState();
     }
 
+    public static string RenderNonInteractive(IOmniClient client, string locale = "es")
+    {
+        var app = new TuiApp(client, locale);
+        var state = app._state;
+        var header = state.Header.WorkingDirectory.Length == 0 ? Environment.CurrentDirectory
+            : state.Header.WorkingDirectory;
+        var conversation = string.Join(Environment.NewLine, state.Conversation.Blocks.Select(block => block.Role switch
+        {
+            ConversationRole.User => "◉ " + block.Text,
+            ConversationRole.Assistant => "◆ " + block.Text,
+            ConversationRole.Tool => "● " + (block.ToolName ?? "tool") + " · " + block.Text,
+            ConversationRole.Interaction => "! " + block.Text,
+            _ => "○ " + block.Text,
+        }));
+        var status = StatusLinePresentation.From(state.StatusLine);
+        return "OmniCore · TUI (sim)" + Environment.NewLine + header + Environment.NewLine
+            + (conversation.Length == 0 ? (locale == "en" ? "No conversation yet." : "Todavía no hay conversación.")
+                : conversation) + Environment.NewLine + status.Left + " · " + status.Right;
+    }
+
     public static int Run(IOmniClient client, string locale = "es")
     {
         var app = new TuiApp(client, locale);
