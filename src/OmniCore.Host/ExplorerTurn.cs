@@ -429,7 +429,20 @@ public sealed class ExplorerTurn
                             _store.ReadFrom(sessionId, 1)).State == RunState.Running)
                             toPersist.Add(new RunAwaitingInput(runId, laneId));
                     }
+                    var pendingPermission = outcome.PendingInteractionId;
+                    if (pendingPermission is not null
+                        && RunProjection.Replay(sessionId, runId, _codecs,
+                            _store.ReadFrom(sessionId, 1)).State == RunState.Running)
+                        toPersist.Add(new RunAwaitingInput(runId, laneId));
                     stream.AppendBatch(toPersist, DurabilityClass.Standard);
+
+                    if (pendingPermission is { } permissionInteractionId)
+                    {
+                        allToolCalls.Add(new ToolUseTrace(call.ToolName, true, "awaiting input",
+                            _redaction.Redact(call.ArgumentsJson)));
+                        return new TurnResult(null, StopReason.InputRequired, steps, usage,
+                            allToolCalls.ToArray(), null, permissionInteractionId);
+                    }
 
                     if (call.ToolName == "user.ask" && outcome.Succeeded)
                     {
