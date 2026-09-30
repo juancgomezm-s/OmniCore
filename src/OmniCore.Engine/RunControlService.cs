@@ -37,6 +37,25 @@ public sealed class RunControlService
         return active;
     }
 
+    /// <summary>ToolCalls de la sesión en EffectUnknown sin Reconciled/outcome (de cualquier Run).</summary>
+    public IReadOnlyList<ToolCallId> UnreconciledEffects(SessionId session)
+    {
+        var unknown = new List<ToolCallId>();
+        var resolved = new HashSet<ToolCallId>();
+        foreach (var evt in _store.ReadFrom(session, 1))
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ToolCallEffectUnknown u: unknown.Add(u.ToolCallId); break;
+                case ToolCallReconciled r: resolved.Add(r.ToolCallId); break;
+                case ToolCallSucceeded s: resolved.Add(s.ToolCallId); break;
+                case ToolCallFailed f: resolved.Add(f.ToolCallId); break;
+            }
+        }
+
+        return unknown.Where(id => !resolved.Contains(id)).ToList();
+    }
+
     /// <summary>
     /// Abre un Run nuevo en la sesión con su Task y Lane raíz y el Plan rev.1 de un item
     /// (ADR-0035 §2-3). Falla con <see cref="RunAlreadyActiveException"/> si ya hay uno activo.
@@ -47,6 +66,13 @@ public sealed class RunControlService
         if (ActiveRun(session) is { } active)
         {
             throw new RunAlreadyActiveException(active);
+        }
+
+        // ADR-0004 §5: un efecto desconocido debe reconciliarse antes de seguir; un Run nuevo no lo pierde.
+        var pending = UnreconciledEffects(session);
+        if (pending.Count > 0)
+        {
+            throw new UnreconciledEffectException(pending);
         }
 
         var run = RunId.New();
@@ -383,5 +409,17 @@ public sealed class InvalidInteractionOptionException : InvalidOperationExceptio
     {
         Interaction = interaction;
         OptionId = optionId;
+    }
+}
+
+/// <summary>Hay ToolCalls con efecto desconocido sin reconciliar: hay que reconciliarlas antes de un Run nuevo (ADR-0004 §5).</summary>
+public sealed class UnreconciledEffectException : InvalidOperationException
+{
+    public IReadOnlyList<ToolCallId> ToolCalls { get; }
+
+    public UnreconciledEffectException(IReadOnlyList<ToolCallId> toolCalls)
+        : base("hay efectos desconocidos sin reconciliar en la sesión: " + string.Join(", ", toolCalls))
+    {
+        ToolCalls = toolCalls;
     }
 }
