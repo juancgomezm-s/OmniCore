@@ -72,6 +72,8 @@ public sealed class ExplorerPlanApprovalTests
                 setup.Server.LastLaneId()!, "runtime plan", CancellationToken.None);
             Assert.Equal(StopReason.EndTurn, continued.StopReason);
             Assert.Contains("same run", continued.FinalText!);
+            // Cada Turn nuevo abre su contabilidad de mutaciones (ADR-0044 §5).
+            Assert.Equal(1, boundary.ReadRegistry().Ledger.TurnNumber);
             var continuedEvents = setup.Server.AcquireStore().ReadFrom(setup.Session, 1);
             Assert.Contains(continuedEvents, evt => evt.RunId?.Equals(setup.Run) == true
                 && evt.Type.ToString() == "turn.started");
