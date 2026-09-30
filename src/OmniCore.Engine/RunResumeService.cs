@@ -99,6 +99,17 @@ public sealed class RunResumeService
                 continue; // idempotencia: ya resuelta por su outcome (o un Reconciled previo)
             }
 
+            if (started.EffectClass == EffectClass.None && !alreadyUnknown.Contains(id))
+            {
+                // ADR-0004 §3: una tool sin efectos (EffectClass.None) se reejecuta siempre: no hay
+                // nada que reconciliar ni que bloquee el Run. Se cierra como fallida-sin-efecto
+                // (Started → Failed, ADR-0036) para que el modelo pueda reintentarla.
+                stream.Append(new ToolCallFailed(id,
+                    "interrupted by crash before completion; no side effects, safe to retry", EffectOutcome.None));
+                reconciled += 1;
+                continue;
+            }
+
             if (!alreadyUnknown.Contains(id))
             {
                 // Solo el primer resume emite EffectUnknown; si ya está en el journal (crash
