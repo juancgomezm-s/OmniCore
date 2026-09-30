@@ -209,12 +209,12 @@ public sealed class M3BarrierOrderingTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
         var spy = new SpyingEventStore();
-        spy.TargetFile = ws + "\\doc.txt";
+        spy.TargetFile = Path.Combine(ws, "doc.txt");
         spy.OriginalContent = original;
         var sessionId = SessionId.New();
         var turn = MakeTurn(executor, hostTools.Catalog(), spy, ws, (request, token) =>
@@ -235,7 +235,7 @@ public sealed class M3BarrierOrderingTests
             Assert.Equal(1, spy.StartedBarrierCalls);
             Assert.True(spy.FileIntactAtStartedBarrier,
                 "el archivo debía seguir intacto cuando se escribió el Started con Barrier");
-            Assert.True(File.ReadAllText(ws + "\\doc.txt") == "linea-uno\nlinea-dos-C\n",
+            Assert.True(File.ReadAllText(Path.Combine(ws, "doc.txt")) == "linea-uno\nlinea-dos-C\n",
                 "el efecto debe aplicarse tras el Barrier");
         }
         finally
@@ -249,12 +249,12 @@ public sealed class M3BarrierOrderingTests
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
             ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
         var spy = new SpyingEventStore();
-        spy.TargetFile = ws + "\\doc.txt";
+        spy.TargetFile = Path.Combine(ws, "doc.txt");
         spy.OriginalContent = original;
         var sessionId = SessionId.New();
         var turn = MakeTurn(executor, hostTools.Catalog(), spy, ws, (request, token) =>
@@ -289,7 +289,7 @@ public sealed class M3BarrierOrderingTests
 
             Assert.Equal(1, startedCount);
             // El contenido final persiste el efecto.
-            Assert.True(File.ReadAllText(ws + "\\doc.txt") == "linea-uno\nlinea-dos-C\n");
+            Assert.True(File.ReadAllText(Path.Combine(ws, "doc.txt")) == "linea-uno\nlinea-dos-C\n");
         }
         finally
         {
@@ -354,7 +354,7 @@ public sealed class M3BarrierOrderingTests
         var fingerprint = new ExecutionFingerprint("m", "h", "t", "c", "o", "M3");
         var selection = new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null);
         return new ExplorerTurn(complete, executor, catalog, materializer, fingerprint, selection,
-            store, EventCodecs.Create(), new FileArtifactStore(ws + "\\.omnicore-barrier-art"),
+            store, EventCodecs.Create(), new FileArtifactStore(Path.Combine(ws, ".omnicore-barrier-art")),
             new InMemoryAuditSink(), new RedactionPolicy());
     }
 }

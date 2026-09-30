@@ -71,15 +71,15 @@ public sealed class M3HostRecoveryTests
         string relativePath)
     {
         var root = TempDir();
-        var ws = root + "\\ws";
+        var ws = Path.Combine(root, "ws");
         Directory.CreateDirectory(ws);
-        var storePath = root + "\\journal.db";
-        var stateFile = root + "\\lastsession.txt";
+        var storePath = Path.Combine(root, "journal.db");
+        var stateFile = Path.Combine(root, "lastsession.txt");
         var original = "linea-uno\nlinea-dos\n";
         var pre = VersionOf(original);
         var updated = "linea-uno\nlinea-dos-C\n";
         var post = VersionOf(updated);
-        File.WriteAllText(ws + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
 
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(storePath);
@@ -183,7 +183,7 @@ public sealed class M3HostRecoveryTests
             var updated = "linea-uno\nlinea-dos-C\n";
             if (fileIsApplied)
             {
-                File.WriteAllText(crash.Workspace + "\\doc.txt", updated);
+                File.WriteAllText(Path.Combine(crash.Workspace, "doc.txt"), updated);
             }
 
             // 1.ª reapertura: el propio arranque del Host detecta y reconcilia el Started-huérfano.
@@ -200,7 +200,7 @@ public sealed class M3HostRecoveryTests
             Assert.Equal(0, CountEvents(store1, crash.SessionId, "toolcall.succeeded"));
             // El archivo no se tocó por el recovery (solo observa): sigue como se dejó tras el crash.
             var expectedContent = fileIsApplied ? updated : "linea-uno\nlinea-dos\n";
-            Assert.Equal(expectedContent, File.ReadAllText(crash.Workspace + "\\doc.txt"));
+            Assert.Equal(expectedContent, File.ReadAllText(Path.Combine(crash.Workspace, "doc.txt")));
             store1.Close();
 
             // 2.ª reapertura: idempotente, NO agrega eventos de reconciliación ni de efecto.
@@ -251,7 +251,7 @@ public sealed class M3HostRecoveryTests
         Assert.Equal(0, CountEvents(store, sessionId, "toolcall.reconciled"));
         Assert.Equal(0, CountEvents(store, sessionId, "toolcall.succeeded"));
         // El archivo queda exactamente como se dejó tras el crash: la recuperación solo observa.
-        Assert.Equal("linea-uno\nlinea-dos\n", File.ReadAllText(workspace + "\\doc.txt"));
+        Assert.Equal("linea-uno\nlinea-dos\n", File.ReadAllText(Path.Combine(workspace, "doc.txt")));
     }
 
     [Fact]
@@ -280,7 +280,7 @@ public sealed class M3HostRecoveryTests
         // La raíz persistida apunta a un directorio que ya no existe (workspace movido/borrado):
         // verificada sobre el filesystem real → bloqueada, nunca se reconcilia contra otro sitio.
         var root = TempDir();
-        var gone = root + "\\moved-workspace";
+        var gone = Path.Combine(root, "moved-workspace");
         var crash = WriteInterruptedPatch(false, true, gone);
         try
         {
@@ -304,7 +304,7 @@ public sealed class M3HostRecoveryTests
         var codecs = EventCodecs.Create();
         var sessionId = SessionId.New();
         var runId = RunId.New();
-        var stateFile = TempDir() + "\\lastsession.txt";
+        var stateFile = Path.Combine(TempDir(), "lastsession.txt");
         File.WriteAllText(stateFile, sessionId.ToString() + "\n" + runId.ToString());
         try
         {
@@ -326,12 +326,12 @@ public sealed class M3HostRecoveryTests
         // Metadatos persistidos con intento de escape del workspace (../ fuera): la recuperación
         // debe fallar cerrado (Unresolvable), NO leer ningún archivo fuera del workspace y nunca
         // clasificar Applied. Este es el riesgo exacto que arregla la no-sustitución por cwd.
-        var crash = WriteInterruptedPatch(false, true, null, "..\\outside\\secret.txt");
+        var crash = WriteInterruptedPatch(false, true, null, "../outside/secret.txt");
         try
         {
-            var outside = Path.GetDirectoryName(crash.Workspace)! + "\\outside";
+            var outside = Path.Combine(Path.GetDirectoryName(crash.Workspace)!, "outside");
             Directory.CreateDirectory(outside);
-            File.WriteAllText(outside + "\\secret.txt", "SECRETO-FUERA");
+            File.WriteAllText(Path.Combine(outside, "secret.txt"), "SECRETO-FUERA");
 
             var store = new SqliteEventStore(crash.StorePath);
             var server = new OmniServer(store, EventCodecs.Create(), new InMemoryAuditSink(), crash.StateFile);
@@ -340,7 +340,7 @@ public sealed class M3HostRecoveryTests
             Assert.Single(results);
             Assert.Equal(ReconciliationOutcome.Unresolvable, results[0].Outcome);
             // El archivo fuera del workspace no fue leído ni modificado por la recuperación.
-            Assert.Equal("SECRETO-FUERA", File.ReadAllText(outside + "\\secret.txt"));
+            Assert.Equal("SECRETO-FUERA", File.ReadAllText(Path.Combine(outside, "secret.txt")));
             // Detalle de falla cerrado (nunca Applied) visible en el evento reconciliado.
             Assert.Equal(0, CountEvents(store, crash.SessionId, "toolcall.succeeded"));
             store.Close();
