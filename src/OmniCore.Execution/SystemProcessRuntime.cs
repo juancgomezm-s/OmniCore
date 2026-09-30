@@ -14,14 +14,30 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
 {
     private readonly Dictionary<int, Process> _alive = new();
 
+    private readonly string[] _additionalEnvironmentAllowlist;
+
+    public SystemProcessRuntime(IEnumerable<string>? additionalEnvironmentAllowlist = null)
+    {
+        var extras = additionalEnvironmentAllowlist?.ToArray() ?? Array.Empty<string>();
+        if (extras.Any(name => !IsValidEnvironmentName(name)))
+            throw new ArgumentException("La allowlist de entorno contiene un nombre inválido.",
+                nameof(additionalEnvironmentAllowlist));
+        _additionalEnvironmentAllowlist = extras.Distinct(EnvironmentComparer).ToArray();
+    }
+
     public static IProcessRuntime Instance() => new SystemProcessRuntime();
 
-    public IProcessRuntime Create() => new SystemProcessRuntime();
+    public IProcessRuntime Create() => new SystemProcessRuntime(_additionalEnvironmentAllowlist);
 
     public ProcessHandle Launch(ProcessLaunch launch, CancellationToken cancellationToken)
     {
         var psi = new ProcessStartInfo();
         psi.FileName = launch.Executable;
+        // ProcessStartInfo starts as a copy of the parent environment. Clear it before adding
+        // the ADR-0037 platform allowlist and the explicit launch delta (which may include a SecretRef).
+        psi.UseShellExecute = false;
+        psi.Environment.Clear();
+        CopyAllowedParentEnvironment(psi.Environment);
         foreach (var arg in launch.Args)
         {
             psi.ArgumentList.Add(arg);
@@ -41,7 +57,6 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         {
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
-            psi.UseShellExecute = false;
         }
 
         psi.CreateNewProcessGroup = true;
@@ -54,6 +69,40 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
 
         _alive[process.Id] = process;
         return new ProcessHandle(process.Id, this);
+    }
+
+    private static StringComparer EnvironmentComparer => OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    private static bool IsValidEnvironmentName(string name) => !string.IsNullOrWhiteSpace(name)
+        && !name.Contains('=') && !name.Any(char.IsControl);
+
+    private void CopyAllowedParentEnvironment(IDictionary<string, string?> target)
+    {
+        var allowed = new HashSet<string>(EnvironmentComparer)
+        {
+            "PATH",
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            allowed.Add("SystemRoot");
+            allowed.Add("WINDIR");
+            allowed.Add("TEMP");
+            allowed.Add("TMP");
+        }
+        else
+        {
+            allowed.Add("HOME");
+            allowed.Add("LANG");
+            allowed.Add("TMPDIR");
+        }
+        foreach (var extra in _additionalEnvironmentAllowlist) allowed.Add(extra);
+
+        foreach (System.Collections.DictionaryEntry pair in Environment.GetEnvironmentVariables())
+        {
+            if (pair.Key is not string name || pair.Value is not string value || !allowed.Contains(name)) continue;
+            target[name] = value;
+        }
     }
 
     public void CancelTree(ProcessHandle handle)

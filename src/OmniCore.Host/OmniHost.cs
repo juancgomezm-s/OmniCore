@@ -2,6 +2,7 @@ namespace OmniCore.Host;
 
 using OmniCore.Abstractions;
 using OmniCore.Engine;
+using OmniCore.Domain;
 using OmniCore.Execution;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
@@ -198,9 +199,10 @@ public sealed class OmniHost
         ModelCapabilityBoundary? boundary) => CreateExplorerExecutor(catalog, workspaceRoot, boundary, null);
 
     public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot,
-        ModelCapabilityBoundary? boundary, IReadOnlyDictionary<string, string>? projectRestrictions)
+        ModelCapabilityBoundary? boundary, IReadOnlyDictionary<string, string>? projectRestrictions,
+        RunId? runId = null)
     {
-        var policy = CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions);
+        var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions, workspaceRoot, runId);
         return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
     }
 
@@ -233,11 +235,33 @@ public sealed class OmniHost
     /// Engine sigue siendo la única autoridad (INV-018).
     /// </summary>
     public static IToolExecutor CreateActExecutor(FakeCatalog catalog, string workspaceRoot,
-        ModelCapabilityBoundary boundary, IReadOnlyDictionary<string, string>? projectRestrictions = null)
+        ModelCapabilityBoundary boundary, IReadOnlyDictionary<string, string>? projectRestrictions = null,
+        RunId? runId = null)
     {
         ArgumentNullException.ThrowIfNull(boundary);
-        var policy = CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode.Act, projectRestrictions);
+        var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId);
         return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
+    }
+
+    /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>
+    public static ScriptedPermissionPolicy CreateGrantAwarePolicy(
+        OmniCore.Domain.RunMode mode, IReadOnlyDictionary<string, string>? restrictions, string workspaceRoot,
+        RunId? runId, IAuditSink? audit = null)
+    {
+        var paths = CreatePlatformPaths();
+        var workspace = OmniCore.Domain.WorkspaceId.Of(
+            ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot));
+        var store = new OmniCore.Security.FilePermissionGrantStore(
+            WorkspaceDataDirectory(paths, workspaceRoot), audit ?? new FileAuditSink(paths.DataDirectory));
+        return CreateProjectRestrictionPolicy(mode, restrictions).WithGrantStore(store, workspace, runId);
+    }
+
+    public static OmniCore.Security.FilePermissionGrantStore CreatePermissionGrantStore(
+        string workspaceRoot, IAuditSink? audit = null)
+    {
+        var paths = CreatePlatformPaths();
+        return new OmniCore.Security.FilePermissionGrantStore(WorkspaceDataDirectory(paths, workspaceRoot),
+            audit ?? new FileAuditSink(paths.DataDirectory));
     }
 
     /// <summary>

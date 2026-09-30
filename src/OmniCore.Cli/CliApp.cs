@@ -35,6 +35,7 @@ public sealed class CliApp
         if (command == "act") return RunAct(args);
         if (command == "model") return ModelPolicyCommands.Run(args);
         if (command == "trust") return RunTrust(args);
+        if (command == "permissions") return RunPermissions(args);
         if (command == "doctor") return RunDoctor(args);
         if (command is "--tui" or "tui") return RunTui(args);
         if (command is "--help" or "-h" or "help")
@@ -148,6 +149,39 @@ public sealed class CliApp
         return redacted.Length <= max ? redacted : redacted.Substring(0, max) + "…";
     }
 
+    private static Task<int> RunPermissions(string[] args)
+    {
+        if (args.Length == 1 || args.Length == 2 && args[1] == "list")
+        {
+            var result = Runtime.Permissions(new ListPermissionGrantsCommand(), CancellationToken.None);
+            Console.WriteLine(Loc().Resolve("permissions.heading"));
+            if (result.Grants.Count == 0) Console.WriteLine(Loc().Resolve("permissions.empty"));
+            foreach (var grant in result.Grants)
+            {
+                var lifetimeKey = grant.Lifetime switch
+                {
+                    "Run" => "interaction.permission.allow_run",
+                    "Workspace" => "interaction.permission.allow_workspace",
+                    _ => "interaction.permission.allow_once",
+                };
+                Console.WriteLine(grant.Id + "  " + grant.ToolId + "  " + Loc().Resolve(lifetimeKey)
+                    + "  " + grant.ClaimsKey + (grant.Run is null ? "" : "  Run " + grant.Run));
+            }
+            return Task.FromResult(0);
+        }
+
+        if (args.Length == 3 && args[1] == "revoke" && Guid.TryParse(args[2], out var id))
+        {
+            var result = Runtime.Permissions(new RevokePermissionGrantCommand(id.ToString()),
+                CancellationToken.None);
+            Console.WriteLine(Loc().Resolve(result.Revoked ? "permissions.revoked" : "permissions.not_found"));
+            return Task.FromResult(result.Revoked ? 0 : 1);
+        }
+
+        Console.WriteLine(Loc().Resolve("permissions.usage"));
+        return Task.FromResult(2);
+    }
+
     private static Task<int> RunTrust(string[] args)
     {
         var revoke = args.Length > 1 && args[1] is "revoke" or "--revoke";
@@ -191,6 +225,7 @@ public sealed class CliApp
         Console.WriteLine("  omni act \"instrucción\"              Run Act con filesystem.read/patch bajo política efectiva (M3)");
         Console.WriteLine("  omni ask \"texto\"                    Turn end-to-end contra el modelo local (M2)");
         Console.WriteLine("  omni model ...                       Políticas de modelo y onboarding (M3)");
+        Console.WriteLine(Loc().Resolve("permissions.help"));
         Console.WriteLine("  omni --help                          Esta ayuda");
     }
 }

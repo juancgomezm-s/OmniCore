@@ -54,23 +54,25 @@ public sealed class ExplorerTurn
     /// </summary>
     private readonly ModelCapabilityBoundary? _boundary;
 
-    // Límites de sesión/día (ADR-0037 §7): $5 por sesión, $20 por día — capa sobre el guard del Run.
-    private readonly decimal _sessionCapUsd = 5m;
+    private readonly ModelPricing? _pricing;
 
-    private readonly decimal _dailyCapUsd = 20m;
+    private readonly bool _enforceDefaultSpendCaps;
 
-    private decimal _sessionCostUsd;
+    // ADR-0037 §7. Solo se aplican a providers que requieren API key; se pueden cambiar por
+    // constructor/configuración de Host. Las tarifas nunca se inventan localmente.
+    private readonly decimal _sessionCapUsd;
 
-    private decimal _dailyCostUsd;
-
-    private readonly string _dailyKey;
+    private readonly decimal _dailyCapUsd;
 
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
         ModelSelection selection, IEventStore store, IEventCodecRegistry codecs, IArtifactStore artifacts,
         IAuditSink audit, RedactionPolicy redaction, HarnessPolicy? harness = null,
-        ModelCapabilityBoundary? boundary = null)
+        ModelCapabilityBoundary? boundary = null, ModelPricing? pricing = null,
+        bool enforceDefaultSpendCaps = false, decimal sessionCapUsd = 5m, decimal dailyCapUsd = 20m)
     {
+        if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
+        if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
         _complete = complete;
         _tools = tools;
         _catalog = catalog;
@@ -84,7 +86,10 @@ public sealed class ExplorerTurn
         _redaction = redaction;
         _harness = harness;
         _boundary = boundary;
-        _dailyKey = DateTimeOffset.Now.ToString("yyyy-MM-dd");
+        _pricing = pricing;
+        _enforceDefaultSpendCaps = enforceDefaultSpendCaps;
+        _sessionCapUsd = sessionCapUsd;
+        _dailyCapUsd = dailyCapUsd;
     }
 
     /// <summary>Journal del Turn (tests: para abrir en él el Run al que pertenece el Turn).</summary>
@@ -102,9 +107,15 @@ public sealed class ExplorerTurn
             new OmniCore.Infrastructure.InMemoryAuditSink(),
             new OmniCore.Domain.RedactionPolicy(),
             null,
-            boundary)
+            boundary,
+            null,
+            false)
     {
     }
+
+    private sealed record PersistedSpend(decimal SessionUsd, decimal DailyUsd, decimal RunUsd, bool Incomplete);
+
+    private sealed record UsageEnvelope(string Response, string RunId, string Day, decimal? CostUsd);
 
     public sealed class TurnResult
     {
@@ -164,6 +175,8 @@ public sealed class ExplorerTurn
     {
         var stream = new EventStream(_store, _codecs, sessionId);
         var turnId = TurnId.New();
+        var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        var persistedSpend = ReadJournalSpend(stream, runId, today);
 
         var messages = LoadConversation(stream, runId);
         var safeQuestion = _redaction.Redact(question ?? "");
@@ -235,25 +248,45 @@ public sealed class ExplorerTurn
                 ModelResponse resolved;
                 try
                 {
+                    var budgeted = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
+                    if (budgeted && (_pricing is null || !_pricing.IsComplete))
+                        throw new BudgetExceededException("precio desconocido: no se puede hacer cumplir el tope");
+                    if (budgeted && persistedSpend.Incomplete)
+                        throw new BudgetExceededException("uso histórico incompleto: no se puede hacer cumplir el tope");
+                    var accumulatedRunCost = persistedSpend.RunUsd + guard.CostUsd()
+                        + (_pricing?.CostUsd(usage) ?? 0m);
+                    var accumulatedSessionCost = persistedSpend.SessionUsd + (_pricing?.CostUsd(usage) ?? 0m);
+                    var accumulatedDailyCost = persistedSpend.DailyUsd + (_pricing?.CostUsd(usage) ?? 0m);
+                    if (budget.MaxCostUsd is not null && accumulatedRunCost >= budget.MaxCostUsd.Value)
+                        throw new BudgetExceededException("límite de costo de Run alcanzado ($"
+                            + budget.MaxCostUsd.Value + ")");
+                    if (_enforceDefaultSpendCaps && accumulatedSessionCost >= _sessionCapUsd)
+                        throw new BudgetExceededException("límite de sesión alcanzado ($" + _sessionCapUsd + ")");
+                    if (_enforceDefaultSpendCaps && accumulatedDailyCost >= _dailyCapUsd)
+                        throw new BudgetExceededException("límite diario alcanzado ($" + _dailyCapUsd + ")");
+
                     resolved = _complete(request, cancellationToken);
+                    usage = CombineUsage(usage, resolved.Usage);
                     guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
-                    // Costo real registrado (rate por token local; ADR-0037 §7): el guard
-                    // corta si excede MaxCostUsd del Run y emite InteractionRequested.
-                    var stepCost = EstimateCostUsd(resolved.Usage);
-                    guard.AddCostUsd(stepCost);
-                    ValidateSessionDaily(stepCost);
+                    var stepCost = _pricing?.CostUsd(resolved.Usage);
+                    if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
+                    if (budget.MaxCostUsd is not null
+                        && persistedSpend.RunUsd + guard.CostUsd() > budget.MaxCostUsd.Value)
+                        throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")");
+                    if (_enforceDefaultSpendCaps)
+                    {
+                        var turnCost = _pricing!.CostUsd(usage) ?? 0m;
+                        ValidateSessionDaily(persistedSpend.SessionUsd + turnCost,
+                            persistedSpend.DailyUsd + turnCost);
+                    }
                 }
                 catch (BudgetExceededException budgetEx)
                 {
-                    // Una SOLA emisión de la interacción de presupuesto con las opciones de
-                    // ADR-0037 (Continuar hasta +X / Detener). ValidateSessionDaily solo lanza.
                     EmitBudgetExceeded(stream, turnId, budgetEx.Detail);
                     stop = StopReason.Cancelled;
                     finalText = "Presupuesto agotado: " + budgetEx.Detail;
                     break;
                 }
-
-                usage = CombineUsage(usage, resolved.Usage);
 
                 finalText = null;
                 var toolBlocks = new List<ToolCallBlock>();
@@ -359,7 +392,10 @@ public sealed class ExplorerTurn
             string? artifactId = null;
             if (finalText is not null && finalText!.Length > 0)
             {
-                var artifact = _artifacts.PutText(_redaction.Redact(finalText!), "text/plain",
+                var safeResponse = _redaction.Redact(finalText!);
+                var cost = _pricing?.CostUsd(usage);
+                var journalRecord = EncodeUsageResponse(safeResponse, usage, cost, runId, today);
+                var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
                     ArtifactKind.ModelResponse, Sensitivity.Sensitive);
                 artifactId = artifact.Hash.ToString();
                 stream.Append(new ModelCompleted(turnId, artifact));
@@ -400,7 +436,8 @@ public sealed class ExplorerTurn
             details["stop"] = stop.ToString();
             details["inputTokens"] = usage.Input.ToString();
             details["outputTokens"] = usage.Output.ToString();
-            details["costUsd"] = EstimateCostUsd(usage).ToString();
+            var cost = _pricing?.CostUsd(usage);
+            if (cost is not null) details["costUsd"] = cost.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
             details["final"] = redactedFinal.Length > 200 ? redactedFinal.Substring(0, 200) : redactedFinal;
             _audit.Record(new AuditRecord("turn.spend", null, sessionId, runId, DateTimeOffset.Now,
                 turnId.ToString(), details), CancellationToken.None);
@@ -443,6 +480,76 @@ public sealed class ExplorerTurn
         }
 
         return new TaskBudget(null, null, null, null);
+    }
+
+    /// <summary>
+    /// Gasto ya confirmado en el journal del workspace. ModelCompleted referencia un artifact
+    /// versionado que conserva la respuesta y la usage/cost metadata; el replay no depende de
+    /// contadores en memoria ni de tarifas que hayan cambiado desde entonces.
+    /// </summary>
+    private PersistedSpend ReadJournalSpend(EventStream stream, RunId runId, string today)
+    {
+        decimal session = 0m, daily = 0m, run = 0m;
+        var incomplete = false;
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (!evt.Type.ToString().Equals("model.completed", StringComparison.Ordinal)) continue;
+            var completed = _codecs.Decode(evt) as ModelCompleted;
+            if (completed?.ResponseArtifact is null) { incomplete = true; continue; }
+            var text = _artifacts.GetText(completed.ResponseArtifact.Hash);
+            if (!TryDecodeUsageEnvelope(text, out var record) || record.CostUsd is null)
+            {
+                incomplete = true;
+                continue;
+            }
+            var cost = record.CostUsd.Value;
+            session += cost;
+            if (record.Day == today) daily += cost;
+            if (record.RunId == runId.ToString()) run += cost;
+        }
+        return new PersistedSpend(session, daily, run, incomplete);
+    }
+
+    private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,
+        RunId runId, string day)
+    {
+        var costJson = cost is null ? "null" : "\""
+            + cost.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\"";
+        return "{\"omnicoreUsage\":1," + JsonObj.Field("response", response)
+            + ",\"runId\":\"" + runId + "\",\"day\":\"" + day
+            + "\",\"input\":" + usage.Input.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"output\":" + usage.Output.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"cacheRead\":" + usage.CacheRead.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"cacheWrite\":" + usage.CacheWrite.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"reasoning\":" + usage.Reasoning.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"costUsd\":" + costJson + "}";
+    }
+
+    private static string DecodeUsageResponse(string? text) =>
+        TryDecodeUsageEnvelope(text, out var record) ? record.Response : text ?? "";
+
+    private static bool TryDecodeUsageEnvelope(string? text, out UsageEnvelope record)
+    {
+        record = new UsageEnvelope("", "", "", null);
+        if (string.IsNullOrEmpty(text)) return false;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(text);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("omnicoreUsage", out var version) || version.GetInt32() != 1
+                || !root.TryGetProperty("response", out var response)
+                || !root.TryGetProperty("runId", out var runId)
+                || !root.TryGetProperty("day", out var day)
+                || !root.TryGetProperty("costUsd", out var cost)) return false;
+            decimal? parsedCost = cost.ValueKind == System.Text.Json.JsonValueKind.String
+                && decimal.TryParse(cost.GetString(), System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : null;
+            record = new UsageEnvelope(response.GetString() ?? "", runId.GetString() ?? "",
+                day.GetString() ?? "", parsedCost);
+            return true;
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+        catch (InvalidOperationException) { return false; }
     }
 
     /// <summary>Aplica plan.propose contra las proyecciones del mismo Run (P0-6 + requisito 2).</summary>
@@ -538,19 +645,12 @@ public sealed class ExplorerTurn
     /// Acumula costo de sesión/día (ADR-0037 §7: 5/20 USD). SOLO lanza al superar el tope:
     /// la emisión de la interacción la hace el catch del turno (evita la doble emisión).
     /// </summary>
-    private void ValidateSessionDaily(decimal stepCost)
+    private void ValidateSessionDaily(decimal totalSessionCost, decimal totalDailyCost)
     {
-        _sessionCostUsd += stepCost;
-        _dailyCostUsd += stepCost;
-        if (_sessionCostUsd > _sessionCapUsd)
-        {
+        if (totalSessionCost > _sessionCapUsd)
             throw new OmniCore.Engine.BudgetExceededException("límite de sesión ($" + _sessionCapUsd + ")");
-        }
-
-        if (_dailyCostUsd > _dailyCapUsd)
-        {
+        if (totalDailyCost > _dailyCapUsd)
             throw new OmniCore.Engine.BudgetExceededException("límite diario ($" + _dailyCapUsd + ")");
-        }
     }
 
     /// <summary>Renderiza el snapshot materializado como texto para el system prompt.</summary>
@@ -634,7 +734,7 @@ public sealed class ExplorerTurn
             {
                 var completed = _codecs.Decode(evt) as ModelCompleted;
                 if (completed?.ResponseArtifact is null) continue;
-                var text = _artifacts.GetText(completed.ResponseArtifact.Hash);
+                var text = DecodeUsageResponse(_artifacts.GetText(completed.ResponseArtifact.Hash));
                 if (!string.IsNullOrEmpty(text))
                     history.Add(new ModelMessage(MessageRole.Assistant,
                         new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
@@ -977,13 +1077,6 @@ public sealed class ExplorerTurn
     private static TokenUsage CombineUsage(TokenUsage a, TokenUsage b) =>
         new TokenUsage(a.Input + b.Input, a.Output + b.Output, a.CacheRead + b.CacheRead,
             a.CacheWrite + b.CacheWrite, a.Reasoning + b.Reasoning);
-
-    /// <summary>Costo estimado en USD de un uso (rate por token local, determinista; ADR-0037 §7).</summary>
-    internal static decimal EstimateCostUsd(TokenUsage usage)
-    {
-        // $0.002/1K input, $0.005/1K output (típico de un local 27B/user en la nube).
-        return usage.Input / 1000m * 0.002m + usage.Output / 1000m * 0.005m;
-    }
 
     private static bool HasWorkingStateContributor(List<OmniCore.Context.IContextContributor> contributors)
     {
