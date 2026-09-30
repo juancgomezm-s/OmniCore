@@ -22,13 +22,13 @@ public sealed class ConfigLoader
     {
         var diagnostics = new List<ConfigDiagnostic>();
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
-            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "authRef" });
+            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "authRef", "auth" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput", "parametersBillions" });
         ValidateRequiredAndRanges(providerNodes, modelNodes, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
 
-        var providerFile = Deserialize<ProvidersFileYaml>(providersYaml, "providers.yaml", diagnostics);
+        var providerFile = CreateProvidersFile(providerNodes);
         var modelFile = Deserialize<ModelsFileYaml>(modelsYaml, "models.yaml", diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
         var registry = new ModelRegistry();
@@ -40,7 +40,11 @@ public sealed class ConfigLoader
             foreach (var pair in providerFile.Providers)
             {
                 var values = pair.Value;
-                var authRef = values.AuthRef;
+                var auth = values.AuthRef is not null
+                    ? AuthConfig.ApiKey(values.AuthRef)
+                    : values.Auth is { IsNone: false, ApiKey: not null } legacyAuth
+                        ? AuthConfig.ApiKey(legacyAuth.ApiKey)
+                        : AuthConfig.None();
                 var family = values.Family switch
                 {
                     "AnthropicMessages" => ProviderFamily.AnthropicMessages,
@@ -48,7 +52,7 @@ public sealed class ConfigLoader
                     _ => ProviderFamily.OpenAiChatCompatible,
                 };
                 registry.Add(new ProviderDescriptor(pair.Key, family, values.BaseUrl!,
-                    string.IsNullOrWhiteSpace(authRef) ? AuthConfig.None() : AuthConfig.ApiKey(authRef),
+                    auth,
                     true, true, true) { TrustedCertificatePath = values.CaCertificate });
             }
         }
@@ -67,7 +71,10 @@ public sealed class ConfigLoader
         if (providersYaml is null && modelsYaml is null)
             registry.AddModel(new ModelDefinition("local-worker", "local", 8192, 8192, 2048));
 
-        return new LoadedUserConfiguration(registry, providerFile, modelFile);
+        var notices = providerFile?.Providers?.Values.Any(provider => provider.Auth is not null) == true
+            ? new[] { LocalizedText.Of("config.legacyAuthDeprecated") }
+            : Array.Empty<LocalizedText>();
+        return new LoadedUserConfiguration(registry, providerFile, modelFile, notices);
     }
 
     private static YamlMappingNode? ParseRoot(string? yaml, string file, string rootKey,
@@ -146,10 +153,13 @@ public sealed class ConfigLoader
                     or "AnthropicMessages"))
                     AddAtNode(diagnostics, "providers.yaml", path + ".family", "config.outOfRange",
                         values.Children[new YamlScalarNode("family")]);
-                if (values.Children.ContainsKey(new YamlScalarNode("authRef"))
-                    && string.IsNullOrWhiteSpace(Scalar(values, "authRef")))
-                    AddAtNode(diagnostics, "providers.yaml", path + ".authRef", "config.missingRequired",
-                        values.Children[new YamlScalarNode("authRef")]);
+                var hasAuth = values.Children.TryGetValue(new YamlScalarNode("auth"), out var authNode);
+                var hasAuthRef = values.Children.TryGetValue(new YamlScalarNode("authRef"), out var authRefNode);
+                if (hasAuth && hasAuthRef)
+                    AddAtNode(diagnostics, "providers.yaml", path + ".auth", "config.conflictingAuth", authNode!);
+                if (hasAuthRef && string.IsNullOrWhiteSpace(Scalar(values, "authRef")))
+                    AddAtNode(diagnostics, "providers.yaml", path + ".authRef", "config.missingRequired", authRefNode!);
+                if (hasAuth) ValidateLegacyAuth(authNode!, path, diagnostics);
             }
         }
 
@@ -181,6 +191,53 @@ public sealed class ConfigLoader
                 AddAtNode(diagnostics, "models.yaml", path + ".parametersBillions", "config.outOfRange",
                     values.Children[new YamlScalarNode("parametersBillions")]);
         }
+    }
+
+    private static ProvidersFileYaml? CreateProvidersFile(YamlMappingNode? providers)
+    {
+        if (providers is null) return null;
+        var result = new ProvidersFileYaml { Providers = new Dictionary<string, ProviderFileYaml>(StringComparer.Ordinal) };
+        foreach (var pair in providers.Children)
+        {
+            if (pair.Key is not YamlScalarNode { Value: { } id } || pair.Value is not YamlMappingNode values)
+                continue;
+            var provider = new ProviderFileYaml
+            {
+                Kind = Scalar(values, "kind"),
+                Family = Scalar(values, "family"),
+                BaseUrl = Scalar(values, "baseUrl"),
+                CaCertificate = Scalar(values, "caCertificate"),
+                AuthRef = Scalar(values, "authRef"),
+            };
+            if (values.Children.TryGetValue(new YamlScalarNode("auth"), out var authNode))
+            {
+                provider.Auth = authNode is YamlScalarNode { Value: { } scalar }
+                    ? new ProviderAuthYaml { IsNone = scalar.Equals("none", StringComparison.OrdinalIgnoreCase) }
+                    : authNode is YamlMappingNode authMap
+                        ? new ProviderAuthYaml { ApiKey = Scalar(authMap, "apiKey") }
+                        : null;
+            }
+            result.Providers.Add(id, provider);
+        }
+        return result;
+    }
+
+    private static void ValidateLegacyAuth(YamlNode node, string providerPath,
+        List<ConfigDiagnostic> diagnostics)
+    {
+        var path = providerPath + ".auth";
+        if (node is YamlScalarNode scalar && IsYamlString(node)
+            && scalar.Value!.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+        if (node is not YamlMappingNode authMap)
+        {
+            AddAtNode(diagnostics, "providers.yaml", path, "config.wrongType", node);
+            return;
+        }
+        CheckKeys(authMap, "providers.yaml", path, new[] { "apiKey" }, diagnostics);
+        if (!authMap.Children.TryGetValue(new YamlScalarNode("apiKey"), out var apiKey))
+            AddAtNode(diagnostics, "providers.yaml", path + ".apiKey", "config.missingRequired", authMap);
+        else if (!IsYamlString(apiKey))
+            AddAtNode(diagnostics, "providers.yaml", path + ".apiKey", "config.wrongType", apiKey);
     }
 
     private static long? ValidateInteger(YamlMappingNode values, string key, string path,
@@ -216,6 +273,10 @@ public sealed class ConfigLoader
             else if (key is "kind" or "family" or "baseUrl" or "caCertificate" or "authRef" or "provider")
             {
                 if (!IsYamlString(pair.Value)) AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+            }
+            else if (key == "auth")
+            {
+                // Validated as the supported legacy scalar/mapping union in ValidateLegacyAuth.
             }
             else if (pair.Value is not YamlScalarNode)
                 AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
@@ -270,7 +331,7 @@ public sealed class ConfigLoader
 }
 
 public sealed record LoadedUserConfiguration(ModelRegistry Registry, ProvidersFileYaml? Providers,
-    ModelsFileYaml? Models)
+    ModelsFileYaml? Models, IReadOnlyList<LocalizedText>? DeprecationNotices = null)
 {
     public string? ProviderKind(string providerId) => Providers?.Providers?.TryGetValue(providerId, out var provider) == true
         ? provider.Kind : null;

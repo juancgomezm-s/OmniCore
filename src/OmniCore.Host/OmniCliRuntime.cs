@@ -14,6 +14,7 @@ public sealed class OmniCliRuntime
     private readonly string _workspaceRoot;
     private OmniServer? _server;
     private bool _workspaceWarningShown;
+    private bool _providerDeprecationShown;
 
     private OmniCliRuntime(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
 
@@ -68,6 +69,7 @@ public sealed class OmniCliRuntime
             return 1;
         }
         var registry = loaded.Registry;
+        ReportProviderNotices(loaded, locale, writeLine, localize);
         writeLine(locale == "en" ? "omni doctor — M2 diagnostics" : "omni doctor — diagnóstico de M2");
         writeLine((locale == "en" ? "Configuration: " : "Configuración: ") + paths.ConfigDirectory);
         var trust = new WorkspaceTrustStore(paths).IsTrusted(Directory.GetCurrentDirectory());
@@ -152,6 +154,11 @@ public sealed class OmniCliRuntime
             return 1;
         }
         var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        if (!_providerDeprecationShown && loaded.DeprecationNotices is { Count: > 0 } notices)
+        {
+            foreach (var notice in notices) writeLine("warning: " + Text(notice));
+            _providerDeprecationShown = true;
+        }
         if (!_workspaceWarningShown)
         {
             WarnIgnoredWorkspaceConfig(workspaceConfig, locale, writeLine);
@@ -365,6 +372,17 @@ public sealed class OmniCliRuntime
                 + ":" + diagnostic.Column);
             writeLine((locale == "en" ? "Configuration error " : "Error de configuración ")
                 + location + " (" + diagnostic.KeyPath + "): " + message);
+        }
+    }
+
+    private static void ReportProviderNotices(LoadedUserConfiguration loaded, string locale,
+        Action<string> writeLine, Func<string, IReadOnlyDictionary<string, string>, string>? localize)
+    {
+        if (loaded.DeprecationNotices is null) return;
+        foreach (var notice in loaded.DeprecationNotices)
+        {
+            var message = localize is null ? notice.Render() : localize(notice.Key, notice.Args);
+            writeLine((locale == "en" ? "warning: " : "aviso: ") + message);
         }
     }
 

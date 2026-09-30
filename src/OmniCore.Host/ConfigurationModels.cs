@@ -15,6 +15,16 @@ public sealed class ProviderFileYaml
     public string? BaseUrl { get; set; }
     public string? CaCertificate { get; set; }
     public string? AuthRef { get; set; }
+
+    /// <summary>Legacy auth syntax, parsed explicitly from YAML nodes to support scalar/map forms AOT-safely.</summary>
+    public ProviderAuthYaml? Auth { get; set; }
+}
+
+/// <summary>Typed representation of legacy <c>auth: none</c> or <c>auth: { apiKey: ref }</c>.</summary>
+public sealed class ProviderAuthYaml
+{
+    public bool IsNone { get; set; }
+    public string? ApiKey { get; set; }
 }
 
 public sealed class ModelsFileYaml
@@ -51,6 +61,7 @@ public sealed class TrustEntryYaml
 [YamlStaticContext]
 [YamlSerializable(typeof(ProvidersFileYaml))]
 [YamlSerializable(typeof(ProviderFileYaml))]
+[YamlSerializable(typeof(ProviderAuthYaml))]
 [YamlSerializable(typeof(ModelsFileYaml))]
 [YamlSerializable(typeof(ModelFileYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
