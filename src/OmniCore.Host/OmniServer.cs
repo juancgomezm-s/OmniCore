@@ -57,6 +57,10 @@ public sealed class OmniServer : IOmniClient
 
     private readonly IArtifactStore? _artifacts;
 
+    private string? _workspaceRoot;
+
+    public void ConfigureWorkspaceRoot(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
+
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
         IArtifactStore? artifacts = null)
     {
@@ -427,7 +431,7 @@ public sealed class OmniServer : IOmniClient
         var result = new List<WireEnvelope>();
         if (_lastSessionId is not null)
         {
-            result.AddRange(new ProtocolMapper(_codecs).Map(_store.ReadFrom(_lastSessionId, Math.Max(1, fromSequence))));
+            result.AddRange(new ProtocolMapper(_codecs, _artifacts).Map(_store.ReadFrom(_lastSessionId, Math.Max(1, fromSequence))));
         }
 
         result.AddRange(_events);
@@ -746,6 +750,58 @@ public sealed class OmniServer : IOmniClient
 
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (name == "commands")
+            return new SessionQueryResult("commands", "{\"commands\":[\"explain\"]}");
+        if (name == "workspaceStatus")
+            return new SessionQueryResult("workspaceStatus", "{" + JsonObj.Field("workingDirectory", _workspaceRoot ?? "") + "}");
+        if (name.StartsWith("complete:", StringComparison.Ordinal))
+        {
+            var prefix = name.Substring("complete:".Length).Replace('\\', '/');
+            var root = _workspaceRoot;
+            if (root is null || !Directory.Exists(root) || prefix.Split('/').Any(part => part == ".."))
+                return new SessionQueryResult("complete", "{\"paths\":[]}");
+            var separator = prefix.LastIndexOf('/');
+            var directoryPart = separator < 0 ? "" : prefix.Substring(0, separator);
+            var filePart = separator < 0 ? prefix : prefix.Substring(separator + 1);
+            var directory = Path.GetFullPath(Path.Combine(root, directoryPart.Replace('/', Path.DirectorySeparatorChar)));
+            var rootWithSeparator = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            if (!directory.Equals(Path.GetFullPath(root), StringComparison.OrdinalIgnoreCase)
+                && !directory.StartsWith(rootWithSeparator, StringComparison.OrdinalIgnoreCase))
+                return new SessionQueryResult("complete", "{\"paths\":[]}");
+            var current = Path.GetFullPath(root);
+            foreach (var segment in directoryPart.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            {
+                current = Path.Combine(current, segment);
+                try
+                {
+                    if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                        return new SessionQueryResult("complete", "{\"paths\":[]}");
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    return new SessionQueryResult("complete", "{\"paths\":[]}");
+                }
+            }
+            var paths = Array.Empty<string>();
+            if (Directory.Exists(directory))
+            {
+                try
+                {
+                    paths = Directory.EnumerateFiles(directory, filePart + "*", SearchOption.TopDirectoryOnly)
+                        .Where(path => (File.GetAttributes(path) & FileAttributes.ReparsePoint) == 0)
+                        .Select(path => Path.GetRelativePath(root, path).Replace('\\', '/'))
+                        .Where(path => !path.Split('/').Any(part => part is ".git" or ".omnicore" or "bin" or "obj" or "node_modules"))
+                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase).Take(50).ToArray();
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+                {
+                    paths = Array.Empty<string>();
+                }
+            }
+            return new SessionQueryResult("complete", "{\"paths\":[" + string.Join(",", paths.Select(path => "\"" + JsonObj.Escape(path) + "\"")) + "]}");
+        }
         if (name == "state")
         {
             var run = _lastSnapshot is null ? "none" : "M2:" + _lastSnapshot!.TokenCount.ToString();
