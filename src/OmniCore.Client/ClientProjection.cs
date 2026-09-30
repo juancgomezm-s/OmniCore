@@ -179,6 +179,9 @@ public sealed class InteractionOverlayModel
 
     public string Title { get; }
 
+    /// <summary>Resumen seguro del sujeto de la interacción (tool, destino y motivo).</summary>
+    public string Subject { get; }
+
     /// <summary>Etiquetas localizadas de las opciones, en el orden del servidor.</summary>
     public IReadOnlyList<string> Options { get; }
 
@@ -186,16 +189,23 @@ public sealed class InteractionOverlayModel
     public IReadOnlyList<string> OptionIds { get; }
 
     public InteractionOverlayModel(string title, IReadOnlyList<string> options)
-        : this(string.Empty, string.Empty, title, options, options)
+        : this(string.Empty, string.Empty, title, string.Empty, options, options)
     {
     }
 
     public InteractionOverlayModel(string id, string kind, string title, IReadOnlyList<string> options,
         IReadOnlyList<string> optionIds)
+        : this(id, kind, title, string.Empty, options, optionIds)
+    {
+    }
+
+    public InteractionOverlayModel(string id, string kind, string title, string subject,
+        IReadOnlyList<string> options, IReadOnlyList<string> optionIds)
     {
         Id = id;
         Kind = kind;
         Title = title;
+        Subject = subject;
         Options = options;
         OptionIds = optionIds;
     }
@@ -309,7 +319,48 @@ public sealed class ClientProjection
         var prefix = "interaction." + Snake(kind) + ".";
         var ids = Get(f, "options").Split(',', StringSplitOptions.RemoveEmptyEntries);
         var labels = ids.Select(id => Label(prefix + id, id)).ToArray();
-        return new InteractionOverlayModel(Get(f, "interactionId"), kind, Label(prefix + "title", kind), labels, ids);
+        var subject = SubjectText(Get(f, "subject"));
+        return new InteractionOverlayModel(Get(f, "interactionId"), kind, Label(prefix + "title", kind),
+            subject, labels, ids);
+    }
+
+    private string SubjectText(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return string.Empty;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            var parts = new List<string>();
+            AddLocalized("operation");
+            Add("toolOrExecutable");
+            Add("target");
+            AddLocalized("reason");
+            if (root.TryGetProperty("details", out var details) && details.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var detail in details.EnumerateArray())
+                    if (detail.ValueKind == System.Text.Json.JsonValueKind.Object
+                        && detail.TryGetProperty("value", out var value) && value.GetString() is { Length: > 0 } text)
+                        parts.Add(text);
+            }
+            return string.Join(" · ", parts);
+
+            void Add(string name)
+            {
+                if (root.TryGetProperty(name, out var value) && value.GetString() is { Length: > 0 } text)
+                    parts.Add(text);
+            }
+
+            void AddLocalized(string name)
+            {
+                if (root.TryGetProperty(name, out var value) && value.GetString() is { Length: > 0 } text)
+                    parts.Add(Label(text, text));
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return string.Empty;
+        }
     }
 
     /// <summary>Texto localizado de una clave; si no existe, el valor técnico (nunca la clave cruda).</summary>

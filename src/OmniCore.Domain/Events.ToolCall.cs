@@ -109,12 +109,12 @@ public record ToolCallEffectUnknown(ToolCallId ToolCallId, EffectClass EffectCla
 }
 
 /// <summary>ToolCallReconciled: resultado de la reconciliación (ADR-0004 §2).</summary>
-public record ToolCallReconciled(ToolCallId ToolCallId, ReconciliationOutcome Outcome, string Detail)
-    : DomainEventPayload
+public record ToolCallReconciled(ToolCallId ToolCallId, ReconciliationOutcome Outcome, string Detail,
+    InteractionCause? Cause = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.reconciled");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>ToolCallCancelled: antes de ejecutar (Requested/Prepared/AwaitingPermission/Authorized).</summary>

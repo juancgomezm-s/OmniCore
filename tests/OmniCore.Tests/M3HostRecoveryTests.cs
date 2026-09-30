@@ -280,16 +280,19 @@ public sealed class M3HostRecoveryTests
         }
     }
 
-    /// <summary>Comprueba un bloqueo de recuperación: visible, sin reconciliar y sin doble efecto.</summary>
+    /// <summary>Comprueba un bloqueo visible con outcome Unresolvable y una resolución humana durable.</summary>
     private static void AssertBlocked(OmniServer server, SqliteEventStore store, SessionId sessionId,
         string workspace)
     {
         Assert.True(server.LastRecoveryProblem() is not null,
             "la recuperación bloqueada debe ser VISIBLE (motivo expuesto)");
         Assert.Contains("blocked", server.Query("state", CancellationToken.None)!.Json);
-        // Sin reconciliar: no se emite EffectUnknown ni Reconciled y NO se clasifica Applied.
-        Assert.Equal(0, CountEvents(store, sessionId, "toolcall.effect_unknown"));
-        Assert.Equal(0, CountEvents(store, sessionId, "toolcall.reconciled"));
+        // No se clasifica Applied ni se repite el efecto. El bloqueo de raíz genera un outcome
+        // Unresolvable y una InteractionRequest, que permite al usuario resolverlo explícitamente.
+        Assert.Equal(1, CountEvents(store, sessionId, "toolcall.effect_unknown"));
+        Assert.Equal(1, CountEvents(store, sessionId, "toolcall.reconciled"));
+        Assert.Equal(1, CountEvents(store, sessionId, "interaction.requested"));
+        Assert.Equal(ReconciliationOutcome.Unresolvable, Reconciled(store, sessionId).Single().Outcome);
         Assert.Equal(0, CountEvents(store, sessionId, "toolcall.succeeded"));
         // El archivo queda exactamente como se dejó tras el crash: la recuperación solo observa.
         Assert.Equal("linea-uno\nlinea-dos\n", File.ReadAllText(Path.Combine(workspace, "doc.txt")));

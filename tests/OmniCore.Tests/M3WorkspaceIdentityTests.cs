@@ -104,9 +104,15 @@ public sealed class M3WorkspaceIdentityTests
         Assert.True(server.LastRecoveryProblem() is not null,
             "la recuperación con identidad no verificada debe ser VISIBLE (bloqueada)");
         Assert.Contains("blocked", server.Query("state", CancellationToken.None)!.Json);
-        // Sin reconciliar y sin doble efecto: nunca effect_unknown/reconciled/succeeded.
-        Assert.Equal(0, CountEvents(store, sessionId, "toolcall.effect_unknown"));
-        Assert.Equal(0, CountEvents(store, sessionId, "toolcall.reconciled"));
+        // Falla cerrado: se conserva sin ejecutar y se marca Unresolvable para exigir decisión
+        // humana; nunca se clasifica Applied con una identidad no verificada.
+        Assert.Equal(1, CountEvents(store, sessionId, "toolcall.effect_unknown"));
+        Assert.Equal(1, CountEvents(store, sessionId, "toolcall.reconciled"));
+        Assert.Equal(1, CountEvents(store, sessionId, "interaction.requested"));
+        var codecs = EventCodecs.Create();
+        var reconciliation = store.ReadFrom(sessionId, 1).Select(evt => codecs.Decode(evt))
+            .OfType<ToolCallReconciled>().Single();
+        Assert.Equal(ReconciliationOutcome.Unresolvable, reconciliation.Outcome);
         Assert.Equal(0, CountEvents(store, sessionId, "toolcall.succeeded"));
     }
 

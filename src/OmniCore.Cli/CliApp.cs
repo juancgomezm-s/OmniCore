@@ -38,6 +38,7 @@ public sealed class CliApp
         if (command == "model") return ModelPolicyCommands.Run(args);
         if (command == "trust") return RunTrust(args);
         if (command == "permissions") return RunPermissions(args);
+        if (command == "resolve") return RunResolve(args);
         if (command == "doctor") return RunDoctor(args);
         if (command is "--tui" or "tui") return RunTui(args);
         if (command is "--help" or "-h" or "help")
@@ -48,6 +49,48 @@ public sealed class CliApp
 
         Console.WriteLine("omni: intención asumida como pregunta → ask '" + command + "'");
         return RunAsk(new[] { "ask", string.Join(" ", args) });
+    }
+
+    private static Task<int> RunResolve(string[] args)
+    {
+        if (args.Length > 3)
+        {
+            Console.WriteLine(Loc().Resolve("interaction.resolve.usage"));
+            return Task.FromResult(2);
+        }
+
+        var client = Runtime.Connect(CancellationToken.None);
+        if (args.Length < 3)
+        {
+            var projection = new ClientProjection(Loc());
+            var state = ClientState.Empty();
+            foreach (var envelope in client.SubscribeSince(0)) state = projection.Apply(state, envelope);
+            if (args.Length == 2)
+            {
+                var matches = state.Overlays.Where(item => item.Id == args[1]).ToArray();
+                state = new ClientState(state.Header, state.Conversation, state.Sidebar, state.Composer,
+                    state.StatusLine, matches, state.Connection);
+            }
+            if (state.Overlays.Count == 0)
+            {
+                Console.WriteLine(Loc().Resolve("interaction.resolve.none"));
+                return Task.FromResult(1);
+            }
+            new PlainRenderer(Loc().Locale).Render(state);
+            return Task.FromResult(0);
+        }
+
+        var payload = "{" + JsonObj.Field("cmd", "interaction.respond") + ","
+            + JsonObj.Field("interactionId", args[1]) + "," + JsonObj.Field("optionId", args[2]) + "}";
+        var ack = client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+        if (ack.Status != "ok")
+        {
+            Console.WriteLine(Loc().ResolveWire(ack.Error ?? "interaction resolution failed"));
+            return Task.FromResult(1);
+        }
+
+        Console.WriteLine(Loc().Resolve("interaction.resolve.done"));
+        return Task.FromResult(0);
     }
 
     private static Task<int> RunTypedCommand(string[] args)
@@ -332,6 +375,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine("  omni model ...                       Políticas de modelo y onboarding (M3)");
         Console.WriteLine(Loc().Resolve("permissions.help"));
+        Console.WriteLine(Loc().Resolve("interaction.resolve.usage"));
         Console.WriteLine("  omni --help                          Esta ayuda");
     }
 }
