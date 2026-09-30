@@ -24,6 +24,8 @@ public sealed class ExplorerTurn
 
     private readonly Func<ModelRequest, CancellationToken, ModelResponse> _complete;
 
+    private readonly IModelProvider? _metaModelProvider;
+
     private readonly IToolExecutor _tools;
 
     private readonly FakeCatalog _catalog;
@@ -75,7 +77,8 @@ public sealed class ExplorerTurn
         ModelCapabilityBoundary? boundary = null, ModelPricing? pricing = null,
         bool enforceDefaultSpendCaps = false, decimal sessionCapUsd = 5m, decimal dailyCapUsd = 20m,
         QuestionnaireInteractionService? questionnaires = null,
-        Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null)
+        Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null,
+        IModelProvider? metaModelProvider = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -98,6 +101,7 @@ public sealed class ExplorerTurn
         _dailyCapUsd = dailyCapUsd;
         _questionnaires = questionnaires;
         _questionnaireResponder = questionnaireResponder;
+        _metaModelProvider = metaModelProvider;
     }
 
     /// <summary>Journal del Turn (tests: para abrir en él el Run al que pertenece el Turn).</summary>
@@ -215,7 +219,7 @@ public sealed class ExplorerTurn
 
         try
         {
-            var preparedContext = MaterializeTurnContext(sessionId, runId, laneId, turnId,
+            var preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
                 workingStateText, instruction, messages, cancellationToken);
             var materialized = preparedContext.Snapshot;
             var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
@@ -248,7 +252,7 @@ public sealed class ExplorerTurn
                 steps = step + 1;
                 if (step > 0)
                 {
-                    preparedContext = MaterializeTurnContext(sessionId, runId, laneId, turnId,
+                    preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
                         workingStateText, instruction, messages, cancellationToken);
                     materialized = preparedContext.Snapshot;
                     if (materialized.Overflowed)
@@ -794,7 +798,8 @@ public sealed class ExplorerTurn
         {
             if (item.Kind == ContextItemKind.WorkingState || item.Kind == ContextItemKind.System
                 || item.Kind == ContextItemKind.Task || item.Kind == ContextItemKind.Decision
-                || item.Kind == ContextItemKind.Constraint || item.Kind == ContextItemKind.File)
+                || item.Kind == ContextItemKind.Constraint || item.Kind == ContextItemKind.File
+                || item.Kind == ContextItemKind.Summary || item.Kind == ContextItemKind.Checkpoint)
             {
                 if (item.Content.Length > 0)
                 {
@@ -981,9 +986,9 @@ public sealed class ExplorerTurn
             + QuestionnaireCodec.EncodeAnswers(outcome.Answers ?? Array.Empty<QuestionAnswer>()) + "}";
     }
 
-    private PreparedTurnContext MaterializeTurnContext(SessionId sessionId, RunId runId, LaneId laneId,
-        TurnId turnId, string workingStateText, string instruction, IReadOnlyList<ModelMessage> messages,
-        CancellationToken cancellationToken)
+    private PreparedTurnContext MaterializeTurnContext(EventStream stream, SessionId sessionId, RunId runId,
+        LaneId laneId, TurnId turnId, string workingStateText, string instruction,
+        IReadOnlyList<ModelMessage> messages, CancellationToken cancellationToken)
     {
         var contributors = new List<IContextContributor>();
         var hasWorkingState = false;
@@ -1026,21 +1031,270 @@ public sealed class ExplorerTurn
             messageById.Add(id, safe);
         }
 
-        contributors.Add(new SessionConversationContributor(entries));
-        var materializer = new ContextMaterializer(_materializer.Counter(), contributors);
+        var policy = _harness?.ContextManagement ?? ContextManagementPolicy.Default;
+        var priorCheckpoint = ReadLatestCheckpoint(stream, runId);
+        var compactedThroughIndex = priorCheckpoint?.CompactedThroughItemIndex ?? -1;
+        var compactedIds = new HashSet<string>(entries.Where(e => !e.PreserveWhenTrimming
+                && ConversationIndex(e.Id) is var index && index >= 0 && index <= compactedThroughIndex)
+            .Select(e => e.Id), StringComparer.Ordinal);
+        var candidates = entries.Where(e => IsConversationKind(e.Kind) && !e.PreserveWhenTrimming).ToArray();
+        var oldCount = Math.Max(0, candidates.Length - Math.Max(0, policy.RecentTailItems));
+        var oldItems = candidates.Take(oldCount).ToArray();
+        var newOldItems = oldItems.Where(e => !compactedIds.Contains(e.Id)).ToArray();
+        if (ContextCompaction.ShouldCompact(newOldItems.Length, policy))
+        {
+            var material = (priorCheckpoint?.Summary is { Length: > 0 } oldSummary
+                    ? "Previous checkpoint:\\n" + oldSummary + "\\n\\nNew older history:\\n" : "")
+                + string.Join("\\n", newOldItems.Select(e => e.Content));
+            string summary;
+            var metaFingerprint = "deterministic-v1";
+            MetaModelService? metaModel = null;
+            if (_metaModelProvider is not null)
+            {
+                metaModel = new MetaModelService(_metaModelProvider, _artifacts,
+                    new ContextStreamEventSink(stream), _selection, _redaction.Redact);
+                try
+                {
+                    summary = metaModel.SummarizeAsync(runId, "CompressContext", material,
+                        policy.MaxCheckpointCharacters, cancellationToken).GetAwaiter().GetResult();
+                    metaFingerprint = metaModel.Fingerprint("CompressContext");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    summary = DeterministicFallbackSummary(material, policy.MaxCheckpointCharacters);
+                    metaFingerprint = "deterministic-fallback-v1";
+                }
+            }
+            else summary = DeterministicFallbackSummary(material, policy.MaxCheckpointCharacters);
+
+            foreach (var entry in oldItems) compactedIds.Add(entry.Id);
+            var checkpointId = Guid.NewGuid().ToString("N");
+            compactedThroughIndex = compactedIds.Select(ConversationIndex).DefaultIfEmpty(-1).Max();
+            var throughSequence = _store.CurrentSequence(sessionId);
+            var checkpointArtifact = PersistCheckpointArtifact(checkpointId, runId, throughSequence,
+                compactedThroughIndex, summary, metaFingerprint);
+            stream.Append(new ContextCheckpointRecorded(checkpointId, runId, throughSequence,
+                checkpointArtifact, metaFingerprint));
+            using var checkpointDocument = System.Text.Json.JsonDocument.Parse(
+                _artifacts.GetText(checkpointArtifact.Hash)!);
+            var checkpointContext = RenderCheckpointContext(checkpointDocument.RootElement);
+            priorCheckpoint = new LoadedCheckpoint(checkpointId, throughSequence, compactedThroughIndex,
+                checkpointContext, checkpointArtifact);
+        }
+
+        var filteredEntries = entries.Where(e => !compactedIds.Contains(e.Id)).ToArray();
+        contributors.Add(new SessionConversationContributor(filteredEntries));
+        if (priorCheckpoint is not null)
+        {
+            contributors.Add(new ContextCheckpointContributor(priorCheckpoint.Id,
+                priorCheckpoint.ThroughSequence, priorCheckpoint.Summary, priorCheckpoint.Artifact));
+        }
+        var priorDiagnostics = entries.Where(e => compactedIds.Contains(e.Id)).Select(e => new ContextDiagnostic(e.Id,
+            new ContextProvenance("session-conversation", ContributionCategory.Conversation, "engine",
+                ScopeLevel.Session, false), ContextDecision.Compacted, e.Content.Length)).ToArray();
+        var materializer = new ContextMaterializer(_materializer.Counter(), contributors, _artifacts, policy);
         var snapshot = materializer.MaterializeWithinBudget(
-            new MaterializeRequest(sessionId, runId, null, laneId, turnId, 0L, _fingerprint),
-            cancellationToken, (int)_selection.ContextBudget);
+            new MaterializeRequest(sessionId, runId, null, laneId, turnId, _store.CurrentSequence(sessionId),
+                _fingerprint, priorDiagnostics), cancellationToken, (int)_selection.ContextBudget);
         var selectedMessages = new List<ModelMessage>();
         foreach (var item in snapshot.Items)
         {
             if (messageById.TryGetValue(item.Id, out var message))
             {
-                selectedMessages.Add(message);
+                var diagnostic = snapshot.Diagnostics.FirstOrDefault(d => d.ItemId == item.Id);
+                selectedMessages.Add(ProjectConversationMessage(message, item, diagnostic?.Decision ?? ContextDecision.Included,
+                    policy.CompressBodyCharacters));
             }
         }
 
         return new PreparedTurnContext(snapshot, selectedMessages.ToArray());
+    }
+
+    private static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,
+        ContextDecision decision, int compressionCharacters)
+    {
+        var externalized = item.Provenance.Refs?.Any(reference => reference.StartsWith("artifact=sha256:",
+            StringComparison.Ordinal)) == true;
+        if (externalized)
+        {
+            var blocks = original.Content.Select(block => block is ToolResultBlock result
+                ? (ContentBlock)(result with { Content = new ContentBlock[] { new TextBlock(item.Content) } })
+                : block is TextBlock ? new TextBlock(item.Content) : block).ToArray();
+            return new ModelMessage(original.Role, blocks);
+        }
+        if (decision is not (ContextDecision.Compressed or ContextDecision.TruncatedByBudget)) return original;
+
+        var charLimit = decision == ContextDecision.TruncatedByBudget
+            ? Math.Max(32, item.EstimatedTokens * 4)
+            : compressionCharacters;
+        var blockLimit = Math.Max(32, charLimit / Math.Max(1, original.Content.Count));
+        var compacted = new List<ContentBlock>();
+        foreach (var block in original.Content)
+        {
+            switch (block)
+            {
+                case TextBlock text:
+                    compacted.Add(new TextBlock(TrimBody(text.Text, blockLimit)));
+                    break;
+                case ToolCallBlock call:
+                    var preview = System.Text.Json.JsonEncodedText.Encode(TrimBody(call.ArgumentsJson, blockLimit));
+                    compacted.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
+                        "{\"_omnicore_compressed\":true,\"preview\":\"" + preview + "\"}"));
+                    break;
+                case ToolResultBlock result:
+                    compacted.Add(result with { Content = result.Content.Select(content => content is TextBlock text
+                        ? (ContentBlock)new TextBlock(TrimBody(text.Text, blockLimit)) : content).ToArray() });
+                    break;
+                case CitationBlock citation:
+                    compacted.Add(citation with { Text = TrimBody(citation.Text, blockLimit),
+                        SourceRef = TrimBody(citation.SourceRef, blockLimit) });
+                    break;
+                case ReasoningBlock:
+                    compacted.Add(new TextBlock("[older reasoning omitted]"));
+                    break;
+                case ProviderOpaqueBlock:
+                    compacted.Add(new TextBlock("[provider state omitted]"));
+                    break;
+            }
+        }
+        return new ModelMessage(original.Role, compacted.ToArray());
+    }
+
+    private static string TrimBody(string content, int maxCharacters)
+    {
+        const string marker = "…[compressed]";
+        if (content.Length <= maxCharacters) return content;
+        var available = Math.Max(0, maxCharacters - marker.Length);
+        return content[..Math.Min(available, content.Length)] + marker;
+    }
+
+    private sealed record LoadedCheckpoint(string Id, long ThroughSequence, int CompactedThroughItemIndex,
+        string Summary, ArtifactRef Artifact);
+
+    private LoadedCheckpoint? ReadLatestCheckpoint(EventStream stream, RunId runId)
+    {
+        ContextCheckpointRecorded? latest = null;
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (_codecs.Decode(evt) is ContextCheckpointRecorded checkpoint && checkpoint.RunId.Equals(runId))
+                latest = checkpoint;
+        }
+        if (latest is null || _artifacts.GetText(latest.CheckpointArtifact.Hash) is not { } json) return null;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            var compactedThrough = root.GetProperty("compactedThroughItemIndex").GetInt32();
+            return new LoadedCheckpoint(latest.CheckpointId, latest.ThroughEventSequence, compactedThrough,
+                RenderCheckpointContext(root), latest.CheckpointArtifact);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string RenderCheckpointContext(System.Text.Json.JsonElement checkpoint)
+    {
+        var sections = new (string Property, string Label)[]
+        {
+            ("goals", "Goals"), ("constraints", "Constraints"), ("decisions", "Decisions"),
+            ("facts", "Facts"), ("relevantFiles", "Relevant files"), ("modifiedFiles", "Modified files"),
+            ("failedAttempts", "Failed attempts"), ("openQuestions", "Open questions"),
+        };
+        var parts = new List<string> { checkpoint.GetProperty("summary").GetString() ?? "" };
+        foreach (var (property, label) in sections)
+        {
+            if (!checkpoint.TryGetProperty(property, out var values) || values.ValueKind != System.Text.Json.JsonValueKind.Array)
+                continue;
+            var entries = values.EnumerateArray().Select(value => value.GetString() ?? "")
+                .Where(value => value.Length > 0).ToArray();
+            if (entries.Length > 0) parts.Add(label + ": " + string.Join("; ", entries));
+        }
+        if (checkpoint.TryGetProperty("testState", out var tests)
+            && tests.GetString() is { Length: > 0 } testState && testState != "unknown")
+            parts.Add("Tests: " + testState);
+        return string.Join("\\n", parts.Where(part => part.Length > 0));
+    }
+
+    private ArtifactRef PersistCheckpointArtifact(string checkpointId, RunId runId, long throughSequence,
+        int compactedThroughItemIndex, string summary, string metaModelFingerprint)
+    {
+        var lines = summary.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        string[] Section(params string[] labels) => lines.Where(line => labels.Any(label =>
+                line.StartsWith(label + ":", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("- " + label + ":", StringComparison.OrdinalIgnoreCase)))
+            .Select(line => line[(line.IndexOf(':') + 1)..].Trim()).Where(line => line.Length > 0).ToArray();
+        var sectionLabels = new[] { "Goal", "Goals", "Constraint", "Constraints", "Decision", "Decisions",
+            "Fact", "Facts", "Relevant file", "Modified file", "Failed attempt", "Pending", "Open question", "Tests" };
+        var categorizedLines = lines.Where(line => sectionLabels.Any(label =>
+            line.StartsWith(label + ":", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("- " + label + ":", StringComparison.OrdinalIgnoreCase))).ToArray();
+        var facts = Section("Fact", "Facts");
+        if (facts.Length == 0) facts = lines.Except(categorizedLines, StringComparer.Ordinal).ToArray();
+        using var output = new System.IO.MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("checkpointId", checkpointId);
+            writer.WriteString("runId", runId.ToString());
+            writer.WriteNumber("throughEventSequence", throughSequence);
+            writer.WriteString("metaModelFingerprint", metaModelFingerprint);
+            writer.WriteString("summary", _redaction.Redact(summary));
+            WriteCheckpointSection(writer, "goals", Section("Goal", "Goals"));
+            WriteCheckpointSection(writer, "constraints", Section("Constraint", "Constraints"));
+            WriteCheckpointSection(writer, "decisions", Section("Decision", "Decisions"));
+            WriteCheckpointSection(writer, "facts", facts);
+            WriteCheckpointSection(writer, "relevantFiles", Section("Relevant file"));
+            WriteCheckpointSection(writer, "modifiedFiles", Section("Modified file"));
+            WriteCheckpointSection(writer, "failedAttempts", Section("Failed attempt"));
+            writer.WriteString("testState", Section("Tests").FirstOrDefault() ?? "unknown");
+            WriteCheckpointSection(writer, "pendingWork", Section("Pending"));
+            WriteCheckpointSection(writer, "openQuestions", Section("Open question"));
+            writer.WriteNumber("compactedThroughItemIndex", compactedThroughItemIndex);
+            writer.WriteEndObject();
+        }
+        return _artifacts.PutText(_redaction.Redact(System.Text.Encoding.UTF8.GetString(output.ToArray())),
+            "application/vnd.omnicore.context-checkpoint+json", ArtifactKind.ContextSnapshot, Sensitivity.Sensitive);
+    }
+
+    private static void WriteCheckpointSection(System.Text.Json.Utf8JsonWriter writer, string name,
+        IReadOnlyList<string> values)
+    {
+        writer.WriteStartArray(name);
+        foreach (var value in values) writer.WriteStringValue(value);
+        writer.WriteEndArray();
+    }
+
+    private static string DeterministicFallbackSummary(string content, int maxCharacters)
+    {
+        if (content.Length <= maxCharacters) return content;
+        if (maxCharacters < 64) return content[..maxCharacters];
+        var half = (maxCharacters - 32) / 2;
+        return content[..half] + "\\n[…older history omitted deterministically…]\\n" + content[^half..];
+    }
+
+    private static bool IsConversationKind(ContextItemKind kind) => kind is ContextItemKind.UserMessage
+        or ContextItemKind.AssistantMessage or ContextItemKind.ToolResult;
+
+    private static int ConversationIndex(string id)
+    {
+        const string prefix = "conversation-";
+        return id.StartsWith(prefix, StringComparison.Ordinal)
+            && int.TryParse(id.AsSpan(prefix.Length), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var index) ? index : -1;
+    }
+
+    private sealed class ContextStreamEventSink : IContextEventSink
+    {
+        private readonly EventStream _stream;
+        public ContextStreamEventSink(EventStream stream) => _stream = stream;
+        public ValueTask AppendAsync(DomainEventPayload payload, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _stream.Append(payload);
+            return ValueTask.CompletedTask;
+        }
     }
 
     private ModelMessage RedactMessage(ModelMessage message)
@@ -1129,6 +1383,7 @@ public sealed class ExplorerTurn
             writer.WriteStartObject();
             writer.WriteString("snapshotId", snapshot.SnapshotId);
             writer.WriteString("fingerprint", snapshot.Fingerprint.Hash());
+            writer.WriteString("snapshotFingerprint", snapshot.SnapshotFingerprint);
             writer.WriteNumber("tokenCount", snapshot.TokenCount);
             writer.WriteNumber("tokenBudget", tokenBudget);
             var accuracy = _materializer.Counter().Accuracy.ToString().ToLowerInvariant();
@@ -1156,9 +1411,16 @@ public sealed class ExplorerTurn
                 writer.WriteString("itemId", diagnostic.ItemId);
                 writer.WriteString("decision", diagnostic.Decision.ToString());
                 writer.WriteNumber("tokens", diagnostic.Tokens);
-                writer.WriteString("reason", diagnostic.Decision == ContextDecision.OmittedByBudget
-                    ? "omitted by context budget" : diagnostic.Decision == ContextDecision.TruncatedByBudget
-                        ? "trimmed by context budget" : "included");
+                writer.WriteString("reason", diagnostic.Decision switch
+                {
+                    ContextDecision.OmittedByBudget => "omitted by context budget",
+                    ContextDecision.TruncatedByBudget => "trimmed by context budget",
+                    ContextDecision.Pruned => "superseded context pruned",
+                    ContextDecision.Externalized => "tool output stored in artifact",
+                    ContextDecision.Compressed => "older conversation compressed deterministically",
+                    ContextDecision.Compacted => "covered by context checkpoint",
+                    _ => "included",
+                });
                 WriteProvenance(writer, diagnostic.Provenance);
                 writer.WriteEndObject();
             }
@@ -1179,6 +1441,12 @@ public sealed class ExplorerTurn
         writer.WriteString("source", provenance.ComponentSource);
         writer.WriteString("scope", provenance.Scope.ToString());
         writer.WriteBoolean("sensitive", provenance.Sensitive);
+        if (provenance.Refs is not null)
+        {
+            writer.WriteStartArray("refs");
+            foreach (var reference in provenance.Refs) writer.WriteStringValue(reference);
+            writer.WriteEndArray();
+        }
     }
 
     private sealed class PreparedTurnContext

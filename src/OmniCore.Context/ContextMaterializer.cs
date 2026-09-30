@@ -9,11 +9,20 @@ public sealed class ContextMaterializer
     private readonly ITokenCounter _counter;
 
     private readonly IReadOnlyList<IContextContributor> _contributors;
+    private readonly IArtifactStore? _artifacts;
+    private readonly ContextManagementPolicy _policy;
 
-    public ContextMaterializer(ITokenCounter counter, IReadOnlyList<IContextContributor> contributors)
+    public ContextMaterializer(ITokenCounter counter, IReadOnlyList<IContextContributor> contributors,
+        IArtifactStore? artifacts = null, ContextManagementPolicy? policy = null)
     {
         _counter = counter;
         _contributors = contributors;
+        _artifacts = artifacts;
+        _policy = policy ?? ContextManagementPolicy.Default;
+        if (_policy.ExternalizeAboveCharacters < 0 || _policy.CompressBodyCharacters < 1
+            || _policy.RecentTailItems < 0 || _policy.CompactAfterItems < 1
+            || _policy.MaxCheckpointCharacters < 1)
+            throw new ArgumentOutOfRangeException(nameof(policy), "La política de contexto contiene umbrales inválidos.");
     }
 
     /// <summary>Contributors configurados para que el runtime combine proyecciones vivas.</summary>
@@ -25,7 +34,7 @@ public sealed class ContextMaterializer
     public ContextSnapshot Materialize(MaterializeRequest request, CancellationToken cancellationToken) =>
         MaterializeWithinBudget(request, cancellationToken, 0);
 
-    /// <summary>Cuenta los items y aplica el recorte provisional de ADR-0042.</summary>
+    /// <summary>Cuenta y aplica poda, externalización, compresión y la última barrera de presupuesto.</summary>
     public ContextSnapshot MaterializeWithinBudget(MaterializeRequest request,
         CancellationToken cancellationToken, int maxTokens)
     {
@@ -41,19 +50,82 @@ public sealed class ContextMaterializer
         }
 
         var ordered = OrderItems(items);
-        var counted = new List<ContextItem>();
+        var pipelineDiagnostics = new Dictionary<string, ContextDiagnostic>(StringComparer.Ordinal);
+        var transformed = new List<ContextItem>(ordered.Count);
         foreach (var item in ordered)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var count = _counter.CountAsync(item, cancellationToken).GetAwaiter().GetResult();
-            counted.Add(WithTokens(item, count));
+            var candidate = item;
+            if (candidate.Kind == ContextItemKind.ToolResult && _artifacts is not null
+                && candidate.Content.Length > _policy.ExternalizeAboveCharacters)
+            {
+                var safeOutput = new RedactionPolicy().Redact(candidate.Content);
+                var artifact = _artifacts.PutText(safeOutput, "text/plain", ArtifactKind.ToolOutput,
+                    candidate.Provenance.Sensitive ? Sensitivity.Sensitive : Sensitivity.Normal);
+                var preview = safeOutput[..Math.Min(240, safeOutput.Length)];
+                var stub = "[tool output externalized; ref=artifact=" + artifact.Hash
+                    + "; re-read by CAS hash with IArtifactStore.GetText or ContextArtifactReferenceResolver.Read(ref)]\\nPreview: " + preview;
+                var provenance = candidate.Provenance with
+                {
+                    Refs = (candidate.Provenance.Refs ?? Array.Empty<string>()).Append("artifact=" + artifact.Hash)
+                        .ToArray(),
+                };
+                candidate = new ContextItem(candidate.Id, candidate.Kind, stub, 0, candidate.Priority,
+                    candidate.Retention, provenance, candidate.PreserveWhenTrimming);
+                pipelineDiagnostics[candidate.Id] = new ContextDiagnostic(candidate.Id, candidate.Provenance,
+                    ContextDecision.Externalized, 0);
+            }
+            transformed.Add(candidate);
+        }
+
+        var pruned = ContextCompaction.PruneSupersededFileReads(transformed, out var pruneDiagnostics);
+        foreach (var diagnostic in pruneDiagnostics.Where(d => d.Decision == ContextDecision.Pruned))
+            pipelineDiagnostics[diagnostic.ItemId] = diagnostic;
+        var prunedIds = new HashSet<string>(pruned.Select(i => i.Id), StringComparer.Ordinal);
+        var conversational = transformed.Where(IsConversation).ToArray();
+        var compressCount = Math.Max(0, conversational.Length - Math.Max(0, _policy.RecentTailItems));
+        var compressibleIds = new HashSet<string>(conversational.Take(compressCount)
+            .Where(i => !i.PreserveWhenTrimming).Select(i => i.Id), StringComparer.Ordinal);
+        for (var i = 0; i < transformed.Count; i++)
+        {
+            var old = transformed[i];
+            if (prunedIds.Contains(old.Id) && compressibleIds.Contains(old.Id)
+                && old.Content.Length > _policy.CompressBodyCharacters)
+            {
+                var compressed = ContextCompaction.Compress(old, _policy.CompressBodyCharacters);
+                if (!ReferenceEquals(compressed, old))
+                {
+                    old = compressed;
+                    pipelineDiagnostics[old.Id] = new ContextDiagnostic(old.Id, old.Provenance,
+                        ContextDecision.Compressed, 0);
+                    transformed[i] = old;
+                }
+            }
+        }
+
+        var counted = new List<ContextItem>();
+        foreach (var item in OrderItems(pruned))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = transformed.FirstOrDefault(i => i.Id == item.Id) ?? item;
+            var count = _counter.CountAsync(current, cancellationToken).GetAwaiter().GetResult();
+            counted.Add(WithTokens(current, count));
         }
 
         var budgetResult = maxTokens > 0 ? ApplyBudget(counted, maxTokens, cancellationToken) : null;
         var finalItems = budgetResult is null ? counted : budgetResult.Items;
-        var diagnostics = budgetResult is null
-            ? IncludedDiagnostics(counted)
-            : budgetResult.Diagnostics;
+        var budgetDiagnostics = budgetResult is null ? IncludedDiagnostics(counted) : budgetResult.Diagnostics;
+        var diagnosticsById = budgetDiagnostics.ToDictionary(d => d.ItemId, StringComparer.Ordinal);
+        foreach (var diagnostic in request.PriorDiagnostics)
+            diagnosticsById[diagnostic.ItemId] = diagnostic;
+        foreach (var pair in pipelineDiagnostics)
+        {
+            if (diagnosticsById.TryGetValue(pair.Key, out var existing)
+                && existing.Decision == ContextDecision.Included)
+                diagnosticsById[pair.Key] = pair.Value with { Tokens = existing.Tokens };
+            else if (!diagnosticsById.ContainsKey(pair.Key)) diagnosticsById[pair.Key] = pair.Value;
+        }
+        var diagnostics = diagnosticsById.Values.ToArray();
         var tokenCount = 0;
         foreach (var item in finalItems)
         {
@@ -275,9 +347,11 @@ public sealed class MaterializeRequest
     public TurnId? TurnId { get; }
     public long BasedOnEventSequence { get; }
     public ExecutionFingerprint Fingerprint { get; }
+    public IReadOnlyList<ContextDiagnostic> PriorDiagnostics { get; }
 
     public MaterializeRequest(SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId, TurnId? turnId,
-        long basedOnEventSequence, ExecutionFingerprint fingerprint)
+        long basedOnEventSequence, ExecutionFingerprint fingerprint,
+        IReadOnlyList<ContextDiagnostic>? priorDiagnostics = null)
     {
         SessionId = sessionId;
         RunId = runId;
@@ -286,6 +360,7 @@ public sealed class MaterializeRequest
         TurnId = turnId;
         BasedOnEventSequence = basedOnEventSequence;
         Fingerprint = fingerprint;
+        PriorDiagnostics = priorDiagnostics ?? Array.Empty<ContextDiagnostic>();
     }
 }
 
@@ -323,6 +398,27 @@ public sealed class SessionConversationContributor : IContextContributor
 /// <summary>Entrada estable para contribuir y seleccionar un mensaje conversacional.</summary>
 public sealed record ConversationContextEntry(string Id, ContextItemKind Kind, string Content,
     bool PreserveWhenTrimming = false);
+
+/// <summary>Regenera en cada materialización la proyección de un checkpoint persistido.</summary>
+public sealed class ContextCheckpointContributor : IContextContributor
+{
+    private readonly ContextItem _item;
+    public ContextCheckpointContributor(string checkpointId, long throughSequence, string summary, ArtifactRef artifact)
+    {
+        var provenance = new ContextProvenance("core.context-checkpoint", ContributionCategory.Checkpoint,
+            "engine", ScopeLevel.Run, false, new[] { "checkpoint=" + checkpointId, "artifact=" + artifact.Hash });
+        _item = new ContextItem("checkpoint-" + checkpointId, ContextItemKind.Summary,
+            "Context checkpoint through event " + throughSequence + ":\\n" + summary, 0,
+            ContextPriority.High, RetentionPolicy.KeepForever, provenance);
+    }
+
+    public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>(new[] { _item });
+    }
+}
 
 /// <summary>Contribuye las instrucciones del system prompt para incluirlas en el presupuesto.</summary>
 public sealed class SystemPromptContributor : IContextContributor

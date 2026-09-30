@@ -44,6 +44,12 @@ public sealed class EffectiveModelProfile
 /// Política del harness derivada del EffectiveModelProfile por una función pura (ADR-0007 §3).
 /// Todo valor configurable se prueba con tests.
 /// </summary>
+public sealed record ContextManagementPolicy(int ExternalizeAboveCharacters, int CompressBodyCharacters,
+    int RecentTailItems, int CompactAfterItems, int MaxCheckpointCharacters)
+{
+    public static ContextManagementPolicy Default { get; } = new(4096, 1200, 12, 24, 6000);
+}
+
 public sealed class HarnessPolicy
 {
     public ToolCallFormat ToolCallFormat { get; }
@@ -60,8 +66,11 @@ public sealed class HarnessPolicy
 
     public int StallThresholdTurns { get; }
 
+    public ContextManagementPolicy ContextManagement { get; }
+
     public HarnessPolicy(ToolCallFormat toolCallFormat, ToolMode toolMode, int maxVisibleTools,
-        GuidanceLevel guidanceLevel, int repairAttempts, PlanControl planControl, int stallThresholdTurns)
+        GuidanceLevel guidanceLevel, int repairAttempts, PlanControl planControl, int stallThresholdTurns,
+        ContextManagementPolicy? contextManagement = null)
     {
         ToolCallFormat = toolCallFormat;
         ToolMode = toolMode;
@@ -70,6 +79,7 @@ public sealed class HarnessPolicy
         RepairAttempts = repairAttempts;
         PlanControl = planControl;
         StallThresholdTurns = stallThresholdTurns;
+        ContextManagement = contextManagement ?? ContextManagementPolicy.Default;
     }
 }
 
@@ -102,8 +112,11 @@ public sealed class HarnessPolicyResolver
         var plan = planTracking >= 0.7 ? PlanControl.ModelDriven
             : planTracking >= 0.4 ? PlanControl.Assisted : PlanControl.RuntimeDriven;
         var stall = multiStep >= 0.6 ? 8 : 4;
+        var contextPolicy = profile.RecommendedUsableContext < 16_000
+            ? new ContextManagementPolicy(2048, 600, 8, 16, 3000)
+            : new ContextManagementPolicy(4096, 1200, 12, 24, 6000);
 
-        return new HarnessPolicy(fmt, mode, visible, guidance, repairs, plan, stall);
+        return new HarnessPolicy(fmt, mode, visible, guidance, repairs, plan, stall, contextPolicy);
     }
 }
 
