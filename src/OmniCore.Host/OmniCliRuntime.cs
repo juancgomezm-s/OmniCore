@@ -328,7 +328,11 @@ public sealed class OmniCliRuntime
             }
 
             var executingAct = act || server.CurrentRunMode() == RunMode.Act;
-            var hostTools = executingAct ? OmniHost.CreateActTools() : OmniHost.CreateExplorerTools();
+            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
+            var artifactReadTool = CreateArtifactReadTool(server, artifacts);
+            var hostTools = executingAct
+                ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
+                : OmniHost.CreateExplorerTools(artifactReadTool);
             server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary,
                 executingAct ? RunMode.Act : RunMode.Plan);
             var workspaceRoot = _workspaceRoot;
@@ -344,7 +348,6 @@ public sealed class OmniCliRuntime
                 ? Array.Empty<IContextContributor>()
                 : new IContextContributor[] { new WorkingStateContributor(workingState) };
             var materializer = new ContextMaterializer(tokenCounter, contributors);
-            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             var questionnaireService = new QuestionnaireInteractionService(server.AcquireStore(),
                 server.AcquireCodecs(), artifacts);
             QuestionnaireAskOutcome? QuestionnaireResponder(InteractionId interactionId, QuestionnaireSchema schema)
@@ -429,7 +432,7 @@ public sealed class OmniCliRuntime
                 }
                 if (optionId == "approve_execute")
                 {
-                    var actTools = OmniHost.CreateActTools();
+                    var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive);
                     var actTurn = new ExplorerTurn((request, token) => provider.Complete(request, token),
@@ -717,6 +720,12 @@ public sealed class OmniCliRuntime
             + JsonObj.Field("kind", outcome.Kind) + "}";
     }
 
+    private static ArtifactReadTool CreateArtifactReadTool(OmniServer server, IArtifactStore artifacts)
+    {
+        var authorization = new SessionArtifactReadAuthorization(server.AcquireStore(), server.LastSessionId, artifacts);
+        return new ArtifactReadTool(artifacts, authorization.IsReferenced);
+    }
+
     private OmniServer Server() => Server(OmniHost.WorkspaceDataDirectory(
         OmniHost.CreatePlatformPaths(), _workspaceRoot));
 
@@ -766,7 +775,11 @@ public sealed class OmniCliRuntime
         }
         var server = Server();
         var mode = server.CurrentRunMode();
-        var catalog = (mode == RunMode.Act ? OmniHost.CreateActTools() : OmniHost.CreateExplorerTools()).Catalog();
+        var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), _workspaceRoot));
+        var artifactReadTool = CreateArtifactReadTool(server, artifacts);
+        var catalog = (mode == RunMode.Act
+            ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
+            : OmniHost.CreateExplorerTools(artifactReadTool)).Catalog();
         server.ConfigureToolDiagnostics(catalog, CreateBoundary(effective, _workspaceRoot), mode);
     }
 

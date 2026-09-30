@@ -60,6 +60,7 @@ public sealed class ContextManagementTests
                 null, null, 0, Fingerprint), TestContext.Current.CancellationToken);
             var externalized = Assert.Single(snapshot.Items);
             Assert.Contains("re-read", externalized.Content, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("artifact.read", externalized.Content, StringComparison.Ordinal);
             var artifactRef = Assert.Single(externalized.Provenance.Refs!, r => r.StartsWith("artifact=", StringComparison.Ordinal));
             Assert.Equal(output, new ContextArtifactReferenceResolver(artifacts).Read(artifactRef));
             Assert.Contains(snapshot.Diagnostics, d => d.Decision == ContextDecision.Externalized
