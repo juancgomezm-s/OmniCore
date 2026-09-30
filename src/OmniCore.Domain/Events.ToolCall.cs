@@ -18,12 +18,14 @@ public record ToolCallPrepared(ToolCallId ToolCallId, string ToolIntentJson) : D
     public int SchemaVersion() => 1;
 }
 
-/// <summary>ToolCallRejected: esquema o Prepare inválido (alimenta el repair loop).</summary>
-public record ToolCallRejected(ToolCallId ToolCallId, string Reason) : DomainEventPayload
+/// <summary>ToolCallRejected: esquema o Prepare inválido (alimenta el repair loop).
+/// <c>ErrorCode</c> (v2, opcional) es el código tipado de spec §71; null = journals v1.</summary>
+public record ToolCallRejected(ToolCallId ToolCallId, string Reason, ToolErrorCode? ErrorCode = null)
+    : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.rejected");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>PermissionEvaluated: traza de la decisión para toda ToolCall (ADR-0036 §5).</summary>
@@ -91,13 +93,14 @@ public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : Doma
     public int SchemaVersion() => 1;
 }
 
-/// <summary>ToolCallFailed: falló con efecto (posiblemente parcial; ADR-0004 §2).</summary>
-public record ToolCallFailed(ToolCallId ToolCallId, string Cause, EffectOutcome EffectOutcome)
-    : DomainEventPayload
+/// <summary>ToolCallFailed: falló con efecto (posiblemente parcial; ADR-0004 §2).
+/// <c>ErrorCode</c> (v2, opcional) es el código tipado de spec §71; null = journals v1.</summary>
+public record ToolCallFailed(ToolCallId ToolCallId, string Cause, EffectOutcome EffectOutcome,
+    ToolErrorCode? ErrorCode = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.failed");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>ToolCallEffectUnknown: empezó pero su outcome no se persiguió (solo recovery).</summary>

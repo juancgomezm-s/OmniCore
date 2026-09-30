@@ -38,7 +38,8 @@ public sealed class ArtifactReadTool : ITool
     public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
     {
         if (!TryParse(call.NormalizedArgumentsJson, out var hash, out var offset, out var limit))
-            return new PreparationRejected("Provide a valid SHA-256 hash and page offset/limit.", null);
+            return new PreparationRejected("Provide a valid SHA-256 hash and page offset/limit.", null,
+                ToolErrorCode.InvalidArguments);
 
         var claims = ResourceClaims.Empty();
         return new Prepared(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
@@ -50,17 +51,23 @@ public sealed class ArtifactReadTool : ITool
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!TryParse(intent.Intent.NormalizedArgumentsJson, out var hash, out var offset, out var limit))
-            return Task.FromResult(ToolResult.Error("Invalid artifact read arguments."));
+            return Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Invalid artifact read arguments."));
 
         // Check the journal before accessing the CAS: an unknown hash must not distinguish
         // between a missing blob and arbitrary content in the store.
         if (!_isReferencedByCurrentSession(hash))
-            return Task.FromResult(ToolResult.Error("The artifact is not referenced by the current session."));
+            return Task.FromResult(ToolResult.Error(ToolErrorCode.PermissionDenied,
+                "The artifact is not referenced by the current session."));
 
         string? content;
         try { content = _artifacts.GetText(ContentHash.Sha256(hash)); }
-        catch (InvalidDataException) { return Task.FromResult(ToolResult.Error("The artifact is corrupted.")); }
-        if (content is null) return Task.FromResult(ToolResult.Error("The artifact is unavailable."));
+        catch (InvalidDataException)
+        {
+            return Task.FromResult(ToolResult.Error(ToolErrorCode.ArtifactCorrupted, "The artifact is corrupted."));
+        }
+        if (content is null)
+            return Task.FromResult(ToolResult.Error(ToolErrorCode.ArtifactMissing, "The artifact is unavailable."));
 
         var start = Math.Min(offset, content.Length);
         var count = Math.Min(limit, content.Length - start);

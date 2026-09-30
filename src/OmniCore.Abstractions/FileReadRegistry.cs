@@ -141,6 +141,13 @@ public sealed class FileReadRegistry
 public sealed record PendingEditValidation(string Path, int Turn, ToolCallId? ToolCallId);
 
 /// <summary>
+/// Rechazo tipado del ledger de mutaciones (spec §71): código tipado + texto estable visible al
+/// modelo. El texto conserva el prefijo "CODE: " histórico; el código viaja aparte para que
+/// el runtime rasure por código, nunca parseando texto.
+/// </summary>
+public sealed record MutationRefusal(ToolErrorCode Code, string Message);
+
+/// <summary>
 /// Contabilidad de mutaciones del Run (ADR-0044 §5, EPIC-021): aplica los límites de la
 /// política de mutación del modelo — <c>MaxFilesPerTurn</c>, <c>MaxChangedLinesPerTurn</c> y
 /// <c>MaxRewriteRatio</c> — y registra las mutaciones publicadas y las validaciones
@@ -158,10 +165,10 @@ public sealed record PendingEditValidation(string Path, int Turn, ToolCallId? To
 public sealed class MutationLedger
 {
     /// <summary>Código estable del rechazo por exceder un límite de mutación (spec §71).</summary>
-    public const string LimitExceededCode = "LIMIT_EXCEEDED";
+    public const string LimitExceededCode = ToolErrorCode.LimitExceededCode;
 
     /// <summary>Código estable del rechazo por modo de mutación (spec §71).</summary>
-    public const string MutationRefusedCode = "MUTATION_REFUSED";
+    public const string MutationRefusedCode = ToolErrorCode.MutationRefusedCode;
 
     private readonly FileReadRegistry _registry;
     private readonly HashSet<string> _turnFiles = new(StringComparer.Ordinal);
@@ -218,7 +225,7 @@ public sealed class MutationLedger
     /// Evalúa una mutación PROPUESTA contra la política de este Run (ADR-0044 §5): el modo de
     /// mutación para la operación, el límite de archivos por Turn, el de líneas cambiadas por
     /// Turn y el ratio de reescritura de una sola operación. Devuelve el rechazo tipado
-    /// ("CODE: texto", spec §71) o null si la permite.
+    /// (<see cref="MutationRefusal"/>, spec §71) o null si la permite.
     ///
     /// Es PURA: no toca estado. La mutación solo se contabiliza con <see cref="RecordMutation"/>
     /// una vez publicada con éxito; un rechazo no gasta presupuesto.
@@ -229,7 +236,7 @@ public sealed class MutationLedger
     /// <param name="deletedLines">Líneas del original que no sobreviven.</param>
     /// <param name="insertedLines">Líneas nuevas que no estaban en el original.</param>
     /// <param name="originalLines">Líneas del contenido original (0 en una creación).</param>
-    public string? RefuseMutation(ModelToolCapability operation, string path, bool targetExists,
+    public MutationRefusal? RefuseMutation(ModelToolCapability operation, string path, bool targetExists,
         int deletedLines, int insertedLines, int originalLines)
     {
         var policy = _policy;
@@ -241,8 +248,9 @@ public sealed class MutationLedger
 
         if (!FileMutationRules.ModeAllows(policy.Mode, operation))
         {
-            return MutationRefusedCode + ": el modo de mutación " + policy.Mode + " no permite "
-                + OperationText(operation) + " (" + path + ").";
+            return new MutationRefusal(ToolErrorCode.MutationRefused,
+                MutationRefusedCode + ": el modo de mutación " + policy.Mode + " no permite "
+                + OperationText(operation) + " (" + path + ").");
         }
 
         var key = _registry.CanonicalKey(path);
@@ -251,28 +259,32 @@ public sealed class MutationLedger
         // (coherente con FileMutationPolicy.CanMutateFiles).
         if (policy.MaxFilesPerTurn == 0)
         {
-            return LimitExceededCode + ": la política del modelo no asigna presupuesto de archivos por Turn.";
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": la política del modelo no asigna presupuesto de archivos por Turn.");
         }
 
         if (!_turnFiles.Contains(key) && _turnFiles.Count >= policy.MaxFilesPerTurn)
         {
-            return LimitExceededCode + ": la política del modelo permite como máximo "
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": la política del modelo permite como máximo "
                 + policy.MaxFilesPerTurn + " archivo(s) por Turn y ya se mutaron " + _turnFiles.Count
-                + " en este Turn. Continúa en el siguiente Turn.";
+                + " en este Turn. Continúa en el siguiente Turn.");
         }
 
         // MaxChangedLinesPerTurn: líneas borradas + insertadas acumuladas en el Turn.
         var delta = deletedLines + insertedLines;
         if (policy.MaxChangedLinesPerTurn == 0)
         {
-            return LimitExceededCode + ": la política del modelo no asigna presupuesto de líneas por Turn.";
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": la política del modelo no asigna presupuesto de líneas por Turn.");
         }
 
         if (_turnChangedLines + delta > policy.MaxChangedLinesPerTurn)
         {
-            return LimitExceededCode + ": la política del modelo permite como máximo "
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": la política del modelo permite como máximo "
                 + policy.MaxChangedLinesPerTurn + " líneas cambiadas por Turn y esta mutación añade "
-                + delta + " sobre las " + _turnChangedLines + " ya aplicadas. Continúa en el siguiente Turn.";
+                + delta + " sobre las " + _turnChangedLines + " ya aplicadas. Continúa en el siguiente Turn.");
         }
 
         // MaxRewriteRatio: fracción del CONTENIDO ORIGINAL que una sola operación reescribe
@@ -283,11 +295,12 @@ public sealed class MutationLedger
             var ratio = deletedLines / (double)originalLines;
             if (ratio > policy.MaxRewriteRatio)
             {
-                return LimitExceededCode + ": la política del modelo permite reescribir como máximo el "
+                return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                    LimitExceededCode + ": la política del modelo permite reescribir como máximo el "
                     + policy.MaxRewriteRatio.ToString("0.##", CultureInfo.InvariantCulture)
                     + " del archivo por operación y esta reescribe " + deletedLines + " de " + originalLines
                     + " líneas (" + ratio.ToString("0.##", CultureInfo.InvariantCulture)
-                    + "). Usa filesystem.patch para cambios localizados.";
+                    + "). Usa filesystem.patch para cambios localizados.");
             }
         }
 

@@ -30,10 +30,11 @@ public sealed class ProcessExecTool : ITool
     public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
     {
         if (!ProcessToolJson.TryParse(call.NormalizedArgumentsJson, out var args, out var error))
-            return new PreparationRejected(error, null);
+            return new PreparationRejected(error, null, ToolErrorCode.InvalidArguments);
         var cwd = ProcessToolJson.ResolveCwd(context.WorkspaceRoot, args.Cwd);
         if (cwd is null || !ProcessToolJson.IsLexicallyWithin(cwd, context.WorkspaceRoot))
-            return new PreparationRejected("cwd debe permanecer dentro del workspace", null);
+            return new PreparationRejected("cwd debe permanecer dentro del workspace", null,
+                ToolErrorCode.InvalidArguments);
         var claims = new ResourceClaims(Array.Empty<string>(), new[] { cwd },
             Array.Empty<NetworkGrant>(),
             new ProcessClaim(args.Executable, args.Argv, "External", args.NetworkRequired), Array.Empty<string>());
@@ -48,7 +49,8 @@ public sealed class ProcessExecTool : ITool
         var (cwd, timeout) = ProcessToolJson.GetRuntimeValues(intent.Intent.NormalizedArgumentsJson,
             context.WorkspaceRoot);
         if (cwd is null || !_boundary.IsWithin(cwd, context.WorkspaceRoot) || !Directory.Exists(cwd))
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("cwd fuera del workspace o no existe"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "cwd fuera del workspace o no existe"));
         return ProcessToolJson.RunAsync(_processLauncher, process.Executable, process.Args, cwd,
             context.WorkspaceRoot, timeout, process.NetworkRequired,
             _requestedStrength, context, cancellationToken);
@@ -80,10 +82,11 @@ public sealed class ShellExecTool : ITool
     public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
     {
         if (!ProcessToolJson.TryParseShell(call.NormalizedArgumentsJson, out var command, out var requestedCwd,
-            out var timeout, out var error)) return new PreparationRejected(error, null);
+            out var timeout, out var error)) return new PreparationRejected(error, null, ToolErrorCode.InvalidArguments);
         var cwd = ProcessToolJson.ResolveCwd(context.WorkspaceRoot, requestedCwd);
         if (cwd is null || !ProcessToolJson.IsLexicallyWithin(cwd, context.WorkspaceRoot))
-            return new PreparationRejected("cwd debe permanecer dentro del workspace", null);
+            return new PreparationRejected("cwd debe permanecer dentro del workspace", null,
+                ToolErrorCode.InvalidArguments);
         var (shell, shellArgs) = ProcessToolJson.ShellInvocation(command);
         // shell.exec queda autorizado como tool distinta y command viaja raw en argv[1], sin parseo.
         var claims = new ResourceClaims(Array.Empty<string>(), new[] { cwd }, Array.Empty<NetworkGrant>(),
@@ -97,10 +100,11 @@ public sealed class ShellExecTool : ITool
     {
         if (!ProcessToolJson.TryParseShell(intent.Intent.NormalizedArgumentsJson, out var command,
             out var requestedCwd, out var timeout, out var error))
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(error));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments, error));
         var cwd = ProcessToolJson.ResolveCwd(context.WorkspaceRoot, requestedCwd);
         if (cwd is null || !_boundary.IsWithin(cwd, context.WorkspaceRoot) || !Directory.Exists(cwd))
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("cwd fuera del workspace o no existe"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "cwd fuera del workspace o no existe"));
         var (_, args) = ProcessToolJson.ShellInvocation(command);
         return ProcessToolJson.RunAsync(_processLauncher, intent.Intent.Claims.Process!.Executable,
             args, cwd, context.WorkspaceRoot, TimeSpan.FromSeconds(timeout), networkRequired: false,
@@ -270,27 +274,29 @@ internal static class ProcessToolJson
             var originalSize = stdout.Length + stderr.Length;
             if (output.TimedOut)
                 return new ToolResult("Proceso agotó timeout o fue cancelado. " + combined, combined, null,
-                    originalSize, false, EffectOutcome.Unknown, true);
+                    originalSize, false, EffectOutcome.Unknown, true, ToolErrorCode.ProcessFailure);
             return new ToolResult("Proceso terminó con código " + output.ExitCode
                 + (truncated ? " (salida truncada)" : ""), combined, null, originalSize, false,
-                output.ExitCode == 0 ? EffectOutcome.Applied : EffectOutcome.Partial, output.ExitCode != 0);
+                output.ExitCode == 0 ? EffectOutcome.Applied : EffectOutcome.Partial, output.ExitCode != 0,
+                output.ExitCode == 0 ? null : ToolErrorCode.ProcessFailure);
         }
         catch (WeakSandboxConsentRequiredException) { throw; }
-        catch (ExecutableNotFoundException ex) { return ToolResult.Error(ex.Message); }
-        catch (ExecutableRequiresShellException ex) { return ToolResult.Error(ex.Message); }
+        catch (ExecutableNotFoundException ex) { return ToolResult.Error(ToolErrorCode.ProcessFailure, ex.Message); }
+        catch (ExecutableRequiresShellException ex) { return ToolResult.Error(ToolErrorCode.InvalidArguments, ex.Message); }
         catch (OperationCanceledException)
         {
             if (process is not null) await TerminateSafelyAsync(process).ConfigureAwait(false);
-            return process is null ? ToolResult.Error("Proceso cancelado")
+            return process is null ? ToolResult.Error(ToolErrorCode.Cancellation, "Proceso cancelado")
                 : new ToolResult("Proceso cancelado; el efecto puede ser parcial", null, null, 0, false,
-                    EffectOutcome.Unknown, true);
+                    EffectOutcome.Unknown, true, ToolErrorCode.Cancellation);
         }
         catch (Exception ex)
         {
             if (process is not null) await TerminateSafelyAsync(process).ConfigureAwait(false);
-            return process is null ? ToolResult.Error("No se pudo iniciar el proceso: " + ex.GetType().Name)
+            return process is null
+                ? ToolResult.Error(ToolErrorCode.ProcessFailure, "No se pudo iniciar el proceso: " + ex.GetType().Name)
                 : new ToolResult("Falló la espera del proceso; el efecto puede ser parcial: " + ex.GetType().Name,
-                    null, null, 0, false, EffectOutcome.Unknown, true);
+                    null, null, 0, false, EffectOutcome.Unknown, true, ToolErrorCode.ProcessFailure);
         }
         finally
         {

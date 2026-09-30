@@ -67,25 +67,27 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         var (path, _, content) = ParseArguments(call.NormalizedArgumentsJson);
         if (path is null)
         {
-            return Rejected("No se pudo interpretar el JSON de argumentos del write");
+            return Rejected("No se pudo interpretar el JSON de argumentos del write",
+                ToolErrorCode.InvalidArguments);
         }
 
         if (path.Length == 0)
         {
-            return Rejected("Falta 'path' en los argumentos");
+            return Rejected("Falta 'path' en los argumentos", ToolErrorCode.InvalidArguments);
         }
 
         // ADR-0018 §4: rutas de secretos se REJECT en Prepare (nunca se llega a Execute).
         if (new RedactionPolicy().IsSecretPath(path))
         {
-            return Rejected("Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)");
+            return Rejected("Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
+                ToolErrorCode.PermissionDenied);
         }
 
         // El contenido debe estar presente como string (puede estar vacío: la decisión de si un
         // vacío es válido —creación sí, reemplazo no— es de Execute, que sabe si el archivo existe).
         if (content is null)
         {
-            return Rejected("Falta 'content' en los argumentos");
+            return Rejected("Falta 'content' en los argumentos", ToolErrorCode.InvalidArguments);
         }
 
         // Se declara el claim de lectura+escritura sobre la ruta concreta para que Security
@@ -186,29 +188,33 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         var (path, expectedVersion, content) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null)
         {
-            return ToolResult.Error("No se pudo interpretar el JSON de argumentos del write");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "No se pudo interpretar el JSON de argumentos del write");
         }
 
         if (path.Length == 0)
         {
-            return ToolResult.Error("Falta 'path' en los argumentos");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Falta 'path' en los argumentos");
         }
 
         if (content is null)
         {
-            return ToolResult.Error("Falta 'content' en los argumentos");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Falta 'content' en los argumentos");
         }
 
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return ToolResult.Error("Ruta fuera del workspace");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Ruta fuera del workspace");
         }
 
         // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
         if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
         {
-            return ToolResult.Error(
+            return ToolResult.Error(ToolErrorCode.PermissionDenied,
                 "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)");
         }
 
@@ -216,7 +222,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // grafía de directorio) nunca es un destino válido.
         if (Directory.Exists(full) || Path.GetFileName(full).Length == 0)
         {
-            return ToolResult.Error("La ruta es un directorio, no un archivo: " + path);
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "La ruta es un directorio, no un archivo: " + path);
         }
 
         var ledger = context.ReadRegistry?.Ledger;
@@ -240,7 +247,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // defensa contra pisar un estado que el modelo no vio.
         if (expectedVersion is null || expectedVersion.Length == 0)
         {
-            return ToolResult.Error(
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "Falta 'expectedVersion': el token de versión es obligatorio para reemplazar un archivo existente (ADR-0044 §5). "
                 + "Lee el archivo y usa el token [version:…], o usa filesystem.patch para un cambio localizado.");
         }
@@ -251,7 +258,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         if (context.ReadRegistry is not null && (ledger?.MutationPolicy?.RequirePriorRead ?? true)
             && !context.ReadRegistry.Matches(path, expectedVersion))
         {
-            return ToolResult.Error(
+            return ToolResult.Error(ToolErrorCode.PriorReadRequired,
                 "PRIOR_READ_REQUIRED: no se puede reemplazar " + path
                 + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
                 + " Lee el archivo y usa el token [version:…] que la lectura devuelva.");
@@ -264,7 +271,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion != actualVersion)
         {
-            return ToolResult.Error(FileVersion.StaleWriteMessage(actualVersion));
+            return ToolResult.Error(ToolErrorCode.StaleWrite,
+                FileVersion.StaleWriteMessage(actualVersion));
         }
 
         FileVersion.DecodedFile decoded;
@@ -275,18 +283,18 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         catch (UnsupportedEncodingException ex)
         {
             // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
-            return ToolResult.Error(ex.Message);
+            return ToolResult.Error(ToolErrorCode.ToolFailure, ex.Message);
         }
 
         if (decoded.Text == content)
         {
-            return ToolResult.Error(
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "El contenido es idéntico al actual: no hay cambio que aplicar (un reemplazo sin cambio no es un efecto válido)");
         }
 
         if (content.Length == 0)
         {
-            return ToolResult.Error(
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "No se permite vaciar un archivo existente con filesystem.write: conserva contenido o usa filesystem.patch");
         }
 
@@ -298,7 +306,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             deleted, inserted, originalLines);
         if (refusal is not null)
         {
-            return ToolResult.Error(refusal);
+            return ToolResult.Error(refusal.Code, refusal.Message);
         }
 
         var newBytes = FileVersion.Encode(content, decoded.Encoding);
@@ -321,7 +329,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             deletedLines: 0, insertedLines: lines, originalLines: 0);
         if (refusal is not null)
         {
-            return ToolResult.Error(refusal);
+            return ToolResult.Error(refusal.Code, refusal.Message);
         }
 
         var newBytes = FileVersion.Encode(content, FileVersion.FileEncoding.Utf8NoBom);
@@ -349,7 +357,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // symlink/junction hacia fuera del workspace).
         if (!_boundary.IsWithin(tempPath, workspaceRoot))
         {
-            return ToolResult.Error("Temporal fuera del workspace");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Temporal fuera del workspace");
         }
 
         var createdTemp = false;
@@ -376,11 +385,20 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
             if (!_boundary.IsWithin(full, workspaceRoot))
             {
-                return ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)");
+                return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                    "Ruta fuera del workspace (revalidada antes de publicar)");
             }
 
-            // Costura de test: permite que otro actor modifique el destino justo antes del
-            // compare-and-publish protegido (o cancelar antes del commit).
+            if (created && File.Exists(full))
+            {
+                // TOCTOU de creación: el archivo apareció entre la verificación y la publicación.
+                // No se pisa: el modelo debe releer y decidir (reemplazo o patch).
+                return ToolResult.Error(ToolErrorCode.StaleWrite,
+                    "El archivo ya existe (apareció tras verificar su ausencia): no se escribió nada. Reléelo y usa expectedVersion para reemplazarlo.");
+            }
+
+            // Costura de test: fallo determinista DESPUÉS de escribir el temporal y antes de
+            // publicar, para forzar el camino de fallo (original intacto + temporal limpio).
             TestFailureHook?.Invoke(tempPath, full);
 
             // El commit barrier está en el lock por ruta: el re-chequeo final y el rename quedan
@@ -393,7 +411,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 {
                     if (File.Exists(full))
                     {
-                        return ToolResult.Error(
+                        return ToolResult.Error(ToolErrorCode.StaleWrite,
                             "El archivo ya existe (apareció tras verificar su ausencia): no se escribió nada. Reléelo y usa expectedVersion para reemplazarlo.");
                     }
                 }
@@ -401,7 +419,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 {
                     if (!File.Exists(full))
                     {
-                        return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                     }
 
                     byte[] currentBytes;
@@ -411,17 +429,17 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                     }
                     catch (FileNotFoundException)
                     {
-                        return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                     }
                     catch (DirectoryNotFoundException)
                     {
-                        return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                     }
 
                     var currentVersion = FileVersion.VersionToken(currentBytes);
                     if (expectedVersion != currentVersion)
                     {
-                        return ToolResult.Error(FileVersion.StaleWriteMessage(currentVersion));
+                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage(currentVersion));
                     }
                 }
 
@@ -450,11 +468,13 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         }
         catch (System.IO.IOException ex)
         {
-            return ToolResult.Error("Error de I/O al publicar el write: " + ex.Message);
+            return ToolResult.Error(ToolErrorCode.ToolFailure,
+                "Error de I/O al publicar el write: " + ex.Message);
         }
         catch (System.Exception ex)
         {
-            return ToolResult.Error("Error al publicar el write: " + ex.Message);
+            return ToolResult.Error(ToolErrorCode.ToolFailure,
+                "Error al publicar el write: " + ex.Message);
         }
         finally
         {
@@ -517,6 +537,10 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     }
 
     private static ToolPreparation Rejected(string reason) => new PreparationRejected(reason, null);
+
+    /// <summary>Rechazo con código tipado (spec §71): el runtime lo persiste en el evento.</summary>
+    private static ToolPreparation Rejected(string reason, ToolErrorCode errorCode) =>
+        new PreparationRejected(reason, null, errorCode);
 
     private static string JoinPath(string root, string relative)
     {
