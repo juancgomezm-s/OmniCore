@@ -193,6 +193,9 @@ public sealed class ManagedServerSpec
         var env = new Dictionary<string, string>();
         env["OMNI_SERVER_PORT"] = port.ToString();
         env["OMNI_SERVER_API_KEY"] = apiKey;
+        // llama.cpp e ik_llama leen la key de LLAMA_API_KEY (equivale a --api-key): sin ella el
+        // servidor gestionado arrancaría sin autenticación.
+        env["LLAMA_API_KEY"] = apiKey;
         return new ProcessLaunch(Executable, outArgs, WorkingDirectory, env, true);
     }
 }

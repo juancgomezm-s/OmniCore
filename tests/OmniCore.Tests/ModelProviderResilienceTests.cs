@@ -237,6 +237,7 @@ data: [DONE]
         Assert.DoesNotContain(launch.Args, arg => arg.Contains(secret, StringComparison.Ordinal));
         Assert.DoesNotContain(launch.Args, arg => arg.Contains("{apiKey}", StringComparison.Ordinal));
         Assert.Equal(secret, launch.Environment["OMNI_SERVER_API_KEY"]);
+        Assert.Equal(secret, launch.Environment["LLAMA_API_KEY"]);
     }
 
     private static OpenAiChatCompatibleProvider CreateProvider(QueueHandler handler, OpenAiProviderOptions? options = null) =>
