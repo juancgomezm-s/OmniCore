@@ -33,6 +33,7 @@ public enum StopReason
     ContentFilter,
     Refusal,
     Cancelled,
+    InputRequired,
     Error,
 }
 
