@@ -377,8 +377,9 @@ public sealed class CliApp
             return JournalCommands.VerifyJournal(new[] { "verify-journal" }
                 .Concat(args.Where(argument => argument == "--json")).ToArray());
 
-        return Task.FromResult(OmniCliRuntime.Doctor(DoctorLocale(args), Console.WriteLine,
-            (key, values) => Loc().Resolve(key, values)));
+        var localization = new Localization(DoctorLocale(args));
+        return Task.FromResult(OmniCliRuntime.Doctor(localization.Locale, Console.WriteLine,
+            localization.Resolve));
     }
 
     private static string DoctorLocale(string[] args)
