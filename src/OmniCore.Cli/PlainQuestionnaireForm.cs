@@ -12,6 +12,7 @@ internal static class PlainQuestionnaireForm
     public static WireQuestionnaireResponse? Read(QuestionnairePromptDto prompt)
     {
         var english = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en";
+        var localization = english ? Localization.English() : Localization.Spanish();
         var model = new QuestionnaireOverlayModel(prompt.Title, prompt.Description,
             prompt.Questions.Select(question => new QuestionnaireQuestionModel(question.Id, question.Prompt,
                 question.HelpText, Enum.Parse<QuestionnaireQuestionKind>(question.Kind),
@@ -73,7 +74,9 @@ internal static class PlainQuestionnaireForm
             QuestionnaireParseResult parsed = QuestionnairePlainFormParser.Parse(model, inputs);
             if (parsed.Response is { } response)
                 return ToWire(response);
-            foreach (var error in parsed.Errors) Console.WriteLine((english ? "Error: " : "Error: ") + error);
+            foreach (var error in parsed.Errors)
+                Console.WriteLine((english ? "Error: " : "Error: ")
+                    + localization.ResolveQuestionnaireValidationError(error));
             Console.WriteLine(english ? "Correct the form and try again." : "Corrige el formulario y vuelve a intentarlo.");
         }
         return null;

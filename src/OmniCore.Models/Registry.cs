@@ -123,6 +123,17 @@ public sealed class ModelDefinition
     }
 }
 
+/// <summary>Error tipado cuando una familia de provider aún no está implementada.</summary>
+public sealed class ProviderFamilyNotSupportedException : NotSupportedException
+{
+    public ProviderFamily Family { get; }
+
+    public LocalizedText UserMessage => LocalizedText.Of("provider.familyNotSupported", "family", Family.ToString());
+
+    public ProviderFamilyNotSupportedException(ProviderFamily family)
+        : base("Provider family is not supported: " + family) => Family = family;
+}
+
 /// <summary>Error tipado cuando no hay modelo configurado (ADR-0011 §2; spec §71).</summary>
 public sealed class NoModelConfiguredException : InvalidOperationException
 {

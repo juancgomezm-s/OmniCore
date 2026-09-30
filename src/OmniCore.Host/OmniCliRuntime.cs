@@ -115,6 +115,13 @@ public sealed class OmniCliRuntime
             var provider = registry.Provider(model.ProviderId);
             writeLine("  " + model.Id + " → provider '" + model.ProviderId + "'"
                 + (provider is null ? "" : " (" + provider.Family + ", " + provider.BaseUrl + ")"));
+            if (provider is not null && provider.Family != ProviderFamily.OpenAiChatCompatible)
+            {
+                var unsupported = new ProviderFamilyNotSupportedException(provider.Family);
+                var message = localize is null ? unsupported.UserMessage.Render()
+                    : localize(unsupported.UserMessage.Key, unsupported.UserMessage.Args);
+                writeLine("    " + message);
+            }
             if (provider is not null)
             {
                 writeLine("    TLS: " + OmniHost.DescribeTls(provider.BaseUrl, provider.TrustedCertificatePath));
@@ -208,12 +215,26 @@ public sealed class OmniCliRuntime
             ?? modelDefinition?.Id;
         var baseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDescription?.BaseUrl
             ?? "http://127.0.0.1:8080/v1";
+        if (providerDescription is not null && providerDescription.Family != ProviderFamily.OpenAiChatCompatible)
+        {
+            var unsupported = new ProviderFamilyNotSupportedException(providerDescription.Family);
+            writeLine("omni " + (act ? "act" : "ask") + ": " + Text(unsupported.UserMessage));
+            return 1;
+        }
         string? key = null;
         if (providerDescription?.Auth.Kind == AuthKind.ApiKey)
         {
-            var credentials = OmniHost.CreateUserCredentialStore(paths);
-            key = OmniHost.ResolveApiKey(credentials, secretRef,
-                Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), cancellationToken);
+            try
+            {
+                var credentials = OmniHost.CreateUserCredentialStore(paths);
+                key = OmniHost.ResolveApiKey(credentials, secretRef,
+                    Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), cancellationToken);
+            }
+            catch (SecretValueTooShortException ex)
+            {
+                writeLine("omni " + (act ? "act" : "ask") + ": " + Text(ex.UserMessage));
+                return 1;
+            }
             if (key is null)
             {
                 writeLine("omni " + (act ? "act" : "ask") + ": falta la credencial del provider. "
@@ -268,8 +289,9 @@ public sealed class OmniCliRuntime
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = server.LastLaneId() ?? LaneId.New();
-            var provider = OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "",
-                providerDescription?.TrustedCertificatePath);
+            var provider = providerDescription is null
+                ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")
+                : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "");
             var usableContext = modelDefinition is not null && modelDefinition.RecommendedUsableContext > 0
                 ? modelDefinition.RecommendedUsableContext
                 : modelDefinition is not null && modelDefinition.ContextWindow > 0
@@ -788,7 +810,8 @@ public sealed class OmniCliRuntime
     public PermissionGrantCommandResult Permissions(PermissionGrantCommand command,
         CancellationToken cancellationToken)
     {
-        var workspace = WorkspaceId.Of(ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot));
+        var workspace = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(
+            ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot)));
         var handler = new PermissionGrantCommandHandler(
             OmniHost.CreatePermissionGrantStore(_workspaceRoot), workspace, Server().LastRunId());
         return handler.Handle(command, cancellationToken);

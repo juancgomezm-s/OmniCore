@@ -50,6 +50,8 @@ public sealed class FileCredentialStore : ICredentialStore
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
+        if (value.Length < Secret.MinimumLength)
+            throw new OmniCore.Domain.SecretValueTooShortException(Secret.MinimumLength);
         cancellationToken.ThrowIfCancellationRequested();
         EnsureFile();
 
@@ -65,7 +67,12 @@ public sealed class FileCredentialStore : ICredentialStore
         var map = LoadMap();
         if (!map.TryGetValue(key, out var stored)) return null;
         var value = Unprotect(stored);
-        if (value is not null) SecretRedactorRegistry.Register(value);
+        if (value is not null)
+        {
+            if (value.Length < Secret.MinimumLength)
+                throw new OmniCore.Domain.SecretValueTooShortException(Secret.MinimumLength);
+            SecretRedactorRegistry.Register(value);
+        }
         return value;
     }
 

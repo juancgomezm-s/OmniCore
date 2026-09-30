@@ -57,6 +57,18 @@ public sealed class Epic001ProjectIdentityTests
     }
 
     [Fact]
+    public void Workspace_case_folding_is_platform_rule_not_domain_behavior()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "OmniCore", "MixedCase");
+        var windowsCanonical = ProjectIdentity.CanonicalWorkspacePath(path, foldCase: true);
+        var caseSensitiveCanonical = ProjectIdentity.CanonicalWorkspacePath(path, foldCase: false);
+
+        Assert.Equal(windowsCanonical, windowsCanonical.ToLowerInvariant());
+        Assert.NotEqual(caseSensitiveCanonical, caseSensitiveCanonical.ToLowerInvariant());
+        Assert.NotEqual(WorkspaceId.Of(windowsCanonical).ToString(), WorkspaceId.Of(caseSensitiveCanonical).ToString());
+    }
+
+    [Fact]
     public void Different_repositories_get_different_project_ids()
     {
         var first = ProjectId.Derive(ProjectIdentity.NormalizeOrigin("https://github.com/team/first.git"));

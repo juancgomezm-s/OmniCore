@@ -586,7 +586,7 @@ public sealed class OmniServer : IOmniClient
         var now = DateTimeOffset.UtcNow;
         var budget = new TaskBudget(null, null, null, null);
         var physicalWorkspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspacePath);
-        stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(physicalWorkspaceRoot).ToString(),
+        stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalWorkspaceRoot)).ToString(),
             workspacePath, ProfileId.New(), now));
         // Origen explícito y seguro de la raíz del run real (ADR-0004 §5): se fija aquí, en la
         // creación de la sesión, y es lo único que la recuperación acepta al arrancar. Nunca se
@@ -1203,7 +1203,7 @@ public sealed class OmniServer : IOmniClient
         var session = SessionId.New();
         var workspace = Path.GetFullPath(".");
         new EventStream(_store, _codecs, session).Append(new SessionCreated(session,
-            WorkspaceId.Of(workspace).ToString(), workspace, ProfileId.New(), DateTimeOffset.UtcNow));
+            WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(), workspace, ProfileId.New(), DateTimeOffset.UtcNow));
         return session;
     }
 
