@@ -12,6 +12,14 @@ using System.Text;
 /// </summary>
 public static class FileVersion
 {
+    /// <summary>Código estable del error tipado de escritura sobre contenido obsoleto (spec §71).</summary>
+    public const string StaleWriteCode = "STALE_WRITE";
+
+    /// <summary>Mensaje de error tipado: prefijo de código estable + token vigente [version:…] para releer.</summary>
+    public static string StaleWriteMessage(string currentVersion) =>
+        StaleWriteCode + ": el contenido del archivo cambió desde la lectura; no se escribió nada. "
+        + "Versión actual [version:" + currentVersion + "]. Reléelo e intenta de nuevo.";
+
     private static readonly byte[] Utf8Bom = { 0xEF, 0xBB, 0xBF };
     private static readonly byte[] Utf16LeBom = { 0xFF, 0xFE };
     private static readonly byte[] Utf16BeBom = { 0xFE, 0xFF };

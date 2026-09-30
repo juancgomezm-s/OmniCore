@@ -109,7 +109,8 @@ public sealed class FilesystemPatchToolTests
         Assert.Equal(ToolCallState.Failed, outcome.FinalState);
         // No se mutó nada.
         Assert.Equal("contenido original", File.ReadAllText(Path.Combine(ws, "doc.txt")));
-        Assert.Contains("STALE_WRITE", outcome.Summary);
+        Assert.StartsWith("STALE_WRITE:", outcome.Summary);
+        Assert.Contains("[version:" + VersionOf("contenido original") + "]", outcome.Summary);
     }
 
     [Fact]
