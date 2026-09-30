@@ -39,6 +39,17 @@ public sealed class CliApp
         if (command == "trust") return RunTrust(args);
         if (command == "permissions") return RunPermissions(args);
         if (command == "resolve") return RunResolve(args);
+        if (command == "verify-journal") return JournalCommands.VerifyJournal(args);
+        if (command == "session" && args.Length >= 2 && args[1] == "purge")
+            return MaintenanceCommands.SessionPurge(args);
+        if (command == "gc") return MaintenanceCommands.Gc(args);
+        if (command == "audit" && args.Length >= 2 && args[1] == "purge")
+            return MaintenanceCommands.AuditPurge(args);
+        if (command is "session" or "audit")
+        {
+            Console.WriteLine("omni " + command + ": subcomando desconocido.");
+            return Task.FromResult(2);
+        }
         if (command == "doctor") return RunDoctor(args);
         if (command is "--tui" or "tui") return RunTui(args);
         if (command is "--help" or "-h" or "help")
@@ -341,8 +352,15 @@ public sealed class CliApp
         return Task.FromResult(0);
     }
 
-    private static Task<int> RunDoctor(string[] args) => Task.FromResult(
-        OmniCliRuntime.Doctor(DoctorLocale(args), Console.WriteLine, (key, values) => Loc().Resolve(key, values)));
+    private static Task<int> RunDoctor(string[] args)
+    {
+        if (args.Any(argument => argument == "--verify-journal"))
+            return JournalCommands.VerifyJournal(new[] { "verify-journal" }
+                .Concat(args.Where(argument => argument == "--json")).ToArray());
+
+        return Task.FromResult(OmniCliRuntime.Doctor(DoctorLocale(args), Console.WriteLine,
+            (key, values) => Loc().Resolve(key, values)));
+    }
 
     private static string DoctorLocale(string[] args)
     {
@@ -374,6 +392,10 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine("  omni model ...                       Políticas de modelo y onboarding (M3)");
+        Console.WriteLine("  omni verify-journal [ruta] [--json]  Verifica el journal y sus artifacts (M4)");
+        Console.WriteLine("  omni session purge <id>             Purga una sesión; conserva auditoría (M4)");
+        Console.WriteLine("  omni gc [--dry-run]                 Recoge blobs huérfanos con gracia (M4)");
+        Console.WriteLine("  omni audit purge [--before fecha]   Aplica retención de auditoría (M4)");
         Console.WriteLine(Loc().Resolve("permissions.help"));
         Console.WriteLine(Loc().Resolve("interaction.resolve.usage"));
         Console.WriteLine("  omni --help                          Esta ayuda");
