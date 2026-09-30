@@ -54,6 +54,99 @@ public static class FileVersion
         Utf16BeBom,
     }
 
+    /// <summary>
+    /// Número de líneas de un texto (ADR-0044 §5): segmentos separados por '\n'; el segmento
+    /// final sin salto de línea cuenta como línea; "" tiene 0 líneas.
+    /// </summary>
+    public static int CountLines(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        var lines = 0;
+        foreach (var c in text)
+        {
+            if (c == '\n')
+            {
+                lines++;
+            }
+        }
+
+        if (text[text.Length - 1] != '\n')
+        {
+            lines++;
+        }
+
+        return lines;
+    }
+
+    /// <summary>
+    /// Diferencia de líneas entre el contenido original y el resultante de una mutación
+    /// (ADR-0044 §5): <paramref name="deleted"/> = líneas del original que NO sobreviven,
+    /// <paramref name="inserted"/> = líneas nuevas que no estaban en el original. El matching
+    /// es por multiconjunto (contando repeticiones): una línea MOVIDA sobrevive con otra
+    /// grafía y no cuenta como cambio (no se reescribió contenido, solo se reubicó); una línea
+    /// EDITADA cuenta como borrada + insertada. Determinista y O(n).
+    ///
+    /// El PRESUPUESTO por Turn suma ambas (deleted + inserted); el RATIO de reescritura usa
+    /// solo las borradas sobre las líneas originales: mide cuánto del contenido PREVIO se
+    /// reescribió, no cuánto creció el archivo (una creación o un append puro no reescriben
+    /// nada existente).
+    /// </summary>
+    public static void ChangedLines(string originalText, string newText, out int deleted, out int inserted)
+    {
+        var oldLines = SplitLines(originalText);
+        var newLines = SplitLines(newText);
+
+        var surviving = new Dictionary<string, int>(oldLines.Count);
+        foreach (var line in oldLines)
+        {
+            surviving[line] = surviving.TryGetValue(line, out var count) ? count + 1 : 1;
+        }
+
+        var matched = 0;
+        foreach (var line in newLines)
+        {
+            if (surviving.TryGetValue(line, out var count) && count > 0)
+            {
+                surviving[line] = count - 1;
+                matched++;
+            }
+        }
+
+        deleted = oldLines.Count - matched;
+        inserted = newLines.Count - matched;
+    }
+
+    /// <summary>Segmentos de texto entre saltos de línea; el tramo final sin salto cuenta como línea.</summary>
+    private static List<string> SplitLines(string text)
+    {
+        var lines = new List<string>();
+        if (string.IsNullOrEmpty(text))
+        {
+            return lines;
+        }
+
+        var start = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '\n')
+            {
+                lines.Add(text.Substring(start, i - start));
+                start = i + 1;
+            }
+        }
+
+        if (start < text.Length)
+        {
+            lines.Add(text.Substring(start));
+        }
+
+        return lines;
+    }
+
     /// <summary>Contenido decodido junto con el modo de encoding usado.</summary>
     public readonly struct DecodedFile
     {

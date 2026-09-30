@@ -209,7 +209,8 @@ public sealed class M3ActVerticalTests
         var dataDir = TempDir();
         var ws = Path.Combine(dataDir, "workspace");
         Directory.CreateDirectory(ws);
-        var original = "linea-uno\nlinea-dos\n";
+        var original = "linea-uno\nlinea-dos\nlinea-tres\nlinea-cuatro\n"
+            + "linea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n";
         File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         var token = VersionOf(original);
         var cx = StartActServer(dataDir, ws, "corrige este test");
@@ -232,7 +233,7 @@ public sealed class M3ActVerticalTests
             Assert.True(result.ToolCalls.Count >= 2, "read + patch (" + result.ToolCalls.Count + ")");
             Assert.True(result.ToolCalls[0].Succeeded, "filesystem.read ok");
             Assert.True(result.ToolCalls[1].Succeeded, "filesystem.patch ok. summary=" + result.ToolCalls[1].Summary);
-            Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+            Assert.Equal("linea-uno\nlinea-dos-C\nlinea-tres\nlinea-cuatro\nlinea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
 
             var types = cx.Store.ReadFrom(cx.SessionId, 1).Select(e => e.Type.ToString()).ToArray();
             Assert.Contains("toolcall.succeeded", types);
@@ -240,7 +241,7 @@ public sealed class M3ActVerticalTests
 
             var reopened = ReopenEvents(cx).Select(e => e.Type.ToString()).ToArray();
             Assert.Contains("toolcall.succeeded", reopened);
-            Assert.Equal("linea-uno\nlinea-dos-C\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+            Assert.Equal("linea-uno\nlinea-dos-C\nlinea-tres\nlinea-cuatro\nlinea-cinco\nlinea-seis\nlinea-siete\nlinea-ocho\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
         {
