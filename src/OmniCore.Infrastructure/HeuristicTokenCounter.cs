@@ -10,6 +10,20 @@ using OmniCore.Domain;
 /// </summary>
 public sealed class HeuristicTokenCounter : ITokenCounter
 {
+    /// <summary>Margen de seguridad por defecto del ADR-0042 §1 (10 %), redondeado hacia arriba.</summary>
+    public const double DefaultSafetyMargin = 0.10;
+
+    private readonly double _safetyMargin;
+
+    public HeuristicTokenCounter() : this(DefaultSafetyMargin) { }
+
+    public HeuristicTokenCounter(double safetyMargin)
+    {
+        if (safetyMargin < 0 || double.IsNaN(safetyMargin))
+            throw new ArgumentOutOfRangeException(nameof(safetyMargin));
+        _safetyMargin = safetyMargin;
+    }
+
     public static readonly TokenizerId HeuristicId = TokenizerId.Parse("heuristic:chars4/1");
 
     public TokenizerId Id => HeuristicId;
@@ -25,7 +39,7 @@ public sealed class HeuristicTokenCounter : ITokenCounter
         }
 
         var chars = text.Length;
-        var tokens = chars / 4 + (chars % 4 == 0 ? 0 : 1);
+        var tokens = (int)Math.Ceiling(Math.Round(chars * (1 + _safetyMargin) / 4.0, 6));
         return System.Threading.Tasks.Task.FromResult(tokens);
     }
 }

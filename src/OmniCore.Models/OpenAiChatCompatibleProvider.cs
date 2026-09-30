@@ -548,6 +548,8 @@ public sealed class ModelProviderException : InvalidOperationException
 [JsonSerializable(typeof(ChatRequestDto))]
 [JsonSerializable(typeof(ChatCompletionResponse))]
 [JsonSerializable(typeof(ChatChunk))]
+[JsonSerializable(typeof(TokenizeRequestDto))]
+[JsonSerializable(typeof(TokenizeResponseDto))]
 [JsonSerializable(typeof(ChatToolChoice))]
 [JsonSerializable(typeof(Dictionary<string, JsonElement>))]
 [JsonSerializable(typeof(string))]
