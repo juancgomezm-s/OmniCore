@@ -166,6 +166,7 @@ public enum InteractionKind
     WeakSandboxConsent,
     BudgetExceeded,
     Question,
+    AcceptanceConfirmation,
 }
 
 /// <summary>Estado de un PlanItem (ADR-0036 §4).</summary>
