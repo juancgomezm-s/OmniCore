@@ -327,4 +327,63 @@ public sealed class M2ReadToolsTests
 
         Cleanup(ws);
     }
+
+    [Fact]
+    public void ListDirectory_recursive_does_not_follow_a_link_that_leaves_the_workspace()
+    {
+        var ws = TempDir();
+        var outside = TempDir();
+        File.WriteAllText(Path.Combine(outside, "outside-secret-name.txt"), "x");
+        File.WriteAllText(Path.Combine(ws, "inside.txt"), "y");
+        if (!TryCreateDirectoryLink(Path.Combine(ws, "escape"), outside))
+        {
+            Cleanup(ws);
+            Cleanup(outside);
+            Assert.Skip("El entorno no permite crear enlaces de directorio.");
+        }
+
+        var outcome = ListExecutor(ws).ExecuteToolWithoutJournal(ListCall(".", recursive: true), false, CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
+        var paths = ParseJson(outcome.Preview!).RootElement.GetProperty("entries").EnumerateArray()
+            .Select(e => e.GetProperty("path").GetString()).ToArray();
+        Assert.Contains("inside.txt", paths);
+        Assert.DoesNotContain("escape", paths);
+        Assert.DoesNotContain(paths, p => p!.Contains("outside-secret-name", StringComparison.Ordinal));
+        Directory.Delete(Path.Combine(ws, "escape"));
+        Cleanup(ws);
+        Cleanup(outside);
+    }
+
+    private static bool TryCreateDirectoryLink(string linkPath, string target)
+    {
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var start = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                start.ArgumentList.Add("/c");
+                start.ArgumentList.Add("mklink");
+                start.ArgumentList.Add("/J");
+                start.ArgumentList.Add(linkPath);
+                start.ArgumentList.Add(target);
+                using var process = System.Diagnostics.Process.Start(start);
+                process?.WaitForExit(15000);
+                return process is { ExitCode: 0 } && Directory.Exists(linkPath);
+            }
+
+            Directory.CreateSymbolicLink(linkPath, target);
+            return Directory.Exists(linkPath);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 }
