@@ -269,11 +269,7 @@ public sealed class CliApp
             client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         }
 
-        var state = ClientState.Empty();
-        var projection = new ClientProjection();
-        foreach (var envelope in client.SubscribeSince(0)) state = projection.Apply(state, envelope);
-        Console.WriteLine(TuiApp.Render(state, "es"));
-        return Task.FromResult(0);
+        return Task.FromResult(TuiApp.Run(client, Loc().Locale));
     }
 
     private static Task<int> RunExplain(string[] args)

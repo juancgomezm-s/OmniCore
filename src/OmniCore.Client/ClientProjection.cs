@@ -188,6 +188,10 @@ public sealed class InteractionOverlayModel
     /// <summary>Ids de las opciones (lo que se envía en <c>interaction.respond</c>).</summary>
     public IReadOnlyList<string> OptionIds { get; }
 
+    public string DefaultOptionId { get; }
+
+    public QuestionnaireOverlayModel? Questionnaire { get; }
+
     public InteractionOverlayModel(string title, IReadOnlyList<string> options)
         : this(string.Empty, string.Empty, title, string.Empty, options, options)
     {
@@ -200,7 +204,8 @@ public sealed class InteractionOverlayModel
     }
 
     public InteractionOverlayModel(string id, string kind, string title, string subject,
-        IReadOnlyList<string> options, IReadOnlyList<string> optionIds)
+        IReadOnlyList<string> options, IReadOnlyList<string> optionIds,
+        QuestionnaireOverlayModel? questionnaire = null, string? defaultOptionId = null)
     {
         Id = id;
         Kind = kind;
@@ -208,6 +213,8 @@ public sealed class InteractionOverlayModel
         Subject = subject;
         Options = options;
         OptionIds = optionIds;
+        Questionnaire = questionnaire;
+        DefaultOptionId = defaultOptionId ?? optionIds.FirstOrDefault() ?? string.Empty;
     }
 }
 
@@ -301,6 +308,20 @@ public sealed class ClientProjection
         }
     }
 
+    /// <summary>Applies Host read-model queries through the same reducer used for wire events.</summary>
+    public ClientState ApplyQuery(ClientState state, SessionQueryResult query)
+    {
+        if (query.Name == "workspaceStatus")
+        {
+            var fields = JsonObj.Parse(query.Json);
+            var directory = fields.TryGetValue("workingDirectory", out var value) ? value ?? "" : "";
+            return new ClientState(new HeaderModel(directory, null, null), state.Conversation,
+                new SidebarModel(new[] { "core.session", "core.plan", "core.files" }), state.Composer,
+                state.StatusLine, state.Overlays, state.Connection);
+        }
+        return state;
+    }
+
     public ClientState ApplyLocal(ClientState state, LocalAction action)
     {
         if (action.Name == "draft")
@@ -320,8 +341,11 @@ public sealed class ClientProjection
         var ids = Get(f, "options").Split(',', StringSplitOptions.RemoveEmptyEntries);
         var labels = ids.Select(id => Label(prefix + id, id)).ToArray();
         var subject = SubjectText(Get(f, "subject"));
+        var questionnaire = kind == "Question"
+            ? QuestionnairePresentationFactory.FromJson(Get(f, "questionnaire"), _text.Locale)
+            : null;
         return new InteractionOverlayModel(Get(f, "interactionId"), kind, Label(prefix + "title", kind),
-            subject, labels, ids);
+            subject, labels, ids, questionnaire, Get(f, "defaultOption"));
     }
 
     private string SubjectText(string json)
