@@ -1,0 +1,151 @@
+using OmniCore.Client;
+using OmniCore.Domain;
+using OmniCore.Engine;
+using OmniCore.Host;
+using OmniCore.Infrastructure;
+using OmniCore.Protocol;
+
+namespace OmniCore.Tests;
+
+/// <summary>
+/// EPIC-010: el Host traduce los eventos de dominio a eventos del protocolo (ProtocolMapper) y el
+/// cliente los reduce a conversación, overlays y status line con textos localizados, sin conocer
+/// los tipos del Engine.
+/// </summary>
+public sealed class ProtocolMapperTests
+{
+    private static readonly EventCodecs Codecs = EventCodecs.Create();
+
+    private static (InMemoryEventStore Store, SessionId Session, TestRun.Opened Run, EventStream Stream) Journal()
+    {
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        var run = TestRun.Open(store, session, "Arregla el \"login\"");
+        return (store, session, run, new EventStream(store, Codecs, session));
+    }
+
+    private static ClientState Reduce(IEnumerable<WireEnvelope> events, Localization? text = null)
+    {
+        var projection = new ClientProjection(text ?? Localization.Spanish());
+        var state = ClientState.Empty();
+        foreach (var evt in events)
+        {
+            state = projection.Apply(state, evt);
+        }
+
+        return state;
+    }
+
+    [Fact]
+    public void Mapped_events_carry_type_sequence_session_and_run_but_not_engine_internals()
+    {
+        var (store, session, run, _) = Journal();
+
+        var wire = new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1));
+
+        var created = JsonObj.Parse(wire.First(w => JsonObj.Parse(w.PayloadJson)["type"] == "run.created").PayloadJson);
+        Assert.Equal("1", created["seq"]);
+        Assert.Equal(session.ToString(), created["sessionId"]);
+        Assert.Equal(run.RunId.ToString(), created["runId"]);
+        Assert.Equal("Arregla el \"login\"", created["objective"]);
+        Assert.Equal("act", created["mode"]);
+        // Lo que no tiene entrada en la tabla (p. ej. task.created) no se expone.
+        Assert.DoesNotContain(wire, w => JsonObj.Parse(w.PayloadJson)["type"] == "task.created");
+    }
+
+    [Fact]
+    public void The_client_renders_the_real_conversation_from_the_journal()
+    {
+        var (store, session, run, stream) = Journal();
+        stream.Append(new UserInputReceived(run.RunId, "[\"revisa auth.cs\"]", null));
+        var call = ToolCallId.New();
+        stream.AppendBatch(new DomainEventPayload[] {
+            new ToolCallRequested(call, "pc", "filesystem.read", "{}"),
+            new ToolCallRejected(call, "ruta de secretos"),
+        }, DurabilityClass.Standard);
+
+        var state = Reduce(new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1)));
+
+        var blocks = state.Conversation.Blocks;
+        Assert.Contains(blocks, b => b.Role == ConversationRole.System && b.Text.Contains("Arregla el \"login\""));
+        Assert.Contains(blocks, b => b.Role == ConversationRole.User && b.Text == "revisa auth.cs");
+        Assert.Contains(blocks, b => b.Role == ConversationRole.Tool && b.ToolName == "filesystem.read");
+        Assert.Contains(blocks, b => b.Role == ConversationRole.Tool && b.Text.Contains("ruta de secretos"));
+    }
+
+    [Fact]
+    public void A_pending_interaction_is_an_overlay_until_it_is_resolved()
+    {
+        var (store, session, run, stream) = Journal();
+        var interaction = InteractionId.New();
+        stream.Append(new InteractionRequested(interaction, InteractionKind.PlanApproval, "{}",
+            "[{\"id\":\"approve_execute\"},{\"id\":\"approve_only\"},{\"id\":\"reject\"}]", "reject", null,
+            run.RootLane, null, null, 0, 1));
+        var mapper = new ProtocolMapper(Codecs);
+
+        var pending = Reduce(mapper.Map(store.ReadFrom(session, 1)));
+        var overlay = Assert.Single(pending.Overlays);
+        Assert.Equal(interaction.ToString(), overlay.Id);
+        Assert.Equal("Aprobar el plan", overlay.Title);
+        Assert.Equal(new[] { "Aprobar y ejecutar", "Aprobar sin ejecutar", "Seguir planificando" }, overlay.Options);
+        Assert.Equal(new[] { "approve_execute", "approve_only", "reject" }, overlay.OptionIds);
+        Assert.Equal(1, pending.StatusLine.PendingInteractions);
+
+        stream.Append(new InteractionResolved(interaction, "approve_execute", InteractionCause.User));
+        stream.Append(new RunModeChanged(run.RunId, RunMode.Plan, RunMode.Act, "PlanApproved"));
+        var resolved = Reduce(mapper.Map(store.ReadFrom(session, 1)));
+        Assert.Empty(resolved.Overlays);
+        Assert.Equal(0, resolved.StatusLine.PendingInteractions);
+        Assert.Equal("act", resolved.StatusLine.Mode);
+    }
+
+    [Fact]
+    public void Texts_follow_the_client_locale()
+    {
+        var (store, session, _, _) = Journal();
+        var wire = new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1));
+
+        var spanish = Reduce(wire, Localization.Spanish());
+        var english = Reduce(wire, Localization.English());
+
+        Assert.Contains(spanish.Conversation.Blocks, b => b.Text.StartsWith("Run iniciado", StringComparison.Ordinal));
+        Assert.Contains(english.Conversation.Blocks, b => b.Text.StartsWith("Run started", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Secrets_in_user_text_are_redacted_before_reaching_the_wire()
+    {
+        var (store, session, run, stream) = Journal();
+        stream.Append(new UserInputReceived(run.RunId, "[\"mi clave es sk-ant-api03-abcdefghijklmnop\"]", null));
+
+        var wire = new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1));
+
+        Assert.DoesNotContain(wire, w => w.PayloadJson.Contains("sk-ant-api03-abcdefghijklmnop", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void The_server_subscription_returns_the_mapped_journal_of_the_current_session()
+    {
+        var server = OmniHost.CreateInMemoryServer();
+        var ack = server.Send(WireEnvelope.Command(Ids.NewV7(),
+            "{" + JsonObj.Field("cmd", "sim") + "," + JsonObj.Field("scenario", "multi-item-plan") + "}"),
+            TestContext.Current.CancellationToken);
+        Assert.Equal("ok", ack.Status);
+
+        var all = server.SubscribeSince(0);
+        var types = all.Select(w => JsonObj.Parse(w.PayloadJson)["type"]).ToArray();
+        Assert.Contains("run.created", types);
+        Assert.Contains("toolcall.requested", types);
+        Assert.Contains("run.completed", types);
+        Assert.Equal("sim.events", types[^1]); // la notificación del servidor va al final
+
+        // Desde una secuencia posterior solo llega lo nuevo (más las notificaciones).
+        var seqs = all.Select(w => JsonObj.Parse(w.PayloadJson)).Where(f => f.ContainsKey("seq"))
+            .Select(f => long.Parse(f["seq"], System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        var later = server.SubscribeSince(seqs.Max());
+        Assert.Single(later, w => JsonObj.Parse(w.PayloadJson).ContainsKey("seq"));
+
+        var state = Reduce(all);
+        Assert.Contains(state.Conversation.Blocks, b => b.Text == "Run completado");
+    }
+}
