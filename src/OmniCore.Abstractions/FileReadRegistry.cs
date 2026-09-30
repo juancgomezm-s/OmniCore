@@ -35,7 +35,52 @@ using OmniCore.Domain;
 /// </summary>
 public sealed class FileReadRegistry
 {
-    private readonly Dictionary<string, string> _readByPath = new();
+    private readonly Dictionary<string, string> _readByPath;
+    private readonly string? _workspaceRoot;
+
+    /// <summary>
+    /// Registro vacío. Con <paramref name="workspaceRoot"/>, las rutas relativas se resuelven contra
+    /// él y una ruta absoluta al mismo archivo cuenta como la misma lectura; sin raíz solo se
+    /// unifican las grafías relativas (separadores, <c>./</c>, <c>..</c>). La comparación ignora
+    /// mayúsculas solo en plataformas con sistema de archivos insensible (Windows, macOS).
+    /// </summary>
+    public FileReadRegistry(string? workspaceRoot = null)
+    {
+        _workspaceRoot = string.IsNullOrEmpty(workspaceRoot) ? null : workspaceRoot;
+        _readByPath = new Dictionary<string, string>(
+            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal);
+    }
+
+    /// <summary>Forma canónica de la clave: nunca la grafía cruda del modelo.</summary>
+    private string Canonical(string path)
+    {
+        if (_workspaceRoot is not null)
+        {
+            var full = Path.GetFullPath(path, _workspaceRoot);
+            return Path.GetRelativePath(_workspaceRoot, full).Replace('\\', '/');
+        }
+
+        var parts = new List<string>();
+        foreach (var seg in path.Replace('\\', '/').Split('/'))
+        {
+            if (seg.Length == 0 || seg == ".")
+            {
+                continue;
+            }
+
+            if (seg == ".." && parts.Count > 0 && parts[^1] != "..")
+            {
+                parts.RemoveAt(parts.Count - 1);
+                continue;
+            }
+
+            parts.Add(seg);
+        }
+
+        return (path.StartsWith('/') || path.StartsWith('\\') ? "/" : "") + string.Join('/', parts);
+    }
 
     /// <summary>
     /// Registra una lectura EFECTIVA (éxito + token visible) de <c>path</c> con el token de
@@ -44,15 +89,15 @@ public sealed class FileReadRegistry
     /// </summary>
     public void RecordRead(string path, string versionToken)
     {
-        _readByPath[path] = versionToken;
+        _readByPath[Canonical(path)] = versionToken;
     }
 
     /// <summary>True si el modelo leyó efectivamente <c>path</c> en este Run.</summary>
-    public bool HasRead(string path) => _readByPath.ContainsKey(path);
+    public bool HasRead(string path) => _readByPath.ContainsKey(Canonical(path));
 
     /// <summary>Token expuesto por la última lectura exitosa de <c>path</c> en este Run; null si no la hay.</summary>
     public string? VersionOf(string path) =>
-        _readByPath.TryGetValue(path, out var v) ? v : null;
+        _readByPath.TryGetValue(Canonical(path), out var v) ? v : null;
 
     /// <summary>
     /// True solo si este Run contiene una lectura exitosa de EXACTAMENTE <c>path</c> cuyo token
