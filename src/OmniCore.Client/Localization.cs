@@ -41,6 +41,36 @@ public sealed class Localization
         return text;
     }
 
+    /// <summary>
+    /// Resuelve un texto que llega en el formato estable del servidor, <c>clave</c> o
+    /// <c>clave(arg=valor,...)</c> (p. ej. el error de un ack). Si la clave no existe en los
+    /// recursos, devuelve el texto tal cual: nunca inventa una frase.
+    /// </summary>
+    public string ResolveWire(string text)
+    {
+        var open = text.IndexOf('(');
+        var key = open < 0 ? text : text[..open];
+        if (!_es.ContainsKey(key) && !_en.ContainsKey(key))
+        {
+            return text;
+        }
+
+        var args = new Dictionary<string, string>();
+        if (open >= 0 && text.EndsWith(')'))
+        {
+            foreach (var part in text[(open + 1)..^1].Split(','))
+            {
+                var eq = part.IndexOf('=');
+                if (eq > 0)
+                {
+                    args[part[..eq]] = part[(eq + 1)..];
+                }
+            }
+        }
+
+        return Resolve(key, args);
+    }
+
     private string Resources(string key)
     {
         var es = _es.TryGetValue(key, out var e) ? e : null;

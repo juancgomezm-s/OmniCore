@@ -7,7 +7,18 @@ namespace OmniCore.Cli;
 /// <summary>Despacha argumentos, procesa el protocolo y delega la composición al Host.</summary>
 public sealed class CliApp
 {
-    private static readonly OmniCliRuntime Runtime = OmniCliRuntime.Create(".");
+    private static readonly OmniCliRuntime Runtime = CreateRuntime();
+
+    private static OmniCliRuntime CreateRuntime()
+    {
+        var runtime = OmniCliRuntime.Create(".");
+        runtime.Localize = (key, args) => Loc().Resolve(key, args);
+        return runtime;
+    }
+
+    // Idioma de la interfaz: OMNI_LOCALE=en o español por defecto (ADR-0040).
+    private static Localization Loc() =>
+        Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? Localization.English() : Localization.Spanish();
 
     public static Task<int> RunAsync(string[] args)
     {
@@ -45,7 +56,7 @@ public sealed class CliApp
             var ack = client.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "sim.resume") + "}"),
                 CancellationToken.None);
             if (ack.Status == "ok") return RenderEvents(client, jsonOutput, 0, "resume");
-            Console.WriteLine("omni sim --resume: " + (ack.Error ?? "fallo"));
+            Console.WriteLine("omni sim --resume: " + (ack.Error is null ? "fallo" : Loc().ResolveWire(ack.Error)));
             return Task.FromResult(1);
         }
 
@@ -66,7 +77,7 @@ public sealed class CliApp
                 : JsonObj.Field("scenario", scenarioName)) + "}";
         var result = client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         if (result.Status == "ok") return RenderEvents(client, jsonOutput, crash ? 1 : 0, scenarioName);
-        Console.WriteLine("omni sim: " + (result.Error ?? "fallo"));
+        Console.WriteLine("omni sim: " + (result.Error is null ? "fallo" : Loc().ResolveWire(result.Error)));
         return Task.FromResult(1);
     }
 
