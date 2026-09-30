@@ -405,11 +405,35 @@ public sealed class CliApp
         return Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
     }
 
-    private static Task<int> RunAsk(string[] args) => Runtime.AskAsync(
-        args.Length >= 2 ? args[1] : Loc().Resolve("cli.ask.default_question"), Console.WriteLine, CancellationToken.None);
+    private static async Task<int> RunAsk(string[] args)
+    {
+        var code = await Runtime.AskAsync(args.Length >= 2 ? args[1] : Loc().Resolve("cli.ask.default_question"),
+            Console.WriteLine, CancellationToken.None);
+        PrintStatusLine();
+        return code;
+    }
 
-    private static Task<int> RunAct(string[] args) => Runtime.ActAsync(
-        args.Length >= 2 ? args[1] : "", Console.WriteLine, CancellationToken.None);
+    private static async Task<int> RunAct(string[] args)
+    {
+        var code = await Runtime.ActAsync(args.Length >= 2 ? args[1] : "", Console.WriteLine, CancellationToken.None);
+        PrintStatusLine();
+        return code;
+    }
+
+    /// <summary>Status line resumida del plain renderer (ADR-0031 §3): tokens · costo · cuota, sin inventar datos.</summary>
+    private static void PrintStatusLine()
+    {
+        if (Runtime.CurrentUsage() is not { } usage) return;
+        Console.WriteLine(StatusLineText(usage));
+    }
+
+    internal static string StatusLineText(UsageSnapshot usage) =>
+        string.Join(" · ", new[]
+        {
+            UsagePresentation.Tokens(usage.SessionTokens),
+            UsagePresentation.Cost(usage.SessionCost),
+            UsagePresentation.Remaining(usage.Remaining),
+        }.Where(part => part is not null));
 
     private static void PrintUsage()
     {

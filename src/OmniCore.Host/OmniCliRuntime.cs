@@ -16,6 +16,7 @@ public sealed class OmniCliRuntime
 {
     private readonly string _workspaceRoot;
     private OmniServer? _server;
+    private (IModelProvider Provider, ModelPricing? Pricing, string BaseUrl, IArtifactStore Artifacts)? _usageContext;
     private bool _workspaceWarningShown;
     private bool _providerDeprecationShown;
 
@@ -375,6 +376,7 @@ public sealed class OmniCliRuntime
 
             var executingAct = act || server.CurrentRunMode() == RunMode.Act;
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
+            _usageContext = (provider, loaded.Pricing(model), baseUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
             var hostTools = executingAct
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
@@ -829,6 +831,20 @@ public sealed class OmniCliRuntime
     /// <summary>Borra la sesión de ChatGPT del credential store.</summary>
     public static void LogoutChatGpt() =>
         OmniHost.CreateChatGptAuth(OmniHost.CreatePlatformPaths()).Logout(CancellationToken.None);
+
+    /// <summary>
+    /// Uso de la sesión para la status line (ADR-0031 §3): tokens y costo desde el journal, cuota solo
+    /// si el provider la informó. Null si todavía no hubo ningún Turn con modelo en este proceso.
+    /// </summary>
+    public UsageSnapshot? CurrentUsage()
+    {
+        if (_server is null || _usageContext is not { } context || _server.LastSessionId() is not { } session) return null;
+        var (tokens, cost, complete) = SessionUsageReporter.ReadSessionTotals(_server.AcquireStore(), _server.AcquireCodecs(),
+            context.Artifacts, session);
+        var windows = context.Provider is IReportsRateLimits reporter ? reporter.LastRateLimits : [];
+        return SessionUsageReporter.Build(tokens, cost, complete, context.Pricing?.IsComplete == true,
+            OmniHost.IsPrivateHost(context.BaseUrl), windows, DateTimeOffset.UtcNow);
+    }
 
     public void SetWorkspaceTrusted(bool trusted) =>
         new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).SetTrusted(_workspaceRoot, trusted);

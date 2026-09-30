@@ -256,3 +256,9 @@ public static class RateLimitQuotaParser
         }
     }
 }
+
+/// <summary>Provider que informa ventanas de rate limit de su última respuesta (ADR-0031 §3).</summary>
+public interface IReportsRateLimits
+{
+    IReadOnlyList<RateLimitWindow> LastRateLimits { get; }
+}
