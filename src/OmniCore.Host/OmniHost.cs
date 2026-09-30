@@ -182,7 +182,8 @@ public sealed class OmniHost
     /// </summary>
     public static HostTools CreateHostTools() => HostTools.Default();
 
-    public static HostTools CreateExplorerTools() => HostTools.Explorer();
+    public static HostTools CreateExplorerTools(ArtifactReadTool? artifactReadTool = null) =>
+        HostTools.Explorer(artifactReadTool);
 
     /// <summary>
     /// Executor del pipeline real de tools + permisos para la simulación: catálogo completo y
@@ -246,9 +247,11 @@ public sealed class OmniHost
     /// Catálogo de <c>omni act</c> (M3): tools Core de lectura + <c>filesystem.patch</c>, sin
     /// FakeTools de simulación. Es la única composición real que expone mutaciones.
     /// </summary>
-    public static HostTools CreateActTools(SandboxStrength processSandboxStrength = SandboxStrength.Strong) =>
+    public static HostTools CreateActTools(SandboxStrength processSandboxStrength = SandboxStrength.Strong,
+        ArtifactReadTool? artifactReadTool = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
-            includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength);
+            includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength,
+            artifactReadTool: artifactReadTool);
 
     /// <summary>
     /// Executor de <c>omni act</c>: capa de modo ACT (escrituras dentro del workspace permitidas por
