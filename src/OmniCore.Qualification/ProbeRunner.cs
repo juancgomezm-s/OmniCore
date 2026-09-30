@@ -1,0 +1,148 @@
+namespace OmniCore.Qualification;
+
+using System.Diagnostics;
+using OmniCore.Abstractions;
+using OmniCore.Domain;
+
+/// <summary>
+/// Runner determinista de probes de cualificación (ADR-0007 §6, M5). Consume el runtime como un
+/// cliente a través de IModelProvider (INV-011); nunca ejecuta la suite automáticamente al
+/// descubrir un modelo. La suite completa es 10–20 probes; esta es la base mínima `quick`.
+/// </summary>
+public sealed class ProbeRunner
+{
+    private readonly IModelProvider _provider;
+
+    public TimeSpan PerProbeTimeout { get; }
+
+    public static readonly TimeSpan DefaultPerProbeTimeout = TimeSpan.FromSeconds(60);
+
+    public ProbeRunner(IModelProvider provider) : this(provider, DefaultPerProbeTimeout) { }
+
+    public ProbeRunner(IModelProvider provider, TimeSpan perProbeTimeout)
+    {
+        _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+        if (perProbeTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(perProbeTimeout), "PerProbeTimeout debe ser positivo");
+        }
+        PerProbeTimeout = perProbeTimeout;
+    }
+
+    /// <summary>
+    /// Ejecuta un conjunto de probes con consentimiento explícito y tope de costo total.
+    /// </summary>
+    public async Task<IReadOnlyList<ProbeResult>> RunSuiteAsync(
+        IReadOnlyList<ProbeRequest> requests,
+        QualificationConsent consent,
+        CancellationToken cancellationToken)
+    {
+        if (requests is null || requests.Count == 0)
+        {
+            throw new ArgumentException("la suite requiere al menos un probe", nameof(requests));
+        }
+        if (consent is null)
+        {
+            throw new ArgumentNullException(nameof(consent));
+        }
+        if (!consent.ExplicitlyGiven)
+        {
+            throw new QualificationConsentRequiredException(
+                "la suite de cualificación requiere consentimiento explícito para ejecutarse");
+        }
+
+        decimal estimated = 0m;
+        foreach (var r in requests)
+        {
+            estimated += r.Probe.MaxCostUsd;
+        }
+        if (estimated > consent.MaxTotalCostUsd)
+        {
+            throw new QualificationCostCapExceededException(consent.MaxTotalCostUsd, estimated);
+        }
+
+        var results = new List<ProbeResult>(requests.Count);
+        foreach (var r in requests)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                results.Add(new ProbeResult(r.Probe.Id, ProbeStatus.NotRun, 0.0, null,
+                    "cancelado antes de ejecutar el probe", TimeSpan.Zero, 0m));
+                continue;
+            }
+            results.Add(await RunProbeAsync(r, cancellationToken));
+        }
+        return results;
+    }
+
+    /// <summary>Ejecuta un probe individual y lo puntúa por regla exacta.</summary>
+    public async Task<ProbeResult> RunProbeAsync(ProbeRequest request, CancellationToken cancellationToken)
+    {
+        var sw = Stopwatch.StartNew();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(PerProbeTimeout);
+
+        ModelResponse? response = null;
+        string? failureMessage = null;
+        try
+        {
+            await foreach (var evt in _provider.StreamAsync(ToModelRequest(request), timeoutCts.Token))
+            {
+                if (evt is ResponseCompleted completed)
+                {
+                    response = completed.Response;
+                }
+                else if (evt is ResponseFailed failed)
+                {
+                    failureMessage = $"{failed.ErrorType}: {failed.Message}";
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            sw.Stop();
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            sw.Stop();
+            throw new ProbeTimeoutException(request.Probe.Id.ToString());
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null, ex.Message, sw.Elapsed, 0m);
+        }
+        sw.Stop();
+
+        if (response is null)
+        {
+            return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
+                failureMessage ?? "el provider no devolvió una respuesta completa", sw.Elapsed, 0m);
+        }
+
+        var text = ProbeScorer.ExtractText(response);
+        var score = ProbeScorer.Score(request.Probe.Kind, text, request.Probe.Expected);
+        var passed = score >= 1.0;
+        return new ProbeResult(request.Probe.Id, passed ? ProbeStatus.Passed : ProbeStatus.Failed,
+            score, text, null, sw.Elapsed, 0m);
+    }
+
+    private static ModelRequest ToModelRequest(ProbeRequest request)
+    {
+        var messages = new List<ModelMessage>
+        {
+            new(MessageRole.User, new List<ContentBlock> { new TextBlock(request.Probe.Prompt) }),
+        };
+        return new ModelRequest(
+            request.Selection,
+            messages,
+            instructions: null,
+            tools: Array.Empty<ToolDefinition>(),
+            ToolChoice.None(),
+            output: null,
+            reasoning: null,
+            cache: null,
+            continuation: null);
+    }
+}

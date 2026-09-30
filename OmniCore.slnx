@@ -11,6 +11,7 @@
     <Project Path="src/OmniCore.Infrastructure/OmniCore.Infrastructure.csproj" />
     <Project Path="src/OmniCore.Models/OmniCore.Models.csproj" />
     <Project Path="src/OmniCore.Protocol/OmniCore.Protocol.csproj" />
+    <Project Path="src/OmniCore.Qualification/OmniCore.Qualification.csproj" />
     <Project Path="src/OmniCore.Sandbox/OmniCore.Sandbox.csproj" />
     <Project Path="src/OmniCore.Security/OmniCore.Security.csproj" />
     <Project Path="src/OmniCore.Tools/OmniCore.Tools.csproj" />
