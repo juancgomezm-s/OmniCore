@@ -83,6 +83,10 @@ public enum ContextDecision
     Included,
     OmittedByBudget,
     TruncatedByBudget,
+    Pruned,
+    Externalized,
+    Compressed,
+    Compacted,
 }
 
 /// <summary>Diagnóstico por item, con procedencia para explicar inclusión y omisiones.</summary>
@@ -121,6 +125,9 @@ public sealed class ContextSnapshot
     /// <summary>Decisiones del presupuesto, incluidas las omisiones y su procedencia (ADR-0029).</summary>
     public IReadOnlyList<ContextDiagnostic> Diagnostics { get; }
 
+    /// <summary>Fingerprint determinista del contenido y decisiones del snapshot (sin SnapshotId).</summary>
+    public string SnapshotFingerprint { get; }
+
     public ContextSnapshot(Guid snapshotId, SessionId sessionId, RunId runId, TaskId? taskId, LaneId? laneId,
         TurnId? turnId, long basedOnEventSequence, ExecutionFingerprint fingerprint,
         IReadOnlyList<ContextItem> items, int tokenCount)
@@ -154,6 +161,31 @@ public sealed class ContextSnapshot
         TokenCount = tokenCount;
         Overflowed = overflowed;
         Diagnostics = diagnostics;
+        SnapshotFingerprint = ComputeSnapshotFingerprint(items, diagnostics, fingerprint.Hash(), tokenCount);
+    }
+
+    private static string ComputeSnapshotFingerprint(IReadOnlyList<ContextItem> items,
+        IReadOnlyList<ContextDiagnostic> diagnostics, string policyFingerprint, int tokenCount)
+    {
+        var canonical = new StringBuilder(policyFingerprint).Append('|')
+            .Append(tokenCount.ToString(CultureInfo.InvariantCulture));
+        foreach (var item in items)
+        {
+            canonical.Append('|').Append(item.Id).Append(':').Append(item.Kind).Append(':')
+                .Append(item.EstimatedTokens.ToString(CultureInfo.InvariantCulture)).Append(':').Append(item.Priority)
+                .Append(':').Append(item.Retention).Append(':').Append(item.PreserveWhenTrimming).Append(':')
+                .Append(item.Provenance.ContributorId).Append(':').Append(item.Provenance.Category).Append(':')
+                .Append(item.Provenance.ComponentSource).Append(':')
+                .Append(item.Provenance.Sensitive).Append(':')
+                .Append(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(item.Content))));
+            foreach (var reference in item.Provenance.Refs ?? Array.Empty<string>()) canonical.Append(':').Append(reference);
+        }
+        foreach (var diagnostic in diagnostics)
+            canonical.Append('|').Append(diagnostic.ItemId).Append(':').Append(diagnostic.Decision).Append(':')
+                .Append(diagnostic.Tokens.ToString(CultureInfo.InvariantCulture)).Append(':')
+                .Append(diagnostic.Provenance.ContributorId)
+                .Append(':').AppendJoin(',', diagnostic.Provenance.Refs ?? Array.Empty<string>());
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString())));
     }
 }
 
