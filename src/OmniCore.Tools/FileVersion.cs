@@ -12,8 +12,9 @@ using System.Text;
 /// </summary>
 public static class FileVersion
 {
-    /// <summary>Código estable del error tipado de escritura sobre contenido obsoleto (spec §71).</summary>
-    public const string StaleWriteCode = "STALE_WRITE";
+    /// <summary>Código estable del error tipado de escritura sobre contenido obsoleto (spec §71).
+    /// Única fuente de verdad: la constante tipada del código en Domain.</summary>
+    public const string StaleWriteCode = OmniCore.Domain.ToolErrorCode.StaleWriteCode;
 
     /// <summary>Mensaje de error tipado: prefijo de código estable + token vigente [version:…] para releer.</summary>
     public static string StaleWriteMessage(string currentVersion) =>

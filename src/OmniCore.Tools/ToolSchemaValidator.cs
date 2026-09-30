@@ -2,6 +2,7 @@ namespace OmniCore.Tools;
 
 using System.Text.Json;
 using OmniCore.Abstractions;
+using OmniCore.Domain;
 
 /// <summary>
 /// Valida los argumentos de una tool contra su InputSchema declarado, ANTES de Prepare
@@ -24,8 +25,9 @@ using OmniCore.Abstractions;
 /// </summary>
 internal static class ToolSchemaValidator
 {
-    /// <summary>Código de error tipado (spec §71): los argumentos no conforman el InputSchema.</summary>
-    public const string InvalidArgumentsCode = "INVALID_ARGUMENTS";
+    /// <summary>Código de error tipado (spec §71): los argumentos no conforman el InputSchema.
+    /// Única fuente de verdad: la constante tipada del código en Domain.</summary>
+    public const string InvalidArgumentsCode = ToolErrorCode.InvalidArgumentsCode;
 
     /// <summary>Valida los argumentos contra el schema. null si son válidos; si no, el detalle del error.</summary>
     public static string? Validate(string? argumentsJson, InputSchema schema)

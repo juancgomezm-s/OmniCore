@@ -147,17 +147,27 @@ public sealed class Prepared : ToolPreparation
     public Prepared(ToolIntent intent) => Intent = intent;
 }
 
-/// <summary>Prepare rechazó por esquema o semántica (alimenta el repair loop).</summary>
+/// <summary>Prepare rechazó por esquema o semántica (alimenta el repair loop).
+/// <c>ErrorCode</c> es el código tipado del rechazo (spec §71): null si el productor no lo fijó
+/// (el runtime lo persiste como código ausente, no como TOOL_FAILURE implícito).</summary>
 public sealed class PreparationRejected : ToolPreparation
 {
     public string Reason { get; }
 
     public string? DetailsJson { get; }
 
-    public PreparationRejected(string reason, string? detailsJson)
+    /// <summary>Código tipado del rechazo (spec §71); null si el productor no lo fijó.</summary>
+    public ToolErrorCode? ErrorCode { get; }
+
+    public PreparationRejected(string reason, string? detailsJson) : this(reason, detailsJson, null)
+    {
+    }
+
+    public PreparationRejected(string reason, string? detailsJson, ToolErrorCode? errorCode)
     {
         Reason = reason;
         DetailsJson = detailsJson;
+        ErrorCode = errorCode;
     }
 }
 

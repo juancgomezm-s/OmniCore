@@ -92,7 +92,8 @@ public sealed class ToolRuntime
         var tool = _catalog.Find(validated.ToolId);
         if (tool is null)
         {
-            _emit(new ToolCallRejected(validated.ToolCallId, "tool no encontrada: " + validated.ToolId));
+            _emit(new ToolCallRejected(validated.ToolCallId, "tool no encontrada: " + validated.ToolId,
+                ToolErrorCode.UnknownTool));
             return new Outcome(false, "tool no encontrada", ToolCallState.Rejected, EffectOutcome.None);
         }
 
@@ -104,7 +105,7 @@ public sealed class ToolRuntime
         if (schemaError is not null)
         {
             var reason = ToolSchemaValidator.InvalidArgumentsCode + ": " + schemaError;
-            _emit(new ToolCallRejected(validated.ToolCallId, reason));
+            _emit(new ToolCallRejected(validated.ToolCallId, reason, ToolErrorCode.InvalidArguments));
             return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
         }
 
@@ -119,13 +120,14 @@ public sealed class ToolRuntime
         }
         catch (Exception ex)
         {
-            _emit(new ToolCallRejected(validated.ToolCallId, "prepare falló: " + ex.Message));
+            _emit(new ToolCallRejected(validated.ToolCallId, "prepare falló: " + ex.Message,
+                ToolErrorCode.ToolFailure));
             return new Outcome(false, "prepare falló: " + ex.Message,
                 ToolCallState.Rejected, EffectOutcome.None);
         }
         if (preparation is PreparationRejected rejected)
         {
-            _emit(new ToolCallRejected(validated.ToolCallId, rejected.Reason));
+            _emit(new ToolCallRejected(validated.ToolCallId, rejected.Reason, rejected.ErrorCode));
             return new Outcome(false, rejected.Reason, ToolCallState.Rejected, EffectOutcome.None);
         }
 
@@ -138,7 +140,7 @@ public sealed class ToolRuntime
             if (_executableResolver is null)
             {
                 const string reason = "No hay resolver de ejecutables configurado; proceso rechazado por seguridad";
-                _emit(new ToolCallRejected(validated.ToolCallId, reason));
+                _emit(new ToolCallRejected(validated.ToolCallId, reason, ToolErrorCode.PermissionDenied));
                 return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
             }
             try
@@ -152,7 +154,7 @@ public sealed class ToolRuntime
             }
             catch (ExecutableNotFoundException ex)
             {
-                _emit(new ToolCallRejected(validated.ToolCallId, ex.Message));
+                _emit(new ToolCallRejected(validated.ToolCallId, ex.Message, ToolErrorCode.ProcessFailure));
                 return new Outcome(false, ex.Message, ToolCallState.Rejected, EffectOutcome.None);
             }
         }
@@ -169,7 +171,7 @@ public sealed class ToolRuntime
             if (!boundaryDecision.Allowed)
             {
                 _emit(new ToolCallRejected(validated.ToolCallId,
-                    "frontera de capacidad: " + boundaryDecision.Reason));
+                    "frontera de capacidad: " + boundaryDecision.Reason, ToolErrorCode.CapabilityRefused));
                 return new Outcome(false, boundaryDecision.Reason, ToolCallState.Rejected,
                     EffectOutcome.None);
             }
@@ -185,7 +187,8 @@ public sealed class ToolRuntime
         }
         catch (Exception ex)
         {
-            _emit(new ToolCallRejected(validated.ToolCallId, "política falló: " + ex.Message));
+            _emit(new ToolCallRejected(validated.ToolCallId, "política falló: " + ex.Message,
+                ToolErrorCode.ToolFailure));
             return new Outcome(false, "política falló: " + ex.Message,
                 ToolCallState.Rejected, EffectOutcome.None);
         }
@@ -315,7 +318,8 @@ public sealed class ToolRuntime
             if (!boundaryDecision.Allowed)
             {
                 _emit(new ToolCallFailed(call.ToolCallId,
-                    "frontera de capacidad: " + boundaryDecision.Reason, EffectOutcome.None));
+                    "frontera de capacidad: " + boundaryDecision.Reason, EffectOutcome.None,
+                    ToolErrorCode.CapabilityRefused));
                 return new Outcome(false, boundaryDecision.Reason, null, ToolCallState.Failed,
                     EffectOutcome.None);
             }
@@ -348,7 +352,8 @@ public sealed class ToolRuntime
         }
         catch (WeakSandboxConsentRequiredException ex)
         {
-            _emit(new ToolCallFailed(call.ToolCallId, ex.Message, EffectOutcome.None));
+            _emit(new ToolCallFailed(call.ToolCallId, ex.Message, EffectOutcome.None,
+                ToolErrorCode.PermissionDenied));
             return new Outcome(false, ex.Message, null, ToolCallState.Failed, EffectOutcome.None);
         }
         catch (Exception ex)
@@ -360,7 +365,7 @@ public sealed class ToolRuntime
                 return new Outcome(false, cause, ToolCallState.EffectUnknown, EffectOutcome.Unknown);
             }
 
-            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None));
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
             return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
         }
         if (result.IsError)
@@ -373,14 +378,15 @@ public sealed class ToolRuntime
                 return new Outcome(false, result.Summary, result.Preview, ToolCallState.EffectUnknown,
                     EffectOutcome.Unknown);
             }
-            _emit(new ToolCallFailed(call.ToolCallId, result.Summary, result.EffectOutcome));
+            _emit(new ToolCallFailed(call.ToolCallId, result.Summary, result.EffectOutcome,
+                result.ErrorCode));
             return new Outcome(false, result.Summary, result.Preview, ToolCallState.Failed, result.EffectOutcome);
         }
 
         var effect = result.EffectOutcome;
         if (effect == EffectOutcome.Unknown)
         {
-            _emit(new ToolCallFailed(call.ToolCallId, "efecto desconocido", effect));
+            _emit(new ToolCallFailed(call.ToolCallId, "efecto desconocido", effect, ToolErrorCode.UnknownEffect));
             return new Outcome(false, result.Summary, result.Preview, ToolCallState.Failed, effect);
         }
 

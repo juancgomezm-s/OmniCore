@@ -45,38 +45,43 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var (path, expectedVersion, oldText, newText) = ParseArguments(call.NormalizedArgumentsJson);
         if (path is null)
         {
-            return Rejected("No se pudo interpretar el JSON de argumentos del patch");
+            return Rejected("No se pudo interpretar el JSON de argumentos del patch",
+                ToolErrorCode.InvalidArguments);
         }
 
         if (path is null || path!.Length == 0)
         {
-            return Rejected("Falta 'path' en los argumentos");
+            return Rejected("Falta 'path' en los argumentos", ToolErrorCode.InvalidArguments);
         }
 
         // ADR-0018 §4: rutas de secretos se REJECT en Prepare (nunca se llega a Execute).
         if (new RedactionPolicy().IsSecretPath(path!))
         {
-            return Rejected("Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)");
+            return Rejected("Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
+                ToolErrorCode.PermissionDenied);
         }
 
         if (expectedVersion is null || expectedVersion!.Length == 0)
         {
-            return Rejected("Falta 'expectedVersion': el token de versión es obligatorio para un patch (ADR-0044 §5)");
+            return Rejected("Falta 'expectedVersion': el token de versión es obligatorio para un patch (ADR-0044 §5)",
+                ToolErrorCode.InvalidArguments);
         }
 
         if (oldText is null || oldText!.Length == 0)
         {
-            return Rejected("Falta 'oldText': el texto a reemplazar no puede estar vacío");
+            return Rejected("Falta 'oldText': el texto a reemplazar no puede estar vacío",
+                ToolErrorCode.InvalidArguments);
         }
 
         if (newText is null)
         {
-            return Rejected("Falta 'newText' en los argumentos");
+            return Rejected("Falta 'newText' en los argumentos", ToolErrorCode.InvalidArguments);
         }
 
         if (oldText == newText)
         {
-            return Rejected("'oldText' y 'newText' son idénticos: no hay cambio que aplicar");
+            return Rejected("'oldText' y 'newText' son idénticos: no hay cambio que aplicar",
+                ToolErrorCode.InvalidArguments);
         }
 
         // Se declara el claim de escritura sobre la ruta concreta para que Security evalúe la
@@ -134,31 +139,35 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var (path, expectedVersion, oldText, newText) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null)
         {
-            return ToolResult.Error("No se pudo interpretar el JSON de argumentos del patch");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "No se pudo interpretar el JSON de argumentos del patch");
         }
 
         if (path is null || path!.Length == 0)
         {
-            return ToolResult.Error("Falta 'path' en los argumentos");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Falta 'path' en los argumentos");
         }
 
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return ToolResult.Error("Ruta fuera del workspace");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Ruta fuera del workspace");
         }
 
         // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
         if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
         {
-            return ToolResult.Error(
+            return ToolResult.Error(ToolErrorCode.PermissionDenied,
                 "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)");
         }
 
         if (!File.Exists(full))
         {
             // No se crea: un patch solo aplica sobre un archivo existente (ADR-0044 §3).
-            return ToolResult.Error("Archivo no encontrado (un patch no crea archivos): " + path);
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Archivo no encontrado (un patch no crea archivos): " + path);
         }
 
         // ADR-0044 §5: exigir lectura previa EFECTIVA del MISMO path/version en este Run antes
@@ -172,7 +181,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             && (context.ReadRegistry!.Ledger.MutationPolicy?.RequirePriorRead ?? true)
             && (expectedVersion is null || !context.ReadRegistry!.Matches(path!, expectedVersion!)))
         {
-            return ToolResult.Error(
+            return ToolResult.Error(ToolErrorCode.PriorReadRequired,
                 "PRIOR_READ_REQUIRED: no se puede parchear " + path
                 + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
                 + " Lee el archivo y usa el token [version:…] que la lectura devuelva.");
@@ -191,7 +200,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         catch (UnsupportedEncodingException ex)
         {
             // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
-            return ToolResult.Error(ex.Message);
+            return ToolResult.Error(ToolErrorCode.ToolFailure, ex.Message);
         }
         var content = decoded.Text;
 
@@ -200,19 +209,22 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion is null || expectedVersion != actualVersion)
         {
-            return ToolResult.Error(FileVersion.StaleWriteMessage(actualVersion));
+            return ToolResult.Error(ToolErrorCode.StaleWrite,
+                FileVersion.StaleWriteMessage(actualVersion));
         }
 
         // Bloqueante 2: no se permite un oldText que sea el contenido completo del archivo, ni un
         // newText que vacíe el archivo (un parche localizado nunca sustituye el archivo completo).
         if (oldText! == content)
         {
-            return ToolResult.Error("oldText es el contenido completo del archivo: no se permite sustituir el archivo entero con un patch localizado");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "oldText es el contenido completo del archivo: no se permite sustituir el archivo entero con un patch localizado");
         }
 
         if (newText!.Length == 0)
         {
-            return ToolResult.Error("newText vacío: no se permite vaciar el archivo con un patch");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "newText vacío: no se permite vaciar el archivo con un patch");
         }
 
         // Localización: oldText debe aparecer exactamente una vez. Cero ocurrencias → no se
@@ -220,12 +232,14 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var first = content.IndexOf(oldText!, StringComparison.Ordinal);
         if (first < 0)
         {
-            return ToolResult.Error("oldText no encontrado en el archivo: el patch no se aplicó");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "oldText no encontrado en el archivo: el patch no se aplicó");
         }
 
         if (content.IndexOf(oldText!, first + oldText!.Length, StringComparison.Ordinal) >= 0)
         {
-            return ToolResult.Error("oldText es ambiguo: aparece más de una vez en el archivo");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "oldText es ambiguo: aparece más de una vez en el archivo");
         }
 
         var updated = content.Substring(0, first) + newText! + content.Substring(first + oldText!.Length);
@@ -235,7 +249,8 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // original (cero cambios), para no generar un efecto sin razón.
         if (updated == content)
         {
-            return ToolResult.Error("El patch no produce ningún cambio sobre el contenido actual");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "El patch no produce ningún cambio sobre el contenido actual");
         }
 
         // Presupuesto de la política del modelo (ADR-0044 §5, EPIC-021) ANTES de escribir nada:
@@ -248,7 +263,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             deletedLines, insertedLines, FileVersion.CountLines(content));
         if (refusal is not null)
         {
-            return ToolResult.Error(refusal);
+            return ToolResult.Error(refusal.Code, refusal.Message);
         }
 
         // Escrito atómico (M3, bloqueante 1 de auditoría): se construyen los bytes actualizados,
@@ -268,7 +283,8 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // apunta fuera, el temporal podría crearse fuera del workspace.
         if (!_boundary.IsWithin(tempPath, context.WorkspaceRoot))
         {
-            return ToolResult.Error("Temporal fuera del workspace");
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Temporal fuera del workspace");
         }
         var createdTemp = false;
         try
@@ -286,7 +302,8 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
             if (!_boundary.IsWithin(full, context.WorkspaceRoot))
             {
-                return ToolResult.Error("Ruta fuera del workspace (revalidada antes de publicar)");
+                return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                    "Ruta fuera del workspace (revalidada antes de publicar)");
             }
 
             // Costura de test: permite mutar el destino después de la comprobación inicial y
@@ -298,7 +315,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!File.Exists(full))
                 {
-                    return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                    return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                 }
 
                 // Recomparar los bytes inmediatamente antes de publicar bajo el lock por ruta.
@@ -310,17 +327,17 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
                 }
                 catch (FileNotFoundException)
                 {
-                    return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                    return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                 }
                 catch (DirectoryNotFoundException)
                 {
-                    return ToolResult.Error(FileVersion.StaleWriteMessage("absent"));
+                    return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                 }
 
                 var currentVersion = FileVersion.VersionToken(currentBytes);
                 if (expectedVersion != currentVersion)
                 {
-                    return ToolResult.Error(FileVersion.StaleWriteMessage(currentVersion));
+                    return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage(currentVersion));
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
@@ -334,11 +351,13 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         }
         catch (System.IO.IOException ex)
         {
-            return ToolResult.Error("Error de I/O al publicar el patch: " + ex.Message);
+            return 
+                ToolResult.Error(ToolErrorCode.ToolFailure, "Error de I/O al publicar el patch: " + ex.Message);
         }
         catch (System.Exception ex)
         {
-            return ToolResult.Error("Error al publicar el patch: " + ex.Message);
+            return 
+                ToolResult.Error(ToolErrorCode.ToolFailure, "Error al publicar el patch: " + ex.Message);
         }
         finally
         {
@@ -455,6 +474,10 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
     }
 
     private static ToolPreparation Rejected(string reason) => new PreparationRejected(reason, null);
+
+    /// <summary>Rechazo con código tipado (spec §71): el runtime lo persiste en el evento.</summary>
+    private static ToolPreparation Rejected(string reason, ToolErrorCode errorCode) =>
+        new PreparationRejected(reason, null, errorCode);
 
     /// <summary>Token de versión = SHA-256 hex de los BYTES REALES del contenido (no del string decodificado),
     /// para que sea estable ante BOM/encoding. Determinista y comparable (ADR-0044 §5).</summary>

@@ -44,7 +44,7 @@ public sealed class ReadFileTool : ITool
         {
             return new PreparationRejected(
                 "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
-                null);
+                null, ToolErrorCode.PermissionDenied);
         }
 
         var claims = path is null || path!.Length == 0
@@ -61,25 +61,28 @@ public sealed class ReadFileTool : ITool
         var path = ExtractPath(intent.Intent.NormalizedArgumentsJson);
         if (path is null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'path' en los argumentos"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Falta 'path' en los argumentos"));
         }
 
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Ruta fuera del workspace"));
         }
 
         // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
         if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.PermissionDenied,
                 "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
         }
 
         if (!File.Exists(full))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Archivo no encontrado: " + path));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Archivo no encontrado: " + path));
         }
 
         // Token de versión: SHA-256 de los BYTES REALES (no del string decodificado), calculado
@@ -96,7 +99,7 @@ public sealed class ReadFileTool : ITool
         catch (UnsupportedEncodingException ex)
         {
             // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ex.Message));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.ToolFailure, ex.Message));
         }
 
         var content = decoded.Text;
@@ -201,7 +204,7 @@ public sealed class ListDirectoryTool : ITool
         {
             return new PreparationRejected(
                 "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
-                null);
+                null, ToolErrorCode.PermissionDenied);
         }
 
         var claims = new ResourceClaims(new string[] { path }, new string[0], new NetworkGrant[0], null, new string[0]);
@@ -222,19 +225,21 @@ public sealed class ListDirectoryTool : ITool
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Ruta fuera del workspace"));
         }
 
         // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos.
         if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.PermissionDenied,
                 "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
         }
 
         if (!Directory.Exists(full))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Directorio no encontrado: " + path));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Directorio no encontrado: " + path));
         }
 
         var entries = new List<DirectoryEntry>();
@@ -245,7 +250,8 @@ public sealed class ListDirectoryTool : ITool
         }
         catch (UnauthorizedAccessException)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Acceso denegado al directorio: " + path));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.PermissionDenied,
+                "Acceso denegado al directorio: " + path));
         }
 
         // Ordenar por ruta relativa
@@ -482,7 +488,7 @@ public sealed class SearchTextTool : ITool
         {
             return new PreparationRejected(
                 "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
-                null);
+                null, ToolErrorCode.PermissionDenied);
         }
 
         var claims = new ResourceClaims(new string[] { path }, new string[0], new NetworkGrant[0], null, new string[0]);
@@ -498,12 +504,14 @@ public sealed class SearchTextTool : ITool
         var pattern = args.Pattern;
         if (pattern is null)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Falta 'pattern' en los argumentos"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Falta 'pattern' en los argumentos"));
         }
 
         if (pattern.Length == 0)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("'pattern' no puede estar vacío"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "'pattern' no puede estar vacío"));
         }
 
         var maxResults = args.MaxResults ?? DefaultMaxResults;
@@ -526,13 +534,15 @@ public sealed class SearchTextTool : ITool
             }
             catch (ArgumentException ex)
             {
-                return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Patrón regex inválido: " + ex.Message));
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                    "Patrón regex inválido: " + ex.Message));
             }
             catch (NotSupportedException ex)
             {
                 // NonBacktracking no soporta algunas construcciones (p. ej. backreferences):
                 // mismo tratamiento que un patrón inválido.
-                return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Patrón regex no soportado: " + ex.Message));
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                    "Patrón regex no soportado: " + ex.Message));
             }
         }
 
@@ -540,20 +550,22 @@ public sealed class SearchTextTool : ITool
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta fuera del workspace"));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Ruta fuera del workspace"));
         }
 
         // ADR-0018 §3: la ruta pedida puede ser un enlace hacia un archivo de secretos;
         // IsSecretTarget resuelve el destino físico antes de decidir.
         if (SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.PermissionDenied,
                 "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
         }
 
         if (!File.Exists(full) && !Directory.Exists(full))
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Ruta no encontrada: " + path));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "Ruta no encontrada: " + path));
         }
 
         var matches = new List<SearchMatch>();
@@ -585,11 +597,13 @@ public sealed class SearchTextTool : ITool
         }
         catch (UnauthorizedAccessException)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Acceso denegado durante la búsqueda: " + path));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.PermissionDenied,
+                "Acceso denegado durante la búsqueda: " + path));
         }
         catch (IOException)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("Error de E/S durante la búsqueda: " + path));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.ToolFailure,
+                "Error de E/S durante la búsqueda: " + path));
         }
 
         // Orden determinista: por ruta y, dentro de cada archivo, por línea.
