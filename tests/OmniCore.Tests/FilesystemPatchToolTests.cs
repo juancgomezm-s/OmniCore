@@ -24,6 +24,12 @@ public sealed class FilesystemPatchToolTests
         return dir;
     }
 
+    private static void RmDir(string dir)
+    {
+        try { if (Directory.Exists(dir)) Directory.Delete(dir, true); }
+        catch (Exception) { }
+    }
+
     private static ScriptedToolExecutor PatchExecutor(string wsDir)
     {
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
@@ -111,6 +117,82 @@ public sealed class FilesystemPatchToolTests
         Assert.Equal("contenido original", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         Assert.StartsWith("STALE_WRITE:", outcome.Summary);
         Assert.Contains("[version:" + VersionOf("contenido original") + "]", outcome.Summary);
+    }
+
+    [Fact]
+    public void Patch_detects_change_after_initial_version_check_and_preserves_concurrent_content()
+    {
+        var ws = TempDir();
+        var full = Path.Combine(ws, "race.txt");
+        File.WriteAllText(full, "prefix-original-suffix");
+        try
+        {
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var patchTool = (FilesystemPatchTool)hostTools.Catalog().Find(new ToolId("filesystem.patch"))!;
+            patchTool.TestFailureHook = (_, destination) => File.WriteAllText(destination, "concurrent");
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
+
+            var outcome = executor.ExecuteToolWithoutJournal(
+                PatchCall(ws, "race.txt", VersionOf("prefix-original-suffix"), "original", "ours"), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.False(outcome.Succeeded);
+            Assert.StartsWith("STALE_WRITE:", outcome.Summary);
+            Assert.Equal("concurrent", File.ReadAllText(full));
+            Assert.DoesNotContain(Directory.EnumerateFiles(ws), file => Path.GetFileName(file).Contains(".tmp-", StringComparison.Ordinal));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Cancellation_before_patch_publish_preserves_destination_and_cleans_temp()
+    {
+        var ws = TempDir();
+        var full = Path.Combine(ws, "cancel.txt");
+        File.WriteAllText(full, "prefix-original-suffix");
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var patchTool = (FilesystemPatchTool)hostTools.Catalog().Find(new ToolId("filesystem.patch"))!;
+            patchTool.TestFailureHook = (_, _) => cts.Cancel();
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
+
+            var outcome = executor.ExecuteToolWithoutJournal(
+                PatchCall(ws, "cancel.txt", VersionOf("prefix-original-suffix"), "original", "ours"), false, cts.Token);
+
+            Assert.False(outcome.Succeeded);
+            Assert.Equal("prefix-original-suffix", File.ReadAllText(full));
+            Assert.DoesNotContain(Directory.EnumerateFiles(ws), file => Path.GetFileName(file).Contains(".tmp-", StringComparison.Ordinal));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Cancellation_after_patch_publish_keeps_applied_effect()
+    {
+        var ws = TempDir();
+        var full = Path.Combine(ws, "cancel-after.txt");
+        File.WriteAllText(full, "prefix-original-suffix");
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var patchTool = (FilesystemPatchTool)hostTools.Catalog().Find(new ToolId("filesystem.patch"))!;
+            patchTool.TestAfterPublishHook = (_, _) => cts.Cancel();
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
+
+            var outcome = executor.ExecuteToolWithoutJournal(
+                PatchCall(ws, "cancel-after.txt", VersionOf("prefix-original-suffix"), "original", "ours"), false, cts.Token);
+
+            Assert.True(outcome.Succeeded, outcome.Summary);
+            Assert.Equal(EffectOutcome.Applied, outcome.Effect);
+            Assert.Equal("prefix-ours-suffix", File.ReadAllText(full));
+        }
+        finally { RmDir(ws); }
     }
 
     [Fact]

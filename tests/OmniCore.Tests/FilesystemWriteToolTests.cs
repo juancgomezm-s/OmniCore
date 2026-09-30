@@ -270,6 +270,90 @@ public sealed class FilesystemWriteToolTests
         }
     }
 
+    [Fact]
+    public void Replace_detects_change_after_initial_version_check_and_preserves_concurrent_content()
+    {
+        var ws = TempDir();
+        var full = Path.Combine(ws, "race.txt");
+        File.WriteAllText(full, "original");
+        try
+        {
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var writeTool = (FilesystemWriteTool)hostTools.Catalog().Find(new ToolId("filesystem.write"))!;
+            writeTool.TestFailureHook = (_, destination) => File.WriteAllText(destination, "concurrent");
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow), ws);
+
+            var outcome = executor.ExecuteToolWithoutJournal(
+                WriteCall("race.txt", "ours", VersionOf("original")), true, TestContext.Current.CancellationToken);
+
+            Assert.False(outcome.Succeeded);
+            Assert.StartsWith("STALE_WRITE:", outcome.Summary);
+            Assert.Equal("concurrent", File.ReadAllText(full));
+            Assert.DoesNotContain(Directory.EnumerateFiles(ws), file => Path.GetFileName(file).Contains(".tmp-", StringComparison.Ordinal));
+        }
+        finally
+        {
+            RmDir(ws);
+        }
+    }
+
+    [Fact]
+    public void Cancellation_before_write_publish_preserves_destination_and_cleans_temp()
+    {
+        var ws = TempDir();
+        var full = Path.Combine(ws, "cancel.txt");
+        File.WriteAllText(full, "original");
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var writeTool = (FilesystemWriteTool)hostTools.Catalog().Find(new ToolId("filesystem.write"))!;
+            writeTool.TestFailureHook = (_, _) => cts.Cancel();
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow), ws);
+
+            var outcome = executor.ExecuteToolWithoutJournal(
+                WriteCall("cancel.txt", "ours", VersionOf("original")), true, cts.Token);
+
+            Assert.False(outcome.Succeeded);
+            Assert.Equal("original", File.ReadAllText(full));
+            Assert.DoesNotContain(Directory.EnumerateFiles(ws), file => Path.GetFileName(file).Contains(".tmp-", StringComparison.Ordinal));
+        }
+        finally
+        {
+            RmDir(ws);
+        }
+    }
+
+    [Fact]
+    public void Cancellation_after_write_publish_keeps_applied_effect()
+    {
+        var ws = TempDir();
+        var full = Path.Combine(ws, "cancel-after.txt");
+        File.WriteAllText(full, "original");
+        using var cts = new CancellationTokenSource();
+        try
+        {
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var writeTool = (FilesystemWriteTool)hostTools.Catalog().Find(new ToolId("filesystem.write"))!;
+            writeTool.TestAfterPublishHook = (_, _) => cts.Cancel();
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow), ws);
+
+            var outcome = executor.ExecuteToolWithoutJournal(
+                WriteCall("cancel-after.txt", "ours", VersionOf("original")), true, cts.Token);
+
+            Assert.True(outcome.Succeeded, outcome.Summary);
+            Assert.Equal(EffectOutcome.Applied, outcome.Effect);
+            Assert.Equal("ours", File.ReadAllText(full));
+        }
+        finally
+        {
+            RmDir(ws);
+        }
+    }
+
     // ==================================================================== 2. Reemplazo
 
     [Fact]
