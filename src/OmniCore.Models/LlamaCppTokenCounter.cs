@@ -24,11 +24,13 @@ public sealed class LlamaCppTokenCounter : ITokenCounter
     private readonly int _maxCacheEntries;
     private static readonly ConcurrentDictionary<(string Hash, string Tokenizer), int> _cache = new();
     private volatile bool _lastFellBack;
+    private readonly Action<int, int>? _onExactCount;
 
     public LlamaCppTokenCounter(string baseUrl, TokenizerId id, ITokenCounter fallback,
         Func<HttpClient>? httpFactory = null, Func<string?>? apiKey = null,
-        TimeSpan? timeout = null, int maxCacheEntries = 4096)
+        TimeSpan? timeout = null, int maxCacheEntries = 4096, Action<int, int>? onExactCount = null)
     {
+        _onExactCount = onExactCount;
         _baseUrl = baseUrl.TrimEnd('/');
         Id = id;
         _fallback = fallback;
@@ -59,6 +61,8 @@ public sealed class LlamaCppTokenCounter : ITokenCounter
         {
             var n = await TokenizeAsync(text, cancellationToken).ConfigureAwait(false);
             _lastFellBack = false;
+            // Cada conteo exacto calibra la estimación que se usa cuando el endpoint no responde.
+            _onExactCount?.Invoke(text.Length, n);
             Store((hash, Id.Value), n);
             return n;
         }

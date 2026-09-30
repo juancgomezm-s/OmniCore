@@ -93,4 +93,27 @@ public sealed class TokenCountingTests
         await Counter(h, idA).CountAsync(Item("same"), ct); // same id, other instance: shared cache hit
         Assert.Equal(2, h.Calls);
     }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Exact_counts_calibrate_the_fallback_estimate_of_the_same_tokenizer()
+    {
+        var calibrator = new TokenEstimateCalibrator(minimumSamples: 3);
+        var tokenizer = "llamacpp:" + Guid.NewGuid();
+        var fallback = new HeuristicTokenCounter(HeuristicTokenCounter.DefaultSafetyMargin, calibrator, tokenizer);
+        var up = true;
+        var h = new StubHandler(_ => up ? Json("{\"tokens\":[1,2,3,4,5,6,7,8,9,10]}") : new HttpResponseMessage(HttpStatusCode.InternalServerError));
+        var counter = new LlamaCppTokenCounter("http://127.0.0.1:8080/", TokenizerId.Parse(tokenizer), fallback,
+            () => new HttpClient(h, false), onExactCount: (chars, tokens) => calibrator.AddSample(tokenizer, chars, tokens));
+        var ct = TestContext.Current.CancellationToken;
+        var text20 = new string('a', 20);
+
+        // Antes de calibrar: 4 chars/token + 10 % → ceil(20*1.1/4) = 6.
+        Assert.Equal(6, await fallback.CountAsync(Item(text20), ct));
+        for (var i = 0; i < 3; i++) await counter.CountAsync(Item(text20 + i), ct); // 21 chars → 10 tokens exactos
+
+        up = false;
+        // Calibrado: 63/30 = 2.1 chars/token → ceil(20*1.1/2.1) = 11.
+        Assert.Equal(11, await counter.CountAsync(Item("otro texto de veinte"), ct));
+        Assert.Equal(3, calibrator.SampleCount(tokenizer));
+    }
 }

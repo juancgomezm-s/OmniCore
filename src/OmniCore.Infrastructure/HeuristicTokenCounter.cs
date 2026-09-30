@@ -14,8 +14,21 @@ public sealed class HeuristicTokenCounter : ITokenCounter
     public const double DefaultSafetyMargin = 0.10;
 
     private readonly double _safetyMargin;
+    private readonly TokenEstimateCalibrator? _calibrator;
+    private readonly string? _calibrationKey;
 
     public HeuristicTokenCounter() : this(DefaultSafetyMargin) { }
+
+    /// <summary>
+    /// Con <paramref name="calibrator"/>, la razón caracteres/token sale de los conteos exactos del
+    /// tokenizer <paramref name="calibrationKey"/> (M5); sin muestras suficientes sigue siendo 4.
+    /// </summary>
+    public HeuristicTokenCounter(double safetyMargin, TokenEstimateCalibrator? calibrator, string? calibrationKey)
+        : this(safetyMargin)
+    {
+        _calibrator = calibrator;
+        _calibrationKey = calibrationKey;
+    }
 
     public HeuristicTokenCounter(double safetyMargin)
     {
@@ -39,7 +52,9 @@ public sealed class HeuristicTokenCounter : ITokenCounter
         }
 
         var chars = text.Length;
-        var tokens = (int)Math.Ceiling(Math.Round(chars * (1 + _safetyMargin) / 4.0, 6));
+        var charsPerToken = _calibrator is not null && _calibrationKey is not null
+            ? _calibrator.CharsPerToken(_calibrationKey) : 4.0;
+        var tokens = (int)Math.Ceiling(Math.Round(chars * (1 + _safetyMargin) / charsPerToken, 6));
         return System.Threading.Tasks.Task.FromResult(tokens);
     }
 }

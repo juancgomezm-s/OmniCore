@@ -167,14 +167,20 @@ public sealed class OmniHost
     /// <summary>Token counter estimado por defecto, o exacto para providers llama.cpp declarados en config.</summary>
     public static ITokenCounter CreateTokenCounter() => new HeuristicTokenCounter();
 
+    /// <summary>Calibración de estimaciones de tokens compartida por el proceso.</summary>
+    internal static TokenEstimateCalibrator TokenCalibration { get; } = new();
+
     public static ITokenCounter CreateTokenCounter(ProviderDescriptor? provider, string? declaredKind,
         string? apiKey, Func<HttpClient>? httpFactory = null, string? baseUrlOverride = null)
     {
-        var fallback = new HeuristicTokenCounter();
-        if (provider is null || declaredKind is not ("llamaCpp" or "ikLlama")) return fallback;
+        if (provider is null || declaredKind is not ("llamaCpp" or "ikLlama")) return new HeuristicTokenCounter();
+        // El calibrador vive con el proceso: los conteos exactos de /tokenize ajustan la estimación
+        // de respaldo del mismo tokenizer (ADR-0042; M5 calibración de estimaciones).
+        var tokenizer = new OmniCore.Domain.TokenizerId("llama.cpp:" + provider.Id);
+        var fallback = new HeuristicTokenCounter(HeuristicTokenCounter.DefaultSafetyMargin, TokenCalibration, tokenizer.Value);
         return new LlamaCppTokenCounter(GetLlamaCppTokenizeBaseUrl(baseUrlOverride ?? provider.BaseUrl),
-            new OmniCore.Domain.TokenizerId("llama.cpp:" + provider.Id), fallback, httpFactory,
-            () => apiKey);
+            tokenizer, fallback, httpFactory, () => apiKey,
+            onExactCount: (chars, tokens) => TokenCalibration.AddSample(tokenizer.Value, chars, tokens));
     }
 
     /// <summary>El endpoint llama.cpp vive en la raíz del servidor, no bajo el prefijo OpenAI /v1.</summary>
