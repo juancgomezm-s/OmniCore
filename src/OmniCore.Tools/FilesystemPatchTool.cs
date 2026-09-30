@@ -192,8 +192,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion is null || expectedVersion != actualVersion)
         {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error("expectedVersion obsoleto (STALE_WRITE): el contenido del archivo "
-                + "cambió desde la lectura. Token actual=" + actualVersion + ". Reléelo e intenta de nuevo."));
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(FileVersion.StaleWriteMessage(actualVersion)));
         }
 
         // Bloqueante 2: no se permite un oldText que sea el contenido completo del archivo, ni un
