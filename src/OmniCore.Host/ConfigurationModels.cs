@@ -42,6 +42,7 @@ public sealed class ModelFileYaml
     public long? RecommendedUsableContext { get; set; }
     public long? MaxOutput { get; set; }
     public double? ParametersBillions { get; set; }
+    public List<string>? Aliases { get; set; }
     public decimal? InputPricePerMillionUsd { get; set; }
     public decimal? OutputPricePerMillionUsd { get; set; }
 }
