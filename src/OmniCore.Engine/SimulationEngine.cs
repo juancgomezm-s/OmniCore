@@ -226,7 +226,10 @@ public sealed class SimulationEngine
             stream.Append(new TaskStarted(tid, laneId));
         }
 
-        ExecuteTurns(scenario, stream, rootLaneId, cancellationToken);
+        // Fingerprint determinista de los Turnos del escenario (ADR-0017, M1 con componentes
+        // simulados): todos los TurnStarted del run la registran, igual que los turnos reales.
+        var fingerprint = SimFingerprint(scenario);
+        ExecuteTurns(scenario, stream, rootLaneId, cancellationToken, fingerprint);
 
         // Watchdog de progreso (ADR-0016 §9, ADR-0036 §7): si el item actual lleva N Turns en
         // InProgress sin señal, emitir ProgressStalled. En M1 el umbral es constante.
@@ -380,7 +383,7 @@ public sealed class SimulationEngine
     }
 
     private void ExecuteTurns(SimulationScenario scenario, EventStream stream, LaneId laneId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ExecutionFingerprint fingerprint)
     {
         var laneActions = scenario.Turns.TryGetValue("root", out var rootActions) ? rootActions : null;
         if (laneActions is null)
@@ -409,19 +412,19 @@ public sealed class SimulationEngine
 
             if (action.Tool is not null)
             {
-                RunToolCall(action, stream, laneId, cancellationToken, scenario.FaultAtTool);
+                RunToolCall(action, stream, laneId, cancellationToken, scenario.FaultAtTool, fingerprint);
             }
             else if (action.IsComplete)
             {
                 var turnId = TurnId.New();
-                stream.Append(new TurnStarted(turnId, laneId));
+                stream.Append(new TurnStarted(turnId, laneId, fingerprint));
                 stream.Append(new TurnCompleted(turnId));
             }
         }
     }
 
     private void RunToolCall(SimulatedTurnAction action, EventStream stream, LaneId laneId,
-        CancellationToken cancellationToken, string? faultAtTool)
+        CancellationToken cancellationToken, string? faultAtTool, ExecutionFingerprint fingerprint)
     {
         var toolName = action.Tool != null ? action.Tool! : throw new InvalidOperationException("tool null");
         var callId = ToolCallId.New();
@@ -450,7 +453,7 @@ public sealed class SimulationEngine
                 stream.Append(new ToolCallStarted(callId, crashIntent.Effect, null), DurabilityClass.Barrier);
                 _crashed = true;
                 var crashTurn = TurnId.New();
-                stream.Append(new TurnStarted(crashTurn, laneId));
+                stream.Append(new TurnStarted(crashTurn, laneId, fingerprint));
                 stream.Append(new TurnAbandoned(crashTurn, "crash inyectado (simulación)"));
                 return;
             }
@@ -472,7 +475,7 @@ public sealed class SimulationEngine
             }
 
             var doneTurn = TurnId.New();
-            stream.Append(new TurnStarted(doneTurn, laneId));
+            stream.Append(new TurnStarted(doneTurn, laneId, fingerprint));
             stream.Append(new TurnCompleted(doneTurn));
             return;
         }
@@ -485,9 +488,71 @@ public sealed class SimulationEngine
             effect == EffectClass.None ? DurabilityClass.Standard : DurabilityClass.Barrier);
         stream.Append(new ToolCallSucceeded(callId, "{\"summary\":\"ok\"}"));
         var fallbackTurn = TurnId.New();
-        stream.Append(new TurnStarted(fallbackTurn, laneId));
+        stream.Append(new TurnStarted(fallbackTurn, laneId, fingerprint));
         stream.Append(new TurnCompleted(fallbackTurn));
     }
+
+    /// <summary>ModelKey fija del "modelo" simulado: determinista, nunca un modelo real.</summary>
+    private const string SimModelKey = "sim.scripted";
+
+    private const string SimContextPolicy = "sim-context-v1";
+
+    private const string SimOverrides = "none";
+
+    private const string SimBuild = "M1-sim";
+
+    /// <summary>
+    /// Fingerprint determinista de los Turnos simulados (ADR-0017, EPIC-009): escenario + model
+    /// key falso fijo + hash del toolkit del sim. El Engine no puede ver el catálogo concreto
+    /// (INV-008), así que el hash del toolkit cubre la superficie de tools que el escenario
+    /// ejerce (las reglas de permisos y las tools invocadas), que es lo que el turno recibió.
+    /// Determinista por construcción → el replay del journal reconstruye el mismo fingerprint y
+    /// la golden rule sigue verificando el estado vivo contra el reconstruido.
+    /// </summary>
+    internal static ExecutionFingerprint SimFingerprint(SimulationScenario scenario)
+    {
+        return new ExecutionFingerprint(
+            SimModelKey,
+            HashOf("sim-scenario:" + scenario.Name),
+            HashOf(ToolkitSurface(scenario)),
+            SimContextPolicy,
+            SimOverrides,
+            SimBuild);
+    }
+
+    /// <summary>Superficie canónica de tools del escenario, ordenada y con longitudes para que
+    /// sea inambigua ("a","bc" vs "ab","c").</summary>
+    private static string ToolkitSurface(SimulationScenario scenario)
+    {
+        var tools = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var tool in scenario.Permissions.Keys)
+        {
+            tools.Add(tool);
+        }
+
+        foreach (var actions in scenario.Turns.Values)
+        {
+            foreach (var act in actions)
+            {
+                if (act.Tool is not null)
+                {
+                    tools.Add(act.Tool!);
+                }
+            }
+        }
+
+        var canonical = new System.Text.StringBuilder();
+        foreach (var tool in tools)
+        {
+            canonical.Append(tool.Length).Append(':').Append(tool).Append(';');
+        }
+
+        return canonical.ToString();
+    }
+
+    private static string HashOf(string value) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(value)));
 
     /// <summary>Requested → Prepared → PermissionEvaluated(Allow) → Authorized, previo al Started.</summary>
     private static void AppendAuthorizedChain(EventStream stream, ToolCallId callId, string toolName, string args)

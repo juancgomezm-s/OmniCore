@@ -44,13 +44,16 @@ public sealed class OmniHost
 
     /// <summary>
     /// Crea un servidor sobre un journal SQLite persistente (ADR-0041 §2): permite reanudar
-    /// un run (crash → resume) entre procesos distintos apuntando al mismo archivo.
+    /// un run (crash → resume) entre procesos distintos apuntando al mismo archivo. La
+    /// auditoría es el FileAuditSink persistente del directorio de datos del workspace (mismo
+    /// layout que <see cref="CreateInProcessServer"/>): vive fuera del journal, así que
+    /// sobrevive a la purga de sesiones (ADR-0043 §1).
     /// </summary>
     public static OmniServer OpenPersistentServer(string journalFile)
     {
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(journalFile);
-        var audit = new InMemoryAuditSink();
+        var audit = new FileAuditSink(Path.GetDirectoryName(Path.GetFullPath(journalFile))!);
         return new OmniServer(store, codecs, audit, Path.Combine(Path.GetDirectoryName(journalFile)!,
             "lastsession.txt"));
     }
