@@ -1,10 +1,11 @@
 # ADR-0009 — Grafo de dependencias entre proyectos
 
-- **Estado:** Aceptada — rev. 4 (2026-09-28)
+- **Estado:** Aceptada — rev. 5 (2026-10-19)
 - **Rev. 1:** grafo inicial de 13 proyectos.
 - **Rev. 2:** sin cambios de aristas; agrega reglas de frontera **dentro** del grafo: validación de rutas, autoridad de `AuthorizedToolIntent`, CLI desacoplado y proyectos futuros.
 - **Rev. 3:** agrega el proyecto **`OmniCore.Client`** (ADR-0030) y la regla de que los frameworks visuales solo aparecen en `OmniCore.Cli`.
 - **Rev. 4:** agrega el proyecto **`OmniCore.Qualification`** (M5): runner de la Model Qualification Suite, depende de Abstractions y Domain.
+- **Rev. 5:** la fachada de la suite (`ModelQualificationHost`, `omni model qualify`) vive en **Host**, que por tanto referencia `OmniCore.Qualification` (M5). Host ya dependía de "todos los anteriores"; la arista queda explícita.
 - **Spec:** §78–§81
 - **Diagrama:** [arquitectura §18](../architecture/arquitectura.md#18-permission-y-sandbox-boundaries)
 

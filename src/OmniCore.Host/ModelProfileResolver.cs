@@ -4,13 +4,17 @@ using OmniCore.Domain;
 using OmniCore.Models;
 
 /// <summary>
-/// Resuelve los hechos declarados y los traits provisionales de M2. Los overrides explícitos
-/// prevalecen por trait; las mediciones empíricas llegarán con la suite de M5.
+/// Resuelve <see cref="EffectiveModelProfile"/> combinando las cuatro fuentes de ADR-0007 §1:
+/// hechos declarados, heurísticas, overrides del usuario y traits empíricos de la suite de
+/// cualificación (capa Empirical, M5). Resolución por campo:
+/// <c>traits = UserOverrides ?? Empirical (solo si el perfil está Qualified/Calibrated/Stale) ?? Heuristic</c>.
+/// Nunca resuelve por nombre ni tamaño de modelo (INV-010).
 /// </summary>
 public sealed class ModelProfileResolver
 {
     public EffectiveModelProfile Resolve(ModelDefinition model, ProviderDescriptor? provider,
-        IReadOnlyDictionary<string, double>? overrides = null)
+        IReadOnlyDictionary<string, double>? overrides = null,
+        IReadOnlyDictionary<string, double>? empiricalTraits = null)
     {
         var size = model.ParameterCountBillions;
         var provisional = size is null ? 0.5 : size <= 9 ? 0.35 : size < 27 ? 0.55 : 0.7;
@@ -21,6 +25,17 @@ public sealed class ModelProfileResolver
             ["ToolErrorRecovery"] = provisional,
             ["MultiStepExecutionReliability"] = provisional,
         };
+        // Capa Empirical (ADR-0007 §1): reemplaza a la heurística para los traits que la suite midió.
+        // El llamador solo aporta traits de un perfil Qualified/Calibrated/Stale (nunca por nombre).
+        if (empiricalTraits is not null)
+        {
+            foreach (var entry in empiricalTraits)
+            {
+                if (entry.Value < 0 || entry.Value > 1)
+                    throw new ArgumentOutOfRangeException(nameof(empiricalTraits), "Los traits deben estar entre 0 y 1");
+                traits[entry.Key] = entry.Value;
+            }
+        }
         if (overrides is not null)
         {
             foreach (var entry in overrides)
