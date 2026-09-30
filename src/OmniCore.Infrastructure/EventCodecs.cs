@@ -95,6 +95,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.PlanItemUnlinked())
             .Plus(Typed.PlanMutationRejected())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.requested"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
@@ -373,7 +374,7 @@ public sealed class Typed
         Of(EventType.Of("run.awaiting_input"), EventJsonContext.Default.RunAwaitingInput);
 
     public static CodecPair UserInputReceived() =>
-        Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived);
+        Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived, currentVersion: 2);
 
     public static CodecPair AssistantMessageRecorded() =>
         Of(EventType.Of("assistant_message.recorded"), EventJsonContext.Default.AssistantMessageRecorded);

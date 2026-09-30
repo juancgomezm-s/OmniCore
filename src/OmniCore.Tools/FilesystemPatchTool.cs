@@ -34,7 +34,8 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             destructive: false,
             risk: ToolRisk.Medium,
             source: ComponentSource.Core(),
-            protection: ToolProtection.None);
+            protection: ToolProtection.None,
+            effectClass: EffectClass.NonIdempotent);
     }
 
     public ToolDescriptor Descriptor => _descriptor;

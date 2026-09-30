@@ -37,6 +37,8 @@ public sealed class OmniServer : IOmniClient
 
     private PromptExpanded? _lastPromptExpanded;
 
+    private string? _pendingPromptOrigin;
+
     private FakeCatalog? _diagnosticCatalog;
 
     private ModelCapabilityBoundary? _diagnosticBoundary;
@@ -58,6 +60,7 @@ public sealed class OmniServer : IOmniClient
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
         IArtifactStore? artifacts = null)
     {
+        _ = SecretRedactor.Shared;
         _store = store;
         _codecs = codecs;
         _audit = audit;
@@ -72,6 +75,7 @@ public sealed class OmniServer : IOmniClient
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
         IArtifactStore? artifacts = null)
     {
+        _ = SecretRedactor.Shared;
         _store = store;
         _codecs = codecs;
         _audit = audit;
@@ -363,6 +367,7 @@ public sealed class OmniServer : IOmniClient
                     ? originValue.GetString() ?? "Typed" : "Typed";
                 _lastPromptExpanded = new CommandService().Expand(
                     new CommandInvocation(name, args, origin));
+                _pendingPromptOrigin = _lastPromptExpanded.Origin;
                 return CommandAck.Ok(command.MessageId);
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
@@ -463,10 +468,11 @@ public sealed class OmniServer : IOmniClient
                 + "{\"id\":\"continue_planning\",\"intent\":\"allow\"},"
                 + "{\"id\":\"reject\",\"intent\":\"deny\"}]",
             "reject", null, rootLane, projection.RootTask, null, 0, 1);
-        // PlanApproval bloquea la continuación mediante una InteractionRequest durable. No se
-        // escribe RunAwaitingInput aquí porque el Engine PlanApprovalEffect inicia RunValidation
-        // desde Running al responder (ADR-0035 §4); la respuesta seguirá pasando por IOmniClient.
-        new EventStream(_store, _codecs, _lastSessionId).Append(request, DurabilityClass.Standard);
+        // PlanApproval es una espera humana durable: publica la interacción y la transición
+        // canónica del Run a AwaitingInput en el mismo commit (ADR-0034/0035/0036).
+        new EventStream(_store, _codecs, _lastSessionId).AppendBatch(
+            new DomainEventPayload[] { request, new RunAwaitingInput(_lastRunId, rootLane) },
+            DurabilityClass.Standard);
         return interaction;
     }
 
@@ -492,6 +498,14 @@ public sealed class OmniServer : IOmniClient
     }
 
     public SessionId? LastSessionId() => _lastSessionId;
+
+    /// <summary>Consume el origen de un PromptCommand para persistirlo en el próximo UserInputReceived.</summary>
+    public string? ConsumePromptOrigin()
+    {
+        var origin = _pendingPromptOrigin;
+        _pendingPromptOrigin = null;
+        return origin;
+    }
 
     public RunId? LastRunId() => _lastRunId;
 
@@ -736,9 +750,7 @@ public sealed class OmniServer : IOmniClient
                 var tool = catalog.Find(new ToolId(definition.Name));
                 if (tool is null) continue;
                 var descriptor = tool.Descriptor;
-                var effect = descriptor.ReadOnly ? EffectClass.None
-                    : descriptor.Id.ToString() == "fake.write" ? EffectClass.Reconcilable
-                    : EffectClass.NonIdempotent;
+                var effect = descriptor.EffectClass;
                 var claims = descriptor.ReadOnly ? ResourceClaims.Empty()
                     : new ResourceClaims(Array.Empty<string>(), new[] { "diagnostic-target" },
                         Array.Empty<NetworkGrant>(), null, Array.Empty<string>());
@@ -915,7 +927,7 @@ public sealed class OmniServer : IOmniClient
 
                     var session = _lastSessionId ?? StartSession();
                     var mode = fields.TryGetValue("mode", out var m) && m == "plan" ? RunMode.Plan : RunMode.Act;
-                    _lastRunId = control.SendInput(session, text, mode);
+                    _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin());
                     _lastSessionId = session;
                     break;
                 }

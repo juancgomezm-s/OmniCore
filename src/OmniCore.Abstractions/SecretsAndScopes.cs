@@ -14,6 +14,49 @@ public interface ISecretProvider
     Secret GetSecret(string secretRef, CancellationToken cancellationToken);
 }
 
+/// <summary>Redacción centralizada de secretos conocidos y patrones (ADR-0018 §2).</summary>
+public interface ISecretRedactor
+{
+    /// <summary>Registra un valor resuelto para redacción durante la vida del proceso.</summary>
+    void RegisterSecret(string value);
+
+    /// <summary>Redacta secretos conocidos y sus codificaciones del texto.</summary>
+    string Redact(string input);
+}
+
+/// <summary>
+/// Puente process-wide hacia la implementación instalada por Security. Conserva el registro
+/// durante toda la vida del proceso, incluso si el host instala o reemplaza el redactor.
+/// </summary>
+public static class SecretRedactorRegistry
+{
+    private static readonly object Gate = new();
+    private static readonly List<string> Registered = new();
+    private static ISecretRedactor? _current;
+
+    public static ISecretRedactor? Current => System.Threading.Volatile.Read(ref _current);
+
+    public static void Install(ISecretRedactor redactor)
+    {
+        ArgumentNullException.ThrowIfNull(redactor);
+        lock (Gate)
+        {
+            System.Threading.Volatile.Write(ref _current, redactor);
+            foreach (var value in Registered) redactor.RegisterSecret(value);
+        }
+    }
+
+    public static void Register(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return;
+        lock (Gate)
+        {
+            Registered.Add(value);
+            _current?.RegisterSecret(value);
+        }
+    }
+}
+
 /// <summary>Credencial seguro: serialización siempre redactada, ToString = *** (ADR-0018).</summary>
 [JsonConverter(typeof(SecretJsonConverter))]
 public sealed class Secret
@@ -22,7 +65,12 @@ public sealed class Secret
 
     private Secret(string value) => _value = value;
 
-    public static Secret Of(string value) => new(value);
+    public static Secret Of(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        SecretRedactorRegistry.Register(value);
+        return new Secret(value);
+    }
 
     /// <summary>Acceso al valor solo dentro del proceso que lo autoriza.</summary>
     public string Value() => _value;
@@ -45,6 +93,7 @@ public interface ICredentialStore
 {
     void Save(string key, string value, CancellationToken cancellationToken);
 
+    /// <summary>Todo valor devuelto debe registrarse en SecretRedactorRegistry antes de retornarse.</summary>
     string? Load(string key, CancellationToken cancellationToken);
 
     void Delete(string key, CancellationToken cancellationToken);
