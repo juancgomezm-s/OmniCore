@@ -5,6 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\OmniCore.Engine\OmniCore.Engine.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Host\OmniCore.Host.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Infrastructure\OmniCore.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Client\OmniCore.Client.csproj" />
