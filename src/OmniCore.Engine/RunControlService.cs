@@ -37,23 +37,29 @@ public sealed class RunControlService
         return active;
     }
 
-    /// <summary>ToolCalls de la sesión en EffectUnknown sin Reconciled/outcome (de cualquier Run).</summary>
+    /// <summary>
+    /// ToolCalls de la sesión que bloquean un Run nuevo (ADR-0004 §5): siguen en EffectUnknown, o su
+    /// reconciliación terminó en Unresolvable/Conflict (falla cerrado: bloqueada, visible; requiere
+    /// resolución humana). Applied/NotApplied desbloquean.
+    /// </summary>
     public IReadOnlyList<ToolCallId> UnreconciledEffects(SessionId session)
     {
-        var unknown = new List<ToolCallId>();
-        var resolved = new HashSet<ToolCallId>();
+        var blocking = new Dictionary<ToolCallId, bool>();
         foreach (var evt in _store.ReadFrom(session, 1))
         {
             switch (_codecs.Decode(evt))
             {
-                case ToolCallEffectUnknown u: unknown.Add(u.ToolCallId); break;
-                case ToolCallReconciled r: resolved.Add(r.ToolCallId); break;
-                case ToolCallSucceeded s: resolved.Add(s.ToolCallId); break;
-                case ToolCallFailed f: resolved.Add(f.ToolCallId); break;
+                case ToolCallEffectUnknown u: blocking[u.ToolCallId] = true; break;
+                case ToolCallReconciled r when blocking.ContainsKey(r.ToolCallId):
+                    blocking[r.ToolCallId] = r.Outcome is ReconciliationOutcome.Unresolvable
+                        or ReconciliationOutcome.Conflict;
+                    break;
+                case ToolCallSucceeded s when blocking.ContainsKey(s.ToolCallId): blocking[s.ToolCallId] = false; break;
+                case ToolCallFailed f when blocking.ContainsKey(f.ToolCallId): blocking[f.ToolCallId] = false; break;
             }
         }
 
-        return unknown.Where(id => !resolved.Contains(id)).ToList();
+        return blocking.Where(kv => kv.Value).Select(kv => kv.Key).ToList();
     }
 
     /// <summary>
@@ -418,7 +424,7 @@ public sealed class UnreconciledEffectException : InvalidOperationException
     public IReadOnlyList<ToolCallId> ToolCalls { get; }
 
     public UnreconciledEffectException(IReadOnlyList<ToolCallId> toolCalls)
-        : base("hay efectos desconocidos sin reconciliar en la sesión: " + string.Join(", ", toolCalls))
+        : base("efectos desconocidos sin reconciliar o con reconciliación Unresolvable/Conflict que requieren resolución humana antes de un Run nuevo: " + string.Join(", ", toolCalls))
     {
         ToolCalls = toolCalls;
     }

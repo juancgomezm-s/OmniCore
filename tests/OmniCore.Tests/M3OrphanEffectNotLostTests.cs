@@ -19,9 +19,53 @@ public sealed class M3OrphanEffectNotLostTests
         stream.Append(new ToolCallPrepared(call, "{}"));
         stream.Append(new PermissionEvaluated(call, PermissionDecision.Allow, "{}", null));
         stream.Append(new ToolCallAuthorized(call));
-        stream.Append(new ToolCallStarted(call, EffectClass.NonIdempotent, null), DurabilityClass.Barrier);
+        stream.Append(new ToolCallStarted(call, EffectClass.NonIdempotent, "{}"), DurabilityClass.Barrier);
         stream.Append(new ToolCallEffectUnknown(call, EffectClass.NonIdempotent));
         return (store, session, run, call);
+    }
+
+    private sealed class StubReconciler(ReconciliationOutcome outcome) : IFilesystemReconciler
+    {
+        public FilesystemReconciliation Reconcile(string workspaceRoot, string json, CancellationToken ct) =>
+            new(outcome, "stub");
+    }
+
+    [Theory]
+    [InlineData(ReconciliationOutcome.Applied)]
+    [InlineData(ReconciliationOutcome.NotApplied)]
+    public void Verifiable_effect_of_cancelled_run_is_reconciled_and_new_run_starts(ReconciliationOutcome outcome)
+    {
+        var (store, session, run, call) = CrashedWithUnknownEffect();
+        var codecs = EventCodecs.Create();
+        var control = new RunControlService(store, codecs);
+        control.CancelRun(session, run);
+        Assert.Throws<UnreconciledEffectException>(() => control.StartRun(session, "otro", RunMode.Act));
+
+        var resume = new RunResumeService(store, codecs, new StubReconciler(outcome), ".");
+        Assert.Equal(1, resume.ReconcileTerminalRuns(session));
+        Assert.Equal(0, resume.ReconcileTerminalRuns(session)); // idempotente
+
+        Assert.Equal(ToolCallState.Reconciled,
+            CanonicalStateTracker.Replay(codecs, store.ReadFrom(session, 1)).ToolCall(call));
+        Assert.NotEqual(run, control.StartRun(session, "otro", RunMode.Act));
+        CanonicalStateTracker.Replay(codecs, store.ReadFrom(session, 1));
+    }
+
+    [Theory]
+    [InlineData(ReconciliationOutcome.Unresolvable)]
+    [InlineData(ReconciliationOutcome.Conflict)]
+    public void Unverifiable_effect_of_cancelled_run_keeps_blocking_and_is_listed(ReconciliationOutcome outcome)
+    {
+        var (store, session, run, call) = CrashedWithUnknownEffect();
+        var codecs = EventCodecs.Create();
+        var control = new RunControlService(store, codecs);
+        control.CancelRun(session, run);
+        new RunResumeService(store, codecs, new StubReconciler(outcome), ".").ReconcileTerminalRuns(session);
+
+        var ex = Assert.Throws<UnreconciledEffectException>(() => control.StartRun(session, "otro", RunMode.Act));
+        Assert.Contains(call, ex.ToolCalls);
+        Assert.Contains(call.ToString(), ex.Message);
+        CanonicalStateTracker.Replay(codecs, store.ReadFrom(session, 1));
     }
 
     [Fact]
@@ -47,7 +91,7 @@ public sealed class M3OrphanEffectNotLostTests
         var codecs = EventCodecs.Create();
         var control = new RunControlService(store, codecs);
         new EventStream(store, codecs, session).Append(
-            new ToolCallReconciled(call, ReconciliationOutcome.Unresolvable, "x"));
+            new ToolCallReconciled(call, ReconciliationOutcome.Applied, "x"));
         control.CancelRun(session, run);
 
         var next = control.StartRun(session, "otro", RunMode.Act);
