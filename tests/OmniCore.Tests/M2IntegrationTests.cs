@@ -183,7 +183,7 @@ public sealed class M2IntegrationTests
         var stream = new EventStream(store, codecs, sessionId);
         var rootItem = PlanItemId.New();
         stream.Append(new RunCreated(runId, sessionId, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
-            FailurePolicy.BlockDependents, new TaskBudget(1m, 1000L, 10, 20), CreatenRootTask(), DateTimeOffset.Now));
+            FailurePolicy.BlockDependents, new TaskBudget(null, 1000L, 10, 20), CreatenRootTask(), DateTimeOffset.Now));
         stream.Append(new RunStarted(runId));
         stream.Append(new PlanCreated(PlanId.New(), runId, rootItem, "objetivo"));
         var p1 = PlanItemId.New();

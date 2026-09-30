@@ -287,8 +287,8 @@ public sealed class OmniCliRuntime
             var workspaceRoot = _workspaceRoot;
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
             var executor = act
-                ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions)
-                : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions);
+                ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId)
+                : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId);
             var contributors = act
                 ? Array.Empty<IContextContributor>()
                 : new IContextContributor[] { new WorkingStateContributor(workingState) };
@@ -296,7 +296,8 @@ public sealed class OmniCliRuntime
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             var turn = new ExplorerTurn((request, token) => provider.Complete(request, token), executor,
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
-                server.AcquireCodecs(), artifacts, new InMemoryAuditSink(), new RedactionPolicy(), harness, boundary);
+                server.AcquireCodecs(), artifacts, new InMemoryAuditSink(), new RedactionPolicy(), harness, boundary,
+                loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey);
             var instruction = act
                 ? "Eres un asistente de ingeniería operando en el workspace actual. Tienes filesystem.read y filesystem.patch bajo la política efectiva del modelo. Contexto del run disponible ({context}). Responde la instrucción y usa las tools cuando aporten; no inventes lecturas ni tokens [version:…]: lee antes de parchear."
                 : "Ayudas a un asistente de ingeniería. Work Thread del workspace:\nContexto del run disponible ({context}).\nResponde en español, sé conciso y usa las tools cuando aporten.";
@@ -353,6 +354,16 @@ public sealed class OmniCliRuntime
 
     public void SetWorkspaceTrusted(bool trusted) =>
         new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).SetTrusted(_workspaceRoot, trusted);
+
+    /// <summary>Ejecuta un comando tipado de permisos para el WorkspaceId del cliente actual.</summary>
+    public PermissionGrantCommandResult Permissions(PermissionGrantCommand command,
+        CancellationToken cancellationToken)
+    {
+        var workspace = WorkspaceId.Of(ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot));
+        var handler = new PermissionGrantCommandHandler(
+            OmniHost.CreatePermissionGrantStore(_workspaceRoot), workspace, Server().LastRunId());
+        return handler.Handle(command, cancellationToken);
+    }
 
     private static void WarnIgnoredWorkspaceConfig(WorkspaceConfigurationResult result, string locale,
         Action<string> writeLine)

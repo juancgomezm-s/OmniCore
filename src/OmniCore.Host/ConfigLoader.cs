@@ -22,9 +22,11 @@ public sealed class ConfigLoader
     {
         var diagnostics = new List<ConfigDiagnostic>();
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
-            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "authRef", "auth" });
+            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "authRef", "auth",
+                "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
-            new[] { "models" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput", "parametersBillions" });
+            new[] { "models" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
+                "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         ValidateRequiredAndRanges(providerNodes, modelNodes, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
 
@@ -208,6 +210,8 @@ public sealed class ConfigLoader
                 BaseUrl = Scalar(values, "baseUrl"),
                 CaCertificate = Scalar(values, "caCertificate"),
                 AuthRef = Scalar(values, "authRef"),
+                InputPricePerMillionUsd = Decimal(values, "inputPricePerMillionUsd"),
+                OutputPricePerMillionUsd = Decimal(values, "outputPricePerMillionUsd"),
             };
             if (values.Children.TryGetValue(new YamlScalarNode("auth"), out var authNode))
             {
@@ -254,21 +258,31 @@ public sealed class ConfigLoader
     private static string? Scalar(YamlMappingNode values, string key) =>
         values.Children.TryGetValue(new YamlScalarNode(key), out var node) ? (node as YamlScalarNode)?.Value : null;
 
+    private static decimal? Decimal(YamlMappingNode values, string key) =>
+        decimal.TryParse(Scalar(values, key), NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            ? value : null;
+
     private static void ValidateKnownScalars(YamlMappingNode map, string path, string file,
         List<ConfigDiagnostic> diagnostics)
     {
         foreach (var pair in map.Children)
         {
             var key = (pair.Key as YamlScalarNode)?.Value ?? "?";
-            if (key is "context" or "recommendedUsableContext" or "maxOutput" or "parametersBillions")
+            if (key is "context" or "recommendedUsableContext" or "maxOutput" or "parametersBillions"
+                or "inputPricePerMillionUsd" or "outputPricePerMillionUsd")
             {
                 var scalar = pair.Value as YamlScalarNode;
                 var raw = scalar?.Value;
                 var valid = scalar is not null && scalar.Style == ScalarStyle.Plain && raw is not null
                     && (key == "parametersBillions"
                         ? double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out _)
-                        : long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out _));
-                if (!valid) AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+                        : key is "inputPricePerMillionUsd" or "outputPricePerMillionUsd"
+                            ? decimal.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var price)
+                                && price >= 0m && price <= 1_000_000m
+                            : long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out _));
+                if (!valid) AddAtNode(diagnostics, file, path + "." + key,
+                    key is "inputPricePerMillionUsd" or "outputPricePerMillionUsd"
+                        ? "config.outOfRange" : "config.wrongType", pair.Value);
             }
             else if (key is "kind" or "family" or "baseUrl" or "caCertificate" or "authRef" or "provider")
             {
@@ -330,11 +344,34 @@ public sealed class ConfigLoader
     }
 }
 
+public sealed record ModelPricing(decimal? InputPricePerMillionUsd, decimal? OutputPricePerMillionUsd)
+{
+    public bool IsComplete => InputPricePerMillionUsd is not null && OutputPricePerMillionUsd is not null;
+
+    public decimal? CostUsd(TokenUsage usage)
+    {
+        if (!IsComplete) return null;
+        return usage.Input / 1_000_000m * InputPricePerMillionUsd!.Value
+            + usage.Output / 1_000_000m * OutputPricePerMillionUsd!.Value;
+    }
+}
+
 public sealed record LoadedUserConfiguration(ModelRegistry Registry, ProvidersFileYaml? Providers,
     ModelsFileYaml? Models, IReadOnlyList<LocalizedText>? DeprecationNotices = null)
 {
     public string? ProviderKind(string providerId) => Providers?.Providers?.TryGetValue(providerId, out var provider) == true
         ? provider.Kind : null;
+
+    public ModelPricing? Pricing(string modelId)
+    {
+        if (Models?.Models is not { } models || !models.TryGetValue(modelId, out var model)) return null;
+        var provider = Providers?.Providers is { } providers
+            && providers.TryGetValue(model.Provider ?? "", out var found) ? found : null;
+        var input = model.InputPricePerMillionUsd ?? provider?.InputPricePerMillionUsd;
+        var output = model.OutputPricePerMillionUsd ?? provider?.OutputPricePerMillionUsd;
+        if (input is null && output is null) return null;
+        return new ModelPricing(input, output);
+    }
 }
 
 public sealed record ConfigDiagnostic(string File, string KeyPath, LocalizedText Message,
