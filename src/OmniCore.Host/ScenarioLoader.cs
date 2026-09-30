@@ -50,25 +50,25 @@ public static class ScenarioLoader
         }
         catch (YamlDotNet.Core.YamlException ex)
         {
-            throw new ScenarioFormatException("YAML inválido: " + ex.Message);
+            throw new ScenarioFormatException("YAML inválido: " + ex.Message, "scenario.yaml_invalid", ("detail", ex.Message));
         }
 
         if (root is null)
         {
-            throw new ScenarioFormatException("el escenario está vacío");
+            throw new ScenarioFormatException("el escenario está vacío", "scenario.empty");
         }
 
         foreach (var key in root.Keys.Select(k => k.ToString()!))
         {
             if (!TopLevel.Contains(key))
             {
-                throw new ScenarioFormatException("campo desconocido: " + key);
+                throw new ScenarioFormatException("campo desconocido: " + key, "scenario.unknown_field", ("field", key));
             }
         }
 
         var name = Str(root, "name") ?? "yaml-scenario";
         var mode = ParseMode(Str(Map(root, "session"), "mode"));
-        var input = Str(root, "input") ?? throw new ScenarioFormatException("falta 'input'");
+        var input = Str(root, "input") ?? throw new ScenarioFormatException("falta 'input'", "scenario.missing_input");
 
         var plan = List(root, "plan").Select(ParsePlanItem).ToArray();
         var tasks = List(root, "tasks").Select(ParseTask).ToArray();
@@ -83,7 +83,7 @@ public static class ScenarioLoader
         foreach (var entry in List(root, "permissions"))
         {
             var map = AsMap(entry, "permissions[]");
-            var tool = Str(map, "tool") ?? throw new ScenarioFormatException("permiso sin 'tool'");
+            var tool = Str(map, "tool") ?? throw new ScenarioFormatException("permiso sin 'tool'", "scenario.permission_missing_tool");
             permissions[tool] = ParseDecision(Str(map, "decision"));
         }
 
@@ -98,7 +98,7 @@ public static class ScenarioLoader
         var planApproval = Str(root, "planApproval");
         if (planApproval is not null && planApproval is not ("approve_execute" or "approve_only" or "reject"))
         {
-            throw new ScenarioFormatException("planApproval inválido: " + planApproval);
+            throw new ScenarioFormatException("planApproval inválido: " + planApproval, "scenario.invalid_plan_approval", ("value", planApproval));
         }
 
         int? stall = null;
@@ -107,7 +107,7 @@ public static class ScenarioLoader
             stall = int.TryParse(stallText, System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out var n) && n >= 1
                 ? n
-                : throw new ScenarioFormatException("stallThresholdTurns debe ser un entero ≥ 1");
+                : throw new ScenarioFormatException("stallThresholdTurns debe ser un entero ≥ 1", "scenario.invalid_stall_threshold");
         }
 
         return new SimulationScenario(name, mode, input, plan, tasks, turns, permissions,
@@ -121,7 +121,7 @@ public static class ScenarioLoader
     private static SimulatedPlanMutation ParsePlanItem(object entry)
     {
         var add = Map(AsMap(entry, "plan[]"), "add");
-        var id = Str(add, "id") ?? throw new ScenarioFormatException("item de plan sin 'id'");
+        var id = Str(add, "id") ?? throw new ScenarioFormatException("item de plan sin 'id'", "scenario.plan_item_missing_id");
         return new SimulatedPlanMutation(id, Str(add, "text") ?? id, Strings(add, "dependsOn"));
     }
 
@@ -132,7 +132,7 @@ public static class ScenarioLoader
         var links = List(map, "links").Select(link =>
         {
             var l = AsMap(link, "links[]");
-            return new SimulatedLink(Str(l, "item") ?? throw new ScenarioFormatException("link sin 'item'"),
+            return new SimulatedLink(Str(l, "item") ?? throw new ScenarioFormatException("link sin 'item'", "scenario.link_missing_item"),
                 Str(l, "role") ?? "implements");
         }).ToArray();
         return new SimulatedTask(id, links, Strings(map, "dependsOn"), Str(map, "objective") ?? id);
@@ -146,11 +146,11 @@ public static class ScenarioLoader
             return SimulatedTurnAction.DoneMarker();
         }
 
-        var tool = Str(map, "tool") ?? throw new ScenarioFormatException("turno sin 'tool' ni 'complete'");
+        var tool = Str(map, "tool") ?? throw new ScenarioFormatException("turno sin 'tool' ni 'complete'", "scenario.turn_missing_tool_or_complete");
         var answer = Str(map, "answer");
         if (answer is not null && answer is not ("approve" or "deny"))
         {
-            throw new ScenarioFormatException("answer inválido: " + answer);
+            throw new ScenarioFormatException("answer inválido: " + answer, "scenario.invalid_answer", ("value", answer));
         }
 
         return SimulatedTurnAction.ToolCall(tool, Str(map, "effect") ?? "read", answer);
@@ -161,7 +161,7 @@ public static class ScenarioLoader
         null or "act" => RunMode.Act,
         "plan" => RunMode.Plan,
         "orchestrate" => RunMode.Orchestrate,
-        _ => throw new ScenarioFormatException("modo inválido: " + mode),
+        _ => throw new ScenarioFormatException("modo inválido: " + mode, "scenario.invalid_mode", ("value", mode!)),
     };
 
     private static PermissionDecision ParseDecision(string? decision) => decision switch
@@ -169,7 +169,7 @@ public static class ScenarioLoader
         "allow" => PermissionDecision.Allow,
         "ask" => PermissionDecision.Ask,
         "deny" => PermissionDecision.Deny,
-        _ => throw new ScenarioFormatException("decisión inválida: " + decision),
+        _ => throw new ScenarioFormatException("decisión inválida: " + decision, "scenario.invalid_decision", ("value", decision!)),
     };
 
     private static string? Str(Dictionary<object, object> map, string key) =>
@@ -185,10 +185,10 @@ public static class ScenarioLoader
         List(map, key).Select(v => v.ToString()!).ToArray();
 
     private static Dictionary<object, object> AsMap(object value, string where) =>
-        value as Dictionary<object, object> ?? throw new ScenarioFormatException(where + " debe ser un mapa");
+        value as Dictionary<object, object> ?? throw new ScenarioFormatException(where + " debe ser un mapa", "scenario.expected_map", ("where", where));
 
     private static IReadOnlyList<object> AsList(object value, string where) =>
-        value as List<object> ?? throw new ScenarioFormatException(where + " debe ser una lista");
+        value as List<object> ?? throw new ScenarioFormatException(where + " debe ser una lista", "scenario.expected_list", ("where", where));
 }
 
 /// <summary>El YAML de un escenario no respeta el formato (error tipado, spec §71).</summary>
@@ -199,5 +199,15 @@ public sealed class ScenarioFormatException : FormatException
     public ScenarioFormatException(string message) : base("escenario inválido: " + message)
     {
         UserMessage = LocalizedText.Of("scenario.invalid", "detail", message);
+    }
+
+    public ScenarioFormatException(string message, string resourceKey, params (string Name, string Value)[] args) : base("escenario inválido: " + message)
+    {
+        var dict = new Dictionary<string, string>();
+        foreach (var (name, value) in args)
+        {
+            dict[name] = value;
+        }
+        UserMessage = new LocalizedText(resourceKey, dict);
     }
 }
