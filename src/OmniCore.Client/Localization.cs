@@ -473,7 +473,7 @@ public sealed class Localization
         ["cli.trust.revoked"] = "Workspace marked as untrusted.",
         ["cli.trust.saved"] = "Trusted workspace saved outside the repository.",
         ["cli.usage.title"] = "omni: local-first agent runtime for .NET 10 (M1)",
-        ["cli.usage.heading"] = "Uso:",
+        ["cli.usage.heading"] = "Usage:",
         ["cli.usage.sim"] = "  omni sim [scenario.yaml] [--json]   Run the M1 simulation",
         ["cli.usage.act"] = "  omni act \"instruction\"              Act Run with filesystem.read/patch under effective policy (M3)",
         ["cli.usage.ask"] = "  omni ask \"text\"                    End-to-end turn against the local model (M2)",
