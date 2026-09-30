@@ -3,32 +3,80 @@
   "title": "OmniCore user providers.yaml",
   "type": "object",
   "additionalProperties": false,
-  "required": ["providers"],
+  "required": [
+    "providers"
+  ],
   "properties": {
     "providers": {
       "type": "object",
       "additionalProperties": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["baseUrl"],
-        "not": { "required": ["auth", "authRef"] },
+        "required": [
+          "baseUrl"
+        ],
+        "not": {
+          "required": [
+            "auth",
+            "authRef"
+          ]
+        },
         "properties": {
-          "kind": { "enum": ["openAiChatCompatible", "openAiResponses", "anthropicMessages", "llamaCpp", "ikLlama"] },
-          "family": { "enum": ["OpenAiChatCompatible", "OpenAIResponses", "AnthropicMessages"] },
-          "baseUrl": { "type": "string", "format": "uri", "pattern": "^https?://" },
-          "caCertificate": { "type": "string" },
-          "authRef": { "type": "string", "description": "Secret reference (preferred form)." },
+          "kind": {
+            "enum": [
+              "openAiChatCompatible",
+              "openAiResponses",
+              "anthropicMessages",
+              "llamaCpp",
+              "ikLlama"
+            ]
+          },
+          "family": {
+            "enum": [
+              "OpenAiChatCompatible",
+              "OpenAIResponses",
+              "AnthropicMessages"
+            ]
+          },
+          "baseUrl": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://"
+          },
+          "caCertificate": {
+            "type": "string"
+          },
+          "authRef": {
+            "type": "string",
+            "description": "Secret reference (preferred form)."
+          },
           "auth": {
             "description": "Deprecated legacy authentication syntax. Prefer authRef.",
             "oneOf": [
-              { "const": "none" },
+              {
+                "const": "none"
+              },
               {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["apiKey"],
-                "properties": { "apiKey": { "type": "string" } }
+                "required": [
+                  "apiKey"
+                ],
+                "properties": {
+                  "apiKey": {
+                    "type": "string"
+                  }
+                }
               }
             ]
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "api",
+              "codex"
+            ],
+            "description": "Perfil dentro de la familia; codex = suscripción ChatGPT (solo OpenAIResponses)"
           }
         }
       }

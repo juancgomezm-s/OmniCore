@@ -45,6 +45,14 @@ public sealed class CliApp
         if (command == "act") return RunAct(args);
         if (command == "model") return ModelPolicyCommands.Run(args);
         if (command == "trust") return RunTrust(args);
+        if (command == "login" && args.Length >= 2 && args[1] == "chatgpt")
+            return Runtime.LoginChatGptAsync(args.Any(a => a == "--device"), Console.WriteLine, CancellationToken.None);
+        if (command == "logout" && args.Length >= 2 && args[1] == "chatgpt")
+        {
+            OmniCliRuntime.LogoutChatGpt();
+            Console.WriteLine(Loc().Resolve("cli.logout.ok"));
+            return Task.FromResult(0);
+        }
         if (command == "permissions") return RunPermissions(args);
         if (command == "resolve") return RunResolve(args);
         if (command == "verify-journal") return JournalCommands.VerifyJournal(args);
