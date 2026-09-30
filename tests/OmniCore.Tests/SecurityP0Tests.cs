@@ -59,7 +59,8 @@ public sealed class SecurityP0Tests
         Assert.Equal("año 漢字 €", store.GetText(reference.Hash));
         Assert.True(store.Verify(reference.Hash, reference.Size));
 
-        var blob = Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Single();
+        var hex = reference.Hash.Value;
+        var blob = Path.Combine(dir, "blobs", "sha256", hex[..2], hex.Substring(2, 2), hex);
         File.WriteAllText(blob, "manipulado");
         Assert.Throws<InvalidDataException>(() => store.GetText(reference.Hash));
         Assert.False(store.Verify(reference.Hash, reference.Size));

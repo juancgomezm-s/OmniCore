@@ -194,6 +194,29 @@ public sealed class SqliteEventStore : IEventStore
         return result.ToArray();
     }
 
+    /// <summary>Cantidad de eventos persistidos de una sesión (auditoría previa a la purga).</summary>
+    public long CountEvents(SessionId sessionId)
+    {
+        var cmd = _conn.CreateCommand()!;
+        cmd.CommandText = "SELECT COUNT(*) FROM events WHERE session_id = :sid";
+        cmd.Parameters.Add(S(cmd, "sid", sessionId.ToString()));
+        return _AsLong(cmd.ExecuteScalar()!);
+    }
+
+    /// <summary>Elimina atómicamente los eventos de una sesión después de auditar la purga.</summary>
+    public long PurgeSession(SessionId sessionId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var tx = _conn.BeginTransaction();
+        var cmd = _conn.CreateCommand()!;
+        cmd.Transaction = tx;
+        cmd.CommandText = "DELETE FROM events WHERE session_id = :sid";
+        cmd.Parameters.Add(S(cmd, "sid", sessionId.ToString()));
+        var deleted = (long)cmd.ExecuteNonQuery();
+        tx.Commit();
+        return deleted;
+    }
+
     public void Close()
     {
         if (_conn is not null)
