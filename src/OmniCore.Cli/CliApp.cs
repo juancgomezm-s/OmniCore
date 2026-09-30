@@ -29,6 +29,7 @@ public sealed class CliApp
         }
 
         var command = args[0];
+        if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
         if (command is "explain" or "explore") return RunExplain(args);
         if (command == "ask") return RunAsk(args);
@@ -46,6 +47,107 @@ public sealed class CliApp
 
         Console.WriteLine("omni: intención asumida como pregunta → ask '" + command + "'");
         return RunAsk(new[] { "ask", string.Join(" ", args) });
+    }
+
+    private static Task<int> RunTypedCommand(string[] args)
+    {
+        if (!CommandLineParser.TryParse(string.Join(" ", args), out var parsed) || parsed is null)
+        {
+            Console.WriteLine("omni: comando / inválido");
+            return Task.FromResult(2);
+        }
+        var invocation = parsed!;
+        var client = Runtime.Connect(CancellationToken.None);
+        if (invocation.Name is "context" or "tools")
+        {
+            if (invocation.Name == "tools")
+            {
+                try { Runtime.ConfigureToolDiagnostics(CancellationToken.None); }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("/tools: " + ex.Message);
+                    return Task.FromResult(1);
+                }
+            }
+            var result = client.Query(invocation.Name, CancellationToken.None);
+            if (result is null)
+            {
+                Console.WriteLine(invocation.Name + ": " + (Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
+                    ? "no data available" : "sin datos disponibles"));
+                return Task.FromResult(1);
+            }
+            RenderDiagnostic(invocation.Name, result.Json);
+            return Task.FromResult(0);
+        }
+
+        var ack = client.Send(WireEnvelope.Command(Ids.NewV7(), CommandInvocationJson.Encode(invocation)),
+            CancellationToken.None);
+        if (ack.Status != "ok")
+        {
+            Console.WriteLine("/" + invocation.Name + ": " + (ack.Error ?? "command failed"));
+            return Task.FromResult(2);
+        }
+        var expanded = client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(expanded);
+            var outcome = document.RootElement.GetProperty("outcome");
+            var text = outcome.GetProperty("text").GetString() ?? "";
+            var origin = outcome.GetProperty("origin").GetString() ?? "";
+            Console.WriteLine("[" + origin + "]");
+            return Runtime.AskAsync(text, Console.WriteLine, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+            or KeyNotFoundException)
+        {
+            Console.WriteLine("/" + invocation.Name + ": resultado de comando inválido");
+            return Task.FromResult(1);
+        }
+    }
+
+    private static void RenderDiagnostic(string name, string json)
+    {
+        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        Console.WriteLine(name == "context"
+            ? (locale == "en" ? "Context snapshot (persisted):" : "Snapshot de contexto (persistido):")
+            : (locale == "en" ? "Effective tools:" : "Tools efectivas:"));
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (name == "context")
+            {
+                var snapshot = root.GetProperty("snapshot");
+                Console.WriteLine("Fingerprint: " + snapshot.GetProperty("fingerprint").GetString());
+                Console.WriteLine("Tokens: " + snapshot.GetProperty("tokenCount").GetInt32() + "/"
+                    + snapshot.GetProperty("tokenBudget").GetInt64() + " ("
+                    + snapshot.GetProperty("tokenAccuracy").GetString() + ")");
+                foreach (var item in snapshot.GetProperty("items").EnumerateArray())
+                    Console.WriteLine("  " + item.GetProperty("kind").GetString() + " · "
+                        + item.GetProperty("contributor").GetString() + " · "
+                        + item.GetProperty("tokens").GetInt32() + " estimated tokens");
+                if (snapshot.TryGetProperty("diagnostics", out var diagnostics))
+                    foreach (var item in diagnostics.EnumerateArray())
+                        Console.WriteLine("  " + item.GetProperty("itemId").GetString() + " · "
+                            + item.GetProperty("decision").GetString() + " · "
+                            + item.GetProperty("reason").GetString());
+            }
+            else
+            {
+                Console.WriteLine("Mode: " + root.GetProperty("mode").GetString());
+                foreach (var tool in root.GetProperty("tools").EnumerateArray())
+                    Console.WriteLine("  " + tool.GetProperty("visibleName").GetString() + " → "
+                        + tool.GetProperty("toolId").GetString() + " · "
+                        + tool.GetProperty("source").GetString() + " · "
+                        + tool.GetProperty("effectClass").GetString() + " · "
+                        + tool.GetProperty("decision").GetString());
+            }
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+            or KeyNotFoundException)
+        {
+            Console.WriteLine(locale == "en" ? "No snapshot is available." : "No hay snapshot disponible.");
+        }
     }
 
     private static Task<int> RunSim(string[] args)
@@ -224,6 +326,9 @@ public sealed class CliApp
         Console.WriteLine("  omni sim [escenario.yaml] [--json]   Ejecuta la simulación de M1");
         Console.WriteLine("  omni act \"instrucción\"              Run Act con filesystem.read/patch bajo política efectiva (M3)");
         Console.WriteLine("  omni ask \"texto\"                    Turn end-to-end contra el modelo local (M2)");
+        Console.WriteLine(Loc().Resolve("commands.context.help"));
+        Console.WriteLine(Loc().Resolve("commands.tools.help"));
+        Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine("  omni model ...                       Políticas de modelo y onboarding (M3)");
         Console.WriteLine(Loc().Resolve("permissions.help"));
         Console.WriteLine("  omni --help                          Esta ayuda");
