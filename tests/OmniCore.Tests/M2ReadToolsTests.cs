@@ -386,4 +386,26 @@ public sealed class M2ReadToolsTests
             return false;
         }
     }
+
+    private static ScriptedToolExecutor SearchExecutor(string wsDir)
+    {
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false, includeMutationTools: false);
+        var policy = ScriptedPermissionPolicy.WithTool("search.text", PermissionDecision.Allow);
+        return ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, wsDir);
+    }
+
+    private static ValidatedToolCall SearchCall(string pattern, bool? regex = null, string? path = null, string? glob = null, int? maxResults = null, bool? caseSensitive = null)
+    {
+        var args = new Dictionary<string, object> { ["pattern"] = pattern };
+        if (regex.HasValue) args["regex"] = regex.Value;
+        if (path != null) args["path"] = path;
+        if (glob != null) args["glob"] = glob;
+        if (maxResults.HasValue) args["maxResults"] = maxResults.Value;
+        if (caseSensitive.HasValue) args["caseSensitive"] = caseSensitive.Value;
+
+        var json = JsonSerializer.Serialize(args);
+        return new ValidatedToolCall(ToolCallId.New(), new ToolId("search.text"),
+            "pc-" + Guid.NewGuid().ToString("N").Substring(0, 6), json);
+    }
+// TODO: Add search tests
 }

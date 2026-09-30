@@ -27,7 +27,8 @@ public sealed class HostTools
         var catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
             .Add(new UserAskTool())
             .Add(new ReadFileTool(boundary))
-            .Add(new ListDirectoryTool(boundary));
+            .Add(new ListDirectoryTool(boundary))
+            .Add(new SearchTextTool(boundary));
         if (includeMutationTools)
         {
             catalog = catalog.Add(new FilesystemPatchTool(boundary));
