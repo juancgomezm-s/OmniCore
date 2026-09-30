@@ -77,6 +77,35 @@ public sealed class ProcessExecToolsTests
     }
 
     [Fact]
+    public void Resolver_never_returns_a_batch_script_on_windows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Solo Windows ejecuta .bat/.cmd a través de cmd.exe.");
+        }
+
+        var workspace = TempDir();
+        var bin = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(bin, "sometool.cmd"), "@echo off");
+            File.WriteAllText(Path.Combine(bin, "other.bat"), "@echo off");
+            var resolver = new SystemExecutableResolver(new[] { bin }, workspace);
+
+            // Por PATHEXT no se ofrece el .cmd; pedido explícitamente, falla tipado.
+            Assert.Throws<ExecutableNotFoundException>(() => resolver.Resolve("sometool", workspace));
+            Assert.Throws<ExecutableRequiresShellException>(() => resolver.Resolve("other.bat", workspace));
+            Assert.Throws<ExecutableRequiresShellException>(() =>
+                resolver.Resolve(Path.Combine(bin, "sometool.cmd"), workspace));
+        }
+        finally
+        {
+            Cleanup(workspace);
+            Cleanup(bin);
+        }
+    }
+
+    [Fact]
     public void Process_exec_passes_argv_verbatim_without_a_shell()
     {
         var workspace = TempDir();

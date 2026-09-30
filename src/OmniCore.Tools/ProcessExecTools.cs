@@ -266,6 +266,7 @@ internal static class ProcessToolJson
                 result.ExitCode != 0);
         }
         catch (ExecutableNotFoundException ex) { return ToolResult.Error(ex.Message); }
+        catch (ExecutableRequiresShellException ex) { return ToolResult.Error(ex.Message); }
         catch (OperationCanceledException)
         {
             if (handle is not null) runtime.CancelTree(handle);

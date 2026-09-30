@@ -26,6 +26,7 @@ public sealed class SystemExecutableResolver : IExecutableResolver
     {
         try { return ResolveCore(executable, workspaceRoot); }
         catch (ExecutableNotFoundException) { throw; }
+        catch (ExecutableRequiresShellException) { throw; }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         { throw new ExecutableNotFoundException(executable ?? string.Empty); }
     }
@@ -40,7 +41,7 @@ public sealed class SystemExecutableResolver : IExecutableResolver
             var absolute = Path.GetFullPath(executable);
             if (IsWithin(absolute, workspace) && !_allowWorkspaceRelativePaths)
                 throw new ExecutableNotFoundException(executable);
-            if (File.Exists(absolute)) return new ExecutableResolution(executable, absolute);
+            if (File.Exists(absolute)) return Checked(executable, absolute);
             throw new ExecutableNotFoundException(executable);
         }
 
@@ -49,7 +50,7 @@ public sealed class SystemExecutableResolver : IExecutableResolver
             if (!_allowWorkspaceRelativePaths)
                 throw new ExecutableNotFoundException(executable);
             var relative = Path.GetFullPath(Path.Combine(workspace, executable));
-            if (File.Exists(relative)) return new ExecutableResolution(executable, relative);
+            if (File.Exists(relative)) return Checked(executable, relative);
             throw new ExecutableNotFoundException(executable);
         }
 
@@ -63,10 +64,23 @@ public sealed class SystemExecutableResolver : IExecutableResolver
             foreach (var candidate in CandidateNames(executable))
             {
                 var path = Path.Combine(directory, candidate);
-                if (File.Exists(path)) return new ExecutableResolution(executable, Path.GetFullPath(path));
+                if (File.Exists(path)) return Checked(executable, Path.GetFullPath(path));
             }
         }
         throw new ExecutableNotFoundException(executable);
+    }
+
+    /// <summary>Un .bat/.cmd en Windows pasaría por cmd.exe, que re-interpreta los argumentos.</summary>
+    private static ExecutableResolution Checked(string requested, string resolved)
+    {
+        var extension = Path.GetExtension(resolved);
+        if (OperatingSystem.IsWindows() && (extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new ExecutableRequiresShellException(requested);
+        }
+
+        return new ExecutableResolution(requested, resolved);
     }
 
     private static IEnumerable<string> CandidateNames(string executable)
@@ -78,7 +92,12 @@ public sealed class SystemExecutableResolver : IExecutableResolver
         }
         var extensions = (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
             .Split(';', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var extension in extensions) yield return executable + extension;
+        foreach (var extension in extensions)
+        {
+            if (extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)) continue;
+            yield return executable + extension;
+        }
         yield return executable;
     }
 
