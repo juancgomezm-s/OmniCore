@@ -30,7 +30,8 @@ public sealed class RunCoupon
 
     public bool CheckCompletionAndGate(PlanService planService, ProgressReconciler reconciler,
         IEventStore store, IEventCodecRegistry codecs, SessionId sessionId, EventStream stream,
-        Func<IReadOnlyList<ExternalCompletionGateResult>>? runExternalGates = null)
+        Func<IReadOnlyList<ExternalCompletionGateResult>>? runExternalGates = null,
+        MutationLedger? mutationLedger = null)
     {
         var rootTask = _run.RootTask;
         var pipeline = new LaneCompletionPipeline();
@@ -104,7 +105,21 @@ public sealed class RunCoupon
         // Host-owned gates execute only after validation starts. They return evidence, never
         // authorization; process effects must already have crossed the normal Security pipeline.
         var externalResults = runExternalGates?.Invoke() ?? Array.Empty<ExternalCompletionGateResult>();
-        var failedExternal = externalResults.Where(result => !result.Passed).ToArray();
+        if (mutationLedger?.PendingValidations().Count > 0
+            && externalResults.Any(result => result.Passed && result.Key is "build" or "test"))
+        {
+            // runExternalGates se ejecuta después de la última actividad del modelo en este intento:
+            // un Build/Test que pasa valida las ediciones pendientes. Las ediciones de Turns
+            // posteriores volverán a añadirse al ledger y exigirán otro gate.
+            mutationLedger.TakePendingValidations();
+        }
+
+        var failedExternal = externalResults.Where(result => !result.Passed).ToList();
+        if (mutationLedger?.PendingValidations() is { Count: > 0 })
+        {
+            failedExternal.Add(new ExternalCompletionGateResult("post-edit-validation", false,
+                LocalizedText.Of("coder.postEditValidation.required").Render()));
+        }
         var pendingExternal = failedExternal.Where(result => result.PendingInteraction is not null).ToArray();
 
         var pendingResult = new PendingTaskGate().Check(finalTasks, finalPlan, rootTask);
@@ -128,13 +143,13 @@ public sealed class RunCoupon
         // El Plan v1 crea un único item raíz que representa el objetivo del Run. Cuando ese
         // objetivo no se descompuso en hojas ni tiene Tasks vinculadas, una propuesta de fin
         // aceptada por todos los gates permite al PlanService cerrarlo explícitamente.
-        if (pendingResult.Passed && laneMissing.Count == 0 && failedExternal.Length == 0)
+        if (pendingResult.Passed && laneMissing.Count == 0 && failedExternal.Count == 0)
         {
             finalPlan = CompleteUnlinkedRunObjective(finalPlan, finalTasks, finalLanes, stream, planService, codecs);
         }
         var gateResult = new PlanCompletionGate().Check(finalPlan);
 
-        if (!pendingResult.Passed || !gateResult.Passed || laneMissing.Count > 0 || failedExternal.Length > 0)
+        if (!pendingResult.Passed || !gateResult.Passed || laneMissing.Count > 0 || failedExternal.Count > 0)
         {
             var gates = new List<string>();
             var missing = new List<string>();
@@ -149,7 +164,8 @@ public sealed class RunCoupon
                 if (failed.OutputArtifact is not null) outputArtifacts.Add(failed.OutputArtifact);
                 var evidence = failed.OutputArtifact is null ? "" : " [artifact:"
                     + failed.OutputArtifact.Hash + "]";
-                missing.Add(failed.Key + ": " + failed.Summary + evidence);
+                missing.Add(failed.Key == "post-edit-validation"
+                    ? failed.Summary : failed.Key + ": " + failed.Summary + evidence);
             }
             if (!pendingResult.Passed)
             {

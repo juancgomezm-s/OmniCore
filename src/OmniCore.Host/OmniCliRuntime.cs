@@ -528,7 +528,7 @@ public sealed class OmniCliRuntime
                         checkResults = runner.Run(stream, cancellationToken);
                     }
                     return checkResults;
-                });
+                }, turn.MutationLedger);
             foreach (var gate in checkResults)
                 writeLine("[gate] " + gate.Key + " → " + (gate.Passed ? "ok" : "FALLO") + ": " + gate.Summary);
             if (completed)
@@ -572,7 +572,7 @@ public sealed class OmniCliRuntime
                         PlanProjection.Replay(server.AcquireCodecs(), resumedEvents)).CheckCompletionAndGate(
                             new PlanService(), new ProgressReconciler(), server.AcquireStore(), server.AcquireCodecs(),
                             sessionId, new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
-                            () => acceptedResults);
+                            () => acceptedResults, turn.MutationLedger);
                     if (resumed) return 0;
                     acceptedResults = null; // cualquier trabajo posterior requiere volver a validar y aceptar
                 }
@@ -591,7 +591,7 @@ public sealed class OmniCliRuntime
                 feedback.Add("Completion was rejected by a runtime gate.");
             else
             {
-                feedback.AddRange(rejection.Missing);
+                feedback.AddRange(rejection.Missing.Select(ResolveWire));
                 foreach (var artifact in rejection.OutputArtifacts ?? Array.Empty<ArtifactRef>())
                     feedback.Add("Gate output:\n" + RedactSensitive(artifacts.GetText(artifact.Hash) ?? ""));
             }
