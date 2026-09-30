@@ -170,8 +170,12 @@ public sealed class OmniServer : IOmniClient
         {
             // Sin efectos laterales pendientes no hay nada que reconciliar: no se exige raíz
             // (p. ej. tras un sim con tools falsas que nunca estableció workspace).
-            if (!new RunResumeService(_store, _codecs, null, "").HasPendingSideEffects(_lastSessionId!))
+            var withoutReconciler = new RunResumeService(_store, _codecs, null, "");
+            if (!withoutReconciler.HasPendingSideEffects(_lastSessionId!))
             {
+                // Aun así se cierran las lecturas interrumpidas (EffectClass.None): no necesitan
+                // reconciliador ni raíz, y si no quedarían en Started para siempre.
+                withoutReconciler.Resume(_lastSessionId!, _lastRunId!);
                 _recoveryProblem = null;
                 return HostRecoveryResult.Ok(0);
             }
