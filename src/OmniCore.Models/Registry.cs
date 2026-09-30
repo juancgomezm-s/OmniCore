@@ -43,6 +43,42 @@ public sealed class ProviderDescriptor
     }
 }
 
+/// <summary>Error tipado cuando un alias de modelo es ambiguo (dos modelos lo declaran, o coincide con otro id).</summary>
+public sealed class AmbiguousModelAliasException : InvalidOperationException
+{
+    public string Alias { get; }
+
+    public string ModelId1 { get; }
+
+    public string ModelId2 { get; }
+
+    public LocalizedText UserMessage { get; }
+
+    public AmbiguousModelAliasException(string alias, string modelId1, string modelId2)
+        : base($"Model alias '{alias}' is declared by multiple models: {modelId1}, {modelId2}.")
+    {
+        Alias = alias;
+        ModelId1 = modelId1;
+        ModelId2 = modelId2;
+        UserMessage = LocalizedText.Of("models.aliasAmbiguous", ("alias", alias), ("model1", modelId1), ("model2", modelId2));
+    }
+}
+
+/// <summary>Error tipado cuando no se encuentra un modelo por id ni por alias.</summary>
+public sealed class UnknownModelException : InvalidOperationException
+{
+    public string Name { get; }
+
+    public LocalizedText UserMessage { get; }
+
+    public UnknownModelException(string name)
+        : base($"Unknown model or alias: {name}.")
+    {
+        Name = name;
+        UserMessage = LocalizedText.Of("models.unknown", "name", name);
+    }
+}
+
 /// <summary>Registro mínimo de providers y modelos (ADR-0011 §2).</summary>
 public sealed class ModelRegistry
 {
@@ -58,6 +94,32 @@ public sealed class ModelRegistry
 
     public ModelRegistry AddModel(ModelDefinition model)
     {
+        // Check for ambiguity at registration time (invariant 20)
+        foreach (var alias in model.Aliases)
+        {
+            // Another model declares the same alias
+            foreach (var existing in _models)
+            {
+                if (existing.Aliases.Contains(alias, StringComparer.Ordinal))
+                {
+                    throw new AmbiguousModelAliasException(alias, existing.Id, model.Id);
+                }
+                // Alias equals another model's id
+                if (existing.Id.Equals(alias, StringComparison.Ordinal))
+                {
+                    throw new AmbiguousModelAliasException(alias, existing.Id, model.Id);
+                }
+            }
+        }
+        // New model's id equals an existing model's alias
+        foreach (var existing in _models)
+        {
+            if (existing.Aliases.Contains(model.Id, StringComparer.Ordinal))
+            {
+                throw new AmbiguousModelAliasException(model.Id, existing.Id, model.Id);
+            }
+        }
+
         _models.Add(model);
         return this;
     }
@@ -94,6 +156,42 @@ public sealed class ModelRegistry
     /// <exception cref="NoModelConfiguredException">No hay ningún modelo configurado.</exception>
     public ModelDefinition ResolveDefault() =>
         _models.Count > 0 ? _models[0] : throw new NoModelConfiguredException();
+
+    /// <summary>
+    /// Resuelve un modelo por id exacto o por alias único (ADR-0011 §2).
+    /// <para>Orden de precedencia:</para>
+    /// <list type="number">
+    ///   <item><description>Coincidencia exacta de <c>Id</c> (case-sensitive, ordinal).</description></item>
+    ///   <item><description>Alias único declarado por un solo modelo.</description></item>
+    /// </list>
+    /// <para>La ambigüedad se detecta en <see cref="AddModel"/>; aquí solo puede fallar por nombre desconocido.</para>
+    /// </summary>
+    /// <exception cref="UnknownModelException">No hay modelo con ese id ni alias.</exception>
+    public ModelDefinition Resolve(string nameOrAlias)
+    {
+        // 1) Coincidencia exacta de Id (ordinal, case-sensitive) - el id siempre gana
+        foreach (var m in _models)
+        {
+            if (m.Id.Equals(nameOrAlias, StringComparison.Ordinal))
+            {
+                return m;
+            }
+        }
+
+        // 2) Buscar por alias (garantizado único por AddModel)
+        foreach (var m in _models)
+        {
+            foreach (var alias in m.Aliases)
+            {
+                if (alias.Equals(nameOrAlias, StringComparison.Ordinal))
+                {
+                    return m;
+                }
+            }
+        }
+
+        throw new UnknownModelException(nameOrAlias);
+    }
 }
 
 /// <summary>Definición de un modelo: provider + hechos (ADR-0007 §1).</summary>
@@ -111,8 +209,11 @@ public sealed class ModelDefinition
 
     public double? ParameterCountBillions { get; }
 
+    /// <summary>Alias declarativos para este modelo (p. ej. "local", "frontier", "fast").</summary>
+    public IReadOnlyList<string> Aliases { get; }
+
     public ModelDefinition(string id, string providerId, long contextWindow, long recommendedUsableContext,
-        long maxOutputTokens, double? parameterCountBillions = null)
+        long maxOutputTokens, double? parameterCountBillions = null, IEnumerable<string>? aliases = null)
     {
         Id = id;
         ProviderId = providerId;
@@ -120,6 +221,7 @@ public sealed class ModelDefinition
         RecommendedUsableContext = recommendedUsableContext;
         MaxOutputTokens = maxOutputTokens;
         ParameterCountBillions = parameterCountBillions;
+        Aliases = (aliases ?? Array.Empty<string>()).ToArray();
     }
 }
 
