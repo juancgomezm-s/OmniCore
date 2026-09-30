@@ -194,4 +194,17 @@ public sealed class ScenarioYamlTests
         rendered = loc.Resolve(ex.UserMessage.Key, ex.UserMessage.Args);
         Assert.Equal("Invalid scenario: missing 'input'", rendered);
     }
+
+    [Fact]
+    public void A_bad_scenario_yaml_yields_an_ack_with_the_localized_key()
+    {
+        var server = OmniHost.CreateInMemoryServer();
+        var payload = "{" + JsonObj.Field("cmd", "sim") + ","
+            + JsonObj.Field("scenarioYaml", "scenario: 1\nname: t\ninput: t\nunknown_field: {}") + "}";
+
+        var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+
+        Assert.Equal("error", ack.Status);
+        Assert.StartsWith("scenario.unknown_field(", ack.Error);
+    }
 }
