@@ -51,7 +51,9 @@ public sealed class M2WiringTests
         var loader = new ConfigLoader();
         var registry = loader.BuildRegistry(providers, models);
 
-        Assert.True(registry.Provider("openrouter") is not null);
+        Assert.Equal(AuthKind.None, registry.Provider("local")!.Auth.Kind);
+        Assert.Equal(AuthKind.ApiKey, registry.Provider("openrouter")!.Auth.Kind);
+        Assert.Equal("openrouter-key", registry.Provider("openrouter")!.Auth.SecretRef);
         Assert.True(registry.Model("qwen-27b") is not null);
         Assert.True(registry.Model("sonnet") is not null);
     }

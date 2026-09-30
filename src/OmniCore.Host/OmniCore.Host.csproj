@@ -1,13 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- IL3050: YamlDotNet dinámico (config). AOT es opcional en este repo (ADR-0038 §5,
-         OAQ-15): el camino por defecto es self-contained. El generador estático de YamlDotNet
-         se evaluará con el Schema Resolver (M2). -->
+    <!-- ScenarioLoader permanece deliberadamente dinámico y está fuera del alcance M2 EPIC-013. -->
     <NoWarn>$(NoWarn);IL3050</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Vecc.YamlDotNet.Analyzers.StaticGenerator" />
     <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />
     <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />
     <ProjectReference Include="..\OmniCore.Engine\OmniCore.Engine.csproj" />
@@ -22,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Schemas/*.schema.json" />
     <InternalsVisibleTo Include="OmniCore.Tests" />
   </ItemGroup>
 

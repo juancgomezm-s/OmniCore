@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OmniCore trusted project .omnicore/settings.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "defaultModel": { "type": "string", "description": "Must name a user-defined model alias." },
+    "permissionRestrictions": { "type": "object", "additionalProperties": { "enum": ["deny", "ask"] } },
+    "providers": false,
+    "credentials": false,
+    "permissions": false,
+    "sandbox": false,
+    "baseUrl": false,
+    "auth": false,
+    "authRef": false,
+    "projectId": false,
+    "network": false,
+    "environmentAllowlist": false,
+    "grants": false,
+    "userPolicy": false
+  }
+}
