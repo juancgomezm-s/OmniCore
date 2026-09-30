@@ -111,6 +111,38 @@ public sealed class SqliteEventStoreDurabilityTests
     }
 
     [Fact]
+    public void Barrier_commit_runs_with_synchronous_FULL_and_Standard_keeps_NORMAL()
+    {
+        const long full = 2;
+        var journal = TempJournal();
+        var store = new SqliteEventStore(journal);
+        try
+        {
+            var session = SessionId.New();
+
+            store.Append(session, Event(session, "test.standard.1"), DurabilityClass.Standard, CancellationToken.None);
+            Assert.Equal(Normal, store.LastCommitSynchronousLevel);
+
+            // Nivel observado dentro de la transacción del commit Barrier.
+            store.Append(session, Event(session, "test.barrier"), DurabilityClass.Barrier, CancellationToken.None);
+            Assert.Equal(full, store.LastCommitSynchronousLevel);
+            AssertSynchronousEquals(store, Normal, "Tras el Barrier la conexión se restaura a NORMAL");
+
+            store.AppendBatch(session, new[] { Event(session, "test.barrier.batch") }, DurabilityClass.Barrier,
+                CancellationToken.None);
+            Assert.Equal(full, store.LastCommitSynchronousLevel);
+
+            store.Append(session, Event(session, "test.standard.2"), DurabilityClass.Standard, CancellationToken.None);
+            Assert.Equal(Normal, store.LastCommitSynchronousLevel);
+        }
+        finally
+        {
+            store.Close();
+            TryDelete(journal);
+        }
+    }
+
+    [Fact]
     public void AppendBatch_is_atomic_on_mid_batch_failure()
     {
         var journal = TempJournal();
