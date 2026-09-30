@@ -131,8 +131,28 @@ public sealed class OmniHost
         return new ModelPolicyService(new SqliteModelPolicyStore(paths.UserDatabasePath));
     }
 
-    /// <summary>Token counter real (heurístico chars/4) para el runtime (no el Fake de tests).</summary>
+    /// <summary>Token counter estimado por defecto, o exacto para providers llama.cpp declarados en config.</summary>
     public static ITokenCounter CreateTokenCounter() => new HeuristicTokenCounter();
+
+    public static ITokenCounter CreateTokenCounter(ProviderDescriptor? provider, string? declaredKind,
+        string? apiKey, Func<HttpClient>? httpFactory = null, string? baseUrlOverride = null)
+    {
+        var fallback = new HeuristicTokenCounter();
+        if (provider is null || declaredKind is not ("llamaCpp" or "ikLlama")) return fallback;
+        return new LlamaCppTokenCounter(GetLlamaCppTokenizeBaseUrl(baseUrlOverride ?? provider.BaseUrl),
+            new OmniCore.Domain.TokenizerId("llama.cpp:" + provider.Id), fallback, httpFactory,
+            () => apiKey);
+    }
+
+    /// <summary>El endpoint llama.cpp vive en la raíz del servidor, no bajo el prefijo OpenAI /v1.</summary>
+    public static string GetLlamaCppTokenizeBaseUrl(string baseUrl)
+    {
+        var uri = new Uri(baseUrl, UriKind.Absolute);
+        var path = uri.AbsolutePath.TrimEnd('/');
+        if (path.EndsWith("/v1", StringComparison.OrdinalIgnoreCase)) path = path[..^3];
+        var builder = new UriBuilder(uri) { Path = path, Query = "", Fragment = "" };
+        return builder.Uri.ToString().TrimEnd('/');
+    }
 
     /// <summary>
     /// Catálogo de tools Core completo (fake + filesystem.read/reference.resolve/plan.propose)
@@ -175,11 +195,28 @@ public sealed class OmniHost
     /// frontera (semántica M2).
     /// </summary>
     public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot,
-        ModelCapabilityBoundary? boundary)
+        ModelCapabilityBoundary? boundary) => CreateExplorerExecutor(catalog, workspaceRoot, boundary, null);
+
+    public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot,
+        ModelCapabilityBoundary? boundary, IReadOnlyDictionary<string, string>? projectRestrictions)
     {
-        var policy = new ScriptedPermissionPolicy(new Dictionary<string, OmniCore.Domain.PermissionDecision>())
-            .WithModeDefaults(OmniCore.Domain.RunMode.Plan);
+        var policy = CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions);
         return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
+    }
+
+    public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,
+        IReadOnlyDictionary<string, string>? restrictions) =>
+        new ScriptedPermissionPolicy(ParseProjectRestrictions(restrictions)).WithModeDefaults(mode);
+
+    private static Dictionary<string, OmniCore.Domain.PermissionDecision> ParseProjectRestrictions(
+        IReadOnlyDictionary<string, string>? restrictions)
+    {
+        var result = new Dictionary<string, OmniCore.Domain.PermissionDecision>(StringComparer.Ordinal);
+        if (restrictions is null) return result;
+        foreach (var pair in restrictions)
+            result[pair.Key] = pair.Value == "deny"
+                ? OmniCore.Domain.PermissionDecision.Deny : OmniCore.Domain.PermissionDecision.Ask;
+        return result;
     }
 
     /// <summary>
@@ -196,11 +233,10 @@ public sealed class OmniHost
     /// Engine sigue siendo la única autoridad (INV-018).
     /// </summary>
     public static IToolExecutor CreateActExecutor(FakeCatalog catalog, string workspaceRoot,
-        ModelCapabilityBoundary boundary)
+        ModelCapabilityBoundary boundary, IReadOnlyDictionary<string, string>? projectRestrictions = null)
     {
         ArgumentNullException.ThrowIfNull(boundary);
-        var policy = new ScriptedPermissionPolicy(new Dictionary<string, OmniCore.Domain.PermissionDecision>())
-            .WithModeDefaults(OmniCore.Domain.RunMode.Act);
+        var policy = CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode.Act, projectRestrictions);
         return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
     }
 
@@ -210,16 +246,17 @@ public sealed class OmniHost
     /// usa <see cref="LoadUserModelRegistry"/>; pasar aquí un directorio del repo permitiría que
     /// el repo redirija la API key a otro host.
     /// </summary>
-    public static ModelRegistry LoadModelRegistry(string configDirectory)
+    public static ModelRegistry LoadModelRegistry(string configDirectory) => LoadUserConfiguration(configDirectory).Registry;
+
+    public static LoadedUserConfiguration LoadUserConfiguration(IPlatformPaths paths) =>
+        LoadUserConfiguration(paths.ConfigDirectory);
+
+    public static LoadedUserConfiguration LoadUserConfiguration(string configDirectory)
     {
-        var loader = new ConfigLoader();
-        var providers = File.Exists(Path.Combine(configDirectory, "providers.yaml"))
-            ? File.ReadAllText(Path.Combine(configDirectory, "providers.yaml"))
-            : null;
-        var models = File.Exists(Path.Combine(configDirectory, "models.yaml"))
-            ? File.ReadAllText(Path.Combine(configDirectory, "models.yaml"))
-            : null;
-        return loader.BuildRegistry(providers, models);
+        var providersPath = Path.Combine(configDirectory, "providers.yaml");
+        var modelsPath = Path.Combine(configDirectory, "models.yaml");
+        return new ConfigLoader().Load(File.Exists(providersPath) ? File.ReadAllText(providersPath) : null,
+            File.Exists(modelsPath) ? File.ReadAllText(modelsPath) : null);
     }
 
     /// <summary>

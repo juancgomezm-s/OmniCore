@@ -13,6 +13,7 @@ public sealed class OmniCliRuntime
 {
     private readonly string _workspaceRoot;
     private OmniServer? _server;
+    private bool _workspaceWarningShown;
 
     private OmniCliRuntime(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
 
@@ -54,14 +55,35 @@ public sealed class OmniCliRuntime
     }
 
     /// <summary>Diagnóstico de componentes de runtime en DTOs de texto para el CLI.</summary>
-    public static int Doctor(string locale, Action<string> writeLine)
+    public static int Doctor(string locale, Action<string> writeLine,
+        Func<string, IReadOnlyDictionary<string, string>, string>? localize = null)
     {
         ArgumentNullException.ThrowIfNull(writeLine);
         var paths = OmniHost.CreatePlatformPaths();
-        var registry = OmniHost.LoadUserModelRegistry(paths);
+        LoadedUserConfiguration loaded;
+        try { loaded = OmniHost.LoadUserConfiguration(paths); }
+        catch (ConfigValidationException ex)
+        {
+            ReportDiagnostics(ex.Diagnostics, locale, writeLine, localize);
+            return 1;
+        }
+        var registry = loaded.Registry;
         writeLine(locale == "en" ? "omni doctor — M2 diagnostics" : "omni doctor — diagnóstico de M2");
         writeLine((locale == "en" ? "Configuration: " : "Configuración: ") + paths.ConfigDirectory);
-        WarnIgnoredRepoConfig(paths.ConfigDirectory, writeLine);
+        var trust = new WorkspaceTrustStore(paths).IsTrusted(Directory.GetCurrentDirectory());
+        WorkspaceConfigurationResult workspaceConfig;
+        try
+        {
+            workspaceConfig = WorkspaceConfigurationLoader.Load(Directory.GetCurrentDirectory(), trust,
+                alias => registry.Model(alias) is not null);
+        }
+        catch (ConfigValidationException ex)
+        {
+            ReportDiagnostics(ex.Diagnostics, locale, writeLine, localize);
+            return 1;
+        }
+        WarnIgnoredWorkspaceConfig(workspaceConfig, locale, writeLine);
+        ReportDiagnostics(workspaceConfig.Diagnostics, locale, writeLine, localize);
         writeLine(locale == "en" ? "Available models:" : "Modelos disponibles:");
         foreach (var model in registry.Models())
         {
@@ -74,7 +96,10 @@ public sealed class OmniCliRuntime
             }
         }
 
-        var tokenizer = OmniHost.CreateTokenCounter();
+        var defaultModel = registry.Models().FirstOrDefault();
+        var defaultProvider = defaultModel is null ? null : registry.Provider(defaultModel.ProviderId);
+        var tokenizer = OmniHost.CreateTokenCounter(defaultProvider,
+            defaultProvider is null ? null : loaded.ProviderKind(defaultProvider.Id), null);
         var resolver = OmniHost.CreateScopeResolver();
         var credentials = OmniHost.CreateUserCredentialStore(paths);
         var localHost = OmniHost.CreateLocalModelHost();
@@ -104,8 +129,35 @@ public sealed class OmniCliRuntime
     {
         var paths = OmniHost.CreatePlatformPaths();
         var workspaceData = OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
-        var registry = OmniHost.LoadUserModelRegistry(paths);
-        WarnIgnoredRepoConfig(paths.ConfigDirectory, writeLine);
+        LoadedUserConfiguration loaded;
+        try { loaded = OmniHost.LoadUserConfiguration(paths); }
+        catch (ConfigValidationException ex)
+        {
+            WriteDiagnostics(ex.Diagnostics, Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es",
+                writeLine);
+            return 1;
+        }
+        var registry = loaded.Registry;
+        var trust = new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+        WorkspaceConfigurationResult workspaceConfig;
+        try
+        {
+            workspaceConfig = WorkspaceConfigurationLoader.Load(_workspaceRoot, trust,
+                alias => registry.Model(alias) is not null);
+        }
+        catch (ConfigValidationException ex)
+        {
+            WriteDiagnostics(ex.Diagnostics, Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es",
+                writeLine);
+            return 1;
+        }
+        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        if (!_workspaceWarningShown)
+        {
+            WarnIgnoredWorkspaceConfig(workspaceConfig, locale, writeLine);
+            _workspaceWarningShown = workspaceConfig.Ignored;
+        }
+        WriteDiagnostics(workspaceConfig.Diagnostics, locale, writeLine);
         ModelDefinition? modelDefinition = null;
         NoModelConfiguredException? noModel = null;
         try
@@ -117,9 +169,12 @@ public sealed class OmniCliRuntime
             noModel = ex;
         }
 
+        if (workspaceConfig.Settings?.DefaultModel is not null)
+            modelDefinition = registry.Model(workspaceConfig.Settings.DefaultModel);
         var providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
         var secretRef = providerDescription?.Auth.SecretRef ?? "qwen";
-        var model = Environment.GetEnvironmentVariable("OMNI_MODEL") ?? modelDefinition?.Id;
+        var model = Environment.GetEnvironmentVariable("OMNI_MODEL") ?? workspaceConfig.Settings?.DefaultModel
+            ?? modelDefinition?.Id;
         var baseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDescription?.BaseUrl
             ?? "http://127.0.0.1:8080/v1";
         string? key = null;
@@ -130,14 +185,16 @@ public sealed class OmniCliRuntime
                 Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), cancellationToken);
             if (key is null)
             {
-                writeLine("omni " + (act ? "act" : "ask") + ": '" + (providerDescription.Id ?? "local")
-                    + "' requiere API key '" + secretRef + "'. Define OMNI_QWEN_KEY una vez: se guarda cifrada"
-                    + (act ? " en el almacén del usuario (ADR-0018)." : " en el almacén del usuario y no hará falta"
-                    + " volver a definirla. No se guardan secretos en el repo (ADR-0018)."));
+                writeLine("omni " + (act ? "act" : "ask") + ": falta la credencial del provider. "
+                    + "Define OMNI_QWEN_KEY una vez; se guarda cifrada en el almacén del usuario. "
+                    + "No se guardan secretos en el repo (ADR-0018).");
                 return 1;
             }
         }
 
+        var tokenCounter = OmniHost.CreateTokenCounter(providerDescription,
+            providerDescription is null ? null : loaded.ProviderKind(providerDescription.Id), key,
+            baseUrlOverride: baseUrl);
         try
         {
             if (model is null)
@@ -210,8 +267,8 @@ public sealed class OmniCliRuntime
 
             // Un boundary (y su registro de lecturas) por Run, canonizado contra la raíz del workspace.
             var boundary = CreateBoundary(effectivePolicy, _workspaceRoot);
-            var fingerprint = new ExecutionFingerprint(model, harnessHash, "core-tools-1", "heuristic:chars4/1",
-                "none", act ? "M3" : "M2", effectivePolicy.Fingerprint(), "heuristic:chars4/1");
+            var fingerprint = new ExecutionFingerprint(model, harnessHash, "core-tools-1", tokenCounter.Id.Value,
+                "none", act ? "M3" : "M2", effectivePolicy.Fingerprint(), tokenCounter.Id.Value);
             var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null);
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
@@ -221,13 +278,14 @@ public sealed class OmniCliRuntime
 
             var hostTools = act ? OmniHost.CreateActTools() : OmniHost.CreateExplorerTools();
             var workspaceRoot = _workspaceRoot;
+            var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
             var executor = act
-                ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary)
-                : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary);
+                ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions)
+                : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions);
             var contributors = act
                 ? Array.Empty<IContextContributor>()
                 : new IContextContributor[] { new WorkingStateContributor(workingState) };
-            var materializer = new ContextMaterializer(new HeuristicTokenCounter(), contributors);
+            var materializer = new ContextMaterializer(tokenCounter, contributors);
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             var turn = new ExplorerTurn((request, token) => provider.Complete(request, token), executor,
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
@@ -283,16 +341,44 @@ public sealed class OmniCliRuntime
         return JsonObj.Parse(json).TryGetValue("workingState", out var text) ? text ?? "" : "";
     }
 
-    private static void WarnIgnoredRepoConfig(string configDirectory, Action<string> writeLine)
+    public bool IsWorkspaceTrusted() =>
+        new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).IsTrusted(_workspaceRoot);
+
+    public void SetWorkspaceTrusted(bool trusted) =>
+        new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).SetTrusted(_workspaceRoot, trusted);
+
+    private static void WarnIgnoredWorkspaceConfig(WorkspaceConfigurationResult result, string locale,
+        Action<string> writeLine)
     {
-        foreach (var name in new[] { "providers.yaml", "models.yaml" })
+        if (!result.Ignored) return;
+        writeLine(locale == "en"
+            ? "warning: workspace is untrusted; .omnicore/ is ignored. Run 'omni trust' to trust this workspace."
+            : "aviso: el workspace no es confiable; se ignora .omnicore/. Ejecuta 'omni trust' para confiar en él.");
+    }
+
+    private void WriteDiagnostics(IReadOnlyList<ConfigDiagnostic> diagnostics, string locale, Action<string> writeLine)
+    {
+        foreach (var diagnostic in diagnostics)
         {
-            if (File.Exists(Path.Combine(".", name))
-                && !Path.GetFullPath(".").Equals(Path.GetFullPath(configDirectory), StringComparison.OrdinalIgnoreCase))
-            {
-                writeLine("aviso: se ignora ./" + name + " (un repo no configura providers, INV-029). "
-                    + "La configuración va en " + Path.Combine(configDirectory, name));
-            }
+            var message = Localize is null ? diagnostic.Message.Render() : Text(diagnostic.Message);
+            var location = diagnostic.File + (diagnostic.Line is null ? "" : ":" + diagnostic.Line
+                + ":" + diagnostic.Column);
+            writeLine((locale == "en" ? "Configuration error " : "Error de configuración ")
+                + location + " (" + diagnostic.KeyPath + "): " + message);
+        }
+    }
+
+    private static void ReportDiagnostics(IReadOnlyList<ConfigDiagnostic> diagnostics, string locale,
+        Action<string> writeLine, Func<string, IReadOnlyDictionary<string, string>, string>? localize)
+    {
+        foreach (var diagnostic in diagnostics)
+        {
+            var message = localize is null ? diagnostic.Message.Render()
+                : localize(diagnostic.Message.Key, diagnostic.Message.Args);
+            var location = diagnostic.File + (diagnostic.Line is null ? "" : ":" + diagnostic.Line
+                + ":" + diagnostic.Column);
+            writeLine((locale == "en" ? "Configuration error " : "Error de configuración ")
+                + location + " (" + diagnostic.KeyPath + "): " + message);
         }
     }
 }

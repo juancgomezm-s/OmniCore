@@ -537,7 +537,7 @@ public sealed class SecurityP0Tests
         Assert.Equal(ca.Thumbprint, OmniHost.LoadTrustedCertificate(der).Thumbprint);
 
         var registry = new ConfigLoader().BuildRegistry(
-            "providers:\n  lan: { baseUrl: https://192.168.1.104:8080/v1, auth: none, caCertificate: "
+            "providers:\n  lan: { baseUrl: https://192.168.1.104:8080/v1, caCertificate: "
                 + pem.Replace('\\', '/') + " }\n",
             null);
         Assert.Equal(pem.Replace('\\', '/'), registry.Provider("lan")!.TrustedCertificatePath);
@@ -577,7 +577,7 @@ public sealed class SecurityP0Tests
         Assert.NotEqual(Path.GetFullPath("."), Path.GetFullPath(paths.ConfigDirectory));
         Directory.CreateDirectory(paths.ConfigDirectory);
         File.WriteAllText(Path.Combine(paths.ConfigDirectory, "providers.yaml"),
-            "providers:\n  mine: { baseUrl: http://127.0.0.1:9999, auth: none }\n");
+            "providers:\n  mine: { baseUrl: http://127.0.0.1:9999 }\n");
         File.WriteAllText(Path.Combine(paths.ConfigDirectory, "models.yaml"), "models:\n  mi-modelo: { provider: mine }\n");
 
         var registry = OmniHost.LoadUserModelRegistry(paths);
