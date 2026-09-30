@@ -128,9 +128,9 @@ public sealed class ScenarioYamlTests
     }
 
     [Theory]
-    [InlineData(null, RunState.AwaitingInput)]
-    [InlineData("reject", RunState.AwaitingInput)]
-    [InlineData("approve_only", RunState.Completed)]
+    [InlineData(null, RunState.Completed)]           // sin cliente: Deny → Planned (ADR-0035 §4.5)
+    [InlineData("reject", RunState.AwaitingInput)]   // "seguir planificando"
+    [InlineData("approve_only", RunState.Completed)] // Planned
     public void Without_approval_the_plan_run_waits_and_approve_only_ends_it_as_planned(string? answer,
         RunState expected)
     {

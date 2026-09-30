@@ -368,56 +368,17 @@ public sealed class SimulationEngine
             0,
             1));
 
-        switch (answer)
-        {
-            case "approve_execute":
-                stream.Append(new InteractionResolved(interaction, "approve_execute", InteractionCause.User));
-                stream.Append(new RunModeChanged(runId, RunMode.Plan, RunMode.Act, "PlanApproved"));
-                return true;
-            case "approve_only":
-                stream.Append(new InteractionResolved(interaction, "approve_only", InteractionCause.User));
-                stream.Append(new RunValidationStarted(runId));
-                CloseRootAs(stream, sessionId, runId, completed: true);
-                stream.Append(new RunCompleted(runId, RunOutcome.Planned));
-                return false;
-            default:
-                if (answer == "reject")
-                {
-                    stream.Append(new InteractionResolved(interaction, "reject", InteractionCause.User));
-                }
-
-                if (rootLane is not null)
-                {
-                    stream.Append(new RunAwaitingInput(runId, rootLane));
-                }
-
-                return false;
-        }
-    }
-
-    /// <summary>Cierra la Lane y la Task raíz del Run (fin del Run sin pasar por RunCoupon).</summary>
-    private void CloseRootAs(EventStream stream, SessionId sessionId, RunId runId, bool completed)
-    {
-        var tail = stream.EventsSince(1);
-        var run = RunProjection.Replay(sessionId, runId, _codecs, tail);
-        if (run.RootTask is null)
-        {
-            return;
-        }
-
-        foreach (var lane in LaneProjection.Replay(_codecs, tail).ForTask(run.RootTask))
-        {
-            if (lane.State == LaneState.Running)
-            {
-                stream.Append(completed ? new LaneCompleted(lane.Id, null) : new LaneFailed(lane.Id, "run cerrado"));
-            }
-        }
-
-        var tasks = TaskGraphProjection.Replay(_codecs, tail);
-        if (tasks.StateOf(run.RootTask) == TaskState.Running)
-        {
-            stream.Append(completed ? new TaskCompleted(run.RootTask, null) : new TaskFailed(run.RootTask, "run cerrado"));
-        }
+        // Mismo efecto que RespondToInteraction (RunControlService). Sin respuesta no hay cliente
+        // interactivo: ADR-0003 → Deny y el Run termina Planned (ADR-0035 §4.5).
+        var control = new RunControlService(_store, _codecs);
+        var option = answer ?? "approve_only";
+        var resolved = new InteractionResolved(interaction, answer ?? "reject",
+            answer is null ? InteractionCause.NoClient : InteractionCause.User);
+        var effect = control.PlanApprovalEffect(stream.EventsSince(1), sessionId, runId, option);
+        var batch = new List<DomainEventPayload> { resolved };
+        batch.AddRange(effect);
+        stream.AppendBatch(batch, DurabilityClass.Standard);
+        return option == "approve_execute";
     }
 
     /// <summary>
