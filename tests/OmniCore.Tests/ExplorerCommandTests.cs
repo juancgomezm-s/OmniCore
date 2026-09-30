@@ -38,7 +38,35 @@ public sealed class ExplorerCommandTests
         var expanded = outcome.GetProperty("text").GetString()!;
         Assert.Contains("src/OmniCore", expanded);
         Assert.DoesNotContain("/explain", expanded);
-        Assert.Equal("PromptCommand(core:explain@1)", outcome.GetProperty("origin").GetString());
+        var origin = outcome.GetProperty("origin").GetString();
+        Assert.Equal("PromptCommand(core:explain@1)", origin);
+
+        // Al enviar el prompt expandido como input, su procedencia se conserva en el evento canónico.
+        var session = SessionId.New();
+        var control = new RunControlService(server.AcquireStore(), server.AcquireCodecs());
+        var run = control.SendInput(session, expanded, RunMode.Plan, server.ConsumePromptOrigin());
+        var userInput = server.AcquireStore().ReadFrom(session, 1)
+            .Select(evt => server.AcquireCodecs().Decode(evt)).OfType<UserInputReceived>().Single();
+        Assert.Equal(run, userInput.RunId);
+        Assert.Equal(origin, userInput.Origin);
+    }
+
+    [Fact]
+    public void Tools_query_uses_the_declared_effect_class()
+    {
+        var server = OmniHost.CreateInMemoryServer();
+        var catalog = new FakeCatalog().Add(FakeTool.Write("custom.reconcilable"));
+        var effective = EffectiveModelPolicy.Resolve(ModelPolicyKey.For("p", "m"), null,
+            new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 16, GuidanceLevel.Full, 3,
+                PlanControl.RuntimeDriven, 8));
+        server.ConfigureToolDiagnostics(catalog, new ModelCapabilityBoundary(effective), RunMode.Act);
+
+        using var document = System.Text.Json.JsonDocument.Parse(
+            server.Query("tools", CancellationToken.None)!.Json);
+        var entry = document.RootElement.GetProperty("tools").EnumerateArray().Single();
+        Assert.Equal(EffectClass.Reconcilable, catalog.Find(new ToolId("custom.reconcilable"))!
+            .Descriptor.EffectClass);
+        Assert.Equal("Reconcilable", entry.GetProperty("effectClass").GetString());
     }
 
     [Fact]

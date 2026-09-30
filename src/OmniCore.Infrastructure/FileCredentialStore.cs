@@ -63,7 +63,10 @@ public sealed class FileCredentialStore : ICredentialStore
         cancellationToken.ThrowIfCancellationRequested();
         EnsureFile();
         var map = LoadMap();
-        return map.TryGetValue(key, out var stored) ? Unprotect(stored) : null;
+        if (!map.TryGetValue(key, out var stored)) return null;
+        var value = Unprotect(stored);
+        if (value is not null) SecretRedactorRegistry.Register(value);
+        return value;
     }
 
     public void Delete(string key, CancellationToken cancellationToken)

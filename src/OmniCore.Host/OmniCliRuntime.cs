@@ -6,6 +6,7 @@ using OmniCore.Domain;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Protocol;
+using OmniCore.Security;
 using OmniCore.Tools;
 
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
@@ -124,7 +125,8 @@ public sealed class OmniCliRuntime
     internal static ModelCapabilityBoundary CreateBoundary(EffectiveModelPolicy policy, string workspaceRoot) =>
         new(policy, ModelCapabilityBoundary.CoreTools, new FileReadRegistry(workspaceRoot));
 
-    public static string RedactSensitive(string value) => new PiiRedactor().Redact(value);
+    public static string RedactSensitive(string value) =>
+        SecretRedactor.Shared.Redact(new PiiRedactor().Redact(value));
 
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken)
@@ -320,7 +322,8 @@ public sealed class OmniCliRuntime
             var instruction = executingAct
                 ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
                 : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.";
-            var result = turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, cancellationToken);
+            var result = turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, cancellationToken,
+                server.ConsumePromptOrigin());
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
             {
                 writeLine("[tool] " + trace.ToolName + " → " + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);

@@ -14,9 +14,12 @@ public sealed class FileArtifactStore : IArtifactStore
 {
     private readonly string _blobsRoot;
 
-    public FileArtifactStore(string dataDirectory)
+    private readonly ISecretRedactor? _redactor;
+
+    public FileArtifactStore(string dataDirectory, ISecretRedactor? redactor = null)
     {
         _blobsRoot = Path.Combine(dataDirectory, "blobs", "sha256");
+        _redactor = redactor ?? SecretRedactorRegistry.Current;
     }
 
     public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
@@ -24,6 +27,8 @@ public sealed class FileArtifactStore : IArtifactStore
         // Redacción obligatoria del contenido antes de persistir (ADR-0018 §4): ningún blob
         // del store lleva secretos en claro.
         var safe = new RedactionPolicy().Redact(content);
+        if (_redactor is not null) safe = _redactor.Redact(safe);
+        var redacted = !string.Equals(safe, content, StringComparison.Ordinal);
         var bytes = Encoding.UTF8.GetBytes(safe);
         var hash = Sha256.Hex(bytes);
         var blobPath = BlobPath(hash);
@@ -33,7 +38,7 @@ public sealed class FileArtifactStore : IArtifactStore
         }
 
         return new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(hash), bytes.LongLength, mediaType, kind,
-            sensitivity);
+            sensitivity, redacted);
     }
 
     /// <summary>

@@ -9,6 +9,8 @@ using System.Text.RegularExpressions;
 /// </summary>
 public sealed class PiiRedactor
 {
+    private static Func<string, string>? _additionalRedactor;
+
     private readonly string[] _patterns = new string[] {
         // "Authorization: Bearer abc…" y cabeceras similares
         "(?i)(authorization\\s*[=: ]+\\s*bearer\\s+)([A-Za-z0-9.~_-]{8,})",
@@ -24,8 +26,21 @@ public sealed class PiiRedactor
         "(?i)(bearer=)([A-Za-z0-9._~-]{6,})",
     };
 
+    /// <summary>Instala desde Security la redacción de valores conocidos.</summary>
+    public static void SetAdditionalRedactor(Func<string, string> redactor) =>
+        System.Threading.Interlocked.Exchange(ref _additionalRedactor,
+            redactor ?? throw new ArgumentNullException(nameof(redactor)));
+
     /// <summary>Enmascara el texto; sustituye los secretos por [REDACTED].</summary>
     public string Redact(string input)
+    {
+        var safe = RedactPatternsOnly(input);
+        var additional = System.Threading.Volatile.Read(ref _additionalRedactor);
+        return additional is null ? safe : additional(safe);
+    }
+
+    /// <summary>Aplica únicamente los patrones locales, sin delegar en valores conocidos.</summary>
+    public string RedactPatternsOnly(string input)
     {
         if (input is null || input.Length == 0)
         {
@@ -113,6 +128,6 @@ public sealed class RedactionPolicy
         return false;
     }
 
-    /// <summary>Redacta contenido (keys, bearer, JWT, cookies) de forma determinista.</summary>
+    /// <summary>Redacta contenido (keys, bearer, JWT, cookies y valores conocidos).</summary>
     public string Redact(string input) => _redactor.Redact(input);
 }
