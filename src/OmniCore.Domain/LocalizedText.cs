@@ -13,6 +13,9 @@ public record LocalizedText(string Key, Dictionary<string, string> Args)
     public static LocalizedText Of(string key, string argName, string argValue) =>
         new(key, new Dictionary<string, string> { [argName] = argValue });
 
+    public static LocalizedText Of(string key, params (string Name, string Value)[] args) =>
+        new(key, args.ToDictionary(a => a.Name, a => a.Value));
+
     /// <summary>Formato estable para logs y tests (no para UI).</summary>
     public string Render()
     {
