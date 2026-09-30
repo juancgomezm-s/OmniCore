@@ -16,6 +16,7 @@ public sealed class OmniCliRuntime
 {
     private readonly string _workspaceRoot;
     private OmniServer? _server;
+    private string? _escalatedModel;
     private (IModelProvider Provider, ModelPricing? Pricing, string BaseUrl, IArtifactStore Artifacts)? _usageContext;
     private bool _workspaceWarningShown;
     private bool _providerDeprecationShown;
@@ -226,9 +227,34 @@ public sealed class OmniCliRuntime
 
         if (workspaceConfig.Settings?.DefaultModel is not null)
             modelDefinition = registry.Model(workspaceConfig.Settings.DefaultModel);
+
+        // Elección explícita (escalación en curso, OMNI_MODEL o defaultModel del workspace) siempre gana;
+        // si no la hay y el usuario configuró routing:, elige el router por tipo de tarea (M5).
+        var explicitModel = _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
+            ?? workspaceConfig.Settings?.DefaultModel;
+        if (_escalatedModel is not null) modelDefinition = registry.Model(_escalatedModel);
+        else if (explicitModel is null)
+        {
+            try
+            {
+                var decision = ModelRoutingHost.Route(loaded, act ? RoutingTaskKind.Implementation : RoutingTaskKind.Exploration,
+                    act, 0, candidate => HasWritePolicy(candidate, loaded, cancellationToken));
+                if (decision is not null)
+                {
+                    modelDefinition = registry.Model(decision.Chosen.Alias);
+                    writeLine(Text(Localized("cli.routing.chosen", ("model", decision.Chosen.Alias))));
+                }
+            }
+            catch (NoRouteAvailableException ex)
+            {
+                writeLine(Text(Localized("cli.routing.none", ("reasons",
+                    string.Join(", ", ex.Rejected.Select(r => r.Alias + ": " + r.Reason))))));
+                return 1;
+            }
+        }
         var providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
         var secretRef = providerDescription?.Auth.SecretRef ?? "qwen";
-        var model = Environment.GetEnvironmentVariable("OMNI_MODEL") ?? workspaceConfig.Settings?.DefaultModel
+        var model = _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL") ?? workspaceConfig.Settings?.DefaultModel
             ?? modelDefinition?.Id;
         var baseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDescription?.BaseUrl
             ?? "http://127.0.0.1:8080/v1";
@@ -459,6 +485,9 @@ public sealed class OmniCliRuntime
             writeLine(Text(Localized("cli.runtime.turn.summary", ("reason", result.StopReason.ToString()),
                 ("steps", result.Steps.ToString()),
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
+            if (result.StopReason == StopReason.ContextOverflow &&
+                await TryEscalateAsync(loaded, model!, usableContext, prompt, act, writeLine, cancellationToken) is { } escalatedCode)
+                return escalatedCode;
 
             if (!executingAct && server.RequestPlanApprovalIfNeeded() is { } approvalId)
             {
@@ -844,6 +873,52 @@ public sealed class OmniCliRuntime
         var windows = context.Provider is IReportsRateLimits reporter ? reporter.LastRateLimits : [];
         return SessionUsageReporter.Build(tokens, cost, complete, context.Pricing?.IsComplete == true,
             OmniHost.IsPrivateHost(context.BaseUrl), windows, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>ADR-0044: el router no manda una tarea escritora a un modelo sin política de mutación suficiente.</summary>
+    private static bool HasWritePolicy(ModelDefinition candidate, LoadedUserConfiguration loaded, CancellationToken cancellationToken)
+    {
+        var provider = loaded.Registry.Provider(candidate.ProviderId);
+        var harness = new HarnessPolicyResolver().Resolve(new ModelProfileResolver().Resolve(candidate, provider));
+        try
+        {
+            var effective = OmniHost.CreateModelPolicyService(null)
+                .Effective(ModelPolicyKey.For(candidate.ProviderId, candidate.Id), harness, cancellationToken);
+            return !effective.IsFallback && effective.MutationPolicy.Mode != FileMutationMode.None;
+        }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>
+    /// Escalación explícita ante un límite de contexto (spec §73): se registra la causa; en modo
+    /// <c>auto</c> se aprueba por política y el mismo pedido se repite con el siguiente modelo de la
+    /// cadena; en modo <c>ask</c> queda solicitada y se informa, sin inventar una aprobación.
+    /// </summary>
+    private async Task<int?> TryEscalateAsync(LoadedUserConfiguration loaded, string currentModel, long currentContext,
+        string prompt, bool act, Action<string> writeLine, CancellationToken cancellationToken)
+    {
+        if (_escalatedModel is not null || Environment.GetEnvironmentVariable("OMNI_MODEL") is not null) return null;
+        var next = ModelRoutingHost.NextEscalation(loaded, currentModel, act, currentContext + 1,
+            candidate => HasWritePolicy(candidate, loaded, cancellationToken));
+        var server = Server();
+        if (next is null || server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return null;
+        var stream = new EventStream(server.AcquireStore(), server.AcquireCodecs(), session);
+        stream.Append(new ModelEscalationRequested(run, currentModel, next.Alias, EscalationCause.ContextLimit));
+        if (ModelRoutingHost.EscalationMode(loaded) != "auto")
+        {
+            writeLine(Text(Localized("cli.escalation.suggest", ("model", next.Alias))));
+            return null;
+        }
+        stream.Append(new ModelEscalationApproved(run, next.Alias, "policy:auto"));
+        writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.Alias))));
+        _escalatedModel = next.Alias;
+        try
+        {
+            var code = await RunTurnAsync(prompt, act, writeLine, cancellationToken).ConfigureAwait(false);
+            stream.Append(new ModelEscalationCompleted(run, next.Alias));
+            return code;
+        }
+        finally { _escalatedModel = null; }
     }
 
     public void SetWorkspaceTrusted(bool trusted) =>
