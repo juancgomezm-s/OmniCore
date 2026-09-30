@@ -29,6 +29,9 @@ public sealed class OmniCliRuntime
     /// </summary>
     public Func<string, IReadOnlyDictionary<string, string>, string>? Localize { get; set; }
 
+    /// <summary>Entrada plain provista por OmniCore.Cli; null cuando no existe un TTY interactivo.</summary>
+    public Func<QuestionnairePromptDto, QuestionnaireResponseDto?>? QuestionnaireInput { get; set; }
+
     private string Text(LocalizedText text) => Localize is null ? text.Render() : Localize(text.Key, text.Args);
 
     /// <summary>Abre el cliente in-process del workspace sin exponer OmniServer al consumidor.</summary>
@@ -323,13 +326,42 @@ public sealed class OmniCliRuntime
                 : new IContextContributor[] { new WorkingStateContributor(workingState) };
             var materializer = new ContextMaterializer(tokenCounter, contributors);
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
+            var questionnaireService = new QuestionnaireInteractionService(server.AcquireStore(),
+                server.AcquireCodecs(), artifacts);
+            QuestionnaireAskOutcome? QuestionnaireResponder(InteractionId interactionId, QuestionnaireSchema schema)
+            {
+                var proposed = QuestionnaireInput?.Invoke(ToQuestionnairePromptDto(schema));
+                if (proposed is null) return null;
+                var answers = proposed.Answers.Select(a => new QuestionAnswer(a.QuestionId,
+                    a.SelectedOptionIds, a.Text, a.OtherText)).ToArray();
+                var ack = server.RespondToQuestionnaire(interactionId, answers, proposed.Cancelled);
+                if (ack.Status != "ok")
+                {
+                    writeLine("Question: " + (ack.Error ?? "no se pudo registrar la respuesta"));
+                    return null;
+                }
+                return questionnaireService.ResolvedOutcome(sessionId, interactionId);
+            }
             var turn = new ExplorerTurn((request, token) => provider.Complete(request, token), executor,
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
                 server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
-                loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey);
+                loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey,
+                questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder);
             var instruction = executingAct
                 ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
                 : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.";
+            if (questionnaireService.Pending(sessionId).FirstOrDefault() is { } pendingQuestion)
+            {
+                var pendingSchema = questionnaireService.SchemaFor(
+                    new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
+                    pendingQuestion.InteractionId);
+                if (!interactive || pendingSchema is null
+                    || QuestionnaireResponder(pendingQuestion.InteractionId, pendingSchema!) is null)
+                {
+                    writeLine(InputRequiredJson(pendingQuestion.InteractionId, "Question"));
+                    return 3;
+                }
+            }
             if (act)
                 return RunActLoop(turn, writeLine, prompt, instruction, sessionId, runId, laneId, workingState,
                     workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
@@ -337,6 +369,11 @@ public sealed class OmniCliRuntime
 
             var result = turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, cancellationToken,
                 server.ConsumePromptOrigin());
+            if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
+            {
+                writeLine(InputRequiredJson(questionId, "Question"));
+                return 3;
+            }
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
             {
                 writeLine("[tool] " + trace.ToolName + " → " + (trace.Succeeded ? "ok" : "FALLO") + ": " + trace.Summary);
@@ -379,7 +416,8 @@ public sealed class OmniCliRuntime
                         actExecutor, actTools.Catalog(), materializer, fingerprint, selection,
                         server.AcquireStore(), server.AcquireCodecs(), artifacts, audit,
                         new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
-                        providerDescription?.Auth.Kind == AuthKind.ApiKey);
+                        providerDescription?.Auth.Kind == AuthKind.ApiKey,
+                        questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder);
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",
@@ -428,6 +466,11 @@ public sealed class OmniCliRuntime
             var result = turn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
                 cancellationToken, origin);
             origin = null;
+            if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
+            {
+                writeLine(InputRequiredJson(questionId, "Question"));
+                return 3;
+            }
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
                 WriteToolTrace(writeLine, trace);
             if (!string.IsNullOrEmpty(result.FinalText)) writeLine(result.FinalText);
@@ -635,6 +678,15 @@ public sealed class OmniCliRuntime
             _ => null,
         };
     }
+
+    private static QuestionnairePromptDto ToQuestionnairePromptDto(QuestionnaireSchema schema) =>
+        new QuestionnairePromptDto(schema.Title, schema.Description, schema.Questions.Select(question =>
+            new QuestionFieldDto(question.Id, question.Prompt, question.HelpText, question.Kind.ToString(),
+                question.Options.Select(option => new QuestionOptionDto(option.Id, option.Label,
+                    option.Description)).ToArray(),
+                question.Other is null ? null : new OtherInputDto(question.Other.OptionId, question.Other.Label,
+                    question.Other.Placeholder, question.Other.TextRequired, question.Other.MaxTextLength),
+                question.Required, question.MinSelections, question.MaxSelections, question.MaxTextLength)).ToArray());
 
     private static string InputRequiredJson(InteractionId interactionId, string kind = "PlanApproval")
     {

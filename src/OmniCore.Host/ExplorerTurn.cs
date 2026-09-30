@@ -64,12 +64,18 @@ public sealed class ExplorerTurn
 
     private readonly decimal _dailyCapUsd;
 
+    private readonly QuestionnaireInteractionService? _questionnaires;
+
+    private readonly Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? _questionnaireResponder;
+
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
         ModelSelection selection, IEventStore store, IEventCodecRegistry codecs, IArtifactStore artifacts,
         IAuditSink audit, RedactionPolicy redaction, HarnessPolicy? harness = null,
         ModelCapabilityBoundary? boundary = null, ModelPricing? pricing = null,
-        bool enforceDefaultSpendCaps = false, decimal sessionCapUsd = 5m, decimal dailyCapUsd = 20m)
+        bool enforceDefaultSpendCaps = false, decimal sessionCapUsd = 5m, decimal dailyCapUsd = 20m,
+        QuestionnaireInteractionService? questionnaires = null,
+        Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -90,6 +96,8 @@ public sealed class ExplorerTurn
         _enforceDefaultSpendCaps = enforceDefaultSpendCaps;
         _sessionCapUsd = sessionCapUsd;
         _dailyCapUsd = dailyCapUsd;
+        _questionnaires = questionnaires;
+        _questionnaireResponder = questionnaireResponder;
     }
 
     /// <summary>Journal del Turn (tests: para abrir en él el Run al que pertenece el Turn).</summary>
@@ -131,8 +139,11 @@ public sealed class ExplorerTurn
 
         public string? ResponseArtifactId { get; }
 
+        public InteractionId? PendingInteractionId { get; }
+
         public TurnResult(string? finalText, StopReason stopReason, int steps, TokenUsage usage,
-            IReadOnlyList<ToolUseTrace> toolCalls, string? responseArtifactId)
+            IReadOnlyList<ToolUseTrace> toolCalls, string? responseArtifactId,
+            InteractionId? pendingInteractionId = null)
         {
             FinalText = finalText;
             StopReason = stopReason;
@@ -140,6 +151,7 @@ public sealed class ExplorerTurn
             Usage = usage;
             ToolCalls = toolCalls;
             ResponseArtifactId = responseArtifactId;
+            PendingInteractionId = pendingInteractionId;
         }
     }
 
@@ -174,12 +186,20 @@ public sealed class ExplorerTurn
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null)
     {
         var stream = new EventStream(_store, _codecs, sessionId);
-        var turnId = TurnId.New();
+        var resumedTurnId = FindOpenTurn(stream, runId);
+        var isResume = resumedTurnId is not null;
+        var turnId = resumedTurnId ?? TurnId.New();
+        if (isResume && _questionnaires is not null
+            && _questionnaires.Pending(sessionId).FirstOrDefault() is { } pending)
+        {
+            return new TurnResult(null, StopReason.InputRequired, 0,
+                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null, pending.InteractionId);
+        }
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var persistedSpend = ReadJournalSpend(stream, runId, today);
 
         var messages = LoadConversation(stream, runId);
-        var safeQuestion = _redaction.Redact(question ?? "");
+        var safeQuestion = isResume ? "" : _redaction.Redact(question ?? "");
         if (safeQuestion.Length > 0)
         {
             messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(safeQuestion) }));
@@ -212,10 +232,13 @@ public sealed class ExplorerTurn
                     StopReason.ContextOverflow, 0, usage, allToolCalls.ToArray(), null);
             }
 
-            EnsureRunAwaitingInput(stream, runId, laneId);
-            var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
-            stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
-            stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+            if (!isResume)
+            {
+                EnsureRunAwaitingInput(stream, runId, laneId);
+                var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
+                stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
+                stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+            }
             started = true;
 
             string? finalText = null;
@@ -345,18 +368,124 @@ public sealed class ExplorerTurn
                         planEvents = proposal.Events;
                     }
 
-                    // Persistir los eventos del pipeline REAL (request/permission/auth/outcome) y los del
-                    // plan en un solo lote atómico: un crash nunca deja la cadena de la ToolCall a medias.
-                    var toPersist = new List<DomainEventPayload>(outcome.Events.Count + planEvents.Count);
+                    QuestionnaireSchema? questionSchema = null;
+                    InteractionId? questionInteractionId = null;
+                    string? questionCallLink = null;
+                    QuestionnaireInteractionService.PublishResult? questionPublication = null;
+                    if (call.ToolName == "user.ask" && outcome.Succeeded && _questionnaires is not null)
+                    {
+                        questionSchema = QuestionnaireCodec.DecodeSchema(call.ArgumentsJson);
+                        if (questionSchema is not null)
+                        {
+                            questionInteractionId = InteractionId.New();
+                            questionCallLink = "{" + JsonObj.Field("toolCallId", call.Id.ToString()) + ","
+                                + JsonObj.Field("providerCallId", call.ProviderCallId ?? call.Id.ToString()) + "}";
+                            questionPublication = _questionnaires.PreparePublish(questionSchema!,
+                                questionInteractionId!, laneId, questionCallLink);
+                        }
+                    }
+
+                    // La publicación y la cadena de ToolCall se confirman juntas. El schema completo
+                    // vive en el artifact; los eventos del ToolCall guardan solo su referencia.
+                    var questionnaireArtifactId = questionPublication?.SchemaArtifact?.Hash.ToString() ?? "unavailable";
+                    var toPersist = new List<DomainEventPayload>(outcome.Events.Count + planEvents.Count + 1);
                     foreach (var evt in outcome.Events)
                     {
-                        toPersist.Add(planError is not null && evt is ToolCallSucceeded
-                            ? new ToolCallFailed(call.Id, _redaction.Redact(planError), EffectOutcome.None)
-                            : evt);
+                        if (planError is not null && evt is ToolCallSucceeded)
+                        {
+                            toPersist.Add(new ToolCallFailed(call.Id, _redaction.Redact(planError), EffectOutcome.None));
+                        }
+                        else if (call.ToolName == "user.ask" && evt is ToolCallRequested requested)
+                        {
+                            toPersist.Add(new ToolCallRequested(requested.ToolCallId, requested.ProviderCallId,
+                                requested.ToolName, "{\"questionnaireArtifact\":\"" + questionnaireArtifactId + "\"}"));
+                        }
+                        else if (call.ToolName == "user.ask" && evt is ToolCallPrepared prepared)
+                        {
+                            toPersist.Add(new ToolCallPrepared(prepared.ToolCallId,
+                                "{\"questionnaireArtifact\":\"" + questionnaireArtifactId + "\"}"));
+                        }
+                        else
+                        {
+                            toPersist.Add(evt);
+                        }
                     }
 
                     toPersist.AddRange(planEvents);
+                    if (questionPublication is { Published: true, RequestEvent: not null })
+                    {
+                        toPersist.Add(questionPublication.RequestEvent!);
+                        if (RunProjection.Replay(sessionId, runId, _codecs,
+                            _store.ReadFrom(sessionId, 1)).State == RunState.Running)
+                            toPersist.Add(new RunAwaitingInput(runId, laneId));
+                    }
                     stream.AppendBatch(toPersist, DurabilityClass.Standard);
+
+                    if (call.ToolName == "user.ask" && outcome.Succeeded)
+                    {
+                        if (_questionnaires is null || questionSchema is null
+                            || questionInteractionId is null || questionPublication is not { Published: true })
+                        {
+                            finalText = "error: user.ask fue rechazado por el Host";
+                            stop = StopReason.Error;
+                            break;
+                        }
+
+                        var schema = questionSchema;
+                        var interactionId = questionInteractionId!;
+                        var callLink = questionCallLink!;
+                        QuestionnaireAskOutcome? answer = _questionnaireResponder?.Invoke(interactionId, schema!);
+                        if (answer is null || answer.IsInputRequired)
+                        {
+                            allToolCalls.Add(new ToolUseTrace(call.ToolName, true, "awaiting input",
+                                _redaction.Redact(call.ArgumentsJson)));
+                            return new TurnResult(null, StopReason.InputRequired, steps, usage,
+                                allToolCalls.ToArray(), null, interactionId);
+                        }
+
+                        var persistedAnswer = _questionnaires.ResolvedOutcome(sessionId, interactionId);
+                        if (persistedAnswer is null)
+                        {
+                            var projection = RunProjection.Replay(sessionId, runId, _codecs,
+                                _store.ReadFrom(sessionId, 1));
+                            DomainEventPayload? runTransition = projection.State == RunState.AwaitingInput
+                                ? new UserInputReceived(runId, InputParts("QuestionnaireResponse:" + interactionId), null,
+                                    "InteractionResponse(Questionnaire)")
+                                : null;
+                            var resolution = _questionnaires.Resolve(stream, interactionId,
+                                answer.Answers ?? Array.Empty<QuestionAnswer>(), answer.Cancelled, callLink,
+                                runTransition);
+                            if (!resolution.Accepted)
+                            {
+                                allToolCalls.Add(new ToolUseTrace(call.ToolName, true, "answer rejected",
+                                    _redaction.Redact(call.ArgumentsJson)));
+                                return new TurnResult(null, StopReason.InputRequired, steps, usage,
+                                    allToolCalls.ToArray(), null, interactionId);
+                            }
+                            else
+                            {
+                                answer = _questionnaires.ResolvedOutcome(sessionId, interactionId);
+                            }
+                        }
+                        else
+                        {
+                            answer = persistedAnswer;
+                        }
+
+                        var answerJson = EncodeQuestionnaireOutcome(answer!);
+                        var assistantAsk = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
+                            new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
+                                _redaction.Redact(call.ArgumentsJson)),
+                        });
+                        var askResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
+                            new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(answerJson) }, answer!.IsInvalid),
+                        });
+                        messages.Add(assistantAsk);
+                        messages.Add(askResult);
+                        allToolCalls.Add(new ToolUseTrace(call.ToolName, !answer!.IsInvalid,
+                            answer.Status, _redaction.Redact(call.ArgumentsJson)));
+                        continue;
+                    }
 
                     // Redacción obligatoria del tool result antes de dárselo al modelo.
                     var content = outcome.Preview is not null && outcome.Preview!.Length > 0
@@ -680,6 +809,49 @@ public sealed class ExplorerTurn
     private List<ModelMessage> LoadConversation(EventStream stream, RunId runId)
     {
         var history = new List<ModelMessage>();
+        var questionnaireCalls = new HashSet<string>(StringComparer.Ordinal);
+        var questionnaireResults = new Dictionary<string, string>(StringComparer.Ordinal);
+        var interactionCalls = new Dictionary<string, string>(StringComparer.Ordinal);
+        var questionnaireArguments = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var evt in stream.EventsSince(1))
+        {
+            var payload = _codecs.Decode(evt);
+            if (payload is InteractionRequested request && request.Kind == InteractionKind.Question
+                && request.ToolCallJson is not null)
+            {
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(request.ToolCallJson);
+                    if (doc.RootElement.TryGetProperty("toolCallId", out var id))
+                    {
+                        var callId = id.GetString();
+                        if (!string.IsNullOrEmpty(callId))
+                        {
+                            questionnaireCalls.Add(callId!);
+                            interactionCalls[request.InteractionId.ToString()] = callId!;
+                            if (request.QuestionnaireSchemaRef is not null
+                                && _artifacts.GetText(request.QuestionnaireSchemaRef.Hash) is { } schemaJson)
+                                questionnaireArguments[callId!] = schemaJson;
+                        }
+                    }
+                }
+                catch (System.Text.Json.JsonException) { }
+            }
+            else if (payload is InteractionResolved resolved && resolved.IsQuestionnaire
+                && resolved.AnswerRef is not null
+                && interactionCalls.TryGetValue(resolved.InteractionId.ToString(), out var callId))
+            {
+                var answerJson = _artifacts.GetText(resolved.AnswerRef!.Hash);
+                if (answerJson is not null)
+                {
+                    var outcome = resolved.State == "cancelled"
+                        ? "{\"status\":\"cancelled\",\"cancelled\":true}"
+                        : "{\"status\":\"answered\",\"answers\":" + answerJson + "}";
+                    questionnaireResults[callId!] = outcome;
+                }
+            }
+        }
+
         foreach (var evt in stream.EventsSince(1))
         {
             if (evt.RunId is null || !evt.RunId.ToString().Equals(runId.ToString(), StringComparison.Ordinal))
@@ -691,7 +863,7 @@ public sealed class ExplorerTurn
             if (type == "user_input.received")
             {
                 var input = _codecs.Decode(evt) as UserInputReceived;
-                if (input is null) continue;
+                if (input is null || input.Origin == "InteractionResponse(Questionnaire)") continue;
                 try
                 {
                     using var parsed = System.Text.Json.JsonDocument.Parse(input.InputPartsJson);
@@ -714,10 +886,14 @@ public sealed class ExplorerTurn
             {
                 var call = _codecs.Decode(evt) as ToolCallRequested;
                 if (call is not null)
+                {
+                    var arguments = questionnaireArguments.TryGetValue(call.ToolCallId.ToString(), out var schemaJson)
+                        ? schemaJson : call.ArgumentsJson;
                     history.Add(new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
                         new ToolCallBlock(call.ToolCallId, call.ProviderCallId, call.ToolName,
-                            _redaction.Redact(call.ArgumentsJson))
+                            _redaction.Redact(arguments))
                     }));
+                }
             }
             else if (type == "toolcall.succeeded" || type == "toolcall.failed" || type == "toolcall.rejected")
             {
@@ -730,16 +906,25 @@ public sealed class ExplorerTurn
                     _ => (ToolCallId?)null,
                 };
                 if (callId is null) continue;
-                var content = payload switch
+                var isQuestionnaireCall = questionnaireCalls.Contains(callId!.ToString());
+                if (isQuestionnaireCall && !questionnaireResults.TryGetValue(callId!.ToString(), out _))
                 {
-                    ToolCallSucceeded e => _redaction.Redact(e.ResultJson),
-                    ToolCallFailed e => "error: " + _redaction.Redact(e.Cause),
-                    ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
-                    _ => "error",
-                };
+                    // El turno está suspendido: la tool call todavía no tiene resultado para el modelo.
+                    continue;
+                }
+                var content = isQuestionnaireCall
+                    ? questionnaireResults[callId!.ToString()]
+                    : payload switch
+                    {
+                        ToolCallSucceeded e => _redaction.Redact(e.ResultJson),
+                        ToolCallFailed e => "error: " + _redaction.Redact(e.Cause),
+                        ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
+                        _ => "error",
+                    };
                 history.Add(new ModelMessage(MessageRole.Tool, new ContentBlock[] {
                     new ToolResultBlock(callId!, new ContentBlock[] { new TextBlock(content) },
-                        payload is not ToolCallSucceeded)
+                        isQuestionnaireCall ? content.Contains("\"status\":\"invalid\"", StringComparison.Ordinal)
+                            : payload is not ToolCallSucceeded)
                 }));
             }
             else if (type == "model.completed")
@@ -754,6 +939,46 @@ public sealed class ExplorerTurn
         }
 
         return history;
+    }
+
+    private TurnId? FindOpenTurn(EventStream stream, RunId runId)
+    {
+        TurnId? open = null;
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (evt.RunId is null || !evt.RunId.Equals(runId)) continue;
+            var payload = _codecs.Decode(evt);
+            switch (payload)
+            {
+                case TurnStarted started:
+                    open = started.TurnId;
+                    break;
+                case TurnCompleted completed when open?.Equals(completed.TurnId) == true:
+                case TurnAbandoned abandoned when open?.Equals(abandoned.TurnId) == true:
+                case TurnInterrupted interrupted when open?.Equals(interrupted.TurnId) == true:
+                    open = null;
+                    break;
+            }
+        }
+        return open;
+    }
+
+    private static string InputParts(string text) => "[\"" + JsonObj.Escape(text) + "\"]";
+
+    private static string EncodeQuestionnaireOutcome(QuestionnaireAskOutcome outcome)
+    {
+        if (outcome.Cancelled) return "{\"status\":\"cancelled\",\"cancelled\":true}";
+        if (outcome.IsInvalid)
+        {
+            var errors = new List<string>();
+            foreach (var error in outcome.Errors ?? Array.Empty<QuestionnaireError>())
+                errors.Add("{\"code\":\"" + JsonObj.Escape(error.Code.ToString())
+                    + "\",\"questionId\":"
+                    + (error.QuestionId is null ? "null" : "\"" + JsonObj.Escape(error.QuestionId) + "\"") + "}");
+            return "{\"status\":\"invalid\",\"errors\":[" + string.Join(",", errors) + "]}";
+        }
+        return "{\"status\":\"answered\",\"answers\":"
+            + QuestionnaireCodec.EncodeAnswers(outcome.Answers ?? Array.Empty<QuestionAnswer>()) + "}";
     }
 
     private PreparedTurnContext MaterializeTurnContext(SessionId sessionId, RunId runId, LaneId laneId,
