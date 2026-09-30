@@ -71,7 +71,7 @@ public sealed class OmniCliRuntime
         ArgumentNullException.ThrowIfNull(writeLine);
         if (string.IsNullOrWhiteSpace(objective))
         {
-            writeLine("omni act: falta la instrucción. Uso: omni act \"instrucción\"");
+            writeLine("omni act: " + Text(LocalizedText.Of("act.missingInstruction")));
             return System.Threading.Tasks.Task.FromResult(2);
         }
 

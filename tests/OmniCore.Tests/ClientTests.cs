@@ -140,7 +140,18 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public void Tui_layout_collapses_sidebar_at_configured_breakpoints()
+    public void Act_missing_instruction_resolves_in_es_and_en()
+    {
+        var spanish = new Localization("es").Resolve("act.missingInstruction");
+        var english = new Localization("en").Resolve("act.missingInstruction");
+        Assert.DoesNotContain("act.missingInstruction", spanish);
+        Assert.DoesNotContain("act.missingInstruction", english);
+        Assert.Equal("falta la instrucci\u00f3n. Uso: omni act \"instrucci\u00f3n\"", spanish);
+        Assert.Equal("missing instruction. Usage: omni act \"instruction\"", english);
+    }
+
+    [Fact]
+    public void Tui_layout_collapses_sidebs()
     {
         Assert.Equal(TuiLayoutMode.Stacked, TuiLayoutModel.ForWidth(120).Mode);
         Assert.Equal(40, TuiLayoutModel.ForWidth(120).SidebarWidth);
