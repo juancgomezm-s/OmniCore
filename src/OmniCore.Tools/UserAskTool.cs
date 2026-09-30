@@ -34,7 +34,7 @@ public sealed class UserAskTool : ITool
                 + "\"description\":{\"type\":\"string\"},\"questions\":{\"type\":\"array\"}},"
                 + "\"required\":[\"title\",\"questions\"]}"),
             new string[] { "interaction" }, true, false, ToolRisk.Low, ComponentSource.Core(),
-            ToolProtection.None);
+            ToolProtection.None, EffectClass.None);
     }
 
     public ToolDescriptor Descriptor => _descriptor;

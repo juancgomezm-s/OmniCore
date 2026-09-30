@@ -35,7 +35,8 @@ public record ArtifactRef(
     long Size,
     string MediaType,
     ArtifactKind Kind,
-    Sensitivity Sensitivity) { }
+    Sensitivity Sensitivity,
+    bool Redacted = false) { }
 
 /// <summary>Tamaño de contexto usable y presupuesto de tokens de una política (spec §26, ADR-0042).</summary>
 public record ContextBudget(

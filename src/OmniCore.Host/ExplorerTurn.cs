@@ -171,7 +171,7 @@ public sealed class ExplorerTurn
 
     /// <summary>Ejecuta la pregunta del usuario con contexto real y persiste el Turn en el journal.</summary>
     public TurnResult Ask(string question, string instruction, SessionId sessionId, RunId runId,
-        LaneId laneId, string workingStateText, CancellationToken cancellationToken)
+        LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null)
     {
         var stream = new EventStream(_store, _codecs, sessionId);
         var turnId = TurnId.New();
@@ -214,7 +214,7 @@ public sealed class ExplorerTurn
 
             EnsureRunAwaitingInput(stream, runId, laneId);
             var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
-            stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null));
+            stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
             stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
             started = true;
 
@@ -294,11 +294,12 @@ public sealed class ExplorerTurn
                 {
                     if (block is TextBlock text)
                     {
-                        finalText = text.Text;
+                        finalText = _redaction.Redact(text.Text);
                     }
                     else if (block is ToolCallBlock call)
                     {
-                        toolBlocks.Add(call);
+                        toolBlocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
+                            _redaction.Redact(call.ArgumentsJson)));
                     }
                 }
 
@@ -363,11 +364,13 @@ public sealed class ExplorerTurn
                         : (outcome.Summary is null ? "ok" : _redaction.Redact(outcome.Summary!));
                     var succeeded = outcome.Succeeded && planError is null;
                     var resultText = succeeded ? content : "error: " + _redaction.Redact(planError ?? outcome.Summary ?? "failed");
-                    allToolCalls.Add(new ToolUseTrace(call.ToolName, succeeded, planError ?? outcome.Summary,
-                        call.ArgumentsJson));
+                    allToolCalls.Add(new ToolUseTrace(call.ToolName, succeeded,
+                        _redaction.Redact(planError ?? outcome.Summary ?? ""),
+                        _redaction.Redact(call.ArgumentsJson)));
 
                     var assistant = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
-                        new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName, call.ArgumentsJson),
+                        new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
+                            _redaction.Redact(call.ArgumentsJson)),
                     });
                     var toolResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
                         new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
@@ -404,7 +407,8 @@ public sealed class ExplorerTurn
             stream.Append(new TurnCompleted(turnId));
             AuditSpend(sessionId, runId, laneId, turnId, stop, usage, _redaction.Redact(finalText ?? ""));
             AuditPolicy(sessionId, runId, turnId, stop);
-            return new TurnResult(finalText, stop, steps, usage, allToolCalls.ToArray(), artifactId);
+            return new TurnResult(finalText is null ? null : _redaction.Redact(finalText), stop, steps,
+                usage, allToolCalls.ToArray(), artifactId);
         }
         catch (Exception ex)
         {
@@ -691,8 +695,16 @@ public sealed class ExplorerTurn
                 try
                 {
                     using var parsed = System.Text.Json.JsonDocument.Parse(input.InputPartsJson);
-                    var text = parsed.RootElement.GetString();
-                    if (!string.IsNullOrEmpty(text))
+                    var root = parsed.RootElement;
+                    var parts = root.ValueKind == System.Text.Json.JsonValueKind.Array
+                        ? root.EnumerateArray()
+                            .Where(static part => part.ValueKind == System.Text.Json.JsonValueKind.String)
+                            .Select(static part => part.GetString() ?? "")
+                        : root.ValueKind == System.Text.Json.JsonValueKind.String
+                            ? new[] { root.GetString() ?? "" }
+                            : Array.Empty<string>();
+                    var text = string.Join("\n", parts.Where(static part => part.Length > 0));
+                    if (text.Length > 0)
                         history.Add(new ModelMessage(MessageRole.User,
                             new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
                 }

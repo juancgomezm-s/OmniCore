@@ -27,8 +27,13 @@ public sealed class ExplorerPlanApprovalTests
             Assert.Contains("reject", interaction.OptionsJson);
             Assert.Equal("reject", interaction.DefaultOptionId);
             Assert.DoesNotContain(events, evt => evt.Type.ToString() == "interaction.resolved");
-            Assert.Equal(RunState.Running, RunProjection.Replay(setup.Session, setup.Run,
+            Assert.Equal(RunState.AwaitingInput, RunProjection.Replay(setup.Session, setup.Run,
                 setup.Server.AcquireCodecs(), events).State);
+            var requestEvent = Assert.Single(events, evt => setup.Server.AcquireCodecs().Decode(evt) is InteractionRequested request
+                && request.Kind == InteractionKind.PlanApproval);
+            Assert.Contains(events, evt => evt.Sequence > requestEvent.Sequence
+                && setup.Server.AcquireCodecs().Decode(evt) is RunAwaitingInput awaiting
+                && awaiting.RunId.Equals(setup.Run));
         }
         finally { Delete(setup.ArtifactsPath); }
     }
