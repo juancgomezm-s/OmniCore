@@ -1,4 +1,4 @@
-using OmniCore.Models;
+using OmniCore.Host;
 
 namespace OmniCore.Tests;
 
@@ -16,8 +16,10 @@ public sealed class ModelPolicyCliTests
         return dir;
     }
 
-    private static ModelRegistry Registry() => new ModelRegistry().AddModel(
-        new ModelDefinition("test-model", "openai", 8192, 8192, 4096));
+    private static IReadOnlyList<ModelRegistryModelDescriptor> Registry() => new[]
+    {
+        new ModelRegistryModelDescriptor("test-model", "openai", 8192, 8192, 4096),
+    };
 
     private static async System.Threading.Tasks.Task<int> Run(string[] args, string input, TextWriter output,
         string dataDir, bool interactive = true) =>
