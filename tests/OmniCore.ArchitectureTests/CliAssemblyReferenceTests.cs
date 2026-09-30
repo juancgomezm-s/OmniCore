@@ -13,22 +13,10 @@ public sealed class CliAssemblyReferenceTests
         "OmniCore.Host",
     };
 
-    // Excepciones heredadas existentes: el CLI actual referencia estos assemblies por el código
-    // ya conectado a componentes de Engine/Host. No se reescribe aquí; una referencia nueva fuera
-    // de esta lista falla y obliga a revisar explícitamente la frontera del CLI.
-    private static readonly HashSet<string> KnownCurrentViolations = new(StringComparer.Ordinal)
-    {
-        "OmniCore.Abstractions",
-        "OmniCore.Context",
-        "OmniCore.Domain",
-        "OmniCore.Engine",
-        "OmniCore.Infrastructure",
-        "OmniCore.Models",
-        "OmniCore.Tools",
-    };
+    private static readonly HashSet<string> KnownCurrentViolations = new(StringComparer.Ordinal);
 
     [Fact]
-    public void Omni_assembly_references_only_allowed_projects_or_documented_legacy_exceptions()
+    public void Omni_assembly_references_only_allowed_projects()
     {
         var assemblyPath = CliAssemblyPath();
         using var file = File.OpenRead(assemblyPath);
@@ -41,13 +29,11 @@ public sealed class CliAssemblyReferenceTests
 
         var violations = references.Except(AllowedCliReferences, StringComparer.Ordinal)
             .ToHashSet(StringComparer.Ordinal);
-        Assert.True(KnownCurrentViolations.SetEquals(violations),
-            "Referencias IL de OmniCore.Cli cambiaron. Las permitidas son "
-            + string.Join(", ", AllowedCliReferences.Order(StringComparer.Ordinal))
-            + "; excepciones heredadas registradas: "
-            + string.Join(", ", KnownCurrentViolations.Order(StringComparer.Ordinal))
-            + "; actuales: " + string.Join(", ", violations.Order(StringComparer.Ordinal))
-            + ". Un assembly nuevo es una violación y debe resolverse o añadirse mediante decisión arquitectónica explícita.");
+        Assert.Empty(KnownCurrentViolations);
+        Assert.True(violations.Count == 0,
+            "Referencias IL no permitidas de OmniCore.Cli: " + string.Join(", ", violations.Order(StringComparer.Ordinal))
+            + ". Las únicas permitidas son "
+            + string.Join(", ", AllowedCliReferences.Order(StringComparer.Ordinal)) + ".");
     }
 
     private static string CliAssemblyPath()
