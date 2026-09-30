@@ -109,7 +109,8 @@ public sealed class OmniHost
     /// ADR-0039 §2). El id se deriva de la ruta canónica de la raíz.
     /// </summary>
     public static string WorkspaceDataDirectory(IPlatformPaths paths, string workspaceRoot) =>
-        paths.WorkspaceDirectory(OmniCore.Domain.WorkspaceId.Of(Path.GetFullPath(workspaceRoot)).ToString());
+        paths.WorkspaceDirectory(OmniCore.Domain.WorkspaceId.Of(
+            ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot)).ToString());
 
     /// <summary>ModelRegistry desde la configuración del USUARIO, nunca desde el cwd (INV-029, ADR-0039).</summary>
     public static ModelRegistry LoadUserModelRegistry(IPlatformPaths paths) =>

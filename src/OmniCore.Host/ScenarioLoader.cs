@@ -184,7 +184,10 @@ public static class ScenarioLoader
 /// <summary>El YAML de un escenario no respeta el formato (error tipado, spec §71).</summary>
 public sealed class ScenarioFormatException : FormatException
 {
+    public LocalizedText UserMessage { get; }
+
     public ScenarioFormatException(string message) : base("escenario inválido: " + message)
     {
+        UserMessage = LocalizedText.Of("scenario.invalid", "detail", message);
     }
 }

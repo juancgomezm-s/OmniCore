@@ -1,6 +1,8 @@
 namespace OmniCore.Abstractions;
 
 using OmniCore.Domain;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 /// <summary>
 /// SecretProvider: única vía de lectura de secretos (ADR-0018 §1, ADR-0011 §3).
@@ -12,7 +14,8 @@ public interface ISecretProvider
     Secret GetSecret(string secretRef, CancellationToken cancellationToken);
 }
 
-/// <summary>Credencial seguro: no serializable, ToString = *** (ADR-0018).</summary>
+/// <summary>Credencial seguro: serialización siempre redactada, ToString = *** (ADR-0018).</summary>
+[JsonConverter(typeof(SecretJsonConverter))]
 public sealed class Secret
 {
     private readonly string _value;
@@ -25,6 +28,16 @@ public sealed class Secret
     public string Value() => _value;
 
     public override string ToString() => "***";
+}
+
+/// <summary>Impide que System.Text.Json exponga el valor de un secreto (ADR-0018 §1).</summary>
+public sealed class SecretJsonConverter : JsonConverter<Secret>
+{
+    public override Secret Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        throw new JsonException("Secret no puede deserializarse.");
+
+    public override void Write(Utf8JsonWriter writer, Secret value, JsonSerializerOptions options) =>
+        writer.WriteStringValue("***");
 }
 
 /// <summary>Almacén de credenciales por plataforma (Windows Credential Manager / DPAPI; ADR-0011 §3).</summary>
