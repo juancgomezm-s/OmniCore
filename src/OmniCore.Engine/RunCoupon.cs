@@ -6,7 +6,9 @@ using OmniCore.Domain;
 /// <summary>
 /// Completion del Run con los gates del runtime (INV-010): el modelo propone DONE, el runtime
 /// decide. En M1 la simulación completa las Tasks cuyo trabajo terminó, deja que el reconciler
-/// lleve el Plan al punto fijo y después valida.
+/// lleve el Plan al punto fijo y después valida. Antes de cada <c>LaneCompleted</c> pasa el
+/// <see cref="LaneCompletionPipeline"/> (EPIC-007): una Lane con ToolCalls sin resolver o Turns
+/// abiertos no se completa.
 ///
 /// Secuencia canónica (ADR-0036 §1, ADR-0035 §5, ADR-0016 §10):
 /// <c>RunValidationStarted</c> → gates → (<c>RunValidationRejected</c> + <c>RunAwaitingInput</c>) o
@@ -27,6 +29,7 @@ public sealed class RunCoupon
         IEventStore store, IEventCodecRegistry codecs, SessionId sessionId, EventStream stream)
     {
         var rootTask = _run.RootTask;
+        var pipeline = new LaneCompletionPipeline();
         var converged = false;
         var guard = 0;
         while (!converged && guard < 1024)
@@ -55,6 +58,8 @@ public sealed class RunCoupon
             {
                 // Sin mutaciones: las Tasks de trabajo que siguen Running terminan (cerrando antes
                 // sus Lanes) y se vuelve a reconciliar. La Task raíz vive hasta el final del Run.
+                // EPIC-007: cada Lane pasa su Lane Completion Pipeline antes de completarse; si un
+                // gate falla, la Lane (y su Task) quedan Running y la validación del Run las verá.
                 var anyRunning = false;
                 foreach (var task in taskProj.Tasks())
                 {
@@ -63,12 +68,17 @@ public sealed class RunCoupon
                         continue;
                     }
 
-                    foreach (var lane in laneProj.ForTask(task.Id))
+                    var runningLanes = laneProj.ForTask(task.Id)
+                        .Where(l => l.State == LaneState.Running)
+                        .ToArray();
+                    if (runningLanes.Any(l => !pipeline.Check(codecs, tail, l.Id).Passed))
                     {
-                        if (lane.State == LaneState.Running)
-                        {
-                            stream.Append(new LaneCompleted(lane.Id, null));
-                        }
+                        continue;
+                    }
+
+                    foreach (var lane in runningLanes)
+                    {
+                        stream.Append(new LaneCompleted(lane.Id, null));
                     }
 
                     stream.Append(new TaskCompleted(task.Id, null));
@@ -89,7 +99,24 @@ public sealed class RunCoupon
 
         var pendingResult = new PendingTaskGate().Check(finalTasks, finalPlan, rootTask);
         var gateResult = new PlanCompletionGate().Check(finalPlan);
-        if (!pendingResult.Passed || !gateResult.Passed)
+
+        // EPIC-007: las Lanes de la Task raíz (la conversación) pasan su Lane Completion Pipeline
+        // antes de cerrarse con el Run. Si falla no hay evento de rechazo a nivel de Lane
+        // (ADR-0016 §10, ADR-0036 §3): el rechazo es el del Run, con gate "lane".
+        var laneMissing = new List<string>();
+        if (rootTask is not null)
+        {
+            foreach (var lane in finalLanes.ForTask(rootTask).Where(l => l.State == LaneState.Running))
+            {
+                var laneResult = pipeline.Check(codecs, finalTail, lane.Id);
+                if (!laneResult.Passed)
+                {
+                    laneMissing.AddRange(laneResult.Missing);
+                }
+            }
+        }
+
+        if (!pendingResult.Passed || !gateResult.Passed || laneMissing.Count > 0)
         {
             var gates = new List<string>();
             var missing = new List<string>();
@@ -103,6 +130,12 @@ public sealed class RunCoupon
             {
                 gates.Add("plan");
                 missing.AddRange(gateResult.Missing);
+            }
+
+            if (laneMissing.Count > 0)
+            {
+                gates.Add("lane");
+                missing.AddRange(laneMissing);
             }
 
             stream.Append(new RunValidationRejected(_run.Id, gates, missing));
