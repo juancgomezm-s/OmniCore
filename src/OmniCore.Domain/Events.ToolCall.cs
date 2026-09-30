@@ -1,6 +1,5 @@
 namespace OmniCore.Domain;
 
-using System.Text.Json.Serialization;
 
 /// <summary>ToolCallRequested: RawToolCall con ToolCallId propio de OmniCore (ADR-0004 §1).</summary>
 public record ToolCallRequested(ToolCallId ToolCallId, string ProviderCallId, string ToolName, string ArgumentsJson)
@@ -12,7 +11,6 @@ public record ToolCallRequested(ToolCallId ToolCallId, string ProviderCallId, st
 }
 
 /// <summary>ToolCallPrepared: Prepare dio un ToolIntent (ADR-0014).</summary>
-[JsonSerializable(typeof(ToolCallPrepared))]
 public record ToolCallPrepared(ToolCallId ToolCallId, string ToolIntentJson) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.prepared");
@@ -21,7 +19,6 @@ public record ToolCallPrepared(ToolCallId ToolCallId, string ToolIntentJson) : D
 }
 
 /// <summary>ToolCallRejected: esquema o Prepare inválido (alimenta el repair loop).</summary>
-[JsonSerializable(typeof(ToolCallRejected))]
 public record ToolCallRejected(ToolCallId ToolCallId, string Reason) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.rejected");
@@ -39,7 +36,6 @@ public record PermissionEvaluated(ToolCallId ToolCallId, PermissionDecision Deci
 }
 
 /// <summary>PermissionRequested: la decisión fue Ask; abre un InteractionRequest de tipo Permission.</summary>
-[JsonSerializable(typeof(PermissionRequested))]
 public record PermissionRequested(ToolCallId ToolCallId, InteractionId InteractionId) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.permission_requested");
@@ -57,7 +53,6 @@ public record PermissionGranted(ToolCallId ToolCallId, GrantId? GrantId, GrantLi
 }
 
 /// <summary>PermissionDenied: el Ask se resolvió Deny (incluye causa NoInteractiveClient).</summary>
-[JsonSerializable(typeof(PermissionDenied))]
 public record PermissionDenied(ToolCallId ToolCallId, string Cause) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.permission_denied");
@@ -66,7 +61,6 @@ public record PermissionDenied(ToolCallId ToolCallId, string Cause) : DomainEven
 }
 
 /// <summary>ToolCallAuthorized: solo Security construye el AuthorizedToolIntent (ADR-0014).</summary>
-[JsonSerializable(typeof(ToolCallAuthorized))]
 public record ToolCallAuthorized(ToolCallId ToolCallId) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.authorized");
@@ -81,7 +75,6 @@ public record ToolCallAuthorized(ToolCallId ToolCallId) : DomainEventPayload
 /// commit Barrier antes del efecto, sobrevive a un crash y es la única fuente fiel del estado
 /// esperado al reconciliar desde el journal. null = sin metadatos (reconciliación conservadora).
 /// </summary>
-[JsonSerializable(typeof(ToolCallStarted))]
 public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass, string? ReconciliationJson)
     : DomainEventPayload
 {
@@ -91,7 +84,6 @@ public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass, st
 }
 
 /// <summary>ToolCallSucceeded: outcome con resultado.</summary>
-[JsonSerializable(typeof(ToolCallSucceeded))]
 public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.succeeded");
@@ -109,7 +101,6 @@ public record ToolCallFailed(ToolCallId ToolCallId, string Cause, EffectOutcome 
 }
 
 /// <summary>ToolCallEffectUnknown: empezó pero su outcome no se persiguió (solo recovery).</summary>
-[JsonSerializable(typeof(ToolCallEffectUnknown))]
 public record ToolCallEffectUnknown(ToolCallId ToolCallId, EffectClass EffectClass) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.effect_unknown");
@@ -127,7 +118,6 @@ public record ToolCallReconciled(ToolCallId ToolCallId, ReconciliationOutcome Ou
 }
 
 /// <summary>ToolCallCancelled: antes de ejecutar (Requested/Prepared/AwaitingPermission/Authorized).</summary>
-[JsonSerializable(typeof(ToolCallCancelled))]
 public record ToolCallCancelled(ToolCallId ToolCallId, string Cause) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("toolcall.cancelled");

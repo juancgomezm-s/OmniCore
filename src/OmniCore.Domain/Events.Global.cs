@@ -1,6 +1,5 @@
 namespace OmniCore.Domain;
 
-using System.Text.Json.Serialization;
 
 /// <summary>
 /// SessionCreated: se crea una sesión durable vinculada a un workspace. El workspace viaja como
@@ -39,7 +38,6 @@ public record WorkspaceRootEstablished(SessionId SessionId, string CanonicalRoot
 }
 
 /// <summary>UserInputReceived: el usuario envía input al Run (ADR-0035 §1).</summary>
-[JsonSerializable(typeof(UserInputReceived))]
 public record UserInputReceived(RunId RunId, string InputPartsJson, ArtifactRef? ContentRef) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("user_input.received");
@@ -107,7 +105,6 @@ public record InteractionResolved(
 }
 
 /// <summary>InteractionExpired: la interacción venció sin respuesta.</summary>
-[JsonSerializable(typeof(InteractionExpired))]
 public record InteractionExpired(InteractionId InteractionId) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("interaction.expired");
@@ -125,7 +122,6 @@ public record ProgressStalled(PlanItemId PlanItemId, int TurnsWithoutProgress, D
 }
 
 /// <summary>RunModeChanged: el Run cambia de modo sin cambiar de estado (ADR-0036 §1).</summary>
-[JsonSerializable(typeof(RunModeChanged))]
 public record RunModeChanged(RunId RunId, RunMode From, RunMode To, string Cause) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("run.mode_changed");
