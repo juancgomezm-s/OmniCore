@@ -85,6 +85,10 @@ public sealed class OmniCliRuntime
         return configured ? 0 : 1;
     }
 
+    /// <summary>Boundary nuevo por Run; su registro de lecturas canoniza contra la raíz del workspace.</summary>
+    internal static ModelCapabilityBoundary CreateBoundary(EffectiveModelPolicy policy, string workspaceRoot) =>
+        new(policy, ModelCapabilityBoundary.CoreTools, new FileReadRegistry(workspaceRoot));
+
     public static string RedactSensitive(string value) => new PiiRedactor().Redact(value);
 
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
@@ -94,7 +98,17 @@ public sealed class OmniCliRuntime
         var workspaceData = OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
         var registry = OmniHost.LoadUserModelRegistry(paths);
         WarnIgnoredRepoConfig(paths.ConfigDirectory, writeLine);
-        var modelDefinition = registry.Models().Count > 0 ? registry.Models()[0] : null;
+        ModelDefinition? modelDefinition = null;
+        NoModelConfiguredException? noModel = null;
+        try
+        {
+            modelDefinition = registry.ResolveDefault();
+        }
+        catch (NoModelConfiguredException ex)
+        {
+            noModel = ex;
+        }
+
         var providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
         var secretRef = providerDescription?.Auth.SecretRef ?? "qwen";
         var model = Environment.GetEnvironmentVariable("OMNI_MODEL") ?? modelDefinition?.Id;
@@ -120,8 +134,8 @@ public sealed class OmniCliRuntime
         {
             if (model is null)
             {
-                writeLine("omni " + (act ? "act" : "ask")
-                    + ": no hay modelo configurado. Crea models.yaml o define OMNI_MODEL.");
+                writeLine("omni " + (act ? "act" : "ask") + ": "
+                    + (noModel?.UserMessage ?? LocalizedText.Of("models.noneConfigured")).Render());
                 return 1;
             }
 
@@ -186,7 +200,8 @@ public sealed class OmniCliRuntime
                 effectivePolicy = EffectiveModelPolicy.Resolve(modelKey, null, harness);
             }
 
-            var boundary = new ModelCapabilityBoundary(effectivePolicy);
+            // Un boundary (y su registro de lecturas) por Run, canonizado contra la raíz del workspace.
+            var boundary = CreateBoundary(effectivePolicy, _workspaceRoot);
             var fingerprint = new ExecutionFingerprint(model, harnessHash, "core-tools-1", "heuristic:chars4/1",
                 "none", act ? "M3" : "M2", effectivePolicy.Fingerprint(), "heuristic:chars4/1");
             var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null);

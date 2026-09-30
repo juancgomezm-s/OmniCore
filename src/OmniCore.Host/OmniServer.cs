@@ -590,6 +590,10 @@ public sealed class OmniServer : IOmniClient
             return result.ExitCode == 0 ? CommandAck.Ok(command.MessageId)
                 : CommandAck.Fail(command.MessageId, "sim falló: " + string.Join("; ", result.Diagnostics));
         }
+        catch (ScenarioFormatException sfe)
+        {
+            return CommandAck.Fail(command.MessageId, sfe.UserMessage.Render());
+        }
         catch (Exception ex)
         {
             var detail = ex is OmniCore.Infrastructure.EventParseException parse
