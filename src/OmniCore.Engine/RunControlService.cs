@@ -344,7 +344,9 @@ public sealed class RunControlService
                     break;
                 case ToolCallState.Started:
                     // Cancelación durante la ejecución: nunca Cancelled; el efecto queda por reconciliar.
-                    batch.Add(new ToolCallFailed(call, cause, EffectOutcome.Unknown));
+                    // Código tipado CANCELLATION (spec §71) tanto si corta el usuario (Interrupt)
+                    // como si cancela el Run completo (CancelRun): la ejecución se interrumpió.
+                    batch.Add(new ToolCallFailed(call, cause, EffectOutcome.Unknown, ToolErrorCode.Cancellation));
                     break;
             }
         }
