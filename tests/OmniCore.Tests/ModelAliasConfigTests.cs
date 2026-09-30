@@ -6,6 +6,18 @@ namespace OmniCore.Tests;
 public sealed class ModelAliasConfigTests
 {
     [Fact]
+    public void Provider_profile_codex_is_read_from_providers_yaml()
+    {
+        var providers = """
+providers:
+  chatgpt: { family: OpenAIResponses, baseUrl: https://chatgpt.com/backend-api, profile: codex, auth: none }
+""";
+        var registry = new ConfigLoader().BuildRegistry(providers, "models:\n  gpt-test: { provider: chatgpt }\n");
+
+        Assert.Equal("codex", registry.Provider("chatgpt")!.Profile);
+    }
+
+    [Fact]
     public void Model_with_aliases_resolves_by_alias()
     {
         var providers = """

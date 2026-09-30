@@ -22,7 +22,7 @@ public sealed class ConfigLoader
     {
         var diagnostics = new List<ConfigDiagnostic>();
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
-            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "authRef", "auth",
+            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth",
                 "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
@@ -209,6 +209,7 @@ public sealed class ConfigLoader
                 Family = Scalar(values, "family"),
                 BaseUrl = Scalar(values, "baseUrl"),
                 CaCertificate = Scalar(values, "caCertificate"),
+                Profile = Scalar(values, "profile"),
                 AuthRef = Scalar(values, "authRef"),
                 InputPricePerMillionUsd = Decimal(values, "inputPricePerMillionUsd"),
                 OutputPricePerMillionUsd = Decimal(values, "outputPricePerMillionUsd"),
@@ -284,7 +285,7 @@ public sealed class ConfigLoader
                     key is "inputPricePerMillionUsd" or "outputPricePerMillionUsd"
                         ? "config.outOfRange" : "config.wrongType", pair.Value);
             }
-            else if (key is "kind" or "family" or "baseUrl" or "caCertificate" or "authRef" or "provider")
+            else if (key is "kind" or "family" or "baseUrl" or "caCertificate" or "profile" or "authRef" or "provider")
             {
                 if (!IsYamlString(pair.Value)) AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
             }
