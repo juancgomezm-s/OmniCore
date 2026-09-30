@@ -44,6 +44,8 @@ public enum ContributionCategory
     Knowledge,
     ToolObservations,
     UserReference,
+    Checkpoint,
+    File,
 }
 
 /// <summary>Rol de un ContextItem en la priorización del presupuesto (spec §24).</summary>
@@ -69,4 +71,5 @@ public record ContextProvenance(
     ContributionCategory Category,
     string ComponentSource,
     ScopeLevel Scope,
-    bool Sensitive) { }
+    bool Sensitive,
+    IReadOnlyList<string>? Refs = null) { }
