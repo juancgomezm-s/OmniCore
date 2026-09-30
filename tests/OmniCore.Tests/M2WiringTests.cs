@@ -71,8 +71,19 @@ public sealed class M2WiringTests
         Assert.IsType<OpenAiChatCompatibleProvider>(provider);
     }
 
+    [Fact]
+    public void Provider_factory_connects_the_native_anthropic_adapter()
+    {
+        var descriptor = new ProviderDescriptor("anthropic", OmniCore.Domain.ProviderFamily.AnthropicMessages,
+            "https://api.example.test", OmniCore.Abstractions.AuthConfig.ApiKey("anthropic"), false, false, true);
+
+        var provider = OmniHost.ConnectProvider(descriptor, descriptor.BaseUrl, "anthropic", "sk-ant-test");
+
+        Assert.IsType<OmniCore.Models.AnthropicMessagesProvider>(provider);
+        Assert.True(OmniHost.IsProviderFamilySupported(OmniCore.Domain.ProviderFamily.AnthropicMessages));
+    }
+
     [Theory]
-    [InlineData(OmniCore.Domain.ProviderFamily.AnthropicMessages)]
     [InlineData(OmniCore.Domain.ProviderFamily.OpenAIResponses)]
     public void Provider_factory_rejects_unimplemented_families_with_typed_error(
         OmniCore.Domain.ProviderFamily family)
@@ -99,15 +110,15 @@ public sealed class M2WiringTests
         {
             Environment.SetEnvironmentVariable(DefaultPlatformPaths.ConfigDirVariable, config);
             File.WriteAllText(Path.Combine(config, "providers.yaml"),
-                "providers:\n  anthropic:\n    family: AnthropicMessages\n    baseUrl: https://api.example.test/v1\n    auth: none\n");
+                "providers:\n  openai:\n    family: OpenAIResponses\n    baseUrl: https://api.example.test/v1\n    auth: none\n");
             File.WriteAllText(Path.Combine(config, "models.yaml"),
-                "models:\n  claude-test:\n    provider: anthropic\n");
+                "models:\n  gpt-test:\n    provider: openai\n");
             var output = new List<string>();
 
             var exit = OmniCliRuntime.Doctor("en", output.Add, (key, args) => Localization.English().Resolve(key, args));
 
             Assert.True(exit == 0, string.Join(Environment.NewLine, output));
-            Assert.Contains(output, line => line.Contains("AnthropicMessages", StringComparison.Ordinal));
+            Assert.Contains(output, line => line.Contains("OpenAIResponses", StringComparison.Ordinal));
             Assert.Contains(output, line => line.Contains("not implemented yet", StringComparison.Ordinal));
         }
         finally
