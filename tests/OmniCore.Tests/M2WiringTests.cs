@@ -26,10 +26,10 @@ public sealed class M2WiringTests
         var v = new PathBoundaryValidator();
         var root = "C:\\Users\\juanc\\source\\repos\\OmniCore";
 
-        Assert.True(v.IsWithin(root + "\\README.md", root), "archivo dentro de la raíz");
-        Assert.True(v.IsWithin(root + "\\src\\OmniCore.Domain\\Ids.cs", root), "subdirectorio dentro");
+        Assert.True(v.IsWithin(Path.Combine(root, "README.md"), root), "archivo dentro de la raíz");
+        Assert.True(v.IsWithin(Path.Combine(root, "src", "OmniCore.Domain", "Ids.cs"), root), "subdirectorio dentro");
         Assert.False(v.IsWithin("C:\\Windows\\System32\\x.exe", root), "absoluto fuera");
-        Assert.False(v.IsWithin(root + "\\..\\README.md", root), "traversal fuera");
+        Assert.False(v.IsWithin(Path.Combine(root, "..", "README.md"), root), "traversal fuera");
     }
 
     [Fact]

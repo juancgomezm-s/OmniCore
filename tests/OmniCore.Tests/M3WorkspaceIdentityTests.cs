@@ -50,11 +50,11 @@ public sealed class M3WorkspaceIdentityTests
     private static Setup WriteInterruptedPatch(string rootPath, string durableIdentity)
     {
         var tmp = TempRoot();
-        var storePath = tmp + "\\journal.db";
-        var stateFile = tmp + "\\lastsession.txt";
+        var storePath = Path.Combine(tmp, "journal.db");
+        var stateFile = Path.Combine(tmp, "lastsession.txt");
         var original = "linea-uno\nlinea-dos\n";
         var pre = VersionOf(original);
-        File.WriteAllText(rootPath + "\\doc.txt", original);
+        File.WriteAllText(Path.Combine(rootPath, "doc.txt"), original);
 
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(storePath);
@@ -119,7 +119,7 @@ public sealed class M3WorkspaceIdentityTests
     [Fact]
     public void Recovery_blocks_when_no_durable_identity_in_event_even_if_root_exists()
     {
-        var root = TempRoot() + "\\ws";
+        var root = Path.Combine(TempRoot(), "ws");
         Directory.CreateDirectory(root);
         var established = WorkspaceRootIdentity.Establish(root);
         Assert.False(string.IsNullOrEmpty(established), "la raíz tiene identidad (premisa del test)");
@@ -143,7 +143,7 @@ public sealed class M3WorkspaceIdentityTests
     {
         // Un repo puede traer .omnicore/workspace-id versionado (incluso como enlace a secretos):
         // la identidad no lo lee, no escribe nada dentro del workspace y no depende de él.
-        var root = TempRoot() + "\\ws";
+        var root = Path.Combine(TempRoot(), "ws");
         Directory.CreateDirectory(Path.Combine(root, ".omnicore"));
         File.WriteAllText(Path.Combine(root, ".omnicore", "workspace-id"), "AWS_SECRET=supersecreto");
 
@@ -169,16 +169,16 @@ public sealed class M3WorkspaceIdentityTests
     public void Recovery_blocks_when_root_replaced_by_symlink_or_junction_to_other_tree()
     {
         var tmp = TempRoot();
-        var ws = tmp + "\\ws";
+        var ws = Path.Combine(tmp, "ws");
         Directory.CreateDirectory(ws);
         var identity = WorkspaceRootIdentity.Establish(ws);
         var setup = WriteInterruptedPatch(ws, identity);
         try
         {
-            var fake = tmp + "\\fake-tree";
+            var fake = Path.Combine(tmp, "fake-tree");
             Directory.CreateDirectory(fake);
-            File.WriteAllText(fake + "\\doc.txt", "linea-uno\nlinea-dos\n"); // mismo contenido
-            Directory.Move(ws, tmp + "\\ws-moved");
+            File.WriteAllText(Path.Combine(fake, "doc.txt"), "linea-uno\nlinea-dos\n"); // mismo contenido
+            Directory.Move(ws, Path.Combine(tmp, "ws-moved"));
             if (!TryCreateDirectoryLink(ws, fake))
             {
                 Assert.Skip("El entorno no permite crear enlaces de directorio.");
