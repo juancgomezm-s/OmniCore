@@ -49,8 +49,14 @@ public sealed class ProjectId
 
     private ProjectId(string value) => _value = value;
 
-    public static ProjectId Derive(string normalizedOriginOrGitCommonDir) =>
-        new(normalizedOriginOrGitCommonDir.Trim().ToLowerInvariant());
+    /// <summary>Deriva una identidad estable del origen normalizado o del git-common-dir (ADR-0022 §3).</summary>
+    public static ProjectId Derive(string normalizedOriginOrGitCommonDir)
+    {
+        ArgumentNullException.ThrowIfNull(normalizedOriginOrGitCommonDir);
+        var hash = System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(normalizedOriginOrGitCommonDir.Trim()));
+        return new(Convert.ToHexStringLower(hash, 0, 8));
+    }
 
     public static ProjectId Parse(string value) => new(value);
 
