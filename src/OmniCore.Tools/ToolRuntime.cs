@@ -61,14 +61,17 @@ public sealed class ToolRuntime
 
         public EffectOutcome Effect { get; }
 
+        public InteractionId? PendingInteractionId { get; }
+
         public Outcome(bool succeeded, string? summary, string? preview, ToolCallState finalState,
-            EffectOutcome effect)
+            EffectOutcome effect, InteractionId? pendingInteractionId = null)
         {
             Succeeded = succeeded;
             Summary = summary;
             Preview = preview;
             FinalState = finalState;
             Effect = effect;
+            PendingInteractionId = pendingInteractionId;
         }
 
         public Outcome(bool succeeded, string? summary, ToolCallState finalState, EffectOutcome effect) :
@@ -224,6 +227,13 @@ public sealed class ToolRuntime
                     _ => "deny",
                 }
                 : execContext.IsInteractive ? execContext.ResolveInteraction?.Invoke(interaction) : null;
+            if (!execContext.IsInteractive && execContext.ResolveInteraction is not null && selectedOption is null)
+            {
+                // Headless callers must not invent a denial/approval: keep the server-owned
+                // interaction pending so the Run can surface InputRequired without a decision.
+                return new Outcome(false, "awaiting input", null, ToolCallState.AwaitingPermission,
+                    EffectOutcome.None, interactionId);
+            }
             if (selectedOption is not ("allow_once" or "allow_run" or "allow_workspace"))
             {
                 _emit(new InteractionResolved(interactionId, "deny",
