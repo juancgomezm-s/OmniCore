@@ -99,6 +99,7 @@ public sealed class RunResumeService
             }
         }
 
+        PublishEffectResolutionRequests(sessionId);
         return count;
     }
 
@@ -144,6 +145,141 @@ public sealed class RunResumeService
 
         return false;
     }
+
+    private void PublishEffectResolutionRequests(SessionId sessionId)
+    {
+        var events = _store.ReadFrom(sessionId, 1);
+        var tools = new Dictionary<ToolCallId, ToolCallRequested>();
+        var started = new Dictionary<ToolCallId, ToolCallStarted>();
+        var outcomes = new Dictionary<ToolCallId, ToolCallReconciled>();
+        var pendingRequests = new Dictionary<InteractionId, InteractionRequested>();
+        foreach (var evt in events)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ToolCallRequested call:
+                    tools[call.ToolCallId] = call;
+                    break;
+                case ToolCallStarted start:
+                    started[start.ToolCallId] = start;
+                    break;
+                case ToolCallReconciled reconciled:
+                    outcomes[reconciled.ToolCallId] = reconciled;
+                    break;
+                case InteractionRequested interaction when interaction.Kind == InteractionKind.ReconciliationConflict:
+                    pendingRequests[interaction.InteractionId] = interaction;
+                    break;
+                case InteractionResolved resolved:
+                    pendingRequests.Remove(resolved.InteractionId);
+                    break;
+                case InteractionExpired expired:
+                    pendingRequests.Remove(expired.InteractionId);
+                    break;
+            }
+        }
+
+        var requested = pendingRequests.Values.Select(interaction => TryGetToolCallId(interaction.ToolCallJson))
+            .Where(id => id is not null).Select(id => id!).ToHashSet();
+        var batch = new List<DomainEventPayload>();
+        foreach (var pair in outcomes)
+        {
+            var id = pair.Key;
+            var reconciliation = pair.Value;
+            if (requested.Contains(id) || reconciliation.Cause == InteractionCause.User
+                || reconciliation.Outcome is not (ReconciliationOutcome.Unresolvable or ReconciliationOutcome.Conflict))
+            {
+                continue;
+            }
+
+            tools.TryGetValue(id, out var call);
+            started.TryGetValue(id, out var start);
+            var target = TargetFrom(start?.ReconciliationJson);
+            var detail = SafeDetail(reconciliation.Detail, target);
+            var safeTarget = IsProtectedTarget(target) ? "[recurso protegido]" : new PiiRedactor().Redact(target);
+            var subject = "{"
+                + "\"operation\":" + JsonString("interaction.reconciliation_conflict.operation") + ","
+                + "\"toolOrExecutable\":" + JsonString(call?.ToolName ?? "herramienta desconocida") + ","
+                + "\"target\":" + JsonString(safeTarget) + ","
+                + "\"risk\":\"Critical\","
+                + "\"reason\":" + JsonString("interaction.reconciliation_conflict.reason") + ","
+                + "\"details\":[{\"key\":\"reconciliation\",\"value\":" + JsonString(detail) + "}]}";
+            var options = reconciliation.Outcome == ReconciliationOutcome.Conflict
+                ? "[{\"id\":\"resolution_applied\",\"intent\":\"choose\"},"
+                    + "{\"id\":\"resolution_not_applied\",\"intent\":\"choose\"},"
+                    + "{\"id\":\"resolution_keep_current\",\"intent\":\"choose\"}]"
+                : "[{\"id\":\"resolution_applied\",\"intent\":\"choose\"},"
+                    + "{\"id\":\"resolution_not_applied\",\"intent\":\"choose\"}]";
+            var interaction = new InteractionRequested(InteractionId.New(), InteractionKind.ReconciliationConflict,
+                subject, options,
+                reconciliation.Outcome == ReconciliationOutcome.Conflict
+                    ? "resolution_keep_current" : "resolution_not_applied",
+                null, null, null, null, 0, 1, null,
+                "{\"toolCallId\":" + JsonString(id.ToString()) + "}");
+            batch.Add(interaction);
+        }
+
+        if (batch.Count > 0)
+        {
+            var activeRun = ActiveRunToAwait(sessionId, events);
+            if (activeRun is not null) batch.Add(activeRun);
+            new EventStream(_store, _codecs, sessionId).AppendBatch(batch, DurabilityClass.Standard);
+        }
+    }
+
+    private RunAwaitingInput? ActiveRunToAwait(SessionId session, IReadOnlyList<DomainEvent> events)
+    {
+        foreach (var createdEvent in events.Reverse())
+        {
+            if (_codecs.Decode(createdEvent) is not RunCreated created) continue;
+            var projection = RunProjection.Replay(session, created.RunId, _codecs, events);
+            if (projection.IsTerminal() || projection.State != RunState.Running || projection.RootTask is null)
+                continue;
+            var rootLane = LaneProjection.Replay(_codecs, events).ForTask(projection.RootTask)
+                .FirstOrDefault(lane => lane.State == LaneState.Running)?.Id;
+            return rootLane is null ? null : new RunAwaitingInput(created.RunId, rootLane);
+        }
+        return null;
+    }
+
+    private static ToolCallId? TryGetToolCallId(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("toolCallId", out var id)
+                && id.GetString() is { } text ? ToolCallId.Parse(text) : null;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or FormatException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private static string TargetFrom(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return "recurso no disponible";
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("path", out var path) && path.GetString() is { } value
+                ? value : "recurso no disponible";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "recurso no disponible";
+        }
+    }
+
+    private static bool IsProtectedTarget(string target) =>
+        new RedactionPolicy().IsSecretPath(target);
+
+    private static string SafeDetail(string detail, string target) => IsProtectedTarget(target)
+        ? "detalle oculto para un recurso protegido"
+        : new PiiRedactor().Redact(detail ?? "resultado no disponible");
+
+    private static string JsonString(string value) =>
+        System.Text.Json.JsonSerializer.Serialize(value, JsonStrings.Default.String);
 
     private ToolCallReconciled ReconcileCall(ToolCallId id, string? reconciliationJson)
     {
