@@ -26,7 +26,7 @@ public sealed class ConfigLoader
                 "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
-                "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
+                "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases" });
         ValidateRequiredAndRanges(providerNodes, modelNodes, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
 
@@ -66,7 +66,7 @@ public sealed class ConfigLoader
                 var m = pair.Value;
                 var context = m.Context ?? 8192;
                 registry.AddModel(new ModelDefinition(pair.Key, m.Provider!, context,
-                    m.RecommendedUsableContext ?? context, m.MaxOutput ?? 2048, m.ParametersBillions));
+                    m.RecommendedUsableContext ?? context, m.MaxOutput ?? 2048, m.ParametersBillions, m.Aliases ?? []));
             }
         }
 
@@ -287,6 +287,15 @@ public sealed class ConfigLoader
             else if (key is "kind" or "family" or "baseUrl" or "caCertificate" or "authRef" or "provider")
             {
                 if (!IsYamlString(pair.Value)) AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+            }
+            else if (key == "aliases")
+            {
+                if (pair.Value is not YamlSequenceNode aliasSequence)
+                    AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+                else
+                    foreach (var item in aliasSequence)
+                        if (item is not YamlScalarNode aliasItem || !IsYamlString(aliasItem))
+                            AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", item);
             }
             else if (key == "auth")
             {
