@@ -551,11 +551,11 @@ public sealed class SecurityP0Tests
     [Fact]
     public void WorkspaceId_is_a_short_hash_without_the_path()
     {
-        var id = WorkspaceId.Of("C:/Users/alguien/repos/proyecto-secreto").ToString();
+        var canonical = "c:/users/alguien/repos/proyecto-secreto";
+        var id = WorkspaceId.Of(canonical).ToString();
         Assert.Matches("^[0-9a-f]{16}$", id);
         Assert.DoesNotContain("secreto", id);
-        Assert.Equal(id, WorkspaceId.Of("C:\\Users\\alguien\\repos\\proyecto-secreto\\").ToString());
-        Assert.NotEqual(id, WorkspaceId.Of("C:/Users/alguien/repos/otro").ToString());
+        Assert.NotEqual(id, WorkspaceId.Of("c:/users/alguien/repos/otro").ToString());
     }
 
     [Fact]

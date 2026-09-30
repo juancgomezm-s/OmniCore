@@ -1,4 +1,5 @@
 using OmniCore.Abstractions;
+using OmniCore.Client;
 using OmniCore.Execution;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
@@ -57,6 +58,63 @@ public sealed class M2WiringTests
         Assert.Equal("openrouter-key", registry.Provider("openrouter")!.Auth.SecretRef);
         Assert.True(registry.Model("qwen-27b") is not null);
         Assert.True(registry.Model("sonnet") is not null);
+    }
+
+    [Fact]
+    public void Provider_factory_uses_chat_completions_for_declared_compatible_family()
+    {
+        var descriptor = new ProviderDescriptor("p", OmniCore.Domain.ProviderFamily.OpenAiChatCompatible,
+            "http://127.0.0.1:8080/v1", OmniCore.Abstractions.AuthConfig.None(), false, false, false);
+
+        var provider = OmniHost.ConnectProvider(descriptor, descriptor.BaseUrl, "key", "");
+
+        Assert.IsType<OpenAiChatCompatibleProvider>(provider);
+    }
+
+    [Theory]
+    [InlineData(OmniCore.Domain.ProviderFamily.AnthropicMessages)]
+    [InlineData(OmniCore.Domain.ProviderFamily.OpenAIResponses)]
+    public void Provider_factory_rejects_unimplemented_families_with_typed_error(
+        OmniCore.Domain.ProviderFamily family)
+    {
+        var descriptor = new ProviderDescriptor("p", family, "https://example.test/v1",
+            OmniCore.Abstractions.AuthConfig.None(), false, false, false);
+
+        var error = Assert.Throws<ProviderFamilyNotSupportedException>(() =>
+            OmniHost.ConnectProvider(descriptor, descriptor.BaseUrl, "key", ""));
+
+        Assert.Equal(family, error.Family);
+        Assert.Equal("provider.familyNotSupported", error.UserMessage.Key);
+        Assert.Contains("not implemented", Localization.English().Resolve(error.UserMessage.Key,
+            error.UserMessage.Args), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Doctor_marks_unimplemented_provider_family()
+    {
+        var config = Path.Combine(Path.GetTempPath(), "omnicore-doctor-config-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(config);
+        var previous = Environment.GetEnvironmentVariable(DefaultPlatformPaths.ConfigDirVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(DefaultPlatformPaths.ConfigDirVariable, config);
+            File.WriteAllText(Path.Combine(config, "providers.yaml"),
+                "providers:\n  anthropic:\n    family: AnthropicMessages\n    baseUrl: https://api.example.test/v1\n    auth: none\n");
+            File.WriteAllText(Path.Combine(config, "models.yaml"),
+                "models:\n  claude-test:\n    provider: anthropic\n");
+            var output = new List<string>();
+
+            var exit = OmniCliRuntime.Doctor("en", output.Add, (key, args) => Localization.English().Resolve(key, args));
+
+            Assert.True(exit == 0, string.Join(Environment.NewLine, output));
+            Assert.Contains(output, line => line.Contains("AnthropicMessages", StringComparison.Ordinal));
+            Assert.Contains(output, line => line.Contains("not implemented yet", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DefaultPlatformPaths.ConfigDirVariable, previous);
+            try { Directory.Delete(config, recursive: true); } catch (IOException) { }
+        }
     }
 
     [Fact]

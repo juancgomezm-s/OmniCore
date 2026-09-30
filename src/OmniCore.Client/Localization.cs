@@ -18,6 +18,10 @@ public sealed class Localization
 
     public static Localization English() => new("en");
 
+    /// <summary>Localiza un error tipado de validación de formulario.</summary>
+    public string ResolveQuestionnaireValidationError(QuestionnaireValidationError error) =>
+        Resolve("questionnaire.validation." + error.Code);
+
     /// <summary>Resuelve una clave con argumentos al texto del locale activo.</summary>
     public string Resolve(string key, string? argName, string? argValue)
     {
@@ -160,6 +164,22 @@ public sealed class Localization
         ["doctor.status.unconfigured"] = "Estado: sin modelo configurado (ejecuta omni ask para ver la guía)",
         ["scenario.invalid"] = "Escenario inválido: {detail}",
         ["models.noneConfigured"] = "No hay ningún modelo configurado.",
+        ["secrets.tooShort"] = "La credencial debe tener al menos {minimumLength} caracteres.",
+        ["provider.familyNotSupported"] = "La familia de provider {family} todavía no está implementada.",
+        ["questionnaire.validation.UnknownQuestionId"] = "Identificador de pregunta desconocido.",
+        ["questionnaire.validation.SelectionNotAllowed"] = "No se permiten opciones en esta pregunta.",
+        ["questionnaire.validation.OtherTextNotAllowed"] = "El texto de «Otro» requiere seleccionar esa opción.",
+        ["questionnaire.validation.RequiredTextMissing"] = "Esta pregunta requiere texto.",
+        ["questionnaire.validation.TextTooLong"] = "El texto supera la longitud máxima.",
+        ["questionnaire.validation.UnknownChoiceId"] = "Identificador de opción desconocido.",
+        ["questionnaire.validation.DuplicateChoiceId"] = "La misma opción se seleccionó más de una vez.",
+        ["questionnaire.validation.MultipleChoicesInSingle"] = "Solo se permite una opción.",
+        ["questionnaire.validation.RequiredChoiceMissing"] = "Selecciona al menos una opción.",
+        ["questionnaire.validation.TooFewChoices"] = "Selecciona más opciones.",
+        ["questionnaire.validation.TooManyChoices"] = "Se seleccionaron demasiadas opciones.",
+        ["questionnaire.validation.OtherRequiresSelection"] = "El texto de «Otro» requiere seleccionar «Otro».",
+        ["questionnaire.validation.OtherTextMissing"] = "La opción «Otro» requiere texto.",
+        ["questionnaire.validation.OtherTextTooLong"] = "El texto de «Otro» supera la longitud máxima.",
         ["config.unknownKey"] = "clave desconocida: {path}",
         ["config.conflictingAuth"] = "auth y authRef no se pueden especificar a la vez: {path}",
         ["config.legacyAuthDeprecated"] = "el formato auth de providers.yaml está obsoleto; usa authRef.",
@@ -270,6 +290,22 @@ public sealed class Localization
         ["doctor.status.unconfigured"] = "Status: no model configured (run omni ask for guidance)",
         ["scenario.invalid"] = "Invalid scenario: {detail}",
         ["models.noneConfigured"] = "No model is configured.",
+        ["secrets.tooShort"] = "The credential must contain at least {minimumLength} characters.",
+        ["provider.familyNotSupported"] = "Provider family {family} is not implemented yet.",
+        ["questionnaire.validation.UnknownQuestionId"] = "Unknown question identifier.",
+        ["questionnaire.validation.SelectionNotAllowed"] = "Choices are not allowed for this question.",
+        ["questionnaire.validation.OtherTextNotAllowed"] = "Other text requires selecting that choice.",
+        ["questionnaire.validation.RequiredTextMissing"] = "This question requires text.",
+        ["questionnaire.validation.TextTooLong"] = "Text exceeds the maximum length.",
+        ["questionnaire.validation.UnknownChoiceId"] = "Unknown choice identifier.",
+        ["questionnaire.validation.DuplicateChoiceId"] = "The same choice was selected more than once.",
+        ["questionnaire.validation.MultipleChoicesInSingle"] = "Only one choice is allowed.",
+        ["questionnaire.validation.RequiredChoiceMissing"] = "Select at least one choice.",
+        ["questionnaire.validation.TooFewChoices"] = "Select more choices.",
+        ["questionnaire.validation.TooManyChoices"] = "Too many choices were selected.",
+        ["questionnaire.validation.OtherRequiresSelection"] = "Other text requires selecting Other.",
+        ["questionnaire.validation.OtherTextMissing"] = "The Other choice requires text.",
+        ["questionnaire.validation.OtherTextTooLong"] = "Other text exceeds the maximum length.",
         ["config.unknownKey"] = "unknown key: {path}",
         ["config.conflictingAuth"] = "auth and authRef cannot both be specified: {path}",
         ["config.legacyAuthDeprecated"] = "the providers.yaml auth format is deprecated; use authRef.",

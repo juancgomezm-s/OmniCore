@@ -171,16 +171,49 @@ public sealed class QuestionnairePlainFormInput
     }
 }
 
+/// <summary>Stable typed validation codes for client-side questionnaire input.</summary>
+public enum QuestionnaireValidationErrorCode
+{
+    UnknownQuestionId,
+    SelectionNotAllowed,
+    OtherTextNotAllowed,
+    RequiredTextMissing,
+    TextTooLong,
+    UnknownChoiceId,
+    DuplicateChoiceId,
+    MultipleChoicesInSingle,
+    RequiredChoiceMissing,
+    TooFewChoices,
+    TooManyChoices,
+    OtherRequiresSelection,
+    OtherTextMissing,
+    OtherTextTooLong,
+}
+
+/// <summary>One questionnaire validation error, independent of the renderer locale.</summary>
+public sealed class QuestionnaireValidationError
+{
+    public QuestionnaireValidationErrorCode Code { get; }
+    public string? QuestionId { get; }
+
+    public QuestionnaireValidationError(QuestionnaireValidationErrorCode code, string? questionId = null)
+    {
+        Code = code;
+        QuestionId = questionId;
+    }
+}
+
 /// <summary>Result of parsing a plain questionnaire form.</summary>
 public sealed class QuestionnaireParseResult
 {
     public QuestionnaireResponseDto? Response { get; }
 
-    public IReadOnlyList<string> Errors { get; }
+    public IReadOnlyList<QuestionnaireValidationError> Errors { get; }
 
     public bool IsValid => Response is not null;
 
-    internal QuestionnaireParseResult(QuestionnaireResponseDto? response, IReadOnlyList<string> errors)
+    internal QuestionnaireParseResult(QuestionnaireResponseDto? response,
+        IReadOnlyList<QuestionnaireValidationError> errors)
     {
         Response = response;
         Errors = errors;
@@ -200,10 +233,10 @@ public static class QuestionnairePlainFormParser
         {
             return new QuestionnaireParseResult(
                 new QuestionnaireResponseDto(Array.Empty<QuestionnaireAnswerDto>(), true),
-                Array.Empty<string>());
+                Array.Empty<QuestionnaireValidationError>());
         }
 
-        var errors = new List<string>();
+        var errors = new List<QuestionnaireValidationError>();
         var knownQuestions = new HashSet<string>(StringComparer.Ordinal);
         foreach (var question in questionnaire.Questions)
         {
@@ -214,7 +247,7 @@ public static class QuestionnairePlainFormParser
         {
             if (!knownQuestions.Contains(input.Key))
             {
-                errors.Add("Unknown question id: " + input.Key);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.UnknownQuestionId, input.Key));
             }
         }
 
@@ -229,22 +262,22 @@ public static class QuestionnairePlainFormParser
             {
                 if (input?.Selection is not null && input.Selection.Trim().Length > 0)
                 {
-                    errors.Add("Selections are not allowed for free-text question " + question.Id);
+                    errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.SelectionNotAllowed, question.Id));
                 }
 
                 if (otherText is not null)
                 {
-                    errors.Add("Other text is not allowed for free-text question " + question.Id);
+                    errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.OtherTextNotAllowed, question.Id));
                 }
 
                 if (question.Required && string.IsNullOrWhiteSpace(text))
                 {
-                    errors.Add("Text is required for question " + question.Id);
+                    errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.RequiredTextMissing, question.Id));
                 }
 
                 if (text is not null && question.MaxTextLength is int textLimit && text.Length > textLimit)
                 {
-                    errors.Add("Text exceeds the maximum length for question " + question.Id);
+                    errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.TextTooLong, question.Id));
                 }
 
                 if (!string.IsNullOrWhiteSpace(text))
@@ -261,39 +294,39 @@ public static class QuestionnairePlainFormParser
 
             if (question.Kind == QuestionnaireQuestionKind.SingleChoice && selectedIds.Count > 1)
             {
-                errors.Add("Only one choice may be selected for question " + question.Id);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.MultipleChoicesInSingle, question.Id));
             }
 
             if (question.Required && selectedIds.Count == 0)
             {
-                errors.Add("A choice is required for question " + question.Id);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.RequiredChoiceMissing, question.Id));
             }
 
             if (question.MinSelections is int minimum && selectedIds.Count < minimum)
             {
-                errors.Add("Too few choices selected for question " + question.Id);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.TooFewChoices, question.Id));
             }
 
             if (question.MaxSelections is int maximum && selectedIds.Count > maximum)
             {
-                errors.Add("Too many choices selected for question " + question.Id);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.TooManyChoices, question.Id));
             }
 
             if (otherText is not null && !otherSelected)
             {
-                errors.Add("Other text requires selecting the other choice for question " + question.Id);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.OtherRequiresSelection, question.Id));
             }
 
             if (otherSelected && question.Other is not null)
             {
                 if (question.Other.TextRequired && string.IsNullOrWhiteSpace(otherText))
                 {
-                    errors.Add("Other text is required for question " + question.Id);
+                    errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.OtherTextMissing, question.Id));
                 }
 
                 if (otherText is not null && otherText.Length > question.Other.MaxTextLength)
                 {
-                    errors.Add("Other text exceeds the maximum length for question " + question.Id);
+                    errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.OtherTextTooLong, question.Id));
                 }
             }
 
@@ -310,7 +343,7 @@ public static class QuestionnairePlainFormParser
     }
 
     private static List<string> ParseSelection(QuestionnaireQuestionModel question, string? raw,
-        List<string> errors)
+        List<QuestionnaireValidationError> errors)
     {
         var selected = new List<string>();
         if (string.IsNullOrWhiteSpace(raw))
@@ -330,11 +363,11 @@ public static class QuestionnairePlainFormParser
         {
             if (!allowed.Contains(token))
             {
-                errors.Add("Unknown choice id for question " + question.Id + ": " + token);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.UnknownChoiceId, question.Id));
             }
             else if (!seen.Add(token))
             {
-                errors.Add("Duplicate choice id for question " + question.Id + ": " + token);
+                errors.Add(new QuestionnaireValidationError(QuestionnaireValidationErrorCode.DuplicateChoiceId, question.Id));
             }
             else
             {

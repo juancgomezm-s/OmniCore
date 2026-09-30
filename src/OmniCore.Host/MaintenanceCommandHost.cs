@@ -76,7 +76,8 @@ public sealed class MaintenanceCommandHost
         try
         {
             var purger = new SessionPurger(store, new FileAuditSink(dataDir));
-            var workspace = WorkspaceId.Of(ProjectIdentity.ResolvePhysicalWorkspaceRoot("."));
+            var workspace = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(
+                ProjectIdentity.ResolvePhysicalWorkspaceRoot(".")));
             var result = purger.Purge(session, workspace, DateTimeOffset.UtcNow,
                 CancellationToken.None);
             if (result is null)
