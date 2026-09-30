@@ -55,7 +55,7 @@ public sealed class CliApp
             return MaintenanceCommands.AuditPurge(args);
         if (command is "session" or "audit")
         {
-            Console.WriteLine("omni " + command + ": subcomando desconocido.");
+            Console.WriteLine(Loc().Resolve("cli.unknown_subcommand", "command", command));
             return Task.FromResult(2);
         }
         if (command == "doctor") return RunDoctor(args);
@@ -66,7 +66,7 @@ public sealed class CliApp
             return Task.FromResult(0);
         }
 
-        Console.WriteLine("omni: intención asumida como pregunta → ask '" + command + "'");
+        Console.WriteLine(Loc().Resolve("cli.ask_assumed", "command", command));
         return RunAsk(new[] { "ask", string.Join(" ", args) });
     }
 
@@ -116,7 +116,7 @@ public sealed class CliApp
     {
         if (!CommandLineParser.TryParse(string.Join(" ", args), out var parsed) || parsed is null)
         {
-            Console.WriteLine("omni: comando / inválido");
+            Console.WriteLine(Loc().Resolve("cli.invalid_command"));
             return Task.FromResult(2);
         }
         var invocation = parsed!;
@@ -128,15 +128,14 @@ public sealed class CliApp
                 try { Runtime.ConfigureToolDiagnostics(CancellationToken.None); }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("/tools: " + ex.Message);
+                    Console.WriteLine(Loc().Resolve("cli.tools_error", "error", ex.Message));
                     return Task.FromResult(1);
                 }
             }
             var result = client.Query(invocation.Name, CancellationToken.None);
             if (result is null)
             {
-                Console.WriteLine(invocation.Name + ": " + (Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
-                    ? "no data available" : "sin datos disponibles"));
+                Console.WriteLine(Loc().Resolve("cli.no_data", "command", invocation.Name));
                 return Task.FromResult(1);
             }
             RenderDiagnostic(invocation.Name, result.Json);
@@ -147,7 +146,8 @@ public sealed class CliApp
             CancellationToken.None);
         if (ack.Status != "ok")
         {
-            Console.WriteLine("/" + invocation.Name + ": " + (ack.Error ?? "command failed"));
+            Console.WriteLine(Loc().Resolve("cli.command_ack_error",
+                new Dictionary<string, string> { ["command"] = invocation.Name, ["error"] = ack.Error ?? Loc().Resolve("cli.command_failed") }));
             return Task.FromResult(2);
         }
         var expanded = client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
@@ -163,7 +163,7 @@ public sealed class CliApp
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
             or KeyNotFoundException)
         {
-            Console.WriteLine("/" + invocation.Name + ": resultado de comando inválido");
+            Console.WriteLine(Loc().Resolve("cli.command_invalid_result", "command", invocation.Name));
             return Task.FromResult(1);
         }
     }
@@ -172,8 +172,8 @@ public sealed class CliApp
     {
         var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
         Console.WriteLine(name == "context"
-            ? (locale == "en" ? "Context snapshot (persisted):" : "Snapshot de contexto (persistido):")
-            : (locale == "en" ? "Effective tools:" : "Tools efectivas:"));
+            ? Loc().Resolve("cli.diagnostic.context")
+            : Loc().Resolve("cli.diagnostic.tools"));
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(json);
@@ -209,7 +209,7 @@ public sealed class CliApp
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
             or KeyNotFoundException)
         {
-            Console.WriteLine(locale == "en" ? "No snapshot is available." : "No hay snapshot disponible.");
+            Console.WriteLine(Loc().Resolve("cli.diagnostic.no_snapshot"));
         }
     }
 
@@ -223,7 +223,8 @@ public sealed class CliApp
             var ack = client.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "sim.resume") + "}"),
                 CancellationToken.None);
             if (ack.Status == "ok") return RenderEvents(client, jsonOutput, 0, "resume");
-            Console.WriteLine("omni sim --resume: " + (ack.Error is null ? "fallo" : Loc().ResolveWire(ack.Error)));
+            Console.WriteLine(Loc().Resolve("cli.sim.resume_failed", "error",
+                ack.Error is null ? Loc().Resolve("cli.fallback.failure") : Loc().ResolveWire(ack.Error)));
             return Task.FromResult(1);
         }
 
@@ -232,7 +233,7 @@ public sealed class CliApp
         var crash = args.Any(a => a == "--crash");
         if (scenarioPath is not null && !File.Exists(scenarioPath))
         {
-            Console.WriteLine("omni sim: no existe el escenario " + scenarioPath);
+            Console.WriteLine(Loc().Resolve("cli.sim.no_scenario", "path", scenarioPath));
             return Task.FromResult(2);
         }
 
@@ -250,7 +251,8 @@ public sealed class CliApp
             // output: preserve the JSON-lines contract and report an interrupted outcome.
             return RenderEvents(client, jsonOutput: true, exitCode: 1, scenarioName: scenarioName);
         }
-        Console.WriteLine("omni sim: " + (result.Error is null ? "fallo" : Loc().ResolveWire(result.Error)));
+        Console.WriteLine(Loc().Resolve("cli.sim.failed", "error",
+            result.Error is null ? Loc().Resolve("cli.fallback.failure") : Loc().ResolveWire(result.Error)));
         return Task.FromResult(1);
     }
 
@@ -269,7 +271,7 @@ public sealed class CliApp
         var state = ClientState.Empty();
         foreach (var envelope in events) state = projection.Apply(state, envelope);
         new PlainRenderer("es").Render(state);
-        if (events.Count == 0) Console.WriteLine("omni sim: ok (sin eventos nuevos; escenario determinista)");
+        if (events.Count == 0) Console.WriteLine(Loc().Resolve("cli.sim.ok_no_events"));
         return Task.FromResult(exitCode);
     }
 
@@ -283,7 +285,8 @@ public sealed class CliApp
             var result = client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
             if (result.Status != "ok")
             {
-                Console.WriteLine("omni tui --sim: " + (result.Error is null ? "fallo" : Loc().ResolveWire(result.Error)));
+                Console.WriteLine(Loc().Resolve("cli.tui.sim_failed", "error",
+                    result.Error is null ? Loc().Resolve("cli.fallback.failure") : Loc().ResolveWire(result.Error)));
                 return Task.FromResult(1);
             }
 
@@ -297,25 +300,25 @@ public sealed class CliApp
 
     private static Task<int> RunExplain(string[] args)
     {
-        var question = args.Length >= 2 ? args[1] : "explícame el estado del plan";
+        var question = args.Length >= 2 ? args[1] : Loc().Resolve("cli.explain.default_question");
         var client = Runtime.Connect(CancellationToken.None);
         var state = client.Query("state", CancellationToken.None);
         var workingState = client.Query("workingState", CancellationToken.None);
-        Console.WriteLine("omni explain: contexto del run y plan mantenido por el runtime.");
-        Console.WriteLine("Pregunta: " + question);
+        Console.WriteLine(Loc().Resolve("cli.explain.intro"));
+        Console.WriteLine(Loc().Resolve("cli.explain.question", "question", question));
         if (state is not null)
         {
             var milestone = JsonObj.Parse(state.Json).TryGetValue("runState", out var value) ? value! : "M2";
-            Console.WriteLine("Run: " + milestone);
+            Console.WriteLine(Loc().Resolve("cli.explain.run", "run", milestone));
         }
 
         if (workingState is not null)
         {
             var text = JsonObj.Parse(workingState.Json).TryGetValue("workingState", out var value) ? value! : "";
-            Console.WriteLine("WorkingState (redactado):");
+            Console.WriteLine(Loc().Resolve("cli.explain.working_state"));
             Console.WriteLine(RedactJson(text, 900));
         }
-        else Console.WriteLine("Contexto: ejecuta primero `omni sim` para materializar el run.");
+        else Console.WriteLine(Loc().Resolve("cli.explain.no_context"));
         return Task.FromResult(0);
     }
 
@@ -363,11 +366,11 @@ public sealed class CliApp
         var revoke = args.Length > 1 && args[1] is "revoke" or "--revoke";
         if (args.Length > 2 || args.Length == 2 && !revoke)
         {
-            Console.WriteLine("Uso: omni trust [revoke]");
+            Console.WriteLine(Loc().Resolve("cli.trust.usage"));
             return Task.FromResult(2);
         }
         Runtime.SetWorkspaceTrusted(!revoke);
-        Console.WriteLine(revoke ? "Workspace marcado como no confiable." : "Workspace confiable guardado fuera del repo.");
+        Console.WriteLine(Loc().Resolve(revoke ? "cli.trust.revoked" : "cli.trust.saved"));
         return Task.FromResult(0);
     }
 
@@ -395,29 +398,29 @@ public sealed class CliApp
     }
 
     private static Task<int> RunAsk(string[] args) => Runtime.AskAsync(
-        args.Length >= 2 ? args[1] : "Responde solo: hola", Console.WriteLine, CancellationToken.None);
+        args.Length >= 2 ? args[1] : Loc().Resolve("cli.ask.default_question"), Console.WriteLine, CancellationToken.None);
 
     private static Task<int> RunAct(string[] args) => Runtime.ActAsync(
         args.Length >= 2 ? args[1] : "", Console.WriteLine, CancellationToken.None);
 
     private static void PrintUsage()
     {
-        Console.WriteLine("omni: runtime de agentes local-first para .NET 10 (M1)");
+        Console.WriteLine(Loc().Resolve("cli.usage.title"));
         Console.WriteLine();
-        Console.WriteLine("Uso:");
-        Console.WriteLine("  omni sim [escenario.yaml] [--json]   Ejecuta la simulación de M1");
-        Console.WriteLine("  omni act \"instrucción\"              Run Act con filesystem.read/patch bajo política efectiva (M3)");
-        Console.WriteLine("  omni ask \"texto\"                    Turn end-to-end contra el modelo local (M2)");
+        Console.WriteLine(Loc().Resolve("cli.usage.heading"));
+        Console.WriteLine(Loc().Resolve("cli.usage.sim"));
+        Console.WriteLine(Loc().Resolve("cli.usage.act"));
+        Console.WriteLine(Loc().Resolve("cli.usage.ask"));
         Console.WriteLine(Loc().Resolve("commands.context.help"));
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
-        Console.WriteLine("  omni model ...                       Políticas de modelo y onboarding (M3)");
-        Console.WriteLine("  omni verify-journal [ruta] [--json]  Verifica el journal y sus artifacts (M4)");
-        Console.WriteLine("  omni session purge <id>             Purga una sesión; conserva auditoría (M4)");
-        Console.WriteLine("  omni gc [--dry-run]                 Recoge blobs huérfanos con gracia (M4)");
-        Console.WriteLine("  omni audit purge [--before fecha]   Aplica retención de auditoría (M4)");
+        Console.WriteLine(Loc().Resolve("cli.usage.model"));
+        Console.WriteLine(Loc().Resolve("cli.usage.verify_journal"));
+        Console.WriteLine(Loc().Resolve("cli.usage.session_purge"));
+        Console.WriteLine(Loc().Resolve("cli.usage.gc"));
+        Console.WriteLine(Loc().Resolve("cli.usage.audit_purge"));
         Console.WriteLine(Loc().Resolve("permissions.help"));
         Console.WriteLine(Loc().Resolve("interaction.resolve.usage"));
-        Console.WriteLine("  omni --help                          Esta ayuda");
+        Console.WriteLine(Loc().Resolve("cli.usage.help"));
     }
 }
