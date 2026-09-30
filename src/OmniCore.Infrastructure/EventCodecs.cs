@@ -94,6 +94,10 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.PlanItemLinked())
             .Plus(Typed.PlanItemUnlinked())
             .Plus(Typed.PlanMutationRejected())
+            .Plus(Typed.ContextCheckpointRecorded())
+            .Plus(Typed.MetaModelInvocationStarted())
+            .Plus(Typed.MetaModelInvocationCompleted())
+            .Plus(Typed.MetaModelInvocationFailed())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
@@ -347,6 +351,10 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(PlanItemLinked))]
 [JsonSerializable(typeof(PlanItemUnlinked))]
 [JsonSerializable(typeof(PlanMutationRejected))]
+[JsonSerializable(typeof(ContextCheckpointRecorded))]
+[JsonSerializable(typeof(MetaModelInvocationStarted))]
+[JsonSerializable(typeof(MetaModelInvocationCompleted))]
+[JsonSerializable(typeof(MetaModelInvocationFailed))]
 internal sealed partial class EventJsonContext : JsonSerializerContext
 {
 }
@@ -583,4 +591,16 @@ public sealed class Typed
 
     public static CodecPair PlanMutationRejected() =>
         Of(EventType.Of("plan_mutation.rejected"), EventJsonContext.Default.PlanMutationRejected);
+
+    public static CodecPair ContextCheckpointRecorded() =>
+        Of(EventType.Of("context.checkpoint_recorded"), EventJsonContext.Default.ContextCheckpointRecorded);
+
+    public static CodecPair MetaModelInvocationStarted() =>
+        Of(EventType.Of("meta_model.invocation_started"), EventJsonContext.Default.MetaModelInvocationStarted);
+
+    public static CodecPair MetaModelInvocationCompleted() =>
+        Of(EventType.Of("meta_model.invocation_completed"), EventJsonContext.Default.MetaModelInvocationCompleted);
+
+    public static CodecPair MetaModelInvocationFailed() =>
+        Of(EventType.Of("meta_model.invocation_failed"), EventJsonContext.Default.MetaModelInvocationFailed);
 }

@@ -280,7 +280,9 @@ public sealed class OmniCliRuntime
             var harness = new HarnessPolicyResolver().Resolve(effectiveProfile);
             var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
                 harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
-                harness.PlanControl, harness.StallThresholdTurns);
+                harness.PlanControl, harness.StallThresholdTurns, harness.ContextManagement.ExternalizeAboveCharacters,
+                harness.ContextManagement.CompressBodyCharacters, harness.ContextManagement.RecentTailItems,
+                harness.ContextManagement.CompactAfterItems, harness.ContextManagement.MaxCheckpointCharacters);
             var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(harnessValue)));
             var policyService = OmniHost.CreateModelPolicyService(
@@ -363,7 +365,8 @@ public sealed class OmniCliRuntime
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
                 server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
                 loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey,
-                questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder);
+                questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
+                metaModelProvider: provider);
             var instruction = executingAct
                 ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
                 : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.";
@@ -434,7 +437,8 @@ public sealed class OmniCliRuntime
                         server.AcquireStore(), server.AcquireCodecs(), artifacts, audit,
                         new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
                         providerDescription?.Auth.Kind == AuthKind.ApiKey,
-                        questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder);
+                        questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
+                 metaModelProvider: provider);
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",

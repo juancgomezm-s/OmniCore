@@ -683,6 +683,8 @@ public sealed class OmniServer : IOmniClient
                 writer.WriteStartObject();
                 writer.WriteString("snapshotId", root.GetProperty("snapshotId").GetString());
                 writer.WriteString("fingerprint", root.GetProperty("fingerprint").GetString());
+                if (root.TryGetProperty("snapshotFingerprint", out var snapshotFingerprint))
+                    writer.WriteString("snapshotFingerprint", snapshotFingerprint.GetString());
                 writer.WriteNumber("tokenCount", root.GetProperty("tokenCount").GetInt32());
                 if (root.TryGetProperty("tokenAccuracy", out var accuracy))
                 {
@@ -704,7 +706,7 @@ public sealed class OmniServer : IOmniClient
                 {
                     writer.WriteStartObject();
                     Copy(item, writer, "id", "kind", "tokens", "tokenAccuracy", "priority", "contributor",
-                        "category", "source", "scope", "sensitive");
+                        "category", "source", "scope", "sensitive", "refs");
                     writer.WriteEndObject();
                 }
                 writer.WriteEndArray();

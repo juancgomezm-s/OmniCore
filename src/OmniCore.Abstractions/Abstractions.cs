@@ -86,6 +86,12 @@ public interface IEventUpcaster
 /// Token counter con identidad de tokenizador y exactitud declaradas (ADR-0042 §1). M1 usa el
 /// FakeTokenCounter determinista en los tests.
 /// </summary>
+/// <summary>Sink de eventos de contexto/meta-modelo al Canonical Journal.</summary>
+public interface IContextEventSink
+{
+    ValueTask AppendAsync(DomainEventPayload payload, CancellationToken cancellationToken);
+}
+
 public interface ITokenCounter
 {
     TokenizerId Id { get; }
