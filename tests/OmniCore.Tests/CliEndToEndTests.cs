@@ -44,6 +44,7 @@ public sealed class CliEndToEndTests
             Environment.CurrentDirectory = workspace;
             Environment.SetEnvironmentVariable(DefaultPlatformPaths.DataDirVariable, data);
             Environment.SetEnvironmentVariable(DefaultPlatformPaths.ConfigDirVariable, config);
+            Environment.SetEnvironmentVariable("OMNI_LOCALE", "es");
             Environment.SetEnvironmentVariable("OMNI_MODEL", null);
 
             await using var provider = new ScriptedHttpProvider();
@@ -94,7 +95,10 @@ public sealed class CliEndToEndTests
             // M2: actual HTTP Chat Completions provider, plus diagnostics and typed client commands.
             var doctor = await Run("doctor");
             Assert.Equal(0, doctor.Code);
+            Assert.Contains("omni doctor — diagnóstico de M2", doctor.Output);
+            Assert.Contains("Modelos disponibles:", doctor.Output);
             Assert.Contains("Estado: modelo configurado", doctor.Output);
+            Assert.DoesNotContain("doctor.", doctor.Output);
             AssertNoLeaks(doctor.Output);
             var doctorJournal = await Run("doctor", "--verify-journal");
             Assert.Equal(0, doctorJournal.Code);
@@ -256,8 +260,18 @@ public sealed class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", "en");
             var englishDoctor = await Run("doctor");
             Assert.Equal(0, englishDoctor.Code);
+            Assert.Contains("omni doctor — M2 diagnostics", englishDoctor.Output);
             Assert.Contains("Available models:", englishDoctor.Output);
+            Assert.Contains("Status: model configured", englishDoctor.Output);
+            Assert.DoesNotContain("doctor.", englishDoctor.Output);
             AssertNoLeaks(englishDoctor.Output);
+
+            Environment.SetEnvironmentVariable("OMNI_LOCALE", "es");
+            var explicitEnglishDoctor = await Run("doctor", "--locale", "en");
+            Assert.Equal(0, explicitEnglishDoctor.Code);
+            Assert.Contains("Available models:", explicitEnglishDoctor.Output);
+            Assert.DoesNotContain("doctor.", explicitEnglishDoctor.Output);
+            Environment.SetEnvironmentVariable("OMNI_LOCALE", "en");
 
             var help = await Run("--help");
             Assert.Equal(0, help.Code);

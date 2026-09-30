@@ -32,7 +32,14 @@ public sealed class OmniCliRuntime
     /// <summary>Entrada plain provista por OmniCore.Cli; null cuando no existe un TTY interactivo.</summary>
     public Func<QuestionnairePromptDto, QuestionnaireResponseDto?>? QuestionnaireInput { get; set; }
 
-    private string Text(LocalizedText text) => Localize is null ? text.Render() : Localize(text.Key, text.Args);
+    private string Text(LocalizedText text) => Resolve(text, Localize);
+
+    private static LocalizedText Localized(string key, params (string Name, string Value)[] args) =>
+        new(key, args.ToDictionary(argument => argument.Name, argument => argument.Value, StringComparer.Ordinal));
+
+    private static string Resolve(LocalizedText text,
+        Func<string, IReadOnlyDictionary<string, string>, string>? localize) =>
+        localize is null ? text.Render() : localize(text.Key, text.Args);
 
     private string ResolveWire(string text)
     {
@@ -71,7 +78,7 @@ public sealed class OmniCliRuntime
         ArgumentNullException.ThrowIfNull(writeLine);
         if (string.IsNullOrWhiteSpace(objective))
         {
-            writeLine("omni act: falta la instrucción. Uso: omni act \"instrucción\"");
+            writeLine(Text(LocalizedText.Of("cli.runtime.act.usage")));
             return System.Threading.Tasks.Task.FromResult(2);
         }
 
@@ -93,8 +100,8 @@ public sealed class OmniCliRuntime
         }
         var registry = loaded.Registry;
         ReportProviderNotices(loaded, locale, writeLine, localize);
-        writeLine(locale == "en" ? "omni doctor — M2 diagnostics" : "omni doctor — diagnóstico de M2");
-        writeLine((locale == "en" ? "Configuration: " : "Configuración: ") + paths.ConfigDirectory);
+        writeLine(Resolve(LocalizedText.Of("doctor.heading"), localize));
+        writeLine(Resolve(Localized("doctor.config", ("path", paths.ConfigDirectory)), localize));
         var trust = new WorkspaceTrustStore(paths).IsTrusted(Directory.GetCurrentDirectory());
         WorkspaceConfigurationResult workspaceConfig;
         try
@@ -107,24 +114,24 @@ public sealed class OmniCliRuntime
             ReportDiagnostics(ex.Diagnostics, locale, writeLine, localize);
             return 1;
         }
-        WarnIgnoredWorkspaceConfig(workspaceConfig, locale, writeLine);
+        WarnIgnoredWorkspaceConfig(workspaceConfig, writeLine, localize);
         ReportDiagnostics(workspaceConfig.Diagnostics, locale, writeLine, localize);
-        writeLine(locale == "en" ? "Available models:" : "Modelos disponibles:");
+        writeLine(Resolve(LocalizedText.Of("doctor.models"), localize));
         foreach (var model in registry.Models())
         {
             var provider = registry.Provider(model.ProviderId);
-            writeLine("  " + model.Id + " → provider '" + model.ProviderId + "'"
-                + (provider is null ? "" : " (" + provider.Family + ", " + provider.BaseUrl + ")"));
+            writeLine(Resolve(Localized("doctor.model", ("name", model.Id), ("provider", model.ProviderId)), localize)
+                + (provider is null ? "" : Resolve(Localized("doctor.model.details", ("family", provider.Family.ToString()),
+                    ("baseUrl", provider.BaseUrl)), localize)));
             if (provider is not null && provider.Family != ProviderFamily.OpenAiChatCompatible)
             {
                 var unsupported = new ProviderFamilyNotSupportedException(provider.Family);
-                var message = localize is null ? unsupported.UserMessage.Render()
-                    : localize(unsupported.UserMessage.Key, unsupported.UserMessage.Args);
-                writeLine("    " + message);
+                writeLine("    " + Resolve(unsupported.UserMessage, localize));
             }
             if (provider is not null)
             {
-                writeLine("    TLS: " + OmniHost.DescribeTls(provider.BaseUrl, provider.TrustedCertificatePath));
+                writeLine(Resolve(Localized("doctor.tls",
+                    ("description", OmniHost.DescribeTls(provider.BaseUrl, provider.TrustedCertificatePath))), localize));
             }
         }
 
@@ -136,17 +143,19 @@ public sealed class OmniCliRuntime
         var credentials = OmniHost.CreateUserCredentialStore(paths);
         var localHost = OmniHost.CreateLocalModelHost();
         var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(paths, "."));
-        writeLine(locale == "en" ? "Wired runtime:" : "Runtime cableado:");
-        writeLine("  tokenCounter=" + tokenizer.Id);
-        writeLine("  scopeResolver=" + (resolver is null ? "?" : resolver.GetType().Name));
-        writeLine("  credentialStore=" + credentials.GetType().Name + " (" + credentials + ")");
-        writeLine("  localModelHost=" + localHost.GetType().Name + " managed=" + localHost.IsManagedRunning());
-        writeLine("  artifactStore=" + artifacts.GetType().Name + " (" + artifacts + ")");
+        writeLine(Resolve(LocalizedText.Of("doctor.runtime"), localize));
+        writeLine(Resolve(Localized("doctor.runtime.tokenCounter", ("value", tokenizer.Id.ToString())), localize));
+        writeLine(Resolve(Localized("doctor.runtime.scopeResolver",
+            ("value", resolver is null ? "?" : resolver.GetType().Name)), localize));
+        writeLine(Resolve(Localized("doctor.runtime.credentialStore", ("type", credentials.GetType().Name),
+            ("value", credentials.ToString() ?? "")), localize));
+        writeLine(Resolve(Localized("doctor.runtime.localModelHost", ("type", localHost.GetType().Name),
+            ("managed", localHost.IsManagedRunning().ToString())), localize));
+        writeLine(Resolve(Localized("doctor.runtime.artifactStore", ("type", artifacts.GetType().Name),
+            ("value", artifacts.ToString() ?? "")), localize));
         var configured = registry.Models().Count > 0;
-        writeLine(configured
-            ? (locale == "en" ? "Status: model configured ✓" : "Estado: modelo configurado ✓")
-            : (locale == "en" ? "Status: no model configured (run omni ask for guidance)"
-                : "Estado: sin modelo configurado (ejecuta omni ask para ver la guía)"));
+        writeLine(Resolve(LocalizedText.Of(configured ? "doctor.status.configured" : "doctor.status.unconfigured"),
+            localize));
         return configured ? 0 : 1;
     }
 
@@ -166,8 +175,7 @@ public sealed class OmniCliRuntime
         try { loaded = OmniHost.LoadUserConfiguration(paths); }
         catch (ConfigValidationException ex)
         {
-            WriteDiagnostics(ex.Diagnostics, Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es",
-                writeLine);
+            WriteDiagnostics(ex.Diagnostics, writeLine);
             return 1;
         }
         var registry = loaded.Registry;
@@ -180,22 +188,22 @@ public sealed class OmniCliRuntime
         }
         catch (ConfigValidationException ex)
         {
-            WriteDiagnostics(ex.Diagnostics, Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es",
-                writeLine);
+            WriteDiagnostics(ex.Diagnostics, writeLine);
             return 1;
         }
         var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
         if (!_providerDeprecationShown && loaded.DeprecationNotices is { Count: > 0 } notices)
         {
-            foreach (var notice in notices) writeLine("warning: " + Text(notice));
+            foreach (var notice in notices)
+                writeLine(Text(Localized("cli.runtime.warning", ("message", Text(notice)))));
             _providerDeprecationShown = true;
         }
         if (!_workspaceWarningShown)
         {
-            WarnIgnoredWorkspaceConfig(workspaceConfig, locale, writeLine);
+            WarnIgnoredWorkspaceConfig(workspaceConfig, writeLine, Localize);
             _workspaceWarningShown = workspaceConfig.Ignored;
         }
-        WriteDiagnostics(workspaceConfig.Diagnostics, locale, writeLine);
+        WriteDiagnostics(workspaceConfig.Diagnostics, writeLine);
         ModelDefinition? modelDefinition = null;
         NoModelConfiguredException? noModel = null;
         try
@@ -218,7 +226,8 @@ public sealed class OmniCliRuntime
         if (providerDescription is not null && providerDescription.Family != ProviderFamily.OpenAiChatCompatible)
         {
             var unsupported = new ProviderFamilyNotSupportedException(providerDescription.Family);
-            writeLine("omni " + (act ? "act" : "ask") + ": " + Text(unsupported.UserMessage));
+            writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
+                ("message", Text(unsupported.UserMessage)))));
             return 1;
         }
         string? key = null;
@@ -232,14 +241,14 @@ public sealed class OmniCliRuntime
             }
             catch (SecretValueTooShortException ex)
             {
-                writeLine("omni " + (act ? "act" : "ask") + ": " + Text(ex.UserMessage));
+                writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
+                    ("message", Text(ex.UserMessage)))));
                 return 1;
             }
             if (key is null)
             {
-                writeLine("omni " + (act ? "act" : "ask") + ": falta la credencial del provider. "
-                    + "Define OMNI_QWEN_KEY una vez; se guarda cifrada en el almacén del usuario. "
-                    + "No se guardan secretos en el repo (ADR-0018).");
+                writeLine(Text(Localized("cli.runtime.credential.missing",
+                    ("command", act ? "act" : "ask"))));
                 return 1;
             }
         }
@@ -251,8 +260,8 @@ public sealed class OmniCliRuntime
         {
             if (model is null)
             {
-                writeLine("omni " + (act ? "act" : "ask") + ": "
-                    + Text(noModel?.UserMessage ?? LocalizedText.Of("models.noneConfigured")));
+                writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
+                    ("message", Text(noModel?.UserMessage ?? LocalizedText.Of("models.noneConfigured"))))));
                 return 1;
             }
 
@@ -268,7 +277,9 @@ public sealed class OmniCliRuntime
                         + JsonObj.Field("objective", prompt) + "}"), cancellationToken);
                     if (start.Status != "ok")
                     {
-                        writeLine("omni ask: " + (start.Error is null ? "no se pudo iniciar el run" : ResolveWire(start.Error)));
+                        writeLine(Text(Localized("cli.runtime.run.startFailed", ("error",
+                            start.Error is null ? Text(LocalizedText.Of("cli.runtime.run.startFailed.fallback"))
+                                : ResolveWire(start.Error)))));
                         return 1;
                     }
 
@@ -281,7 +292,9 @@ public sealed class OmniCliRuntime
                     + JsonObj.Field("objective", prompt) + "}"), cancellationToken);
                 if (ack.Status != "ok")
                 {
-                    writeLine("omni act: " + (ack.Error is null ? "no se pudo crear el Run Act" : ResolveWire(ack.Error)));
+                    writeLine(Text(Localized("cli.runtime.run.actCreateFailed", ("error",
+                        ack.Error is null ? Text(LocalizedText.Of("cli.runtime.run.actCreateFailed.fallback"))
+                            : ResolveWire(ack.Error)))));
                     return 1;
                 }
             }
@@ -335,7 +348,8 @@ public sealed class OmniCliRuntime
                 var ack = server.RespondToInteraction(pendingApproval, selected);
                 if (ack.Status != "ok")
                 {
-                    writeLine("PlanApproval: " + (ack.Error ?? "no se pudo registrar la respuesta"));
+                    writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "PlanApproval"),
+                        ("error", ack.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
                     return 1;
                 }
                 if (selected is "approve_only" or "reject") return 0;
@@ -346,7 +360,7 @@ public sealed class OmniCliRuntime
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
             {
-                writeLine("omni ask: (servidor local managed activo)");
+                writeLine(Text(LocalizedText.Of("cli.runtime.managedHost.active")));
             }
 
             var executingAct = act || server.CurrentRunMode() == RunMode.Act;
@@ -381,7 +395,8 @@ public sealed class OmniCliRuntime
                 var ack = server.RespondToQuestionnaire(interactionId, answers, proposed.Cancelled);
                 if (ack.Status != "ok")
                 {
-                    writeLine("Question: " + (ack.Error ?? "no se pudo registrar la respuesta"));
+                    writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "Question"),
+                        ("error", ack.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
                     return null;
                 }
                 return questionnaireService.ResolvedOutcome(sessionId, interactionId);
@@ -429,8 +444,9 @@ public sealed class OmniCliRuntime
                 writeLine(result.FinalText);
             }
 
-            writeLine("── " + result.StopReason + " · steps " + result.Steps
-                + " · tokens " + (result.Usage.Input + result.Usage.Output));
+            writeLine(Text(Localized("cli.runtime.turn.summary", ("reason", result.StopReason.ToString()),
+                ("steps", result.Steps.ToString()),
+                ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
 
             if (!executingAct && server.RequestPlanApprovalIfNeeded() is { } approvalId)
             {
@@ -449,7 +465,8 @@ public sealed class OmniCliRuntime
                 var response = server.RespondToInteraction(approvalId, optionId);
                 if (response.Status != "ok")
                 {
-                    writeLine("PlanApproval: " + (response.Error ?? "no se pudo registrar la respuesta"));
+                    writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "PlanApproval"),
+                        ("error", response.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
                     return 1;
                 }
                 if (optionId == "approve_execute")
@@ -474,18 +491,19 @@ public sealed class OmniCliRuntime
 
             if (act && result.FinalText is null)
             {
-                writeLine("omni act: el turno no produjo respuesta.");
+                writeLine(Text(LocalizedText.Of("cli.runtime.act.noResponse")));
             }
 
             return act && (result.StopReason != StopReason.EndTurn || result.FinalText is null) ? 1 : 0;
         }
         catch (Exception ex)
         {
-            writeLine("omni " + (act ? "act" : "ask") + ": error: " + RedactSensitive(ex.Message ?? "?")
-                + " [" + ex.GetType().Name + "]");
+            writeLine(Text(Localized("cli.runtime.error", ("command", act ? "act" : "ask"),
+                ("message", RedactSensitive(ex.Message ?? "?")), ("type", ex.GetType().Name))));
             if (!act && ex.StackTrace is not null)
             {
-                writeLine("  frames: " + ex.StackTrace.Length + " " + string.Join("|", ex.StackTrace.Take(6)));
+                writeLine(Text(Localized("cli.runtime.error.frames", ("count", ex.StackTrace.Length.ToString()),
+                    ("frames", string.Join("|", ex.StackTrace.Take(6))))));
             }
 
             return 1;
@@ -520,8 +538,9 @@ public sealed class OmniCliRuntime
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
                 writeLine(FormatToolTrace(trace));
             if (!string.IsNullOrEmpty(result.FinalText)) writeLine(result.FinalText);
-            writeLine("── " + result.StopReason + " · steps " + result.Steps
-                + " · tokens " + (result.Usage.Input + result.Usage.Output));
+            writeLine(Text(Localized("cli.runtime.turn.summary", ("reason", result.StopReason.ToString()),
+                ("steps", result.Steps.ToString()),
+                ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
             if (result.StopReason != StopReason.EndTurn || result.FinalText is null)
             {
                 writeLine(Text(LocalizedText.Of("coder.completion.invalid")));
@@ -552,7 +571,9 @@ public sealed class OmniCliRuntime
                     return checkResults;
                 }, turn.MutationLedger);
             foreach (var gate in checkResults)
-                writeLine("[gate] " + gate.Key + " → " + (gate.Passed ? "ok" : "FALLO") + ": " + gate.Summary);
+                writeLine(Text(Localized("cli.runtime.gate.result", ("name", gate.Key),
+                    ("status", Text(LocalizedText.Of(gate.Passed ? "cli.runtime.gate.passed" : "cli.runtime.gate.failed"))),
+                    ("summary", gate.Summary))));
             if (completed)
             {
                 if (!hasExternalGates)
@@ -580,7 +601,8 @@ public sealed class OmniCliRuntime
                 var response = server.RespondToInteraction(pendingAcceptance.InteractionId, selected);
                 if (response.Status != "ok")
                 {
-                    writeLine("AcceptanceConfirmation: " + (response.Error ?? "no se pudo registrar la respuesta"));
+                    writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "AcceptanceConfirmation"),
+                        ("error", response.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
                     return 1;
                 }
                 if (selected == "accept")
@@ -621,9 +643,7 @@ public sealed class OmniCliRuntime
                 + string.Join("\n", feedback);
         }
 
-        writeLine(locale == "en"
-            ? "omni act: completion gates were not satisfied within the turn limit; Run remains resumable."
-            : "omni act: no se satisficieron los gates dentro del límite; el Run puede reanudarse.");
+        writeLine(Text(LocalizedText.Of("cli.runtime.completion.turnLimit")));
         return 1;
 
     }
@@ -700,7 +720,7 @@ public sealed class OmniCliRuntime
         catch (JsonException) { return request.DefaultOptionId; }
         for (var index = 0; index < choices.Count; index++)
             writeLine("[" + (index + 1) + "] " + choices[index].Label);
-        writeLine(locale == "en" ? "Choose an option (default: deny): " : "Elige una opción (por defecto: denegar): ");
+        writeLine(Text(LocalizedText.Of("cli.runtime.interaction.chooseDefaultDeny")));
         var input = Console.ReadLine();
         if (string.IsNullOrWhiteSpace(input)) return request.DefaultOptionId;
         if (int.TryParse(input, out var choice) && choice >= 1 && choice <= choices.Count)
@@ -715,8 +735,8 @@ public sealed class OmniCliRuntime
         writeLine("[1] " + Text(LocalizedText.Of("interaction.plan_approval.approve_execute")));
         writeLine("[2] " + Text(LocalizedText.Of("interaction.plan_approval.approve_only")));
         writeLine("[3] " + Text(LocalizedText.Of("interaction.plan_approval.continue_planning")));
-        writeLine("[4] " + (locale == "en" ? "Reject" : "Rechazar"));
-        writeLine(locale == "en" ? "Choose an option: " : "Elige una opción: ");
+        writeLine("[4] " + Text(LocalizedText.Of("interaction.plan_approval.reject")));
+        writeLine(Text(LocalizedText.Of("cli.runtime.interaction.choose")));
         return Console.ReadLine() switch
         {
             "1" or "approve_execute" => "approve_execute",
@@ -821,24 +841,22 @@ public sealed class OmniCliRuntime
         return handler.Handle(command, cancellationToken);
     }
 
-    private static void WarnIgnoredWorkspaceConfig(WorkspaceConfigurationResult result, string locale,
-        Action<string> writeLine)
+    private static void WarnIgnoredWorkspaceConfig(WorkspaceConfigurationResult result, Action<string> writeLine,
+        Func<string, IReadOnlyDictionary<string, string>, string>? localize)
     {
         if (!result.Ignored) return;
-        writeLine(locale == "en"
-            ? "warning: workspace is untrusted; .omnicore/ is ignored. Run 'omni trust' to trust this workspace."
-            : "aviso: el workspace no es confiable; se ignora .omnicore/. Ejecuta 'omni trust' para confiar en él.");
+        writeLine(Resolve(LocalizedText.Of("cli.runtime.workspace.untrusted"), localize));
     }
 
-    private void WriteDiagnostics(IReadOnlyList<ConfigDiagnostic> diagnostics, string locale, Action<string> writeLine)
+    private void WriteDiagnostics(IReadOnlyList<ConfigDiagnostic> diagnostics, Action<string> writeLine)
     {
         foreach (var diagnostic in diagnostics)
         {
-            var message = Localize is null ? diagnostic.Message.Render() : Text(diagnostic.Message);
+            var message = Text(diagnostic.Message);
             var location = diagnostic.File + (diagnostic.Line is null ? "" : ":" + diagnostic.Line
                 + ":" + diagnostic.Column);
-            writeLine((locale == "en" ? "Configuration error " : "Error de configuración ")
-                + location + " (" + diagnostic.KeyPath + "): " + message);
+            writeLine(Text(Localized("cli.runtime.config.error", ("location", location),
+                ("key", diagnostic.KeyPath), ("message", message))));
         }
     }
 
@@ -848,8 +866,7 @@ public sealed class OmniCliRuntime
         if (loaded.DeprecationNotices is null) return;
         foreach (var notice in loaded.DeprecationNotices)
         {
-            var message = localize is null ? notice.Render() : localize(notice.Key, notice.Args);
-            writeLine((locale == "en" ? "warning: " : "aviso: ") + message);
+            writeLine(Resolve(Localized("cli.runtime.warning", ("message", Resolve(notice, localize))), localize));
         }
     }
 
@@ -858,12 +875,11 @@ public sealed class OmniCliRuntime
     {
         foreach (var diagnostic in diagnostics)
         {
-            var message = localize is null ? diagnostic.Message.Render()
-                : localize(diagnostic.Message.Key, diagnostic.Message.Args);
+            var message = Resolve(diagnostic.Message, localize);
             var location = diagnostic.File + (diagnostic.Line is null ? "" : ":" + diagnostic.Line
                 + ":" + diagnostic.Column);
-            writeLine((locale == "en" ? "Configuration error " : "Error de configuración ")
-                + location + " (" + diagnostic.KeyPath + "): " + message);
+            writeLine(Resolve(Localized("cli.runtime.config.error", ("location", location),
+                ("key", diagnostic.KeyPath), ("message", message)), localize));
         }
     }
 }
