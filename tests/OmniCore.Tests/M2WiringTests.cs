@@ -98,6 +98,11 @@ public sealed class M2WiringTests
         // ADR-0042 §2: el WorkingState va al final y el snapshot registra tokens.
         var counter = new FakeTokenCounter();
         var contributors = new OmniCore.Context.IContextContributor[] {
+            new OmniCore.Context.SystemPromptContributor("system prompt"),
+            new OmniCore.Context.SessionConversationContributor(new[] {
+                new OmniCore.Context.ConversationContextEntry("conversation-000000", OmniCore.Domain.ContextItemKind.UserMessage,
+                    "pregunta", true),
+            }),
             new OmniCore.Context.WorkingStateContributor("Plan rev.1 - Objetivo: x\n→ tarea"),
         };
         var materializer = new OmniCore.Context.ContextMaterializer(counter, contributors);
@@ -110,7 +115,23 @@ public sealed class M2WiringTests
         Assert.True(snapshot.Items.Count >= 1, "Hay al menos el WorkingState");
         Assert.True(snapshot.Fingerprint.ModelKey == "k");
         Assert.True(snapshot.TokenCount > 0, "El conteo registra tokens");
-        Assert.Equal("working-state", snapshot.Items[0].Id);
+        Assert.Equal("system-prompt", snapshot.Items[0].Id);
+        Assert.Equal("working-state", snapshot.Items[^1].Id);
+    }
+
+    [Fact]
+    public void Execution_fingerprint_is_sha256_and_changes_with_effective_inputs()
+    {
+        var baseline = new OmniCore.Domain.ExecutionFingerprint("model-a", "harness-a", "tools-a",
+            "context-a", "overrides-a", "build-a");
+
+        Assert.Matches("^[0-9a-f]{64}$", baseline.Hash());
+        Assert.NotEqual(baseline.Hash(), new OmniCore.Domain.ExecutionFingerprint("model-b", "harness-a",
+            "tools-a", "context-a", "overrides-a", "build-a").Hash());
+        Assert.NotEqual(baseline.Hash(), new OmniCore.Domain.ExecutionFingerprint("model-a", "harness-b",
+            "tools-a", "context-a", "overrides-a", "build-a").Hash());
+        Assert.NotEqual(baseline.Hash(), new OmniCore.Domain.ExecutionFingerprint("model-a", "harness-a",
+            "tools-b", "context-a", "overrides-a", "build-a").Hash());
     }
 
     [Fact]
