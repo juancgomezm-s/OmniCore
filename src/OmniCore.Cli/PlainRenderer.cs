@@ -13,6 +13,8 @@ public sealed class PlainRenderer
 
     private int _printedBlocks;
 
+    private readonly HashSet<string> _printedInteractions = new(StringComparer.Ordinal);
+
     public PlainRenderer(string locale) => _locale = locale;
 
     /// <summary>Imprime los bloques de conversación nuevos (los del snapshot ya mostrados se omiten).</summary>
@@ -25,6 +27,24 @@ public sealed class PlainRenderer
         }
 
         _printedBlocks = blocks.Count;
+        foreach (var interaction in state.Overlays)
+        {
+            if (interaction.Id.Length == 0 || !_printedInteractions.Add(interaction.Id)) continue;
+            Print(interaction);
+        }
+    }
+
+    private void Print(InteractionOverlayModel interaction)
+    {
+        Console.WriteLine("[" + (_locale == "en" ? "Pending interaction" : "Interacción pendiente")
+            + "] " + interaction.Title + " (#" + interaction.Id + ")");
+        if (interaction.Subject.Length > 0) Console.WriteLine("  " + interaction.Subject);
+        for (var i = 0; i < interaction.Options.Count; i++)
+            Console.WriteLine("  [" + (i + 1) + "] " + interaction.Options[i]
+                + " (" + interaction.OptionIds[i] + ")");
+        Console.WriteLine(_locale == "en"
+            ? "  Resolve with: omni resolve " + interaction.Id + " <option-id>"
+            : "  Resuélvela con: omni resolve " + interaction.Id + " <id-opción>");
     }
 
     private void Print(ConversationBlock block)

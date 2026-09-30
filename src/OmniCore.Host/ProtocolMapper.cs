@@ -80,11 +80,16 @@ public sealed class ProtocolMapper
         ToolCallRejected e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Reason) },
         PermissionDenied e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Cause) },
         ToolCallCancelled e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Cause) },
-        ToolCallReconciled e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["outcome"] = e.Outcome.ToString() },
+        ToolCallReconciled e => new()
+        {
+            ["toolCallId"] = e.ToolCallId.ToString(), ["outcome"] = e.Outcome.ToString(),
+            ["cause"] = e.Cause?.ToString() ?? "",
+        },
         InteractionRequested e => new()
         {
             ["interactionId"] = e.InteractionId.ToString(), ["kind"] = e.Kind.ToString(),
             ["options"] = string.Join(",", OptionIds(e.OptionsJson)), ["defaultOption"] = e.DefaultOptionId,
+            ["subject"] = _redaction.Redact(e.SubjectJson),
             ["questionnaireSchemaHash"] = e.QuestionnaireSchemaRef?.Hash.ToString() ?? "",
         },
         InteractionResolved e => new()

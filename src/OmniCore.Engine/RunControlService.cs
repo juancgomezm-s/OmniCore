@@ -51,8 +51,8 @@ public sealed class RunControlService
             {
                 case ToolCallEffectUnknown u: blocking[u.ToolCallId] = true; break;
                 case ToolCallReconciled r when blocking.ContainsKey(r.ToolCallId):
-                    blocking[r.ToolCallId] = r.Outcome is ReconciliationOutcome.Unresolvable
-                        or ReconciliationOutcome.Conflict;
+                    blocking[r.ToolCallId] = r.Cause != InteractionCause.User
+                        && (r.Outcome is ReconciliationOutcome.Unresolvable or ReconciliationOutcome.Conflict);
                     break;
                 case ToolCallSucceeded s when blocking.ContainsKey(s.ToolCallId): blocking[s.ToolCallId] = false; break;
                 case ToolCallFailed f when blocking.ContainsKey(f.ToolCallId): blocking[f.ToolCallId] = false; break;
@@ -78,7 +78,7 @@ public sealed class RunControlService
         var pending = UnreconciledEffects(session);
         if (pending.Count > 0)
         {
-            throw new UnreconciledEffectException(pending);
+            throw new UnreconciledEffectException(pending, PendingEffectInteractionIds(session, pending));
         }
 
         var run = RunId.New();
@@ -198,7 +198,38 @@ public sealed class RunControlService
         }
 
         var batch = new List<DomainEventPayload> { new InteractionResolved(interaction, optionId, InteractionCause.User) };
-        if (request.Kind == InteractionKind.PlanApproval && ActiveRun(session) is { } run)
+        if (request.Kind == InteractionKind.ReconciliationConflict)
+        {
+            var toolCallId = ToolCallIdFrom(request.ToolCallJson)
+                ?? throw new InvalidInteractionOptionException(interaction, optionId);
+            var lastReconciliation = events.Select(evt => _codecs.Decode(evt))
+                .OfType<ToolCallReconciled>().LastOrDefault(item => item.ToolCallId == toolCallId);
+            if (lastReconciliation is null || lastReconciliation.Cause == InteractionCause.User
+                || lastReconciliation.Outcome is not (ReconciliationOutcome.Unresolvable or ReconciliationOutcome.Conflict))
+            {
+                throw new InteractionNotPendingException(interaction);
+            }
+
+            var resolvedOutcome = optionId switch
+            {
+                "resolution_applied" => ReconciliationOutcome.Applied,
+                "resolution_not_applied" => ReconciliationOutcome.NotApplied,
+                "resolution_keep_current" when lastReconciliation.Outcome == ReconciliationOutcome.Conflict
+                    => ReconciliationOutcome.Conflict,
+                _ => throw new InvalidInteractionOptionException(interaction, optionId),
+            };
+            batch.Add(new ToolCallReconciled(toolCallId, resolvedOutcome,
+                "human resolution: " + resolvedOutcome, InteractionCause.User));
+            if (ActiveRun(session) is { } effectRun
+                && PendingInteractions(events).All(pending => pending.InteractionId == interaction))
+            {
+                var projection = RunProjection.Replay(session, effectRun, _codecs, events);
+                if (projection.State == RunState.AwaitingInput)
+                    batch.Add(new UserInputReceived(effectRun,
+                        InputParts("EffectResolution: " + optionId), null, "InteractionResponse(EffectResolution)"));
+            }
+        }
+        else if (request.Kind == InteractionKind.PlanApproval && ActiveRun(session) is { } run)
         {
             batch.AddRange(PlanApprovalEffect(events, session, run, optionId));
         }
@@ -385,6 +416,30 @@ public sealed class RunControlService
     private static string InputParts(string text) => "["
         + System.Text.Json.JsonSerializer.Serialize(text, JsonStrings.Default.String) + "]";
 
+    private IReadOnlyList<InteractionId> PendingEffectInteractionIds(SessionId session, IReadOnlyList<ToolCallId> calls)
+    {
+        var callSet = calls.ToHashSet();
+        return PendingInteractions(_store.ReadFrom(session, 1))
+            .Where(request => request.Kind == InteractionKind.ReconciliationConflict
+                && ToolCallIdFrom(request.ToolCallJson) is { } call && callSet.Contains(call))
+            .Select(request => request.InteractionId).ToArray();
+    }
+
+    private static ToolCallId? ToolCallIdFrom(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty("toolCallId", out var id)
+                && id.GetString() is { } text ? ToolCallId.Parse(text) : null;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or FormatException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
     private static IReadOnlyList<string> OptionIds(string optionsJson)
     {
         var ids = new List<string>();
@@ -472,9 +527,13 @@ public sealed class UnreconciledEffectException : InvalidOperationException
 {
     public IReadOnlyList<ToolCallId> ToolCalls { get; }
 
-    public UnreconciledEffectException(IReadOnlyList<ToolCallId> toolCalls)
-        : base("efectos desconocidos sin reconciliar o con reconciliación Unresolvable/Conflict que requieren resolución humana antes de un Run nuevo: " + string.Join(", ", toolCalls))
+    public IReadOnlyList<InteractionId> Interactions { get; }
+
+    public UnreconciledEffectException(IReadOnlyList<ToolCallId> toolCalls,
+        IReadOnlyList<InteractionId>? interactions = null)
+        : base("efectos sin resolución humana antes de un Run nuevo: " + string.Join(", ", toolCalls))
     {
         ToolCalls = toolCalls;
+        Interactions = interactions ?? Array.Empty<InteractionId>();
     }
 }
