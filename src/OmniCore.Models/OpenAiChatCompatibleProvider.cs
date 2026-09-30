@@ -37,10 +37,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
     private readonly ISecretProvider _secrets;
     private readonly Func<HttpClient> _httpFactory;
     private readonly OpenAiProviderOptions _options;
-    private readonly object _breakerLock = new();
-    private int _consecutiveFailures;
-    private DateTimeOffset? _openUntil;
-    private bool _halfOpenProbe;
+    private readonly ProviderResilience _resilience;
 
     public OpenAiChatCompatibleProvider(ProviderDescriptor descriptor, ISecretProvider secrets)
         : this(descriptor, secrets, static () => new HttpClient(), null, null) { }
@@ -61,8 +58,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         _httpFactory = httpFactory;
         _options = options ?? new OpenAiProviderOptions();
         ProviderKey = providerKey ?? descriptor.Id;
-        if (_options.CircuitFailureThreshold < 1 || _options.MaxRetries < 0 || _options.CircuitCooldown < TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(options), "Los límites de resiliencia no pueden ser negativos y el umbral debe ser mayor que cero.");
+        _resilience = new ProviderResilience(_options, ProviderKey);
     }
 
     public string ProviderKey { get; }
@@ -85,7 +81,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        EnterCircuit();
+        _resilience.EnterCircuit();
         var (response, http) = await SendWithRetryAsync(BuildBody(request), cancellationToken).ConfigureAwait(false);
         var completed = false;
         try
@@ -93,7 +89,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
             yield return new ResponseStarted(0);
             await foreach (var item in ReadSseAsync(response, request, cancellationToken).ConfigureAwait(false))
             {
-                if (item is ResponseCompleted) { completed = true; MarkSuccess(); }
+                if (item is ResponseCompleted) { completed = true; _resilience.MarkSuccess(); }
                 yield return item;
             }
             if (!completed) throw new ModelProviderException("ProviderUnavailable", "El stream terminó sin completar la respuesta.");
@@ -102,55 +98,14 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         {
             response.Dispose();
             http.Dispose();
-            if (!completed && !cancellationToken.IsCancellationRequested) MarkFailure();
+            if (!completed && !cancellationToken.IsCancellationRequested) _resilience.MarkFailure();
         }
     }
 
-    private async System.Threading.Tasks.Task<(HttpResponseMessage Response, HttpClient Client)> SendWithRetryAsync(
-        string requestJson, CancellationToken cancellationToken)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var http = _httpFactory();
-            try
-            {
-                using var httpRequest = CreateHttpRequest(requestJson, cancellationToken);
-                var response = await http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-                if (response.IsSuccessStatusCode) return (response, http);
-                var status = (int)response.StatusCode;
-                var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                if (IsRetryableStatus(status) && attempt < _options.MaxRetries)
-                {
-                    var delay = ComputeDelay(attempt, RetryAfter(response));
-                    response.Dispose();
-                    http.Dispose();
-                    await _options.DelayAsync(delay, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-                response.Dispose();
-                http.Dispose();
-                MarkFailure();
-                throw ErrorFromBody(status, body);
-            }
-            catch (HttpRequestException ex)
-            {
-                http.Dispose();
-                if (attempt < _options.MaxRetries)
-                {
-                    await _options.DelayAsync(ComputeDelay(attempt, null), cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-                MarkFailure();
-                throw new ModelProviderException("ProviderUnavailable", ex.Message, null, ex);
-            }
-            catch
-            {
-                http.Dispose();
-                throw;
-            }
-        }
-    }
+    private System.Threading.Tasks.Task<(HttpResponseMessage Response, HttpClient Client)> SendWithRetryAsync(
+        string requestJson, CancellationToken cancellationToken) =>
+        _resilience.SendWithRetryAsync(_httpFactory, () => CreateHttpRequest(requestJson, cancellationToken),
+            ErrorFromBody, IsRetryableStatus, cancellationToken);
 
     public static ModelResponse ParseChatCompletion(string json)
     {
@@ -443,79 +398,10 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         catch (JsonException) { return JsonDocument.Parse("{}").RootElement.Clone(); }
     }
 
-    private void EnterCircuit()
-    {
-        lock (_breakerLock)
-        {
-            if (_openUntil is null) return;
-            if (_options.UtcNow() < _openUntil.Value)
-                throw new ModelProviderException("ProviderUnavailable", "Circuit breaker abierto para " + ProviderKey + ".");
-            if (_halfOpenProbe)
-                throw new ModelProviderException("ProviderUnavailable", "Circuit breaker en prueba para " + ProviderKey + ".");
-            _halfOpenProbe = true;
-        }
-    }
-
-    private void MarkSuccess()
-    {
-        lock (_breakerLock)
-        {
-            _consecutiveFailures = 0;
-            _openUntil = null;
-            _halfOpenProbe = false;
-        }
-    }
-
-    private void MarkFailure()
-    {
-        lock (_breakerLock)
-        {
-            _halfOpenProbe = false;
-            _consecutiveFailures++;
-            if (_consecutiveFailures >= _options.CircuitFailureThreshold)
-                _openUntil = _options.UtcNow() + _options.CircuitCooldown;
-        }
-    }
-
-    private TimeSpan ComputeDelay(int attempt, TimeSpan? retryAfter)
-    {
-        if (retryAfter is not null) return retryAfter.Value < TimeSpan.Zero ? TimeSpan.Zero : retryAfter.Value;
-        var multiplier = Math.Pow(2, attempt);
-        var raw = TimeSpan.FromMilliseconds(_options.BaseRetryDelay.TotalMilliseconds * multiplier);
-        var jitter = Math.Clamp(_options.Jitter(), 0, 1);
-        var jittered = raw.TotalMilliseconds * (0.75 + jitter * 0.5);
-        return TimeSpan.FromMilliseconds(Math.Min(_options.MaxRetryDelay.TotalMilliseconds, jittered));
-    }
-
-    private TimeSpan? RetryAfter(HttpResponseMessage response)
-    {
-        var delta = response.Headers.RetryAfter?.Delta;
-        if (delta is not null) return delta;
-        var date = response.Headers.RetryAfter?.Date;
-        return date is null ? null : date.Value - _options.UtcNow();
-    }
-
     private static bool IsRetryableStatus(int status) => status is 408 or 429 || status >= 500;
 
-    internal static ModelProviderException ErrorFromBody(int status, string body)
-    {
-        var kind = status switch
-        {
-            401 or 403 => "AuthenticationFailed",
-            408 or 429 => "RateLimited",
-            >= 500 => "ProviderUnavailable",
-            _ => "ProviderError",
-        };
-        var message = string.IsNullOrWhiteSpace(body) ? "(sin body)" : body;
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            if (doc.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object && error.TryGetProperty("message", out var detail))
-                message = "#" + status.ToString(CultureInfo.InvariantCulture) + ": " + detail.GetString();
-        }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException) { }
-        return new ModelProviderException(kind, message, status);
-    }
+    internal static ModelProviderException ErrorFromBody(int status, string body) =>
+        ProviderResilience.ErrorFromBody(status, body);
 
     private sealed class ToolAccumulator(int index)
     {

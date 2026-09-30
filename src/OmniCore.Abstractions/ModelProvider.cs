@@ -13,6 +13,25 @@ public interface IModelProvider
     IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken cancellationToken);
 }
 
+/// <summary>Helpers sobre el contrato: agregan el stream sin formar parte de cada adapter (ADR-0005 §2).</summary>
+public static class ModelProviderExtensions
+{
+    /// <summary>Consume el stream y devuelve la respuesta completa (para consumidores síncronos).</summary>
+    public static ModelResponse Complete(this IModelProvider provider, ModelRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        var enumerator = provider.StreamAsync(request, cancellationToken).GetAsyncEnumerator(cancellationToken);
+        try
+        {
+            ModelResponse? response = null;
+            while (enumerator.MoveNextAsync().AsTask().GetAwaiter().GetResult())
+                if (enumerator.Current is ResponseCompleted completed) response = completed.Response;
+            return response ?? throw new InvalidOperationException("El stream del provider terminó sin una respuesta completa.");
+        }
+        finally { enumerator.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+    }
+}
+
 /// <summary>Solicitud al modelo (ADR-0005 §2).</summary>
 public sealed class ModelRequest
 {
