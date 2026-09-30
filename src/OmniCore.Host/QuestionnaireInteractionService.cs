@@ -128,13 +128,14 @@ public sealed class QuestionnaireInteractionService
     }
 
     /// <summary>
-    /// Valida la respuesta contra el schema vigente y, si es válida, redacta + persiste la
+    /// Valida la respuesta contra el schema PUBLICADO para la interacción (artifact del
+    /// <c>InteractionRequested</c>; nunca uno aportado por el llamador) y, si es válida, redacta + persiste la
     /// respuesta como artifact y emite <c>InteractionResolved</c> EXACTAMENTE UNA VEZ. Una
     /// respuesta duplicada/tardía/para otra interacción se rechaza sin emitir nada. Cancelar
     /// (ADR-0045 §5) es válido como resultado estructurado (<c>State=Cancelled</c>), nunca se
     /// escoge ni se aplica Deny.
     /// </summary>
-    public ResolveResult Resolve(EventStream stream, InteractionId interactionId, QuestionnaireSchema schema,
+    public ResolveResult Resolve(EventStream stream, InteractionId interactionId,
         IReadOnlyList<QuestionAnswer> answers, bool cancelled, string? toolCallJson)
     {
         var already = IsResolved(stream, interactionId);
@@ -144,6 +145,13 @@ public sealed class QuestionnaireInteractionService
         }
 
         if (already == ResolutionStatus.Unknown)
+        {
+            return ResolveResult.Unknown();
+        }
+
+        // El schema sale del journal/artifact publicado: el llamador no puede aflojarlo.
+        var schema = SchemaFor(stream, interactionId);
+        if (schema is null)
         {
             return ResolveResult.Unknown();
         }
@@ -177,12 +185,13 @@ public sealed class QuestionnaireInteractionService
         foreach (var evt in stream.EventsSince(1))
         {
             var payload = _codecs.Decode(evt);
-            if (payload is InteractionRequested req
+            // Solo interacciones Question: otras clases comparten el espacio de ids.
+            if (payload is InteractionRequested req && req.Kind == InteractionKind.Question
                 && req.InteractionId.ToString().Equals(id, StringComparison.Ordinal))
             {
                 foundRequested = true;
             }
-            else if (payload is InteractionResolved res
+            else if (foundRequested && payload is InteractionResolved res
                 && res.InteractionId.ToString().Equals(id, StringComparison.Ordinal))
             {
                 return ResolutionStatus.Resolved;
