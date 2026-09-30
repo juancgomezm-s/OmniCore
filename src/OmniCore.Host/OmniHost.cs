@@ -358,18 +358,37 @@ public sealed class OmniHost
         return (OpenAiChatCompatibleProvider)ConnectProvider(descriptor, baseUrl, secretRef, apiKey);
     }
 
+    /// <summary>Familias con adapter nativo implementado (ADR-0005 §1); el resto falla tipado.</summary>
+    public static bool IsProviderFamilySupported(ProviderFamily family) =>
+        family is ProviderFamily.OpenAiChatCompatible or ProviderFamily.AnthropicMessages;
+
     /// <summary>Conecta la implementación que corresponde a la familia declarada (ADR-0005, M5).</summary>
-    public static OpenAiChatCompatibleProvider ConnectProvider(ProviderDescriptor descriptor, string baseUrl,
+    public static IModelProvider ConnectProvider(ProviderDescriptor descriptor, string baseUrl,
         string secretRef, string apiKey)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         return descriptor.Family switch
         {
             ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey),
-            ProviderFamily.AnthropicMessages => throw new ProviderFamilyNotSupportedException(descriptor.Family),
+            ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey),
             ProviderFamily.OpenAIResponses => throw new ProviderFamilyNotSupportedException(descriptor.Family),
             _ => throw new ProviderFamilyNotSupportedException(descriptor.Family),
         };
+    }
+
+    private static AnthropicMessagesProvider ConnectAnthropicMessages(ProviderDescriptor descriptor,
+        string baseUrl, string secretRef, string apiKey)
+    {
+        var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
+            descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
+            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath };
+        // Misma política TLS que el resto: validación estándar para hosts públicos como api.anthropic.com.
+        HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
+        {
+            Timeout = System.TimeSpan.FromSeconds(600),
+        };
+        var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
+        return new AnthropicMessagesProvider(configured, secrets, CreateClient);
     }
 
     private static OpenAiChatCompatibleProvider ConnectOpenAiChatCompatible(ProviderDescriptor descriptor,
