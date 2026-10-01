@@ -267,4 +267,35 @@ public sealed class SecretLeakTests
         Assert.DoesNotContain(secret, encoded, StringComparison.Ordinal);
         Assert.Contains(SecretRedactor.Marker, encoded, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void A_short_secret_inside_an_id_never_corrupts_the_event_and_is_still_redacted_in_text()
+    {
+        _ = SecretRedactor.Shared;
+        var secret = "c0ff" + Random.Shared.Next(1000, 9999);
+        SecretRedactorRegistry.Register(secret);
+        var run = new RunId(Guid.Parse(secret + "-0000-7000-8000-000000000000"));
+        var input = new UserInputReceived(run, JsonSerializer.Serialize("la clave es " + secret), null, null);
+        var codec = EventCodecs.Create().CodecFor(input.Type());
+
+        var encoded = codec.Encode(input);
+        var decoded = Assert.IsType<UserInputReceived>(codec.Decode(input.Type(), encoded));
+
+        Assert.Equal(run, decoded.RunId);
+        Assert.DoesNotContain("la clave es " + secret, encoded, StringComparison.Ordinal);
+        Assert.Contains(SecretRedactor.Marker, decoded.InputPartsJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_secret_shaped_like_a_guid_is_redacted_when_it_is_the_whole_value()
+    {
+        _ = SecretRedactor.Shared;
+        var guidSecret = Guid.NewGuid().ToString();
+        SecretRedactorRegistry.Register(guidSecret);
+        var input = new UserInputReceived(RunId.New(), JsonSerializer.Serialize(guidSecret), null, guidSecret);
+
+        var encoded = EventCodecs.Create().CodecFor(input.Type()).Encode(input);
+
+        Assert.DoesNotContain(guidSecret, encoded, StringComparison.Ordinal);
+    }
 }
