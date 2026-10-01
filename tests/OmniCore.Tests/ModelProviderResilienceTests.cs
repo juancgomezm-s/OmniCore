@@ -41,6 +41,54 @@ data: [DONE]
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Tool_names_are_encoded_to_the_function_name_charset_on_the_wire()
+    {
+        // NVIDIA (y otros endpoints Chat Completions) validan function.name como [A-Za-z0-9_-]+ y
+        // rechazan los nombres canónicos con punto. El request debe llevar la forma de transporte.
+        var handler = new QueueHandler(_ => Sse("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n" + "data: [DONE]\n\n"));
+        var provider = CreateProvider(handler);
+        var request = RequestWithTools(ToolChoice.Exact("plan.propose"));
+
+        await Collect(provider.StreamAsync(request, TestContext.Current.CancellationToken));
+
+        var payload = await handler.LastBody!;
+        Assert.Contains("\"name\":\"filesystem-read\"", payload);
+        Assert.DoesNotContain("\"name\":\"filesystem.read\"", payload);
+        Assert.Contains("\"name\":\"plan-propose\"", payload);
+        Assert.DoesNotContain("\"name\":\"plan.propose\"", payload);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Wire_tool_name_is_decoded_back_to_the_canonical_tool_id_in_the_response()
+    {
+        var handler = new QueueHandler(_ => Sse("""
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-x","function":{"name":"filesystem-read","arguments":"{\"path\":\"a.txt\"}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"""));
+        var provider = CreateProvider(handler);
+
+        var events = await Collect(provider.StreamAsync(Request(), TestContext.Current.CancellationToken));
+
+        var completed = Assert.IsType<ResponseCompleted>(events[^1]).Response;
+        var call = Assert.Single(completed.Content.OfType<ToolCallBlock>());
+        Assert.Equal("filesystem.read", call.ToolName);
+        Assert.Equal("{\"path\":\"a.txt\"}", call.ArgumentsJson);
+    }
+
+    [Fact]
+    public void Wire_tool_name_decode_is_injective_for_all_escape_tokens()
+    {
+        var parsed = OpenAiChatCompatibleProvider.ParseChatCompletion(
+            "{\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":{\"name\":\"weird-name_uwith_mdash\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}");
+        var call = Assert.Single(parsed.Content.OfType<ToolCallBlock>());
+        Assert.Equal("weird.name_with-dash", call.ToolName);
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Cancellation_during_stream_stops_enumeration()
     {
         var handler = new QueueHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -244,6 +292,20 @@ data: [DONE]
         new(new ProviderDescriptor("test-provider", ProviderFamily.OpenAiChatCompatible, "https://example.test/v1",
             AuthConfig.None(), false, false, true), new EmptySecrets(),
             () => new HttpClient(handler, disposeHandler: false), options);
+
+    private static ModelRequest RequestWithTools(ToolChoice choice)
+    {
+        var profile = new EffectiveModelProfile("model-a", 4096, 4096, 1024, ["text"], [ToolCallFormat.Native], true,
+            new Dictionary<string, double>());
+        var selection = new ModelSelection(new ModelIdValue("model-a"), 4096, ToolMode.Direct, null);
+        var messages = new ModelMessage[] { new(MessageRole.User, [new TextBlock("hello")]) };
+        var tools = new ToolDefinition[]
+        {
+            new("filesystem.read", "Read a file", "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}"),
+            new("plan.propose", "Propose a plan", "{\"type\":\"object\"}"),
+        };
+        return new ModelRequest(selection, messages, null, tools, choice, null, null, null, null);
+    }
 
     private static ModelRequest Request(ProviderState? continuation = null)
     {

@@ -205,7 +205,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         }
         foreach (var tool in tools.Values)
         {
-            var block = new ToolCallBlock(ToolCallId.New(), tool.Id, tool.Name.ToString(), tool.Arguments.Length == 0 ? "{}" : tool.Arguments.ToString());
+            var block = new ToolCallBlock(ToolCallId.New(), tool.Id, DecodeWireToolName(tool.Name.ToString()), tool.Arguments.Length == 0 ? "{}" : tool.Arguments.ToString());
             content.Add(block);
             yield return new BlockCompleted(100 + tool.Index, block);
         }
@@ -281,7 +281,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         {
             Function = new ChatRequestFunction
             {
-                Name = tool.Name,
+                Name = EncodeWireToolName(tool.Name),
                 Description = tool.Description,
                 Parameters = ParseJsonElementOrEmpty(tool.InputSchemaJson),
             },
@@ -296,7 +296,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
             {
                 "none" => JsonSerializer.SerializeToElement("none", OpenAiJsonContext.Default.String),
                 "exact" => JsonSerializer.SerializeToElement(
-                    new ChatToolChoice { Type = "function", Function = new ChatToolChoiceFunction { Name = request.ToolChoice.ToolName ?? "" } },
+                    new ChatToolChoice { Type = "function", Function = new ChatToolChoiceFunction { Name = EncodeWireToolName(request.ToolChoice.ToolName ?? "") } },
                     OpenAiJsonContext.Default.ChatToolChoice),
                 _ => JsonSerializer.SerializeToElement("auto", OpenAiJsonContext.Default.String),
             },
@@ -321,7 +321,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
                         {
                             Id = ids.GetValueOrDefault(call.Id.ToString(), call.ProviderCallId ?? call.Id.ToString()),
                             Type = "function",
-                            Function = new ChatRequestFunctionCall { Name = call.ToolName, Arguments = call.ArgumentsJson },
+                            Function = new ChatRequestFunctionCall { Name = EncodeWireToolName(call.ToolName), Arguments = call.ArgumentsJson },
                         }],
                     };
                     break;
@@ -338,6 +338,55 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Codificación biyectiva del nombre de tool para endpoints Chat Completions que imponen
+    /// <c>[A-Za-z0-9_-]+</c> (p. ej. NVIDIA aplica el charset de function-name y rechaza los
+    /// nombres canónicos con punto). El nombre canónico vuelve a decodificarse en la respuesta
+    /// antes de que el runtime lo vea, así que la resolución de tool y su autorización siguen
+    /// operando sobre el ToolId canónico.
+    /// </summary>
+    internal static string EncodeWireToolName(string canonical)
+    {
+        if (canonical.Length == 0) return canonical;
+        var builder = new StringBuilder(canonical.Length + 4);
+        foreach (var c in canonical)
+        {
+            switch (c)
+            {
+                case '.': builder.Append('-'); break;
+                case '_': builder.Append("_u"); break;
+                case '-': builder.Append("_m"); break;
+                default: builder.Append(c); break;
+            }
+        }
+        return builder.ToString();
+    }
+
+    /// <summary>Inversa exacta de <see cref="EncodeWireToolName"/>.</summary>
+    internal static string DecodeWireToolName(string wire)
+    {
+        if (wire.IndexOf('_') < 0 && wire.IndexOf('-') < 0) return wire;
+        var builder = new StringBuilder(wire.Length);
+        for (var i = 0; i < wire.Length; i++)
+        {
+            var c = wire[i];
+            if (c == '_' && i + 1 < wire.Length && (wire[i + 1] == 'u' || wire[i + 1] == 'm'))
+            {
+                builder.Append(wire[i + 1] == 'u' ? '_' : '-');
+                i++;
+            }
+            else if (c == '-')
+            {
+                builder.Append('.');
+            }
+            else
+            {
+                builder.Append(c);
+            }
+        }
+        return builder.ToString();
     }
 
     private static Dictionary<string, string> CollectServerCallIds(IReadOnlyList<ModelMessage> messages)
@@ -358,7 +407,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
             if (!string.IsNullOrEmpty(message.ReasoningContent)) content.Add(new ReasoningBlock(message.ReasoningContent, ReasoningVisibility.Full, null));
             if (!string.IsNullOrEmpty(message.Content)) content.Add(new TextBlock(message.Content));
             foreach (var tool in message.ToolCalls ?? [])
-                content.Add(new ToolCallBlock(ToolCallId.New(), tool.Id, tool.Function?.Name ?? "", tool.Function?.Arguments ?? "{}"));
+                content.Add(new ToolCallBlock(ToolCallId.New(), tool.Id, DecodeWireToolName(tool.Function?.Name ?? ""), tool.Function?.Arguments ?? "{}"));
         }
         var usage = response.Usage is null ? new TokenUsage(0, 0, 0, 0, 0) :
             new TokenUsage(response.Usage.PromptTokens, response.Usage.CompletionTokens, 0, 0, 0);
