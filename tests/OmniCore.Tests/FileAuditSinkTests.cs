@@ -236,8 +236,12 @@ public sealed class FileAuditSinkTests
 
         // "Purga de la sesión": se borra el journal (archivo); la auditoría sigue íntegra.
         // El pool de conexiones de SQLite retiene el archivo tras Close(), así que se libera.
+        // Solo el pool de ESTE journal (ClearPool): ClearAllPools cerraría a la vez conexiones en
+        // reposo de otros tests en paralelo, y al cerrarse físicamente un escritor WAL ajeno se
+        // volcaría su -wal y mutaría su journal.db (p. ej. Verification_never_mutates_the_journal).
         (server.AcquireStore() as SqliteEventStore)?.Close();
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        Microsoft.Data.Sqlite.SqliteConnection.ClearPool(
+            new Microsoft.Data.Sqlite.SqliteConnection("DataSource=" + journal));
         File.Delete(journal);
         foreach (var sidecar in new[] { journal + "-wal", journal + "-shm" })
         {
