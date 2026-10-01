@@ -9,7 +9,14 @@ using OmniCore.Abstractions;
 using OmniCore.Host;
 using OmniCore.Models;
 
-/// <summary>Login con la suscripción de ChatGPT (ADR-0011 §3.4), sin red ni navegador.</summary>
+/// <summary>
+/// Login con la suscripción de ChatGPT (ADR-0011 §3.4), sin red ni navegador.
+/// Los tokens de fixture se registran en el <see cref="SecretRedactorRegistry"/> process-wide
+/// (ADR-0018 §3) al guardarse la sesión: deben contener al menos un carácter ajeno al alfabeto
+/// de los GUID (hex + '-'), como la 's' de "access-1". Un valor como "acc-1" coincide con
+/// subcadenas de GUIDs aleatorios (p. ej. "…-bacc-1f2a…"), y la redacción de payloads los
+/// corrompería en tests paralelos (EventParseException al releer el journal).
+/// </summary>
 public sealed class ChatGptSubscriptionAuthProviderTests
 {
     private static readonly DateTimeOffset T0 = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
@@ -39,7 +46,7 @@ public sealed class ChatGptSubscriptionAuthProviderTests
     [Fact]
     public async System.Threading.Tasks.Task Browser_login_exchanges_the_code_and_stores_tokens_with_the_account_from_the_jwt()
     {
-        var handler = new FakeHandler(_ => TokenResponse("acc-1", "ref-1", 3600, Jwt("acct-7788")));
+        var handler = new FakeHandler(_ => TokenResponse("access-1", "ref-1", 3600, Jwt("acct-7788")));
         var store = new MemoryStore();
         string? shownUrl = null;
         var listener = new FakeListener(url => new Dictionary<string, string> { ["code"] = "code-123", ["state"] = StateOf(url) });
@@ -54,9 +61,9 @@ public sealed class ChatGptSubscriptionAuthProviderTests
         Assert.Equal("code-123", form["code"]);
         Assert.False(string.IsNullOrEmpty(form["code_verifier"]));
         var credential = await auth.GetAsync(TestContext.Current.CancellationToken);
-        Assert.Equal("acc-1", credential.AccessToken);
+        Assert.Equal("access-1", credential.AccessToken);
         Assert.Equal("acct-7788", credential.AccountId);
-        Assert.DoesNotContain("acc-1", shownUrl!);
+        Assert.DoesNotContain("access-1", shownUrl!);
     }
 
     [Fact]
@@ -78,8 +85,8 @@ public sealed class ChatGptSubscriptionAuthProviderTests
     {
         var now = T0;
         var handler = new FakeHandler(
-            _ => TokenResponse("acc-1", "ref-1", 600, Jwt("acct-1")),
-            _ => TokenResponse("acc-2", null, 3600, null));
+            _ => TokenResponse("access-1", "ref-1", 600, Jwt("acct-1")),
+            _ => TokenResponse("access-2", null, 3600, null));
         var listener = ApprovingListener();
         var auth = Create(handler, new MemoryStore(), clock: () => now, listener: listener);
         await auth.LoginWithBrowserAsync(url => listener.Url = url, TestContext.Current.CancellationToken);
@@ -87,7 +94,7 @@ public sealed class ChatGptSubscriptionAuthProviderTests
         now = T0.AddMinutes(6); // quedan 4 min < margen de 5 min
         var credential = await auth.GetAsync(TestContext.Current.CancellationToken);
 
-        Assert.Equal("acc-2", credential.AccessToken);
+        Assert.Equal("access-2", credential.AccessToken);
         Assert.Equal("acct-1", credential.AccountId);
         var refresh = HttpUtility.ParseQueryString(handler.Bodies[1]);
         Assert.Equal("refresh_token", refresh["grant_type"]);
@@ -103,7 +110,7 @@ public sealed class ChatGptSubscriptionAuthProviderTests
 
         var now = T0;
         var handler = new FakeHandler(
-            _ => TokenResponse("acc-1", "ref-1", 60, Jwt("a")),
+            _ => TokenResponse("access-1", "ref-1", 60, Jwt("a")),
             _ => new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("{\"error\":\"invalid_grant\"}") });
         var listener = ApprovingListener();
         var auth = Create(handler, new MemoryStore(), clock: () => now, listener: listener);
@@ -121,7 +128,7 @@ public sealed class ChatGptSubscriptionAuthProviderTests
             _ => Json("{\"device_auth_id\":\"dev-1\",\"user_code\":\"ABCD-1234\",\"interval\":1}"),
             _ => new HttpResponseMessage(HttpStatusCode.Forbidden),
             _ => Json("{\"authorization_code\":\"code-x\",\"code_verifier\":\"ver-x\"}"),
-            _ => TokenResponse("acc-d", "ref-d", 3600, Jwt("acct-dev1")));
+            _ => TokenResponse("access-d", "ref-d", 3600, Jwt("acct-dev1")));
         string? shownCode = null;
         var auth = Create(handler, new MemoryStore());
 
