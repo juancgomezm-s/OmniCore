@@ -102,7 +102,7 @@ public sealed class DomainEvent
             0,
             type,
             schemaVersion,
-            DateTimeOffset.Now,
+            DateTimeOffset.UtcNow,
             causation,
             correlationId,
             runId,
