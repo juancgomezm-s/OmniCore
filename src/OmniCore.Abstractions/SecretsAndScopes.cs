@@ -22,6 +22,9 @@ public interface ISecretRedactor
 
     /// <summary>Redacta secretos conocidos y sus codificaciones del texto.</summary>
     string Redact(string input);
+
+    /// <summary>True si el valor completo es un secreto registrado (o una de sus codificaciones).</summary>
+    bool IsKnownSecret(string value) => false;
 }
 
 /// <summary>

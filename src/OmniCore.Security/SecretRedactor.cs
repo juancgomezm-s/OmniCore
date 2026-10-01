@@ -30,6 +30,8 @@ public sealed class SecretRedactor : ISecretRedactor
 
     public string Redact(string input) => RedactKnownValues(_patterns.RedactPatternsOnly(input));
 
+    public bool IsKnownSecret(string value) => !string.IsNullOrEmpty(value) && _known.ContainsKey(value);
+
     /// <summary>Redacta solo valores conocidos; se usa como hook de PiiRedactor para el journal.</summary>
     public string RedactKnownValues(string input)
     {

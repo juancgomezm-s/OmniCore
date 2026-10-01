@@ -243,7 +243,9 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
     {
         var json = JsonSerializer.Serialize((T) payload, _info);
         var redactor = OmniCore.Abstractions.SecretRedactorRegistry.Current;
-        return redactor is null ? json : redactor.Redact(json);
+        // Por valor y respetando ids: sustituir sobre el JSON crudo podía corromper un GUID que
+        // contuviera un secreto corto y dejar el evento ilegible.
+        return redactor is null ? json : JournalRedaction.RedactStringValues(json, redactor);
     }
 
     public string DebugType() => _type.ToString();
