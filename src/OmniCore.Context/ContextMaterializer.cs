@@ -64,7 +64,7 @@ public sealed class ContextMaterializer
                     candidate.Provenance.Sensitive ? Sensitivity.Sensitive : Sensitivity.Normal);
                 var preview = safeOutput[..Math.Min(240, safeOutput.Length)];
                 var stub = "[tool output externalized; re-read with artifact.read using hash=\""
-                    + artifact.Hash.Value + "\" (offset=0, limit=4096); repeat with next offset for more.]\\nPreview: " + preview;
+                    + artifact.Hash.Value + "\" (offset=0, limit=4096); repeat with next offset for more.]\nPreview: " + preview;
                 var provenance = candidate.Provenance with
                 {
                     Refs = (candidate.Provenance.Refs ?? Array.Empty<string>()).Append("artifact=" + artifact.Hash)
@@ -408,7 +408,7 @@ public sealed class ContextCheckpointContributor : IContextContributor
         var provenance = new ContextProvenance("core.context-checkpoint", ContributionCategory.Checkpoint,
             "engine", ScopeLevel.Run, false, new[] { "checkpoint=" + checkpointId, "artifact=" + artifact.Hash });
         _item = new ContextItem("checkpoint-" + checkpointId, ContextItemKind.Summary,
-            "Context checkpoint through event " + throughSequence + ":\\n" + summary, 0,
+            "Context checkpoint through event " + throughSequence + ":\n" + summary, 0,
             ContextPriority.High, RetentionPolicy.KeepForever, provenance);
     }
 

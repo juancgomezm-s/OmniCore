@@ -39,7 +39,7 @@ public sealed class MetaModelService
         if (safeInput.Length > inputLimit)
         {
             var half = Math.Max(1, (inputLimit - 48) / 2);
-            safeInput = safeInput[..half] + "\\n[…middle of older input omitted deterministically…]\\n"
+            safeInput = safeInput[..half] + "\n[…middle of older input omitted deterministically…]\n"
                 + safeInput[^half..];
         }
         var modelFingerprint = Fingerprint(operation);
