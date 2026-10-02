@@ -113,3 +113,16 @@ public record TurnAbandoned(TurnId TurnId, string Reason) : DomainEventPayload
 
     public int SchemaVersion() => 1;
 }
+
+/// <summary>ModelStepCompleted: un paso del modelo terminó (ADR-0046). Se emite ANTES de cualquier suspension (user.ask, permiso). Lleva TurnId, StepIndex, Usage y CostUsd opcional. No cambia el estado del Turn (ADR-0036). El payload no incluye prompts ni respuestas. El costo se calcula en el momento del paso; si no hay pricing, CostUsd es null.</summary>
+public record ModelStepCompleted(
+    TurnId TurnId,
+    int StepIndex,
+    TokenUsage Usage,
+    decimal? CostUsd,
+    StopReason StopReason) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("model_step.completed");
+
+    public int SchemaVersion() => 1;
+}

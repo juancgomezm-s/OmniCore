@@ -62,6 +62,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.ModelEscalationRequested())
             .Plus(Typed.ModelEscalationApproved())
             .Plus(Typed.ModelEscalationCompleted())
+            .Plus(Typed.ModelStepCompleted())
             .Plus(Typed.ModelCompleted())
             .Plus(Typed.TurnCompleted())
             .Plus(Typed.TurnInterrupted())
@@ -366,6 +367,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(MetaModelInvocationStarted))]
 [JsonSerializable(typeof(MetaModelInvocationCompleted))]
 [JsonSerializable(typeof(MetaModelInvocationFailed))]
+[JsonSerializable(typeof(OmniCore.Domain.ModelStepCompleted))]
 internal sealed partial class EventJsonContext : JsonSerializerContext
 {
 }
@@ -506,6 +508,9 @@ public sealed class Typed
 
     public static CodecPair ModelEscalationCompleted() =>
         Of(EventType.Of("model.escalation_completed"), EventJsonContext.Default.ModelEscalationCompleted);
+
+    public static CodecPair ModelStepCompleted() =>
+        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted);
 
     public static CodecPair ModelCompleted() =>
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);

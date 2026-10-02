@@ -258,9 +258,28 @@ public sealed class ExplorerTurn
             string? finalText = null;
             var stop = StopReason.EndTurn;
             ProviderState? continuation = null;
+
+            // Determine starting step index and accumulated usage from existing ModelStepCompleted events.
+            var completedSteps = 0;
+            var accumulatedUsage = new TokenUsage(0, 0, 0, 0, 0);
+            foreach (var evt in stream.EventsSince(1))
+            {
+                if (evt.Type.ToString().Equals("model_step.completed", StringComparison.Ordinal))
+                {
+                    var ms = _codecs.Decode(evt) as ModelStepCompleted;
+                    if (ms is not null && ms.TurnId.Equals(turnId))
+                    {
+                        completedSteps++;
+                        accumulatedUsage = CombineUsage(accumulatedUsage, ms.Usage);
+                    }
+                }
+            }
+            usage = accumulatedUsage; // Start with accumulated usage from previous steps
+
             for (var step = 0; step < MaxSteps; step++)
             {
                 steps = step + 1;
+                var stepIndex = completedSteps + step + 1; // 1-based, continues from existing steps
                 if (step > 0)
                 {
                     preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
@@ -304,10 +323,19 @@ public sealed class ExplorerTurn
                         throw new BudgetExceededException("límite diario alcanzado ($" + _dailyCapUsd + ")");
 
                     resolved = _complete(request, cancellationToken);
+
+                    // Emit ModelStepCompleted for durable usage accounting (ADR-0046 §1, Bug 6).
+                    // This persists the usage of this step BEFORE any suspension (user.ask, permission)
+                    // or budget check. It does not change Turn state; the Turn stays in Started.
+                    // StepIndex is 1-based and continues across suspensions.
+                    var stepCost = _pricing?.CostUsd(resolved.Usage);
+                    stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage, stepCost,
+                        resolved.StopReason));
+
                     usage = CombineUsage(usage, resolved.Usage);
                     guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
-                    var stepCost = _pricing?.CostUsd(resolved.Usage);
                     if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
+
                     if (budget.MaxCostUsd is not null
                         && persistedSpend.RunUsd + guard.CostUsd() > budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")");
@@ -662,9 +690,10 @@ public sealed class ExplorerTurn
     }
 
     /// <summary>
-    /// Gasto ya confirmado en el journal del workspace. ModelCompleted referencia un artifact
-    /// versionado que conserva la respuesta y la usage/cost metadata; el replay no depende de
-    /// contadores en memoria ni de tarifas que hayan cambiado desde entonces.
+    /// Gasto ya confirmado en el journal del workspace. Lee ModelStepCompleted (con costo
+    /// directo en el payload) como fuente de verdad para contabilidad por paso (ADR-0046, Bug 6).
+    /// ModelCompleted contiene el uso acumulado del turno completo; sumarlo duplicaría el gasto.
+    /// El replay no depende de contadores en memoria ni de tarifas que hayan cambiado desde entonces.
     /// </summary>
     private PersistedSpend ReadJournalSpend(EventStream stream, RunId runId, string today)
     {
@@ -672,19 +701,14 @@ public sealed class ExplorerTurn
         var incomplete = false;
         foreach (var evt in stream.EventsSince(1))
         {
-            if (!evt.Type.ToString().Equals("model.completed", StringComparison.Ordinal)) continue;
-            var completed = _codecs.Decode(evt) as ModelCompleted;
-            if (completed?.ResponseArtifact is null) { incomplete = true; continue; }
-            var text = _artifacts.GetText(completed.ResponseArtifact.Hash);
-            if (!TryDecodeUsageEnvelope(text, out var record) || record.CostUsd is null)
-            {
-                incomplete = true;
-                continue;
-            }
-            var cost = record.CostUsd.Value;
+            var type = evt.Type.ToString();
+            if (!type.Equals("model_step.completed", StringComparison.Ordinal)) continue;
+            var step = _codecs.Decode(evt) as ModelStepCompleted;
+            if (step is null || step.CostUsd is null) { incomplete = true; continue; }
+            var cost = step.CostUsd.Value;
             session += cost;
-            if (record.Day == today) daily += cost;
-            if (record.RunId == runId.ToString()) run += cost;
+            if (evt.Timestamp.ToString("yyyy-MM-dd") == today) daily += cost;
+            if (evt.RunId?.ToString() == runId.ToString()) run += cost;
         }
         return new PersistedSpend(session, daily, run, incomplete);
     }
