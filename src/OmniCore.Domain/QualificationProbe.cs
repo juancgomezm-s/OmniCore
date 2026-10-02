@@ -123,10 +123,14 @@ public sealed class ProbeResult
 
     public TimeSpan Duration { get; }
 
-    public decimal CostUsd { get; }
+    /// <summary>
+    /// Coste real en USD del probe, o null si no se pudo calcular con evidencia del provider
+    /// (pricing desconocido o uso incompleto). Null NUNCA significa gratis: gratis es 0m explícito.
+    /// </summary>
+    public decimal? CostUsd { get; }
 
     public ProbeResult(ProbeId id, ProbeStatus status, double score, string? output,
-        string? error, TimeSpan duration, decimal costUsd)
+        string? error, TimeSpan duration, decimal? costUsd)
     {
         if (id is null)
         {

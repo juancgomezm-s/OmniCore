@@ -53,9 +53,18 @@ public sealed class ModelRequest
 
     public ProviderState? Continuation { get; }
 
+    /// <summary>
+    /// Tope explícito de tokens de salida pedido al provider, si lo hay. Es un techo duro del
+    /// request, no una preferencia: los adapters lo traducen a su campo nativo (<c>max_tokens</c>,
+    /// <c>max_output_tokens</c>). Null significa que decide el provider/servidor. La cualificación
+    /// lo fija para acotar el gasto (M5, ADR-0007 §7).
+    /// </summary>
+    public long? MaxOutputTokens { get; }
+
     public ModelRequest(ModelSelection model, IReadOnlyList<ModelMessage> messages, string? instructions,
         IReadOnlyList<ToolDefinition> tools, ToolChoice toolChoice, OutputConstraint? output,
-        ReasoningRequest? reasoning, CacheHints? cache, ProviderState? continuation)
+        ReasoningRequest? reasoning, CacheHints? cache, ProviderState? continuation,
+        long? maxOutputTokens = null)
     {
         Model = model;
         Messages = messages;
@@ -66,6 +75,7 @@ public sealed class ModelRequest
         Reasoning = reasoning;
         Cache = cache;
         Continuation = continuation;
+        MaxOutputTokens = maxOutputTokens;
     }
 }
 

@@ -482,7 +482,14 @@ public sealed class ModelPolicyCommands
         decimal estimatedCost;
         try
         {
-            estimatedCost = ModelQualificationHost.EstimateSuiteCostUsd(suite);
+            var preview = _qualification.PreviewCost(modelId, suite);
+            if (preview.IsUnknownPaidPricing || preview.EstimatedUsd is null)
+            {
+                _output.WriteLine(_loc.Resolve("cli.model.qualify.unknown_pricing", "model", modelId));
+                return 2;
+            }
+
+            estimatedCost = preview.EstimatedUsd.Value;
         }
         catch (ModelQualificationUnsupportedSuiteException ex)
         {
@@ -549,6 +556,11 @@ public sealed class ModelPolicyCommands
             _output.WriteLine(_loc.Resolve("cli.model.qualify.consent.required"));
             return 1;
         }
+        catch (ModelQualificationUnknownPricingException)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.unknown_pricing", "model", modelId));
+            return 2;
+        }
 
         // Estado (ADR-0007 §4): Unknown → Declared → ProvisionallyClassified → Qualified.
         _output.WriteLine(_loc.Resolve("cli.model.qualify.state", new Dictionary<string, string>
@@ -568,7 +580,9 @@ public sealed class ModelPolicyCommands
                 ["kind"] = probe.Kind,
                 ["status"] = probe.Status,
                 ["score"] = probe.Score.ToString("0.00", CultureInfo.InvariantCulture),
-                ["cost"] = probe.CostUsd.ToString("0.0000", CultureInfo.InvariantCulture),
+                ["cost"] = probe.CostUsd is { } cost
+                    ? cost.ToString("0.0000", CultureInfo.InvariantCulture) + " USD"
+                    : "—",
             }));
         }
 

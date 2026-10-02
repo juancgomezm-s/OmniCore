@@ -39,7 +39,7 @@ public sealed record QualificationProbeOutcome(
     double Score,
     string? Error,
     TimeSpan Duration,
-    decimal CostUsd);
+    decimal? CostUsd);
 
 /// <summary>Trait empírico persistido para la revisión vigente del perfil.</summary>
 public sealed record QualificationTraitValue(
@@ -134,6 +134,32 @@ public sealed class ModelQualificationUnsupportedSuiteException : Exception
 }
 
 /// <summary>
+/// Error tipado de nivel Host: la configuración es un provider pago remoto sin precios declarados.
+/// La suite falla en cerrado antes de invocar al provider: el costo desconocido nunca se asume
+/// gratis ni se puede hacer cumplir el tope. Nada se ejecutó ni se persistió.
+/// </summary>
+public sealed class ModelQualificationUnknownPricingException : Exception
+{
+    public string ModelId { get; }
+
+    public ModelQualificationUnknownPricingException(string modelId)
+        : base("pricing desconocido para el modelo pago remoto '" + modelId
+            + "': declara inputPricePerMillionUsd/outputPricePerMillionUsd (modelo o provider) antes de cualificar")
+    {
+        ModelId = modelId;
+    }
+}
+
+/// <summary>
+/// Vista previa de costo de una suite para el consentimiento del cliente. <see cref="EstimatedUsd"/> es
+/// null cuando el pricing es desconocido (<see cref="IsUnknownPaidPricing"/>): null NUNCA significa gratis.
+/// </summary>
+public sealed record ModelQualificationCostPreview(
+    bool IsUnknownPaidPricing,
+    decimal? EstimatedUsd,
+    long MaxOutputTokens);
+
+/// <summary>
 /// Fachada de la suite de cualificación para clientes (M5, ADR-0007 §6–§7). Ejecuta la suite
 /// <c>quick</c> contra el MISMO provider configurado que usa el runtime (OmniHost.ConnectProvider,
 /// sin camino especial), exige consentimiento explícito, respeta el tope de coste y persiste el
@@ -149,13 +175,17 @@ public sealed class ModelQualificationHost : IDisposable
 
     private readonly ModelRegistry _registry;
 
+    /// <summary>Configuración del usuario, fuente de precios declarados; null si hay registryOverride.</summary>
+    private readonly LoadedUserConfiguration? _configuration;
+
     private readonly IPlatformPaths _paths;
 
     private ModelQualificationHost(SqliteModelQualificationStore store, ModelRegistry registry,
-        IPlatformPaths paths)
+        LoadedUserConfiguration? configuration, IPlatformPaths paths)
     {
         _store = store;
         _registry = registry;
+        _configuration = configuration;
         _paths = paths;
     }
 
@@ -176,11 +206,12 @@ public sealed class ModelQualificationHost : IDisposable
         IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null)
     {
         var paths = OmniHost.CreatePlatformPaths(dataDirectoryOverride);
-        var registry = registryOverride is null
-            ? OmniHost.LoadUserModelRegistry(paths)
-            : ToRegistry(registryOverride);
+        // Sin override se carga la configuración completa (no solo el registro): los precios
+        // declarados viven ahí y son la fuente de la estimación conservadora de la suite (M5).
+        var configuration = registryOverride is null ? OmniHost.LoadUserConfiguration(paths) : null;
+        var registry = configuration?.Registry ?? ToRegistry(registryOverride!);
         var store = OmniHost.CreateModelQualificationStore(dataDirectoryOverride);
-        return new ModelQualificationHost(store, registry, paths);
+        return new ModelQualificationHost(store, registry, configuration, paths);
     }
 
     /// <summary>Perfil de cualificación vigente para la configuración exacta del modelo, o null.</summary>
@@ -215,11 +246,15 @@ public sealed class ModelQualificationHost : IDisposable
         var existing = _store.Get(key, cancellationToken);
         var previousState = existing?.State ?? ModelQualificationState.Declared;
 
-        var estimatedCost = 0m;
-        foreach (var probe in probes)
+        // Fail-closed: un provider pago remoto sin precios declarados no puede estimar ni acotar
+        // el gasto; se rechaza ANTES de construir el provider, sin emitir ninguna llamada.
+        var costPolicy = CostPolicyFor(model, provider);
+        if (costPolicy.Kind == QualificationCostKind.UnknownPaidPricing)
         {
-            estimatedCost += probe.MaxCostUsd;
+            throw new ModelQualificationUnknownPricingException(model.Id);
         }
+
+        var estimatedCost = costPolicy.EstimateSuiteMaxCostUsd(probes) ?? 0m;
 
         // El runner revalida consentimiento y tope de costo (QualificationCostCapExceededException,
         // ProbeTimeoutException tipados); nada se persiste si la suite no se completa.
@@ -228,7 +263,7 @@ public sealed class ModelQualificationHost : IDisposable
             ToolMode.Direct, null);
         var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
         var runner = new ProbeRunner(ConnectProvider(model, provider, options),
-            options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout);
+            options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout, costPolicy);
         var consent = new QualificationConsent(explicitlyGiven: true, options.MaxTotalCostUsd);
         IReadOnlyList<ProbeResult> results;
         try
@@ -238,6 +273,10 @@ public sealed class ModelQualificationHost : IDisposable
         catch (QualificationCostCapExceededException exception)
         {
             throw new ModelQualificationCostCapException(exception.MaxTotalCostUsd, exception.EstimatedCostUsd);
+        }
+        catch (QualificationUnknownPricingException)
+        {
+            throw new ModelQualificationUnknownPricingException(model.Id);
         }
         catch (ProbeTimeoutException exception)
         {
@@ -353,12 +392,59 @@ public sealed class ModelQualificationHost : IDisposable
     };
 
     /// <summary>
-    /// Coste estimado de una suite (suma de los topes declarados por sus probes) para mostrarlo
-    /// ANTES de pedir consentimiento. Las suites quick actuales son gratuitas (modelos locales),
-    /// pero el aviso se mantiene: el contrato es explícito para cuando lleguen probes de pago.
+    /// Vista previa para el consentimiento ANTES de pedir permiso: clasifica el provider y estima
+    /// de forma conservadora el costo máximo de la suite. Un provider pago remoto sin precios
+    /// declarados devuelve <see cref="ModelQualificationCostPreview.IsUnknownPaidPricing"/> y un
+    /// estimado null (desconocido, nunca 0): el cliente falla en cerrado.
     /// </summary>
-    public static decimal EstimateSuiteCostUsd(string suite) => Suite(suite)
-        .Sum(probe => probe.MaxCostUsd);
+    public ModelQualificationCostPreview PreviewCost(string modelId, string suite)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(modelId);
+        var model = _registry.Model(modelId);
+        if (model is null)
+        {
+            throw new ArgumentException("modelo desconocido en el registro: '" + modelId + "'", nameof(modelId));
+        }
+
+        var provider = _registry.Provider(model.ProviderId);
+        var policy = CostPolicyFor(model, provider);
+        var probes = Suite(suite);
+        if (policy.Kind == QualificationCostKind.UnknownPaidPricing)
+        {
+            return new ModelQualificationCostPreview(true, null, policy.MaxOutputTokens);
+        }
+
+        return new ModelQualificationCostPreview(false, policy.EstimateSuiteMaxCostUsd(probes) ?? 0m,
+            policy.MaxOutputTokens);
+    }
+
+    /// <summary>
+    /// Clasifica el costo de la configuración exacta (M5): precios declarados completos →
+    /// DeclaredPricing; provider local/fake (sin credencial o base URL privada) → LocalZeroCost
+    /// explícito; provider remoto con credencial y sin precios → UnknownPaidPricing (fail-closed).
+    /// Nunca se asume gratis un provider pago por omisión.
+    /// </summary>
+    private QualificationCostPolicy CostPolicyFor(ModelDefinition model, ProviderDescriptor? provider)
+    {
+        var maxOutput = model.MaxOutputTokens > 0
+            ? model.MaxOutputTokens
+            : QualificationCostPolicy.FallbackMaxOutputTokens;
+        var declared = _configuration?.Pricing(model.Id);
+        if (declared is not null)
+        {
+            var pricing = new QualificationPricing(declared.InputPricePerMillionUsd, declared.OutputPricePerMillionUsd);
+            if (pricing.IsComplete)
+            {
+                return QualificationCostPolicy.Declared(pricing, maxOutput);
+            }
+        }
+
+        var remotePaid = provider is { Auth.Kind: AuthKind.ApiKey }
+            && !OmniHost.IsPrivateHost(provider.BaseUrl);
+        return remotePaid
+            ? QualificationCostPolicy.UnknownPaid(maxOutput)
+            : QualificationCostPolicy.LocalZeroCost(maxOutput);
+    }
 
     private IModelProvider ConnectProvider(ModelDefinition model, ProviderDescriptor? provider,
         QualificationOptions options)

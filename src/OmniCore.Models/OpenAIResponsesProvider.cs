@@ -164,7 +164,9 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             w.WriteBoolean("stream", true);
             w.WriteBoolean("store", false);
             if (!string.IsNullOrEmpty(request.Instructions)) w.WriteString("instructions", request.Instructions);
-            if (options.MaxOutputTokens is { } max) w.WriteNumber("max_output_tokens", max);
+            // El tope explícito del request manda sobre la opción del adapter (techo duro del gasto).
+            if (request.MaxOutputTokens is > 0) w.WriteNumber("max_output_tokens", request.MaxOutputTokens.Value);
+            else if (options.MaxOutputTokens is { } max) w.WriteNumber("max_output_tokens", max);
 
             var reasoning = request.Reasoning ?? request.Model.Reasoning;
             var effort = reasoning?.Kind is "minimal" or "low" or "medium" or "high" ? reasoning.Kind : null;

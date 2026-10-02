@@ -73,3 +73,20 @@ public sealed class ProbeTimeoutException : Exception
     {
     }
 }
+
+/// <summary>
+/// La configuración es un provider pago remoto sin precios declarados. La suite falla en cerrado
+/// ANTES de invocar al provider: no se puede hacer cumplir el tope de costo y el costo desconocido
+/// jamás se reporta como gratis (M5, ADR-0007 §7).
+/// </summary>
+public sealed class QualificationUnknownPricingException : Exception
+{
+    public string ProviderId { get; }
+
+    public QualificationUnknownPricingException(string providerId = "")
+        : base("pricing desconocido para un provider pago remoto: no se puede estimar ni hacer cumplir el tope de costo"
+            + (string.IsNullOrEmpty(providerId) ? "" : " (" + providerId + ")"))
+    {
+        ProviderId = providerId;
+    }
+}

@@ -115,7 +115,10 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
             w.WriteString("model", request.Model.Model.ToString());
             var reasoning = request.Reasoning ?? request.Model.Reasoning;
             var budget = reasoning?.BudgetTokens is > 0 ? reasoning.BudgetTokens.Value : 0;
-            w.WriteNumber("max_tokens", budget > 0 ? budget + options.OutputTokensAboveReasoningBudget : options.DefaultMaxOutputTokens);
+            var computedMax = budget > 0 ? budget + (long)options.OutputTokensAboveReasoningBudget : options.DefaultMaxOutputTokens;
+            // Un tope explícito del request manda sobre el default del adapter: es el techo duro que
+            // pediste (p. ej. la cualificación acota el gasto). Sin él se conserva el default.
+            w.WriteNumber("max_tokens", request.MaxOutputTokens is > 0 ? request.MaxOutputTokens.Value : computedMax);
             w.WriteBoolean("stream", true);
             if (budget > 0)
             {
