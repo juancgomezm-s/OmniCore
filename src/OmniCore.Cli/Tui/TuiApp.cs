@@ -32,6 +32,18 @@ public sealed class TuiApp
     private InteractionOverlayModel? _activeInteraction;
     private bool _sidebarOpen;
 
+    // Acceso interno para pruebas de cableado reales (Terminal.Gui real sobre IOmniClient real).
+    internal Window? MainWindow => _window;
+    internal TextField? Composer => _composer;
+    internal Label? Conversation => _conversation;
+    internal FrameView? Sidebar => _sidebar;
+    internal Label? Completion => _completion;
+    internal Label? Status => _status;
+    internal View? Overlay => _overlay;
+    internal ClientState ProjectionState => _state;
+    internal bool SidebarOpen => _sidebarOpen;
+    internal ModelPolicyHost Policies => _policies;
+
     public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null)
     {
         _client = client;
@@ -67,22 +79,41 @@ public sealed class TuiApp
         var app = new TuiApp(client, locale);
         using var application = Application.Create();
         application.Init();
-        var window = app.BuildMainWindow();
-        application.AddTimeout(TimeSpan.FromMilliseconds(500), () =>
-        {
-            app.PollEvents();
-            return true;
-        });
-        application.Keyboard.KeyDown += (_, key) =>
-        {
-            var code = key.KeyCode.ToString();
-            if (code == "F2") app.ToggleSidebar();
-            else if (code == "F3") app.ShowModelPolicies();
-            else if (code == "Esc" && app._activeInteraction is { } interaction) app.RespondDefault(interaction);
-            else if (code == "Esc" && app._overlay is not null) app.CloseOverlay();
-        };
+        return app.RunWith(application);
+    }
+
+    /// <summary>
+    /// Construye la ventana, cablea teclado y polling, y ejecuta el bucle de sesión.
+    /// Es el mismo cableado que usa <see cref="Run"/>; separado para pruebas de cableado reales
+    /// que crean la aplicación con un driver controlado.
+    /// </summary>
+    internal int RunWith(IApplication application)
+    {
+        var window = BuildMainWindow();
+        application.AddTimeout(TimeSpan.FromMilliseconds(500), PollOnce);
+        application.Keyboard.KeyDown += OnApplicationKeyDown;
         application.Run(window);
         return 0;
+    }
+
+    /// <summary>Poll de eventos del cliente; devuelve true para repetir como AddTimeout.</summary>
+    internal bool PollOnce()
+    {
+        PollEvents();
+        return true;
+    }
+
+    /// <summary>Teclas a nivel de aplicación: F2 sidebar, F3 modelos, Esc responde/overlay.</summary>
+    internal void OnApplicationKeyDown(object? sender, Key key)
+    {
+        // Esc es la tecla Command.Quit POR DEFECTO en Terminal.Gui 2.6 (Application.DefaultKeyBindings):
+        // si no se marca Handled tras consumirla, el framework además cierra toda la aplicación
+        // (un Esc para cerrar un overlay mataría la TUI entera). F2/F3 igual: consumidas aquí.
+        var code = key.KeyCode.ToString();
+        if (code == "F2") { ToggleSidebar(); key.Handled = true; }
+        else if (code == "F3") { ShowModelPolicies(); key.Handled = true; }
+        else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
+        else if (code == "Esc" && _overlay is not null) { CloseOverlay(); key.Handled = true; }
     }
 
     /// <summary>Creates the main window without starting a terminal session; useful for headless smoke tests.</summary>
@@ -104,10 +135,15 @@ public sealed class TuiApp
         composerFrame.Add(_composer, _completion);
         _status = new Label { X = 0, Y = Pos.AnchorEnd(1), Width = Dim.Fill(), Height = 1, Text = StatusText() };
         _window.Add(_header, conversationFrame, _sidebar, composerFrame, _status);
-        _sidebarOpen = Console.WindowWidth >= 90;
+        var initialWidth = 80;
+        try { initialWidth = Console.WindowWidth; }
+        catch (IOException) { /* consola redirigida o sin TTY: arranque en modo estrecho, el layout se corrige con el primer frame real. */ }
+        _sidebarOpen = initialWidth >= 90;
         _window.FrameChanged += (_, _) => ApplyResponsiveLayout();
         ApplyResponsiveLayout();
         RenderState();
+        // El composer recibe el foco inicial: sin esto, el primer texto tecleado se pierde hasta que el usuario pulsa Tab.
+        _composer.SetFocus();
         return _window;
     }
 
@@ -283,8 +319,11 @@ public sealed class TuiApp
         for (var index = 0; index < interaction.Options.Count; index++)
         {
             var optionId = interaction.OptionIds.ElementAtOrDefault(index) ?? "";
-            var button = new Button { X = 1, Y = 2 + index, Text = interaction.Options[index],
-                IsDefault = optionId == interaction.DefaultOptionId };
+            // Sin IsDefault: en Terminal.Gui 2.6 un botón predeterminado suprime el Accept de
+            // cualquier otro botón del contenedor (Enter sobre «Permitir una vez» dispararía
+            // «Denegar»), lo que traiciona la intención visible del foco. La opción segura llega
+            // por el foco inicial y por Esc (OnApplicationKeyDown → RespondDefault), no por flag.
+            var button = new Button { X = 1, Y = 2 + index, Text = interaction.Options[index] };
             button.Accepted += (_, _) => RespondChoice(interaction, optionId);
             overlay.Add(button);
             if (optionId == interaction.DefaultOptionId) defaultButton = button;
@@ -324,8 +363,11 @@ public sealed class TuiApp
                     var checkbox = new CheckBox { X = 2, Y = y++, Text = choice.Label,
                         RadioStyle = question.Kind == QuestionnaireQuestionKind.SingleChoice };
                     if (question.Kind == QuestionnaireQuestionKind.SingleChoice)
-                        checkbox.Accepted += (_, _) =>
+                        // La exclusividad de la selección única se cablea a ValueChanged: Accepted no
+                        // se dispara al marcar con espacio (Checkbox de Terminal.Gui 2.6).
+                        checkbox.ValueChanged += (_, args) =>
                         {
+                            if (args.NewValue != CheckState.Checked) return;
                             foreach (var otherChoice in checkList)
                                 if (!ReferenceEquals(otherChoice.Item2, checkbox)) otherChoice.Item2.Value = CheckState.UnChecked;
                         };
@@ -342,7 +384,9 @@ public sealed class TuiApp
             }
         }
         var error = new Label { X = 1, Y = Math.Min(y, 18), Width = Dim.Fill(2), Height = 1, Text = "" };
-        var submit = new Button { X = Pos.AnchorEnd(22), Y = Math.Min(y + 1, 20), Text = model.SubmitLabel, IsDefault = true };
+        // Sin IsDefault: Enter activa el botón enfocado (predecible). Enviar/Cancelar responden al
+        // Enter del usuario solo cuando el usuario los enfoca deliberadamente; Esc cancela.
+        var submit = new Button { X = Pos.AnchorEnd(22), Y = Math.Min(y + 1, 20), Text = model.SubmitLabel };
         var cancel = new Button { X = Pos.AnchorEnd(12), Y = Math.Min(y + 1, 20), Text = model.CancelLabel };
         submit.Accepted += (_, _) =>
         {
