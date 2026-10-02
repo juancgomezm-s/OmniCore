@@ -188,7 +188,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                 {
                     w.WriteStartObject();
                     w.WriteString("type", "function");
-                    w.WriteString("name", tool.Name);
+                    w.WriteString("name", ToolNameWireCodec.Encode(tool.Name));
                     w.WriteString("description", tool.Description);
                     w.WritePropertyName("parameters");
                     WriteRawJsonOrEmptyObject(w, tool.InputSchemaJson);
@@ -199,7 +199,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                 {
                     w.WriteStartObject("tool_choice");
                     w.WriteString("type", "function");
-                    w.WriteString("name", request.ToolChoice.ToolName);
+                    w.WriteString("name", ToolNameWireCodec.Encode(request.ToolChoice.ToolName));
                     w.WriteEndObject();
                 }
                 else
@@ -263,7 +263,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         w.WriteStartObject();
                         w.WriteString("type", "function_call");
                         w.WriteString("call_id", ids[call.Id.ToString()]);
-                        w.WriteString("name", call.ToolName);
+                        w.WriteString("name", ToolNameWireCodec.Encode(call.ToolName));
                         w.WriteString("arguments", string.IsNullOrWhiteSpace(call.ArgumentsJson) ? "{}" : call.ArgumentsJson);
                         w.WriteEndObject();
                         break;
@@ -490,7 +490,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         Name = Str(call, "name") ?? Name;
                         if (args.Length == 0) args = Str(call, "arguments") ?? "";
                     }
-                    return new ToolCallBlock(ToolCallId.New(), CallId, Name ?? "", args.Length == 0 ? "{}" : args);
+                    return new ToolCallBlock(ToolCallId.New(), CallId, ToolNameWireCodec.Decode(Name ?? ""), args.Length == 0 ? "{}" : args);
                 case "reasoning":
                     var summary = Text.ToString();
                     return new ReasoningBlock(summary.Length == 0 ? null : summary,

@@ -93,7 +93,7 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
         Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
         Assert.Equal("reasoning.encrypted_content", root.GetProperty("include")[0].GetString());
         Assert.Equal("function", root.GetProperty("tools")[0].GetProperty("type").GetString());
-        Assert.Equal("filesystem.read", root.GetProperty("tools")[0].GetProperty("name").GetString());
+        Assert.Equal("filesystem-read", root.GetProperty("tools")[0].GetProperty("name").GetString());
         Assert.False(root.TryGetProperty("messages", out _));
         Assert.Equal("input_text", root.GetProperty("input")[0].GetProperty("content")[0].GetProperty("type").GetString());
     }
@@ -118,6 +118,7 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
             input.Select(i => i.GetProperty("type").GetString()!).ToArray());
         Assert.Equal("output_text", input[1].GetProperty("content")[0].GetProperty("type").GetString());
         Assert.Equal("call_9", input[2].GetProperty("call_id").GetString());
+        Assert.Equal("filesystem-read", input[2].GetProperty("name").GetString());
         Assert.Equal("{\"path\":\"a.cs\"}", input[2].GetProperty("arguments").GetString());
         Assert.Equal("call_9", input[3].GetProperty("call_id").GetString());
         Assert.Equal("contenido", input[3].GetProperty("output").GetString());
@@ -236,6 +237,63 @@ data: {"type":"response.failed","response":{"status":"failed","error":{"code":"r
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Tool_definitions_and_exact_tool_choice_use_the_responses_function_name_charset()
+    {
+        var handler = new QueueHandler(_ => Sse(MinimalStream("ok")));
+        var request = Request(
+            tools:
+            [
+                new ToolDefinition("filesystem.read", "Read a file", "{\"type\":\"object\"}"),
+                new ToolDefinition("plan.propose", "Propose a plan", "{\"type\":\"object\"}"),
+            ],
+            toolChoice: ToolChoice.Exact("plan.propose"));
+
+        await Collect(CreateProvider(handler).StreamAsync(request, TestContext.Current.CancellationToken));
+
+        var sent = handler.Requests.Single();
+        using var body = JsonDocument.Parse(sent.Body);
+        var root = body.RootElement;
+        Assert.Equal(["filesystem-read", "plan-propose"],
+            root.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()!).ToArray());
+        Assert.Equal("function", root.GetProperty("tool_choice").GetProperty("type").GetString());
+        Assert.Equal("plan-propose", root.GetProperty("tool_choice").GetProperty("name").GetString());
+        Assert.DoesNotContain("filesystem.read", sent.Body);
+        Assert.DoesNotContain("plan.propose", sent.Body);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Wire_function_call_name_is_decoded_to_the_canonical_tool_id_and_call_id_is_preserved()
+    {
+        var stream = ToolStream.Replace("\"name\":\"filesystem.read\"", "\"name\":\"filesystem-read\"");
+        var events = await Collect(CreateProvider(new QueueHandler(_ => Sse(stream)))
+            .StreamAsync(Request(), TestContext.Current.CancellationToken));
+        var call = Assert.Single(Assert.IsType<ResponseCompleted>(events[^1]).Response.Content.OfType<ToolCallBlock>());
+        Assert.Equal("filesystem.read", call.ToolName);
+        Assert.Equal("call_1", call.ProviderCallId);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Assistant_function_call_echo_uses_the_wire_name_and_preserves_the_call_id()
+    {
+        var handler = new QueueHandler(_ => Sse(MinimalStream("ok")));
+        var call = new ToolCallBlock(ToolCallId.New(), "call_9", "filesystem.read", "{\"path\":\"a.cs\"}");
+        var messages = new ModelMessage[]
+        {
+            new(MessageRole.User, [new TextBlock("lee a.cs")]),
+            new(MessageRole.Assistant, [call]),
+            new(MessageRole.Tool, [new ToolResultBlock(call.Id, [new TextBlock("contenido")], false)]),
+        };
+
+        await Collect(CreateProvider(handler).StreamAsync(Request(messages: messages), TestContext.Current.CancellationToken));
+
+        using var body = JsonDocument.Parse(handler.Requests.Single().Body);
+        var input = body.RootElement.GetProperty("input").EnumerateArray().ToArray();
+        var functionCall = Assert.Single(input, i => i.GetProperty("type").GetString() == "function_call");
+        Assert.Equal("filesystem-read", functionCall.GetProperty("name").GetString());
+        Assert.Equal("call_9", functionCall.GetProperty("call_id").GetString());
+    }
+
+    [Fact]
     public void Codex_profile_without_subscription_source_and_foreign_family_are_rejected()
     {
         var descriptor = Descriptor("https://x.test", AuthConfig.None());
@@ -273,10 +331,10 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 
     private static ModelRequest Request(string model = "gpt-test", IReadOnlyList<ModelMessage>? messages = null,
         string? instructions = null, IReadOnlyList<ToolDefinition>? tools = null, ReasoningRequest? reasoning = null,
-        ProviderState? continuation = null) =>
+        ProviderState? continuation = null, ToolChoice? toolChoice = null) =>
         new(new ModelSelection(new ModelIdValue(model), 4096, ToolMode.Direct, null),
             messages ?? [new ModelMessage(MessageRole.User, [new TextBlock("hola")])], instructions, tools ?? [],
-            ToolChoice.Auto(), null, reasoning, null, continuation);
+            toolChoice ?? ToolChoice.Auto(), null, reasoning, null, continuation);
 
     private static HttpResponseMessage Sse(string body) => new(HttpStatusCode.OK)
     {

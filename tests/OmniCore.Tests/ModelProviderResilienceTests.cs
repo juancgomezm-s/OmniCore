@@ -86,6 +86,86 @@ data: [DONE]
             "{\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"c1\",\"function\":{\"name\":\"weird-name_uwith_mdash\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}");
         var call = Assert.Single(parsed.Content.OfType<ToolCallBlock>());
         Assert.Equal("weird.name_with-dash", call.ToolName);
+        Assert.Equal("c1", call.ProviderCallId);
+    }
+
+    // Cubre punto, guion, underscore y combinaciones que parecen tokens de escape, tanto al salir
+    // (request) como al entrar (JSON normal y SSE).
+    [Theory]
+    [InlineData("filesystem.read")]
+    [InlineData("plan.propose")]
+    [InlineData("user.ask")]
+    [InlineData("weird_name")]
+    [InlineData("weird-name")]
+    [InlineData("a.b_c-d")]
+    [InlineData("Mixed.Case_Name-X")]
+    [InlineData("_")]
+    [InlineData("-")]
+    [InlineData("_u")]
+    [InlineData("_m")]
+    [InlineData("a_uB_mC")]
+    [InlineData("escape_u_and_m_tokens")]
+    [InlineData("dash-mixed_with.underscore")]
+    public void Wire_tool_name_codec_round_trips_any_canonical_name(string canonical)
+    {
+        var wire = ToolNameWireCodec.Encode(canonical);
+        Assert.Matches("^[A-Za-z0-9_-]+$", wire);
+        Assert.Equal(canonical, ToolNameWireCodec.Decode(wire));
+    }
+
+    [Fact]
+    public void Wire_tool_name_codec_is_injective_over_the_canonical_alphabet()
+    {
+        var samples = new[] { "a.b", "a_b", "a-b", "_", "-", "_u", "_m", "a_u", "a_m", "a.b_c-d", "a-b_c.d" };
+        var wire = samples.Select(ToolNameWireCodec.Encode).ToArray();
+        Assert.Equal(samples.Length, wire.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Chat_assistant_tool_call_echo_uses_the_wire_name_and_preserves_the_call_id()
+    {
+        var handler = new QueueHandler(_ => Sse("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n" + "data: [DONE]\n\n"));
+        var provider = CreateProvider(handler);
+        var call = new ToolCallBlock(ToolCallId.New(), "provider-call-7", "filesystem.read", "{\"path\":\"a\"}");
+        var messages = new ModelMessage[]
+        {
+            new(MessageRole.User, [new TextBlock("lee a")]),
+            new(MessageRole.Assistant, [call]),
+            new(MessageRole.Tool, [new ToolResultBlock(call.Id, [new TextBlock("contenido")], false)]),
+        };
+        var selection = new ModelSelection(new ModelIdValue("model-a"), 4096, ToolMode.Direct, null);
+        var request = new ModelRequest(selection, messages, null, [], ToolChoice.Auto(), null, null, null, null);
+
+        await Collect(provider.StreamAsync(request, TestContext.Current.CancellationToken));
+
+        var payload = await handler.LastBody!;
+        Assert.Contains("\"name\":\"filesystem-read\"", payload);
+        Assert.Contains("\"tool_call_id\":\"provider-call-7\"", payload);
+        Assert.DoesNotContain("\"name\":\"filesystem.read\"", payload);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Split_sse_wire_name_decodes_to_the_canonical_tool_id_and_keeps_the_provider_call_id()
+    {
+        var handler = new QueueHandler(_ => Sse("""
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-split","function":{"name":"a-b_uC_md","arguments":"{\"x\":"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"""));
+        var provider = CreateProvider(handler);
+
+        var events = await Collect(provider.StreamAsync(Request(), TestContext.Current.CancellationToken));
+
+        var completed = Assert.IsType<ResponseCompleted>(events[^1]).Response;
+        var call = Assert.Single(completed.Content.OfType<ToolCallBlock>());
+        Assert.Equal("a.b_C-d", call.ToolName);
+        Assert.Equal("call-split", call.ProviderCallId);
+        Assert.Equal("{\"x\":1}", call.ArgumentsJson);
     }
 
     [Fact]

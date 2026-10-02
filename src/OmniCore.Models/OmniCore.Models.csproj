@@ -1,6 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <InternalsVisibleTo Include="OmniCore.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />
     <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />
   </ItemGroup>

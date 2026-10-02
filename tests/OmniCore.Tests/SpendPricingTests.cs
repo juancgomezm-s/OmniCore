@@ -79,6 +79,28 @@ public sealed class SpendPricingTests
     }
 
     [Fact]
+    public void Unknown_price_with_default_api_key_caps_fails_closed_before_call()
+    {
+        // El tope por defecto de un provider ApiKey (enforceDefaultSpendCaps) también exige precio
+        // completo: sin precio conocido no se llama al modelo. Nunca se sustituye por gasto ilimitado.
+        var setup = CreateTurn(new TaskBudget(null, null, null, null), pricing: null,
+            enforceCaps: false, response: null);
+        var calls = 0;
+        var turn = CreateTurn(setup.Store, setup.Artifacts, setup.Session, setup.Run,
+            new TaskBudget(null, null, null, null), null, true, (_, _) =>
+            {
+                calls++;
+                return Response(new TokenUsage(100, 100, 0, 0, 0));
+            });
+        var result = turn.Ask("hola", "sys", setup.Session, setup.Run, "", CancellationToken.None);
+        Assert.Equal(0, calls);
+        Assert.Equal(StopReason.Cancelled, result.StopReason);
+        Assert.Contains(setup.Store.ReadFrom(setup.Session, 1).Where(e => e.Type.ToString() == "interaction.requested")
+            .Select(e => (InteractionRequested)EventCodecs.Create().Decode(e)),
+            interaction => interaction.Kind == InteractionKind.BudgetExceeded);
+    }
+
+    [Fact]
     public void Spend_is_replayed_from_journal_and_refuses_the_next_model_call_after_restart()
     {
         var setup = CreateTurn(new TaskBudget(0.001m, null, null, null),
