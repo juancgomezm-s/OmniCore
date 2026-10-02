@@ -31,9 +31,14 @@ public sealed class ModelQualificationCliTests
     };
 
     private static async Task<int> Run(string[] args, string input, TextWriter output, string dataDir,
-        bool interactive = false) =>
-        await OmniCore.Cli.ModelPolicyCommands.Run(args, new StringReader(input), output, interactive,
-            dataDir, Registry());
+        bool interactive = false, CancellationToken? cancellationToken = null)
+    {
+        using var linkedCancellation = cancellationToken is { } token
+            ? CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, token)
+            : CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        return await OmniCore.Cli.ModelPolicyCommands.Run(args, new StringReader(input), output, interactive,
+            dataDir, Registry(), linkedCancellation.Token);
+    }
 
     [Fact]
     public async Task Qualify_refuses_without_yes_and_without_tty()
@@ -57,6 +62,22 @@ public sealed class ModelQualificationCliTests
 
         Assert.Equal(1, code);
         Assert.Contains("Cancelado", output.ToString());
+    }
+
+    [Fact]
+    public async Task Qualify_cancelled_before_probe_prints_cost_summary_and_propagates_cancellation()
+    {
+        var output = new StringWriter();
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<ModelQualificationCancelledException>(() =>
+            Run(new[] { "model", "qualify", "qwen-test", "--yes" }, "", output, TempDir(),
+                cancellationToken: cts.Token));
+
+        Assert.Contains("Coste conocido: 0.000000 USD", output.ToString());
+        Assert.Contains("coste desconocido presente: no", output.ToString());
+        Assert.Contains("NotRun", output.ToString());
     }
 
     [Fact]
