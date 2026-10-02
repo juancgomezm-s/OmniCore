@@ -143,14 +143,16 @@ public sealed class BenchmarkIdentity
 
     public string TaskSetHash { get; }
 
-    public int Seed { get; }
+    /// <summary>Null cuando la ejecución no fijó ni observó una semilla efectiva.</summary>
+    public int? Seed { get; }
 
-    public double Temperature { get; }
+    /// <summary>Null cuando la ejecución no fijó ni observó la temperatura efectiva.</summary>
+    public double? Temperature { get; }
 
     public string OmniCoreVersion { get; }
 
-    public BenchmarkIdentity(string suiteId, string suiteVersion, string taskSetHash, int seed,
-        double temperature, string omniCoreVersion)
+    public BenchmarkIdentity(string suiteId, string suiteVersion, string taskSetHash, int? seed,
+        double? temperature, string omniCoreVersion)
     {
         SuiteId = suiteId;
         SuiteVersion = suiteVersion;

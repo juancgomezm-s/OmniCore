@@ -357,7 +357,7 @@ public sealed class ModelQualificationHost : IDisposable
         // autocontenido y se redacta antes de cruzar la frontera del ArtifactStore (INV-016).
         cancellationToken.ThrowIfCancellationRequested();
         var benchmark = new BenchmarkIdentity(QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion,
-            ProbeScorer.TaskSetHash(probes), seed: 0, temperature: 0.0,
+            ProbeScorer.TaskSetHash(probes), seed: null, temperature: null,
             typeof(ModelQualificationHost).Assembly.GetName().Version?.ToString() ?? "unknown");
         var probeById = probes.ToDictionary(probe => probe.Id.ToString(), StringComparer.Ordinal);
         var evidence = new QualificationEvidenceBundle(benchmark,

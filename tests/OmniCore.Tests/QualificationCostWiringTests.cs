@@ -450,6 +450,8 @@ public sealed class QualificationCostWiringTests
         Assert.Equal("2.0.0", benchmark.GetProperty("SuiteVersion").GetString());
         Assert.Equal(ProbeScorer.TaskSetHash(QuickProbeSuite.Probes()),
             benchmark.GetProperty("TaskSetHash").GetString());
+        Assert.Equal(JsonValueKind.Null, benchmark.GetProperty("Seed").ValueKind);
+        Assert.Equal(JsonValueKind.Null, benchmark.GetProperty("Temperature").ValueKind);
         Assert.Equal(10, evidence.RootElement.GetProperty("Probes").GetArrayLength());
         Assert.Contains(evidence.RootElement.GetProperty("Probes").EnumerateArray(), probe =>
             probe.GetProperty("Output").GetString() == "[REDACTED]");
