@@ -251,6 +251,58 @@ public sealed class ModelQualificationStoreTests
     }
 
     [Fact]
+    public void Opening_populated_legacy_profile_adds_nullable_artifact_ref_without_losing_data()
+    {
+        var dir = TempDir();
+        var dbPath = Path.Combine(dir, "user.db");
+        var key = LocalKey();
+        const string createdAt = "2026-10-01T10:11:12.0000000+00:00";
+        const string updatedAt = "2026-10-01T13:14:15.0000000+00:00";
+
+        // Estado persistido anterior a ambas columnas aditivas, incluyendo una fila real.
+        using (var conn = new Microsoft.Data.Sqlite.SqliteConnection("DataSource=" + dbPath))
+        {
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                CREATE TABLE model_profiles (
+                    key_hash TEXT PRIMARY KEY,
+                    key_json TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    profile_revision INTEGER NOT NULL,
+                    suite_id TEXT NOT NULL,
+                    suite_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO model_profiles
+                    (key_hash, key_json, state, profile_revision, suite_id, suite_version, created_at, updated_at)
+                VALUES ($hash, $json, 'Qualified', 7, 'quick', '2.0.0', $created, $updated);
+            """;
+            cmd.Parameters.AddWithValue("$hash", key.QualificationKeyHash());
+            cmd.Parameters.AddWithValue("$json", key.CanonicalJson());
+            cmd.Parameters.AddWithValue("$created", createdAt);
+            cmd.Parameters.AddWithValue("$updated", updatedAt);
+            cmd.ExecuteNonQuery();
+        }
+
+        using var store = NewStore(dir);
+        var read = store.Get(key, CancellationToken.None);
+
+        Assert.NotNull(read);
+        Assert.True(key.Equals(read!.Key));
+        Assert.Equal(key.QualificationKeyHash(), read.KeyHash);
+        Assert.Equal(ModelQualificationState.Qualified, read.State);
+        Assert.Equal(7L, read.ProfileRevision);
+        Assert.Equal("quick", read.SuiteId);
+        Assert.Equal("2.0.0", read.SuiteVersion);
+        Assert.Null(read.StaleBySuiteVersion);
+        Assert.Equal(DateTimeOffset.Parse(createdAt), read.CreatedAt);
+        Assert.Equal(DateTimeOffset.Parse(updatedAt), read.UpdatedAt);
+        Assert.Null(read.ResultsArtifact);
+    }
+
+    [Fact]
     public void MarkStale_requires_current_revision()
     {
         var dir = TempDir();
