@@ -135,8 +135,11 @@ public sealed class ModelQualificationCancelledException : OperationCanceledExce
 
     public bool HasUnknownCost { get; }
 
+    /// <summary>False when cancellation interrupted a request before final provider usage was known.</summary>
+    public bool IsFinalCostConfirmed { get; }
+
     public ModelQualificationCancelledException(IReadOnlyList<QualificationProbeOutcome> probes,
-        TokenUsage? observedUsage, decimal knownCostUsd, bool hasUnknownCost,
+        TokenUsage? observedUsage, decimal knownCostUsd, bool hasUnknownCost, bool isFinalCostConfirmed,
         CancellationToken cancellationToken, Exception innerException)
         : base("cualificación cancelada; no se guardó perfil", innerException, cancellationToken)
     {
@@ -144,6 +147,7 @@ public sealed class ModelQualificationCancelledException : OperationCanceledExce
         ObservedUsage = observedUsage;
         KnownCostUsd = knownCostUsd;
         HasUnknownCost = hasUnknownCost;
+        IsFinalCostConfirmed = isFinalCostConfirmed;
     }
 }
 
@@ -303,7 +307,8 @@ public sealed class ModelQualificationHost : IDisposable
                 probes.First(probe => probe.Id.Equals(result.Id)).Kind.ToString(),
                 result.Status.ToString(), result.Score, result.Error, result.Duration, result.CostUsd)).ToArray();
             throw new ModelQualificationCancelledException(outcomes, exception.ObservedUsage,
-                exception.KnownCostUsd, exception.HasUnknownCost, exception.CancellationToken, exception);
+                exception.KnownCostUsd, exception.HasUnknownCost, exception.IsFinalCostConfirmed,
+                exception.CancellationToken, exception);
         }
         catch (QualificationCostCapExceededException exception)
         {

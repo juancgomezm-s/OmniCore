@@ -258,6 +258,7 @@ public sealed class QualificationCostWiringTests
 
         Assert.Equal(3, exception.Results.Count);
         Assert.All(exception.Results, result => Assert.Equal(ProbeStatus.NotRun, result.Status));
+        Assert.True(exception.IsFinalCostConfirmed);
         Assert.Equal(cts.Token, exception.CancellationToken);
         Assert.Equal(0, provider.RequestCount);
     }
@@ -279,6 +280,7 @@ public sealed class QualificationCostWiringTests
         Assert.Equal(usage, exception.ObservedUsage);
         Assert.Equal(0.0000016m, exception.KnownCostUsd);
         Assert.False(exception.HasUnknownCost);
+        Assert.False(exception.IsFinalCostConfirmed);
         Assert.Equal([ProbeStatus.Cancelled, ProbeStatus.NotRun, ProbeStatus.NotRun],
             exception.Results.Select(result => result.Status));
         Assert.Equal(0.0000016m, exception.Results[0].CostUsd);
@@ -366,6 +368,7 @@ public sealed class QualificationCostWiringTests
         Assert.Equal(usage, exception.ObservedUsage);
         Assert.Equal(0.0000016m, exception.KnownCostUsd);
         Assert.False(exception.HasUnknownCost);
+        Assert.False(exception.IsFinalCostConfirmed);
         Assert.Equal(["Cancelled", "NotRun", "NotRun"], exception.Probes.Select(probe => probe.Status));
         Assert.Equal(0.0000016m, exception.Probes[0].CostUsd);
         Assert.Equal(1, provider.RequestCount);

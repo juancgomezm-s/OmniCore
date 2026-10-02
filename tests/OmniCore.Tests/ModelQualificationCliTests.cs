@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
+using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Host;
 using OmniCore.Models;
@@ -31,13 +33,14 @@ public sealed class ModelQualificationCliTests
     };
 
     private static async Task<int> Run(string[] args, string input, TextWriter output, string dataDir,
-        bool interactive = false, CancellationToken? cancellationToken = null)
+        bool interactive = false, CancellationToken? cancellationToken = null,
+        IModelProvider? qualificationProvider = null)
     {
         using var linkedCancellation = cancellationToken is { } token
             ? CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken, token)
             : CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         return await OmniCore.Cli.ModelPolicyCommands.Run(args, new StringReader(input), output, interactive,
-            dataDir, Registry(), linkedCancellation.Token);
+            dataDir, Registry(), linkedCancellation.Token, qualificationProvider);
     }
 
     [Fact]
@@ -75,9 +78,80 @@ public sealed class ModelQualificationCliTests
             Run(new[] { "model", "qualify", "qwen-test", "--yes" }, "", output, TempDir(),
                 cancellationToken: cts.Token));
 
-        Assert.Contains("Coste conocido: 0.000000 USD", output.ToString());
-        Assert.Contains("coste desconocido presente: no", output.ToString());
+        Assert.Contains("Coste observado: 0.000000 USD", output.ToString());
+        Assert.Contains("total final del provider confirmado: sí", output.ToString());
+        Assert.Contains("coste desconocido en datos observados: no", output.ToString());
         Assert.Contains("NotRun", output.ToString());
+    }
+
+    [Fact]
+    public async Task Qualify_cancelled_during_provider_reports_provisional_cost_and_propagates_cancellation()
+    {
+        var dir = TempDir();
+        WritePaidConfiguration(dir);
+        var output = new StringWriter();
+        using var cts = new CancellationTokenSource();
+        var usage = new TokenUsage(7, 3, 0, 0, 0);
+        var provider = new PartialUsageBlockingProvider(usage, cts);
+
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken, cts.Token);
+        var exception = await Assert.ThrowsAsync<ModelQualificationCancelledException>(() =>
+            OmniCore.Cli.ModelPolicyCommands.Run(new[] { "model", "qualify", "paid-model", "--yes" },
+                new StringReader(""), output, interactive: false, dataDirectoryOverride: dir,
+                cancellationToken: linkedCancellation.Token, qualificationProvider: provider));
+
+        var text = output.ToString();
+        Assert.Contains("Coste observado: 0.000002 USD", text);
+        Assert.Contains("total final del provider confirmado: no", text);
+        Assert.Contains("coste desconocido en datos observados: no", text);
+        Assert.Contains("Cancelled", text);
+        Assert.Contains("NotRun", text);
+        Assert.False(exception.IsFinalCostConfirmed);
+        Assert.Equal(usage, exception.ObservedUsage);
+        Assert.Equal(0.0000016m, exception.KnownCostUsd);
+        Assert.False(exception.HasUnknownCost);
+        Assert.Equal(linkedCancellation.Token, exception.CancellationToken);
+        Assert.Equal(1, provider.RequestCount);
+    }
+
+    private static void WritePaidConfiguration(string dataDir)
+    {
+        var config = Path.Combine(dataDir, "config");
+        Directory.CreateDirectory(config);
+        File.WriteAllText(Path.Combine(config, "providers.yaml"),
+            "providers:\n  nvidia:\n    family: OpenAiChatCompatible\n"
+            + "    baseUrl: \"https://integrate.api.nvidia.com/v1\"\n    authRef: \"nvidia-key\"\n"
+            + "    inputPricePerMillionUsd: 0.10\n    outputPricePerMillionUsd: 0.30\n");
+        File.WriteAllText(Path.Combine(config, "models.yaml"),
+            "models:\n  paid-model:\n    provider: \"nvidia\"\n    context: 65536\n"
+            + "    recommendedUsableContext: 65536\n    maxOutput: 8192\n");
+    }
+
+    private sealed class PartialUsageBlockingProvider : IModelProvider
+    {
+        private readonly TokenUsage _usage;
+        private readonly CancellationTokenSource _cancellation;
+        private int _requestCount;
+
+        public PartialUsageBlockingProvider(TokenUsage usage, CancellationTokenSource cancellation)
+        {
+            _usage = usage;
+            _cancellation = cancellation;
+        }
+
+        public int RequestCount => _requestCount;
+
+        public ProviderCapabilities Capabilities => new(true, false, false);
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _requestCount);
+            yield return new UsageUpdated(_usage);
+            _cancellation.Cancel();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
     }
 
     [Fact]

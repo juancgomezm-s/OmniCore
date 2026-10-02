@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using OmniCore.Abstractions;
 using OmniCore.Client;
 using OmniCore.Host;
 
@@ -20,6 +21,8 @@ public sealed class ModelPolicyCommands
 
     private readonly ModelQualificationHost _qualification;
 
+    private readonly IModelProvider? _qualificationProvider;
+
     private readonly Localization _loc;
 
     private readonly TextReader _input;
@@ -34,10 +37,12 @@ public sealed class ModelPolicyCommands
 
     private ModelPolicyCommands(ModelPolicyHost host, ModelQualificationHost qualification,
         Localization loc, TextReader input, TextWriter output,
-        bool interactive, string workspaceId, CancellationToken cancellationToken)
+        bool interactive, string workspaceId, CancellationToken cancellationToken,
+        IModelProvider? qualificationProvider)
     {
         _host = host;
         _qualification = qualification;
+        _qualificationProvider = qualificationProvider;
         _loc = loc;
         _input = input;
         _output = output;
@@ -50,7 +55,7 @@ public sealed class ModelPolicyCommands
     public static System.Threading.Tasks.Task<int> Run(string[] args, TextReader? input = null,
         TextWriter? output = null, bool? interactive = null, string? dataDirectoryOverride = null,
         IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, IModelProvider? qualificationProvider = null)
     {
         var reader = input ?? Console.In;
         var writer = output ?? Console.Out;
@@ -66,7 +71,7 @@ public sealed class ModelPolicyCommands
         // Workspace del CLI: el directorio actual (una selección vigente por proyecto).
         var workspace = "cli|" + Path.GetFullPath(".");
         var commands = new ModelPolicyCommands(host, qualification, loc, reader, writer, tty,
-            workspace, cancellationToken);
+            workspace, cancellationToken, qualificationProvider);
         return System.Threading.Tasks.Task.FromResult(commands.Dispatch(args));
     }
 
@@ -528,6 +533,7 @@ public sealed class ModelPolicyCommands
                 Suite = suite,
                 ConsentGiven = true,
                 MaxTotalCostUsd = maxCost,
+                Provider = _qualificationProvider,
             }, _cancellationToken).GetAwaiter().GetResult();
         }
         catch (ModelQualificationCancelledException ex)
@@ -536,6 +542,7 @@ public sealed class ModelPolicyCommands
             {
                 ["cost"] = ex.KnownCostUsd.ToString("0.000000", CultureInfo.InvariantCulture) + " USD",
                 ["unknown"] = ex.HasUnknownCost ? "sí" : "no",
+                ["final"] = ex.IsFinalCostConfirmed ? "sí" : "no",
             }));
             _output.WriteLine(_loc.Resolve("cli.model.qualify.probe.header"));
             foreach (var probe in ex.Probes)

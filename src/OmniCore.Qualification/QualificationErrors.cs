@@ -109,9 +109,12 @@ public sealed class QualificationCancelledException : OperationCanceledException
 
     public bool HasUnknownCost { get; }
 
+    /// <summary>False when cancellation interrupted a request whose final billed usage is unknown.</summary>
+    public bool IsFinalCostConfirmed { get; }
+
     public QualificationCancelledException(IReadOnlyList<ProbeResult> results,
         TokenUsage? observedUsage, CancellationToken cancellationToken,
-        OperationCanceledException innerException)
+        OperationCanceledException innerException, bool isFinalCostConfirmed)
         : base("suite de cualificación cancelada; no se guardó perfil", innerException, cancellationToken)
     {
         Results = results;
@@ -120,6 +123,7 @@ public sealed class QualificationCancelledException : OperationCanceledException
             .Sum(result => result.CostUsd ?? 0m);
         HasUnknownCost = results.Any(result => result.Status != OmniCore.Domain.ProbeStatus.NotRun
             && result.CostUsd is null);
+        IsFinalCostConfirmed = isFinalCostConfirmed;
     }
 }
 

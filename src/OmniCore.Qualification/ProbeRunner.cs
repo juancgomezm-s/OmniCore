@@ -88,7 +88,7 @@ public sealed class ProbeRunner
                     "cancelado antes de ejecutar el probe", TimeSpan.Zero, null));
                 AddNotRun(results, requests, i + 1, "no ejecutado: la suite fue cancelada");
                 throw new QualificationCancelledException(results, null, cancellationToken,
-                    new OperationCanceledException(cancellationToken));
+                    new OperationCanceledException(cancellationToken), isFinalCostConfirmed: true);
             }
 
             ProbeResult result;
@@ -101,7 +101,7 @@ public sealed class ProbeRunner
                 results.Add(exception.Result);
                 AddNotRun(results, requests, i + 1, "no ejecutado: la suite fue cancelada");
                 throw new QualificationCancelledException(results, exception.ObservedUsage,
-                    cancellationToken, exception);
+                    cancellationToken, exception, isFinalCostConfirmed: false);
             }
             results.Add(result);
 
