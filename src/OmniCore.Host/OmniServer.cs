@@ -9,6 +9,7 @@ using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
+using System.Globalization;
 
 /// <summary>
 /// OmniServer: sesión de protocolo in-process que expone el runtime detrás de IOmniClient
@@ -951,8 +952,13 @@ public sealed class OmniServer : IOmniClient
             new WorkingStateContributor(OmniCore.Engine.WorkingStateProjector.Render(result.WorkingState)),
         };
         var materializer = new ContextMaterializer(counter, contributors);
+        var policy = ContextManagementPolicy.Default;
+        var usableContext = 8192L;
+        var contextPolicyHash = ComputeContextPolicyHash(policy, usableContext);
+        var harnessHash = "harness-v1"; // deterministic placeholder for simulation harness
         var fingerprint = new ExecutionFingerprint(
-            "qwen38-27b-local", "harness-v1", "core-tools", "ctx-v1", "none", "M2");
+            "qwen38-27b-local", harnessHash, "core-tools", contextPolicyHash, "none", "M2",
+            "", counter.Id.Value);
         var request = new MaterializeRequest(result.SessionId, result.RunId, null, null, null,
             _store.CurrentSequence(result.SessionId), fingerprint);
         return materializer.Materialize(request, CancellationToken.None);
@@ -1227,6 +1233,24 @@ public sealed class OmniServer : IOmniClient
             return CommandAck.FailWithCause(command.MessageId, ex.Message ?? "exception",
                 ex.StackTrace is null ? "" : string.Join("; ", ex.StackTrace));
         }
+    }
+
+    /// <summary>
+    /// Computa un hash determinista de la política de contexto efectiva (ContextManagementPolicy + budget).
+    /// Versión 1: campos estables de ContextManagementPolicy + budget de tokens utilizables.
+    /// </summary>
+    private static string ComputeContextPolicyHash(ContextManagementPolicy policy, long usableContext)
+    {
+        var canonical = string.Join("|",
+            "ctx-policy-v1",
+            policy.ExternalizeAboveCharacters.ToString(CultureInfo.InvariantCulture),
+            policy.CompressBodyCharacters.ToString(CultureInfo.InvariantCulture),
+            policy.RecentTailItems.ToString(CultureInfo.InvariantCulture),
+            policy.CompactAfterItems.ToString(CultureInfo.InvariantCulture),
+            policy.MaxCheckpointCharacters.ToString(CultureInfo.InvariantCulture),
+            usableContext.ToString(CultureInfo.InvariantCulture));
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical)));
     }
 }
 
