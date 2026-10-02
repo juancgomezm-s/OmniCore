@@ -1,5 +1,6 @@
 namespace OmniCore.Host;
 
+using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Models;
@@ -78,4 +79,49 @@ public static class ModelRoutingHost
     /// <summary><c>auto</c> | <c>ask</c> | <c>deny</c>; por defecto <c>ask</c> (una escalación nunca es silenciosa).</summary>
     public static string EscalationMode(LoadedUserConfiguration loaded) =>
         loaded.Models?.Routing?.Escalation?.Mode ?? "ask";
+
+    /// <summary>Razón por la que un candidato de escalación no puede auto-aprobarse (gap-pre-m6 §4 bug 7).</summary>
+    public enum AutoEscalationRejection
+    {
+        /// <summary>El provider del candidato no está autorizado: falta descriptor, falta credencial
+        /// para su authRef o declara un modo de autenticación no verificable con la configuración actual.</summary>
+        UnauthorizedProvider,
+
+        /// <summary>El precio del candidato es parcial o desconocido: no se puede medir el gasto.</summary>
+        UnknownPricing,
+    }
+
+    /// <summary>
+    /// ¿Puede el modo <c>auto</c> aprobar y ejecutar este candidato? (gap-pre-m6 §4 bug 7, ADR-0046 §9).
+    /// Exige autorización y precio completo (entrada y salida): una escalación automática nunca
+    /// gasta sin autorización ni sin gasto medible. La autorización sale del descriptor del
+    /// provider — <c>auth: none</c> declarada, o un authRef con credencial existente — y nunca se
+    /// infiere del nombre ni de la dirección. No lee secretos: <paramref name="hasCredential"/>
+    /// solo decide si existe una credencial usable para la referencia.
+    /// </summary>
+    public static bool CanAutoApprove(LoadedUserConfiguration loaded, RouteCandidate candidate,
+        Func<string, bool> hasCredential, out AutoEscalationRejection? rejection)
+    {
+        var model = loaded.Registry.Model(candidate.Alias);
+        var provider = model is null ? null : loaded.Registry.Provider(model.ProviderId);
+        var authorized = provider switch
+        {
+            null => false,
+            { Auth.Kind: AuthKind.None } => true,
+            { Auth.Kind: AuthKind.ApiKey, Auth.SecretRef: { } secretRef } => hasCredential(secretRef),
+            _ => false, // Bearer/OAuth: no verificables con la configuración/credencial actual
+        };
+        if (!authorized)
+        {
+            rejection = AutoEscalationRejection.UnauthorizedProvider;
+            return false;
+        }
+        if (loaded.Pricing(model!.Id)?.IsComplete != true)
+        {
+            rejection = AutoEscalationRejection.UnknownPricing;
+            return false;
+        }
+        rejection = null;
+        return true;
+    }
 }

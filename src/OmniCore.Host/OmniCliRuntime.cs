@@ -896,6 +896,7 @@ public sealed class OmniCliRuntime
     /// Escalación explícita ante un límite de contexto (spec §73): se registra la causa; en modo
     /// <c>auto</c> se aprueba por política y el mismo pedido se repite con el siguiente modelo de la
     /// cadena; en modo <c>ask</c> queda solicitada y se informa, sin inventar una aprobación.
+    /// El modo <c>auto</c> además exige autorización y precio completo (bug 7, gap-pre-m6 §4).
     /// </summary>
     private async Task<int?> TryEscalateAsync(LoadedUserConfiguration loaded, string currentModel, long currentContext,
         string prompt, bool act, Action<string> writeLine, CancellationToken cancellationToken)
@@ -912,6 +913,16 @@ public sealed class OmniCliRuntime
             writeLine(Text(Localized("cli.escalation.suggest", ("model", next.Alias))));
             return null;
         }
+        // Bug 7 (gap-pre-m6 §4): auto solo aprueba con autorización y precio completo del
+        // candidato; si falta alguno, degrada a sugerencia no aprobada y no invoca al candidato.
+        if (!ModelRoutingHost.CanAutoApprove(loaded, next,
+                secretRef => HasEscalationCredential(secretRef, cancellationToken), out var rejection))
+        {
+            writeLine(Text(Localized("cli.escalation.auto.blocked", ("model", next.Alias),
+                ("reason", Text(Localized(rejection == ModelRoutingHost.AutoEscalationRejection.UnknownPricing
+                    ? "cli.escalation.reason.price" : "cli.escalation.reason.auth"))))));
+            return null;
+        }
         stream.Append(new ModelEscalationApproved(run, next.Alias, "policy:auto"));
         writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.Alias))));
         _escalatedModel = next.Alias;
@@ -922,6 +933,28 @@ public sealed class OmniCliRuntime
             return code;
         }
         finally { _escalatedModel = null; }
+    }
+
+    /// <summary>
+    /// ¿Existe una credencial usable para la referencia de un candidato de escalación? (bug 7).
+    /// Mismo criterio que <see cref="RunTurnAsync"/>: la API key del entorno o la del almacén
+    /// cifrado del usuario; un valor demasiado corto no es credencial. Nunca imprime ni
+    /// journaliza el valor: solo decide si existe.
+    /// </summary>
+    private static bool HasEscalationCredential(string secretRef, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var environment = Environment.GetEnvironmentVariable("OMNI_QWEN_KEY");
+            if (environment is { Length: > 0 }) return environment.Length >= Secret.MinimumLength;
+            var stored = OmniHost.CreateUserCredentialStore(OmniHost.CreatePlatformPaths())
+                .Load(secretRef, cancellationToken);
+            return stored is { Length: >= Secret.MinimumLength };
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return false; // Un almacén ilegible no autoriza: la escalación degrada a sugerencia.
+        }
     }
 
     public void SetWorkspaceTrusted(bool trusted) =>
