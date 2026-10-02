@@ -257,6 +257,7 @@ public sealed class ExplorerTurn
 
             string? finalText = null;
             var stop = StopReason.EndTurn;
+            ProviderState? continuation = null;
             for (var step = 0; step < MaxSteps; step++)
             {
                 steps = step + 1;
@@ -280,7 +281,7 @@ public sealed class ExplorerTurn
                     RenderContext(materialized),
                     VisibleTools(),
                     ToolChoice.Auto(),
-                    null, null, new CacheHints(4, "automatic"), null);
+                    null, null, new CacheHints(4, "automatic"), continuation);
 
                 ModelResponse resolved;
                 try
@@ -325,8 +326,12 @@ public sealed class ExplorerTurn
                     break;
                 }
 
+                // Capture continuation state for the next step within this Turn.
+                // Scoped to this Ask/Turn; not persisted to journal/artifacts.
+                continuation = resolved.State;
+
                 finalText = null;
-                var toolBlocks = new List<ToolCallBlock>();
+                var toolCalls = new List<ToolCallBlock>();
                 foreach (ContentBlock block in resolved.Content)
                 {
                     if (block is TextBlock text)
@@ -335,18 +340,30 @@ public sealed class ExplorerTurn
                     }
                     else if (block is ToolCallBlock call)
                     {
-                        toolBlocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
+                        toolCalls.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
                             _redaction.Redact(call.ArgumentsJson)));
                     }
                 }
 
-                if (resolved.StopReason != StopReason.ToolUse || toolBlocks.Count == 0)
+                if (resolved.StopReason != StopReason.ToolUse || toolCalls.Count == 0)
                 {
                     stop = resolved.StopReason;
                     break;
                 }
 
-                foreach (ToolCallBlock call in toolBlocks)
+                // Preserve the full assistant message (all content blocks) as returned by the model.
+                // This keeps reasoning/thinking blocks and provider-opaque blocks intact.
+                var assistantBlocks = new List<ContentBlock>();
+                foreach (ContentBlock block in resolved.Content)
+                {
+                    var redactedBlock = RedactContentBlock(block);
+                    assistantBlocks.Add(redactedBlock);
+                }
+                messages.Add(new ModelMessage(MessageRole.Assistant, assistantBlocks));
+
+                // Execute all tool calls and collect results.
+                var toolResults = new List<ToolResultBlock>();
+                foreach (ToolCallBlock call in toolCalls)
                 {
                     try
                     {
@@ -507,17 +524,14 @@ public sealed class ExplorerTurn
                         }
 
                         var answerJson = EncodeQuestionnaireOutcome(answer!);
-                        var assistantAsk = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
-                            new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                                _redaction.Redact(call.ArgumentsJson)),
-                        });
                         var askResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
                             new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(answerJson) }, answer!.IsInvalid),
                         });
-                        messages.Add(assistantAsk);
                         messages.Add(askResult);
                         allToolCalls.Add(new ToolUseTrace(call.ToolName, !answer!.IsInvalid,
                             answer.Status, _redaction.Redact(call.ArgumentsJson)));
+                        // user.ask suspends the turn; the assistant message was already added with all blocks.
+                        // We continue to the next step which will send the updated conversation.
                         continue;
                     }
 
@@ -531,20 +545,18 @@ public sealed class ExplorerTurn
                         _redaction.Redact(planError ?? outcome.Summary ?? ""),
                         _redaction.Redact(call.ArgumentsJson)));
 
-                    var assistant = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
-                        new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                            _redaction.Redact(call.ArgumentsJson)),
-                    });
-                    var toolResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
-                        new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
-                    });
-                    messages.Add(assistant);
-                    messages.Add(toolResult);
+                    toolResults.Add(new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded));
                 }
 
                 if (stop == StopReason.Cancelled)
                 {
                     break;
+                }
+
+                // Add all tool results as a single tool message.
+                if (toolResults.Count > 0)
+                {
+                    messages.Add(new ModelMessage(MessageRole.Tool, toolResults));
                 }
             }
 
@@ -1327,35 +1339,29 @@ public sealed class ExplorerTurn
         }
     }
 
+    private ContentBlock RedactContentBlock(ContentBlock block)
+    {
+        return block switch
+        {
+            TextBlock text => new TextBlock(_redaction.Redact(text.Text)),
+            ToolCallBlock call => new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
+                _redaction.Redact(call.ArgumentsJson)),
+            ToolResultBlock result => new ToolResultBlock(result.Id, RedactBlocks(result.Content), result.IsError),
+            ReasoningBlock reasoning => new ReasoningBlock(reasoning.VisibleText is null
+                ? null : _redaction.Redact(reasoning.VisibleText), reasoning.Visibility, null),
+            CitationBlock citation => new CitationBlock(_redaction.Redact(citation.Text),
+                _redaction.Redact(citation.SourceRef)),
+            ProviderOpaqueBlock opaque => opaque, // Provider-opaque state passes through unchanged (sensitive, not logged)
+            _ => new TextBlock("[unknown block]"),
+        };
+    }
+
     private ModelMessage RedactMessage(ModelMessage message)
     {
         var blocks = new List<ContentBlock>();
         foreach (var block in message.Content)
         {
-            switch (block)
-            {
-                case TextBlock text:
-                    blocks.Add(new TextBlock(_redaction.Redact(text.Text)));
-                    break;
-                case ToolCallBlock call:
-                    blocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                        _redaction.Redact(call.ArgumentsJson)));
-                    break;
-                case ToolResultBlock result:
-                    blocks.Add(new ToolResultBlock(result.Id, RedactBlocks(result.Content), result.IsError));
-                    break;
-                case ReasoningBlock reasoning:
-                    blocks.Add(new ReasoningBlock(reasoning.VisibleText is null
-                        ? null : _redaction.Redact(reasoning.VisibleText), reasoning.Visibility, null));
-                    break;
-                case CitationBlock citation:
-                    blocks.Add(new CitationBlock(_redaction.Redact(citation.Text),
-                        _redaction.Redact(citation.SourceRef)));
-                    break;
-                case ProviderOpaqueBlock:
-                    blocks.Add(new TextBlock("[estado opaco del provider omitido]"));
-                    break;
-            }
+            blocks.Add(RedactContentBlock(block));
         }
 
         return new ModelMessage(message.Role, blocks.ToArray());
