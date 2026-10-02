@@ -9,6 +9,7 @@ using OmniCore.Models;
 using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
+using System.Globalization;
 using System.Text.Json;
 
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
@@ -360,6 +361,7 @@ public sealed class OmniCliRuntime
                 harness.ContextManagement.CompactAfterItems, harness.ContextManagement.MaxCheckpointCharacters);
             var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(harnessValue)));
+            var contextPolicyHash = ComputeContextPolicyHash(harness.ContextManagement, usableContext);
             var policyService = OmniHost.CreateModelPolicyService(
                 act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"));
             var modelKey = ModelPolicyKey.For(modelDefinition?.ProviderId ?? "local", model);
@@ -394,7 +396,7 @@ public sealed class OmniCliRuntime
                 }
                 if (selected is "approve_only" or "reject") return 0;
             }
-            var fingerprint = new ExecutionFingerprint(model, harnessHash, "core-tools-1", tokenCounter.Id.Value,
+            var fingerprint = new ExecutionFingerprint(model, harnessHash, "core-tools-1", contextPolicyHash,
                 "none", act ? "M3" : "M2", effectivePolicy.Fingerprint(), tokenCounter.Id.Value);
             var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null);
             var localHost = OmniHost.CreateLocalModelHost();
@@ -1040,5 +1042,23 @@ public sealed class OmniCliRuntime
             writeLine(Resolve(Localized("cli.runtime.config.error", ("location", location),
                 ("key", diagnostic.KeyPath), ("message", message)), localize));
         }
+    }
+
+    /// <summary>
+    /// Computa un hash determinista de la política de contexto efectiva (ContextManagementPolicy + budget).
+    /// Versión 1: campos estables de ContextManagementPolicy + budget de tokens utilizables.
+    /// </summary>
+    private static string ComputeContextPolicyHash(ContextManagementPolicy policy, long usableContext)
+    {
+        var canonical = string.Join("|",
+            "ctx-policy-v1",
+            policy.ExternalizeAboveCharacters.ToString(CultureInfo.InvariantCulture),
+            policy.CompressBodyCharacters.ToString(CultureInfo.InvariantCulture),
+            policy.RecentTailItems.ToString(CultureInfo.InvariantCulture),
+            policy.CompactAfterItems.ToString(CultureInfo.InvariantCulture),
+            policy.MaxCheckpointCharacters.ToString(CultureInfo.InvariantCulture),
+            usableContext.ToString(CultureInfo.InvariantCulture));
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical)));
     }
 }
