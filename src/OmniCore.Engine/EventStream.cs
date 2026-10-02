@@ -141,8 +141,9 @@ public sealed class EventStream
         var run = ids.RunId ?? _runId;
         var causation = CausationScope.Current
             ?? (_lastEventId is null ? null : new EventCausation(_lastEventId));
+        var artifactRefs = ArtifactRefExtractor.Extract(payload);
         var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, ids.TaskId,
-            ids.LaneId, ids.TurnId, ids.PlanItemId, ids.ToolCallId, Array.Empty<ArtifactRef>(), json);
+            ids.LaneId, ids.TurnId, ids.PlanItemId, ids.ToolCallId, artifactRefs, json);
         _lastEventId = envelope.EventId;
         return envelope;
     }

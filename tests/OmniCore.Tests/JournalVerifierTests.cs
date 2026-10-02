@@ -513,9 +513,9 @@ public sealed class JournalVerifierTests
 
         Assert.True(report.Ok, string.Join("; ", AllDetails(report)));
         Assert.Equal(6, report.EventCount);
-        // El runtime persiste las refs en el payload (el envelope lleva ArtifactRef[0],
-        // EventStream.Append): contentRef + responseArtifact = 2 refs verificadas.
-        Assert.Equal(2, report.ArtifactRefCount);
+        // El runtime ahora persiste las refs TANTO en el envelope (para indexar, ADR-0001 §3)
+        // COMO en el payload. Se verifican 2 refs de envelope + 2 refs de payload = 4.
+        Assert.Equal(4, report.ArtifactRefCount);
     }
 
     // ------------------------------------------------------------------ helpers
