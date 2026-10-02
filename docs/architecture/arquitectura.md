@@ -767,12 +767,14 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 ### Estado real por epic
 
 > **Estado contrastado con código y tests:** la tabla distingue lo implementado de los criterios de salida
-> que aún requieren validación real. Última ejecución de `dotnet test --solution OmniCore.slnx`: 1115 tests
-> (1111 correctos, 4 omitidos por las restricciones del entorno para crear symlinks).
+> que aún requieren validación real. Última ejecución de `dotnet test --solution OmniCore.slnx`: 1136 tests
+> (1132 correctos, 4 omitidos por las restricciones del entorno para crear symlinks).
 >
-> **M5 — auditoría con NVIDIA (2026-10-01):** la familia Chat-compatible quedó validada contra
+> **M5 — auditoría interina con NVIDIA (2026-10-01):** la familia Chat-compatible quedó validada contra
 > `deepseek-ai/deepseek-v4.1-flash` real (round trip de tool de 2 pasos) tras corregir el charset de
-> `function.name`; la matriz completa y los pendientes honestos están en
+> `function.name`. La misma restricción se aplicó también a la Responses API (patrón `FunctionToolParam.name`
+> del OpenAPI oficial). **Esto no cierra M5:** la cualificación real, los providers nativos con credencial y
+> el login OAuth real siguen pendientes. Matriz completa y pendientes honestos en
 > [`docs/validation/m5-closure-20261001.md`](../validation/m5-closure-20261001.md).
 
 | Epic | Estado | Lo principal que falta |
