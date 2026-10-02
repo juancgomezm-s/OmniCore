@@ -6,6 +6,7 @@ using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Host;
+using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Qualification;
 using Task = System.Threading.Tasks.Task;
@@ -372,7 +373,8 @@ public sealed class QualificationCostWiringTests
     {
         var dir = TempDir();
         WritePaidConfiguration(dir, declaredPricing: true);
-        using var host = ModelQualificationHost.Create(dir);
+        var artifacts = new CountingArtifactStore(new FileArtifactStore(dir));
+        using var host = ModelQualificationHost.Create(dir, artifactStore: artifacts);
         var usage = new TokenUsage(7, 3, 0, 0, 0);
         var provider = new PartialUsageBlockingProvider(usage);
         using var cts = new CancellationTokenSource();
@@ -398,6 +400,7 @@ public sealed class QualificationCostWiringTests
         Assert.Equal(0.0000016m, exception.Probes[0].CostUsd);
         Assert.Equal(1, provider.RequestCount);
         Assert.Equal(cts.Token, exception.CancellationToken);
+        Assert.Equal(0, artifacts.PutCount);
 
         // Una nueva suite completa empieza desde Declared: la cancelada no creó perfil ni traits.
         var completed = await host.QualifyAsync("paid-model", new QualificationOptions
@@ -409,6 +412,70 @@ public sealed class QualificationCostWiringTests
         }, CancellationToken.None);
         Assert.Equal("Declared", completed.PreviousState);
         Assert.Equal(1, completed.ProfileRevision);
+        Assert.Equal(1, artifacts.PutCount);
+    }
+
+    [Fact]
+    public async Task Completed_suite_persists_redacted_cas_bundle_and_links_it_to_profile_revision()
+    {
+        var dir = TempDir();
+        WritePaidConfiguration(dir, declaredPricing: true);
+        using var host = ModelQualificationHost.Create(dir);
+        const string canary = "sk-test-qualification-secret123";
+
+        var result = await host.QualifyAsync("paid-model", new QualificationOptions
+        {
+            Suite = "quick",
+            ConsentGiven = true,
+            MaxTotalCostUsd = 1.00m,
+            Provider = new CountingProvider(responseText: canary),
+        }, CancellationToken.None);
+
+        using var profileStore = new SqliteModelQualificationStore(Path.Combine(dir, "user.db"));
+        var profile = Assert.Single(profileStore.List(CancellationToken.None));
+        var reference = Assert.IsType<ArtifactRef>(profile.ResultsArtifact);
+        Assert.Equal(result.ProfileRevision, profile.ProfileRevision);
+        Assert.True(reference.Redacted);
+        Assert.Equal(ArtifactKind.Other, reference.Kind);
+        Assert.Equal(Sensitivity.Sensitive, reference.Sensitivity);
+
+        var artifactStore = new FileArtifactStore(dir);
+        Assert.True(artifactStore.Verify(reference.Hash, reference.Size));
+        var content = artifactStore.GetText(reference.Hash)!;
+        Assert.DoesNotContain(canary, content);
+        Assert.Contains("[REDACTED]", content);
+        using var evidence = JsonDocument.Parse(content);
+        var benchmark = evidence.RootElement.GetProperty("BenchmarkIdentity");
+        Assert.Equal("omnicore-quick", benchmark.GetProperty("SuiteId").GetString());
+        Assert.Equal("2.0.0", benchmark.GetProperty("SuiteVersion").GetString());
+        Assert.Equal(ProbeScorer.TaskSetHash(QuickProbeSuite.Probes()),
+            benchmark.GetProperty("TaskSetHash").GetString());
+        Assert.Equal(10, evidence.RootElement.GetProperty("Probes").GetArrayLength());
+        Assert.Contains(evidence.RootElement.GetProperty("Probes").EnumerateArray(), probe =>
+            probe.GetProperty("Output").GetString() == "[REDACTED]");
+    }
+
+    [Fact]
+    public async Task Incomplete_suite_does_not_write_a_complete_evidence_artifact()
+    {
+        var dir = TempDir();
+        WritePaidConfiguration(dir, declaredPricing: true);
+        var artifacts = new CountingArtifactStore(new FileArtifactStore(dir));
+        using var host = ModelQualificationHost.Create(dir, artifactStore: artifacts);
+
+        await Assert.ThrowsAsync<ModelQualificationSuiteIncompleteException>(() =>
+            host.QualifyAsync("paid-model", new QualificationOptions
+            {
+                Suite = "quick",
+                ConsentGiven = true,
+                MaxTotalCostUsd = 1.00m,
+                PerProbeTimeout = TimeSpan.FromMilliseconds(50),
+                Provider = new PartialUsageSlowProvider(new TokenUsage(7, 3, 0, 0, 0)),
+            }, CancellationToken.None));
+
+        Assert.Equal(0, artifacts.PutCount);
+        using var profileStore = new SqliteModelQualificationStore(Path.Combine(dir, "user.db"));
+        Assert.Empty(profileStore.List(CancellationToken.None));
     }
 
     [Fact]
@@ -536,10 +603,15 @@ public sealed class QualificationCostWiringTests
     private sealed class CountingProvider : IModelProvider
     {
         private readonly TokenUsage _usage;
+        private readonly string _responseText;
 
         private readonly List<ModelRequest> _requests = [];
 
-        public CountingProvider(TokenUsage? usage = null) => _usage = usage ?? new TokenUsage(10, 5, 0, 0, 0);
+        public CountingProvider(TokenUsage? usage = null, string responseText = "wrong-answer")
+        {
+            _usage = usage ?? new TokenUsage(10, 5, 0, 0, 0);
+            _responseText = responseText;
+        }
 
         public int RequestCount => _requests.Count;
 
@@ -554,9 +626,28 @@ public sealed class QualificationCostWiringTests
             cancellationToken.ThrowIfCancellationRequested();
             await Task.Yield();
             yield return new ResponseCompleted(new ModelResponse(
-                [new TextBlock("wrong-answer")], StopReason.EndTurn, _usage, null,
+                [new TextBlock(_responseText)], StopReason.EndTurn, _usage, null,
                 new ProviderMetadata("req", "paid-model", null)));
         }
+    }
+
+    private sealed class CountingArtifactStore : IArtifactStore
+    {
+        private readonly IArtifactStore _inner;
+
+        public CountingArtifactStore(IArtifactStore inner) => _inner = inner;
+
+        public int PutCount { get; private set; }
+
+        public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
+        {
+            PutCount++;
+            return _inner.PutText(content, mediaType, kind, sensitivity);
+        }
+
+        public string? GetText(ContentHash hash) => _inner.GetText(hash);
+
+        public bool Verify(ContentHash hash, long expectedSize) => _inner.Verify(hash, expectedSize);
     }
 
     private sealed class PartialUsageSlowProvider : IModelProvider

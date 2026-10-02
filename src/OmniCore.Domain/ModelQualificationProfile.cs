@@ -44,6 +44,9 @@ public sealed class ModelQualificationProfile
     /// </summary>
     public string? StaleBySuiteVersion { get; }
 
+    /// <summary>Artifact CAS con la evidencia completa que produjo esta revisión, si existe.</summary>
+    public ArtifactRef? ResultsArtifact { get; }
+
     public DateTimeOffset CreatedAt { get; }
 
     public DateTimeOffset UpdatedAt { get; }
@@ -51,13 +54,20 @@ public sealed class ModelQualificationProfile
     public ModelQualificationProfile(ModelQualificationKey key, ModelQualificationState state,
         long profileRevision, string suiteId, string suiteVersion, DateTimeOffset createdAt,
         DateTimeOffset updatedAt) : this(key, state, profileRevision, suiteId, suiteVersion,
-        null, createdAt, updatedAt)
+        null, createdAt, updatedAt, null)
+    {
+    }
+
+    public ModelQualificationProfile(ModelQualificationKey key, ModelQualificationState state,
+        long profileRevision, string suiteId, string suiteVersion, DateTimeOffset createdAt,
+        DateTimeOffset updatedAt, ArtifactRef? resultsArtifact) : this(key, state, profileRevision,
+        suiteId, suiteVersion, null, createdAt, updatedAt, resultsArtifact)
     {
     }
 
     public ModelQualificationProfile(ModelQualificationKey key, ModelQualificationState state,
         long profileRevision, string suiteId, string suiteVersion, string? staleBySuiteVersion,
-        DateTimeOffset createdAt, DateTimeOffset updatedAt)
+        DateTimeOffset createdAt, DateTimeOffset updatedAt, ArtifactRef? resultsArtifact = null)
     {
         Key = key;
         KeyHash = key.QualificationKeyHash();
@@ -66,6 +76,7 @@ public sealed class ModelQualificationProfile
         SuiteId = suiteId;
         SuiteVersion = suiteVersion;
         StaleBySuiteVersion = staleBySuiteVersion;
+        ResultsArtifact = resultsArtifact;
         CreatedAt = createdAt;
         UpdatedAt = updatedAt;
     }

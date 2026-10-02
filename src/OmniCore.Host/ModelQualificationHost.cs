@@ -210,13 +210,16 @@ public sealed class ModelQualificationHost : IDisposable
 
     private readonly IPlatformPaths _paths;
 
+    private readonly IArtifactStore _artifactStore;
+
     private ModelQualificationHost(SqliteModelQualificationStore store, ModelRegistry registry,
-        LoadedUserConfiguration? configuration, IPlatformPaths paths)
+        LoadedUserConfiguration? configuration, IPlatformPaths paths, IArtifactStore artifactStore)
     {
         _store = store;
         _registry = registry;
         _configuration = configuration;
         _paths = paths;
+        _artifactStore = artifactStore;
     }
 
     public void Dispose()
@@ -233,7 +236,8 @@ public sealed class ModelQualificationHost : IDisposable
     /// binario omni — frontera de ADR-0009 §2.4 verificada por CliAssemblyReferenceTests).
     /// </summary>
     public static ModelQualificationHost Create(string? dataDirectoryOverride = null,
-        IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null)
+        IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null,
+        IArtifactStore? artifactStore = null)
     {
         var paths = OmniHost.CreatePlatformPaths(dataDirectoryOverride);
         // Sin override se carga la configuración completa (no solo el registro): los precios
@@ -241,7 +245,8 @@ public sealed class ModelQualificationHost : IDisposable
         var configuration = registryOverride is null ? OmniHost.LoadUserConfiguration(paths) : null;
         var registry = configuration?.Registry ?? ToRegistry(registryOverride!);
         var store = OmniHost.CreateModelQualificationStore(dataDirectoryOverride);
-        return new ModelQualificationHost(store, registry, configuration, paths);
+        return new ModelQualificationHost(store, registry, configuration, paths,
+            artifactStore ?? OmniHost.CreateArtifactStore(paths.DataDirectory));
     }
 
     /// <summary>Perfil de cualificación vigente para la configuración exacta del modelo, o null.</summary>
@@ -348,8 +353,37 @@ public sealed class ModelQualificationHost : IDisposable
             ? null
             : _store.Traits(key, existing.ProfileRevision, cancellationToken));
 
+        // Solo una suite completamente ejecutada puede producir evidencia durable. El bundle es
+        // autocontenido y se redacta antes de cruzar la frontera del ArtifactStore (INV-016).
+        cancellationToken.ThrowIfCancellationRequested();
+        var benchmark = new BenchmarkIdentity(QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion,
+            ProbeScorer.TaskSetHash(probes), seed: 0, temperature: 0.0,
+            typeof(ModelQualificationHost).Assembly.GetName().Version?.ToString() ?? "unknown");
+        var probeById = probes.ToDictionary(probe => probe.Id.ToString(), StringComparer.Ordinal);
+        var evidence = new QualificationEvidenceBundle(benchmark,
+            results.Select(result => new QualificationEvidenceProbe(
+                result.Id.ToString(), probeById[result.Id.ToString()].Kind.ToString(),
+                probeById[result.Id.ToString()].Prompt, probeById[result.Id.ToString()].Expected,
+                result.Status.ToString(), result.Score, result.Output, result.Error,
+                result.Duration.Ticks, result.CostUsd)).ToArray());
+        var evidenceJson = System.Text.Json.JsonSerializer.Serialize(evidence,
+            QualificationEvidenceJsonContext.Default.QualificationEvidenceBundle);
+        var redactedEvidence = new RedactionPolicy().Redact(evidenceJson);
+        cancellationToken.ThrowIfCancellationRequested();
+        var resultsArtifact = _artifactStore.PutText(redactedEvidence,
+            "application/vnd.omnicore.model-qualification+json", ArtifactKind.Other, Sensitivity.Sensitive);
+        if (redactedEvidence != evidenceJson && !resultsArtifact.Redacted)
+        {
+            resultsArtifact = resultsArtifact with { Redacted = true };
+        }
+        if (!_artifactStore.Verify(resultsArtifact.Hash, resultsArtifact.Size))
+        {
+            throw new InvalidDataException("el artifact de evidencia de cualificación no verificó contra su hash y tamaño");
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+
         var profile = _store.Upsert(key, existing?.ProfileRevision ?? 0, newState,
-            QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion, cancellationToken);
+            QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion, cancellationToken, resultsArtifact);
         _store.SaveTraits(key, profile.ProfileRevision,
             traits.Select(trait => new ModelTraitRecord(key.QualificationKeyHash(), profile.ProfileRevision,
                 trait.Trait, trait.Value, trait.Confidence, trait.Samples, trait.Source)).ToArray(),

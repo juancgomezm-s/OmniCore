@@ -70,7 +70,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
     public ModelQualificationProfile Upsert(ModelQualificationKey key, long expectedRevision,
         ModelQualificationState state, string suiteId, string suiteVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, ArtifactRef? resultsArtifact = null)
     {
         var keyHash = key.QualificationKeyHash();
         var existing = Get(key, cancellationToken);
@@ -90,15 +90,18 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 insert.CommandText = """
                     INSERT INTO model_profiles (
                         key_hash, key_json, state, profile_revision, suite_id, suite_version,
-                        created_at, updated_at)
-                    VALUES (:h, :kj, :st, 1, :sid, :sver, :now, :now)
+                        results_artifact_ref_json, created_at, updated_at)
+                    VALUES (:h, :kj, :st, 1, :sid, :sver, :artifact, :now, :now)
                 """;
                 AddProfileParams(insert, key, keyHash, state, suiteId, suiteVersion, now);
+                Add(insert, "artifact", resultsArtifact is null ? DBNull.Value
+                    : JsonSerializer.Serialize(resultsArtifact, ModelQualificationJsonContext.Default.ArtifactRef));
                 insert.ExecuteNonQuery();
             }
 
             tx.Commit();
-            return new ModelQualificationProfile(key, state, 1, suiteId, suiteVersion, now, now);
+            return new ModelQualificationProfile(key, state, 1, suiteId, suiteVersion, now, now,
+                resultsArtifact);
         }
 
         if (existing!.ProfileRevision != expectedRevision)
@@ -107,20 +110,22 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         }
 
         var updated = new ModelQualificationProfile(key, state, existing!.ProfileRevision + 1, suiteId,
-            suiteVersion, existing!.CreatedAt, now);
+            suiteVersion, existing!.CreatedAt, now, resultsArtifact);
         using (var update = _conn.CreateCommand())
         {
             update.Transaction = tx;
             update.CommandText = """
                 UPDATE model_profiles SET
                     state = :st, profile_revision = :rev, suite_id = :sid, suite_version = :sver,
-                    updated_at = :now
+                    results_artifact_ref_json = :artifact, updated_at = :now
                 WHERE key_hash = :h AND profile_revision = :expected
             """;
             Add(update, "st", state.ToString());
             Add(update, "rev", updated.ProfileRevision);
             Add(update, "sid", suiteId);
             Add(update, "sver", suiteVersion);
+            Add(update, "artifact", resultsArtifact is null ? DBNull.Value
+                : JsonSerializer.Serialize(resultsArtifact, ModelQualificationJsonContext.Default.ArtifactRef));
             Add(update, "now", Iso(now));
             Add(update, "h", keyHash);
             Add(update, "expected", existing!.ProfileRevision);
@@ -194,7 +199,8 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
         tx.Commit();
         return new ModelQualificationProfile(key, ModelQualificationState.Stale, existing!.ProfileRevision + 1,
-            existing!.SuiteId, existing!.SuiteVersion, newSuiteVersion, existing!.CreatedAt, now);
+            existing!.SuiteId, existing!.SuiteVersion, newSuiteVersion, existing!.CreatedAt, now,
+            existing.ResultsArtifact);
     }
 
     private static int[] ParseVersionParts(string version)
@@ -327,6 +333,10 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         {
             Exec("ALTER TABLE model_profiles ADD COLUMN stale_by_suite_version TEXT");
         }
+        if (!ColumnExists("model_profiles", "results_artifact_ref_json"))
+        {
+            Exec("ALTER TABLE model_profiles ADD COLUMN results_artifact_ref_json TEXT");
+        }
         Exec("""
             CREATE TABLE IF NOT EXISTS model_traits (
                 key_hash TEXT NOT NULL,
@@ -369,12 +379,16 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
         var staleByOrdinal = reader.GetOrdinal("stale_by_suite_version");
         var staleBy = reader.IsDBNull(staleByOrdinal) ? null : Text(reader, "stale_by_suite_version");
+        var artifactOrdinal = reader.GetOrdinal("results_artifact_ref_json");
+        var resultsArtifact = reader.IsDBNull(artifactOrdinal) ? null
+            : JsonSerializer.Deserialize(Text(reader, "results_artifact_ref_json"),
+                ModelQualificationJsonContext.Default.ArtifactRef);
 
         return new ModelQualificationProfile(key,
             Enum.Parse<ModelQualificationState>(Text(reader, "state")),
             reader.GetInt64(reader.GetOrdinal("profile_revision")),
             Text(reader, "suite_id"), Text(reader, "suite_version"), staleBy,
-            ParseIso(Text(reader, "created_at")), ParseIso(Text(reader, "updated_at")));
+            ParseIso(Text(reader, "created_at")), ParseIso(Text(reader, "updated_at")), resultsArtifact);
     }
 
     /// <summary>Reconstruye la clave exacta desde su JSON canónico persistido.</summary>

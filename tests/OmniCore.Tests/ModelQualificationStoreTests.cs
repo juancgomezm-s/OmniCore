@@ -53,6 +53,33 @@ public sealed class ModelQualificationStoreTests
     }
 
     [Fact]
+    public void Results_artifact_reference_roundtrips_with_profile_revision_and_survives_stale_transition()
+    {
+        var dir = TempDir();
+        var key = LocalKey();
+        var reference = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('a', 64)), 42,
+            "application/vnd.omnicore.model-qualification+json", ArtifactKind.Other,
+            Sensitivity.Sensitive, Redacted: true);
+
+        using (var store = NewStore(dir))
+        {
+            var profile = store.Upsert(key, 0, ModelQualificationState.Qualified, "quick", "2.0.0",
+                CancellationToken.None, reference);
+            Assert.Equal(1L, profile.ProfileRevision);
+            Assert.Equal(reference, profile.ResultsArtifact);
+        }
+
+        using (var store = NewStore(dir))
+        {
+            var profile = store.Get(key, CancellationToken.None)!;
+            Assert.Equal(reference, profile.ResultsArtifact);
+            var stale = store.MarkStale(key, profile.ProfileRevision, "3.0.0", CancellationToken.None);
+            Assert.Equal(2L, stale.ProfileRevision);
+            Assert.Equal(reference, stale.ResultsArtifact);
+        }
+    }
+
+    [Fact]
     public void Keys_are_isolated_by_exact_configuration()
     {
         var dir = TempDir();

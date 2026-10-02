@@ -26,7 +26,7 @@ public interface IModelQualificationStore
     /// </summary>
     ModelQualificationProfile Upsert(ModelQualificationKey key, long expectedRevision,
         ModelQualificationState state, string suiteId, string suiteVersion,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken, ArtifactRef? resultsArtifact = null);
 
     /// <summary>
     /// Marca un perfil como Stale sin destruir la evidencia (ADR-0007 §4): se aplica solo cuando
