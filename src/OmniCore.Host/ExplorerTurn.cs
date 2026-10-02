@@ -206,7 +206,7 @@ public sealed class ExplorerTurn
         var persistedSpend = ReadJournalSpend(stream, runId, today);
 
         var messages = LoadConversation(stream, runId);
-        var safeQuestion = isResume ? "" : _redaction.Redact(question ?? "");
+        var safeQuestion = _redaction.Redact(question ?? "");
         if (safeQuestion.Length > 0)
         {
             messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(safeQuestion) }));
@@ -239,11 +239,15 @@ public sealed class ExplorerTurn
                     StopReason.ContextOverflow, 0, usage, allToolCalls.ToArray(), null);
             }
 
+            // Journal the user input for both initial and resumed turns.
+            // For resumed turns, use a distinct origin to trace the follow-up.
+            var inputOrigin = isResume ? (origin ?? "ResumeInput") : origin;
+            EnsureRunAwaitingInput(stream, runId, laneId);
+            var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
+            stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, inputOrigin));
+
             if (!isResume)
             {
-                EnsureRunAwaitingInput(stream, runId, laneId);
-                var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
-                stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
                 stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
                 // Límites de mutación por Turn (ADR-0044 §5): un Turn nuevo reinicia el contador del
                 // Turn; los totales del Run se conservan. Un Turn reanudado sigue con su contador.

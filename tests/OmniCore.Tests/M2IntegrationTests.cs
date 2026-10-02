@@ -1287,6 +1287,198 @@ public sealed class M2IntegrationTests
 
         return n;
     }
+
+    /// <summary>
+    /// When resuming an open Turn (e.g., after a questionnaire or permission interaction), the new user input
+    /// is journaled via UserInputReceived and included in the model conversation exactly once.
+    /// No duplicate TurnStarted is emitted; the same TurnId continues.
+    /// </summary>
+    [Fact]
+    public void Explorer_resume_open_turn_preserves_user_input_and_journals_it()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var artifacts = new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-resume-artifacts"));
+        var session = SessionId.New();
+        var run = TestRun.OpenRun(store, session);
+        var lane = LaneId.New();
+
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow)
+                .WithModeDefaults(RunMode.Act), TestCwd);
+        var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
+        var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
+        var selection = new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null);
+
+        // Create an open turn manually (TurnStarted without terminal event)
+        var stream = new EventStream(store, codecs, session);
+        var turnId = TurnId.New();
+        var snapshotArtifact = artifacts.PutText("{}", "application/json", ArtifactKind.ContextSnapshot, Sensitivity.Sensitive);
+        stream.Append(new TurnStarted(turnId, lane, fingerprint, snapshotArtifact));
+        // Ensure Run is in AwaitingInput state for the resume
+        stream.Append(new RunAwaitingInput(run, lane));
+
+        // First resume: provide initial input
+        var seenMessages = new List<string>();
+        var firstTurn = new ExplorerTurn((request, token) =>
+        {
+            foreach (var message in request.Messages)
+                foreach (var part in message.Content)
+                    if (part is TextBlock text) seenMessages.Add(text.Text);
+            return new ModelResponse(new ContentBlock[] { new TextBlock("first response") },
+                StopReason.EndTurn, new TokenUsage(10, 5, 0, 0, 0), null,
+                new ProviderMetadata("", "", null));
+        }, executor, hostTools.Catalog(), materializer, fingerprint, selection,
+            store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+
+        var firstResult = firstTurn.Ask("initial question", "sys", session, run, lane, "", CancellationToken.None);
+        Assert.Equal(StopReason.EndTurn, firstResult.StopReason);
+        Assert.Contains("initial question", seenMessages);
+
+        // Verify journal after first resume: one TurnStarted, one UserInputReceived
+        var eventsAfterFirst = store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt)).ToArray();
+        var turnStartedEvents = eventsAfterFirst.OfType<TurnStarted>().ToArray();
+        var userInputEvents = eventsAfterFirst.OfType<UserInputReceived>().ToArray();
+        Assert.Single(turnStartedEvents);
+        Assert.Equal(turnId, turnStartedEvents[0].TurnId);
+        Assert.Single(userInputEvents);
+        Assert.Contains(ExtractInputText(userInputEvents[0].InputPartsJson), "initial question");
+        Assert.Equal("ResumeInput", userInputEvents[0].Origin); // first resume has ResumeInput origin
+
+        // Create another open turn (simulate a new suspension)
+        var turnId2 = TurnId.New();
+        stream.Append(new TurnStarted(turnId2, lane, fingerprint, snapshotArtifact));
+        stream.Append(new RunAwaitingInput(run, lane));
+
+        // Second resume: provide follow-up input
+        seenMessages.Clear();
+        var resumeTurn = new ExplorerTurn((request, token) =>
+        {
+            foreach (var message in request.Messages)
+                foreach (var part in message.Content)
+                    if (part is TextBlock text) seenMessages.Add(text.Text);
+            return new ModelResponse(new ContentBlock[] { new TextBlock("resumed ok") },
+                StopReason.EndTurn, new TokenUsage(5, 5, 0, 0, 0), null,
+                new ProviderMetadata("", "", null));
+        }, executor, hostTools.Catalog(), materializer, fingerprint, selection,
+            store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+
+        var resumeResult = resumeTurn.Ask("follow-up question", "sys", session, run, lane, "", CancellationToken.None);
+        Assert.Equal(StopReason.EndTurn, resumeResult.StopReason);
+
+        // Verify the new input appears in the model conversation
+        Assert.Contains("follow-up question", seenMessages);
+        // Verify the initial input from first turn is still there (via LoadConversation)
+        Assert.Contains("initial question", seenMessages);
+        Assert.Contains("first response", seenMessages);
+
+        // Verify journal: two TurnStarted (different turns), two UserInputReceived
+        var eventsAfterSecond = store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt)).ToArray();
+        turnStartedEvents = eventsAfterSecond.OfType<TurnStarted>().ToArray();
+        userInputEvents = eventsAfterSecond.OfType<UserInputReceived>().ToArray();
+        Assert.Equal(2, turnStartedEvents.Length);
+        Assert.Equal(2, userInputEvents.Length);
+
+        // Verify both inputs are journaled with correct origins
+        Assert.Contains(userInputEvents, e => e.Origin == "ResumeInput" && ExtractInputText(e.InputPartsJson).Contains("initial question"));
+        Assert.Contains(userInputEvents, e => e.Origin == "ResumeInput" && ExtractInputText(e.InputPartsJson).Contains("follow-up question"));
+
+        TryDeleteFiles(TestCwd, ".omnicore-resume-artifacts");
+    }
+
+    [Fact]
+    public void Explorer_resume_after_sqlite_reopen_persists_input_once_on_same_turn()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore.Tests", "resume-input-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var journalPath = Path.Combine(root, "journal.db");
+        SqliteEventStore? store = null;
+        try
+        {
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var lane = LaneId.New();
+            store = new SqliteEventStore(journalPath);
+            var stream = new EventStream(store, codecs, session);
+            var run = TestRun.Open(stream, session).RunId;
+            var turnId = TurnId.New();
+            var artifacts = new FileArtifactStore(Path.Combine(root, "artifacts"));
+            var snapshot = artifacts.PutText("{}", "application/json", ArtifactKind.ContextSnapshot, Sensitivity.Sensitive);
+            var fingerprint = new ExecutionFingerprint("test-model", "h", "t", "c", "o", "M2");
+            stream.Append(new TurnStarted(turnId, lane, fingerprint, snapshot));
+            stream.Append(new RunAwaitingInput(run, lane));
+
+            // Reopen the SQLite journal to exercise the process-restart replay path.
+            store.Close();
+            store = new SqliteEventStore(journalPath);
+
+            var observedMessages = new List<string>();
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow)
+                    .WithModeDefaults(RunMode.Act), TestCwd);
+            var resumedTurn = new ExplorerTurn((request, token) =>
+            {
+                foreach (var message in request.Messages)
+                    foreach (var part in message.Content)
+                        if (part is TextBlock text) observedMessages.Add(text.Text);
+                return new ModelResponse(new ContentBlock[] { new TextBlock("resumed after restart") },
+                    StopReason.EndTurn, new TokenUsage(2, 2, 0, 0, 0), null,
+                    new ProviderMetadata("", "", null));
+            }, executor, hostTools.Catalog(),
+                new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+                fingerprint, new ModelSelection(new ModelIdValue("test-model"), 8192, ToolMode.Direct, null),
+                store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+
+            const string answer = "follow-up after restart";
+            var result = resumedTurn.Ask(answer, "sys", session, run, lane, "", CancellationToken.None);
+
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
+            Assert.Equal(1, observedMessages.Count(message => message == answer));
+            var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            var started = Assert.Single(events.OfType<TurnStarted>());
+            Assert.Equal(turnId, started.TurnId);
+            var completed = Assert.Single(events.OfType<TurnCompleted>());
+            Assert.Equal(turnId, completed.TurnId);
+            var input = Assert.Single(events.OfType<UserInputReceived>());
+            Assert.Contains(answer, ExtractInputText(input.InputPartsJson));
+            Assert.Equal("ResumeInput", input.Origin);
+        }
+        finally
+        {
+            store?.Close();
+            var poolKey = new Microsoft.Data.Sqlite.SqliteConnection("DataSource=" + journalPath);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearPool(poolKey);
+            poolKey.Dispose();
+            foreach (var sidecar in new[] { journalPath, journalPath + "-wal", journalPath + "-shm" })
+            {
+                if (File.Exists(sidecar)) File.Delete(sidecar);
+            }
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static string ExtractInputText(string inputPartsJson)
+    {
+        try
+        {
+            using var parsed = System.Text.Json.JsonDocument.Parse(inputPartsJson);
+            var root = parsed.RootElement;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                return string.Join("\n", root.EnumerateArray()
+                    .Where(static part => part.ValueKind == System.Text.Json.JsonValueKind.String)
+                    .Select(static part => part.GetString() ?? ""));
+            }
+            if (root.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                return root.GetString() ?? "";
+            }
+        }
+        catch (System.Text.Json.JsonException) { }
+        return "";
+    }
 }
 
 /// <summary>Respuestas fake: primero una tool call; después el texto final.</summary>
