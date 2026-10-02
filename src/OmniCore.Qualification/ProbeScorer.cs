@@ -1,5 +1,6 @@
 namespace OmniCore.Qualification;
 
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,8 +9,8 @@ using OmniCore.Domain;
 /// <summary>
 /// Puntuador determinista de probes (ADR-0007 §6, M5). No usa LLM juez, no escribe repos reales
 /// ni ejecuta probes pagos: aplica reglas exactas sobre el texto crudo de la respuesta. El score
-/// está en 0..1 y el probe pasa si score >= 1.0 (regla exacta binaria para los tres tipos
-/// iniciales de la suite quick).
+/// está en 0..1 y el probe pasa si score >= 1.0 (reglas exactas binarias para los tipos
+/// de la suite quick).
 /// </summary>
 public static class ProbeScorer
 {
@@ -128,7 +129,8 @@ public static class ProbeScorer
     /// <summary>
     /// Hash canónico determinista de un conjunto de probes, para la TaskSetHash de
     /// BenchmarkIdentity (ADR-0007 §6). SHA-256 hex minúsculo de una serialización canónica
-    /// (ids y expected en orden, sin dependencias de cultura ni de plataforma).
+    /// (id, tipo, prompt, expected y tope por probe en orden, sin dependencias de cultura ni
+    /// de plataforma).
     /// </summary>
     public static string TaskSetHash(IReadOnlyList<Probe> probes)
     {
@@ -136,7 +138,11 @@ public static class ProbeScorer
         var sb = new StringBuilder();
         foreach (var p in probes.OrderBy(p => p.Id.ToString(), StringComparer.Ordinal))
         {
-            sb.Append(p.Id.ToString()).Append('\u0001').Append(p.Kind.ToString()).Append('\u0001').Append(p.Expected).Append('\n');
+            sb.Append(p.Id.ToString()).Append('\u0001')
+                .Append(p.Kind.ToString()).Append('\u0001')
+                .Append(p.Prompt).Append('\u0001')
+                .Append(p.Expected).Append('\u0001')
+                .Append(p.MaxCostUsd.ToString(CultureInfo.InvariantCulture)).Append('\n');
         }
         return Hex(sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString())));
     }

@@ -41,7 +41,7 @@ public sealed class QualificationCostWiringTests
     // ---- Estimación conservadora: no nula para pricing pago declarado ----
 
     [Fact]
-    public void Declared_pricing_estimates_a_nonzero_cost_for_the_three_probe_quick_suite()
+    public void Declared_pricing_estimates_all_ten_quick_probes_and_matches_their_sum()
     {
         var policy = DeclaredPolicy();
         var estimate = policy.EstimateSuiteMaxCostUsd(QuickProbeSuite.Probes());
@@ -49,7 +49,8 @@ public sealed class QualificationCostWiringTests
         Assert.NotNull(estimate);
         Assert.True(estimate > 0m, "la estimación de una suite paga declarada no puede ser cero");
 
-        // La estimación es la suma de los tres topes por probe (input + maxOutput).
+        Assert.Equal(10, QuickProbeSuite.Probes().Count);
+        // La estimación incluye cada probe de la nueva suite (input + maxOutput).
         var perProbe = QuickProbeSuite.Probes().Sum(probe => policy.EstimateProbeMaxCostUsd(probe)!.Value);
         Assert.Equal(perProbe, estimate!.Value);
     }
@@ -99,6 +100,27 @@ public sealed class QualificationCostWiringTests
         Assert.Equal(0, provider.RequestCount);
     }
 
+    [Fact]
+    public async Task Cap_that_only_covers_the_previous_three_probe_suite_rejects_the_ten_probe_suite()
+    {
+        var probes = QuickProbeSuite.Probes();
+        var policy = DeclaredPolicy();
+        var previousThreeProbeEstimate = policy.EstimateSuiteMaxCostUsd(probes.Take(3).ToArray())!.Value;
+        var tenProbeEstimate = policy.EstimateSuiteMaxCostUsd(probes)!.Value;
+        var provider = new CountingProvider();
+        var runner = new ProbeRunner(provider, policy);
+
+        var exception = await Assert.ThrowsAsync<QualificationCostCapExceededException>(() =>
+            runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, previousThreeProbeEstimate),
+                CancellationToken.None));
+
+        Assert.Equal(10, probes.Count);
+        Assert.True(tenProbeEstimate > previousThreeProbeEstimate);
+        Assert.Equal(tenProbeEstimate, exception.EstimatedCostUsd);
+        Assert.Equal(previousThreeProbeEstimate, exception.MaxTotalCostUsd);
+        Assert.Equal(0, provider.RequestCount);
+    }
+
     // ---- Costo real medido con la evidencia del provider ----
 
     [Fact]
@@ -111,7 +133,7 @@ public sealed class QualificationCostWiringTests
         var results = await runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, 1.00m),
             CancellationToken.None);
 
-        Assert.Equal(3, results.Count);
+        Assert.Equal(10, results.Count);
         Assert.All(results, result => Assert.Equal(0.0000025m, result.CostUsd));
     }
 
@@ -140,9 +162,9 @@ public sealed class QualificationCostWiringTests
         var results = await runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, 0m),
             CancellationToken.None);
 
-        Assert.Equal(3, results.Count);
+        Assert.Equal(10, results.Count);
         Assert.All(results, result => Assert.Equal(0m, result.CostUsd));
-        Assert.Equal(3, provider.RequestCount);
+        Assert.Equal(10, provider.RequestCount);
     }
 
     // ---- Tope explícito de salida en el ModelRequest ----
@@ -256,7 +278,7 @@ public sealed class QualificationCostWiringTests
         var exception = await Assert.ThrowsAsync<QualificationCancelledException>(() =>
             runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, 1.00m), cts.Token));
 
-        Assert.Equal(3, exception.Results.Count);
+        Assert.Equal(10, exception.Results.Count);
         Assert.All(exception.Results, result => Assert.Equal(ProbeStatus.NotRun, result.Status));
         Assert.True(exception.IsFinalCostConfirmed);
         Assert.Equal(cts.Token, exception.CancellationToken);
@@ -281,7 +303,7 @@ public sealed class QualificationCostWiringTests
         Assert.Equal(0.0000016m, exception.KnownCostUsd);
         Assert.False(exception.HasUnknownCost);
         Assert.False(exception.IsFinalCostConfirmed);
-        Assert.Equal([ProbeStatus.Cancelled, ProbeStatus.NotRun, ProbeStatus.NotRun],
+        Assert.Equal(new[] { ProbeStatus.Cancelled }.Concat(Enumerable.Repeat(ProbeStatus.NotRun, 9)),
             exception.Results.Select(result => result.Status));
         Assert.Equal(0.0000016m, exception.Results[0].CostUsd);
         Assert.All(exception.Results.Skip(1), result => Assert.Null(result.CostUsd));
@@ -323,6 +345,8 @@ public sealed class QualificationCostWiringTests
         Assert.NotNull(preview.EstimatedUsd);
         Assert.True(preview.EstimatedUsd > 0m);
         Assert.Equal(8192, preview.MaxOutputTokens);
+        var expectedPreview = DeclaredPolicy(preview.MaxOutputTokens).EstimateSuiteMaxCostUsd(QuickProbeSuite.Probes());
+        Assert.Equal(expectedPreview, preview.EstimatedUsd);
 
         var provider = new CountingProvider(new TokenUsage(10, 5, 0, 0, 0));
         var result = await host.QualifyAsync("paid-model", new QualificationOptions
@@ -334,7 +358,7 @@ public sealed class QualificationCostWiringTests
         }, CancellationToken.None);
 
         Assert.True(result.EstimatedCostUsd > 0m);
-        Assert.Equal(3, provider.RequestCount);
+        Assert.Equal(10, provider.RequestCount);
         Assert.All(result.Probes, probe => Assert.Equal(0.0000025m, probe.CostUsd));
 
         // La recomendación es visible pero la política operativa no se crea ni se toca.
@@ -369,7 +393,8 @@ public sealed class QualificationCostWiringTests
         Assert.Equal(0.0000016m, exception.KnownCostUsd);
         Assert.False(exception.HasUnknownCost);
         Assert.False(exception.IsFinalCostConfirmed);
-        Assert.Equal(["Cancelled", "NotRun", "NotRun"], exception.Probes.Select(probe => probe.Status));
+        Assert.Equal(new[] { "Cancelled" }.Concat(Enumerable.Repeat("NotRun", 9)),
+            exception.Probes.Select(probe => probe.Status));
         Assert.Equal(0.0000016m, exception.Probes[0].CostUsd);
         Assert.Equal(1, provider.RequestCount);
         Assert.Equal(cts.Token, exception.CancellationToken);
@@ -463,6 +488,9 @@ public sealed class QualificationCostWiringTests
         var text = output.ToString();
         Assert.Contains("coste estimado", text);
         Assert.DoesNotContain("~0.00 USD", text);
+        var expected = QualificationCostPolicy.Declared(new QualificationPricing(0.10m, 0.30m), 8192)
+            .EstimateSuiteMaxCostUsd(QuickProbeSuite.Probes())!.Value;
+        Assert.Contains(expected.ToString("0.000000", System.Globalization.CultureInfo.InvariantCulture), text);
         Assert.Contains("Cancelado", text);
     }
 

@@ -32,6 +32,26 @@ public sealed class ModelQualificationCliTests
         new OmniCore.Host.ModelRegistryModelDescriptor("qwen-test", "local", 8192, 8192, 2048),
     };
 
+    private static string QuickResponse(string body) => body.Contains("mentioned last", StringComparison.Ordinal)
+        ? TextResponse("dog")
+        : body.Contains("quick brown fox", StringComparison.Ordinal)
+            ? TextResponse("fox")
+            : body.Contains("standard week", StringComparison.Ordinal)
+                ? TextResponse("7")
+                : body.Contains("9 plus 8", StringComparison.Ordinal)
+                    ? TextResponse("17")
+                    : body.Contains("50 minus 8", StringComparison.Ordinal)
+                        ? TextResponse("42")
+                        : body.Contains("6 multiplied by 7", StringComparison.Ordinal)
+                            ? TextResponse("42")
+                            : body.Contains("2, 4, 6", StringComparison.Ordinal)
+                                ? TextResponse("8")
+                                : body.Contains("valid", StringComparison.Ordinal)
+                                    ? TextResponse("{\"valid\":true,\"count\":2}")
+                                    : body.Contains("arithmetic problem", StringComparison.Ordinal)
+                                        ? TextResponse("42")
+                                        : TextResponse("{\"status\":\"ok\",\"count\":1}");
+
     private static async Task<int> Run(string[] args, string input, TextWriter output, string dataDir,
         bool interactive = false, CancellationToken? cancellationToken = null,
         IModelProvider? qualificationProvider = null)
@@ -184,11 +204,7 @@ public sealed class ModelQualificationCliTests
         await using var provider = new ScriptedHttpProvider();
         // El cuerpo viaja JSON-escapado por System.Text.Json (encoder HTML-seguro): '+' se emite
         // como \u002B, así que el matcher usa substrings sin caracteres escapables.
-        provider.RespondWith((_, body) => body.Contains("quick brown fox", StringComparison.Ordinal)
-            ? TextResponse("fox")
-            : body.Contains("arithmetic problem", StringComparison.Ordinal)
-                ? TextResponse("42")
-                : TextResponse("{\"status\":\"ok\",\"count\":1}"));
+        provider.RespondWith((_, body) => QuickResponse(body));
 
         var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
         try
@@ -204,7 +220,7 @@ public sealed class ModelQualificationCliTests
 
             // Transición de estado (ADR-0007 §4) y probes.
             Assert.Contains("Declared", text);
-            Assert.Contains("Qualified", text);
+            Assert.True(text.Contains("Qualified", StringComparison.Ordinal), text);
             Assert.Contains("reading-basic", text);
             Assert.Contains("Passed", text);
 
@@ -218,7 +234,7 @@ public sealed class ModelQualificationCliTests
             Assert.Contains("no se cambió ninguna política", text);
 
             // La suite corrió de verdad contra el provider scripteado.
-            Assert.Equal(3, provider.RequestCount);
+            Assert.Equal(10, provider.RequestCount);
 
             // Persistido en el store de cualificación bajo la clave exacta.
             var model = new ModelDefinition("qwen-test", "local", 8192, 8192, 2048);
@@ -247,11 +263,7 @@ public sealed class ModelQualificationCliTests
 
         await using var provider = new ScriptedHttpProvider();
         // Matcher por substrings que sobreviven al JSON-escaping del cuerpo (ver nota arriba).
-        provider.RespondWith((_, body) => body.Contains("quick brown fox", StringComparison.Ordinal)
-            ? TextResponse("fox")
-            : body.Contains("arithmetic problem", StringComparison.Ordinal)
-                ? TextResponse("42")
-                : TextResponse("{\"status\":\"ok\",\"count\":1}"));
+        provider.RespondWith((_, body) => QuickResponse(body));
 
         var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
         try

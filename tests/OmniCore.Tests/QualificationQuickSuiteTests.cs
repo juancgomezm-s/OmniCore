@@ -52,7 +52,7 @@ public sealed class QualificationQuickSuiteTests
         var i = 0;
         foreach (var p in probes)
         {
-            dict[p.Prompt] = i < answers.Length ? answers[i] : null;
+            dict[p.Prompt] = i < answers.Length ? answers[i] : p.Expected;
             i++;
         }
         return dict;
@@ -92,7 +92,7 @@ public sealed class QualificationQuickSuiteTests
     // ---- Runner: puntuación end-to-end con fake ----
 
     [Fact]
-    public async Task Runner_passes_all_three_quick_probes_when_answers_are_exact()
+    public async Task Runner_passes_all_ten_quick_probes_when_answers_are_exact()
     {
         var outputs = PromptOutputs(QuickProbeSuite.Probes(), "fox", "42", "{\"status\":\"ok\",\"count\":1}");
         var runner = new ProbeRunner(new FakeProvider(outputs));
@@ -100,7 +100,7 @@ public sealed class QualificationQuickSuiteTests
 
         var results = await runner.RunSuiteAsync(requests, QualificationConsent.Local(), CancellationToken.None);
 
-        Assert.Equal(3, results.Count);
+        Assert.Equal(10, results.Count);
         foreach (var r in results)
         {
             Assert.Equal(ProbeStatus.Passed, r.Status);
@@ -225,13 +225,23 @@ public sealed class QualificationQuickSuiteTests
     // ---- Suite identity ----
 
     [Fact]
-    public void Quick_suite_has_three_probes_and_stable_identity()
+    public void Quick_suite_has_ten_unique_probes_and_stable_identity()
     {
         var probes = QuickProbeSuite.Probes();
 
-        Assert.Equal(3, probes.Count);
+        Assert.Equal(10, probes.Count);
+        Assert.Equal(10, probes.Select(probe => probe.Id.ToString()).Distinct(StringComparer.Ordinal).Count());
         Assert.Equal("omnicore-quick", QuickProbeSuite.SuiteId);
-        Assert.False(string.IsNullOrEmpty(QuickProbeSuite.SuiteVersion));
+        Assert.Equal("2.0.0", QuickProbeSuite.SuiteVersion);
         Assert.All(probes, p => Assert.Equal(0m, p.MaxCostUsd));
+    }
+
+    [Fact]
+    public void TaskSetHash_changes_when_prompt_changes_even_if_expected_answer_does_not()
+    {
+        var baseline = new Probe(ProbeId.WellKnown("same-id"), ProbeKind.Reading, "first prompt", "answer", 0m);
+        var changed = new Probe(ProbeId.WellKnown("same-id"), ProbeKind.Reading, "different prompt", "answer", 0m);
+
+        Assert.NotEqual(ProbeScorer.TaskSetHash([baseline]), ProbeScorer.TaskSetHash([changed]));
     }
 }

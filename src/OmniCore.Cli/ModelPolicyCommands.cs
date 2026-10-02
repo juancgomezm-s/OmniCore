@@ -513,7 +513,7 @@ public sealed class ModelPolicyCommands
             }
 
             _output.Write(_loc.Resolve("cli.model.qualify.consent.prompt",
-                "cost", estimatedCost.ToString("0.00", CultureInfo.InvariantCulture)));
+                "cost", estimatedCost.ToString("0.000000", CultureInfo.InvariantCulture)));
             _output.Flush();
             _cancellationToken.ThrowIfCancellationRequested();
             var answer = _input.ReadLine()?.Trim().ToLowerInvariant();
@@ -565,8 +565,8 @@ public sealed class ModelPolicyCommands
             _output.WriteLine(_loc.Resolve("cli.model.qualify.cost.exceeded",
                 new Dictionary<string, string>
                 {
-                    ["estimated"] = ex.EstimatedUsd.ToString("0.00", CultureInfo.InvariantCulture),
-                    ["cap"] = ex.CapUsd.ToString("0.00", CultureInfo.InvariantCulture),
+                    ["estimated"] = ex.EstimatedUsd.ToString("0.000000", CultureInfo.InvariantCulture),
+                    ["cap"] = ex.CapUsd.ToString("0.000000", CultureInfo.InvariantCulture),
                 }));
             return 2;
         }

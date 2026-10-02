@@ -1,9 +1,9 @@
 namespace OmniCore.Domain;
 
 /// <summary>
-/// Tipo de probe de la suite de cualificación (ADR-0007 §6, M5). La suite `quick` inicial cubre
-/// tres tipos de lectura/razonamiento estructurado puntuado por reglas exactas, sin LLM juez y
-/// sin escribir repos reales.
+/// Tipo de probe de la suite de cualificación (ADR-0007 §7, M5). La suite `quick` cubre
+/// lectura/razonamiento estructurado puntuado por reglas exactas, sin LLM juez y sin escribir
+/// repos reales.
 /// </summary>
 public enum ProbeKind
 {
