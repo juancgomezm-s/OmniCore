@@ -319,6 +319,26 @@ public sealed class QualificationCostWiringTests
     }
 
     [Fact]
+    public void Host_does_not_treat_a_public_provider_without_authRef_as_free()
+    {
+        var dir = TempDir();
+        var config = Path.Combine(dir, "config");
+        Directory.CreateDirectory(config);
+        File.WriteAllText(Path.Combine(config, "providers.yaml"),
+            "providers:\n  public-endpoint:\n    family: OpenAiChatCompatible\n"
+            + "    baseUrl: \"https://example.test/v1\"\n");
+        File.WriteAllText(Path.Combine(config, "models.yaml"),
+            "models:\n  remote-model:\n    provider: \"public-endpoint\"\n"
+            + "    context: 8192\n    recommendedUsableContext: 8192\n    maxOutput: 1024\n");
+        using var host = ModelQualificationHost.Create(dir);
+
+        var preview = host.PreviewCost("remote-model", "quick");
+
+        Assert.True(preview.IsUnknownPaidPricing);
+        Assert.Null(preview.EstimatedUsd);
+    }
+
+    [Fact]
     public void Host_preview_keeps_local_models_at_zero_cost()
     {
         var dir = TempDir();

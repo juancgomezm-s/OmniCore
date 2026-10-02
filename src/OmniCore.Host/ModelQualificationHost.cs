@@ -439,11 +439,14 @@ public sealed class ModelQualificationHost : IDisposable
             }
         }
 
-        var remotePaid = provider is { Auth.Kind: AuthKind.ApiKey }
-            && !OmniHost.IsPrivateHost(provider.BaseUrl);
-        return remotePaid
-            ? QualificationCostPolicy.UnknownPaid(maxOutput)
-            : QualificationCostPolicy.LocalZeroCost(maxOutput);
+        // Solo un endpoint privado sin autenticación es explícitamente local/gratis. No inferir
+        // gratuidad por ausencia de API key: un endpoint público sin authRef o con Bearer/OAuth
+        // también puede facturar y debe fallar en cerrado si no declara ambos precios.
+        var explicitLocal = provider is null
+            || (provider.Auth.Kind == AuthKind.None && OmniHost.IsPrivateHost(provider.BaseUrl));
+        return explicitLocal
+            ? QualificationCostPolicy.LocalZeroCost(maxOutput)
+            : QualificationCostPolicy.UnknownPaid(maxOutput);
     }
 
     private IModelProvider ConnectProvider(ModelDefinition model, ProviderDescriptor? provider,
