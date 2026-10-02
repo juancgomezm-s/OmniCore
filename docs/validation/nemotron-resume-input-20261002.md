@@ -1,6 +1,6 @@
 # M5.5 Phase A — Bug 5: preservar el input al reanudar un Turn
 
-**Base:** `281dcf1` (`codex/nemotron-m55-resume-input`)  
+**Base:** `281dcf1` (`codex/nemotron-m55-resume-input`)
 **Alcance:** `ExplorerTurn.Ask` y pruebas de integración locales; sin llamadas a proveedores reales.
 
 ## Hallazgo y corrección
