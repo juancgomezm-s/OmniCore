@@ -21,6 +21,7 @@ public enum ProbeStatus
     Failed,
     Error,
     Timeout,
+    Cancelled,
     NotRun,
 }
 

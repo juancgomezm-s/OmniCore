@@ -86,10 +86,23 @@ public sealed class ProbeRunner
             {
                 results.Add(new ProbeResult(request.Probe.Id, ProbeStatus.NotRun, 0.0, null,
                     "cancelado antes de ejecutar el probe", TimeSpan.Zero, null));
-                continue;
+                AddNotRun(results, requests, i + 1, "no ejecutado: la suite fue cancelada");
+                throw new QualificationCancelledException(results, null, cancellationToken,
+                    new OperationCanceledException(cancellationToken));
             }
 
-            var (result, _) = await RunProbeCoreAsync(request, cancellationToken).ConfigureAwait(false);
+            ProbeResult result;
+            try
+            {
+                (result, _) = await RunProbeCoreAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ProbeCancelledException exception)
+            {
+                results.Add(exception.Result);
+                AddNotRun(results, requests, i + 1, "no ejecutado: la suite fue cancelada");
+                throw new QualificationCancelledException(results, exception.ObservedUsage,
+                    cancellationToken, exception);
+            }
             results.Add(result);
 
             if (result.CostUsd is { } actual)
@@ -160,10 +173,12 @@ public sealed class ProbeRunner
                 }
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
         {
             sw.Stop();
-            throw;
+            var result = new ProbeResult(request.Probe.Id, ProbeStatus.Cancelled, 0.0, null,
+                "probe cancelado por el llamador", sw.Elapsed, _costPolicy.ActualCostUsd(observedUsage));
+            throw new ProbeCancelledException(result, observedUsage, exception, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -201,6 +216,16 @@ public sealed class ProbeRunner
         var passed = score >= 1.0;
         return (new ProbeResult(request.Probe.Id, passed ? ProbeStatus.Passed : ProbeStatus.Failed,
             score, text, null, sw.Elapsed, actualCost), false);
+    }
+
+    private static void AddNotRun(List<ProbeResult> results, IReadOnlyList<ProbeRequest> requests,
+        int startIndex, string reason)
+    {
+        for (var i = startIndex; i < requests.Count; i++)
+        {
+            results.Add(new ProbeResult(requests[i].Probe.Id, ProbeStatus.NotRun, 0.0, null,
+                reason, TimeSpan.Zero, null));
+        }
     }
 
     private static ModelRequest ToModelRequest(ProbeRequest request, long maxOutputTokens)

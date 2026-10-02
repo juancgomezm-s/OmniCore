@@ -1,5 +1,7 @@
 namespace OmniCore.Qualification;
 
+using OmniCore.Domain;
+
 /// <summary>
 /// Errores tipados de la suite de cualificación (spec §71). No se usa Exception genérica para
 /// estos fallos de dominio.
@@ -71,6 +73,53 @@ public sealed class ProbeTimeoutException : Exception
     public ProbeTimeoutException(string probeId)
         : base($"probe {probeId} superó su tope de tiempo")
     {
+    }
+}
+
+/// <summary>
+/// Un probe fue cancelado por el llamador después de iniciar. Conserva la evidencia de uso
+/// parcial para contabilizarla sin convertir la cancelación en éxito.
+/// </summary>
+public sealed class ProbeCancelledException : OperationCanceledException
+{
+    public ProbeResult Result { get; }
+
+    public TokenUsage? ObservedUsage { get; }
+
+    public ProbeCancelledException(ProbeResult result, TokenUsage? observedUsage,
+        OperationCanceledException innerException, CancellationToken cancellationToken)
+        : base("probe cancelado: " + result.Id, innerException, cancellationToken)
+    {
+        Result = result;
+        ObservedUsage = observedUsage;
+    }
+}
+
+/// <summary>
+/// Suite cancelada por el llamador. Incluye resultados ya observados, el probe interrumpido y
+/// los restantes como NotRun; nunca representa una cualificación persistible.
+/// </summary>
+public sealed class QualificationCancelledException : OperationCanceledException
+{
+    public IReadOnlyList<ProbeResult> Results { get; }
+
+    public TokenUsage? ObservedUsage { get; }
+
+    public decimal KnownCostUsd { get; }
+
+    public bool HasUnknownCost { get; }
+
+    public QualificationCancelledException(IReadOnlyList<ProbeResult> results,
+        TokenUsage? observedUsage, CancellationToken cancellationToken,
+        OperationCanceledException innerException)
+        : base("suite de cualificación cancelada; no se guardó perfil", innerException, cancellationToken)
+    {
+        Results = results;
+        ObservedUsage = observedUsage;
+        KnownCostUsd = results.Where(result => result.Status != OmniCore.Domain.ProbeStatus.NotRun)
+            .Sum(result => result.CostUsd ?? 0m);
+        HasUnknownCost = results.Any(result => result.Status != OmniCore.Domain.ProbeStatus.NotRun
+            && result.CostUsd is null);
     }
 }
 

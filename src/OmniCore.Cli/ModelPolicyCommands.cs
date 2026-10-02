@@ -530,6 +530,29 @@ public sealed class ModelPolicyCommands
                 MaxTotalCostUsd = maxCost,
             }, _cancellationToken).GetAwaiter().GetResult();
         }
+        catch (ModelQualificationCancelledException ex)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.cancelled", new Dictionary<string, string>
+            {
+                ["cost"] = ex.KnownCostUsd.ToString("0.000000", CultureInfo.InvariantCulture) + " USD",
+                ["unknown"] = ex.HasUnknownCost ? "sí" : "no",
+            }));
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.probe.header"));
+            foreach (var probe in ex.Probes)
+            {
+                _output.WriteLine(_loc.Resolve("cli.model.qualify.probe.line", new Dictionary<string, string>
+                {
+                    ["id"] = probe.Id,
+                    ["kind"] = probe.Kind,
+                    ["status"] = probe.Status,
+                    ["score"] = probe.Score.ToString("0.00", CultureInfo.InvariantCulture),
+                    ["cost"] = probe.CostUsd is { } cost
+                        ? cost.ToString("0.000000", CultureInfo.InvariantCulture) + " USD"
+                        : "desconocido",
+                }));
+            }
+            throw;
+        }
         catch (ModelQualificationCostCapException ex)
         {
             _output.WriteLine(_loc.Resolve("cli.model.qualify.cost.exceeded",

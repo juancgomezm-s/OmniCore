@@ -150,6 +150,10 @@ public sealed record ToolArgumentsDelta(int Index, string PartialJson) : ModelSt
 
 public sealed record BlockCompleted(int Index, ContentBlock Block) : ModelStreamEvent;
 
+/// <summary>
+/// Snapshot of cumulative usage observed so far for the current provider request. Consumers
+/// replace an earlier snapshot with this one; they must not add snapshots together.
+/// </summary>
 public sealed record UsageUpdated(TokenUsage Usage) : ModelStreamEvent;
 
 public sealed record ResponseCompleted(ModelResponse Response) : ModelStreamEvent;

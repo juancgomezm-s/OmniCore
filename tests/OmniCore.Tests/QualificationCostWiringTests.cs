@@ -253,11 +253,58 @@ public sealed class QualificationCostWiringTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var results = await runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, 1.00m), cts.Token);
+        var exception = await Assert.ThrowsAsync<QualificationCancelledException>(() =>
+            runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, 1.00m), cts.Token));
 
-        Assert.Equal(3, results.Count);
-        Assert.All(results, result => Assert.Equal(ProbeStatus.NotRun, result.Status));
+        Assert.Equal(3, exception.Results.Count);
+        Assert.All(exception.Results, result => Assert.Equal(ProbeStatus.NotRun, result.Status));
+        Assert.Equal(cts.Token, exception.CancellationToken);
         Assert.Equal(0, provider.RequestCount);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_probe_preserves_partial_usage_once_and_marks_rest_not_run()
+    {
+        var usage = new TokenUsage(7, 3, 0, 0, 0);
+        var provider = new PartialUsageBlockingProvider(usage);
+        var runner = new ProbeRunner(provider, DeclaredPolicy());
+        using var cts = new CancellationTokenSource();
+
+        var run = runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, 1.00m), cts.Token);
+        await provider.UsageEmitted.Task;
+        cts.Cancel();
+
+        var exception = await Assert.ThrowsAsync<QualificationCancelledException>(() => run);
+
+        Assert.Equal(usage, exception.ObservedUsage);
+        Assert.Equal(0.0000016m, exception.KnownCostUsd);
+        Assert.False(exception.HasUnknownCost);
+        Assert.Equal([ProbeStatus.Cancelled, ProbeStatus.NotRun, ProbeStatus.NotRun],
+            exception.Results.Select(result => result.Status));
+        Assert.Equal(0.0000016m, exception.Results[0].CostUsd);
+        Assert.All(exception.Results.Skip(1), result => Assert.Null(result.CostUsd));
+        Assert.Equal(1, provider.RequestCount);
+        Assert.Equal(cts.Token, exception.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Cancellation_without_paid_usage_keeps_cost_unknown_not_zero()
+    {
+        var provider = new PartialUsageBlockingProvider(new TokenUsage(0, 0, 0, 0, 0));
+        var runner = new ProbeRunner(provider, DeclaredPolicy());
+        using var cts = new CancellationTokenSource();
+
+        var run = runner.RunSuiteAsync(QuickRequests(), new QualificationConsent(true, 1.00m), cts.Token);
+        await provider.UsageEmitted.Task;
+        cts.Cancel();
+
+        var exception = await Assert.ThrowsAsync<QualificationCancelledException>(() => run);
+
+        Assert.Equal(new TokenUsage(0, 0, 0, 0, 0), exception.ObservedUsage);
+        Assert.True(exception.HasUnknownCost);
+        Assert.Null(exception.Results[0].CostUsd);
+        Assert.Equal(0m, exception.KnownCostUsd);
+        Assert.Equal(1, provider.RequestCount);
     }
 
     // ---- Cableado de la fachada Host: preview y fail-closed end-to-end ----
@@ -292,6 +339,48 @@ public sealed class QualificationCostWiringTests
         Assert.False(string.IsNullOrEmpty(result.RecommendedCategory));
         var policyService = OmniHost.CreateModelPolicyService(dir);
         Assert.Null(policyService.Get(ModelPolicyKey.For("nvidia", "paid-model"), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Host_reports_cancellation_accounting_without_persisting_a_partial_profile()
+    {
+        var dir = TempDir();
+        WritePaidConfiguration(dir, declaredPricing: true);
+        using var host = ModelQualificationHost.Create(dir);
+        var usage = new TokenUsage(7, 3, 0, 0, 0);
+        var provider = new PartialUsageBlockingProvider(usage);
+        using var cts = new CancellationTokenSource();
+
+        var run = host.QualifyAsync("paid-model", new QualificationOptions
+        {
+            Suite = "quick",
+            ConsentGiven = true,
+            MaxTotalCostUsd = 1.00m,
+            Provider = provider,
+        }, cts.Token);
+        await provider.UsageEmitted.Task;
+        cts.Cancel();
+
+        var exception = await Assert.ThrowsAsync<ModelQualificationCancelledException>(() => run);
+
+        Assert.Equal(usage, exception.ObservedUsage);
+        Assert.Equal(0.0000016m, exception.KnownCostUsd);
+        Assert.False(exception.HasUnknownCost);
+        Assert.Equal(["Cancelled", "NotRun", "NotRun"], exception.Probes.Select(probe => probe.Status));
+        Assert.Equal(0.0000016m, exception.Probes[0].CostUsd);
+        Assert.Equal(1, provider.RequestCount);
+        Assert.Equal(cts.Token, exception.CancellationToken);
+
+        // Una nueva suite completa empieza desde Declared: la cancelada no creó perfil ni traits.
+        var completed = await host.QualifyAsync("paid-model", new QualificationOptions
+        {
+            Suite = "quick",
+            ConsentGiven = true,
+            MaxTotalCostUsd = 1.00m,
+            Provider = new CountingProvider(),
+        }, CancellationToken.None);
+        Assert.Equal("Declared", completed.PreviousState);
+        Assert.Equal(1, completed.ProfileRevision);
     }
 
     [Fact]
@@ -455,6 +544,30 @@ public sealed class QualificationCostWiringTests
             yield return new ResponseCompleted(new ModelResponse(
                 [new TextBlock("late")], StopReason.EndTurn, _usage, null,
                 new ProviderMetadata("req", "paid-model", null)));
+        }
+    }
+
+    private sealed class PartialUsageBlockingProvider : IModelProvider
+    {
+        private readonly TokenUsage _usage;
+        private int _requestCount;
+
+        public PartialUsageBlockingProvider(TokenUsage usage) => _usage = usage;
+
+        public TaskCompletionSource<bool> UsageEmitted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public int RequestCount => _requestCount;
+
+        public ProviderCapabilities Capabilities => new(true, false, false);
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _requestCount);
+            yield return new UsageUpdated(_usage);
+            UsageEmitted.TrySetResult(true);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
     }
 

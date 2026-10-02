@@ -121,6 +121,32 @@ public sealed class ModelQualificationSuiteIncompleteException : Exception
     }
 }
 
+/// <summary>
+/// Error tipado de Host: la cualificación fue cancelada y nada se persistió. Conserva los
+/// resultados parciales exclusivamente como contabilidad; no son traits ni una cualificación.
+/// </summary>
+public sealed class ModelQualificationCancelledException : OperationCanceledException
+{
+    public IReadOnlyList<QualificationProbeOutcome> Probes { get; }
+
+    public TokenUsage? ObservedUsage { get; }
+
+    public decimal KnownCostUsd { get; }
+
+    public bool HasUnknownCost { get; }
+
+    public ModelQualificationCancelledException(IReadOnlyList<QualificationProbeOutcome> probes,
+        TokenUsage? observedUsage, decimal knownCostUsd, bool hasUnknownCost,
+        CancellationToken cancellationToken, Exception innerException)
+        : base("cualificación cancelada; no se guardó perfil", innerException, cancellationToken)
+    {
+        Probes = probes;
+        ObservedUsage = observedUsage;
+        KnownCostUsd = knownCostUsd;
+        HasUnknownCost = hasUnknownCost;
+    }
+}
+
 /// <summary>Error tipado de nivel Host: suite pedida no existe (solo `quick` en M5).</summary>
 public sealed class ModelQualificationUnsupportedSuiteException : Exception
 {
@@ -269,6 +295,15 @@ public sealed class ModelQualificationHost : IDisposable
         try
         {
             results = await runner.RunSuiteAsync(requests, consent, cancellationToken);
+        }
+        catch (QualificationCancelledException exception)
+        {
+            var outcomes = exception.Results.Select(result => new QualificationProbeOutcome(
+                result.Id.ToString(),
+                probes.First(probe => probe.Id.Equals(result.Id)).Kind.ToString(),
+                result.Status.ToString(), result.Score, result.Error, result.Duration, result.CostUsd)).ToArray();
+            throw new ModelQualificationCancelledException(outcomes, exception.ObservedUsage,
+                exception.KnownCostUsd, exception.HasUnknownCost, exception.CancellationToken, exception);
         }
         catch (QualificationCostCapExceededException exception)
         {
