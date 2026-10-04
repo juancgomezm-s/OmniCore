@@ -348,6 +348,112 @@ public sealed class JournalVerifierTests
     }
 
     [Fact]
+    public void Envelope_artifact_ref_with_wrong_size_reports_artifact_size_mismatch()
+    {
+        using var fx = NewFixture();
+        var session = SessionId.New();
+        var artifact = fx.Artifacts.PutText("contenido", "text/plain", ArtifactKind.Other, Sensitivity.Normal);
+        fx.AppendValidTurn(session, null);
+        fx.CloseStore();
+        var envelope = string.Join("|", artifact.Id, artifact.Hash.Algorithm, artifact.Hash.Value,
+            artifact.Size + 1, artifact.MediaType, artifact.Kind, artifact.Sensitivity,
+            artifact.Redacted ? "1" : "0");
+        fx.RawSql("UPDATE events SET artifacts = :a WHERE session_id = :sid AND seq = 1",
+            ("a", envelope), ("sid", session.ToString()));
+
+        var report = fx.VerifySession(session);
+
+        Assert.False(report.Ok);
+        var issue = Assert.Single(report.Issues);
+        Assert.Equal(JournalIssueCode.ArtifactSizeMismatch, issue.Code);
+    }
+
+    [Theory]
+    [InlineData("not-a-size")]
+    [InlineData("-1")]
+    public void Envelope_artifact_ref_with_invalid_size_reports_malformed_ref(string invalidSize)
+    {
+        using var fx = NewFixture();
+        var session = SessionId.New();
+        var artifact = fx.Artifacts.PutText("contenido", "text/plain", ArtifactKind.Other, Sensitivity.Normal);
+        fx.AppendValidTurn(session, null);
+        fx.CloseStore();
+        var envelope = string.Join("|", artifact.Id, artifact.Hash.Algorithm, artifact.Hash.Value,
+            invalidSize, artifact.MediaType, artifact.Kind, artifact.Sensitivity,
+            artifact.Redacted ? "1" : "0");
+        fx.RawSql("UPDATE events SET artifacts = :a WHERE session_id = :sid AND seq = 1",
+            ("a", envelope), ("sid", session.ToString()));
+
+        var report = fx.VerifySession(session);
+
+        Assert.False(report.Ok);
+        var issue = Assert.Single(report.Issues);
+        Assert.Equal(JournalIssueCode.ArtifactRefMalformed, issue.Code);
+    }
+
+    [Theory]
+    [InlineData("true")]
+    [InlineData("2")]
+    [InlineData("")]
+    public void Envelope_artifact_ref_with_invalid_redacted_token_reports_malformed_ref(string invalidRedacted)
+    {
+        using var fx = NewFixture();
+        var session = SessionId.New();
+        var artifact = fx.Artifacts.PutText("contenido", "text/plain", ArtifactKind.Other, Sensitivity.Normal);
+        fx.AppendValidTurn(session, null);
+        fx.CloseStore();
+        var envelope = string.Join("|", artifact.Id, artifact.Hash.Algorithm, artifact.Hash.Value,
+            artifact.Size, artifact.MediaType, artifact.Kind, artifact.Sensitivity, invalidRedacted);
+        fx.RawSql("UPDATE events SET artifacts = :a WHERE session_id = :sid AND seq = 1",
+            ("a", envelope), ("sid", session.ToString()));
+
+        var report = fx.VerifySession(session);
+
+        Assert.False(report.Ok);
+        var issue = Assert.Single(report.Issues);
+        Assert.Equal(JournalIssueCode.ArtifactRefMalformed, issue.Code);
+    }
+
+    [Theory]
+    [InlineData(5, "Bogus")]
+    [InlineData(6, "Bogus")]
+    [InlineData(5, "999")]
+    [InlineData(6, "999")]
+    [InlineData(5, "0")]
+    [InlineData(6, "0")]
+    [InlineData(5, " Other")]
+    [InlineData(6, "sensitive")]
+    public void Envelope_artifact_ref_with_noncanonical_enum_is_rejected_by_verifier_and_reader(
+        int fieldIndex, string invalidToken)
+    {
+        using var fx = NewFixture();
+        var session = SessionId.New();
+        var artifact = fx.Artifacts.PutText("contenido", "text/plain", ArtifactKind.Other, Sensitivity.Normal);
+        fx.AppendValidTurn(session, null);
+        fx.CloseStore();
+        var fields = new[] { artifact.Id.ToString(), artifact.Hash.Algorithm, artifact.Hash.Value,
+            artifact.Size.ToString(System.Globalization.CultureInfo.InvariantCulture), artifact.MediaType,
+            artifact.Kind.ToString(), artifact.Sensitivity.ToString(), "0" };
+        fields[fieldIndex] = invalidToken;
+        fx.RawSql("UPDATE events SET artifacts = :a WHERE session_id = :sid AND seq = 1",
+            ("a", string.Join("|", fields)), ("sid", session.ToString()));
+
+        var report = fx.VerifySession(session);
+
+        Assert.False(report.Ok);
+        Assert.Equal(JournalIssueCode.ArtifactRefMalformed, Assert.Single(report.Issues).Code);
+        var reopened = new SqliteEventStore(fx.JournalPath);
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() => reopened.ReadFrom(session, 1));
+        }
+        finally
+        {
+            reopened.Close();
+        }
+    }
+
+    [Fact]
     public void Missing_blob_reports_artifact_missing()
     {
         using var fx = NewFixture();
