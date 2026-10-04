@@ -50,3 +50,24 @@ Para el pendiente 1 se propuso añadir registros canónicos aditivos de edición
 Tras aprobación: concretar schema/codec, replay y scope; reproducir RED, implementar, verificar conservación tras reopen/recreación y revisar el bloque completo con Luna. No escribir nuevos eventos antes de esa decisión.
 
 La rama contiene regresiones rojas explícitas y NO está lista para integrar en principal ni etiquetar un hito cerrado.
+
+## Actualización — contrato aprobado e implementado (2026-10-04 23:48 UTC / 17:48 local)
+
+El usuario aprobó el contrato mínimo. Se implementaron dos eventos aditivos v1:
+
+- `post_edit_validation.pending`: RunId, ToolCallId (ID estable de edición) y rutas declaradas. Solo las herramientas Core filesystem.patch/write que ya alimentaban MutationLedger reservan deuda cuando la política exige validación; claims de procesos no crean deuda de edición.
+- `post_edit_validation.consumed`: RunId, IDs de ediciones cubiertas y clave build/test. La captura de IDs precede al delegate del gate. Un build O test exitoso consume solo esa captura, aunque otro gate falle; no consume una edición posterior.
+
+El hook corre después de autorización y antes del efecto. Pending y ToolCallStarted se confirman en UN lote atómico Barrier; fallo del commit impide ejecutar la herramienta. El hook no autoriza efectos ni eleva permisos. El executor primitivo sin journal/Run conserva su uso de pruebas histórico.
+
+La proyección de deuda usa el Run explícito del journal, incluso con ledger ausente/nuevo. Outcome None y reconciliación NotApplied liberan la reserva; Partial/Unknown/Applied/Conflict la conservan hasta una validación cubierta. El consumo se confirma Barrier antes de quitar su representación en memoria. Los contadores de mutación por Turn/Run NO se restauran como parte de este cambio.
+
+Evidencia nueva, ejecutada por coordinador:
+
+- 163/163 pruebas focales pasan; incluye 12 casos de replay/reopen/consumo/scope, 2 fallos inyectados alrededor del commit atómico, 2 escenarios del filesystem real con boundary recreado (ahora también SQLite cerrado/reabierto), controles de gates/ledger, Barrier, codecs, filesystem, lanes y verifier. Sin omitidos ni errores del runner.
+- Luna encontró la reserva huérfana en la primera versión; corregida mediante lote atómico y revisada nuevamente sin otro defecto concreto.
+- Recuento de las cinco clases rojas anteriores: 7 casos, 3 pasan y 4 fallan. Deuda perdida deja de fallar; cross-session daily cap, suspended usage, resume input y opaque ArtifactRef durable siguen abiertos.
+- Pruebas de gates devuelven evidencia sintética. No prueban reinicio OS ni proceso real build/test ni cualificación de proveedor.
+- Journals antiguos sin estos eventos no se migran ni se les inventa deuda retrospectiva; este contrato protege las ediciones registradas por el runtime actualizado. Runs anteriores requieren validación explícita antes de confiar en su deuda pendiente.
+
+El pending 1 de la lista anterior queda reparado para el contrato nuevo. La propuesta ya no está esperando aprobación. Main permanece intacto, monitor anterior pausado, resto de contratos y gates externos abiertos.

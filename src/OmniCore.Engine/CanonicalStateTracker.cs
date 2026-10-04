@@ -151,6 +151,15 @@ public sealed class CanonicalStateTracker
             case TurnAbandoned e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
 
             // ── ToolCall (ADR-0004 §2, ADR-0036 §5) ──
+            case PostEditValidationPending e:
+                RequireNonTerminalRun(e.RunId, payload);
+                break;
+            case PostEditValidationConsumed e:
+                RequireNonTerminalRun(e.RunId, payload);
+                if (Require(_runs, e.RunId, "run", payload) != RunState.Validating
+                    || e.Gate is not ("build" or "test"))
+                    throw new InvalidStateTransitionException("run", "invalid validation evidence", payload.Type().ToString());
+                break;
             case ToolCallRequested requested:
                 Create(_toolCalls, requested.ToolCallId, ToolCallState.Requested, "toolcall", payload);
                 break;

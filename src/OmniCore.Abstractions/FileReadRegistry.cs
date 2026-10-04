@@ -332,6 +332,12 @@ public sealed class MutationLedger
     /// <summary>Validaciones post-edición exigidas por la política y aún no verificadas.</summary>
     public IReadOnlyList<PendingEditValidation> PendingValidations() => _pendingValidations;
 
+    /// <summary>Consume only the captured pre-gate edits, not edits published during a gate.</summary>
+    public void ConsumePendingValidations(IReadOnlyList<PendingEditValidation> covered)
+    {
+        foreach (var edit in covered) _pendingValidations.Remove(edit);
+    }
+
     /// <summary>Retira y devuelve las validaciones pendientes (las consume el Coder / los gates).</summary>
     public IReadOnlyList<PendingEditValidation> TakePendingValidations()
     {

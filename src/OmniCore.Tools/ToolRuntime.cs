@@ -347,6 +347,7 @@ public sealed class ToolRuntime
             }
         }
 
+        execContext.BeforeEffect?.Invoke(intent);
         _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, ReconciliationJsonFor(intent.Claims, reconciliation)));
 
         ToolResult result;
