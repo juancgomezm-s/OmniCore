@@ -914,6 +914,34 @@ public sealed class OmniCliRuntime
             writeLine(Text(Localized("cli.escalation.suggest", ("model", next.Alias))));
             return null;
         }
+        // phaseA7 (M55): en modo auto no se aprueba la escalación si el proveedor del modelo
+        // destino requiere API key y esta no está resuelta; misma semántica que RunTurnAsync,
+        // sin aprobar ni completar el intento (el Requested ya registra la causa).
+        var escalatedDefinition = loaded.Registry.Model(next.Alias);
+        var escalatedProvider = escalatedDefinition is null ? null
+            : loaded.Registry.Provider(escalatedDefinition.ProviderId);
+        if (escalatedProvider?.Auth.Kind == AuthKind.ApiKey)
+        {
+            string? escalatedKey;
+            try
+            {
+                var credentials = OmniHost.CreateUserCredentialStore(OmniHost.CreatePlatformPaths());
+                escalatedKey = OmniHost.ResolveApiKey(credentials, escalatedProvider.Auth.SecretRef ?? "qwen",
+                    Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), cancellationToken);
+            }
+            catch (SecretValueTooShortException ex)
+            {
+                writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
+                    ("message", Text(ex.UserMessage)))));
+                return 1;
+            }
+            if (escalatedKey is null)
+            {
+                writeLine(Text(Localized("cli.runtime.credential.missing",
+                    ("command", act ? "act" : "ask"))));
+                return 1;
+            }
+        }
         stream.Append(new ModelEscalationApproved(run, next.Alias, "policy:auto"));
         writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.Alias))));
         _escalatedModel = next.Alias;
