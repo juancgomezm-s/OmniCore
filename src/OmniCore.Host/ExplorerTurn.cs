@@ -253,6 +253,8 @@ public sealed class ExplorerTurn
 
             string? finalText = null;
             var stop = StopReason.EndTurn;
+            // Estado opaco del adapter: local a esta Ask, sin interpretación ni persistencia.
+            ProviderState? continuation = null;
             for (var step = 0; step < MaxSteps; step++)
             {
                 steps = step + 1;
@@ -276,7 +278,7 @@ public sealed class ExplorerTurn
                     RenderContext(materialized),
                     VisibleTools(),
                     ToolChoice.Auto(),
-                    null, null, new CacheHints(4, "automatic"), null);
+                    null, null, new CacheHints(4, "automatic"), continuation);
 
                 ModelResponse resolved;
                 try
@@ -299,6 +301,7 @@ public sealed class ExplorerTurn
                         throw new BudgetExceededException("límite diario alcanzado ($" + _dailyCapUsd + ")");
 
                     resolved = _complete(request, cancellationToken);
+                    continuation = resolved.State;
                     usage = CombineUsage(usage, resolved.Usage);
                     guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
                     var stepCost = _pricing?.CostUsd(resolved.Usage);
@@ -341,6 +344,10 @@ public sealed class ExplorerTurn
                     stop = resolved.StopReason;
                     break;
                 }
+
+                // Una respuesta ToolUse conserva sus bloques y orden en un solo mensaje.
+                // Se mantiene la redacción vigente; el replay opaco requiere una política aparte.
+                messages.Add(RedactMessage(new ModelMessage(MessageRole.Assistant, resolved.Content.ToArray())));
 
                 foreach (ToolCallBlock call in toolBlocks)
                 {
@@ -503,14 +510,9 @@ public sealed class ExplorerTurn
                         }
 
                         var answerJson = EncodeQuestionnaireOutcome(answer!);
-                        var assistantAsk = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
-                            new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                                _redaction.Redact(call.ArgumentsJson)),
-                        });
                         var askResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
                             new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(answerJson) }, answer!.IsInvalid),
                         });
-                        messages.Add(assistantAsk);
                         messages.Add(askResult);
                         allToolCalls.Add(new ToolUseTrace(call.ToolName, !answer!.IsInvalid,
                             answer.Status, _redaction.Redact(call.ArgumentsJson)));
@@ -527,14 +529,9 @@ public sealed class ExplorerTurn
                         _redaction.Redact(planError ?? outcome.Summary ?? ""),
                         _redaction.Redact(call.ArgumentsJson)));
 
-                    var assistant = new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
-                        new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                            _redaction.Redact(call.ArgumentsJson)),
-                    });
                     var toolResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
                         new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
                     });
-                    messages.Add(assistant);
                     messages.Add(toolResult);
                 }
 
@@ -564,7 +561,7 @@ public sealed class ExplorerTurn
             }
 
             stream.Append(new TurnCompleted(turnId));
-            AuditSpend(sessionId, runId, laneId, turnId, stop, usage, _redaction.Redact(finalText ?? ""));
+            AuditSpend(sessionId, runId, laneId, turnId, stop, usage);
             AuditPolicy(sessionId, runId, turnId, stop);
             return new TurnResult(finalText is null ? null : _redaction.Redact(finalText), stop, steps,
                 usage, allToolCalls.ToArray(), artifactId);
@@ -591,7 +588,7 @@ public sealed class ExplorerTurn
     /// presupuesto por sesión/día (P1: el audit sink del turno se usa).
     /// </summary>
     private void AuditSpend(SessionId sessionId, RunId runId, LaneId laneId, TurnId turnId,
-        StopReason stop, TokenUsage usage, string redactedFinal)
+        StopReason stop, TokenUsage usage)
     {
         try
         {
@@ -601,7 +598,6 @@ public sealed class ExplorerTurn
             details["outputTokens"] = usage.Output.ToString();
             var cost = _pricing?.CostUsd(usage);
             if (cost is not null) details["costUsd"] = cost.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            details["final"] = redactedFinal.Length > 200 ? redactedFinal.Substring(0, 200) : redactedFinal;
             _audit.Record(new AuditRecord("turn.spend", null, sessionId, runId, DateTimeOffset.Now,
                 turnId.ToString(), details), CancellationToken.None);
         }
