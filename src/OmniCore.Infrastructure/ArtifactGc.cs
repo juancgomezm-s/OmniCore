@@ -96,13 +96,15 @@ public sealed class ArtifactGc
             var envelope = AsText(row.GetValue(0));
             if (envelope is not null && envelope.Length > 0)
             {
-                foreach (var part in envelope.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                foreach (var part in SplitUnescaped(envelope, ';'))
                 {
-                    var fields = part.Split('|');
-                    if (fields.Length == 3)
+                    if (part.Length == 0) continue;
+                    var fields = SplitUnescaped(part, '|');
+                    // Formatos respaldados por el writer: anterior (3 campos) y actual (8 campos).
+                    if ((fields.Count == 3 || fields.Count == 8) && fields[1] == "sha256" && IsSha256Hex(fields[2]))
                     {
                         live.Add(fields[2]);
-                        if (fields[1] == "sha256" && IsSha256Hex(fields[2])) referencedBlobs.Enqueue(fields[2]);
+                        referencedBlobs.Enqueue(fields[2]);
                     }
                 }
             }
@@ -228,4 +230,30 @@ public sealed class ArtifactGc
     private static string? AsText(object? value) => value is null || value == DBNull.Value
         ? null
         : value.ToString();
+
+    private static List<string> SplitUnescaped(string text, char delimiter)
+    {
+        var result = new List<string>();
+        var current = new System.Text.StringBuilder();
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '\\' && i + 1 < text.Length)
+            {
+                current.Append(c);
+                current.Append(text[++i]);
+            }
+            else if (c == delimiter)
+            {
+                result.Add(current.ToString());
+                current.Clear();
+            }
+            else
+            {
+                current.Append(c);
+            }
+        }
+        result.Add(current.ToString());
+        return result;
+    }
 }

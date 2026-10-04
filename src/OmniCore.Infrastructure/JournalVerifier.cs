@@ -457,8 +457,8 @@ public sealed class JournalVerifier
     private void VerifyEnvelopeRefs(SessionScan scan, RawRow row, Result result, Dictionary<string, BlobProbe> probes,
         CancellationToken cancellationToken)
     {
-        var entries = row.Artifacts!.Split(';');
-        for (var i = 0; i < entries.Length; i++)
+        var entries = SplitUnescaped(row.Artifacts!, ';');
+        for (var i = 0; i < entries.Count; i++)
         {
             var entry = entries[i];
             var field = "artifacts[" + i + "]";
@@ -469,11 +469,12 @@ public sealed class JournalVerifier
                 continue;
             }
 
-            var parts = entry.Split('|');
-            if (parts.Length != 3)
+            var parts = SplitUnescaped(entry, '|');
+            // Formatos respaldados por el writer: anterior (3 campos) y actual (8 campos).
+            if (parts.Count != 3 && parts.Count != 8)
             {
                 result.Add(scan, row, JournalIssueCode.ArtifactRefMalformed, field,
-                    "la entrada no sigue 'id|alg;hash' con 3 campos: '" + entry + "'");
+                    "la entrada no sigue un formato válido de artifact ref: '" + entry + "'");
                 continue;
             }
 
@@ -484,8 +485,8 @@ public sealed class JournalVerifier
                 continue;
             }
 
-            // El hash manda (ADR-0001 §4): "sha256" exacto y 64 hex minúsculas. La columna del
-            // envelope no lleva tamaño, así que la ref del sobre se verifica por hash.
+            // El hash manda (ADR-0001 §4): "sha256" exacto y 64 hex minúsculas.
+            // En todos los formatos, parts[1]=algoritmo, parts[2]=valor hash.
             if (!IsSha256Hex64(parts[1], parts[2]))
             {
                 result.Add(scan, row, JournalIssueCode.ArtifactHashInvalid, field,
@@ -493,9 +494,71 @@ public sealed class JournalVerifier
                 continue;
             }
 
+            // El formato actual incluye tamaño; el anterior no, por lo que no se puede comprobar.
+            long? expectedSize = null;
+            if (parts.Count == 8)
+            {
+                if (long.TryParse(parts[3], System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out var sz) && sz >= 0)
+                {
+                    expectedSize = sz;
+                }
+                else
+                {
+                    result.Add(scan, row, JournalIssueCode.ArtifactRefMalformed, field,
+                        "el tamaño de la referencia no es un entero no negativo: '" + parts[3] + "'");
+                    continue;
+                }
+                if (!Enum.TryParse<ArtifactKind>(parts[5], out var kind)
+                    || !Enum.IsDefined(kind) || kind.ToString() != parts[5]
+                    || !Enum.TryParse<Sensitivity>(parts[6], out var sensitivity)
+                    || !Enum.IsDefined(sensitivity) || sensitivity.ToString() != parts[6])
+                {
+                    result.Add(scan, row, JournalIssueCode.ArtifactRefMalformed, field,
+                        "kind o sensitivity no es un nombre canónico válido de enum");
+                    continue;
+                }
+                // El token redacted es canónico ("0" o "1" exacto): se valida el token persistido
+                // contra el formato del writer. mediaType, kind y sensitivity son metadata del
+                // envelope que no se compara contra el blob físico (el hash y el size mandan).
+                if (parts[7] != "0" && parts[7] != "1")
+                {
+                    result.Add(scan, row, JournalIssueCode.ArtifactRefMalformed, field,
+                        "el campo redacted de la referencia no es el token canónico '0' o '1': '"
+                        + parts[7] + "'");
+                    continue;
+                }
+            }
+
             VerifyBlobRef(scan, row, result, probes, artifactId: parts[0], hashAlgorithm: parts[1],
-                hashValue: parts[2], field: field, expectedSize: null, cancellationToken: cancellationToken);
+                hashValue: parts[2], field: field, expectedSize: expectedSize, cancellationToken: cancellationToken);
         }
+    }
+
+    private static List<string> SplitUnescaped(string text, char delimiter)
+    {
+        var result = new List<string>();
+        var current = new System.Text.StringBuilder();
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '\\' && i + 1 < text.Length)
+            {
+                current.Append(c);
+                current.Append(text[++i]);
+            }
+            else if (c == delimiter)
+            {
+                result.Add(current.ToString());
+                current.Clear();
+            }
+            else
+            {
+                current.Append(c);
+            }
+        }
+        result.Add(current.ToString());
+        return result;
     }
 
     private void VerifyPayload(SessionScan scan, RawRow row, Result result, Dictionary<string, BlobProbe> probes,

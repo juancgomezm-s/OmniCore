@@ -1,5 +1,6 @@
 namespace OmniCore.Infrastructure;
 
+using System.Globalization;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
@@ -278,7 +279,7 @@ public sealed class SqliteEventStore : IEventStore
             Parts.ParseTurnId(_AsStringOrNull(row.GetValue(10))),
             Parts.ParsePlanItemId(_AsStringOrNull(row.GetValue(11))),
             Parts.ParseToolCallId(_AsStringOrNull(row.GetValue(12))),
-            new ArtifactRef[0],
+            Parts.ParseArtifacts(_AsStringOrNull(row.GetValue(14))),
             _AsString(row.GetValue(13)));
     }
 
@@ -359,16 +360,114 @@ public sealed class Parts
         return null;
     }
 
+    private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("|", "\\|").Replace(";", "\\;");
+
+    private static string Unescape(string value) => value.Replace("\\;", ";").Replace("\\|", "|").Replace("\\\\", "\\");
+
     public static string Artifacts(IReadOnlyList<ArtifactRef> refs)
     {
         var parts = new string[refs.Count];
         var i = 0;
         foreach (var r in refs)
         {
-            parts[i++] = r.Id.ToString() + "|" + r.Hash.Algorithm + "|" + r.Hash.Value;
+            parts[i++] = r.Id.ToString() + "|" + r.Hash.Algorithm + "|" + r.Hash.Value + "|" +
+                r.Size + "|" + Escape(r.MediaType) + "|" + r.Kind + "|" + r.Sensitivity + "|" + (r.Redacted ? "1" : "0");
         }
 
         return string.Join(";", parts);
+    }
+
+    public static IReadOnlyList<ArtifactRef> ParseArtifacts(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return Array.Empty<ArtifactRef>();
+        }
+
+        var refStrings = SplitUnescaped(text, ';');
+        var result = new ArtifactRef[refStrings.Count];
+        for (var i = 0; i < refStrings.Count; i++)
+        {
+            var fields = SplitUnescaped(refStrings[i], '|');
+            if (fields.Count == 3)
+            {
+                // Persisted format before full-ref round-tripping: Id|Algorithm|Value.
+                // Missing metadata is not derivable from the journal, so use neutral defaults.
+                result[i] = new ArtifactRef(
+                    ArtifactId.Parse(fields[0]),
+                    new ContentHash(fields[1], fields[2]),
+                    0,
+                    "",
+                    ArtifactKind.Other,
+                    Sensitivity.Normal,
+                    false);
+                continue;
+            }
+
+            if (fields.Count != 8)
+            {
+                throw new InvalidOperationException("Formato de artifact ref inválido: " + refStrings[i]);
+            }
+
+            // M55: el escritor emite exactamente "1"/"0" para el flag redacted (ver Artifacts). Un
+            // token distinto indica una fila corrupta; aceptarlo en silencio como false ocultaría
+            // la corrupción, así que se rechaza con el mismo error de formato inválido.
+            if (fields[7] != "0" && fields[7] != "1")
+            {
+                throw new InvalidOperationException("Formato de artifact ref inválido: " + refStrings[i]);
+            }
+
+            // Full refs must use the writer's canonical metadata representation.
+            if (!long.TryParse(fields[3], NumberStyles.None, CultureInfo.InvariantCulture, out var size)
+                || size < 0
+                || !Enum.TryParse<ArtifactKind>(fields[5], out var kind)
+                || !Enum.IsDefined(kind) || kind.ToString() != fields[5]
+                || !Enum.TryParse<Sensitivity>(fields[6], out var sensitivity)
+                || !Enum.IsDefined(sensitivity) || sensitivity.ToString() != fields[6])
+            {
+                throw new InvalidOperationException("Formato de artifact ref inválido: " + refStrings[i]);
+            }
+
+            result[i] = new ArtifactRef(
+                ArtifactId.Parse(fields[0]),
+                new ContentHash(fields[1], fields[2]),
+                size,
+                Unescape(fields[4]),
+                kind,
+                sensitivity,
+                fields[7] == "1");
+        }
+
+        return result;
+    }
+
+    private static List<string> SplitUnescaped(string text, char delimiter)
+    {
+        var result = new List<string>();
+        var current = new System.Text.StringBuilder();
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '\\' && i + 1 < text.Length)
+            {
+                // Preserve the escape for the next parsing layer. ArtifactRefs are
+                // split first by ';' and then by '|'; unescaping here would expose
+                // an escaped '|' (or '\\') to the second split.
+                current.Append(c);
+                current.Append(text[++i]);
+            }
+            else if (c == delimiter)
+            {
+                result.Add(current.ToString());
+                current.Clear();
+            }
+            else
+            {
+                current.Append(c);
+            }
+        }
+        result.Add(current.ToString());
+        return result;
     }
 
     public static SessionId? ParseSessionId(string? text) => Empty(text) ? null : SessionId.Parse(text!);
