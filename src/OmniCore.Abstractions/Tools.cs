@@ -230,12 +230,15 @@ public sealed class ToolExecutionContext
 
     public bool IsInteractive { get; }
 
+    /// <summary>Host durability hook after authorization, before any tool effect; never authorizes.</summary>
+    public Action<ToolIntent>? BeforeEffect { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
         Action<DomainEventPayload>? emitEvent = null, Func<InteractionRequested, string?>? resolveInteraction = null,
         IAuditSink? audit = null, bool isInteractive = false,
-        WeakSandboxConsentState? weakSandboxConsent = null)
+        WeakSandboxConsentState? weakSandboxConsent = null, Action<ToolIntent>? beforeEffect = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -244,6 +247,7 @@ public sealed class ToolExecutionContext
         Audit = audit;
         IsInteractive = isInteractive;
         WeakSandboxConsent = weakSandboxConsent;
+        BeforeEffect = beforeEffect;
     }
 }
 

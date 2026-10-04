@@ -102,20 +102,28 @@ public sealed class RunCoupon
 
         stream.Append(new RunValidationStarted(_run.Id));
 
+        var coveredEdits = PostEditValidationProjection.Pending(_run.Id, codecs, store.ReadFrom(sessionId, 1));
+        var coveredMemory = mutationLedger?.PendingValidations().ToArray()
+            ?? Array.Empty<PendingEditValidation>();
+
         // Host-owned gates execute only after validation starts. They return evidence, never
         // authorization; process effects must already have crossed the normal Security pipeline.
         var externalResults = runExternalGates?.Invoke() ?? Array.Empty<ExternalCompletionGateResult>();
-        if (mutationLedger?.PendingValidations().Count > 0
-            && externalResults.Any(result => result.Passed && result.Key is "build" or "test"))
+        var successfulValidation = externalResults.FirstOrDefault(result => result.Passed && result.Key is "build" or "test");
+        if (successfulValidation is not null)
         {
             // runExternalGates se ejecuta después de la última actividad del modelo en este intento:
             // un Build/Test que pasa valida las ediciones pendientes. Las ediciones de Turns
             // posteriores volverán a añadirse al ledger y exigirán otro gate.
-            mutationLedger.TakePendingValidations();
+            if (coveredEdits.Count > 0)
+                stream.Append(new PostEditValidationConsumed(_run.Id, coveredEdits, successfulValidation.Key),
+                    DurabilityClass.Barrier);
+            mutationLedger?.ConsumePendingValidations(coveredMemory);
         }
 
         var failedExternal = externalResults.Where(result => !result.Passed).ToList();
-        if (mutationLedger?.PendingValidations() is { Count: > 0 })
+        if (mutationLedger?.PendingValidations() is { Count: > 0 }
+            || PostEditValidationProjection.Pending(_run.Id, codecs, store.ReadFrom(sessionId, 1)).Count > 0)
         {
             failedExternal.Add(new ExternalCompletionGateResult("post-edit-validation", false,
                 LocalizedText.Of("coder.postEditValidation.required").Render()));

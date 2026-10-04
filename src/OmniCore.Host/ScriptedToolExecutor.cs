@@ -155,12 +155,19 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 // ANTES de que la tool ejecute (aquí el ToolRuntime aún no llamó ExecuteAsync).
                 // Los eventos previos se escriben antes (Standard, en orden) para no romper la
                 // secuencia, y luego este Started como Barrier.
-                foreach (var evt in buffered)
+                foreach (var evt in buffered.Where(evt => evt is not PostEditValidationPending))
                 {
                     stream.Append(evt);
                 }
 
-                stream.Append(started, DurabilityClass.Barrier);
+                var debtAndStart = buffered.Where(evt => evt is PostEditValidationPending).ToList();
+                if (debtAndStart.Count == 0) stream.Append(started, DurabilityClass.Barrier);
+                else
+                {
+                    // No orphan debt if a crash happens before Started: both commit atomically.
+                    debtAndStart.Add(started);
+                    stream.AppendBatch(debtAndStart, DurabilityClass.Barrier);
+                }
                 buffered.Clear();
                 return VoidBox.Instance;
             }
@@ -174,7 +181,21 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
         var execContext = new ToolExecutionContext(_workspaceRoot, _boundary?.ReadRegistry(),
-            payload => emit(payload), _interactionResponder, _audit, _isInteractive, _weakSandboxConsent);
+            payload => emit(payload), _interactionResponder, _audit, _isInteractive, _weakSandboxConsent,
+            beforeEffect: intent =>
+            {
+                // Match the two Core tools that currently call Ledger.RecordMutation;
+                // process write claims are not file-edit publication or validation debt.
+                if (stream is null || intent.ToolId.ToString() is not ("filesystem.patch" or "filesystem.write")
+                    || intent.Claims.Writes.Count == 0 || intent.Effect == EffectClass.None
+                    || _boundary?.ReadRegistry().Ledger.MutationPolicy?.RequirePostEditValidation != true)
+                    return;
+                var runId = stream.EventsSince(1).LastOrDefault()?.RunId;
+                // Primitive pipeline tests may have no Run; there is no Run completion to guard.
+                if (runId is null) return;
+                // Buffered before Started: its Barrier confirms this debt before ExecuteAsync.
+                emit(new PostEditValidationPending(runId, intent.ToolCallId, intent.Claims.Writes.ToArray()));
+            });
         var outcome = runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken);
         var events = buffered.ToArray();
 

@@ -31,6 +31,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.AssistantMessageRecorded())
             .Plus(Typed.RunValidationStarted())
             .Plus(Typed.RunValidationRejected())
+            .Plus(Typed.PostEditValidationPending())
+            .Plus(Typed.PostEditValidationConsumed())
             .Plus(Typed.RunCompleted())
             .Plus(Typed.RunFailed())
             .Plus(Typed.RunCancelled())
@@ -295,6 +297,8 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(AssistantMessageRecorded))]
 [JsonSerializable(typeof(RunValidationStarted))]
 [JsonSerializable(typeof(RunValidationRejected))]
+[JsonSerializable(typeof(PostEditValidationPending))]
+[JsonSerializable(typeof(PostEditValidationConsumed))]
 [JsonSerializable(typeof(RunCompleted))]
 [JsonSerializable(typeof(RunFailed))]
 [JsonSerializable(typeof(RunCancelled))]
@@ -413,6 +417,12 @@ public sealed class Typed
 
     public static CodecPair RunValidationRejected() =>
         Of(EventType.Of("run.validation_rejected"), EventJsonContext.Default.RunValidationRejected);
+
+    public static CodecPair PostEditValidationPending() =>
+        Of(EventType.Of("post_edit_validation.pending"), EventJsonContext.Default.PostEditValidationPending);
+
+    public static CodecPair PostEditValidationConsumed() =>
+        Of(EventType.Of("post_edit_validation.consumed"), EventJsonContext.Default.PostEditValidationConsumed);
 
     public static CodecPair RunCompleted() =>
         Of(EventType.Of("run.completed"), EventJsonContext.Default.RunCompleted);

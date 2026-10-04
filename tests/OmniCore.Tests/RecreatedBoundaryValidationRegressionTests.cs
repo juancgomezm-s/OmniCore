@@ -72,8 +72,18 @@ public sealed class RecreatedBoundaryValidationRegressionTests
             Assert.Contains(result.ToolCalls, call => call.ToolName == "filesystem.patch" && call.Succeeded);
             Assert.Equal(original.Replace("BROKEN", "FIXED", StringComparison.Ordinal), File.ReadAllText(Path.Combine(root, "Program.cs")));
             Assert.Single(originalBoundary.ReadRegistry().Ledger.PendingValidations());
+            var editEnvelope = Assert.Single(store.ReadFrom(session, 1),
+                evt => codecs.Decode(evt) is PostEditValidationPending);
+            var edit = Assert.IsType<PostEditValidationPending>(codecs.Decode(editEnvelope));
+            Assert.Equal(run.RunId, edit.RunId);
+            Assert.Equal("Program.cs", Assert.Single(edit.Paths));
+            var startedEnvelope = Assert.Single(store.ReadFrom(session, 1),
+                evt => codecs.Decode(evt) is ToolCallStarted started && started.ToolCallId == edit.ToolCallId);
+            Assert.True(editEnvelope.Sequence < startedEnvelope.Sequence);
             if (recreateBoundary)
             {
+                store.Close();
+                store = new SqliteEventStore(journal);
                 turn = MakeTurn(Complete, out _);
                 Assert.Empty(turn.MutationLedger!.PendingValidations());
             }
