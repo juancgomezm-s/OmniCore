@@ -1,5 +1,6 @@
 namespace OmniCore.Host;
 
+using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Models;
@@ -67,10 +68,18 @@ public static class ModelRoutingHost
         {
             [RoutingTaskKind.Reasoning] = chainIds,
         }, false);
+        var candidates = Candidates(loaded, hasWritePolicy);
+        if (EscalationMode(loaded) == "auto")
+        {
+            // El coste pagado desconocido se excluye antes de la selección automática.
+            candidates = candidates.Where(c =>
+                loaded.Registry.Provider(loaded.Registry.Resolve(c.Alias).ProviderId)?.Auth
+                    is not { Kind: AuthKind.ApiKey } || loaded.Pricing(c.Alias) is { IsComplete: true }).ToArray();
+        }
         try
         {
             return ModelRouter.Select(new RoutingRequest(RoutingTaskKind.Reasoning, requiresWrite, neededContextTokens, [], false),
-                Candidates(loaded, hasWritePolicy), policy).Chosen;
+                candidates, policy).Chosen;
         }
         catch (NoRouteAvailableException) { return null; }
     }
