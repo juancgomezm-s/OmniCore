@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 08:24 UTC /02:24 America/Mexico_City. Rama autorizada
+Checkpoint 08:33 UTC /02:33 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -86,11 +86,18 @@ Legacy ctor/Ok/Fail no infieren outcome desde Status, que sigue intacto. No exis
 serialización/lectura CommandAck actual para probar round-trip; no se inventó un transporte nuevo.
 El tipo permite declarar resultados pero el servidor aún no los emite por tener el contrato.
 
-Luna tiene ownership de OmniServer y nuevos controles IOmniClient para conectar sólo run.interrupt
-y run.cancel a outcomes/rangos de eventos causados por el commandId en su Session. Pendiente
-implementación y auditoría: no declarar todos los commands migrados ni commands internos listos.
-M5.5 no se declara cerrado por estos contratos parciales. Nueva suite funcional de contrato Ack
-en curso al checkpoint; registrar sólo cuando termine.
+Suite funcional independiente tras el contrato Ack:1277 casos,1273 PASS /0 FAIL /4 SKIP.
+
+`09f1984` conecta run.interrupt/run.cancel con Accepted o Rejected explícitos, manteniendo Status
+y Error y las transiciones existentes. El rango filtra eventos posteriores en la misma Session
+por CommandCausation exacto; no incluye eventos previos ni notificaciones. Sin escritura causada,
+el rango es null. Root auditó diff y reprodujo31/31 pruebas RunControl vía IOmniClient in-process,
+incluidos primera/segunda interrupción, cancelación, rechazo sin sesión/terminal, suscripción y
+proyección. No provider invocado por esos tests. No se clasifican NoOp/Deferred por conveniencia.
+
+Luna continúa session.input/interaction.respond; aún pendientes de entrega y auditoría. No declarar
+todos los commands migrados ni commands internos listos. M5.5 no se declara cerrado. Suite funcional
+completa posterior a09f1984 en curso al checkpoint; registrar sólo cuando termine.
 
 Ling03 recibió un paquete cerrado mínimo para pruebas CausationScope y terminó con HTTP429
 sin código visible. Ninguna entrega de esa ronda fue aplicada; logs preservados. No fallback
