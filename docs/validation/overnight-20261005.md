@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 08:51 UTC /02:51 America/Mexico_City. Rama autorizada
+Checkpoint 08:57 UTC /02:57 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -117,9 +117,24 @@ Suite funcional completa independiente posterior a creation y aislamiento de con
 **1289=1285 PASS /0 FAIL /4 SKIP**, exit0. Fix de aislamiento: `74e6c53`; no modifica código de
 producción ni assertions. No confundir este resultado con cierre M4/M5 o cualificación remota.
 
-Luna continúa sim/sim.resume: distinguir aceptación del comando de éxito del Run y preservar
-Status/Error. No declarar todos los commands migrados ni commands internos listos. M5.5 no se
-declara cerrado.
+`e860be1` conecta sim/sim.resume: distingue aceptación del comando de éxito del Run y preserva
+Status/Error/diagnósticos. Un escenario aceptado que termina fallido conserva Status=error y
+Outcome=Accepted. Escenario inválido o resume sin Run rechazan sin rango; resume correcto incluye
+sólo eventos nuevos de su Session causados por el comando. Catches genéricos conservan outcome
+legacy null y stack/error: no se infiere rechazo de una excepción posterior a efectos.
+
+Root completó atribución de telemetría con ExecutionId? opcional, sin generar IDs ni registrar
+contenido. Dos pruebas nuevas verifican scopes anidados/restauración/ausencia de scope y dos
+flujos async concurrentes usando el mismo sink; callers legacy conservan null. El fixture de
+reapertura de journal de TelemetryBoundaryTests ahora dispone la conexión real y limpia sólo su
+pool antes de reabrir y borrar: no oculta IOException ni debilita assertions.
+
+Verificación independiente combinada sim/telemetría/fixtures:51/51 PASS. Suite funcional completa
+posterior: **1295=1291 PASS /0 FAIL /4 SKIP**. Arquitectura recompilada (incluido whitelist de
+ExecutionId sin texto arbitrario):54/54 PASS, conteo separado. No sumar cifras solapadas.
+Luna audita el cambio de telemetría y prepara la frontera de escritura interna de cuestionario
+según ADR0046§5. No declarar todos los commands migrados ni commands internos listos. M5.5 no
+se declara cerrado; Source/fallback causal y wiring general siguen pendientes.
 
 Ling03 recibió un paquete cerrado mínimo para pruebas CausationScope y terminó con HTTP429
 sin código visible. Ninguna entrega de esa ronda fue aplicada; logs preservados. No fallback
