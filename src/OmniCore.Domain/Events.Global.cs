@@ -46,6 +46,22 @@ public record UserInputReceived(RunId RunId, string InputPartsJson, ArtifactRef?
     public int SchemaVersion() => 2;
 }
 
+/// <summary>Input ordinario recibido mientras un Turn sigue abierto; se reserva para el Turn siguiente.</summary>
+public record FollowUpQueued(FollowUpId FollowUpId, RunId RunId, LaneId LaneId, TurnId? TurnId,
+    string InputPartsJson, string? Origin) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("followup.queued");
+    public int SchemaVersion() => 1;
+}
+
+/// <summary>FollowUp promovido exactamente una vez al comenzar un Turn posterior.</summary>
+public record FollowUpPromoted(FollowUpId FollowUpId, RunId RunId, LaneId LaneId, TurnId TurnId)
+    : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("followup.promoted");
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>AssistantMessageRecorded: bloques de texto finales de un Turn (ADR-0035 §1).</summary>
 public record AssistantMessageRecorded(RunId RunId, LaneId LaneId, TurnId TurnId, ArtifactRef? ContentRef)
     : DomainEventPayload

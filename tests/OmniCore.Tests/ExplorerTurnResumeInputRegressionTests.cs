@@ -12,10 +12,7 @@ using OmniCore.Tools;
 namespace OmniCore.Tests;
 
 /// <summary>
-/// Regression: a user input supplied to a NEW ExplorerTurn.Ask that resumes a turn suspended on a
-/// questionnaire must reach the provider as an ordinary USER message and be journaled as an ordinary
-/// UserInputReceived (not an InteractionResponse transition). Expected RED today: on resume the turn
-/// builds safeQuestion = "" so the resumed input never reaches the provider request.
+/// Ordinary input received while a Turn is open is a FollowUp for the next Turn, never implicit Steering.
 /// </summary>
 public sealed class ExplorerTurnResumeInputRegressionTests
 {
@@ -25,7 +22,7 @@ public sealed class ExplorerTurnResumeInputRegressionTests
                 new QuestionOption("fast", "Fast", null) }, null, true, null, null, null) });
 
     [Fact]
-    public void Resume_input_after_questionnaire_reaches_provider_as_user_message()
+    public void Resume_input_after_questionnaire_is_promoted_to_next_turn()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-explorer-resume-input-" + Guid.NewGuid().ToString("N"));
         var journal = Path.Combine(root, "journal.db");
@@ -87,8 +84,8 @@ public sealed class ExplorerTurnResumeInputRegressionTests
             Assert.Equal("ok", accepted.Status);
             Assert.Empty(service.Pending(session));
 
-            // Resume with a brand-new ordinary user input (not an interaction response); capture the
-            // request handed to the scripted provider.
+            // A new input at the open Turn boundary is queued as FollowUp and must not steer the
+            // original Turn. Capture that original Turn's provider request first.
             ModelRequest? captured = null;
             var resumed = new ExplorerTurn((request, token) =>
             {
@@ -102,7 +99,7 @@ public sealed class ExplorerTurnResumeInputRegressionTests
 
             const string marker = "resume-user-marker";
             var completed = resumed.Ask(marker, "system", session, run.RunId, run.RootLane, "",
-                CancellationToken.None);
+                CancellationToken.None, "Composer");
             Assert.Equal(StopReason.EndTurn, completed.StopReason);
             Assert.NotNull(captured);
 
@@ -112,22 +109,47 @@ public sealed class ExplorerTurnResumeInputRegressionTests
                 .OfType<TextBlock>()
                 .Select(text => text.Text)
                 .ToArray();
-            Assert.Equal(1, userTexts.Count(text => text.Contains(marker, StringComparison.Ordinal)));
+            Assert.Equal(0, userTexts.Count(text => text.Contains(marker, StringComparison.Ordinal)));
             Assert.Contains(userTexts, text => text.Contains("ask the user", StringComparison.Ordinal));
 
-            var turnIds = store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt))
+            var events = store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt)).ToArray();
+            var queued = Assert.Single(events.OfType<FollowUpQueued>(), evt =>
+                evt.InputPartsJson.Contains(marker, StringComparison.Ordinal));
+            Assert.Equal("Composer", queued.Origin);
+            var turnIds = events
                 .OfType<TurnStarted>().Select(evt => evt.TurnId).ToArray();
             Assert.Single(turnIds);
             Assert.Equal(originalTurn, turnIds[0]);
 
-            // Only reachable once the resumed input reaches the provider request: the journal must hold
-            // exactly one ordinary UserInputReceived carrying the marker (origin must NOT be the
-            // InteractionResponse(Questionnaire) transition, which is not a conversation user message).
-            var markerInputs = store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt))
+            // Only a later Turn promotes the input to an ordinary conversation message.
+            ModelRequest? nextRequest = null;
+            var next = new ExplorerTurn((request, _) =>
+            {
+                nextRequest = request;
+                return new ModelResponse(new ContentBlock[] { new TextBlock("next turn") }, StopReason.EndTurn,
+                    new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("scripted", "", null));
+            }, executor, catalog,
+                new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()), fingerprint,
+                selection, store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                questionnaires: service);
+            Assert.Equal(StopReason.EndTurn, next.Ask("", "system", session, run.RunId, run.RootLane, "",
+                CancellationToken.None).StopReason);
+            var promotedTurn = events = store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt)).ToArray();
+            var laterTurnId = promotedTurn.OfType<TurnStarted>().Select(evt => evt.TurnId).Last();
+            Assert.NotEqual(originalTurn, laterTurnId);
+            var promotedTexts = nextRequest!.Messages.Where(message => message.Role == MessageRole.User)
+                .SelectMany(message => message.Content).OfType<TextBlock>().Select(block => block.Text).ToArray();
+            Assert.Equal(1, promotedTexts.Count(text => text.Contains(marker, StringComparison.Ordinal)));
+            var promotedInput = Assert.Single(promotedTurn.OfType<UserInputReceived>(), evt =>
+                evt.InputPartsJson.Contains(marker, StringComparison.Ordinal));
+            Assert.Equal("Composer", promotedInput.Origin);
+            var promotion = Assert.Single(promotedTurn.OfType<FollowUpPromoted>());
+            Assert.Equal(queued.FollowUpId, promotion.FollowUpId);
+            Assert.Equal(laterTurnId, promotion.TurnId);
+
+            var markerInputs = promotedTurn
                 .OfType<UserInputReceived>()
                 .Where(evt => evt.InputPartsJson.Contains(marker, StringComparison.Ordinal))
-                .Where(evt => !string.Equals(evt.Origin, "InteractionResponse(Questionnaire)",
-                    StringComparison.Ordinal))
                 .ToArray();
             Assert.Single(markerInputs);
         }

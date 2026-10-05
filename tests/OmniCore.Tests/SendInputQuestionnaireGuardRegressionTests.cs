@@ -12,7 +12,7 @@ namespace OmniCore.Tests;
 public sealed class SendInputQuestionnaireGuardRegressionTests
 {
     [Fact]
-    public void Generic_input_is_journaled_without_resolving_pending_questionnaire()
+    public void Generic_input_is_queued_without_resolving_or_reactivating_pending_questionnaire()
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-input-guard-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -58,9 +58,13 @@ public sealed class SendInputQuestionnaireGuardRegressionTests
             Assert.Equal(first.PendingInteractionId, Assert.Single(service.Pending(session)).InteractionId);
             var events = store.ReadFrom(session,1).Select(e => codecs.Decode(e)).ToArray();
             Assert.Equal(original,Assert.Single(events.OfType<TurnStarted>()).TurnId);
-            var input = Assert.Single(events.OfType<UserInputReceived>(),e => e.InputPartsJson.Contains(marker,StringComparison.Ordinal));
+            var input = Assert.Single(events.OfType<FollowUpQueued>(),e => e.InputPartsJson.Contains(marker,StringComparison.Ordinal));
             Assert.Equal("Composer",input.Origin);
             Assert.Equal(run.RunId,input.RunId);
+            Assert.Equal(run.RootLane,input.LaneId);
+            Assert.DoesNotContain(events.OfType<UserInputReceived>(),e => e.InputPartsJson.Contains(marker,StringComparison.Ordinal));
+            Assert.Equal(RunState.AwaitingInput,
+                RunProjection.Replay(session, run.RunId, codecs, store.ReadFrom(session, 1)).State);
             Assert.DoesNotContain(events.OfType<UserInputReceived>(),e => e.Origin == "InteractionResponse(Questionnaire)");
             Assert.Empty(events.OfType<ModelCompleted>());
             Assert.Empty(events.OfType<TurnCompleted>());
