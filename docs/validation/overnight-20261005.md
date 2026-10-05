@@ -169,8 +169,14 @@ Root reprodujo51/51 aprobación/M2/FollowUp/input y full independiente:1310 caso
 /4 SKIP. `47935f5` corrige la fixture para conservar CAS durante todo el test y añade fallo atómico
 de store con excepción visible, restauración de scopes ajenos y retry sin filas parciales ni
 doble publicación. Root auditó y reprodujo14/14 aprobación/Ask/Act después, sin inventar full1311.
-Siguiente bloque autorizado de Luna: sólo las tres escrituras de ModelEscalation en Host, bajo
-operaciones internas con Ack/rango. No envolver ni modificar routing, gasto, credenciales o provider.
+`33f31c6` mueve las tres escrituras ModelEscalation a operaciones internas tipadas, con pertenencia
+Session/Run explícita, causa/Ack/rango exactos y restauración del scope. Completed permite un Run
+terminal, conservando el flujo previo; los nulls legacy Turn/Lane no se rellenan desde un padre
+ajeno. Root auditó que no cambia routing, credenciales, gasto ni orden CLI y reprodujo31/31 focales.
+Full independiente root75334 al09:37UTC /03:37local: **1315=1311 PASS /0 FAIL /4 SKIP**, exit0.
+Incluye los controles fault/CAS de47935f5; no sumar suites solapadas. Siguiente bloque de Luna:
+frontera interna específica para completion/gates del loopAct, preservando autorización,
+MutationLedger y aceptación explícita; pruebas locales/fakes, sin gates/proveedores reales.
 Un build focal del worker coincidió con la suite root y encontró locks MSB3026; lo detuvo sin tocar
 el proceso root y ya recibió aviso de compilación libre tras el resultado completo. No fue un fallo
 del producto ni una validación remota, y no se reiniciaron servidores.
