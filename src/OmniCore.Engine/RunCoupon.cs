@@ -40,7 +40,7 @@ public sealed class RunCoupon
         while (!converged && guard < 1024)
         {
             guard += 1;
-            var tail = store.ReadFrom(sessionId, 1);
+            var tail = RunEvents(codecs, store.ReadFrom(sessionId, 1));
             var planProj = PlanProjection.Replay(codecs, tail);
             var taskProj = TaskGraphProjection.Replay(codecs, tail);
             var laneProj = LaneProjection.Replay(codecs, tail);
@@ -94,7 +94,7 @@ public sealed class RunCoupon
             }
         }
 
-        var finalTail = store.ReadFrom(sessionId, 1);
+        var finalTail = RunEvents(codecs, store.ReadFrom(sessionId, 1));
         var finalPlan = PlanProjection.Replay(codecs, finalTail);
         var finalTasks = TaskGraphProjection.Replay(codecs, finalTail);
         var finalLanes = LaneProjection.Replay(codecs, finalTail);
@@ -237,7 +237,7 @@ public sealed class RunCoupon
                 PlanMutation.Start(candidate.Id, MutationCause.Policy));
             if (!start.Accepted) return plan;
             stream.AppendBatch(start.Events, DurabilityClass.Standard);
-            var events = stream.EventsSince(1);
+            var events = RunEvents(codecs, stream.EventsSince(1));
             plan = PlanProjection.Replay(codecs, events);
             tasks = TaskGraphProjection.Replay(codecs, events);
             lanes = LaneProjection.Replay(codecs, events);
@@ -246,8 +246,14 @@ public sealed class RunCoupon
         var complete = planService.Apply(plan, tasks, lanes,
             PlanMutation.Complete(candidate.Id, MutationCause.Policy, "Run completion gates passed"));
         if (complete.Accepted) stream.AppendBatch(complete.Events, DurabilityClass.Standard);
-        return PlanProjection.Replay(codecs, stream.EventsSince(1));
+        return PlanProjection.Replay(codecs, RunEvents(codecs, stream.EventsSince(1)));
     }
+
+    // Projections participating in one Run's completion must not reconcile or close entities
+    // from another sequential Run in the same Session. Session sequence remains global; the
+    // correlated event subsequence is the canonical boundary for this evaluation.
+    private IReadOnlyList<DomainEvent> RunEvents(IEventCodecRegistry codecs, IReadOnlyList<DomainEvent> events) =>
+        events.Where(evt => evt.CorrelationId?.Equals(_run.Id) == true).ToArray();
 
     /// <summary>Cierra la Lane raíz y la Task raíz cuando el Run termina (ADR-0035 §2).</summary>
     private static void CloseRoot(EventStream stream, TaskGraphProjection tasks, LaneProjection lanes,
