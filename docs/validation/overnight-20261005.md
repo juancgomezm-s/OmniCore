@@ -158,7 +158,8 @@ batch correcto conserve su cadena interna y tail. Root batería16/16 PASS (5 de 
 **1303=1299 PASS /0 FAIL /4 SKIP**; los2 controles añadidos después se verificaron focalmente,
 no se inventa un full de1305. Luna auditó el fix sin defecto concreto. Siguiente full combinado
 independiente tras `f331704` y los5 controles EventStream: **1307=1303 PASS /0 FAIL /4 SKIP**, exit0.
-Ese full precede al ajuste test-only de RunMode.Act, que se verificará focalmente.
+Ese full precede al ajuste test-only `10ec78d` de RunMode.Act. Root auditó su diff y reprodujo7/7
+Ask/Act después del ajuste, incluida la assertion del modo Act real.
 
 Siguiente operación interna de Luna: RequestPlanApprovalIfNeeded conserva API y condiciones de
 autorización actuales; debe atribuir su publicación al command interno, devolver Ack/rango causal y
