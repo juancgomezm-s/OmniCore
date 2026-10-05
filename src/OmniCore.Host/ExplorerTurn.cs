@@ -287,8 +287,11 @@ public sealed class ExplorerTurn
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         if (FindPendingRunInteraction(runEvents, runId) is { } pendingInteraction)
         {
-            return new TurnResult(null, StopReason.InputRequired, 0,
-                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null, pendingInteraction);
+            var stop = pendingInteraction.Kind == InteractionKind.BudgetExceeded
+                ? StopReason.Cancelled : StopReason.InputRequired;
+            return new TurnResult(null, stop, 0,
+                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null,
+                pendingInteraction.InteractionId);
         }
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var persistedSpend = ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps);
@@ -1292,7 +1295,7 @@ public sealed class ExplorerTurn
         return open;
     }
 
-    private InteractionId? FindPendingRunInteraction(IReadOnlyList<DomainEvent> events, RunId runId)
+    private InteractionRequested? FindPendingRunInteraction(IReadOnlyList<DomainEvent> events, RunId runId)
     {
         var pending = new Dictionary<InteractionId, InteractionRequested>();
         foreach (var evt in events)
@@ -1311,8 +1314,7 @@ public sealed class ExplorerTurn
                     break;
             }
         }
-        return pending.Values.OrderBy(request => request.InteractionId.ToString(), StringComparer.Ordinal)
-            .FirstOrDefault()?.InteractionId;
+        return pending.Values.FirstOrDefault();
     }
 
     private static string InputParts(string text) => "[\"" + JsonObj.Escape(text) + "\"]";
