@@ -34,21 +34,21 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     {
         // WAL + synchronous=NORMAL por defecto (ADR-0002 §2). journal_mode se aplica a la base,
         // synchronous es por conexión y se alterna alrededor de un commit Barrier.
-        var wal = _conn.CreateCommand()!;
+        using var wal = _conn.CreateCommand()!;
         wal.CommandText = "PRAGMA journal_mode=WAL";
         wal.ExecuteNonQuery();
 
-        var syncDefault = _conn.CreateCommand()!;
+        using var syncDefault = _conn.CreateCommand()!;
         syncDefault.CommandText = "PRAGMA synchronous=NORMAL";
         syncDefault.ExecuteNonQuery();
 
         // Otro proceso puede tener el journal abierto (CLI + servidor): se espera al lock en vez de
         // fallar al instante con SQLITE_BUSY.
-        var busy = _conn.CreateCommand()!;
+        using var busy = _conn.CreateCommand()!;
         busy.CommandText = "PRAGMA busy_timeout=5000";
         busy.ExecuteNonQuery();
 
-        var ddl = _conn.CreateCommand()!;
+        using var ddl = _conn.CreateCommand()!;
         ddl.CommandText = """
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -78,7 +78,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         // BEGIN IMMEDIATE serializes the existence check with ALTER TABLE. A second host opening
         // this legacy journal waits, then observes the migrated schema instead of racing an ALTER.
         using var migration = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: false);
-        var columns = _conn.CreateCommand()!;
+        using var columns = _conn.CreateCommand()!;
         columns.Transaction = migration;
         columns.CommandText = "PRAGMA table_info(events)";
         var hasExecutionId = false;
@@ -96,7 +96,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
         if (!hasExecutionId)
         {
-            var migrate = _conn.CreateCommand()!;
+            using var migrate = _conn.CreateCommand()!;
             migrate.Transaction = migration;
             migrate.CommandText = "ALTER TABLE events ADD COLUMN execution_id TEXT";
             migrate.ExecuteNonQuery();
@@ -104,7 +104,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
         migration.Commit();
 
-        var idx = _conn.CreateCommand()!;
+        using var idx = _conn.CreateCommand()!;
         idx.CommandText = """
             CREATE UNIQUE INDEX IF NOT EXISTS ux_events_session_seq ON events (session_id, seq)
         """;
@@ -174,7 +174,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     private void SetSynchronous(string mode)
     {
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "PRAGMA synchronous=" + mode;
         cmd.ExecuteNonQuery();
     }
@@ -183,7 +183,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     private long ReadSynchronousLevel(System.Data.Common.DbTransaction tx)
     {
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.Transaction = tx;
         cmd.CommandText = "PRAGMA synchronous";
         return _AsLong(cmd.ExecuteScalar()!);
@@ -191,7 +191,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     private long CurrentSequence(SessionId sessionId, System.Data.Common.DbTransaction? tx)
     {
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.Transaction = tx;
         cmd.CommandText = "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = :sid";
         var p = cmd.CreateParameter()!;
@@ -204,7 +204,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive)
     {
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "SELECT event_id, seq, event_type, schema_version, timestamp, causation, correlation, " +
             "run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, execution_id, payload, artifacts " +
             "FROM events WHERE session_id = :sid AND seq >= :from ORDER BY seq";
@@ -231,7 +231,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     public IReadOnlyList<DomainEvent> ReadEvents(EventType type)
     {
         ArgumentNullException.ThrowIfNull(type);
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "SELECT session_id, event_id, seq, event_type, schema_version, timestamp, " +
             "causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, execution_id, " +
             "payload, artifacts FROM events WHERE event_type = :type ORDER BY id";
@@ -250,7 +250,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     /// <summary>Cantidad de eventos persistidos de una sesión (auditoría previa a la purga).</summary>
     public long CountEvents(SessionId sessionId)
     {
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "SELECT COUNT(*) FROM events WHERE session_id = :sid";
         cmd.Parameters.Add(S(cmd, "sid", sessionId.ToString()));
         return _AsLong(cmd.ExecuteScalar()!);
@@ -261,7 +261,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var tx = _conn.BeginTransaction();
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.Transaction = tx;
         cmd.CommandText = "DELETE FROM events WHERE session_id = :sid";
         cmd.Parameters.Add(S(cmd, "sid", sessionId.ToString()));
@@ -280,7 +280,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     private void InsertRow(SessionId sessionId, DomainEvent evt, long sequence, System.Data.Common.DbTransaction tx)
     {
-        var cmd = _conn.CreateCommand()!;
+        using var cmd = _conn.CreateCommand()!;
         cmd.Transaction = tx;
         cmd.CommandText = "INSERT INTO events (session_id, seq, event_id, event_type, schema_version, " +
             "timestamp, causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, " +
