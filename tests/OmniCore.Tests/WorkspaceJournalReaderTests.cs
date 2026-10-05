@@ -185,8 +185,11 @@ public sealed class WorkspaceJournalReaderTests
             if (Store is SqliteEventStore sqlite)
             {
                 sqlite.Close();
-                // Close returns the connection to its pool; release this fixture's pool before deleting.
-                SqliteConnection.ClearPool((SqliteConnection)sqlite.Connection);
+                // Close returns the owned connection to its pool; clear that exact pool and dispose
+                // the connection object before deleting the journal on Windows.
+                var connection = (SqliteConnection)sqlite.Connection;
+                SqliteConnection.ClearPool(connection);
+                connection.Dispose();
                 File.Delete(Path!);
                 File.Delete(Path + "-wal");
                 File.Delete(Path + "-shm");
