@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 08:33 UTC /02:33 America/Mexico_City. Rama autorizada
+Checkpoint 08:50 UTC /02:50 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -95,9 +95,29 @@ el rango es null. Root auditó diff y reprodujo31/31 pruebas RunControl vía IOm
 incluidos primera/segunda interrupción, cancelación, rechazo sin sesión/terminal, suscripción y
 proyección. No provider invocado por esos tests. No se clasifican NoOp/Deferred por conveniencia.
 
-Luna continúa session.input/interaction.respond; aún pendientes de entrega y auditoría. No declarar
-todos los commands migrados ni commands internos listos. M5.5 no se declara cerrado. Suite funcional
-completa posterior a09f1984 en curso al checkpoint; registrar sólo cuando termine.
+Suite funcional independiente posterior a09f1984:1280=1276 PASS /0 FAIL /4 SKIP.
+
+`dd994a3` conecta session.input/interaction.respond con outcomes explícitos y rangos causales.
+Root auditó diff y reprodujo75/75 pruebas de input, interacción, cuestionario y controles. Una
+Session nueva no hereda el rango de otra; FollowUp aceptado no se confunde con ejecución de un
+nuevo Turn. Opciones/respuestas inválidas o duplicadas preservan rechazo y permisos existentes.
+
+La suite independiente posterior terminó1286=1281 PASS /1 FAIL /4 SKIP. Falló
+M2IntegrationTests.Explaine_repo_criterion_renders_with_plain_renderer (assert de intención asumida),
+con stdout contaminado por JSON de otra ejecución. Aislado pasa1/1. Tres fixtures que reemplazan
+Console.Out carecían de la colección de aislamiento global existente; ahora M2IntegrationTests,
+ClientTests y JournalCommandsTests usan ProcessEnvironmentCollection. No se debilitan assertions,
+se cambian rutas de producción ni se desactiva el paralelismo de toda la suite.
+
+`066dd68` añade outcomes a explore.start, act y command.invoke. Los Runs nuevos reportan sólo
+eventos de su nueva Session causados por ese command. Objetivo vacío rechaza sin crear Session;
+expansión correcta es Accepted sin journal (no NoOp), errores de catálogo/JSON mantienen Error.
+Root auditó diff y reprodujo73/73 incluyendo estas pruebas y los fixtures de consola corregidos.
+Suite funcional completa nueva está en curso; no declarar verde antes del resultado.
+
+Luna continúa sim/sim.resume: distinguir aceptación del comando de éxito del Run y preservar
+Status/Error. No declarar todos los commands migrados ni commands internos listos. M5.5 no se
+declara cerrado.
 
 Ling03 recibió un paquete cerrado mínimo para pruebas CausationScope y terminó con HTTP429
 sin código visible. Ninguna entrega de esa ronda fue aplicada; logs preservados. No fallback
