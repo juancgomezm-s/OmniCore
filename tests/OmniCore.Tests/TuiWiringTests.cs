@@ -32,6 +32,107 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    [Theory]
+    [InlineData(80, 25, "conversation")]
+    [InlineData(100, 30, "conversation")]
+    [InlineData(140, 40, "conversation")]
+    [InlineData(100, 30, "sidebar")]
+    [InlineData(100, 30, "notice")]
+    public void Visual_frames_export_the_real_driver_cells(int columns, int rows, string scene) => RunTuiTest(fx =>
+    {
+        var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+        var content = fx.Artifacts.PutText("## Conversación\nUn diseño limpio, con `código inline` y espacio para leer.\n\n"
+            + "### Métodos principales\n- `AskAsync(ct)` — Explorar el proyecto\n- `ActAsync(ct)` — Ejecutar una tarea\n\n"
+            + "```c#\npublic sealed class Scenarios\n{\n    // Una respuesta con estilos\n    public string Run() { return \"Listo\"; }\n    public int Count = 42;\n}\n```\n\n"
+            + "La conversación conserva el foco y el historial.", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+        new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+            .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), content));
+        fx.StartTui();
+        fx.Application.Invoke(() => fx.Application.Driver!.SetScreenSize(columns, rows));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Width == columns && fx.App.MainWindow.Frame.Height == rows,
+            "el renderer debe completar el resize");
+        Type(fx, "Escribe tu siguiente instrucción…");
+        if (scene == "sidebar")
+        {
+            fx.Injector.InjectKey(new Key(KeyCode.F2));
+            fx.Wait(() => fx.App.Sidebar!.Visible, "sidebar visible en fotograma");
+        }
+        else if (scene == "notice")
+        {
+            fx.Application.Invoke(() => fx.App.Composer!.Text = "");
+            Type(fx, "/context");
+            fx.Injector.InjectKey(new Key(KeyCode.Enter));
+            fx.Wait(() => fx.App.Overlay is not null, "menú visible en fotograma");
+        }
+        using var captured = new ManualResetEventSlim();
+        Exception? captureError = null;
+        EventHandler<EventArgs> capture = (_, _) =>
+        {
+            if (captured.IsSet) return;
+            var cells = fx.Application.Driver!.Contents!;
+            if (cells.GetLength(0) != rows || cells.GetLength(1) != columns) return;
+            var text = string.Join("\n", Enumerable.Range(0, rows).Select(y =>
+                string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
+            // Input injection completing is not the same as its frame being drawn.
+            // Wait for the normal loop's completed frame, retaining the timeout below.
+            if (!text.Contains(scene == "notice" ? "Aviso" : "Escribe tu siguiente", StringComparison.Ordinal)) return;
+            if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
+            try
+            {
+                Assert.Equal(rows, cells.GetLength(0));
+                Assert.Equal(columns, cells.GetLength(1));
+                Assert.DoesNotContain("╭", text);
+                Assert.DoesNotContain("┌", text);
+                if (scene == "notice")
+                {
+                    Assert.Contains("Aviso", text);
+                    Assert.Contains("OK", text);
+                    Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
+                    Assert.False(fx.App.Composer!.HasFocus);
+                }
+                else
+                {
+                    Assert.Contains("Conversación", text);
+                    Assert.Contains("AskAsync(ct)", text);
+                    Assert.Contains("Mensaje", text);
+                    var inputRow = Enumerable.Range(0, rows).Single(y =>
+                        string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme)).Contains("Escribe tu siguiente", StringComparison.Ordinal));
+                    var helpRow = Enumerable.Range(0, rows).Single(y =>
+                        string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme)).Contains("Enter enviar", StringComparison.Ordinal));
+                    Assert.True(helpRow > inputRow, "ayudas debajo del panel de mensaje");
+                    Assert.True(fx.App.Composer!.HasFocus);
+                    if (scene == "sidebar") Assert.Contains("Workspace", text);
+                }
+                var destination = Environment.GetEnvironmentVariable("OMNICORE_TUI_SNAPSHOT_DIR");
+                if (string.IsNullOrWhiteSpace(destination)) return;
+                Directory.CreateDirectory(destination);
+                // Export the driver's actual desired screen buffer, not an ANSI reconstruction
+                // or a desktop capture. Only this synthetic fixture enters the artifact.
+                var svg = new System.Text.StringBuilder($"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{columns * 12}\" height=\"{rows * 24}\">");
+                for (var y = 0; y < rows; y++)
+                for (var x = 0; x < columns; x++)
+                {
+                    var cell = cells[y, x];
+                    var attribute = cell.Attribute ?? fx.App.MainWindow!.GetScheme().Normal;
+                    static string Hex(Terminal.Gui.Drawing.Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+                    svg.Append($"<rect x=\"{x * 12}\" y=\"{y * 24}\" width=\"12\" height=\"24\" fill=\"{Hex(attribute.Background)}\"/>");
+                    if (!string.IsNullOrWhiteSpace(cell.Grapheme))
+                        svg.Append($"<text x=\"{x * 12}\" y=\"{y * 24 + 19}\" font-family=\"Consolas, monospace\" font-size=\"20\" fill=\"{Hex(attribute.Foreground)}\">{System.Security.SecurityElement.Escape(cell.Grapheme)}</text>");
+                }
+                svg.Append("</svg>");
+                File.WriteAllText(Path.Combine(destination, $"{scene}-{columns}x{rows}.svg"), svg.ToString());
+                File.WriteAllText(Path.Combine(destination, $"{scene}-{columns}x{rows}.txt"), text);
+            }
+            catch (Exception error) { captureError = error; }
+            finally { captured.Set(); }
+        };
+        fx.Application.LayoutAndDrawComplete += capture;
+        fx.Application.Invoke(() => fx.App.MainWindow!.SetNeedsDraw());
+        try { Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "captura del renderer completada"); }
+        finally { fx.Application.LayoutAndDrawComplete -= capture; }
+        if (captureError is not null) throw captureError;
+    });
+
     [Fact]
     public void Rich_conversation_is_read_only_and_polling_preserves_history_position() => RunTuiTest(fx =>
     {
@@ -46,14 +147,23 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.Conversation!.Text.Contains("Key Methods"), "respuesta durable renderizada");
         Assert.True(fx.App.Conversation!.ReadOnly);
         Assert.True(fx.App.Conversation.ScrollBars);
-        Assert.Contains("┌─ </> c#", fx.App.Conversation.Text);
+        Assert.Contains("  </> c#", fx.App.Conversation.Text);
         Assert.DoesNotContain("```", fx.App.Conversation.Text);
         var cells = fx.App.Conversation.GetAllLines().SelectMany(line => line).ToArray();
         if (Environment.GetEnvironmentVariable("NO_COLOR") is null)
         {
+            var background = new Terminal.Gui.Drawing.Color("#061822");
+            Assert.Equal(background, fx.App.MainWindow!.GetScheme().Normal.Background);
+            Assert.Equal(new Terminal.Gui.Drawing.Color("#293648"), fx.App.Composer!.GetScheme().Focus.Background);
+            Assert.Equal(new Terminal.Gui.Drawing.Color("#F4F7FB"), fx.App.Composer.GetScheme().Normal.Foreground);
+            Assert.Equal(background, fx.App.Conversation.GetScheme().Normal.Background);
+            Assert.All(cells, cell => Assert.NotEqual(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Background));
             Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#53B8F5"));
             Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#EF9A70"));
             Assert.Contains(cells, cell => cell.Attribute?.Background == new Terminal.Gui.Drawing.Color("#0A2330"));
+            Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#C8A0F5"));
+            Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#F1D58A"));
+            Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#67D4D0"));
         }
         Thread.Sleep(300); // Let the first styled frame render before navigating history.
         fx.Application.Invoke(() => fx.App.Conversation.MoveEnd());
@@ -61,6 +171,20 @@ public sealed class TuiWiringTests
         var row = fx.App.Conversation.CurrentRow;
         Thread.Sleep(1100); // More than two production polls, not a handler-only test.
         Assert.Equal(row, fx.App.Conversation.CurrentRow);
+        fx.Application.Invoke(() => fx.App.Conversation.SelectAll());
+        fx.Wait(() => fx.App.Conversation.SelectedText.Contains("public void Run()"), "el código coloreado sigue siendo seleccionable");
+        var selection = fx.App.Conversation.SelectedText;
+        Assert.False(selection.Contains('\u001b'), "la selección no debe incluir secuencias ANSI");
+        // Exercise the actual Copy command without touching the user's clipboard.
+        var clipboard = new FakeClipboard(false, false);
+        fx.Application.Invoke(() =>
+        {
+            fx.Application.Driver!.Clipboard = clipboard;
+            fx.App.Conversation.InvokeCommand(Command.Copy);
+        });
+        fx.Wait(() => clipboard.GetClipboardData() == selection, "copiar selección entrega texto plano sin ANSI");
+        Thread.Sleep(1100); // Selection must survive the same production polling path.
+        Assert.Equal(selection, fx.App.Conversation.SelectedText);
         Assert.True(fx.App.Composer!.HasFocus);
     });
 
@@ -103,6 +227,7 @@ public sealed class TuiWiringTests
         Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.MainWindow!.BorderStyle);
         Assert.Equal(24, fx.App.Status!.Frame.Y);
         Assert.True(fx.App.Composer!.Frame.Width > 60);
+        Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Sidebar.BorderStyle);
 
         // F2 abre el sidebar; a 80 columnas el layout es Overlay (centrado), la conversación no se reduce.
         fx.Injector.InjectKey(new Key(KeyCode.F2));
@@ -137,6 +262,10 @@ public sealed class TuiWiringTests
 
         Type(fx, "/pl");
         fx.Wait(() => fx.App.Completion!.Text?.ToString().Contains("/plan") == true, "el catálogo real del Host completa /plan");
+        Assert.Same(fx.App.MainWindow, fx.App.Completion!.SuperView);
+        var composerPanel = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
+        Assert.True(fx.App.Completion.Frame.Y >= composerPanel.Frame.Bottom,
+            "las sugerencias de comandos deben quedar fuera y debajo del mensaje");
 
         fx.Application.Invoke(() => fx.App.Composer!.Text = "");
         Type(fx, "@src/");
