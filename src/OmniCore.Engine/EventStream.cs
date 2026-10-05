@@ -19,6 +19,7 @@ using System.Text.Json;
 /// <item>Ids de entidad leídos del payload (que tiene prioridad); los ids ausentes se completan
 /// desde <see cref="ExecutionScope"/> cuando existe. Así se indexan eventos tool sin repetir sus
 /// ids de ejecución en cada payload.</item>
+/// <item><c>ExecutionId</c> también se toma primero del payload y, si falta, del scope ambiental.</item>
 /// </list>
 /// Antes de persistir, cada evento se valida contra las máquinas de estado canónicas (ADR-0036,
 /// <see cref="CanonicalStateTracker"/>): una transición inválida lanza
@@ -140,6 +141,7 @@ public sealed class EventStream
         var laneId = ids.LaneId ?? scope?.LaneId;
         var turnId = ids.TurnId ?? scope?.TurnId;
         var toolCallId = ids.ToolCallId ?? scope?.ToolCallId;
+        var executionId = ids.ExecutionId ?? scope?.ExecutionId;
         if (runId is not null)
         {
             _runId = runId;
@@ -150,7 +152,7 @@ public sealed class EventStream
             ?? (_lastEventId is null ? null : new EventCausation(_lastEventId));
         var artifactRefs = ArtifactRefExtractor.Extract(payload);
         var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, taskId,
-            laneId, turnId, ids.PlanItemId, toolCallId, artifactRefs, json);
+            laneId, turnId, ids.PlanItemId, toolCallId, artifactRefs, json, executionId);
         _lastEventId = envelope.EventId;
         return envelope;
     }
@@ -285,10 +287,10 @@ public static class CausationScope
 /// <summary>
 /// Ids de entidad de un payload, leídos del JSON ya codificado (sin reflexión): propiedades de
 /// primer nivel <c>RunId</c>, <c>TaskId</c>, <c>LaneId</c>, <c>TurnId</c>, <c>PlanItemId</c> y
-/// <c>ToolCallId</c>, serializadas como <c>{"Value":"guid"}</c>.
+/// <c>ToolCallId</c> y <c>ExecutionId</c>, serializadas como <c>{"Value":"guid"}</c>.
 /// </summary>
 internal readonly record struct EnvelopeIds(RunId? RunId, TaskId? TaskId, LaneId? LaneId, TurnId? TurnId,
-    PlanItemId? PlanItemId, ToolCallId? ToolCallId)
+    PlanItemId? PlanItemId, ToolCallId? ToolCallId, ExecutionId? ExecutionId)
 {
     public static EnvelopeIds From(string json)
     {
@@ -305,7 +307,8 @@ internal readonly record struct EnvelopeIds(RunId? RunId, TaskId? TaskId, LaneId
             Guid(root, "LaneId") is { } lane ? new LaneId(lane) : null,
             Guid(root, "TurnId") is { } turn ? new TurnId(turn) : null,
             Guid(root, "PlanItemId") is { } item ? new PlanItemId(item) : null,
-            Guid(root, "ToolCallId") is { } call ? new ToolCallId(call) : null);
+            Guid(root, "ToolCallId") is { } call ? new ToolCallId(call) : null,
+            Guid(root, "ExecutionId") is { } execution ? new ExecutionId(execution) : null);
     }
 
     private static Guid? Guid(JsonElement root, string name)

@@ -8,7 +8,8 @@ public sealed record ExecutionScopeState(
     TaskId? TaskId = null,
     LaneId? LaneId = null,
     TurnId? TurnId = null,
-    ToolCallId? ToolCallId = null);
+    ToolCallId? ToolCallId = null,
+    ExecutionId? ExecutionId = null);
 
 /// <summary>Async-flowing execution context. Nested scopes restore their parent on disposal.</summary>
 public static class ExecutionScope
