@@ -54,14 +54,14 @@ public sealed class TuiWiringTests
         Type(fx, "Escribe tu siguiente instrucción…");
         if (scene == "sidebar")
         {
-            fx.Injector.InjectKey(new Key(KeyCode.F2));
+            fx.InjectKey(new Key(KeyCode.F2));
             fx.Wait(() => fx.App.Sidebar!.Visible, "sidebar visible en fotograma");
         }
         else if (scene == "notice")
         {
             fx.Application.Invoke(() => fx.App.Composer!.Text = "");
             Type(fx, "/context");
-            fx.Injector.InjectKey(new Key(KeyCode.Enter));
+            fx.InjectKey(new Key(KeyCode.Enter));
             fx.Wait(() => fx.App.Overlay is not null, "menú visible en fotograma");
         }
         using var captured = new ManualResetEventSlim();
@@ -127,7 +127,11 @@ public sealed class TuiWiringTests
             finally { captured.Set(); }
         };
         fx.Application.LayoutAndDrawComplete += capture;
-        fx.Application.Invoke(() => fx.App.MainWindow!.SetNeedsDraw());
+        fx.Application.Invoke(() =>
+        {
+            fx.App.MainWindow!.SetNeedsLayout();
+            fx.App.MainWindow.SetNeedsDraw();
+        });
         try { Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "captura del renderer completada"); }
         finally { fx.Application.LayoutAndDrawComplete -= capture; }
         if (captureError is not null) throw captureError;
@@ -230,7 +234,7 @@ public sealed class TuiWiringTests
         Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Sidebar.BorderStyle);
 
         // F2 abre el sidebar; a 80 columnas el layout es Overlay (centrado), la conversación no se reduce.
-        fx.Injector.InjectKey(new Key(KeyCode.F2));
+        fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => fx.App.Sidebar!.Visible, "F2 debe abrir el sidebar");
         fx.Wait(() => fx.App.Sidebar!.Frame.Width == 44, "a 80 cols el sidebar Overlay mide 44");
         Assert.Equal(80, conversation.Frame.Width);
@@ -243,7 +247,7 @@ public sealed class TuiWiringTests
         Assert.Equal(80, conversation.Frame.Width); // 120 - 40 sidebar; no outer chrome
 
         // F2 cierra el sidebar: la conversación recupera el ancho completo.
-        fx.Injector.InjectKey(new Key(KeyCode.F2));
+        fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => !fx.App.Sidebar!.Visible, "F2 debe cerrar el sidebar");
         fx.Wait(() => conversation.Frame.Width == 120, "sin sidebar la conversación ocupa 120");
 
@@ -372,7 +376,7 @@ public sealed class TuiWiringTests
         // Selección única con radio REAL: se marca "a" y luego, con espacio sobre "b", "a" se desmarca sola.
         fx.Application.Invoke(() => checkboxes[0].Value = CheckState.Checked);
         fx.Application.Invoke(() => checkboxes[1].SetFocus());
-        fx.Injector.InjectKey(new Key(' '));
+        fx.InjectKey(new Key(' '));
         fx.Wait(() => checkboxes[1].Value == CheckState.Checked, "espacio marca la opción enfocada");
         fx.Wait(() => checkboxes[0].Value == CheckState.UnChecked, "la selección única desmarca la opción anterior (radio)");
 
@@ -493,32 +497,12 @@ public sealed class TuiWiringTests
         return condition();
     }
 
-        /// <summary>
-    /// Ejecuta un test de wiring completo sobre una fixture fresca. Si el loop de la TUI muere
-    /// por la carrera de <c>View.RenderLineCanvas</c> del build develop-61 de Terminal.Gui
-    /// (defecto del framework: relee <c>_pendingOverlappedCellMaps</c> sin guard tras el
-    /// null-check), reintenta el test entero hasta 3 veces; cada intento arranca de cero
-    /// (journal y artifacts nuevos), asi que la semantica no cambia. En el ultimo intento la
-    /// excepcion original se propaga tal cual.
-    /// </summary>
+    /// <summary>Una fixture y un intento: una caída del loop falla la prueba y conserva
+    /// la excepción completa; no repetir hasta ocultar una carrera.</summary>
     private static void RunTuiTest(Action<TuiFixture> body)
     {
-        for (var attempt = 1; ; attempt++)
-        {
-            using var fx = TuiFixture.Create();
-            try
-            {
-                body(fx);
-                return;
-            }
-            catch (Xunit.Sdk.SkipException)
-            {
-                throw;
-            }
-            catch (Exception) when (attempt < 3 && fx.LoopError is not null)
-            {
-            }
-        }
+        using var fx = TuiFixture.Create();
+        body(fx);
     }
 
     private static string OverlayText(View overlay) => string.Join(" ",
@@ -540,12 +524,12 @@ public sealed class TuiWiringTests
             });
             if (text.StartsWith(actual, StringComparison.Ordinal))
             {
-                foreach (var ch in text.Substring(actual.Length)) fx.Injector.InjectKey(new Key(ch));
+                foreach (var ch in text.Substring(actual.Length)) fx.InjectKey(new Key(ch));
             }
             else
             {
                 fx.Application.Invoke(() => fx.App.Composer!.Text = "");
-                foreach (var ch in text) fx.Injector.InjectKey(new Key(ch));
+                foreach (var ch in text) fx.InjectKey(new Key(ch));
             }
             if (WaitUntil(() => (fx.App.Composer!.Text?.ToString() ?? "") == text, 3000)) return;
             if (tries >= 3)
@@ -563,7 +547,7 @@ public sealed class TuiWiringTests
     {
         for (var tries = 0; ; tries++)
         {
-            fx.Injector.InjectKey(new Key(key));
+            fx.InjectKey(new Key(key));
             if (WaitUntil(effect, 3000)) return;
             if (tries >= 3) Assert.Fail(message);
         }
@@ -584,6 +568,10 @@ public sealed class TuiWiringTests
         public TuiApp App = null!;
         public IApplication Application = null!;
         public IInputInjector Injector = null!;
+
+        // The injector can process keyboard events synchronously. Dispatch it on the UI
+        // thread, like real keyboard input, so overlays cannot mutate during drawing.
+        public void InjectKey(Key key) => Application.Invoke(() => Injector.InjectKey(key));
         public Thread Loop = null!;
 
         public static TuiFixture Create()
@@ -623,7 +611,7 @@ public sealed class TuiWiringTests
                 Assert.Fail(message + " (no alcanzado en el tope de espera"
                     + (LoopError is null ? "" : "; loop caido: " + LoopError.Message) + ")");
             if (LoopError is not null)
-                Assert.Fail(message + " (loop de la TUI caido: " + LoopError.Message + ")");
+                Assert.Fail(message + " (loop de la TUI caido: " + LoopError + ")");
         }
 
         public void StartTui(ModelPolicyHost? policies = null)
@@ -650,6 +638,8 @@ public sealed class TuiWiringTests
                             + exception.Message);
                     continue;
                 }
+                var firstFrameDrawn = 0;
+                Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);
                 Loop = new Thread(() =>
                 {
                     try { App.RunWith(Application); }
@@ -660,7 +650,10 @@ public sealed class TuiWiringTests
                 // AboveNormal reproduce la prioridad relativa real sin tocar la semántica del wiring.
                 Loop.Priority = ThreadPriority.AboveNormal;
                 Loop.Start();
-                var ready = WaitUntil(() => App.MainWindow?.Frame.Width > 0 == true || _loopError is not null);
+                // A positive Frame is assigned during Begin/EndInit, before the view tree
+                // is safe to mutate. Invoke can execute immediately before Run is active.
+                // Wait for the first completed frame, not a partially initialized window.
+                var ready = WaitUntil(() => Volatile.Read(ref firstFrameDrawn) != 0 || _loopError is not null);
                 if (ready && _loopError is null)
                 {
                     Injector = Application.GetInputInjector();
