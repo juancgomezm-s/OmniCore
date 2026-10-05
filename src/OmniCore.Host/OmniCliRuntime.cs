@@ -621,29 +621,32 @@ public sealed class OmniCliRuntime
                 return 1;
             }
 
-            var events = server.AcquireStore().ReadFrom(sessionId, 1);
-            var run = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), events);
-            var tasks = TaskGraphProjection.Replay(server.AcquireCodecs(), events);
-            var plan = PlanProjection.Replay(server.AcquireCodecs(), events);
             IReadOnlyList<ExternalCompletionGateResult> checkResults = Array.Empty<ExternalCompletionGateResult>();
-            var stream = new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId);
-            var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
-                new ProgressReconciler(), server.AcquireStore(), server.AcquireCodecs(), sessionId, stream,
-                () =>
+            var completion = server.CheckRunCompletionAndGate(sessionId, runId, stream =>
+            {
+                if (acceptedResults is not null)
                 {
-                    if (acceptedResults is not null)
-                    {
-                        checkResults = acceptedResults;
-                    }
-                    else if (gateConfiguration is not null && hasAnyGate)
-                    {
-                        var runner = new ConfiguredCompletionGates(gateConfiguration, _workspaceRoot, runId,
-                            laneId, run.RootTask, restrictions, audit, artifacts,
-                            interactionResponder, interactive);
-                        checkResults = runner.Run(stream, cancellationToken);
-                    }
-                    return checkResults;
-                }, turn.MutationLedger);
+                    checkResults = acceptedResults;
+                }
+                else if (gateConfiguration is not null && hasAnyGate)
+                {
+                    var runEvents = server.AcquireStore().ReadFrom(sessionId, 1);
+                    var run = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), runEvents);
+                    var runner = new ConfiguredCompletionGates(gateConfiguration, _workspaceRoot, runId,
+                        laneId, run.RootTask, restrictions, audit, artifacts,
+                        interactionResponder, interactive);
+                    checkResults = runner.Run(stream, cancellationToken);
+                }
+                return checkResults;
+            }, turn.MutationLedger);
+            if (completion.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
+                || completion.Completed is not { } completed)
+            {
+                writeLine(Text(Localized("cli.runtime.error", ("command", "act"),
+                    ("message", completion.Ack.Error ?? "completion evaluation was rejected"),
+                    ("type", nameof(InvalidOperationException)))));
+                return 1;
+            }
             foreach (var gate in checkResults)
                 writeLine(Text(Localized("cli.runtime.gate.result", ("name", gate.Key),
                     ("status", Text(LocalizedText.Of(gate.Passed ? "cli.runtime.gate.passed" : "cli.runtime.gate.failed"))),
@@ -684,13 +687,16 @@ public sealed class OmniCliRuntime
                     acceptedResults = checkResults.Where(gate => gate.Key != "acceptance").ToList();
                     acceptedResults = acceptedResults.Append(new ExternalCompletionGateResult("acceptance", true,
                         "confirmado por el usuario")).ToArray();
-                    var resumedEvents = server.AcquireStore().ReadFrom(sessionId, 1);
-                    var resumedRun = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), resumedEvents);
-                    var resumed = new RunCoupon(resumedRun, TaskGraphProjection.Replay(server.AcquireCodecs(), resumedEvents),
-                        PlanProjection.Replay(server.AcquireCodecs(), resumedEvents)).CheckCompletionAndGate(
-                            new PlanService(), new ProgressReconciler(), server.AcquireStore(), server.AcquireCodecs(),
-                            sessionId, new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
-                            () => acceptedResults, turn.MutationLedger);
+                    var resumedEvaluation = server.CheckRunCompletionAndGate(sessionId, runId,
+                        _ => acceptedResults, turn.MutationLedger);
+                    if (resumedEvaluation.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
+                        || resumedEvaluation.Completed is not { } resumed)
+                    {
+                        writeLine(Text(Localized("cli.runtime.error", ("command", "act"),
+                            ("message", resumedEvaluation.Ack.Error ?? "completion evaluation was rejected"),
+                            ("type", nameof(InvalidOperationException)))));
+                        return 1;
+                    }
                     if (resumed) return 0;
                     acceptedResults = null; // cualquier trabajo posterior requiere volver a validar y aceptar
                 }
