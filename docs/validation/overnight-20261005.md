@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 07:34 UTC /01:34 America/Mexico_City. Rama autorizada
+Checkpoint 07:46 UTC /01:46 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -31,14 +31,21 @@ Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni inte
 
 ## En curso y límites
 
-Luna tiene ownership de contratos Domain AgentExecution/ExecutionId/lineage y EventCodecs con
-pruebas nuevas, conforme ADR0046§2/8/9. Pendiente su entrega, revisión independiente y pruebas.
-No se declara implementado por haber asignado el trabajo. Scheduler, joins, ejecución de agentes
-concurrentes y aceptación de resultados siguen fuera de este bloque.
+`303691e` añade ExecutionId UUIDv7, tres eventos agent_execution lifecycle y ejes independientes
+Relation/Supervision, además de TaskCreated v2 con ParentTaskId? y upcaster v1. Root auditó los
+cinco archivos y reprodujo3/3 focales y suite completa: **1260 casos,1256 PASS /0 FAIL /4 SKIP**.
+Lifecycle no cambia estados canónicos Task/Lane/Run ni implica producción/aceptación de resultado.
+No existe emisión automática ni scheduler/joins. Luna corrige cleanup exclusivo del fixture en
+commit separado y después tiene ownership de ExecutionId ambiental/envelope persistido, pendiente
+entrega y auditoría. No declarar ese cableado terminado por tener el tipo o por asignarlo.
 
 Ling03 recibió un paquete cerrado mínimo para pruebas CausationScope y terminó con HTTP429
 sin código visible. Ninguna entrega de esa ronda fue aplicada; logs preservados. No fallback
-pagado ni repetición inmediata. Qwen permanece bloqueado tras length8192 sin entrega: no se
+pagado ni repetición inmediata. Ling04 nuevo paquete de tests de sink concurrente también recibió
+HTTP429 sin entrega. Su log reveló override NODE_TLS_REJECT_UNAUTHORIZED=0 heredado: no afirmar
+TLS validado para esa llamada. Se retiró ese override sólo del runner antes de cualquier fetch
+futuro; no se cambiaron certificados, servidores ni el entorno padre. Qwen permanece bloqueado
+tras length8192 sin entrega: no se
 relanzó ni se comprobó/modificó su servidor durante este checkpoint.
 
 Telemetry es opt-in y process-local; no exportadores ni readmodels durables. ExecutionScope aún
