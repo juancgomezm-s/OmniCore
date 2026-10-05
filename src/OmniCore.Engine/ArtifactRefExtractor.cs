@@ -49,6 +49,14 @@ internal static class ArtifactRefExtractor
                 refs.Add(m.ResponseArtifact!);
                 break;
 
+            case ModelStepStarted m when m.ContextSnapshotRef is not null:
+                refs.Add(m.ContextSnapshotRef!);
+                break;
+
+            case ModelStepCompleted m when m.ResponseArtifact is not null:
+                refs.Add(m.ResponseArtifact!);
+                break;
+
             // Global interaction events
             case UserInputReceived u when u.ContentRef is not null:
                 refs.Add(u.ContentRef!);

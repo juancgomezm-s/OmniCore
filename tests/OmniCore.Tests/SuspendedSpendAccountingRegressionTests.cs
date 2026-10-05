@@ -15,7 +15,7 @@ namespace OmniCore.Tests;
 /// Regression fixtures for spend reported before user.ask suspends a Turn, before a final
 /// ModelCompleted exists. Each first segment stays below its configured caps and is expected to
 /// reach the questionnaire. SQLite is reopened before checking spend from another session or
-/// resuming the same Run. RED until suspended-segment usage is durably accounted for.
+/// resuming the same Run; negative and positive controls verify durable accounting at that boundary.
 /// </summary>
 public sealed class SuspendedSpendAccountingRegressionTests
 {
@@ -212,6 +212,67 @@ public sealed class SuspendedSpendAccountingRegressionTests
 
             Assert.Equal(1, calls);
             Assert.Equal(StopReason.EndTurn, result.StopReason);
+        }
+        finally { Cleanup(store, journal, root); }
+    }
+
+    [Fact]
+    public void Step_cost_must_match_its_usage_artifact_before_a_budget_can_allow_provider()
+    {
+        AssertMalformedStepIsFailClosed(nullUsage: false);
+    }
+
+    [Fact]
+    public void Null_step_usage_is_fail_closed_without_throwing_before_budget_refusal()
+    {
+        AssertMalformedStepIsFailClosed(nullUsage: true);
+    }
+
+    private static void AssertMalformedStepIsFailClosed(bool nullUsage)
+    {
+        var root = NewRoot(nullUsage ? "null-usage" : "mismatched-step-cost");
+        var journal = Path.Combine(root, "journal.db");
+        SqliteEventStore? store = null;
+        try
+        {
+            store = new SqliteEventStore(journal);
+            var codecs = EventCodecs.Create();
+            var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
+            var sessionA = SessionId.New();
+            var runA = TestRun.Open(store, sessionA);
+            var streamA = new EventStream(store, codecs, sessionA);
+            var turnId = TurnId.New();
+            streamA.Append(new TurnStarted(turnId, runA.RootLane));
+            var usage = new TokenUsage(10_000_000, 0, 0, 0, 0);
+            var nowDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
+                System.Globalization.CultureInfo.InvariantCulture);
+            var responseRef = artifacts.PutText(
+                "{\"omnicoreUsage\":1,\"response\":\"safe\",\"runId\":\"" + runA.RunId
+                + "\",\"day\":\"" + nowDay + "\",\"input\":10000000,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0,\"reasoning\":0,\"costUsd\":\"10\"}",
+                "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+            streamA.Append(new ModelStepStarted(turnId, 0, "scripted", 8192, "Direct", null, null, null));
+            streamA.Append(new ModelStepCompleted(turnId, 0, nullUsage ? null! : usage, StopReason.ToolUse,
+                responseRef, nowDay, 0m));
+
+            var sessionB = SessionId.New();
+            var runB = TestRun.Open(store, sessionB);
+            var service = new QuestionnaireInteractionService(store, codecs, artifacts);
+            var catalog = new FakeCatalog().Add(new UserAskTool());
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var calls = 0;
+            var turn = MakeTurn((_, _) =>
+            {
+                calls++;
+                return FinalResponse();
+            }, store, codecs, artifacts, executor, catalog, service, sessionCapUsd: 100m,
+                dailyCapUsd: 100m);
+
+            var result = turn.Ask("request", "system", sessionB, runB.RunId, runB.RootLane,
+                "", CancellationToken.None);
+
+            Assert.Equal(0, calls);
+            Assert.Equal(StopReason.Cancelled, result.StopReason);
         }
         finally { Cleanup(store, journal, root); }
     }
