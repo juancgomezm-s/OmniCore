@@ -348,9 +348,23 @@ internal static class Languages
         BlockComment: null,
         ['"']);
 
+    public static readonly LanguageDefinition Html = new(
+        "html", ["html", "htm", "html5"], Set(false), Set(false), [], ("<!--", "-->"), ['"', '\''], false);
+
+    public static readonly LanguageDefinition Css = new(
+        "css", ["css"],
+        Set(false, "important", "inherit", "initial", "unset", "none", "auto", "block", "flex", "grid",
+            "relative", "absolute", "fixed", "solid", "transparent", "red", "blue", "white", "black"),
+        Set(false, "color", "background", "background-color", "display", "padding", "margin", "width",
+            "height", "font-size", "font-family", "border", "position", "gap", "content", "opacity"),
+        [], ("/*", "*/"), ['"', '\''], false);
+
+    public static readonly LanguageDefinition Markdown = new(
+        "markdown", ["markdown", "md", "mdown", "mkd"], Set(true), Set(true), [], null, []);
+
     public static readonly IReadOnlyList<LanguageDefinition> All =
         [CSharp, JavaScript, Python, Sql, Abl, Java, Kotlin, VisualBasic, Dax, PowerQuery, Xml, Yaml,
-         C, Cpp, Abap, Shell, Json];
+         C, Cpp, Abap, Shell, Json, Html, Css, Markdown];
 
     private static readonly Dictionary<string, LanguageDefinition> ByAlias = BuildIndex();
 

@@ -52,7 +52,13 @@ internal static class SyntaxHighlighter
                 (IReadOnlyList<ConversationSpan>)(l.Length == 0 ? [] : [new ConversationSpan(l, ConversationStyle.Code)]))];
         }
 
-        return new Scanner(text, definition).Run();
+        text = text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        return definition.Name switch
+        {
+            "html" => MarkupSyntaxHighlighter.Html(text),
+            "markdown" => MarkupSyntaxHighlighter.Markdown(text),
+            _ => new Scanner(text, definition).Run(),
+        };
     }
 
     private static IEnumerable<string> SplitLines(string text) =>

@@ -63,4 +63,17 @@ public sealed class ConversationPresentationTests
         var text = "```csharp\n" + new string('x', MarkdownRenderer.MaxLength);
         Assert.Equal(text, string.Join("\n", MarkdownRenderer.Render(text).Select(row => string.Concat(row.Select(s => s.Text)))));
     }
+
+    [Theory]
+    [InlineData("html", "<script>const n = 42;</script>", "const", "SyntaxKeyword")]
+    [InlineData("md", "# Title\n**strong** `inline`", "# Title", "SyntaxType")]
+    public void Markup_languages_reach_the_conversation_as_styled_code(
+        string language, string source, string token, string style)
+    {
+        var rows = Render("~~~~" + language + "\n" + source + "\n~~~~");
+        Assert.Contains(rows.SelectMany(row => row), span => span.Text == token && span.Style == Enum.Parse<ConversationStyle>(style));
+        var body = rows.Skip(2).Take(rows.Count - 3).ToArray();
+        Assert.Equal(source, string.Join("\n", body.Select(row => string.Concat(row.Select(span => span.Text))[2..])));
+        Assert.All(body.SelectMany(row => row), span => Assert.True(span.Style >= ConversationStyle.Code));
+    }
 }

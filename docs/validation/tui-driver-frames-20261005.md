@@ -135,3 +135,27 @@ support or graphical copy button is claimed by this iteration.
   `%TEMP%/omnicore-syntax-no-color-final.xml`, `%TEMP%/omnicore-syntax-full.xml`.
 - Updated syntax-frames reviewed at 100x30 and 140x40. These are actual renderer
   frames, not host screenshots. No M4 closure, journal changes or provider calls.
+
+## HTML, CSS and Markdown source highlighting
+
+- LanguageDefinition now registers 20 languages. Added HTML (`html`, `htm`,
+  `html5`), CSS (`css`) and Markdown (`markdown`, `md`, `mdown`, `mkd`). Existing
+  `postgres`/`postgresql` aliases still use SQL rules, not a PL/pgSQL parser.
+- HTML source recognizes tags, attributes, quoted strings and comments without
+  rendering it, decoding entities, running JavaScript or fetching links.
+  `<style>` bodies and quoted `style` attributes use CSS; `<script>` bodies and
+  quoted `on...` attributes use JavaScript. JSON/JSON-LD script types use JSON;
+  other explicit script types remain plain. Matching is lexical, not a DOM,
+  browser or complete CSS/JavaScript parser; preprocessors are not claimed.
+- Markdown as response still uses the existing presentation subset. Markdown as
+  fenced source keeps all markers visible, highlights headings/quotes/inline
+  constructs, and dispatches fenced code to its language. Nested Markdown fences
+  remain literal to avoid recursive expansion. This is not full CommonMark.
+- Existing 200k syntax/400k presentation limits and NO_COLOR behavior remain.
+  New tests cover aliases, exact text/blank-line/Unicode preservation, incomplete
+  input, cross-line comments, same-line language transitions, inline CSS/handlers,
+  non-JS script types, nested fences and presentation-pipeline integration.
+- Verification: build zero warnings/errors; initial combined focal 83/83 passed;
+  final full (including added presentation cases) 1419 total, 1415 passed, zero
+  failed, four Windows symlink-permission skips. XMLs:
+  `%TEMP%/omnicore-markup-focal.xml`, `%TEMP%/omnicore-markup-full.xml`.
