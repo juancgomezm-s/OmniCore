@@ -25,7 +25,7 @@ public sealed class TelemetryBoundaryTests
             Assert.NotEqual(typeof(string), property.PropertyType));
         Assert.False(typeof(DomainEventPayload).IsAssignableFrom(typeof(TelemetryRecord)));
         Assert.Throws<ArgumentException>(() => new TelemetryRecord(TelemetryKind.Sample,
-            TelemetrySignal.InputTokenCount, 1, DateTimeOffset.Now));
+            TelemetrySignal.InputTokenCount, 1, DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(1))));
         Assert.Throws<ArgumentOutOfRangeException>(() => new TelemetryRecord(TelemetryKind.Sample,
             TelemetrySignal.InputTokenCount, -1, DateTimeOffset.UtcNow));
         Assert.Throws<ArgumentOutOfRangeException>(() => new TelemetryRecord((TelemetryKind)99,
@@ -109,6 +109,46 @@ public sealed class TelemetryBoundaryTests
 
         Assert.Same(response, actual);
         Assert.Equal(1, provider.Calls);
+    }
+
+    [Fact]
+    public async Task Consumer_cancellation_midstream_is_forwarded_without_extra_provider_calls()
+    {
+        var provider = new BlockingProvider();
+        var wrapped = new TelemetryObservingModelProvider(provider, new InMemoryTelemetrySink());
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            TestContext.Current.CancellationToken);
+        await using var enumerator = wrapped.StreamAsync(Request(), cancellation.Token)
+            .GetAsyncEnumerator(cancellation.Token);
+
+        Assert.True(await enumerator.MoveNextAsync());
+        Assert.IsType<ResponseStarted>(enumerator.Current);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => enumerator.MoveNextAsync().AsTask());
+
+        Assert.Equal(1, provider.Calls);
+        Assert.Equal(cancellation.Token, provider.SeenCancellationToken);
+    }
+
+    [Fact]
+    public async Task Response_failed_is_forwarded_unchanged_without_retaining_error_text()
+    {
+        var failure = new ResponseFailed("private error type", "private provider message");
+        var provider = new ScriptedProvider(new ModelStreamEvent[] { failure });
+        var sink = new InMemoryTelemetrySink();
+        var wrapped = new TelemetryObservingModelProvider(provider, sink);
+        var observed = new List<ModelStreamEvent>();
+
+        await foreach (var item in wrapped.StreamAsync(Request(), TestContext.Current.CancellationToken))
+            observed.Add(item);
+
+        Assert.Same(failure, Assert.Single(observed));
+        Assert.Equal(1, provider.Calls);
+        Assert.Contains(sink.Snapshot(), record => record.Kind == TelemetryKind.Progress
+            && record.Signal == TelemetrySignal.ResponseFailedCount && record.Value == 1);
+        var telemetryJson = System.Text.Json.JsonSerializer.Serialize(sink.Snapshot());
+        Assert.DoesNotContain("private", telemetryJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -197,6 +237,22 @@ public sealed class TelemetryBoundaryTests
                 yield return item;
                 await Task.Yield();
             }
+        }
+    }
+
+    private sealed class BlockingProvider : IModelProvider
+    {
+        public ProviderCapabilities Capabilities { get; } = ProviderCapabilities.Local();
+        public int Calls { get; private set; }
+        public CancellationToken SeenCancellationToken { get; private set; }
+
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
+            [EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            Calls++;
+            SeenCancellationToken = cancellationToken;
+            yield return new ResponseStarted(0);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         }
     }
 
