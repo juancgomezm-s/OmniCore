@@ -1614,7 +1614,8 @@ public sealed class ExplorerTurn
                     break;
                 case ReasoningBlock reasoning:
                     blocks.Add(new ReasoningBlock(reasoning.VisibleText is null
-                        ? null : _redaction.Redact(reasoning.VisibleText), reasoning.Visibility, null));
+                        ? null : _redaction.Redact(reasoning.VisibleText), reasoning.Visibility,
+                        VerifiedOpaqueStateRef(reasoning.OpaquePayload)));
                     break;
                 case CitationBlock citation:
                     blocks.Add(new CitationBlock(_redaction.Redact(citation.Text),
@@ -1627,6 +1628,27 @@ public sealed class ExplorerTurn
         }
 
         return new ModelMessage(message.Role, blocks.ToArray());
+    }
+
+    private ArtifactRef? VerifiedOpaqueStateRef(ArtifactRef? artifact)
+    {
+        if (artifact is null || artifact.Kind != ArtifactKind.ProviderOpaqueState
+            || artifact.Sensitivity != Sensitivity.Sensitive || artifact.Redacted || artifact.Size < 0
+            || string.IsNullOrWhiteSpace(artifact.MediaType)
+            || artifact.MediaType.IndexOfAny(new[] { '\r', '\n' }) >= 0
+            || artifact.Hash is null || !string.Equals(artifact.Hash.Algorithm, "sha256", StringComparison.Ordinal)
+            || string.IsNullOrEmpty(artifact.Hash.Value) || artifact.Hash.Value.Length != 64
+            || artifact.Hash.Value.Any(ch => !(ch is >= '0' and <= '9' or >= 'a' and <= 'f')))
+            return null;
+
+        try
+        {
+            return _artifacts.Verify(artifact.Hash, artifact.Size) ? artifact : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private IReadOnlyList<ContentBlock> RedactBlocks(IReadOnlyList<ContentBlock> blocks)
