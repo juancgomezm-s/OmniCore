@@ -56,7 +56,7 @@ public static class QuestionnaireCodec
         var parts = new List<string> { JsonField("optionId", o.OptionId), JsonField("label", o.Label) };
         if (o.Placeholder is not null) parts.Add(JsonField("placeholder", o.Placeholder));
         parts.Add(JsonFieldBool("textRequired", o.TextRequired));
-        parts.Add(JsonField("maxTextLength", o.MaxTextLength.ToString()));
+        parts.Add(JsonFieldRaw("maxTextLength", o.MaxTextLength.ToString()));
         return "{" + string.Join(",", parts.ToArray()) + "}";
     }
 
@@ -217,7 +217,10 @@ public static class QuestionnaireCodec
     private static int? GetInt(JsonElement el, string name)
     {
         if (!el.TryGetProperty(name, out var v)) return null;
+        // Número, o dígito en cadena: los artifacts ya publicados con la forma anterior (ADR-0001:
+        // un artifact referenciado no desaparece) siguen siendo legibles.
         if (v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n)) return n;
+        if (v.ValueKind == JsonValueKind.String && int.TryParse(v.GetString(), out var s)) return s;
         return null;
     }
 

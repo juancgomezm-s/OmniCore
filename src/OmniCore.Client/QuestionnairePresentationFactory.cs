@@ -43,8 +43,24 @@ public static class QuestionnairePresentationFactory
             ? value.GetString() : null;
     private static bool Bool(System.Text.Json.JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.True;
-    private static int Int(System.Text.Json.JsonElement element, string name, int fallback) =>
-        element.TryGetProperty(name, out var value) && value.TryGetInt32(out var result) ? result : fallback;
+    private static int Int(System.Text.Json.JsonElement element, string name, int fallback)
+    {
+        var value = IntOrFallback(element, name, fallback);
+        return value ?? fallback;
+    }
     private static int? NullableInt(System.Text.Json.JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.TryGetInt32(out var result) ? result : null;
+        IntOrFallback(element, name, null);
+
+    /// <summary>
+    /// Número, o dígito en cadena. Los artifacts de schemas ya publicados son inmutables (ADR-0001):
+    /// un "maxTextLength":"80" legado debe seguir renderizándose, no descartar el cuestionario.
+    /// </summary>
+    private static int? IntOrFallback(System.Text.Json.JsonElement element, string name, int? fallback)
+    {
+        if (!element.TryGetProperty(name, out var value)) return fallback;
+        if (value.ValueKind == System.Text.Json.JsonValueKind.Number && value.TryGetInt32(out var number)) return number;
+        if (value.ValueKind == System.Text.Json.JsonValueKind.String
+            && int.TryParse(value.GetString(), out var text)) return text;
+        return fallback;
+    }
 }
