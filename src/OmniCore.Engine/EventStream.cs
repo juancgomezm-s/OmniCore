@@ -67,8 +67,12 @@ public sealed class EventStream
     {
         CatchUp();
         _tracker.Clone().Apply(payload);
-        var envelope = BuildEnvelope(payload);
+        var pendingRunId = _runId;
+        var pendingLastEventId = _lastEventId;
+        var envelope = BuildEnvelope(payload, ref pendingRunId, ref pendingLastEventId);
         _store.Append(_sessionId, envelope, durability, CancellationToken.None);
+        _runId = pendingRunId;
+        _lastEventId = pendingLastEventId;
         _tracker.Apply(payload);
         _appliedLocally.Add(envelope.EventId);
         _written.Add(payload);
@@ -102,13 +106,17 @@ public sealed class EventStream
             validation.Apply(payload); // todo el lote es válido o no se escribe nada
         }
 
+        var pendingRunId = _runId;
+        var pendingLastEventId = _lastEventId;
         var envelopes = new DomainEvent[payloads.Count];
         for (var i = 0; i < payloads.Count; i++)
         {
-            envelopes[i] = BuildEnvelope(payloads[i]);
+            envelopes[i] = BuildEnvelope(payloads[i], ref pendingRunId, ref pendingLastEventId);
         }
 
         _store.AppendBatch(_sessionId, envelopes, durability, CancellationToken.None);
+        _runId = pendingRunId;
+        _lastEventId = pendingLastEventId;
         for (var i = 0; i < payloads.Count; i++)
         {
             _tracker.Apply(payloads[i]);
@@ -121,7 +129,10 @@ public sealed class EventStream
     public IReadOnlyList<DomainEvent> EventsSince(long fromSequenceInclusive) =>
         _store.ReadFrom(_sessionId, fromSequenceInclusive);
 
-    private DomainEvent BuildEnvelope(DomainEventPayload payload)
+    // Envelope candidates may chain within an atomic batch, but only successful persistence
+    // publishes their run/causation cursor to this stream.
+    private DomainEvent BuildEnvelope(DomainEventPayload payload, ref RunId? pendingRunId,
+        ref EventId? pendingLastEventId)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var type = payload.Type();
@@ -144,16 +155,16 @@ public sealed class EventStream
         var executionId = ids.ExecutionId ?? scope?.ExecutionId;
         if (runId is not null)
         {
-            _runId = runId;
+            pendingRunId = runId;
         }
 
-        var run = runId ?? _runId;
+        var run = runId ?? pendingRunId;
         var causation = CausationScope.Current
-            ?? (_lastEventId is null ? null : new EventCausation(_lastEventId));
+            ?? (pendingLastEventId is null ? null : new EventCausation(pendingLastEventId));
         var artifactRefs = ArtifactRefExtractor.Extract(payload);
         var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, taskId,
             laneId, turnId, ids.PlanItemId, toolCallId, artifactRefs, json, executionId);
-        _lastEventId = envelope.EventId;
+        pendingLastEventId = envelope.EventId;
         return envelope;
     }
 
