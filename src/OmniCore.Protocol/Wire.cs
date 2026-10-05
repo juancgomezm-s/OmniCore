@@ -77,7 +77,49 @@ public sealed class MessageTypes
     public static readonly string Hello = "hello";
 }
 
-/// <summary>Acuse de un command (ADR-0019 §1).</summary>
+/// <summary>Outcome explícito de un RuntimeCommand (ADR-0046 §5), distinto de CommandService outcomes.</summary>
+public enum RuntimeCommandOutcomeKind
+{
+    Accepted,
+    Rejected,
+    NoOp,
+    Deferred,
+}
+
+/// <summary>
+/// Outcome explícito de una ejecución de command en Host/Core. El outcome no se infiere del Status
+/// compatible y Deferred siempre conserva la razón que difirió la operación.
+/// </summary>
+public sealed record RuntimeCommandOutcome
+{
+    public RuntimeCommandOutcomeKind Kind { get; }
+
+    public string? Reason { get; }
+
+    private RuntimeCommandOutcome(RuntimeCommandOutcomeKind kind, string? reason)
+    {
+        Kind = kind;
+        Reason = reason;
+    }
+
+    public static RuntimeCommandOutcome Accepted() => new(RuntimeCommandOutcomeKind.Accepted, null);
+
+    public static RuntimeCommandOutcome Rejected() => new(RuntimeCommandOutcomeKind.Rejected, null);
+
+    public static RuntimeCommandOutcome NoOp() => new(RuntimeCommandOutcomeKind.NoOp, null);
+
+    public static RuntimeCommandOutcome Deferred(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            throw new ArgumentException("Deferred requires a non-empty reason.", nameof(reason));
+        }
+
+        return new RuntimeCommandOutcome(RuntimeCommandOutcomeKind.Deferred, reason);
+    }
+}
+
+/// <summary>Acuse de un command (ADR-0019 §1, ADR-0046 §5).</summary>
 public sealed class CommandAck
 {
     public string CommandId { get; }
@@ -86,11 +128,49 @@ public sealed class CommandAck
 
     public string? Error { get; }
 
+    /// <summary>Null for legacy acknowledgements; existing Status does not imply this value.</summary>
+    public RuntimeCommandOutcome? Outcome { get; }
+
+    /// <summary>First resulting sequence in this command's session, when available.</summary>
+    public long? FirstSeq { get; }
+
+    /// <summary>Last resulting sequence in this command's session, when available.</summary>
+    public long? LastSeq { get; }
+
     public CommandAck(string commandId, string status, string? error)
+        : this(commandId, status, error, null)
     {
+    }
+
+    public CommandAck(string commandId, string status, string? error, RuntimeCommandOutcome? outcome,
+        long? firstSeq = null, long? lastSeq = null)
+    {
+        if (firstSeq.HasValue != lastSeq.HasValue)
+        {
+            throw new ArgumentException("FirstSeq and LastSeq must be supplied together.");
+        }
+
+        if (firstSeq is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(firstSeq), "Sequence numbers start at 1.");
+        }
+
+        if (lastSeq is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(lastSeq), "Sequence numbers start at 1.");
+        }
+
+        if (firstSeq.HasValue && firstSeq.Value > lastSeq!.Value)
+        {
+            throw new ArgumentException("FirstSeq must not be greater than LastSeq.");
+        }
+
         CommandId = commandId;
         Status = status;
         Error = error;
+        Outcome = outcome;
+        FirstSeq = firstSeq;
+        LastSeq = lastSeq;
     }
 
     public static CommandAck Ok(string commandId) => new(commandId, "ok", null);
