@@ -205,6 +205,14 @@ Full independiente33928 al12:04UTC /06:04local: **1326=1322 PASS /0 FAIL /4 SKIP
 Siguiente tarea de Luna: auditoría de exposición pública del journal y guard de arquitectura,
 distinguiendo lecturas de escrituras y sin declarar completa una migración no demostrada.
 
+`784135d` restringe AcquireStore/AcquireCodecs a internal (callers productivos dentroHost),
+con guard de visibilidad y wiringCLI específico. Root recompiló arquitectura56/56PASS al12:12UTC.
+Su filtro queue exacto por Run/correlación es defensivo; el test foreignLane creaba dosRuns
+activos antes cancelar el primero, contra ADR0046§8. Root pidió fixture secuencial real vía
+Server y no cuenta ese caso sintético como defecto productivo demostrado. El guard de wiring
+tampoco demuestra universalmente que no quede ninguna escritura Host fueraCommand.
+Full funcional vigente1326=1322PASS/0FAIL/4SKIP precede784135d; no inventar cifra posterior.
+
 Runbook operativo compactado al09:26 UTC, preservando íntegra la versión previa en
 C:\Users\juanc\.codex\omni-overnight-20261005-history-0925.md. Consultar el historial sólo para
 evidencia específica; fuente vigente sigue siendo omni-overnight-20261005.md.
