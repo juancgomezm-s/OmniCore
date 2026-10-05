@@ -4,6 +4,8 @@ using OmniCore.Protocol;
 
 namespace OmniCore.Tests;
 
+// PlainRenderer captures the process-wide Console.Out.
+[Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class ClientTests
 {
     [Fact]

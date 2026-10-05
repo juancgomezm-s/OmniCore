@@ -23,6 +23,8 @@ namespace OmniCore.Tests;
 ///  6. Context overflow: la política de recorte suelta volátiles, no rinde el WorkingState.
 ///  7. Secretos: `Secret.ToString()` y los credenciales nunca salen del proceso.
 /// </summary>
+// Console.Out is process-wide; stdout capture must not overlap other CLI fixtures.
+[Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class M2IntegrationTests
 {
     private static readonly string TestCwd = Path.GetFullPath(".");
