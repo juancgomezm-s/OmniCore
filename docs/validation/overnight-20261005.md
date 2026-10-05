@@ -181,6 +181,13 @@ Un build focal del worker coincidió con la suite root y encontró locks MSB3026
 el proceso root y ya recibió aviso de compilación libre tras el resultado completo. No fue un fallo
 del producto ni una validación remota, y no se reiniciaron servidores.
 
+`d284a31` atribuye las dos evaluaciones completion/gates del loopAct a comandos internos,
+separando Accepted de completion=true y preservando aceptación explícita y callbacks de gates.
+Root reprodujo13/13 focales y full independiente7739 al11:44UTC /05:44local:
+**1320=1316 PASS /0 FAIL /4 SKIP**, exit0. No demuestra aislamiento global multiRun: RunCoupon
+relee todaSession internamente. Luna recibió repro secuencial con primerRun cancelado y tareas
+pendientes, antes de cualquier fix; no schedulerM6 ni validación de proveedor real.
+
 Runbook operativo compactado al09:26 UTC, preservando íntegra la versión previa en
 C:\Users\juanc\.codex\omni-overnight-20261005-history-0925.md. Consultar el historial sólo para
 evidencia específica; fuente vigente sigue siendo omni-overnight-20261005.md.
