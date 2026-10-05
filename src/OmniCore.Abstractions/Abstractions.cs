@@ -25,7 +25,7 @@ public interface IEventStore
 /// <summary>Optional read-only view of event types across every session in a workspace journal.</summary>
 public interface IWorkspaceJournalReader
 {
-    /// <summary>Returns all persisted events of this type across sessions, in journal order.</summary>
+    /// <summary>Returns all persisted events of this type across sessions.</summary>
     IReadOnlyList<DomainEvent> ReadEvents(EventType type);
 }
 

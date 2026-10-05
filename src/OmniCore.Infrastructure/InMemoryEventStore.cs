@@ -7,7 +7,7 @@ using OmniCore.Domain;
 /// Event Store en memoria para tests deterministas (ADR-0002 §1).
 /// Un solo escritor por sesión asigna secuencias contiguas sin huecos.
 /// </summary>
-public sealed class InMemoryEventStore : IEventStore
+public sealed class InMemoryEventStore : IEventStore, IWorkspaceJournalReader
 {
     private readonly Dictionary<SessionId, DomainEvent[]> _sessions = new();
 
@@ -80,4 +80,9 @@ public sealed class InMemoryEventStore : IEventStore
 
         return tail;
     }
+
+    public IReadOnlyList<DomainEvent> ReadEvents(EventType type) => _sessions.Values
+        .SelectMany(events => events)
+        .Where(evt => evt.Type.Equals(type))
+        .ToArray();
 }
