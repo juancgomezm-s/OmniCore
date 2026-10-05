@@ -1281,6 +1281,42 @@ public sealed class OmniServer : IOmniClient
         return (result, ack);
     }
 
+    internal CommandAck RecordModelEscalationRequested(SessionId sessionId, ModelEscalationRequested payload) =>
+        RecordModelEscalation(sessionId, payload.RunId, payload);
+
+    internal CommandAck RecordModelEscalationApproved(SessionId sessionId, ModelEscalationApproved payload) =>
+        RecordModelEscalation(sessionId, payload.RunId, payload);
+
+    internal CommandAck RecordModelEscalationCompleted(SessionId sessionId, ModelEscalationCompleted payload) =>
+        RecordModelEscalation(sessionId, payload.RunId, payload);
+
+    private CommandAck RecordModelEscalation(SessionId sessionId, RunId runId, DomainEventPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        var ambientCommand = CausationScope.Current as CommandCausation;
+        var commandId = ambientCommand?.CommandId ?? CommandId.New();
+        var commandMessageId = commandId.Value.ToString();
+        var belongsToSession = _store.ReadFrom(sessionId, 1)
+            .Select(_codecs.Decode)
+            .OfType<RunCreated>()
+            .Any(created => created.RunId.Equals(runId));
+        if (!belongsToSession)
+        {
+            return new CommandAck(commandMessageId, "error", "the Run does not belong to the requested Session",
+                RuntimeCommandOutcome.Rejected());
+        }
+
+        var sequenceBefore = _store.CurrentSequence(sessionId);
+        using var internalCommand = ambientCommand is null
+            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+        // Do not inherit unrelated ambient task/lane/turn attribution: this record names only its
+        // persisted Run. Payload v2 TurnId/LaneId remain null unless the caller explicitly supplied them.
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: runId));
+        new EventStream(_store, _codecs, sessionId).Append(payload, DurabilityClass.Standard);
+        return CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+            sessionId, sequenceBefore, commandId);
+    }
+
     private void AuditEffectResolutions(SessionId session, long sequenceBeforeResponse, InteractionId interaction)
     {
         WorkspaceId? workspace = null;

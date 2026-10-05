@@ -935,8 +935,8 @@ public sealed class OmniCliRuntime
             candidate => HasWritePolicy(candidate, loaded, cancellationToken));
         var server = Server();
         if (next is null || server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return null;
-        var stream = new EventStream(server.AcquireStore(), server.AcquireCodecs(), session);
-        stream.Append(new ModelEscalationRequested(run, currentModel, next.Alias, EscalationCause.ContextLimit));
+        EnsureEscalationRecorded(server.RecordModelEscalationRequested(session,
+            new ModelEscalationRequested(run, currentModel, next.Alias, EscalationCause.ContextLimit)));
         if (ModelRoutingHost.EscalationMode(loaded) != "auto")
         {
             writeLine(Text(Localized("cli.escalation.suggest", ("model", next.Alias))));
@@ -970,16 +970,26 @@ public sealed class OmniCliRuntime
                 return 1;
             }
         }
-        stream.Append(new ModelEscalationApproved(run, next.Alias, "policy:auto"));
+        EnsureEscalationRecorded(server.RecordModelEscalationApproved(session,
+            new ModelEscalationApproved(run, next.Alias, "policy:auto")));
         writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.Alias))));
         _escalatedModel = next.Alias;
         try
         {
             var code = await RunTurnAsync(prompt, act, writeLine, cancellationToken).ConfigureAwait(false);
-            stream.Append(new ModelEscalationCompleted(run, next.Alias));
+            EnsureEscalationRecorded(server.RecordModelEscalationCompleted(session,
+                new ModelEscalationCompleted(run, next.Alias)));
             return code;
         }
         finally { _escalatedModel = null; }
+    }
+
+    private static void EnsureEscalationRecorded(CommandAck ack)
+    {
+        if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
+        {
+            throw new InvalidOperationException(ack.Error ?? "the model escalation event was rejected");
+        }
     }
 
     public void SetWorkspaceTrusted(bool trusted) =>
