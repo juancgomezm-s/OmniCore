@@ -107,6 +107,12 @@ public sealed class RunControlService
     {
         ArgumentException.ThrowIfNullOrEmpty(text);
         var run = ActiveRun(session) ?? StartRun(session, text, defaultMode);
+        var currentEvents = _store.ReadFrom(session, 1);
+        var projection = RunProjection.Replay(session, run, _codecs, currentEvents);
+        if (FollowUpQueue.TryQueue(_store, _codecs, session, run, RootLane(currentEvents, projection), text, origin))
+        {
+            return run;
+        }
         var parts = "[" + System.Text.Json.JsonSerializer.Serialize(text, JsonStrings.Default.String) + "]";
         new EventStream(_store, _codecs, session).Append(new UserInputReceived(run, parts, null, origin));
         return run;

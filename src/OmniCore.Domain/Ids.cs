@@ -46,6 +46,13 @@ public record InteractionId(Guid Value)
     public override string ToString() => Value.ToString();
 }
 
+public record FollowUpId(Guid Value)
+{
+    public static FollowUpId New() => new(Guid.CreateVersion7());
+    public static FollowUpId Parse(string text) => new(EventId.ParseGuidText(text));
+    public override string ToString() => Value.ToString("D");
+}
+
 /// <summary>Identifica una sesión durable (spec §6).</summary>
 public record SessionId(Guid Value)
 {

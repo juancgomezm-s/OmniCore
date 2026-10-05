@@ -177,6 +177,10 @@ public sealed class OmniCliRuntime
     public static string RedactSensitive(string value) =>
         SecretRedactor.Shared.Redact(new PiiRedactor().Redact(value));
 
+    internal static bool QueuePromptForOpenTurn(IEventStore store, IEventCodecRegistry codecs,
+        SessionId session, RunId run, LaneId lane, string prompt, string? origin) =>
+        FollowUpQueue.TryQueue(store, codecs, session, run, lane, prompt, origin);
+
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken)
     {
@@ -338,6 +342,10 @@ public sealed class OmniCliRuntime
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = server.LastLaneId() ?? LaneId.New();
+            var promptOrigin = server.ConsumePromptOrigin();
+            if (QueuePromptForOpenTurn(server.AcquireStore(), server.AcquireCodecs(), sessionId, runId,
+                laneId, prompt, promptOrigin))
+                prompt = ""; // queued once before any CLI early-return; Ask must not enqueue it again.
             IModelProvider provider = providerDescription is null
                 ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")
                 : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "",
@@ -468,10 +476,10 @@ public sealed class OmniCliRuntime
             if (act)
                 return RunActLoop(turn, writeLine, prompt, instruction, sessionId, runId, laneId, workingState,
                     workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
-                    interactionResponder, interactive, locale, cancellationToken, server.ConsumePromptOrigin());
+                    interactionResponder, interactive, locale, cancellationToken, promptOrigin);
 
             var result = turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, cancellationToken,
-                server.ConsumePromptOrigin());
+                promptOrigin);
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
             {
                 writeLine(InputRequiredJson(questionId, "Question"));

@@ -275,21 +275,35 @@ public sealed class ExplorerTurn
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null)
     {
         var stream = new EventStream(_store, _codecs, sessionId);
-        var resumedTurnId = FindOpenTurn(stream, runId);
+        var resumedTurnId = FindOpenTurn(stream, runId, laneId);
         var isResume = resumedTurnId is not null;
+        var queuedQuestion = _redaction.Redact(question ?? "").Length > 0
+            && FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, question ?? "", origin);
+        var runEvents = stream.EventsSince(1);
+        if (RunProjection.Replay(sessionId, runId, _codecs, runEvents).IsTerminal())
+            return new TurnResult("Run is terminal; queued FollowUps remain inert.", StopReason.Error,
+                0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var turnId = resumedTurnId ?? TurnId.New();
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
-        if (isResume && _questionnaires is not null
-            && _questionnaires.Pending(sessionId).FirstOrDefault() is { } pending)
+        if (FindPendingRunInteraction(runEvents, runId) is { } pendingInteraction)
         {
             return new TurnResult(null, StopReason.InputRequired, 0,
-                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null, pending.InteractionId);
+                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null, pendingInteraction);
         }
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var persistedSpend = ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps);
 
         var messages = LoadConversation(stream, runId);
-        var safeQuestion = isResume ? "" : _redaction.Redact(question ?? "");
+        var safeQuestion = isResume || queuedQuestion ? "" : _redaction.Redact(question ?? "");
+        var pendingFollowUps = isResume
+            ? Array.Empty<FollowUpQueue.Item>()
+            : FollowUpQueue.Pending(_store, _codecs, sessionId, runId, laneId).Take(1).ToArray();
+        foreach (var followUp in pendingFollowUps)
+        {
+            var text = FollowUpText(followUp.InputPartsJson);
+            if (text.Length > 0)
+                messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+        }
         if (safeQuestion.Length > 0)
         {
             messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(safeQuestion) }));
@@ -325,10 +339,15 @@ public sealed class ExplorerTurn
 
             if (!isResume)
             {
-                EnsureRunAwaitingInput(stream, runId, laneId);
+                var startEvents = new List<DomainEventPayload>();
+                if (RunProjection.Replay(sessionId, runId, _codecs, stream.EventsSince(1)).State == RunState.Running)
+                    startEvents.Add(new RunAwaitingInput(runId, laneId));
+                startEvents.AddRange(FollowUpQueue.PromotionEvents(pendingFollowUps, runId, laneId, turnId));
                 var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
-                stream.Append(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
-                stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+                if (safeQuestion.Length > 0 || pendingFollowUps.Length == 0)
+                    startEvents.Add(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
+                startEvents.Add(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+                stream.AppendBatch(startEvents, DurabilityClass.Barrier);
                 // Límites de mutación por Turn (ADR-0044 §5): un Turn nuevo reinicia el contador del
                 // Turn; los totales del Run se conservan. Un Turn reanudado sigue con su contador.
                 _boundary?.BeginTurn();
@@ -1251,7 +1270,7 @@ public sealed class ExplorerTurn
         return history;
     }
 
-    private TurnId? FindOpenTurn(EventStream stream, RunId runId)
+    private TurnId? FindOpenTurn(EventStream stream, RunId runId, LaneId laneId)
     {
         TurnId? open = null;
         foreach (var evt in stream.EventsSince(1))
@@ -1260,7 +1279,7 @@ public sealed class ExplorerTurn
             var payload = _codecs.Decode(evt);
             switch (payload)
             {
-                case TurnStarted started:
+                case TurnStarted started when started.LaneId == laneId:
                     open = started.TurnId;
                     break;
                 case TurnCompleted completed when open?.Equals(completed.TurnId) == true:
@@ -1273,7 +1292,49 @@ public sealed class ExplorerTurn
         return open;
     }
 
+    private InteractionId? FindPendingRunInteraction(IReadOnlyList<DomainEvent> events, RunId runId)
+    {
+        var pending = new Dictionary<InteractionId, InteractionRequested>();
+        foreach (var evt in events)
+        {
+            var payload = _codecs.Decode(evt);
+            switch (payload)
+            {
+                case InteractionRequested requested when evt.RunId == runId:
+                    pending[requested.InteractionId] = requested;
+                    break;
+                case InteractionResolved resolved:
+                    pending.Remove(resolved.InteractionId);
+                    break;
+                case InteractionExpired expired:
+                    pending.Remove(expired.InteractionId);
+                    break;
+            }
+        }
+        return pending.Values.OrderBy(request => request.InteractionId.ToString(), StringComparer.Ordinal)
+            .FirstOrDefault()?.InteractionId;
+    }
+
     private static string InputParts(string text) => "[\"" + JsonObj.Escape(text) + "\"]";
+
+    private static string FollowUpText(string inputPartsJson)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(inputPartsJson);
+            var root = document.RootElement;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.String) return root.GetString() ?? "";
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Array) return "";
+            return string.Join("\n", root.EnumerateArray()
+                .Where(part => part.ValueKind == System.Text.Json.JsonValueKind.String)
+                .Select(part => part.GetString() ?? "")
+                .Where(part => part.Length > 0));
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "";
+        }
+    }
 
     private static string EncodeQuestionnaireOutcome(QuestionnaireAskOutcome outcome)
     {

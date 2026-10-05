@@ -28,6 +28,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunStarted())
             .Plus(Typed.RunAwaitingInput())
             .Plus(Typed.UserInputReceived())
+            .Plus(Typed.FollowUpQueued())
+            .Plus(Typed.FollowUpPromoted())
             .Plus(Typed.AssistantMessageRecorded())
             .Plus(Typed.RunValidationStarted())
             .Plus(Typed.RunValidationRejected())
@@ -296,6 +298,8 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(RunStarted))]
 [JsonSerializable(typeof(RunAwaitingInput))]
 [JsonSerializable(typeof(UserInputReceived))]
+[JsonSerializable(typeof(FollowUpQueued))]
+[JsonSerializable(typeof(FollowUpPromoted))]
 [JsonSerializable(typeof(AssistantMessageRecorded))]
 [JsonSerializable(typeof(RunValidationStarted))]
 [JsonSerializable(typeof(RunValidationRejected))]
@@ -412,6 +416,12 @@ public sealed class Typed
 
     public static CodecPair UserInputReceived() =>
         Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived, currentVersion: 2);
+
+    public static CodecPair FollowUpQueued() =>
+        Of(EventType.Of("followup.queued"), EventJsonContext.Default.FollowUpQueued);
+
+    public static CodecPair FollowUpPromoted() =>
+        Of(EventType.Of("followup.promoted"), EventJsonContext.Default.FollowUpPromoted);
 
     public static CodecPair AssistantMessageRecorded() =>
         Of(EventType.Of("assistant_message.recorded"), EventJsonContext.Default.AssistantMessageRecorded);
