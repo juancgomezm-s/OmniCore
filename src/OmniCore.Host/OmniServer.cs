@@ -384,12 +384,12 @@ public sealed class OmniServer : IOmniClient
                 _lastPromptExpanded = new CommandService().Expand(
                     new CommandInvocation(name, args, origin));
                 _pendingPromptOrigin = _lastPromptExpanded.Origin;
-                return CommandAck.Ok(command.MessageId);
+                return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
                 or KeyNotFoundException)
             {
-                return CommandAck.Fail(command.MessageId, ex.Message);
+                return new CommandAck(command.MessageId, "error", ex.Message, RuntimeCommandOutcome.Rejected());
             }
         }
 
@@ -545,7 +545,8 @@ public sealed class OmniServer : IOmniClient
         var objective = fields.TryGetValue("objective", out var value) ? value : null;
         if (string.IsNullOrWhiteSpace(objective))
         {
-            return CommandAck.Fail(command.MessageId, "falta el objetivo del Explorer");
+            return new CommandAck(command.MessageId, "error", "falta el objetivo del Explorer",
+                RuntimeCommandOutcome.Rejected());
         }
 
         return StartRunAct(command, objective!, Path.GetFullPath("."), RunMode.Plan);
@@ -564,7 +565,8 @@ public sealed class OmniServer : IOmniClient
         var objective = fields.TryGetValue("objective", out var value) ? value : null;
         if (string.IsNullOrWhiteSpace(objective))
         {
-            return CommandAck.Fail(command.MessageId, "falta el objetivo del act");
+            return new CommandAck(command.MessageId, "error", "falta el objetivo del act",
+                RuntimeCommandOutcome.Rejected());
         }
 
         var workspace = fields.TryGetValue("workspace", out var w) ? w : null;
@@ -610,7 +612,8 @@ public sealed class OmniServer : IOmniClient
         _lastRunId = runId;
         _lastSnapshot = MaterializeFromJournal(sessionId, runId);
         SaveLastSession();
-        return CommandAck.Ok(command.MessageId);
+        return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(), sessionId, 0,
+            new CommandId(Guid.Parse(command.MessageId)));
     }
 
     /// <summary>Store del servidor (para el Turn de Explorer, que persiste en el mismo journal).</summary>
@@ -1103,7 +1106,7 @@ public sealed class OmniServer : IOmniClient
                     {
                         if (explicitOutcome)
                         {
-                            return RunControlOutcomeAck(command.MessageId, "error", "falta 'text'",
+                            return CommandOutcomeAck(command.MessageId, "error", "falta 'text'",
                                 RuntimeCommandOutcome.Rejected(), null, 0, commandId);
                         }
 
@@ -1176,7 +1179,7 @@ public sealed class OmniServer : IOmniClient
             SaveLastSession();
             if (explicitOutcome)
             {
-                return RunControlOutcomeAck(command.MessageId, "ok", null,
+                return CommandOutcomeAck(command.MessageId, "ok", null,
                     RuntimeCommandOutcome.Accepted(), outcomeSession, outcomeSequenceBefore, commandId);
             }
 
@@ -1188,7 +1191,7 @@ public sealed class OmniServer : IOmniClient
             var error = "effects.unresolved(interactionId=" + interactionId + ")";
             if (explicitOutcome)
             {
-                return RunControlOutcomeAck(command.MessageId, "error", error,
+                return CommandOutcomeAck(command.MessageId, "error", error,
                     RuntimeCommandOutcome.Rejected(), outcomeSession, outcomeSequenceBefore, commandId);
             }
 
@@ -1200,7 +1203,7 @@ public sealed class OmniServer : IOmniClient
         {
             if (explicitOutcome)
             {
-                return RunControlOutcomeAck(command.MessageId, "error", ex.Message,
+                return CommandOutcomeAck(command.MessageId, "error", ex.Message,
                     RuntimeCommandOutcome.Rejected(), outcomeSession, outcomeSequenceBefore, commandId);
             }
 
@@ -1208,7 +1211,7 @@ public sealed class OmniServer : IOmniClient
         }
     }
 
-    private CommandAck RunControlOutcomeAck(string commandMessageId, string status, string? error,
+    private CommandAck CommandOutcomeAck(string commandMessageId, string status, string? error,
         RuntimeCommandOutcome outcome, SessionId? session, long sequenceBefore, CommandId commandId)
     {
         if (session is null)
