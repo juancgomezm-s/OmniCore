@@ -1236,10 +1236,10 @@ public sealed class OmniServer : IOmniClient
     }
 
     /// <summary>
-    /// Runs one non-Act Explorer turn as an internal Host command. The boundary is intentionally
-    /// limited to the CLI Ask path; it does not claim that a returned Turn is completed successfully.
+    /// Runs one CLI Explorer Ask invocation as an internal Host command, including each Act-loop
+    /// iteration. A normal callback return means the invocation was accepted, not that the Run completed.
     /// </summary>
-    internal (ExplorerTurn.TurnResult? Result, CommandAck Ack) ExecuteAskTurn(SessionId sessionId,
+    internal (ExplorerTurn.TurnResult? Result, CommandAck Ack) ExecuteExplorerTurn(SessionId sessionId,
         RunId runId, Func<CancellationToken, ExplorerTurn.TurnResult> execute,
         CancellationToken cancellationToken)
     {
