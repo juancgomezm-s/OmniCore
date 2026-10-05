@@ -123,7 +123,7 @@ Outcome=Accepted. Escenario inválido o resume sin Run rechazan sin rango; resum
 sólo eventos nuevos de su Session causados por el comando. Catches genéricos conservan outcome
 legacy null y stack/error: no se infiere rechazo de una excepción posterior a efectos.
 
-Root completó atribución de telemetría con ExecutionId? opcional, sin generar IDs ni registrar
+Root `ae278c2` completó atribución de telemetría con ExecutionId? opcional, sin generar IDs ni registrar
 contenido. Dos pruebas nuevas verifican scopes anidados/restauración/ausencia de scope y dos
 flujos async concurrentes usando el mismo sink; callers legacy conservan null. El fixture de
 reapertura de journal de TelemetryBoundaryTests ahora dispone la conexión real y limpia sólo su
@@ -132,8 +132,11 @@ pool antes de reabrir y borrar: no oculta IOException ni debilita assertions.
 Verificación independiente combinada sim/telemetría/fixtures:51/51 PASS. Suite funcional completa
 posterior: **1295=1291 PASS /0 FAIL /4 SKIP**. Arquitectura recompilada (incluido whitelist de
 ExecutionId sin texto arbitrario):54/54 PASS, conteo separado. No sumar cifras solapadas.
-Luna audita el cambio de telemetría y prepara la frontera de escritura interna de cuestionario
-según ADR0046§5. No declarar todos los commands migrados ni commands internos listos. M5.5 no
+Luna auditó telemetría sin defecto concreto y prepara una frontera interna Host-server para la
+ejecución ExplorerTurn que hoy llama Ask directamente fuera de command (ADR0046§5). No se añade
+una causa sintética por lote en Engine: debe representar la operación interna completa y conservar
+resultado, cancelación, scope previo y causalidad ambiental existente. Sigue pendiente de entrega.
+No declarar todos los commands migrados ni commands internos listos. M5.5 no
 se declara cerrado; Source/fallback causal y wiring general siguen pendientes.
 
 Ling03 recibió un paquete cerrado mínimo para pruebas CausationScope y terminó con HTTP429
