@@ -921,12 +921,17 @@ public sealed class OmniServer : IOmniClient
                 + "," + JsonObj.Field("exitCode", result.ExitCode == 0 ? "0" : "1")
                 + "," + JsonObj.Field("run", result.Run.State.ToString())
                 + "," + JsonObj.Field("ctxTokens", snapshot is null ? "0" : snapshot.TokenCount.ToString()) + "}"));
-            return result.ExitCode == 0 ? CommandAck.Ok(command.MessageId)
-                : CommandAck.Fail(command.MessageId, "sim falló: " + string.Join("; ", result.Diagnostics));
+            return result.ExitCode == 0
+                ? CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                    result.SessionId, 0, new CommandId(Guid.Parse(command.MessageId)))
+                : CommandOutcomeAck(command.MessageId, "error", "sim falló: " + string.Join("; ", result.Diagnostics),
+                    RuntimeCommandOutcome.Accepted(), result.SessionId, 0,
+                    new CommandId(Guid.Parse(command.MessageId)));
         }
         catch (ScenarioFormatException sfe)
         {
-            return CommandAck.Fail(command.MessageId, sfe.UserMessage.Render());
+            return new CommandAck(command.MessageId, "error", sfe.UserMessage.Render(),
+                RuntimeCommandOutcome.Rejected());
         }
         catch (Exception ex)
         {
@@ -1280,16 +1285,20 @@ public sealed class OmniServer : IOmniClient
     {
         if (_lastSessionId is null || _lastRunId is null)
         {
-            return CommandAck.Fail(command.MessageId, "no hay un run previo para reanudar");
+            return new CommandAck(command.MessageId, "error", "no hay un run previo para reanudar",
+                RuntimeCommandOutcome.Rejected());
         }
 
+        var session = _lastSessionId;
+        var sequenceBefore = _store.CurrentSequence(session);
         try
         {
-            var stream = new EventStream(_store, _codecs, _lastSessionId!);
-            var reconciled = _engine.Resume(_lastSessionId!, _lastRunId!, stream);
+            var stream = new EventStream(_store, _codecs, session);
+            var reconciled = _engine.Resume(session, _lastRunId!, stream);
             _events.Add(WireEnvelope.Event(Ids.NewV7(), "{" + JsonObj.FieldRaw("type", "\"sim.resumed\"")
                 + "," + JsonObj.Field("reconciled", reconciled == 0 ? "0" : "1") + "}"));
-            return CommandAck.Ok(command.MessageId);
+            return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                session, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
         }
         catch (Exception ex)
         {
