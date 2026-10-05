@@ -1235,6 +1235,36 @@ public sealed class OmniServer : IOmniClient
                 causedSequences.Min(), causedSequences.Max());
     }
 
+    /// <summary>
+    /// Runs one non-Act Explorer turn as an internal Host command. The boundary is intentionally
+    /// limited to the CLI Ask path; it does not claim that a returned Turn is completed successfully.
+    /// </summary>
+    internal (ExplorerTurn.TurnResult? Result, CommandAck Ack) ExecuteAskTurn(SessionId sessionId,
+        RunId runId, Func<CancellationToken, ExplorerTurn.TurnResult> execute,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(execute);
+        var ambientCommand = CausationScope.Current as CommandCausation;
+        var commandId = ambientCommand?.CommandId ?? CommandId.New();
+        var messageId = commandId.Value.ToString();
+
+        if (_lastSessionId != sessionId || _lastRunId != runId
+            || new RunControlService(_store, _codecs).ActiveRun(sessionId) != runId)
+        {
+            return (null, new CommandAck(messageId, "error",
+                "the requested session/run is not the current active Run",
+                RuntimeCommandOutcome.Rejected()));
+        }
+
+        var sequenceBefore = _store.CurrentSequence(sessionId);
+        using var internalCommand = ambientCommand is null
+            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+        var result = execute(cancellationToken);
+        var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+            sessionId, sequenceBefore, commandId);
+        return (result, ack);
+    }
+
     private void AuditEffectResolutions(SessionId session, long sequenceBeforeResponse, InteractionId interaction)
     {
         WorkspaceId? workspace = null;
