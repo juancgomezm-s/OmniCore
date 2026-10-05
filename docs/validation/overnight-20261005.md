@@ -188,6 +188,15 @@ Root reprodujo13/13 focales y full independiente7739 al11:44UTC /05:44local:
 relee todaSession internamente. Luna recibió repro secuencial con primerRun cancelado y tareas
 pendientes, antes de cualquier fix; no schedulerM6 ni validación de proveedor real.
 
+`91aceed` confirmó el defecto: el plan pendiente del Run cancelado bloqueaba completion del
+siguiente Run de la mismaSession (Accepted, pero Completed=false). `32bbe79` filtra las
+relecturas/proyecciones de RunCoupon por CorrelationId=Run, conservando Sequence por Session.
+La regresión exige Task/Lane/Plan anterior intactos y restauración del Scope padre; otro control
+inyecta fallo Append, conserva prefijo durable legítimo y verifica retry sin Ack de éxito falso.
+Root auditó ambos commits y reprodujo26/26 focales. Full independiente61460 al11:54UTC /05:54local:
+**1322=1318 PASS /0 FAIL /4 SKIP**, exit0. Siguiente bloque: causación de la cola FollowUp que
+CLI persiste antes de sus earlyreturns; no cambia selección de modelos ni autorizaciones.
+
 Runbook operativo compactado al09:26 UTC, preservando íntegra la versión previa en
 C:\Users\juanc\.codex\omni-overnight-20261005-history-0925.md. Consultar el historial sólo para
 evidencia específica; fuente vigente sigue siendo omni-overnight-20261005.md.
