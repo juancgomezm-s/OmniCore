@@ -1426,8 +1426,8 @@ public sealed class ExplorerTurn
         if (ContextCompaction.ShouldCompact(newOldItems.Length, policy))
         {
             var material = (priorCheckpoint?.Summary is { Length: > 0 } oldSummary
-                    ? "Previous checkpoint:\\n" + oldSummary + "\\n\\nNew older history:\\n" : "")
-                + string.Join("\\n", newOldItems.Select(e => e.Content));
+                    ? "Previous checkpoint:\n" + oldSummary + "\n\nNew older history:\n" : "")
+                + string.Join("\n", newOldItems.Select(e => e.Content));
             string summary;
             var metaFingerprint = "deterministic-v1";
             MetaModelService? metaModel = null;
@@ -1596,7 +1596,7 @@ public sealed class ExplorerTurn
         if (checkpoint.TryGetProperty("testState", out var tests)
             && tests.GetString() is { Length: > 0 } testState && testState != "unknown")
             parts.Add("Tests: " + testState);
-        return string.Join("\\n", parts.Where(part => part.Length > 0));
+        return string.Join("\n", parts.Where(part => part.Length > 0));
     }
 
     private ArtifactRef PersistCheckpointArtifact(string checkpointId, RunId runId, long throughSequence,
@@ -1653,7 +1653,7 @@ public sealed class ExplorerTurn
         if (content.Length <= maxCharacters) return content;
         if (maxCharacters < 64) return content[..maxCharacters];
         var half = (maxCharacters - 32) / 2;
-        return content[..half] + "\\n[…older history omitted deterministically…]\\n" + content[^half..];
+        return content[..half] + "\n[…older history omitted deterministically…]\n" + content[^half..];
     }
 
     private static bool IsConversationKind(ContextItemKind kind) => kind is ContextItemKind.UserMessage

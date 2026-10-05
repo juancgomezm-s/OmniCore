@@ -159,6 +159,99 @@ public sealed class ContextManagementTests
     }
 
     [Fact]
+    public void SQLite_journal_reopened_by_a_second_instance_restores_checkpoints_and_materializes_identically()
+    {
+        // M4: cierre de sesión larga — la restauración debe funcionar reabriendo el journal de
+        // SQLite desde otra instancia (mismo proceso y fichero), simulando lo que hace el
+        // Host al arrancar de nuevo: replay del journal + artifact content-addressed, mismo
+        // fingerprint de contexto, y el journal sigue siendo append-only.
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-sqlite-restore-" + Guid.NewGuid().ToString("N"));
+        var journalPath = Path.Combine(root, "journal.db");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var artifactBlobs = 0;
+
+            // --- "Instancia A": la sesión original, que escribe y cierra limpio.
+            ContextCheckpointRecorded checkpointA;
+            long sequenceA;
+            string firstFingerprint;
+            string[] payloadsA;
+            {
+                var artifacts = new FileArtifactStore(root);
+                var store = new SqliteEventStore(journalPath);
+                var stream = new EventStream(store, codecs, session);
+                stream.Append(new SessionCreated(session, WorkspaceId.Of("ws-restore").ToString(), "ws-restore",
+                    ProfileId.New(), DateTimeOffset.UtcNow));
+                var run = TestRun.Open(store, session).RunId;
+                stream.Append(new UserInputReceived(run, "[\"cuenta algo\"]", null, "user"));
+
+                var checkpointArtifact = artifacts.PutText("""{"summary":"checkpoint durable"}""",
+                    "application/json", ArtifactKind.ContextSnapshot, Sensitivity.Sensitive);
+                artifactBlobs = Directory.GetFiles(Path.Combine(root, "blobs"), "*", SearchOption.AllDirectories)
+                    .Length;
+                stream.Append(new ContextCheckpointRecorded("cp-sqlite-1", run, store.CurrentSequence(session),
+                    checkpointArtifact, "meta-fingerprint"));
+
+                payloadsA = store.ReadFrom(session, 1).Select(e => e.PayloadJson).ToArray();
+                sequenceA = store.CurrentSequence(session);
+                checkpointA = Assert.IsType<ContextCheckpointRecorded>(
+                    codecs.Decode(store.ReadFrom(session, 1).Last()));
+                var first = Materialize(store, artifacts, session, run, codecs, checkpointA);
+                firstFingerprint = first.SnapshotFingerprint;
+                Assert.Contains(first.Items, i => i.Kind == ContextItemKind.WorkingState);
+                store.Close();
+            }
+
+            // --- "Instancia B": reabre el MISMO fichero con una instancia nueva y restaura.
+            long sequenceB;
+            string secondFingerprint;
+            {
+                var artifacts = new FileArtifactStore(root); // nueva instancia: artifacts por hash
+                var store = new SqliteEventStore(journalPath);
+                var payloadsB = store.ReadFrom(session, 1).Select(e => e.PayloadJson).ToArray();
+                sequenceB = store.CurrentSequence(session);
+                Assert.Equal(sequenceA, sequenceB);                      // nada se perdió al reabrir
+                Assert.Equal(payloadsA, payloadsB);                       // y el orden es idéntico
+
+                var checkpointB = Assert.IsType<ContextCheckpointRecorded>(
+                    codecs.Decode(store.ReadFrom(session, 1).Last()));
+                Assert.Equal(checkpointA.CheckpointId, checkpointB.CheckpointId);
+                Assert.Equal(checkpointA.ThroughEventSequence, checkpointB.ThroughEventSequence);
+                Assert.Equal(checkpointA.CheckpointArtifact.Hash, checkpointB.CheckpointArtifact.Hash);
+
+                var second = Materialize(store, artifacts, session, checkpointB.RunId, codecs, checkpointB);
+                secondFingerprint = second.SnapshotFingerprint;
+                Assert.Contains(second.Items, i => i.Kind == ContextItemKind.Summary
+                    && i.Content.Contains("checkpoint durable", StringComparison.Ordinal));
+                Assert.Equal(artifactBlobs,
+                    Directory.GetFiles(Path.Combine(root, "blobs"), "*", SearchOption.AllDirectories).Length);
+
+                // El journal sigue siendo append-only en la instancia restaurada: puede seguir usándose.
+                var stream = new EventStream(store, codecs, session);
+                stream.Append(new UserInputReceived(checkpointB.RunId, "[\"continúa\"]", null, "user"));
+                Assert.Equal(sequenceA + 1, store.CurrentSequence(session));
+                store.Close();
+            }
+
+            // La restauración es determinista: mismo checkpoint ⇒ mismo fingerprint de contexto.
+            Assert.Equal(firstFingerprint, secondFingerprint);
+        }
+        finally
+        {
+            // Close() devuelve la conexión al pool de Microsoft.Data.Sqlite: sin liberar el pool de
+            // ESTE journal, Windows retiene el handle y no se puede borrar el directorio temporal.
+            // ClearPool (no ClearAllPools): a la vez rompería conexiones en reposo de otros tests
+            // en paralelo, igual que hace FileAuditSinkTests con su propio journal.
+            Microsoft.Data.Sqlite.SqliteConnection.ClearPool(
+                new Microsoft.Data.Sqlite.SqliteConnection("DataSource=" + journalPath));
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void Checkpoint_is_append_only_and_restart_materialization_has_same_fingerprint()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-checkpoint-" + Guid.NewGuid().ToString("N"));
@@ -331,4 +424,22 @@ public sealed class ContextManagementTests
                 new ProviderMetadata("scripted", "test-meta", null)));
         }
     }
+    private static ContextSnapshot Materialize(IEventStore store, FileArtifactStore artifacts,
+        SessionId session, RunId run, EventCodecs codecs, ContextCheckpointRecorded checkpoint)
+    {
+        using var checkpointJson = System.Text.Json.JsonDocument.Parse(
+            artifacts.GetText(checkpoint.CheckpointArtifact.Hash)!);
+        var summary = checkpointJson.RootElement.GetProperty("summary").GetString()!;
+        var contributors = new IContextContributor[]
+        {
+            new WorkingStateContributor("Plan rev.3; P2 active"),
+            new ContextCheckpointContributor(checkpoint.CheckpointId, checkpoint.ThroughEventSequence,
+                summary, checkpoint.CheckpointArtifact),
+        };
+        var request = new MaterializeRequest(session, run, null, null, null,
+            store.CurrentSequence(session), Fingerprint);
+        return new ContextMaterializer(new FakeTokenCounter(), contributors)
+            .Materialize(request, TestContext.Current.CancellationToken);
+    }
+
 }
