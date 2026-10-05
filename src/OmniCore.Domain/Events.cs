@@ -39,6 +39,9 @@ public sealed class DomainEvent
 
     public ToolCallId? ToolCallId { get; }
 
+    /// <summary>Execution instance ambient at append time, when attributed (ADR-0046 §4).</summary>
+    public ExecutionId? ExecutionId { get; }
+
     /// <summary>Referencias explícitas para indexar sin parsear el payload (ADR-0001 §3).</summary>
     public IReadOnlyList<ArtifactRef> ArtifactRefs { get; }
 
@@ -60,6 +63,7 @@ public sealed class DomainEvent
         TurnId? turnId,
         PlanItemId? planItemId,
         ToolCallId? toolCallId,
+        ExecutionId? executionId,
         IReadOnlyList<ArtifactRef> artifactRefs,
         string payloadJson)
     {
@@ -77,6 +81,7 @@ public sealed class DomainEvent
         TurnId = turnId;
         PlanItemId = planItemId;
         ToolCallId = toolCallId;
+        ExecutionId = executionId;
         ArtifactRefs = artifactRefs;
         PayloadJson = payloadJson;
     }
@@ -95,7 +100,8 @@ public sealed class DomainEvent
         PlanItemId? planItemId,
         ToolCallId? toolCallId,
         IReadOnlyList<ArtifactRef> artifactRefs,
-        string payloadJson) =>
+        string payloadJson,
+        ExecutionId? executionId = null) =>
         new(
             EventId.New(),
             sessionId,
@@ -111,6 +117,7 @@ public sealed class DomainEvent
             turnId,
             planItemId,
             toolCallId,
+            executionId,
             artifactRefs,
             payloadJson);
 
@@ -131,7 +138,8 @@ public sealed class DomainEvent
         PlanItemId? planItemId,
         ToolCallId? toolCallId,
         IReadOnlyList<ArtifactRef> artifactRefs,
-        string payloadJson) =>
+        string payloadJson,
+        ExecutionId? executionId = null) =>
         new(
             eventId,
             sessionId,
@@ -147,6 +155,7 @@ public sealed class DomainEvent
             turnId,
             planItemId,
             toolCallId,
+            executionId,
             artifactRefs,
             payloadJson);
 }

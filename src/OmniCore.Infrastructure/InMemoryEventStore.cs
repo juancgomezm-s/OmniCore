@@ -46,7 +46,8 @@ public sealed class InMemoryEventStore : IEventStore, IWorkspaceJournalReader
                 pending.PlanItemId,
                 pending.ToolCallId,
                 pending.ArtifactRefs,
-                pending.PayloadJson);
+                pending.PayloadJson,
+                pending.ExecutionId);
             idx++;
         }
 
