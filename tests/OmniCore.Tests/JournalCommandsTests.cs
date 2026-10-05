@@ -9,6 +9,8 @@ namespace OmniCore.Tests;
 /// estado del journal, salida en texto y en JSON, filtro de sesión, raíz de artifacts
 /// explícita y uso incorrecto. La salida se inyecta (StringWriter) para tests deterministas.
 /// </summary>
+// CLI dispatch temporarily replaces the process-wide Console.Out.
+[Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class JournalCommandsTests
 {
     [Fact]

@@ -66,7 +66,7 @@ public class FileReadRegistryPathTests
     }
 }
 
-/// <summary>Cambia variables de entorno del proceso: no corre en paralelo con otros tests.</summary>
+/// <summary>Fixtures con estado global del proceso (entorno, cwd o consola): no corren en paralelo.</summary>
 [CollectionDefinition(nameof(ProcessEnvironmentCollection), DisableParallelization = true)]
 public sealed class ProcessEnvironmentCollection;
 
