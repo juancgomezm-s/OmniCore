@@ -67,25 +67,28 @@ public sealed class TuiWiringTests
 
         // Arranque estrecho (80 cols bajo driver DOTNET): sidebar cerrado, conversación a ancho completo.
         Assert.False(fx.App.Sidebar!.Visible);
-        Assert.Equal(78, conversation.Frame.Width);
+        Assert.Equal(80, conversation.Frame.Width);
+        Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.MainWindow!.BorderStyle);
+        Assert.Equal(24, fx.App.Status!.Frame.Y);
+        Assert.True(fx.App.Composer!.Frame.Width > 60);
 
         // F2 abre el sidebar; a 80 columnas el layout es Overlay (centrado), la conversación no se reduce.
         fx.Injector.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => fx.App.Sidebar!.Visible, "F2 debe abrir el sidebar");
         fx.Wait(() => fx.App.Sidebar!.Frame.Width == 44, "a 80 cols el sidebar Overlay mide 44");
-        Assert.Equal(78, conversation.Frame.Width);
+        Assert.Equal(80, conversation.Frame.Width);
 
         // Terminal ancha (120): el resize real del driver reencuadra la ventana; sidebar apilado a la derecha.
         fx.Application.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 120, 40));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 120, "la ventana debe ocupar la pantalla tras el resize del driver");
         fx.Wait(() => fx.App.Sidebar!.Frame.Width == 40, "a 120 cols el sidebar apilado mide 40");
-        Assert.Equal(78, fx.App.Sidebar!.Frame.X);
-        Assert.Equal(78, conversation.Frame.Width); // 120 - 40 sidebar - 2 bordes
+        Assert.Equal(80, fx.App.Sidebar!.Frame.X);
+        Assert.Equal(80, conversation.Frame.Width); // 120 - 40 sidebar; no outer chrome
 
         // F2 cierra el sidebar: la conversación recupera el ancho completo.
         fx.Injector.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => !fx.App.Sidebar!.Visible, "F2 debe cerrar el sidebar");
-        fx.Wait(() => conversation.Frame.Width == 118, "sin sidebar la conversación ocupa 118");
+        fx.Wait(() => conversation.Frame.Width == 120, "sin sidebar la conversación ocupa 120");
 
         // Vuelta a estrecho sin errores de layout.
         fx.Application.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 80, 25));

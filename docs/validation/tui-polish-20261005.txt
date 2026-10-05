@@ -1,0 +1,54 @@
+OmniCore visual polish PTY capture — 2026-10-05 17:22 UTC / 11:22 Mexico City.
+Real executable, no --sim; 80 columns. Terminal stream inspection, not a desktop screenshot.
+
+polishFinalMain
+[?9001h[?1004h[?25l[2J[m[H]0;C:\Users\juanc\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe[?25h[?1049h[?25l[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[H[?25h[2J[?1015h[?2004h[?1003;1006h[?u[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[?25l[80C]0;OmniCore[H  C:\…uanc\AppData\Local\Temp\omnicore-m4-pty-281fe8d326f34142b5d947df05e83730                                                                                    ○ Run iniciado: hola prueba M4                                                                                                                                  ◉ hola prueba M4                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                Enter enviar   / comandos   @ archivos   F2 workspace   F3 modelos             ╭┤ Mensaje ├─────────────────────────────────────────────────────────────────╮  │ ›                                                                          │  │                                                                            │  ╰────────────────────────────────────────────────────────────────────────────╯   act                                                                        —  [5 q[21;6H[?25h
+
+polishFinalOverlay
+[?25l[H  C:\…uanc\AppData\Local\Temp\omnicore-m4-pty-281fe8d326f34142b5d947df05e83730                                                                                    ○ Run iniciado: hola prueba M4                                                                                                                                  ◉ hola prueba M4                                                                                                                                                                                                                                                                                                                      ╭┤ Aviso ├─────────────────────────────────────────────────────╮                │                                                              │                │ {                                                            │                │   "snapshot": null                                           │                │ }                                                            │                │                                                  ⟦ OK ⟧[30m▖     [m│                │                                                  [K[30m▝▀▀▀▀▀▘     [m│                ╰──────────────────────────────────────────────────────────────╯                                                                                                                                                                          Enter enviar   / comandos   @ archivos   F2 workspace   F3 modelos             ╭┤ Mensaje ├─────────────────────────────────────────────────────────────────╮  │ ›                                                                          │  │                                                                            │  ╰────────────────────────────────────────────────────────────────────────────╯   act                                                                        —

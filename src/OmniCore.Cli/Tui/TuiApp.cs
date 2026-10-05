@@ -119,22 +119,26 @@ public sealed class TuiApp
     /// <summary>Creates the main window without starting a terminal session; useful for headless smoke tests.</summary>
     public Window BuildMainWindow()
     {
-        _window = new Window { Title = " OmniCore · TUI ", X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
-        _header = new Label { X = 0, Y = 0, Width = Dim.Fill(), Height = 1, Text = HeaderText() };
-        var conversationFrame = new FrameView { X = 0, Y = 1, Width = Dim.Fill(31), Height = Dim.Fill(5), Title = " CONVERSATION " };
-        _conversation = new Label { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill(), Text = ConversationText() };
+        _window = new Window { Title = "OmniCore", BorderStyle = LineStyle.None, X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
+        _header = new Label { X = 2, Y = 0, Width = Dim.Fill(2), Height = 1, Text = HeaderText() };
+        var conversationFrame = new FrameView { X = 0, Y = 2, Width = Dim.Fill(31), Height = Dim.Fill(6), BorderStyle = LineStyle.None };
+        _conversation = new Label { X = 2, Y = 0, Width = Dim.Fill(2), Height = Dim.Fill(), Text = ConversationText() };
         conversationFrame.Add(_conversation);
-        _sidebar = new FrameView { X = Pos.AnchorEnd(31), Y = 1, Width = 31, Height = Dim.Fill(5), Title = " SIDEBAR " };
-        _sidebarContent = new Label { X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill(), Text = SidebarText() };
+        _sidebar = new FrameView { X = Pos.AnchorEnd(31), Y = 2, Width = 31, Height = Dim.Fill(6), Title = " Workspace ", BorderStyle = LineStyle.Rounded };
+        _sidebarContent = new Label { X = 1, Y = 1, Width = Dim.Fill(1), Height = Dim.Fill(1), Text = SidebarText() };
         _sidebar.Add(_sidebarContent);
-        var composerFrame = new FrameView { X = 0, Y = Pos.AnchorEnd(4), Width = Dim.Fill(), Height = 3, Title = " COMPOSER · Enter to send · / commands · @ files · F2 sidebar · F3 models " };
-        _composer = new TextField { X = 0, Y = 0, Width = Dim.Fill(), Height = 1, Text = "" };
+        var composerFrame = new FrameView { X = 1, Y = Pos.AnchorEnd(5), Width = Dim.Fill(1), Height = 4, Title = _locale == "en" ? " Message " : " Mensaje ", BorderStyle = LineStyle.Rounded };
+        _composer = new TextField { X = 3, Y = 0, Width = Dim.Fill(1), Height = 1, Text = "" };
+        composerFrame.Add(new Label { X = 1, Y = 0, Text = "›" });
         _completion = new Label { X = 0, Y = 1, Width = Dim.Fill(), Height = 1, Text = "" };
         _composer.TextChanged += (_, _) => UpdateAutocomplete();
         _composer.Accepted += (_, _) => SubmitComposer();
         composerFrame.Add(_composer, _completion);
         _status = new Label { X = 0, Y = Pos.AnchorEnd(1), Width = Dim.Fill(), Height = 1, Text = StatusText() };
         _window.Add(_header, conversationFrame, _sidebar, composerFrame, _status);
+        _window.Add(new Label { X = 2, Y = Pos.AnchorEnd(6), Width = Dim.Fill(2), Height = 1,
+            Text = _locale == "en" ? "Enter send   / commands   @ files   F2 workspace   F3 models" : "Enter enviar   / comandos   @ archivos   F2 workspace   F3 modelos" });
+        ApplyTheme(_window);
         var initialWidth = 80;
         try { initialWidth = Console.WindowWidth; }
         catch (IOException) { /* consola redirigida o sin TTY: arranque en modo estrecho, el layout se corrige con el primer frame real. */ }
@@ -161,6 +165,7 @@ public sealed class TuiApp
             conversation.Width = layout.SidebarVisible && layout.Mode != TuiLayoutMode.Overlay
                 ? Dim.Fill(layout.SidebarWidth) : Dim.Fill();
         }
+        RenderState();
     }
 
     private void ToggleSidebar()
@@ -269,7 +274,9 @@ public sealed class TuiApp
         if (_sidebarContent is not null) _sidebarContent.Text = SidebarText();
     }
 
-    private string ConversationText() => string.Join("\n\n", _state.Conversation.Blocks.Select(block => block.Role switch
+    private string ConversationText() => _state.Conversation.Blocks.Count == 0
+        ? (_locale == "en" ? "OmniCore\n\nReady when you are.\nWrite a message or use / to explore commands." : "OmniCore\n\nListo para trabajar.\nEscribe un mensaje o usa / para explorar comandos.")
+        : string.Join("\n\n", _state.Conversation.Blocks.Select(block => block.Role switch
     {
         ConversationRole.User => "◉ " + block.Text,
         ConversationRole.Assistant => "◆ " + block.Text,
@@ -278,13 +285,33 @@ public sealed class TuiApp
         _ => "○ " + block.Text,
     }));
 
-    private string HeaderText() => (_state.Header.WorkingDirectory.Length == 0 ? Environment.CurrentDirectory : _state.Header.WorkingDirectory)
-        + (_state.Header.GitBranch is null ? "" : "   " + _state.Header.GitBranch + " " + (_state.Header.GitDirty ?? ""));
+    private string HeaderText()
+    {
+        var path = _state.Header.WorkingDirectory.Length == 0 ? Environment.CurrentDirectory : _state.Header.WorkingDirectory;
+        var git = _state.Header.GitBranch is null ? "" : "   " + _state.Header.GitBranch + " " + (_state.Header.GitDirty ?? "");
+        var width = Math.Max(12, (_window?.Frame.Width ?? 80) - 4);
+        if (git.Length > width / 3) git = "";
+        return AbbreviatePath(path, width - git.Length) + git;
+    }
+
+    internal static string AbbreviatePath(string path, int width)
+    {
+        width = Math.Max(1, width);
+        if (path.Length <= width) return path;
+        if (width < 5) return "…" + path[^Math.Max(0, width - 1)..];
+        var prefix = Math.Min(3, width / 3);
+        return path[..prefix] + "…" + path[^(width - prefix - 1)..];
+    }
 
     private string StatusText()
     {
         var presentation = StatusLinePresentation.From(_state.StatusLine);
-        return " " + presentation.Left + "                                        " + presentation.Right;
+        var width = Math.Max(1, (_window?.Frame.Width ?? 80) - 4);
+        var left = presentation.Left;
+        var right = presentation.Right;
+        if (left.Length + right.Length + 2 > width) right = "—";
+        if (left.Length + right.Length + 2 > width) left = left[..Math.Max(0, width - right.Length - 2)];
+        return "  " + left + new string(' ', Math.Max(1, width - left.Length - right.Length)) + right;
     }
 
     private string SidebarText()
@@ -297,8 +324,8 @@ public sealed class TuiApp
             new ChangedFilesSidebarWidget(new ChangedFileWidgetData(_state.Sidebar.WidgetIds.Contains("core.files")
                 ? new[] { new WidgetRowModel(_locale == "en" ? "No changed files" : "Sin archivos modificados", ThemeRole.Muted) } : Array.Empty<WidgetRowModel>())),
         });
-        return string.Join("\n\n", widgets.Build(_state, WidgetSize.Normal).SelectMany(item => item.Model is ListWidgetModel model
-            ? new[] { model.Title }.Concat(model.Rows.Select(row => ThemeGlyphs.For(row.Role) + " " + row.Text)) : Array.Empty<string>()));
+        return string.Join("\n\n", widgets.Build(_state, WidgetSize.Normal).Select(item => item.Model is ListWidgetModel model
+            ? model.Title + "\n" + string.Join("\n", model.Rows.Select(row => ThemeGlyphs.For(row.Role) + " " + row.Text)) : ""));
     }
 
     private void ShowCurrentInteraction()
@@ -420,8 +447,20 @@ public sealed class TuiApp
     private FrameView OverlayFrame(string title, int height)
     {
         var frame = new FrameView { X = Pos.Center(), Y = Pos.Center(), Width = Dim.Percent(80), Height = height,
-            Title = " " + title + " ", CanFocus = true };
+            Title = " " + title + " ", BorderStyle = LineStyle.Rounded, CanFocus = true };
+        ApplyTheme(frame);
         return frame;
+    }
+
+    private static void ApplyTheme(View view)
+    {
+        // Framework defaults invert whole titles and edit fields. Keep a quiet surface;
+        // focus remains visible through the cursor and cyan hotkeys, never color alone.
+        var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
+        var primary = new Terminal.Gui.Drawing.Attribute(Color.None, Color.None);
+        var accent = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color("#67D4D0"), Color.None);
+        view.SetScheme(new Scheme { Normal = primary, Focus = primary, Editable = primary,
+            HotNormal = accent, HotFocus = accent });
     }
 
     private void RespondDefault(InteractionOverlayModel interaction)
@@ -523,9 +562,23 @@ public sealed class TuiApp
     private void ShowMessage(string message)
     {
         if (_window is null) return;
-        var frame = OverlayFrame(_locale == "en" ? "Notice" : "Aviso", 5);
-        frame.Add(new Label { X = 1, Y = 0, Width = Dim.Fill(2), Text = message });
-        var ok = new Button { X = Pos.AnchorEnd(12), Y = 2, Text = "OK" };
+        // Diagnostic JSON is inspected as structured text, not a clipped single-line blob.
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(message);
+            using var buffer = new MemoryStream();
+            using (var writer = new System.Text.Json.Utf8JsonWriter(buffer,
+                new System.Text.Json.JsonWriterOptions { Indented = true })) document.RootElement.WriteTo(writer);
+            message = System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+        }
+        catch (System.Text.Json.JsonException) { }
+        var lines = message.Split('\n');
+        var available = Math.Max(1, (_window.Frame.Height > 0 ? _window.Frame.Height : 25) - 9);
+        var visible = lines.Take(available).ToArray();
+        if (lines.Length > available) visible[^1] = "…";
+        var frame = OverlayFrame(_locale == "en" ? "Notice" : "Aviso", Math.Max(6, visible.Length + 5));
+        frame.Add(new Label { X = 1, Y = 1, Width = Dim.Fill(2), Height = visible.Length, Text = string.Join("\n", visible) });
+        var ok = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = "OK" };
         ok.Accepted += (_, _) => CloseOverlay(); frame.Add(ok); _overlay = frame; _window.Add(frame); frame.SetFocus();
     }
 
