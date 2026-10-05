@@ -64,6 +64,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.ModelEscalationRequested())
             .Plus(Typed.ModelEscalationApproved())
             .Plus(Typed.ModelEscalationCompleted())
+            .Plus(Typed.ModelStepStarted())
+            .Plus(Typed.ModelStepCompleted())
             .Plus(Typed.ModelCompleted())
             .Plus(Typed.TurnCompleted())
             .Plus(Typed.TurnInterrupted())
@@ -332,6 +334,8 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(ModelEscalationCompleted))]
 [JsonSerializable(typeof(EscalationCause))]
 [JsonSerializable(typeof(ModelCompleted))]
+[JsonSerializable(typeof(ModelStepStarted))]
+[JsonSerializable(typeof(ModelStepCompleted))]
 [JsonSerializable(typeof(TurnCompleted))]
 [JsonSerializable(typeof(TurnInterrupted))]
 [JsonSerializable(typeof(TurnAbandoned))]
@@ -519,6 +523,12 @@ public sealed class Typed
 
     public static CodecPair ModelCompleted() =>
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
+
+    public static CodecPair ModelStepStarted() =>
+        Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted);
+
+    public static CodecPair ModelStepCompleted() =>
+        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted);
 
     public static CodecPair TurnCompleted() =>
         Of(EventType.Of("turn.completed"), EventJsonContext.Default.TurnCompleted);

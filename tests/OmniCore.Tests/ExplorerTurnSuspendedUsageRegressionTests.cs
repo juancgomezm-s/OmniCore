@@ -129,6 +129,18 @@ public sealed class ExplorerTurnSuspendedUsageRegressionTests
             Assert.NotEmpty(records);
             Assert.Equal(14L, records.Sum(record => record.Input));
             Assert.Equal(3L, records.Sum(record => record.Output));
+
+            var stepStarts = store.ReadFrom(session, 1).Select(codecs.Decode)
+                .OfType<ModelStepStarted>().Where(step => step.TurnId == originalTurn)
+                .OrderBy(step => step.StepIndex).ToArray();
+            var stepCompletions = store.ReadFrom(session, 1).Select(codecs.Decode)
+                .OfType<ModelStepCompleted>().Where(step => step.TurnId == originalTurn)
+                .OrderBy(step => step.StepIndex).ToArray();
+            Assert.Equal(new[] { 0, 1 }, stepStarts.Select(step => step.StepIndex));
+            Assert.Equal(new[] { 0, 1 }, stepCompletions.Select(step => step.StepIndex));
+            Assert.Equal(new long[] { 10, 4 }, stepCompletions.Select(step => step.Usage.Input));
+            Assert.Equal(new long[] { 2, 1 }, stepCompletions.Select(step => step.Usage.Output));
+            Assert.All(stepCompletions, step => Assert.NotNull(step.ResponseArtifact));
         }
         finally
         {

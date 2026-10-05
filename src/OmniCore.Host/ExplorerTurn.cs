@@ -48,6 +48,48 @@ public sealed class ExplorerTurn
 
     private readonly HarnessPolicy? _harness;
 
+    private TokenUsage ReadTurnModelStepUsage(EventStream stream, TurnId turnId)
+    {
+        var total = new TokenUsage(0, 0, 0, 0, 0);
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (!evt.Type.ToString().Equals("model_step.completed", StringComparison.Ordinal)) continue;
+            try
+            {
+                if (_codecs.Decode(evt) is ModelStepCompleted completed && completed.TurnId == turnId
+                    && completed.Usage is not null)
+                    total = CombineUsage(total, completed.Usage);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException)
+            {
+                // The spend reader marks malformed evidence incomplete; don't make resume fail open.
+            }
+        }
+        return total;
+    }
+
+    private int ReadNextModelStepIndex(EventStream stream, TurnId turnId)
+    {
+        var max = -1;
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (!evt.Type.ToString().Equals("model_step.started", StringComparison.Ordinal)) continue;
+            try
+            {
+                if (_codecs.Decode(evt) is ModelStepStarted started && started.TurnId == turnId
+                    && started.StepIndex >= 0)
+                    max = Math.Max(max, started.StepIndex);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException)
+            {
+                // ReadJournalSpend independently marks malformed invocation evidence incomplete.
+            }
+        }
+        return max + 1;
+    }
+
     /// <summary>
     /// Frontera de capacidad del modelo (ADR-0044 §5): el ToolPlanner (VisibleTools) oculta las
     /// tools fuera del techo y el ToolRuntime la re-valida antes de permisos y antes de ejecutar.
@@ -130,7 +172,8 @@ public sealed class ExplorerTurn
 
     private sealed record PersistedSpend(decimal SessionUsd, decimal DailyUsd, decimal RunUsd, bool Incomplete);
 
-    private sealed record UsageEnvelope(string Response, string RunId, string Day, decimal? CostUsd);
+    private sealed record UsageEnvelope(string Response, string RunId, string Day, decimal? CostUsd,
+        TokenUsage? Usage);
 
     public sealed class TurnResult
     {
@@ -196,6 +239,7 @@ public sealed class ExplorerTurn
         var resumedTurnId = FindOpenTurn(stream, runId);
         var isResume = resumedTurnId is not null;
         var turnId = resumedTurnId ?? TurnId.New();
+        var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         if (isResume && _questionnaires is not null
             && _questionnaires.Pending(sessionId).FirstOrDefault() is { } pending)
         {
@@ -214,6 +258,7 @@ public sealed class ExplorerTurn
 
         var allToolCalls = new List<ToolUseTrace>();
         var usage = new TokenUsage(0, 0, 0, 0, 0);
+        var turnUsage = ReadTurnModelStepUsage(stream, turnId);
 
         var budget = ReadRunBudget(stream, runId);
         var guard = new SpendGuard(budget);
@@ -300,11 +345,27 @@ public sealed class ExplorerTurn
                     if (_enforceDefaultSpendCaps && accumulatedDailyCost >= _dailyCapUsd)
                         throw new BudgetExceededException("límite diario alcanzado ($" + _dailyCapUsd + ")");
 
+                    var stepIndex = nextModelStepIndex++;
+                    stream.Append(new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
+                        _selection.ContextBudget, _selection.ToolMode.ToString(),
+                        _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
+                        PersistContextSnapshot(materialized, _selection.ContextBudget)), DurabilityClass.Barrier);
                     resolved = _complete(request, cancellationToken);
                     continuation = resolved.State;
                     usage = CombineUsage(usage, resolved.Usage);
-                    guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
+                    turnUsage = CombineUsage(turnUsage, resolved.Usage);
+                    var stepResponse = string.Join("\n", resolved.Content.OfType<TextBlock>()
+                        .Select(block => _redaction.Redact(block.Text)));
                     var stepCost = _pricing?.CostUsd(resolved.Usage);
+                    var completedDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
+                        System.Globalization.CultureInfo.InvariantCulture);
+                    var stepArtifact = _artifacts.PutText(
+                        EncodeUsageResponse(stepResponse, resolved.Usage, stepCost, runId, completedDay),
+                        "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse,
+                        Sensitivity.Sensitive);
+                    stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
+                        resolved.StopReason, stepArtifact, completedDay, stepCost), DurabilityClass.Barrier);
+                    guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
                     if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
                     if (budget.MaxCostUsd is not null
                         && persistedSpend.RunUsd + guard.CostUsd() > budget.MaxCostUsd.Value)
@@ -552,8 +613,8 @@ public sealed class ExplorerTurn
             if (finalText is not null && finalText!.Length > 0)
             {
                 var safeResponse = _redaction.Redact(finalText!);
-                var cost = _pricing?.CostUsd(usage);
-                var journalRecord = EncodeUsageResponse(safeResponse, usage, cost, runId, today);
+                var cost = _pricing?.CostUsd(turnUsage);
+                var journalRecord = EncodeUsageResponse(safeResponse, turnUsage, cost, runId, today);
                 var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
                     ArtifactKind.ModelResponse, Sensitivity.Sensitive);
                 artifactId = artifact.Hash.ToString();
@@ -561,10 +622,10 @@ public sealed class ExplorerTurn
             }
 
             stream.Append(new TurnCompleted(turnId));
-            AuditSpend(sessionId, runId, laneId, turnId, stop, usage);
+            AuditSpend(sessionId, runId, laneId, turnId, stop, turnUsage);
             AuditPolicy(sessionId, runId, turnId, stop);
             return new TurnResult(finalText is null ? null : _redaction.Redact(finalText), stop, steps,
-                usage, allToolCalls.ToArray(), artifactId);
+                turnUsage, allToolCalls.ToArray(), artifactId);
         }
         catch (Exception ex)
         {
@@ -651,10 +712,17 @@ public sealed class ExplorerTurn
     {
         decimal session = 0m, daily = 0m, run = 0m;
         var incomplete = false;
+        IReadOnlyList<DomainEvent>? stepStarts = null;
+        IReadOnlyList<DomainEvent>? stepCompletions = null;
         IReadOnlyList<DomainEvent>? completions = null;
         if (includeWorkspaceDaily && _store is IWorkspaceJournalReader store)
         {
-            try { completions = store.ReadEvents(EventType.Of("model.completed")); }
+            try
+            {
+                stepStarts = store.ReadEvents(EventType.Of("model_step.started"));
+                stepCompletions = store.ReadEvents(EventType.Of("model_step.completed"));
+                completions = store.ReadEvents(EventType.Of("model.completed"));
+            }
             catch (Exception)
             {
                 // A failed cross-session scan cannot establish a safe daily total.
@@ -667,10 +735,116 @@ public sealed class ExplorerTurn
             if (includeWorkspaceDaily) incomplete = true;
             completions = stream.EventsSince(1)
                 .Where(evt => evt.Type.ToString().Equals("model.completed", StringComparison.Ordinal)).ToArray();
+            stepStarts = stream.EventsSince(1)
+                .Where(evt => evt.Type.ToString().Equals("model_step.started", StringComparison.Ordinal)).ToArray();
+            stepCompletions = stream.EventsSince(1)
+                .Where(evt => evt.Type.ToString().Equals("model_step.completed", StringComparison.Ordinal)).ToArray();
         }
 
+        stepStarts ??= Array.Empty<DomainEvent>();
+        stepCompletions ??= Array.Empty<DomainEvent>();
+        var startedKeys = new HashSet<(string Session, string Turn, int Index)>();
+        var startedRuns = new Dictionary<(string Session, string Turn, int Index), string>();
+        foreach (var evt in stepStarts)
+        {
+            try
+            {
+                if (_codecs.Decode(evt) is not ModelStepStarted started || started.StepIndex < 0
+                    || started.ContextBudget <= 0 || string.IsNullOrWhiteSpace(started.ModelId)
+                    || !Enum.TryParse<ToolMode>(started.ToolMode, out var toolMode)
+                    || !Enum.IsDefined(toolMode)
+                    || evt.TurnId is null || evt.TurnId.ToString() != started.TurnId.ToString()
+                    || evt.RunId is null
+                    || !startedKeys.Add((evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)))
+                {
+                    incomplete = true;
+                    continue;
+                }
+                startedRuns[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = evt.RunId!.ToString();
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException)
+            {
+                incomplete = true;
+            }
+        }
+
+        var completedKeys = new HashSet<(string Session, string Turn, int Index)>();
+        foreach (var evt in stepCompletions)
+        {
+            ModelStepCompleted? completed;
+            try { completed = _codecs.Decode(evt) as ModelStepCompleted; }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException)
+            {
+                incomplete = true;
+                continue;
+            }
+            if (completed is null || completed.StepIndex < 0 || evt.TurnId is null
+                || evt.TurnId.ToString() != completed.TurnId.ToString()
+                || completed.Usage is null
+                || completed.Usage.Input < 0 || completed.Usage.Output < 0 || completed.Usage.CacheRead < 0
+                || completed.Usage.CacheWrite < 0 || completed.Usage.Reasoning < 0
+                || !Enum.IsDefined(completed.StopReason)
+                || !completedKeys.Add((evt.SessionId.ToString(), completed.TurnId.ToString(), completed.StepIndex)))
+            {
+                incomplete = true;
+                continue;
+            }
+            var key = (evt.SessionId.ToString(), completed.TurnId.ToString(), completed.StepIndex);
+            UsageEnvelope stepEnvelope;
+            bool artifactValid;
+            try
+            {
+                var responseRef = completed.ResponseArtifact;
+                var artifactMetadataValid = responseRef is not null && responseRef.Size >= 0
+                    && responseRef.Kind == ArtifactKind.ModelResponse
+                    && responseRef.Sensitivity == Sensitivity.Sensitive
+                    && responseRef.MediaType == "application/vnd.omnicore.model-usage+json"
+                    && responseRef.Hash is not null
+                    && string.Equals(responseRef.Hash.Algorithm, "sha256", StringComparison.Ordinal)
+                    && _artifacts.Verify(responseRef.Hash, responseRef.Size);
+                var artifactText = artifactMetadataValid ? _artifacts.GetText(responseRef!.Hash!) : null;
+                artifactValid = TryDecodeUsageEnvelope(artifactText, out stepEnvelope);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or FormatException or OverflowException)
+            {
+                artifactValid = false;
+                stepEnvelope = new UsageEnvelope("", "", "", null, null);
+            }
+            if (!startedKeys.Contains(key) || completed.CostUsd is null || !artifactValid
+                || stepEnvelope.Usage is null || stepEnvelope.Usage != completed.Usage
+                || stepEnvelope.CostUsd != completed.CostUsd || stepEnvelope.Day != completed.Day
+                || evt.RunId is null || stepEnvelope.RunId != evt.RunId.ToString()
+                || !startedRuns.TryGetValue(key, out var startedRun)
+                || evt.RunId.ToString() != startedRun
+                || !DateOnly.TryParseExact(completed.Day, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out _))
+            {
+                incomplete = true;
+                continue;
+            }
+            var cost = completed.CostUsd.Value;
+            if (cost < 0) { incomplete = true; continue; }
+            if (completed.Day == today) daily += cost;
+            if (evt.SessionId == sessionId) session += cost;
+            if (evt.SessionId == sessionId && evt.RunId == runId) run += cost;
+        }
+        if (startedKeys.Any(key => !completedKeys.Contains(key))) incomplete = true;
+        foreach (var group in startedKeys.GroupBy(key => (key.Session, key.Turn)))
+        {
+            var indexes = group.Select(key => key.Index).OrderBy(index => index).ToArray();
+            for (var i = 0; i < indexes.Length; i++)
+                if (indexes[i] != i) { incomplete = true; break; }
+        }
+
+        // A Turn with invocation records is accounted per invocation; its final summary is
+        // retained for compatibility but must never be added a second time.
+        var stepTurnKeys = startedKeys.Select(key => (key.Session, key.Turn)).ToHashSet();
         foreach (var evt in completions)
         {
+            if (evt.TurnId is not null && stepTurnKeys.Contains((evt.SessionId.ToString(), evt.TurnId.ToString())))
+                continue;
             ModelCompleted? completed;
             try { completed = _codecs.Decode(evt) as ModelCompleted; }
             catch (Exception ex) when (ex is System.Text.Json.JsonException
@@ -737,7 +911,7 @@ public sealed class ExplorerTurn
 
     private static bool TryDecodeUsageEnvelope(string? text, out UsageEnvelope record)
     {
-        record = new UsageEnvelope("", "", "", null);
+        record = new UsageEnvelope("", "", "", null, null);
         if (string.IsNullOrEmpty(text)) return false;
         try
         {
@@ -751,8 +925,21 @@ public sealed class ExplorerTurn
             decimal? parsedCost = cost.ValueKind == System.Text.Json.JsonValueKind.String
                 && decimal.TryParse(cost.GetString(), System.Globalization.NumberStyles.Number,
                     System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : null;
+            TokenUsage? parsedUsage = null;
+            var usageNames = new[] { "input", "output", "cacheRead", "cacheWrite", "reasoning" };
+            var present = 0;
+            foreach (var name in usageNames)
+                if (root.TryGetProperty(name, out _)) present++;
+            if (present != 0 && present != usageNames.Length) return false;
+            if (present == usageNames.Length)
+            {
+                var numbers = new long[usageNames.Length];
+                for (var i = 0; i < usageNames.Length; i++)
+                    if (!root.GetProperty(usageNames[i]).TryGetInt64(out numbers[i]) || numbers[i] < 0) return false;
+                parsedUsage = new TokenUsage(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4]);
+            }
             record = new UsageEnvelope(response.GetString() ?? "", runId.GetString() ?? "",
-                day.GetString() ?? "", parsedCost);
+                day.GetString() ?? "", parsedCost, parsedUsage);
             return true;
         }
         catch (System.Text.Json.JsonException) { return false; }

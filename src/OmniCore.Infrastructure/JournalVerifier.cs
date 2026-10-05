@@ -697,6 +697,16 @@ public sealed class JournalVerifier
             refs.Add((model.ResponseArtifact, "responseArtifact"));
         }
 
+        if (payload is ModelStepStarted modelStepStarted && modelStepStarted.ContextSnapshotRef is not null)
+        {
+            refs.Add((modelStepStarted.ContextSnapshotRef, "contextSnapshotRef"));
+        }
+
+        if (payload is ModelStepCompleted modelStepCompleted && modelStepCompleted.ResponseArtifact is not null)
+        {
+            refs.Add((modelStepCompleted.ResponseArtifact, "responseArtifact"));
+        }
+
         return refs;
     }
 
