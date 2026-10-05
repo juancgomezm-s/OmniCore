@@ -92,6 +92,14 @@ public sealed class CliEndToEndTests
             Assert.Contains("\"outcome\"", resumed.Output);
             AssertNoLeaks(resumed.Output, machineReadable: true);
 
+            // M1 scenarios can deliberately leave a live Question interaction. Ordinary input must
+            // not resolve it (FollowUp contract). Start the independent HTTP smoke in its own
+            // workspace instead of implicitly relying on ask to bypass that pending interaction.
+            workspace = Path.Combine(root, "workspace-http");
+            Directory.CreateDirectory(workspace);
+            Environment.CurrentDirectory = workspace;
+            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace));
+
             // M2: actual HTTP Chat Completions provider, plus diagnostics and typed client commands.
             var doctor = await Run("doctor");
             Assert.Equal(0, doctor.Code);
@@ -100,15 +108,16 @@ public sealed class CliEndToEndTests
             Assert.Contains("Estado: modelo configurado", doctor.Output);
             Assert.DoesNotContain("doctor.", doctor.Output);
             AssertNoLeaks(doctor.Output);
+            var ask = await Run("ask", "explica el estado");
+            Assert.True(ask.Code == 0, $"ask expected exit=0, actual={ask.Code}: {ask.Output}");
+            Assert.Contains("respuesta-scripted", ask.Output);
+            AssertNoLeaks(ask.Output);
+
+            // Verify the new workspace's journal after ask has actually created it.
             var doctorJournal = await Run("doctor", "--verify-journal");
             Assert.Equal(0, doctorJournal.Code);
             Assert.Contains("verify-journal:", doctorJournal.Output);
             AssertNoLeaks(doctorJournal.Output);
-
-            var ask = await Run("ask", "explica el estado");
-            Assert.Equal(0, ask.Code);
-            Assert.Contains("respuesta-scripted", ask.Output);
-            AssertNoLeaks(ask.Output);
 
             var explain = await Run("explain", "estado del plan");
             Assert.Equal(0, explain.Code);
