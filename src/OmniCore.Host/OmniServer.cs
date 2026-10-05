@@ -1089,7 +1089,8 @@ public sealed class OmniServer : IOmniClient
         var control = new RunControlService(_store, _codecs);
         SessionId? outcomeSession = null;
         long outcomeSequenceBefore = 0;
-        var explicitOutcome = commandName is "run.interrupt" or "run.cancel";
+        var explicitOutcome = commandName is "session.input" or "run.interrupt" or "run.cancel"
+            or "interaction.respond";
         var commandId = new CommandId(Guid.Parse(command.MessageId));
         try
         {
@@ -1100,10 +1101,19 @@ public sealed class OmniServer : IOmniClient
                     var text = fields.TryGetValue("text", out var t) ? t : "";
                     if (text.Length == 0)
                     {
+                        if (explicitOutcome)
+                        {
+                            return RunControlOutcomeAck(command.MessageId, "error", "falta 'text'",
+                                RuntimeCommandOutcome.Rejected(), null, 0, commandId);
+                        }
+
                         return CommandAck.Fail(command.MessageId, "falta 'text'");
                     }
 
-                    var session = _lastSessionId ?? StartSession();
+                    outcomeSession = _lastSessionId;
+                    outcomeSequenceBefore = outcomeSession is null ? 0 : _store.CurrentSequence(outcomeSession);
+                    var session = outcomeSession ?? StartSession();
+                    outcomeSession = session;
                     var mode = fields.TryGetValue("mode", out var m) && m == "plan" ? RunMode.Plan : RunMode.Act;
                     _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin());
                     _lastSessionId = session;
@@ -1129,6 +1139,8 @@ public sealed class OmniServer : IOmniClient
                     {
                         if (_artifacts is null) throw new FormatException("artifact store no disponible");
                         var session = RequireSession();
+                        outcomeSession = session;
+                        outcomeSequenceBefore = _store.CurrentSequence(session);
                         var questionnaire = new QuestionnaireInteractionService(_store, _codecs, _artifacts);
                         var answers = QuestionnaireCodec.DecodeAnswers(fields.TryGetValue("answers", out var a) ? a : "[]");
                         var cancelled = fields.TryGetValue("cancelled", out var c) && c == "true";
@@ -1150,6 +1162,8 @@ public sealed class OmniServer : IOmniClient
                     {
                         var session = RequireSession();
                         var sequenceBeforeResponse = _store.CurrentSequence(session);
+                        outcomeSession = session;
+                        outcomeSequenceBefore = sequenceBeforeResponse;
                         control.Respond(session, interaction,
                             fields.TryGetValue("optionId", out var o) ? o : "");
                         AuditEffectResolutions(session, sequenceBeforeResponse, interaction);
