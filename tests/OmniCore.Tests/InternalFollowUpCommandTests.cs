@@ -36,6 +36,27 @@ public sealed class InternalFollowUpCommandTests
     }
 
     [Fact]
+    public void Existing_command_causation_is_preserved()
+    {
+        using var setup = new Setup();
+        setup.OpenTurn();
+        var parent = new CommandCausation(new CommandId(Guid.NewGuid()));
+        var before = setup.Store.CurrentSequence(setup.Session);
+
+        using (CausationScope.Begin(parent))
+        {
+            var result = setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run, setup.Lane,
+                "command scoped", null);
+            Assert.True(result.Queued);
+            Assert.Equal(parent.CommandId.Value.ToString(), result.Ack.CommandId);
+            Assert.Equal(parent, CausationScope.Current);
+        }
+
+        var queued = Assert.Single(setup.Store.ReadFrom(setup.Session, before + 1));
+        Assert.Equal(parent, queued.Causation);
+    }
+
+    [Fact]
     public void Pending_interaction_without_open_turn_keeps_null_source_turn()
     {
         using var setup = new Setup();
@@ -57,6 +78,11 @@ public sealed class InternalFollowUpCommandTests
         var queuedEvent = Assert.Single(setup.Store.ReadFrom(setup.Session, 1), evt =>
             evt.Type.ToString() == "followup.queued");
         Assert.Null(Assert.IsType<FollowUpQueued>(setup.Codecs.Decode(queuedEvent)).TurnId);
+        var journal = setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode).ToArray();
+        Assert.DoesNotContain(journal, payload => payload is InteractionResolved resolved
+            && resolved.InteractionId == interaction);
+        Assert.Equal(RunState.AwaitingInput, RunProjection.Replay(setup.Session, setup.Run, setup.Codecs,
+            setup.Store.ReadFrom(setup.Session, 1)).State);
     }
 
     [Fact]
@@ -74,6 +100,10 @@ public sealed class InternalFollowUpCommandTests
         AssertRejected(setup.Server.QueueFollowUpPromptCommand(SessionId.New(), setup.Run, setup.Lane, "x", null));
         AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, RunId.New(), setup.Lane, "x", null));
         AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run, LaneId.New(), "x", null));
+        var foreign = setup.AddOtherRun();
+        var beforeForeignLaneAttempt = setup.Store.CurrentSequence(setup.Session);
+        AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run, foreign.Lane, "x", null));
+        Assert.Equal(beforeForeignLaneAttempt, setup.Store.CurrentSequence(setup.Session));
 
         using (ExecutionScope.Begin(new ExecutionScopeState(setup.Run, setup.Task, setup.Lane)))
             new EventStream(setup.Store, setup.Codecs, setup.Session).Append(new RunCancelled(setup.Run),
@@ -159,6 +189,30 @@ public sealed class InternalFollowUpCommandTests
             using (ExecutionScope.Begin(new ExecutionScopeState(Run, Task, Lane, turn)))
                 new EventStream(Store, Codecs, Session).Append(new TurnStarted(turn, Lane), DurabilityClass.Standard);
             return turn;
+        }
+
+        public (RunId Run, LaneId Lane) AddOtherRun()
+        {
+            var otherRun = RunId.New();
+            var otherTask = TaskId.New();
+            var otherLane = LaneId.New();
+            var budget = new TaskBudget(null, null, null, null);
+            var stream = new EventStream(Store, Codecs, Session);
+            using (ExecutionScope.Begin(new ExecutionScopeState(otherRun, otherTask, otherLane)))
+            {
+                stream.Append(new RunCreated(otherRun, Session, "foreign run", RunMode.Plan,
+                    ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, otherTask,
+                    DateTimeOffset.UtcNow));
+                stream.Append(new RunStarted(otherRun));
+                stream.Append(new TaskCreated(otherTask, otherRun, "foreign task", Array.Empty<TaskDependency>(), budget));
+                stream.Append(new TaskReady(otherTask));
+                stream.Append(new LaneCreated(otherLane, otherTask, ProfileId.New()));
+                stream.Append(new LaneStarted(otherLane));
+                stream.Append(new TaskStarted(otherTask, otherLane));
+                stream.Append(new PlanCreated(PlanId.New(), otherRun, PlanItemId.New(), "foreign run"));
+            }
+
+            return (otherRun, otherLane);
         }
 
         public void Dispose()

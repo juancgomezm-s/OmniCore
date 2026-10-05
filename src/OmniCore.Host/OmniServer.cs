@@ -633,10 +633,10 @@ public sealed class OmniServer : IOmniClient
     }
 
     /// <summary>Store del servidor (para el Turn de Explorer, que persiste en el mismo journal).</summary>
-    public IEventStore AcquireStore() => _store;
+    internal IEventStore AcquireStore() => _store;
 
     /// <summary>Registro de codecs del servidor.</summary>
-    public IEventCodecRegistry AcquireCodecs() => _codecs;
+    internal IEventCodecRegistry AcquireCodecs() => _codecs;
 
     /// <summary>El LaneId del último run (del journal) o null si no hay run persistido.</summary>
     public LaneId? LastLaneId()
@@ -1269,7 +1269,9 @@ public sealed class OmniServer : IOmniClient
                 RuntimeCommandOutcome.Rejected()));
         }
 
-        var own = EventsForRun(events, runId);
+        // Filter by envelope Run correlation rather than the current-run interval: one Session
+        // may contain lifecycle events for an earlier Run after another Run was created.
+        var own = events.Where(evt => evt.CorrelationId == runId || evt.RunId == runId).ToArray();
         var runProjection = RunProjection.Replay(sessionId, runId, _codecs, own);
         if (runProjection.IsTerminal())
         {
