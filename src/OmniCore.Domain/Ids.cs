@@ -113,6 +113,16 @@ public record LaneId(Guid Value)
     public override string ToString() => Value.ToString();
 }
 
+/// <summary>Identifica una instancia concreta de ejecución de un agente (ADR-0046 §2).</summary>
+public record ExecutionId(Guid Value)
+{
+    public static ExecutionId New() => new(Guid.CreateVersion7());
+
+    public static ExecutionId Parse(string text) => new(EventId.ParseGuidText(text));
+
+    public override string ToString() => Value.ToString();
+}
+
 /// <summary>Identifica un Turn de una Lane (spec §12).</summary>
 public record TurnId(Guid Value)
 {

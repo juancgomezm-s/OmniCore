@@ -46,6 +46,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.InteractionExpired())
             .Plus(Typed.ProgressStalled())
             .Plus(Typed.TaskCreated())
+            .Plus(Typed.AgentExecutionStarted())
+            .Plus(Typed.AgentExecutionCompleted())
+            .Plus(Typed.AgentExecutionFailed())
             .Plus(Typed.TaskReady())
             .Plus(Typed.TaskStarted())
             .Plus(Typed.TaskBlocked())
@@ -116,7 +119,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("task.created"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -316,6 +320,9 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(InteractionExpired))]
 [JsonSerializable(typeof(ProgressStalled))]
 [JsonSerializable(typeof(TaskCreated))]
+[JsonSerializable(typeof(AgentExecutionStarted))]
+[JsonSerializable(typeof(AgentExecutionCompleted))]
+[JsonSerializable(typeof(AgentExecutionFailed))]
 [JsonSerializable(typeof(TaskReady))]
 [JsonSerializable(typeof(TaskStarted))]
 [JsonSerializable(typeof(TaskBlocked))]
@@ -469,7 +476,16 @@ public sealed class Typed
         Of(EventType.Of("progress.stalled"), EventJsonContext.Default.ProgressStalled);
 
     public static CodecPair TaskCreated() =>
-        Of(EventType.Of("task.created"), EventJsonContext.Default.TaskCreated);
+        Of(EventType.Of("task.created"), EventJsonContext.Default.TaskCreated, currentVersion: 2);
+
+    public static CodecPair AgentExecutionStarted() =>
+        Of(EventType.Of("agent_execution.started"), EventJsonContext.Default.AgentExecutionStarted);
+
+    public static CodecPair AgentExecutionCompleted() =>
+        Of(EventType.Of("agent_execution.completed"), EventJsonContext.Default.AgentExecutionCompleted);
+
+    public static CodecPair AgentExecutionFailed() =>
+        Of(EventType.Of("agent_execution.failed"), EventJsonContext.Default.AgentExecutionFailed);
 
     public static CodecPair TaskReady() =>
         Of(EventType.Of("task.ready"), EventJsonContext.Default.TaskReady);
