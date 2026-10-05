@@ -343,8 +343,14 @@ public sealed class OmniCliRuntime
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = server.LastLaneId() ?? LaneId.New();
             var promptOrigin = server.ConsumePromptOrigin();
-            if (QueuePromptForOpenTurn(server.AcquireStore(), server.AcquireCodecs(), sessionId, runId,
-                laneId, prompt, promptOrigin))
+            var followUp = server.QueueFollowUpPromptCommand(sessionId, runId, laneId, prompt, promptOrigin);
+            if (followUp.Ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Rejected)
+            {
+                writeLine(followUp.Ack.Error ?? "follow-up queue rejected");
+                return 1;
+            }
+
+            if (followUp.Queued)
                 prompt = ""; // queued once before any CLI early-return; Ask must not enqueue it again.
             IModelProvider provider = providerDescription is null
                 ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")

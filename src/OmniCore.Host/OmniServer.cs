@@ -1251,6 +1251,56 @@ public sealed class OmniServer : IOmniClient
                 causedSequences.Min(), causedSequences.Max());
     }
 
+    /// <summary>Queues one CLI FollowUp intent as an internal Host command.</summary>
+    internal (bool Queued, CommandAck Ack) QueueFollowUpPromptCommand(SessionId sessionId, RunId runId,
+        LaneId laneId, string prompt, string? origin)
+    {
+        var ambientCommand = CausationScope.Current as CommandCausation;
+        var commandId = ambientCommand?.CommandId ?? CommandId.New();
+        var commandMessageId = commandId.Value.ToString();
+        var events = _store.ReadFrom(sessionId, 1);
+        var decoded = events.Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        var created = decoded.Select(pair => pair.Payload).OfType<RunCreated>()
+            .FirstOrDefault(item => item.RunId == runId && item.SessionId == sessionId);
+        if (created is null)
+        {
+            return (false, new CommandAck(commandMessageId, "error",
+                "the requested Run does not belong to the requested Session",
+                RuntimeCommandOutcome.Rejected()));
+        }
+
+        var own = EventsForRun(events, runId);
+        var runProjection = RunProjection.Replay(sessionId, runId, _codecs, own);
+        if (runProjection.IsTerminal())
+        {
+            return (false, new CommandAck(commandMessageId, "error", "the requested Run is terminal",
+                RuntimeCommandOutcome.Rejected()));
+        }
+
+        var lane = decoded.FirstOrDefault(pair => pair.Event.RunId == runId
+            && pair.Payload is LaneCreated laneCreated && laneCreated.LaneId == laneId);
+        if (lane.Payload is not LaneCreated requestedLane
+            || !decoded.Any(pair => pair.Event.RunId == runId
+                && pair.Payload is TaskCreated taskCreated && taskCreated.TaskId == requestedLane.TaskId
+                && taskCreated.RunId == runId))
+        {
+            return (false, new CommandAck(commandMessageId, "error",
+                "the requested Lane does not belong to the requested Run",
+                RuntimeCommandOutcome.Rejected()));
+        }
+
+        var sequenceBefore = _store.CurrentSequence(sessionId);
+        using var internalCommand = ambientCommand is null
+            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+        // Queue writes belong to the explicit Run/Lane only; never inherit a caller's unrelated
+        // Task/Lane/Turn ambient attribution.
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, requestedLane.TaskId, laneId));
+        var queued = FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, prompt, origin);
+        var outcome = queued ? RuntimeCommandOutcome.Accepted() : RuntimeCommandOutcome.NoOp();
+        return (queued, CommandOutcomeAck(commandMessageId, "ok", null, outcome,
+            sessionId, sequenceBefore, commandId));
+    }
+
     /// <summary>
     /// Runs one CLI Explorer Ask invocation as an internal Host command, including each Act-loop
     /// iteration. A normal callback return means the invocation was accepted, not that the Run completed.
