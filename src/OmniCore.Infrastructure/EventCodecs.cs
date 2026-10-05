@@ -120,7 +120,10 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("task.created"), 1));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("task.created"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_requested"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_approved"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_completed"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -539,13 +542,13 @@ public sealed class Typed
         Of(EventType.Of("turn.started"), EventJsonContext.Default.TurnStarted, currentVersion: 2);
 
     public static CodecPair ModelEscalationRequested() =>
-        Of(EventType.Of("model.escalation_requested"), EventJsonContext.Default.ModelEscalationRequested);
+        Of(EventType.Of("model.escalation_requested"), EventJsonContext.Default.ModelEscalationRequested, currentVersion: 2);
 
     public static CodecPair ModelEscalationApproved() =>
-        Of(EventType.Of("model.escalation_approved"), EventJsonContext.Default.ModelEscalationApproved);
+        Of(EventType.Of("model.escalation_approved"), EventJsonContext.Default.ModelEscalationApproved, currentVersion: 2);
 
     public static CodecPair ModelEscalationCompleted() =>
-        Of(EventType.Of("model.escalation_completed"), EventJsonContext.Default.ModelEscalationCompleted);
+        Of(EventType.Of("model.escalation_completed"), EventJsonContext.Default.ModelEscalationCompleted, currentVersion: 2);
 
     public static CodecPair ModelCompleted() =>
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
