@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 08:50 UTC /02:50 America/Mexico_City. Rama autorizada
+Checkpoint 08:51 UTC /02:51 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -113,7 +113,9 @@ se cambian rutas de producción ni se desactiva el paralelismo de toda la suite.
 eventos de su nueva Session causados por ese command. Objetivo vacío rechaza sin crear Session;
 expansión correcta es Accepted sin journal (no NoOp), errores de catálogo/JSON mantienen Error.
 Root auditó diff y reprodujo73/73 incluyendo estas pruebas y los fixtures de consola corregidos.
-Suite funcional completa nueva está en curso; no declarar verde antes del resultado.
+Suite funcional completa independiente posterior a creation y aislamiento de consola terminó
+**1289=1285 PASS /0 FAIL /4 SKIP**, exit0. Fix de aislamiento: `74e6c53`; no modifica código de
+producción ni assertions. No confundir este resultado con cierre M4/M5 o cualificación remota.
 
 Luna continúa sim/sim.resume: distinguir aceptación del comando de éxito del Run y preservar
 Status/Error. No declarar todos los commands migrados ni commands internos listos. M5.5 no se
