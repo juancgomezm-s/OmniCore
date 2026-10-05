@@ -10,7 +10,9 @@ public sealed class InternalActCommandTests
     [Fact]
     public void Act_loop_suspension_and_resume_use_distinct_internal_causes_on_the_same_turn()
     {
-        using var fx = new InternalExplorerAskCommandTests.Fixture();
+        using var fx = new InternalExplorerAskCommandTests.Fixture(RunMode.Act);
+        Assert.Equal(RunMode.Act, RunProjection.Replay(fx.Session, fx.Run, fx.Codecs,
+            fx.Store.ReadFrom(fx.Session, 1)).Mode);
         var runtime = OmniCliRuntime.Create(fx.Root);
         var output = new List<string>();
         var initialSequence = fx.Store.CurrentSequence(fx.Session);
