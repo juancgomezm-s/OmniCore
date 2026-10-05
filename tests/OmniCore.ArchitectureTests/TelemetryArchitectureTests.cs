@@ -36,6 +36,7 @@ public sealed class TelemetryArchitectureTests
             nameof(TelemetryRecord.Kind), nameof(TelemetryRecord.Signal), nameof(TelemetryRecord.Value),
             nameof(TelemetryRecord.TimestampUtc), nameof(TelemetryRecord.RunId), nameof(TelemetryRecord.TaskId),
             nameof(TelemetryRecord.LaneId), nameof(TelemetryRecord.TurnId), nameof(TelemetryRecord.ToolCallId),
+            nameof(TelemetryRecord.ExecutionId),
         }.Order(StringComparer.Ordinal), properties.Select(property => property.Name).Order(StringComparer.Ordinal));
         Assert.All(properties, property => Assert.NotEqual(typeof(string), property.PropertyType));
         Assert.Equal(typeof(long), typeof(TelemetryRecord).GetProperty(nameof(TelemetryRecord.Value))!.PropertyType);

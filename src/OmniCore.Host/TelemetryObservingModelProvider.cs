@@ -37,7 +37,8 @@ public sealed class TelemetryObservingModelProvider : IModelProvider
             try
             {
                 _sink.Record(new TelemetryRecord(kind, signal, value, DateTimeOffset.UtcNow,
-                    scope?.RunId, scope?.TaskId, scope?.LaneId, scope?.TurnId, scope?.ToolCallId));
+                    scope?.RunId, scope?.TaskId, scope?.LaneId, scope?.TurnId, scope?.ToolCallId,
+                    scope?.ExecutionId));
             }
             catch (Exception)
             {
