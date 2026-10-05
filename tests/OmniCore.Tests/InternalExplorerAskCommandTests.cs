@@ -19,7 +19,7 @@ public sealed class InternalExplorerAskCommandTests
             null, true, null, null, null),
     });
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "omnicore-internal-ask-" + Guid.NewGuid().ToString("N"));
         public OmniServer Server { get; }
@@ -28,6 +28,7 @@ public sealed class InternalExplorerAskCommandTests
         public LaneId Lane { get; }
         public InMemoryEventStore Store { get; }
         public EventCodecs Codecs { get; }
+        public QuestionnaireInteractionService Questionnaires { get; }
         public int ProviderCalls;
         public ExplorerTurn Turn { get; }
 
@@ -49,10 +50,17 @@ public sealed class InternalExplorerAskCommandTests
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), Root);
             var artifacts = new FileArtifactStore(Path.Combine(Root, "blobs"));
-            var questionnaires = new QuestionnaireInteractionService(Store, Codecs, artifacts);
+            Questionnaires = new QuestionnaireInteractionService(Store, Codecs, artifacts);
             Turn = new ExplorerTurn((_, _) =>
             {
                 ProviderCalls++;
+                if (ProviderCalls > 1)
+                {
+                    return new ModelResponse(new ContentBlock[] { new TextBlock("resumed") }, StopReason.EndTurn,
+                        new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("scripted", "test", null));
+                }
+
                 return new ModelResponse(new ContentBlock[]
                 {
                     new ToolCallBlock(ToolCallId.New(), "provider-ask", "user.ask",
@@ -63,7 +71,7 @@ public sealed class InternalExplorerAskCommandTests
                 new ExecutionFingerprint("scripted", "h", "t", "c", "o", "M5.5"),
                 new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
                 Store, Codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-                questionnaires: questionnaires);
+                questionnaires: Questionnaires);
         }
 
         public void Dispose() => Directory.Delete(Root, recursive: true);
@@ -75,7 +83,7 @@ public sealed class InternalExplorerAskCommandTests
         using var fx = new Fixture();
         var before = fx.Store.CurrentSequence(fx.Session);
 
-        var execution = fx.Server.ExecuteAskTurn(fx.Session, fx.Run,
+        var execution = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run,
             token => fx.Turn.Ask("ask the user", "system", fx.Session, fx.Run, fx.Lane, "", token),
             TestContext.Current.CancellationToken);
 
@@ -112,7 +120,7 @@ public sealed class InternalExplorerAskCommandTests
         var cause = new CommandCausation(commandId);
         using (CausationScope.Begin(cause))
         {
-            var execution = fx.Server.ExecuteAskTurn(fx.Session, fx.Run,
+            var execution = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run,
                 token =>
                 {
                     Assert.Equal(cause, CausationScope.Current);
@@ -141,7 +149,7 @@ public sealed class InternalExplorerAskCommandTests
 
         using (CausationScope.Begin(cause))
         {
-            var execution = fx.Server.ExecuteAskTurn(fx.Session, fx.Run, _ =>
+            var execution = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, _ =>
             {
                 new EventStream(fx.Store, fx.Codecs, fx.Session).Append(
                     new UserInputReceived(fx.Run, "[\"visible\"]", null));
@@ -166,7 +174,7 @@ public sealed class InternalExplorerAskCommandTests
     {
         using var fx = new Fixture();
         var calls = 0;
-        var rejected = fx.Server.ExecuteAskTurn(SessionId.New(), fx.Run, _ =>
+        var rejected = fx.Server.ExecuteExplorerTurn(SessionId.New(), fx.Run, _ =>
         {
             calls++;
             return new ExplorerTurn.TurnResult("should not execute", StopReason.EndTurn, 0,
@@ -181,7 +189,7 @@ public sealed class InternalExplorerAskCommandTests
         Assert.Equal(0, calls);
         Assert.Null(CausationScope.Current);
 
-        var wrongRun = fx.Server.ExecuteAskTurn(fx.Session, RunId.New(), _ =>
+        var wrongRun = fx.Server.ExecuteExplorerTurn(fx.Session, RunId.New(), _ =>
         {
             calls++;
             return new ExplorerTurn.TurnResult("should not execute", StopReason.EndTurn, 0,
@@ -196,7 +204,7 @@ public sealed class InternalExplorerAskCommandTests
             + JsonObj.Field("runId", fx.Run.Value.ToString()) + "}";
         Assert.Equal("ok", fx.Server.Send(WireEnvelope.Command(Ids.NewV7(), cancelPayload),
             TestContext.Current.CancellationToken).Status);
-        var terminal = fx.Server.ExecuteAskTurn(fx.Session, fx.Run, _ =>
+        var terminal = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, _ =>
         {
             calls++;
             return new ExplorerTurn.TurnResult("should not execute", StopReason.EndTurn, 0,
@@ -220,7 +228,7 @@ public sealed class InternalExplorerAskCommandTests
         using (CausationScope.Begin(parentCause))
         {
             var exception = Assert.Throws<OperationCanceledException>(() =>
-                fx.Server.ExecuteAskTurn(fx.Session, fx.Run, token =>
+                fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, token =>
             {
                 Assert.Equal(cancellation.Token, token);
                 new EventStream(fx.Store, fx.Codecs, fx.Session).Append(
@@ -237,4 +245,29 @@ public sealed class InternalExplorerAskCommandTests
 
         Assert.Null(CausationScope.Current);
     }
+
+    [Fact]
+    public void Generated_command_scope_is_restored_after_callback_appends_then_throws()
+    {
+        using var fx = new Fixture();
+        var before = fx.Store.CurrentSequence(fx.Session);
+        var parent = new EventCausation(new EventId(Guid.NewGuid()));
+        using (CausationScope.Begin(parent))
+        {
+            Assert.Throws<InvalidOperationException>(() => fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, _ =>
+            {
+                new EventStream(fx.Store, fx.Codecs, fx.Session).Append(
+                    new UserInputReceived(fx.Run, "[\"before throw\"]", null));
+                throw new InvalidOperationException("scripted failure");
+            }, TestContext.Current.CancellationToken));
+
+            var appended = Assert.Single(fx.Store.ReadFrom(fx.Session, before + 1));
+            var generatedCause = Assert.IsType<CommandCausation>(appended.Causation);
+            Assert.False(parent.Equals(generatedCause));
+            Assert.Equal(parent, CausationScope.Current);
+        }
+
+        Assert.Null(CausationScope.Current);
+    }
+
 }

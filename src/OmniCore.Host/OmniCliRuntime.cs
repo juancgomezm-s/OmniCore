@@ -478,7 +478,7 @@ public sealed class OmniCliRuntime
                     workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
                     interactionResponder, interactive, locale, cancellationToken, promptOrigin);
 
-            var askExecution = server.ExecuteAskTurn(sessionId, runId,
+            var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
                     promptOrigin), cancellationToken);
             if (askExecution.Result is null
@@ -590,8 +590,19 @@ public sealed class OmniCliRuntime
 
         for (var attempt = 0; attempt < maxTurns; attempt++)
         {
-            var result = turn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
-                cancellationToken, origin);
+            var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
+                token => turn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
+                    token, origin), cancellationToken);
+            if (askExecution.Result is null
+                || askExecution.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
+            {
+                writeLine(Text(Localized("cli.runtime.error", ("command", "act"),
+                    ("message", askExecution.Ack.Error ?? "internal Explorer turn command was rejected"),
+                    ("type", nameof(InvalidOperationException)))));
+                return 1;
+            }
+
+            var result = askExecution.Result;
             origin = null;
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
             {
