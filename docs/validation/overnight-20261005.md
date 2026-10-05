@@ -197,6 +197,14 @@ Root auditó ambos commits y reprodujo26/26 focales. Full independiente61460 al1
 **1322=1318 PASS /0 FAIL /4 SKIP**, exit0. Siguiente bloque: causación de la cola FollowUp que
 CLI persiste antes de sus earlyreturns; no cambia selección de modelos ni autorizaciones.
 
+`cb31876` migra la cola FollowUp temprana del CLI a un comando interno causal: valida Run/Lane
+de la Session, no hereda atribución ajena y separa Queued de Accepted/NoOp/Rejected. El prompt
+sólo se vacía tras persistencia durable, y ante rechazo no se invoca provider. No inventa un
+SourceTurn cuando aprobación pendiente aún no tiene Turn. Root auditó y reprodujo22/22 focales.
+Full independiente33928 al12:04UTC /06:04local: **1326=1322 PASS /0 FAIL /4 SKIP**, exit0.
+Siguiente tarea de Luna: auditoría de exposición pública del journal y guard de arquitectura,
+distinguiendo lecturas de escrituras y sin declarar completa una migración no demostrada.
+
 Runbook operativo compactado al09:26 UTC, preservando íntegra la versión previa en
 C:\Users\juanc\.codex\omni-overnight-20261005-history-0925.md. Consultar el historial sólo para
 evidencia específica; fuente vigente sigue siendo omni-overnight-20261005.md.
