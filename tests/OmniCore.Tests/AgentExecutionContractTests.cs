@@ -86,7 +86,7 @@ public sealed class AgentExecutionContractTests
                 awaitedUnmanaged.ProfileId, awaitedUnmanaged.ParentExecutionId,
                 awaitedUnmanaged.Relation, awaitedUnmanaged.Supervision));
 
-            store.Close();
+            Release(store);
             store = new SqliteEventStore(journal);
             var persisted = store.ReadFrom(session, 1);
             var payloads = persisted.Select(codecs.Decode).ToArray();
@@ -120,11 +120,20 @@ public sealed class AgentExecutionContractTests
         }
         finally
         {
-            store?.Close();
-            using var connection = new SqliteConnection("DataSource=" + journal);
-            SqliteConnection.ClearPool(connection);
-            connection.Dispose();
-            try { Directory.Delete(root, true); } catch (IOException) { }
+            if (store is not null)
+            {
+                Release(store);
+            }
+
+            Directory.Delete(root, true);
         }
+    }
+
+    private static void Release(SqliteEventStore store)
+    {
+        var connection = Assert.IsType<SqliteConnection>(store.Connection);
+        store.Close();
+        SqliteConnection.ClearPool(connection);
+        connection.Dispose();
     }
 }
