@@ -100,17 +100,33 @@ public sealed class InternalFollowUpCommandTests
         AssertRejected(setup.Server.QueueFollowUpPromptCommand(SessionId.New(), setup.Run, setup.Lane, "x", null));
         AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, RunId.New(), setup.Lane, "x", null));
         AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run, LaneId.New(), "x", null));
-        var foreign = setup.AddOtherRun();
+        var cancel = setup.Server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "run.cancel")
+            + "," + JsonObj.Field("runId", setup.Run.Value.ToString()) + "}"), CancellationToken.None);
+        Assert.Equal("ok", cancel.Status);
+        Assert.Equal(RunState.Cancelled, RunProjection.Replay(setup.Session, setup.Run, setup.Codecs,
+            setup.Store.ReadFrom(setup.Session, 1)).State);
+        var next = setup.AddOtherRun();
         var beforeForeignLaneAttempt = setup.Store.CurrentSequence(setup.Session);
-        AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run, foreign.Lane, "x", null));
+        AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, next.Run, setup.Lane, "x", null));
+        Assert.Equal(beforeForeignLaneAttempt, setup.Store.CurrentSequence(setup.Session));
+        var ownLane = setup.Server.QueueFollowUpPromptCommand(setup.Session, next.Run, next.Lane, "next prompt", null);
+        Assert.False(ownLane.Queued);
+        Assert.Equal(RuntimeCommandOutcomeKind.NoOp, ownLane.Ack.Outcome?.Kind);
+        Assert.Null(ownLane.Ack.FirstSeq);
+        Assert.Null(ownLane.Ack.LastSeq);
         Assert.Equal(beforeForeignLaneAttempt, setup.Store.CurrentSequence(setup.Session));
 
-        using (ExecutionScope.Begin(new ExecutionScopeState(setup.Run, setup.Task, setup.Lane)))
-            new EventStream(setup.Store, setup.Codecs, setup.Session).Append(new RunCancelled(setup.Run),
-                DurabilityClass.Standard);
+        // A completed escalation can legitimately be recorded for a terminal Run after the
+        // next Run exists. It does not reactivate the old Run or authorize more input for it.
+        var completion = setup.Server.RecordModelEscalationCompleted(setup.Session,
+            new ModelEscalationCompleted(setup.Run, "test-model"));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, completion.Outcome?.Kind);
         var beforeTerminalAttempt = setup.Store.CurrentSequence(setup.Session);
         AssertRejected(setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run, setup.Lane, "x", null));
         Assert.Equal(beforeTerminalAttempt, setup.Store.CurrentSequence(setup.Session));
+        Assert.Equal(RunState.Cancelled, RunProjection.Replay(setup.Session, setup.Run, setup.Codecs,
+            setup.Store.ReadFrom(setup.Session, 1)).State);
+        Assert.Equal(next.Run, new RunControlService(setup.Store, setup.Codecs).ActiveRun(setup.Session));
     }
 
     [Fact]
@@ -193,25 +209,13 @@ public sealed class InternalFollowUpCommandTests
 
         public (RunId Run, LaneId Lane) AddOtherRun()
         {
-            var otherRun = RunId.New();
-            var otherTask = TaskId.New();
-            var otherLane = LaneId.New();
-            var budget = new TaskBudget(null, null, null, null);
-            var stream = new EventStream(Store, Codecs, Session);
-            using (ExecutionScope.Begin(new ExecutionScopeState(otherRun, otherTask, otherLane)))
-            {
-                stream.Append(new RunCreated(otherRun, Session, "foreign run", RunMode.Plan,
-                    ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, otherTask,
-                    DateTimeOffset.UtcNow));
-                stream.Append(new RunStarted(otherRun));
-                stream.Append(new TaskCreated(otherTask, otherRun, "foreign task", Array.Empty<TaskDependency>(), budget));
-                stream.Append(new TaskReady(otherTask));
-                stream.Append(new LaneCreated(otherLane, otherTask, ProfileId.New()));
-                stream.Append(new LaneStarted(otherLane));
-                stream.Append(new TaskStarted(otherTask, otherLane));
-                stream.Append(new PlanCreated(PlanId.New(), otherRun, PlanItemId.New(), "foreign run"));
-            }
-
+            var ack = Server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "session.input")
+                + "," + JsonObj.Field("text", "next objective") + "}"), CancellationToken.None);
+            Assert.Equal("ok", ack.Status);
+            Assert.Equal(Session, Server.LastSessionId());
+            var otherRun = Assert.IsType<RunId>(Server.LastRunId());
+            var otherLane = Assert.IsType<LaneId>(Server.LastLaneId());
+            Assert.NotEqual(Run, otherRun);
             return (otherRun, otherLane);
         }
 

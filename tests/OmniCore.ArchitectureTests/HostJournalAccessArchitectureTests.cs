@@ -18,6 +18,13 @@ public sealed class HostJournalAccessArchitectureTests
         Assert.False(codecs.IsPublic);
         Assert.Equal(typeof(IEventStore), store.ReturnType);
         Assert.Equal(typeof(IEventCodecRegistry), codecs.ReturnType);
+        // Also prevent a public replacement accessor under another name, including a property.
+        Assert.DoesNotContain(server.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public),
+            method => typeof(IEventStore).IsAssignableFrom(method.ReturnType)
+                || typeof(IEventCodecRegistry).IsAssignableFrom(method.ReturnType));
+        Assert.DoesNotContain(server.GetFields(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public),
+            field => typeof(IEventStore).IsAssignableFrom(field.FieldType)
+                || typeof(IEventCodecRegistry).IsAssignableFrom(field.FieldType));
     }
 
     [Fact]
