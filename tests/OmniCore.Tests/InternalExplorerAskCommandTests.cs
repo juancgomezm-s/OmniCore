@@ -32,12 +32,13 @@ public sealed class InternalExplorerAskCommandTests
         public int ProviderCalls;
         public ExplorerTurn Turn { get; }
 
-        public Fixture()
+        public Fixture(RunMode mode = RunMode.Plan)
         {
             Directory.CreateDirectory(Path.Combine(Root, "blobs"));
             Server = OmniHost.CreateInMemoryServer();
             var input = Server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "session.input")
-                + "," + JsonObj.Field("text", "ask objective") + "," + JsonObj.Field("mode", "plan") + "}"),
+                + "," + JsonObj.Field("text", "ask objective") + "," + JsonObj.Field("mode",
+                    mode == RunMode.Act ? "act" : "plan") + "}"),
                 TestContext.Current.CancellationToken);
             Assert.Equal("ok", input.Status);
             Session = Assert.IsType<SessionId>(Server.LastSessionId());
