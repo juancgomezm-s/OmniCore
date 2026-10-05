@@ -1,0 +1,56 @@
+2026-10-05 Conversation reference: controlled TUI wiring in native PTY, Terminal.Gui DOTNET, fake durable assistant fixture (no model call).
+NO_COLOR removed only in child test process; TERM=xterm-256color. Not a desktop screenshot.
+[?9001h[?1004h[2J[m]0;C:\Users\juanc\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe[?25l[2;1H[?25hxUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.Tests
+  Discovered:  OmniCore.Tests
+  Starting:    OmniCore.Tests
+[?1049h[?25l[H[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[6;1H[?25h[?1003h[?1015h[?1006h[?2004h[?u[?25l]0;OmniCore[H  C:\…pData\Local\Temp\omnicore-tui-wiring-a2b26412e621439da095fdfde978c00c\ws                                                                                    [38;2;139;157;172m○                                                                          [K[m▲    [38;2;139;157;172mRun iniciado: semilla de prueba                                            [K[38;2;103;212;208m█  [m                                                                             [K[38;2;103;212;208m█  [m  [38;2;139;157;172mTÚ                                                                         [K[38;2;103;212;208m█  [m  semilla de prueba                                                          [K[38;2;103;212;208m█  [m                                                                             ░    [38;2;83;184;245mOMNICORE                                                                   [K[m░    [38;2;83;184;245mKey Methods                                                                [K[m░    • [38;2;239;154;112mAskAsync(ct) [m— Run Explorer                                              ░    [38;2;103;212;208m[48;2;10;35;48m┌─ </> c#[38;2;230;230;230m[49m                                                                  [K[m░    [38;2;181;222;243m[48;2;10;35;48m│ public void Run() { }[38;2;230;230;230m[49m                                                    [K[m░    [38;2;103;212;208m[48;2;10;35;48m└─[38;2;230;230;230m[49m                                                                         [K[m░    History 0                                                                  ░    History 1                                                                  ░    History 2                                                                  ░    History 3                                                                  ▼    Enter enviar   / comandos   @ archivos   F2 workspace   F3 modelos             ╭┤ Mensaje ├─────────────────────────────────────────────────────────────────╮  │ ›                                                                          │  │                                                                            │  ╰────────────────────────────────────────────────────────────────────────────╯   act                                                                        —  [5 q[H  C:\…pData\Local\Temp\omnicore-tui-wiring-a2b26412e621439da095fdfde978c00c\ws                                                                                    [38;2;139;157;172m○                                                                          [K[m▲    [38;2;139;157;172mRun iniciado: semilla de prueba                                            [K[38;2;103;212;208m█  [m                                                                             [K[38;2;103;212;208m█  [m  [38;2;139;157;172mTÚ                                                                         [K[38;2;103;212;208m█  [m  semilla de prueba                                                          [K[38;2;103;212;208m█  [m                                                                             ░    [38;2;83;184;245mOMNICORE                                                                   [K[m░    [38;2;83;184;245mKey Methods                                                                [K[m░    • [38;2;239;154;112mAskAsync(ct) [m— Run Explorer                                              ░    [38;2;103;212;208m[48;2;10;35;48m┌─ </> c#[38;2;230;230;230m[49m                                                                  [K[m░    [38;2;181;222;243m[48;2;10;35;48m│ public void Run() { }[38;2;230;230;230m[49m                                                    [K[m░    [38;2;103;212;208m[48;2;10;35;48m└─[38;2;230;230;230m[49m                                                                         [K[m░    History 0                                                                  ░    History 1                                                                  ░    History 2                                                                  ░    History 3                                                                  ▼    Enter enviar   / comandos   @ archivos   F2 workspace   F3 modelos             ╭┤ Mensaje ├─────────────────────────────────────────────────────────────────╮  │ ›                                                                          │  │                                                                            │  ╰────────────────────────────────────────────────────────────────────────────╯   act                                                                        —  [21;6H[?25h[?25l[H  C:\…pData\Local\Temp\omnicore-tui-wiring-a2b26412e621439da095fdfde978c00c\ws                                                                                    History 24                                                                 ▲    History 25                                                                 ░    History 26                                                                 ░    History 27                                                                 ░    History 28                                                                 ░    History 29                                                                 ░    History 30                                                                 ░    History 31                                                                 ░    History 32                                                                 ░    History 33                                                                 ░    History 34                                                                 ░    History 35                                                                 [K[38;2;103;212;208m█  [m  History 36                                                                 [K[38;2;103;212;208m█  [m  History 37                                                                 [K[38;2;103;212;208m█  [m  History 38                                                                 [K[38;2;103;212;208m█  [m  History 39                                                                 ▼    Enter enviar   / comandos   @ archivos   F2 workspace   F3 modelos             ╭┤ Mensaje ├─────────────────────────────────────────────────────────────────╮  │ ›                                                                          │  │                                                                            │  ╰────────────────────────────────────────────────────────────────────────────╯   act                                                                        —  [21;6H[?25h[?2004l[?1003l[?1015l[?1006l[?1049l[?25l[H[K
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)[K
+  Discovering: OmniCore.Tests[K
+  Discovered:  OmniCore.Tests[K
+  Starting:    OmniCore.Tests[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[6;1H[?25h  Finished:    OmniCore.Tests (ID = '29545d0728cf8015425b22bfe578e422127ef2a0fe58f916f33c0f31d4a66f82')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.Tests  Total: 1, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 2.229s
+]0;C:\Users\juanc\.cache\codex-runtimes\codex-primary-runtime\dependencies\native\powershell\pwsh.exe[?9001l[?1004l
