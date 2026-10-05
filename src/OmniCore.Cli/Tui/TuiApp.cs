@@ -121,26 +121,29 @@ public sealed class TuiApp
     public Window BuildMainWindow()
     {
         _window = new Window { Title = "OmniCore", BorderStyle = LineStyle.None, X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
-        _header = new Label { X = 2, Y = 0, Width = Dim.Fill(2), Height = 1, Text = HeaderText() };
-        var conversationFrame = new FrameView { X = 0, Y = 2, Width = Dim.Fill(31), Height = Dim.Fill(6), BorderStyle = LineStyle.None };
+        _header = new Label { Id = "omni-heading", X = 2, Y = 0, Width = Dim.Fill(2), Height = 1, Text = HeaderText() };
+        var conversationFrame = new FrameView { X = 0, Y = 2, Width = Dim.Fill(31), Height = Dim.Fill(7), BorderStyle = LineStyle.None };
         _conversation = new ConversationView { X = 2, Y = 0, Width = Dim.Fill(2), Height = Dim.Fill(),
             ReadOnly = true, WordWrap = true, ScrollBars = true, Text = ConversationText() };
         _renderedConversation = null;
+        _conversation.ViewportChanged += (_, _) => RenderConversation();
         ApplyTheme(_conversation);
         conversationFrame.Add(_conversation);
-        _sidebar = new FrameView { X = Pos.AnchorEnd(31), Y = 2, Width = 31, Height = Dim.Fill(6), Title = " Workspace ", BorderStyle = LineStyle.Rounded };
-        _sidebarContent = new Label { X = 1, Y = 1, Width = Dim.Fill(1), Height = Dim.Fill(1), Text = SidebarText() };
-        _sidebar.Add(_sidebarContent);
-        var composerFrame = new FrameView { X = 1, Y = Pos.AnchorEnd(5), Width = Dim.Fill(1), Height = 4, Title = _locale == "en" ? " Message " : " Mensaje ", BorderStyle = LineStyle.Rounded };
-        _composer = new TextField { X = 3, Y = 0, Width = Dim.Fill(1), Height = 1, Text = "" };
-        composerFrame.Add(new Label { X = 1, Y = 0, Text = "›" });
-        _completion = new Label { X = 0, Y = 1, Width = Dim.Fill(), Height = 1, Text = "" };
+        _sidebar = new FrameView { Id = "omni-panel", X = Pos.AnchorEnd(31), Y = 2, Width = 31, Height = Dim.Fill(7), Title = " Workspace ", BorderStyle = LineStyle.None };
+        _sidebarContent = new Label { X = 2, Y = 3, Width = Dim.Fill(2), Height = Dim.Fill(1), Text = SidebarText() };
+        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "Workspace" }, _sidebarContent);
+        var composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
+        _composer = new TextField { X = 4, Y = 1, Width = Dim.Fill(2), Height = 1, Text = "" };
+        composerFrame.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _locale == "en" ? "Message" : "Mensaje" },
+            new Label { Id = "omni-heading", X = 2, Y = 1, Text = "›" });
+        _completion = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(2), Height = 1, Text = "" };
         _composer.TextChanged += (_, _) => UpdateAutocomplete();
         _composer.Accepted += (_, _) => SubmitComposer();
-        composerFrame.Add(_composer, _completion);
+        composerFrame.Add(_composer);
         _status = new Label { X = 0, Y = Pos.AnchorEnd(1), Width = Dim.Fill(), Height = 1, Text = StatusText() };
         _window.Add(_header, conversationFrame, _sidebar, composerFrame, _status);
-        _window.Add(new Label { X = 2, Y = Pos.AnchorEnd(6), Width = Dim.Fill(2), Height = 1,
+        _window.Add(_completion);
+        _window.Add(new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1,
             Text = _locale == "en" ? "Enter send   / commands   @ files   F2 workspace   F3 models" : "Enter enviar   / comandos   @ archivos   F2 workspace   F3 modelos" });
         ApplyTheme(_window);
         var initialWidth = 80;
@@ -282,35 +285,13 @@ public sealed class TuiApp
     {
         if (_conversation is null) return;
         // Polling must not reload identical text: doing so resets selection and history scroll.
-        var signature = string.Join("\u001f", _state.Conversation.Blocks.Select(b => b.Role + "\u001e" + b.ToolName + "\u001e" + b.Text));
+        var codeWidth = Math.Max(1, _conversation.Viewport.Width - 1);
+        var signature = codeWidth + "\u001d" + string.Join("\u001f", _state.Conversation.Blocks.Select(b => b.Role + "\u001e" + b.ToolName + "\u001e" + b.Text));
         if (_renderedConversation == signature) return;
         _renderedConversation = signature;
         if (_state.Conversation.Blocks.Count == 0) { _conversation.Text = ConversationText(); return; }
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
-        var rows = new List<List<Cell>>();
-        foreach (var row in ConversationPresentation.Render(_state.Conversation.Blocks, _locale))
-        {
-            var cells = new List<Cell>();
-            foreach (var span in row)
-            {
-                var foreground = noColor ? Color.None : span.Style switch
-                {
-                    ConversationStyle.Heading => new Color("#53B8F5"),
-                    ConversationStyle.InlineCode => new Color("#EF9A70"),
-                    ConversationStyle.Code => new Color("#B5DEF3"),
-                    ConversationStyle.CodeHeader => new Color("#67D4D0"),
-                    ConversationStyle.Muted => new Color("#8B9DAC"),
-                    _ => Color.None,
-                };
-                var background = !noColor && span.Style is ConversationStyle.Code or ConversationStyle.CodeHeader
-                    ? new Color("#0A2330") : Color.None;
-                var attribute = new Terminal.Gui.Drawing.Attribute(foreground, background);
-                var elements = System.Globalization.StringInfo.GetTextElementEnumerator(span.Text);
-                while (elements.MoveNext()) cells.Add(new Cell(attribute, false, elements.GetTextElement()));
-            }
-            rows.Add(cells);
-        }
-        _conversation.Load(rows);
+        _conversation.LoadStyled(ConversationPresentation.Render(_state.Conversation.Blocks, _locale), codeWidth, noColor);
     }
 
     private string ConversationText() => _state.Conversation.Blocks.Count == 0
@@ -330,7 +311,9 @@ public sealed class TuiApp
         var git = _state.Header.GitBranch is null ? "" : "   " + _state.Header.GitBranch + " " + (_state.Header.GitDirty ?? "");
         var width = Math.Max(12, (_window?.Frame.Width ?? 80) - 4);
         if (git.Length > width / 3) git = "";
-        return AbbreviatePath(path, width - git.Length) + git;
+        var workspace = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+        if (string.IsNullOrWhiteSpace(workspace)) workspace = path;
+        return AbbreviatePath("OmniCore · " + workspace, width - git.Length) + git;
     }
 
     internal static string AbbreviatePath(string path, int width)
@@ -379,7 +362,7 @@ public sealed class TuiApp
     {
         var overlay = OverlayFrame(interaction.Title, 7 + interaction.Options.Count);
         _activeInteraction = interaction;
-        overlay.Add(new Label { X = 1, Y = 0, Width = Dim.Fill(2), Height = 2,
+        overlay.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = 2,
             Text = interaction.Subject.Length == 0 ? interaction.Kind : interaction.Subject });
         Button? defaultButton = null;
         for (var index = 0; index < interaction.Options.Count; index++)
@@ -389,13 +372,14 @@ public sealed class TuiApp
             // cualquier otro botón del contenedor (Enter sobre «Permitir una vez» dispararía
             // «Denegar»), lo que traiciona la intención visible del foco. La opción segura llega
             // por el foco inicial y por Esc (OnApplicationKeyDown → RespondDefault), no por flag.
-            var button = new Button { X = 1, Y = 2 + index, Text = interaction.Options[index] };
+            var button = new Button { X = 2, Y = 4 + index, Text = interaction.Options[index] };
             button.Accepted += (_, _) => RespondChoice(interaction, optionId);
             overlay.Add(button);
             if (optionId == interaction.DefaultOptionId) defaultButton = button;
         }
-        overlay.Add(new Label { X = 1, Y = 3 + interaction.Options.Count, Text = _locale == "en" ? "Esc: default / deny" : "Esc: opción predeterminada / denegar" });
+        overlay.Add(new Label { Id = "omni-help", X = 2, Y = 5 + interaction.Options.Count, Text = _locale == "en" ? "Esc: default / deny" : "Esc: opción predeterminada / denegar" });
         _overlay = overlay;
+        ApplyTheme(overlay);
         _window!.Add(overlay);
         ((View?)defaultButton ?? overlay).SetFocus();
     }
@@ -409,7 +393,7 @@ public sealed class TuiApp
         var checkBoxes = new Dictionary<string, List<(string Id, CheckBox Control)>>(StringComparer.Ordinal);
         var textFields = new Dictionary<string, TextField>(StringComparer.Ordinal);
         var otherFields = new Dictionary<string, TextField>(StringComparer.Ordinal);
-        var y = 0;
+        var y = 2;
         foreach (var question in model.Questions)
         {
             overlay.Add(new Label { X = 1, Y = y++, Width = Dim.Fill(2), Text = question.Prompt });
@@ -479,27 +463,44 @@ public sealed class TuiApp
             new OmniCore.Client.QuestionnaireResponseDto(Array.Empty<OmniCore.Client.QuestionnaireAnswerDto>(), true));
         overlay.Add(error, submit, cancel);
         _overlay = overlay;
+        ApplyTheme(overlay);
         _window!.Add(overlay);
         overlay.SetFocus();
     }
 
     private FrameView OverlayFrame(string title, int height)
     {
-        var frame = new FrameView { X = Pos.Center(), Y = Pos.Center(), Width = Dim.Percent(80), Height = height,
-            Title = " " + title + " ", BorderStyle = LineStyle.Rounded, CanFocus = true };
+        var frame = new FrameView { Id = "omni-panel", X = Pos.Center(), Y = Pos.Center(), Width = Dim.Percent(80),
+            Height = Math.Min(height + 2, Math.Max(6, (_window?.Frame.Height ?? 25) - 2)),
+            Title = " " + title + " ", BorderStyle = LineStyle.None, CanFocus = true };
+        frame.Add(new Label { Id = "omni-menu-title", X = 2, Y = 0, Width = Dim.Fill(2), Height = 1, Text = title });
         ApplyTheme(frame);
         return frame;
     }
 
-    private static void ApplyTheme(View view)
+    private static void ApplyTheme(View view, string surface = "#061822")
     {
         // Framework defaults invert whole titles and edit fields. Keep a quiet surface;
         // focus remains visible through the cursor and cyan hotkeys, never color alone.
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
-        var primary = new Terminal.Gui.Drawing.Attribute(Color.None, Color.None);
-        var accent = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color("#67D4D0"), Color.None);
-        view.SetScheme(new Scheme { Normal = primary, Focus = primary, Editable = primary,
-            HotNormal = accent, HotFocus = accent });
+        if (view.Id == "omni-composer") surface = "#293648";
+        else if (view.Id == "omni-panel") surface = "#202C3B";
+        else if (view.Id == "omni-menu-title") surface = "#344559";
+        var background = noColor ? Color.None : new Color(surface);
+        var foreground = view.Id == "omni-help" ? "#B9CBDF"
+            : view.Id == "omni-heading" ? "#85E6DF" : "#F4F7FB";
+        var primary = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(foreground), background);
+        var accent = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color("#67D4D0"), background);
+        var focus = view is Button && !noColor
+            ? new Terminal.Gui.Drawing.Attribute(new Color("#FFFFFF"), new Color("#3D5068")) : primary;
+        if (view is Button button)
+        {
+            button.NoDecorations = true;
+            button.ShadowStyle = ShadowStyles.None;
+        }
+        view.SetScheme(new Scheme { Normal = primary, Focus = focus, Editable = primary,
+            HotNormal = accent, HotFocus = view is Button ? focus : accent });
+        foreach (var child in view.SubViews) ApplyTheme(child, surface);
     }
 
     private void RespondDefault(InteractionOverlayModel interaction)
@@ -533,7 +534,7 @@ public sealed class TuiApp
     {
         if (_window is null || _overlay is not null) return;
         var frame = OverlayFrame(_locale == "en" ? "Preferences > Models" : "Preferencias > Modelos", 18);
-        var y = 0;
+        var y = 2;
         foreach (var descriptor in _policies.Models)
         {
             var key = new ModelPolicyKeyDto(descriptor.ProviderId, descriptor.Id);
@@ -562,9 +563,10 @@ public sealed class TuiApp
                 frame.Add(delete);
             }
         }
-        var close = new Button { X = Pos.AnchorEnd(12), Y = 15, Text = _locale == "en" ? "Close" : "Cerrar" };
+        var close = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _locale == "en" ? "Close" : "Cerrar" };
         close.Accepted += (_, _) => CloseOverlay();
         frame.Add(close);
+        ApplyTheme(frame);
         _overlay = frame; _window.Add(frame); frame.SetFocus();
     }
 
@@ -573,8 +575,8 @@ public sealed class TuiApp
         if (_window is null) return;
         var model = ModelPolicySetupModel.From(draft.Key.ToString(), draft.RecommendedCategory, draft.Warnings);
         var frame = OverlayFrame(_locale == "en" ? "Model setup" : "Configurar modelo", 14);
-        frame.Add(new Label { X = 1, Y = 0, Width = Dim.Fill(2), Text = model.ModelIdentity });
-        var y = 1;
+        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = model.ModelIdentity });
+        var y = 3;
         foreach (var warning in model.Warnings) frame.Add(new Label { X = 1, Y = y++, Width = Dim.Fill(2), Text = "! " + warning });
         foreach (var choice in model.Choices)
         {
@@ -595,7 +597,7 @@ public sealed class TuiApp
         };
         var cancel = new Button { X = 1, Y = y, Text = _locale == "en" ? "Cancel" : "Cancelar" };
         cancel.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
-        frame.Add(once, cancel); _overlay = frame; _window!.Add(frame); frame.SetFocus();
+        frame.Add(once, cancel); ApplyTheme(frame); _overlay = frame; _window!.Add(frame); frame.SetFocus();
     }
 
     private void ShowMessage(string message)
@@ -616,9 +618,9 @@ public sealed class TuiApp
         var visible = lines.Take(available).ToArray();
         if (lines.Length > available) visible[^1] = "…";
         var frame = OverlayFrame(_locale == "en" ? "Notice" : "Aviso", Math.Max(6, visible.Length + 5));
-        frame.Add(new Label { X = 1, Y = 1, Width = Dim.Fill(2), Height = visible.Length, Text = string.Join("\n", visible) });
+        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = visible.Length, Text = string.Join("\n", visible) });
         var ok = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = "OK" };
-        ok.Accepted += (_, _) => CloseOverlay(); frame.Add(ok); _overlay = frame; _window.Add(frame); frame.SetFocus();
+        ok.Accepted += (_, _) => CloseOverlay(); frame.Add(ok); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();
     }
 
     private void CloseOverlay()
