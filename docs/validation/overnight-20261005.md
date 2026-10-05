@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 09:08 UTC /03:08 America/Mexico_City. Rama autorizada
+Checkpoint 09:17 UTC /03:17 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -139,8 +139,13 @@ conserva CommandCausation existente o genera CommandId interno por operación, d
 y Ack/rango causal tras retorno normal, sin capturar excepciones/cancelación ni cambiar protocolo
 del provider. Root auditó y reprodujo sus5 tests, incluida suspensión user.ask, rechazo sin callback
 para par Session/Run incorrecto o terminal, rangos con causa preexistente y excepción tras escritura.
-No se añade una causa sintética por lote en Engine. Luna extiende ahora la misma frontera a cada
-invocación de Turn del loop Act, aún sin entrega; gates/aprobación/escalación siguen fuera.
+No se añade una causa sintética por lote en Engine. `f331704` extiende la misma frontera a cada
+invocación de Turn del loop Act. Root reprodujo25/25 incluyendo gates existentes, controles Ask/Act,
+cuestionario y causalidad de persistencia. El test nuevo mantiene TurnId al suspender/reanudar bajo
+dos CommandId distintos. La excepción con scope interno generado restaura su padre EventCausation
+incluso después de append, sin fabricar Ack de éxito. Auditoría detectó que el nuevo test Act usaba
+fixture RunMode.Plan; Luna lo corrige a RunMode.Act con assertion explícita, cambio sólo de pruebas.
+Gates/aprobación/escalación todavía no están envueltos por esa frontera.
 
 Root `a809c34` reprodujo y reparó un defecto independiente de EventStream: tres pruebas fallaban porque el cursor
 de Run/último evento se adelantaba al construir envelopes antes de persistir. Append fallido,
@@ -151,7 +156,16 @@ Los tres repros pasan; dos controles adicionales verifican ausencia de fuga de R
 batch correcto conserve su cadena interna y tail. Root batería16/16 PASS (5 de fallo/persistencia,
 5 Ask interno,5 ExecutionId envelope,1 Scope). Suite funcional independiente tras fix y los3 repros:
 **1303=1299 PASS /0 FAIL /4 SKIP**; los2 controles añadidos después se verificaron focalmente,
-no se inventa un full de1305. Pendiente auditoría cruzada y siguiente full combinado.
+no se inventa un full de1305. Luna auditó el fix sin defecto concreto. Siguiente full combinado
+independiente tras `f331704` y los5 controles EventStream: **1307=1303 PASS /0 FAIL /4 SKIP**, exit0.
+Ese full precede al ajuste test-only de RunMode.Act, que se verificará focalmente.
+
+Siguiente operación interna de Luna: RequestPlanApprovalIfNeeded conserva API y condiciones de
+autorización actuales; debe atribuir su publicación al command interno, devolver Ack/rango causal y
+clasificar como NoOp sólo sus ramas condicionales ya inefectivas. No introduce aprobación automática.
+Un build focal del worker coincidió con la suite root y encontró locks MSB3026; lo detuvo sin tocar
+el proceso root y ya recibió aviso de compilación libre tras el resultado completo. No fue un fallo
+del producto ni una validación remota, y no se reiniciaron servidores.
 No declarar todos los commands migrados ni commands internos listos. M5.5 no
 se declara cerrado; Source/fallback causal y wiring general siguen pendientes.
 
