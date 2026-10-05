@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 08:57 UTC /02:57 America/Mexico_City. Rama autorizada
+Checkpoint 09:08 UTC /03:08 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -133,9 +133,25 @@ Verificación independiente combinada sim/telemetría/fixtures:51/51 PASS. Suite
 posterior: **1295=1291 PASS /0 FAIL /4 SKIP**. Arquitectura recompilada (incluido whitelist de
 ExecutionId sin texto arbitrario):54/54 PASS, conteo separado. No sumar cifras solapadas.
 Luna auditó telemetría sin defecto concreto y prepara una frontera interna Host-server para la
-ejecución ExplorerTurn que hoy llama Ask directamente fuera de command (ADR0046§5). No se añade
-una causa sintética por lote en Engine: debe representar la operación interna completa y conservar
-resultado, cancelación, scope previo y causalidad ambiental existente. Sigue pendiente de entrega.
+ejecución ExplorerTurn que llamaba Ask directamente fuera de command (ADR0046§5).
+`4d89915` implementa esa frontera interna sólo para Ask no-Act: valida Session/Run activo,
+conserva CommandCausation existente o genera CommandId interno por operación, devuelve resultado
+y Ack/rango causal tras retorno normal, sin capturar excepciones/cancelación ni cambiar protocolo
+del provider. Root auditó y reprodujo sus5 tests, incluida suspensión user.ask, rechazo sin callback
+para par Session/Run incorrecto o terminal, rangos con causa preexistente y excepción tras escritura.
+No se añade una causa sintética por lote en Engine. Luna extiende ahora la misma frontera a cada
+invocación de Turn del loop Act, aún sin entrega; gates/aprobación/escalación siguen fuera.
+
+Root reprodujo un defecto independiente de EventStream: tres pruebas fallaban porque el cursor
+de Run/último evento se adelantaba al construir envelopes antes de persistir. Append fallido,
+AppendBatch fallido o error al codificar un elemento posterior dejaban al siguiente evento con
+causa de un envelope nunca persistido. El fix usa candidatos locales por lote y publica cursores
+sólo después de Append/AppendBatch confirmado, sin catch ni eliminación global del fallback.
+Los tres repros pasan; dos controles adicionales verifican ausencia de fuga de RunId y que un
+batch correcto conserve su cadena interna y tail. Root batería16/16 PASS (5 de fallo/persistencia,
+5 Ask interno,5 ExecutionId envelope,1 Scope). Suite funcional independiente tras fix y los3 repros:
+**1303=1299 PASS /0 FAIL /4 SKIP**; los2 controles añadidos después se verificaron focalmente,
+no se inventa un full de1305. Pendiente auditoría cruzada y siguiente full combinado.
 No declarar todos los commands migrados ni commands internos listos. M5.5 no
 se declara cerrado; Source/fallback causal y wiring general siguen pendientes.
 
