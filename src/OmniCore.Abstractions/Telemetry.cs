@@ -42,10 +42,12 @@ public sealed class TelemetryRecord
     public LaneId? LaneId { get; }
     public TurnId? TurnId { get; }
     public ToolCallId? ToolCallId { get; }
+    public ExecutionId? ExecutionId { get; }
 
     public TelemetryRecord(TelemetryKind kind, TelemetrySignal signal, long value,
         DateTimeOffset timestampUtc, RunId? runId = null, TaskId? taskId = null,
-        LaneId? laneId = null, TurnId? turnId = null, ToolCallId? toolCallId = null)
+        LaneId? laneId = null, TurnId? turnId = null, ToolCallId? toolCallId = null,
+        ExecutionId? executionId = null)
     {
         if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         if (!Enum.IsDefined(signal)) throw new ArgumentOutOfRangeException(nameof(signal));
@@ -62,6 +64,7 @@ public sealed class TelemetryRecord
         LaneId = laneId;
         TurnId = turnId;
         ToolCallId = toolCallId;
+        ExecutionId = executionId;
     }
 }
 

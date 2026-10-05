@@ -191,7 +191,10 @@ public sealed class TelemetryBoundaryTests
             Assert.Equal("canonical final response", result.FinalText);
             Assert.Equal(1, provider.Calls);
             Assert.NotEmpty(telemetry.Snapshot());
+            var closedConnection = (SqliteConnection)store.Connection;
             store.Close();
+            SqliteConnection.ClearPool(closedConnection);
+            closedConnection.Dispose();
             store = new SqliteEventStore(journal);
             var events = store.ReadFrom(session, 1);
             Assert.Contains(events, evt => evt.Type.ToString() == "model_step.completed");
@@ -204,11 +207,14 @@ public sealed class TelemetryBoundaryTests
         }
         finally
         {
-            store?.Close();
-            using var connection = new SqliteConnection("DataSource=" + journal);
-            SqliteConnection.ClearPool(connection);
-            connection.Dispose();
-            try { Directory.Delete(root, true); } catch (IOException) { }
+            if (store is not null)
+            {
+                var connection = (SqliteConnection)store.Connection;
+                store.Close();
+                SqliteConnection.ClearPool(connection);
+                connection.Dispose();
+            }
+            Directory.Delete(root, true);
         }
     }
 
