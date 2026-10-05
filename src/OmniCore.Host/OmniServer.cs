@@ -1087,6 +1087,10 @@ public sealed class OmniServer : IOmniClient
     private CommandAck RunControl(WireEnvelope command, string commandName, Dictionary<string, string> fields)
     {
         var control = new RunControlService(_store, _codecs);
+        SessionId? outcomeSession = null;
+        long outcomeSequenceBefore = 0;
+        var explicitOutcome = commandName is "run.interrupt" or "run.cancel";
+        var commandId = new CommandId(Guid.Parse(command.MessageId));
         try
         {
             switch (commandName)
@@ -1107,10 +1111,14 @@ public sealed class OmniServer : IOmniClient
                 }
 
                 case "run.interrupt":
-                    control.Interrupt(RequireSession(), RunFrom(fields));
+                    outcomeSession = RequireSession();
+                    outcomeSequenceBefore = _store.CurrentSequence(outcomeSession);
+                    control.Interrupt(outcomeSession, RunFrom(fields));
                     break;
                 case "run.cancel":
-                    control.CancelRun(RequireSession(), RunFrom(fields));
+                    outcomeSession = RequireSession();
+                    outcomeSequenceBefore = _store.CurrentSequence(outcomeSession);
+                    control.CancelRun(outcomeSession, RunFrom(fields));
                     break;
                 case "interaction.respond":
                 {
@@ -1152,19 +1160,57 @@ public sealed class OmniServer : IOmniClient
             }
 
             SaveLastSession();
+            if (explicitOutcome)
+            {
+                return RunControlOutcomeAck(command.MessageId, "ok", null,
+                    RuntimeCommandOutcome.Accepted(), outcomeSession, outcomeSequenceBefore, commandId);
+            }
+
             return CommandAck.Ok(command.MessageId);
         }
         catch (UnreconciledEffectException ex)
         {
             var interactionId = ex.Interactions.FirstOrDefault()?.ToString() ?? "none";
-            return CommandAck.Fail(command.MessageId, "effects.unresolved(interactionId=" + interactionId + ")");
+            var error = "effects.unresolved(interactionId=" + interactionId + ")";
+            if (explicitOutcome)
+            {
+                return RunControlOutcomeAck(command.MessageId, "error", error,
+                    RuntimeCommandOutcome.Rejected(), outcomeSession, outcomeSequenceBefore, commandId);
+            }
+
+            return CommandAck.Fail(command.MessageId, error);
         }
         catch (Exception ex) when (ex is RunAlreadyActiveException or RunNotActiveException
             or InteractionNotPendingException or InvalidInteractionOptionException or InvalidStateTransitionException
             or FormatException or ArgumentException)
         {
+            if (explicitOutcome)
+            {
+                return RunControlOutcomeAck(command.MessageId, "error", ex.Message,
+                    RuntimeCommandOutcome.Rejected(), outcomeSession, outcomeSequenceBefore, commandId);
+            }
+
             return CommandAck.Fail(command.MessageId, ex.Message);
         }
+    }
+
+    private CommandAck RunControlOutcomeAck(string commandMessageId, string status, string? error,
+        RuntimeCommandOutcome outcome, SessionId? session, long sequenceBefore, CommandId commandId)
+    {
+        if (session is null)
+        {
+            return new CommandAck(commandMessageId, status, error, outcome);
+        }
+
+        var causedSequences = _store.ReadFrom(session, sequenceBefore + 1)
+            .Where(evt => evt.Causation is CommandCausation causation
+                && causation.CommandId == commandId)
+            .Select(evt => evt.Sequence)
+            .ToArray();
+        return causedSequences.Length == 0
+            ? new CommandAck(commandMessageId, status, error, outcome)
+            : new CommandAck(commandMessageId, status, error, outcome,
+                causedSequences.Min(), causedSequences.Max());
     }
 
     private void AuditEffectResolutions(SessionId session, long sequenceBeforeResponse, InteractionId interaction)
