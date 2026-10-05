@@ -142,7 +142,7 @@ para par Session/Run incorrecto o terminal, rangos con causa preexistente y exce
 No se añade una causa sintética por lote en Engine. Luna extiende ahora la misma frontera a cada
 invocación de Turn del loop Act, aún sin entrega; gates/aprobación/escalación siguen fuera.
 
-Root reprodujo un defecto independiente de EventStream: tres pruebas fallaban porque el cursor
+Root `a809c34` reprodujo y reparó un defecto independiente de EventStream: tres pruebas fallaban porque el cursor
 de Run/último evento se adelantaba al construir envelopes antes de persistir. Append fallido,
 AppendBatch fallido o error al codificar un elemento posterior dejaban al siguiente evento con
 causa de un envelope nunca persistido. El fix usa candidatos locales por lote y publica cursores
