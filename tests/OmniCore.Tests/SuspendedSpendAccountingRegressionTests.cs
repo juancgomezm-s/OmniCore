@@ -74,6 +74,48 @@ public sealed class SuspendedSpendAccountingRegressionTests
     }
 
     [Fact]
+    public void Suspended_spend_below_daily_cap_allows_provider_in_next_session()
+    {
+        var root = NewRoot("daily-control");
+        var journal = Path.Combine(root, "journal.db");
+        SqliteEventStore? store = null;
+        try
+        {
+            store = new SqliteEventStore(journal);
+            var codecs = EventCodecs.Create();
+            var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
+            var sessionA = SessionId.New();
+            var runA = TestRun.Open(store, sessionA, mode: RunMode.Plan);
+            Assert.NotNull(StartQuestionAndSuspend(store, codecs, artifacts, root,
+                sessionA, runA.RunId, runA.RootLane, sessionCapUsd: 20m, dailyCapUsd: 20m));
+            Assert.Empty(store.ReadFrom(sessionA, 1).Select(codecs.Decode).OfType<ModelCompleted>());
+
+            store.Close();
+            store = new SqliteEventStore(journal);
+            var sessionB = SessionId.New();
+            var runB = TestRun.Open(store, sessionB);
+            var service = new QuestionnaireInteractionService(store, codecs, artifacts);
+            var catalog = new FakeCatalog().Add(new UserAskTool());
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var calls = 0;
+            var turn = MakeTurn((_, _) =>
+            {
+                calls++;
+                return FinalResponse();
+            }, store, codecs, artifacts, executor, catalog, service, sessionCapUsd: 100m,
+                dailyCapUsd: 15m);
+
+            var result = turn.Ask("new request", "system", sessionB, runB.RunId, runB.RootLane,
+                "", CancellationToken.None);
+
+            Assert.Equal(1, calls);
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
+        }
+        finally { Cleanup(store, journal, root); }
+    }
+
+    [Fact]
     public void Resuming_same_run_rejects_before_provider_when_new_session_cap_is_below_suspended_spend()
     {
         var root = NewRoot("resume");
@@ -122,6 +164,54 @@ public sealed class SuspendedSpendAccountingRegressionTests
             Assert.Equal(StopReason.Cancelled, result.StopReason);
             Assert.Contains(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<InteractionRequested>(),
                 item => item.Kind == InteractionKind.BudgetExceeded);
+        }
+        finally { Cleanup(store, journal, root); }
+    }
+
+    [Fact]
+    public void Resuming_same_run_allows_provider_when_new_session_cap_covers_suspended_spend()
+    {
+        var root = NewRoot("resume-control");
+        var journal = Path.Combine(root, "journal.db");
+        SqliteEventStore? store = null;
+        try
+        {
+            store = new SqliteEventStore(journal);
+            var codecs = EventCodecs.Create();
+            var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var interactionId = StartQuestionAndSuspend(store, codecs, artifacts, root,
+                session, run.RunId, run.RootLane, sessionCapUsd: 20m, dailyCapUsd: 100m);
+            Assert.NotNull(interactionId);
+            Assert.Empty(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<ModelCompleted>());
+
+            store.Close();
+            store = new SqliteEventStore(journal);
+            artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
+            var service = new QuestionnaireInteractionService(store, codecs, artifacts);
+            var stateFile = Path.Combine(root, "lastsession.txt");
+            File.WriteAllText(stateFile, session + "\n" + run.RunId);
+            var server = new OmniServer(store, codecs, new InMemoryAuditSink(), stateFile, artifacts);
+            Assert.Equal("ok", server.RespondToQuestionnaire(interactionId!,
+                new[] { new QuestionAnswer("approach", new[] { "safe" }, null, null) }, false).Status);
+
+            var catalog = new FakeCatalog().Add(new UserAskTool());
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var calls = 0;
+            var turn = MakeTurn((_, _) =>
+            {
+                calls++;
+                return FinalResponse();
+            }, store, codecs, artifacts, executor, catalog, service, sessionCapUsd: 15m,
+                dailyCapUsd: 100m);
+
+            var result = turn.Ask("continue", "system", session, run.RunId, run.RootLane, "",
+                CancellationToken.None);
+
+            Assert.Equal(1, calls);
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
         }
         finally { Cleanup(store, journal, root); }
     }
