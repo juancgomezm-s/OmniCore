@@ -71,3 +71,29 @@ Evidencia nueva, ejecutada por coordinador:
 - Journals antiguos sin estos eventos no se migran ni se les inventa deuda retrospectiva; este contrato protege las ediciones registradas por el runtime actualizado. Runs anteriores requieren validación explícita antes de confiar en su deuda pendiente.
 
 El pending 1 de la lista anterior queda reparado para el contrato nuevo. La propuesta ya no está esperando aprobación. Main permanece intacto, monitor anterior pausado, resto de contratos y gates externos abiertos.
+
+## Reparación delegada integrada — 2026-10-05 01:42 UTC / 2026-10-04 19:42 local
+
+Tres de los cuatro defectos restantes quedan reparados en `codex/omnicore-consolidation-20261004`, código hasta `90d3530`. Implementación de Luna en su worktree aislado, auditada e integrada mediante cherry-picks por el coordinador. Main y sus cambios preexistentes no se modificaron.
+
+1. Daily cap entre sesiones: lector opcional `IWorkspaceJournalReader`, SQLite y memoria. El diario agrega todas las sesiones del mismo journal/workspace por día UTC; sesión y Run conservan su scope. Evidencia incompleta/metadata inválida, incluso costo legacy negativo, impide una nueva llamada cuando se exige ese presupuesto. Un cap sólo por Run no exige lectura global.
+2. Uso suspendido: eventos aditivos v1 `model_step.started` y `model_step.completed`, confirmados Barrier antes de la llamada y después de su respuesta, antes de herramientas/suspensión. Reanudar recupera uso y costo de pasos anteriores. Resumen legacy no se suma otra vez si hay pasos; costo confirmado se suma sin recalcular con tarifa nueva. Los índices Started/Completed deben corresponder; un paso huérfano deja el costo desconocido, no parcial conocido. El lector valida metadata contra el artifact de uso.
+3. Reasoning opaque CAS: conserva una ArtifactRef original sólo con kind/sensitivity/hash/size/redacted/metadata admitidos y CAS verificado. Texto visible continúa redactado; referencias ausentes, corruptas o inválidas se descartan. No se serializa ProviderState crudo ni se implementa replay entre Ask/reinicio. Los dos Facts originales de continuidad siguen intactos; casos negativos CAS están en archivo separado.
+
+Commits integrados: `f111c12`, `fff536a`, `0715c33`, `1a5eb47`, `322b28f`, `2bad7db`, `5ed0c6c`, `9f27ce8`, `0ab0b32`, `90d3530`. Origen Luna: `878fa3d`, `be0341d`, `1bace80`, `3d66034`, `fac67b5`, `14610c5`, `54c3524`, `6fbdced`, `e697d60`, `b4731e6`.
+
+### Verificación independiente final
+
+- Build de OmniCore.Tests: 0 errores, 0 advertencias.
+- Batería integrada: 156 casos, 155 PASS, 1 FAIL, 0 errores del runner, 0 omitidos. Cubre ExplorerTurn, caps, suspended spend, costo por paso, continuidad/CAS, deuda durable, ArtifactRefs/store/durabilidad, codecs/verifier, Barrier, GC y guard del cuestionario.
+- Reejecución de las cinco clases de regresión originales (ahora ampliadas): 15 casos, 14 PASS, 1 FAIL. Los grupos se solapan; no sumar cifras.
+- Único RED: `ExplorerTurnResumeInputRegressionTests.Resume_input_after_questionnaire_reaches_provider_as_user_message`, línea 115: marcador esperado una vez en mensajes user, actual cero. NO es ausencia de llamada al provider. No se alteró ni omitió su assertion.
+- `git diff --check` limpio. Sólo pruebas locales/scripted y fixtures temporales; ningún gasto de cualificación real.
+
+### Reparto y límites reales
+
+GLM59 produjo exploración sin patch durante aproximadamente 40 minutos; se canceló sólo su Pi identificado y se redujo el paquete, preservando trabajo/logs. GLM60 terminó por length (16384 tokens) sin texto ni código; no se repitió el bucle. Luna tomó los bloques restantes. GLM61 entregó revisión cerrada sin herramientas, stop normal: sugirió un OverflowException hipotético al decodificar StepIndex. No se acepta como defecto reproducido: el codec usa JsonSerializer, envuelve JsonException en EventParseException, ya cubierta por el catch. No vio/ejecutó el codec. Pese solicitar thinking off, el provider reportó 8203 tokens reasoning de 8520 output. GLM aportó revisión, NO implementación aceptada.
+
+La entrada ordinaria al reanudar sigue pendiente de decisión: ADR-0046 exige FollowUp del siguiente Turn sin declaración explícita de Steering; el RED espera entrega al Turn activo. No se cambia ese contrato silenciosamente. Después de elegir, falta implementar cola/promoción durable FollowUp o entrada explícitamente Steering con controles.
+
+Los eventos ModelStep son un subconjunto mínimo para contabilizar uso: NO cierran el contrato completo ADR-0046/0047 (RouteId y replay de ProviderState siguen pendientes). El cap global es lectura de journal al inicio de Ask, NO reserva atómica entre llamadas concurrentes; puede excederse durante una respuesta y detener el siguiente paso. No inventa deuda/uso en journals antiguos sin evidencia. No se cierra M4 TTY/sesión larga/reinicio OS ni M5 cualificación real. Monitor anterior sigue PAUSED; ningún push ni integración en main.
