@@ -108,6 +108,45 @@ public sealed class ModelStepRunCostAccountingTests
         finally { Cleanup(store, journal, root); }
     }
 
+    [Fact]
+    public void Summary_cost_is_unknown_if_any_invocation_started_without_confirmed_completion()
+    {
+        var root = NewRoot();
+        var store = new InMemoryEventStore();
+        try
+        {
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session);
+            var stream = new EventStream(store, codecs, session);
+            var turnId = TurnId.New();
+            stream.Append(new TurnStarted(turnId, run.RootLane));
+            stream.Append(new ModelStepStarted(turnId, 0, "test", 8192, "Direct", null, null, null));
+            var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
+            var catalog = FakeCatalog.Default();
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var calls = 0;
+            var turn = MakeTurn(store, codecs, artifacts, session, run.RunId, catalog, executor,
+                new ModelPricing(2m, 2m), (_, _) =>
+                {
+                    calls++;
+                    return FinalResponse(new TokenUsage(1_000_000, 0, 0, 0, 0));
+                });
+
+            var result = turn.Ask("resume", "system", session, run.RunId, run.RootLane, "",
+                CancellationToken.None);
+
+            Assert.Equal(1, calls);
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
+            var summaryEvent = store.ReadFrom(session, 1).Select(codecs.Decode).OfType<ModelCompleted>().Single();
+            using var summary = System.Text.Json.JsonDocument.Parse(artifacts.GetText(summaryEvent.ResponseArtifact!.Hash)!);
+            Assert.Equal(System.Text.Json.JsonValueKind.Null,
+                summary.RootElement.GetProperty("costUsd").ValueKind);
+        }
+        finally { DeleteRoot(root); }
+    }
+
     private static TestRun.Opened OpenRun(IEventStore store, IEventCodecRegistry codecs,
         SessionId session, decimal maxCost)
     {

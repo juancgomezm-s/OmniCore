@@ -72,16 +72,16 @@ public sealed class ExplorerTurn
     private decimal? ReadTurnModelStepCost(EventStream stream, TurnId turnId)
     {
         decimal total = 0m;
-        var found = false;
-        var sawStart = false;
+        var started = new HashSet<int>();
+        var completedIndexes = new HashSet<int>();
         foreach (var evt in stream.EventsSince(1))
         {
             if (evt.Type.ToString().Equals("model_step.started", StringComparison.Ordinal))
             {
                 try
                 {
-                    if (_codecs.Decode(evt) is ModelStepStarted started && started.TurnId == turnId)
-                        sawStart = true;
+                    if (_codecs.Decode(evt) is ModelStepStarted start && start.TurnId == turnId
+                        && !started.Add(start.StepIndex)) return null;
                 }
                 catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
                     or FormatException or ArgumentException)
@@ -94,7 +94,7 @@ public sealed class ExplorerTurn
             try
             {
                 if (_codecs.Decode(evt) is not ModelStepCompleted completed || completed.TurnId != turnId) continue;
-                found = true;
+                if (!completedIndexes.Add(completed.StepIndex)) return null;
                 if (completed.CostUsd is null || completed.CostUsd < 0m) return null;
                 total += completed.CostUsd.Value;
             }
@@ -104,7 +104,8 @@ public sealed class ExplorerTurn
                 return null;
             }
         }
-        return sawStart && !found ? null : found ? total : 0m;
+        if (!started.SetEquals(completedIndexes)) return null;
+        return completedIndexes.Count == 0 ? 0m : total;
     }
 
     private int ReadNextModelStepIndex(EventStream stream, TurnId turnId)
