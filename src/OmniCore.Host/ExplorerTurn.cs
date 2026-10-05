@@ -925,6 +925,13 @@ public sealed class ExplorerTurn
                 incomplete = true;
             }
             var cost = record.CostUsd.Value;
+            if (cost < 0)
+            {
+                // Legacy summaries are still journal evidence. A negative amount must not be
+                // allowed to reduce a daily/session total and thereby bypass a spend cap.
+                incomplete = true;
+                continue;
+            }
             if (record.Day == today) daily += cost;
             if (evt.SessionId == sessionId) session += cost;
             if (evt.SessionId == sessionId && evt.RunId == runId) run += cost;

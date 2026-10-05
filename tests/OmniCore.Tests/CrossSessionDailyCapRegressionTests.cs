@@ -295,6 +295,60 @@ public sealed class CrossSessionDailyCapRegressionTests
         }
     }
 
+    [Fact]
+    public void Negative_legacy_cost_in_prior_session_fails_closed_under_daily_cap()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-cross-session-negative-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var journal = Path.Combine(root, "journal.db");
+        var store = new SqliteEventStore(journal);
+        try
+        {
+            var codecs = EventCodecs.Create();
+            var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
+            var priorSession = SessionId.New();
+            var priorRun = TestRun.Open(store, priorSession);
+            AppendUsageCompletion(store, codecs, artifacts, priorSession, priorRun.RunId,
+                DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), "-1");
+
+            var currentSession = SessionId.New();
+            var currentRun = TestRun.Open(store, currentSession);
+            var catalog = OmniHost.CreateExplorerTools().Catalog();
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var calls = 0;
+            var turn = new ExplorerTurn((_, _) =>
+            {
+                calls++;
+                return new ModelResponse(new ContentBlock[] { new TextBlock("done") }, StopReason.EndTurn,
+                    new TokenUsage(1, 0, 0, 0, 0), null, new ProviderMetadata("scripted", "", null));
+            }, executor, catalog,
+                new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+                new ExecutionFingerprint("scripted", "h", "t", "c", "o", "M3"),
+                new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
+                store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: true,
+                sessionCapUsd: 100m, dailyCapUsd: 20m);
+
+            var result = turn.Ask("today", "system", currentSession, currentRun.RunId,
+                currentRun.RootLane, "", CancellationToken.None);
+
+            Assert.Equal(0, calls);
+            Assert.Equal(StopReason.Cancelled, result.StopReason);
+            Assert.Contains(store.ReadFrom(currentSession, 1).Select(codecs.Decode).OfType<InteractionRequested>(),
+                interaction => interaction.Kind == InteractionKind.BudgetExceeded);
+        }
+        finally
+        {
+            store.Close();
+            using var connection = new SqliteConnection("DataSource=" + journal);
+            SqliteConnection.ClearPool(connection);
+            try { Directory.Delete(root, true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
     private static void AppendUsageCompletion(IEventStore store, IEventCodecRegistry codecs,
         IArtifactStore artifacts, SessionId sessionId, RunId runId, string day, string? costUsd,
         bool includeArtifact = true)
