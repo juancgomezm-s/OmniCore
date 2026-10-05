@@ -213,6 +213,24 @@ Server y no cuenta ese caso sintético como defecto productivo demostrado. El gu
 tampoco demuestra universalmente que no quede ninguna escritura Host fueraCommand.
 Full funcional vigente1326=1322PASS/0FAIL/4SKIP precede784135d; no inventar cifra posterior.
 
+## Reanudación manual — 2026-10-05 16:50 UTC /10:50 local
+
+Tras el corte14:00UTC, el usuario pidió retomar cambios faltantes. Automatización verificada
+PAUSED y vencida; no reactivada. Luna falló por límite de uso en la tarea de corrección y no se
+reintentó ni sustituyó por proveedor pagado. Root terminó el pendiente en `006d2de`:
+
+- La fixture cancela Run1 por comando antes de crear Run2 por session.input en la mismaSession.
+  Lane de Run1 para Run2 se rechaza sin filas; Lane propia sin trabajo pendiente da NoOp.
+  Un ModelEscalationCompleted tardío permitido para Run1 terminal no lo reactiva ni admite input.
+- La prueba de arquitectura también impide devolver Store/Codec desde un nuevo método/getter
+  público o campo público de OmniServer. El guard de wiringCLI sigue teniendo alcance específico.
+- Focal root23/23 PASS; arquitectura recompilada56/56 PASS. Full root82957, exit0:
+  **1327 casos =1323 PASS /0 FAIL /4 SKIP**, por permisos de symlinks Windows. No sumar suites.
+
+No cambia producción ni debilita assertions, no introduce dosRuns activos/schedulerM6 y no
+consume presupuesto real de proveedores. Main preservado. Source/fallback causal, ModelStepId,
+routing/billing consent/steering/fingerprint y gates externos M4/M5 siguen pendientes.
+
 Runbook operativo compactado al09:26 UTC, preservando íntegra la versión previa en
 C:\Users\juanc\.codex\omni-overnight-20261005-history-0925.md. Consultar el historial sólo para
 evidencia específica; fuente vigente sigue siendo omni-overnight-20261005.md.
