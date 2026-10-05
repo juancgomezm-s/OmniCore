@@ -4,25 +4,28 @@ namespace OmniCore.Domain;
 public enum EscalationCause { CapabilityMissing, ContextLimit, RepeatedFailure, Uncertainty, ToolReliability, ManualRequest }
 
 /// <summary>ModelEscalationRequested: se solicita subir de modelo dentro de un Run.</summary>
-public record ModelEscalationRequested(RunId RunId, string FromModel, string ToModel, EscalationCause Cause) : DomainEventPayload
+public record ModelEscalationRequested(RunId RunId, string FromModel, string ToModel, EscalationCause Cause,
+    TurnId? TurnId = null, LaneId? LaneId = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("model.escalation_requested");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>ModelEscalationApproved: la escalación fue aprobada.</summary>
-public record ModelEscalationApproved(RunId RunId, string ToModel, string ApprovedBy) : DomainEventPayload
+public record ModelEscalationApproved(RunId RunId, string ToModel, string ApprovedBy,
+    TurnId? TurnId = null, LaneId? LaneId = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("model.escalation_approved");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>ModelEscalationCompleted: la escalación se aplicó y el Run continúa con el nuevo modelo.</summary>
-public record ModelEscalationCompleted(RunId RunId, string ToModel) : DomainEventPayload
+public record ModelEscalationCompleted(RunId RunId, string ToModel,
+    TurnId? TurnId = null, LaneId? LaneId = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("model.escalation_completed");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
