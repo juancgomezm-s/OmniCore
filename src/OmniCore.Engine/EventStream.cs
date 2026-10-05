@@ -16,8 +16,9 @@ using System.Text.Json;
 /// payload si lo lleva, si no el Run en curso de la sesión. Nulo solo antes del primer Run.</item>
 /// <item><c>CausationId</c> = el comando en curso (<see cref="CausationScope"/>) o, fuera de un
 /// comando, el evento anterior escrito por este stream. El primer evento sin comando es raíz.</item>
-/// <item>Ids de entidad (Run, Task, Lane, Turn, PlanItem, ToolCall) leídos del payload, para
-/// indexar sin parsearlo.</item>
+/// <item>Ids de entidad leídos del payload (que tiene prioridad); los ids ausentes se completan
+/// desde <see cref="ExecutionScope"/> cuando existe. Así se indexan eventos tool sin repetir sus
+/// ids de ejecución en cada payload.</item>
 /// </list>
 /// Antes de persistir, cada evento se valida contra las máquinas de estado canónicas (ADR-0036,
 /// <see cref="CanonicalStateTracker"/>): una transición inválida lanza
@@ -133,17 +134,23 @@ public sealed class EventStream
 
         var json = RedactPayload(_codecs.CodecFor(type).Encode(payload));
         var ids = EnvelopeIds.From(json);
-        if (ids.RunId is not null)
+        var scope = ExecutionScope.Current;
+        var runId = ids.RunId ?? scope?.RunId;
+        var taskId = ids.TaskId ?? scope?.TaskId;
+        var laneId = ids.LaneId ?? scope?.LaneId;
+        var turnId = ids.TurnId ?? scope?.TurnId;
+        var toolCallId = ids.ToolCallId ?? scope?.ToolCallId;
+        if (runId is not null)
         {
-            _runId = ids.RunId;
+            _runId = runId;
         }
 
-        var run = ids.RunId ?? _runId;
+        var run = runId ?? _runId;
         var causation = CausationScope.Current
             ?? (_lastEventId is null ? null : new EventCausation(_lastEventId));
         var artifactRefs = ArtifactRefExtractor.Extract(payload);
-        var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, ids.TaskId,
-            ids.LaneId, ids.TurnId, ids.PlanItemId, ids.ToolCallId, artifactRefs, json);
+        var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, taskId,
+            laneId, turnId, ids.PlanItemId, toolCallId, artifactRefs, json);
         _lastEventId = envelope.EventId;
         return envelope;
     }

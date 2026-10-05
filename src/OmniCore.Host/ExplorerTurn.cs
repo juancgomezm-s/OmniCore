@@ -284,6 +284,8 @@ public sealed class ExplorerTurn
             return new TurnResult("Run is terminal; queued FollowUps remain inert.", StopReason.Error,
                 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var turnId = resumedTurnId ?? TurnId.New();
+        using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
+            FindTaskForLane(runEvents, runId, laneId), laneId, turnId));
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         if (FindPendingRunInteraction(runEvents, runId) is { } pendingInteraction)
         {
@@ -1293,6 +1295,18 @@ public sealed class ExplorerTurn
             }
         }
         return open;
+    }
+
+    private TaskId? FindTaskForLane(IReadOnlyList<DomainEvent> events, RunId runId, LaneId laneId)
+    {
+        foreach (var evt in events)
+        {
+            if (evt.RunId != runId) continue;
+            if (_codecs.Decode(evt) is LaneCreated created && created.LaneId == laneId)
+                return created.TaskId;
+        }
+
+        return null;
     }
 
     private InteractionRequested? FindPendingRunInteraction(IReadOnlyList<DomainEvent> events, RunId runId)
