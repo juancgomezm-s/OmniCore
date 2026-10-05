@@ -77,11 +77,11 @@ public record RunCancelled(RunId RunId) : DomainEventPayload
 
 /// <summary>TaskCreated: la Task entra en Pending.</summary>
 public record TaskCreated(TaskId TaskId, RunId RunId, string Objective, IReadOnlyList<TaskDependency> Dependencies,
-    TaskBudget Budget) : DomainEventPayload
+    TaskBudget Budget, TaskId? ParentTaskId = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("task.created");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>TaskReady: Pending → Ready (dependencias requeridas completadas).</summary>
