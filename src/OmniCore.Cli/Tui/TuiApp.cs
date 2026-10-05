@@ -21,7 +21,8 @@ public sealed class TuiApp
     private ClientState _state = ClientState.Empty();
     private long _lastSequence;
     private Window? _window;
-    private Label? _conversation;
+    private ConversationView? _conversation;
+    private string? _renderedConversation;
     private TextField? _composer;
     private Label? _header;
     private Label? _status;
@@ -35,7 +36,7 @@ public sealed class TuiApp
     // Acceso interno para pruebas de cableado reales (Terminal.Gui real sobre IOmniClient real).
     internal Window? MainWindow => _window;
     internal TextField? Composer => _composer;
-    internal Label? Conversation => _conversation;
+    internal ConversationView? Conversation => _conversation;
     internal FrameView? Sidebar => _sidebar;
     internal Label? Completion => _completion;
     internal Label? Status => _status;
@@ -122,7 +123,10 @@ public sealed class TuiApp
         _window = new Window { Title = "OmniCore", BorderStyle = LineStyle.None, X = 0, Y = 0, Width = Dim.Fill(), Height = Dim.Fill() };
         _header = new Label { X = 2, Y = 0, Width = Dim.Fill(2), Height = 1, Text = HeaderText() };
         var conversationFrame = new FrameView { X = 0, Y = 2, Width = Dim.Fill(31), Height = Dim.Fill(6), BorderStyle = LineStyle.None };
-        _conversation = new Label { X = 2, Y = 0, Width = Dim.Fill(2), Height = Dim.Fill(), Text = ConversationText() };
+        _conversation = new ConversationView { X = 2, Y = 0, Width = Dim.Fill(2), Height = Dim.Fill(),
+            ReadOnly = true, WordWrap = true, ScrollBars = true, Text = ConversationText() };
+        _renderedConversation = null;
+        ApplyTheme(_conversation);
         conversationFrame.Add(_conversation);
         _sidebar = new FrameView { X = Pos.AnchorEnd(31), Y = 2, Width = 31, Height = Dim.Fill(6), Title = " Workspace ", BorderStyle = LineStyle.Rounded };
         _sidebarContent = new Label { X = 1, Y = 1, Width = Dim.Fill(1), Height = Dim.Fill(1), Text = SidebarText() };
@@ -268,10 +272,45 @@ public sealed class TuiApp
 
     private void RenderState()
     {
-        if (_conversation is not null) _conversation.Text = ConversationText();
+        RenderConversation();
         if (_header is not null) _header.Text = HeaderText();
         if (_status is not null) _status.Text = StatusText();
         if (_sidebarContent is not null) _sidebarContent.Text = SidebarText();
+    }
+
+    private void RenderConversation()
+    {
+        if (_conversation is null) return;
+        // Polling must not reload identical text: doing so resets selection and history scroll.
+        var signature = string.Join("\u001f", _state.Conversation.Blocks.Select(b => b.Role + "\u001e" + b.ToolName + "\u001e" + b.Text));
+        if (_renderedConversation == signature) return;
+        _renderedConversation = signature;
+        if (_state.Conversation.Blocks.Count == 0) { _conversation.Text = ConversationText(); return; }
+        var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
+        var rows = new List<List<Cell>>();
+        foreach (var row in ConversationPresentation.Render(_state.Conversation.Blocks, _locale))
+        {
+            var cells = new List<Cell>();
+            foreach (var span in row)
+            {
+                var foreground = noColor ? Color.None : span.Style switch
+                {
+                    ConversationStyle.Heading => new Color("#53B8F5"),
+                    ConversationStyle.InlineCode => new Color("#EF9A70"),
+                    ConversationStyle.Code => new Color("#B5DEF3"),
+                    ConversationStyle.CodeHeader => new Color("#67D4D0"),
+                    ConversationStyle.Muted => new Color("#8B9DAC"),
+                    _ => Color.None,
+                };
+                var background = !noColor && span.Style is ConversationStyle.Code or ConversationStyle.CodeHeader
+                    ? new Color("#0A2330") : Color.None;
+                var attribute = new Terminal.Gui.Drawing.Attribute(foreground, background);
+                var elements = System.Globalization.StringInfo.GetTextElementEnumerator(span.Text);
+                while (elements.MoveNext()) cells.Add(new Cell(attribute, false, elements.GetTextElement()));
+            }
+            rows.Add(cells);
+        }
+        _conversation.Load(rows);
     }
 
     private string ConversationText() => _state.Conversation.Blocks.Count == 0

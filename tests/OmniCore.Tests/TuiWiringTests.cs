@@ -32,6 +32,38 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    [Fact]
+    public void Rich_conversation_is_read_only_and_polling_preserves_history_position() => RunTuiTest(fx =>
+    {
+        var lane = fx.Server.AcquireStore().ReadFrom(fx.Server.LastSessionId()!, 1)
+            .Select(e => fx.Server.AcquireCodecs().Decode(e)).OfType<LaneCreated>().Last().LaneId;
+        var content = fx.Artifacts.PutText("## Key Methods\n- `AskAsync(ct)` — Run Explorer\n```c#\npublic void Run() { }\n```\n"
+            + string.Join("\n", Enumerable.Range(0, 40).Select(i => "History " + i)),
+            "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+        new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+            .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), content));
+        fx.StartTui();
+        fx.Wait(() => fx.App.Conversation!.Text.Contains("Key Methods"), "respuesta durable renderizada");
+        Assert.True(fx.App.Conversation!.ReadOnly);
+        Assert.True(fx.App.Conversation.ScrollBars);
+        Assert.Contains("┌─ </> c#", fx.App.Conversation.Text);
+        Assert.DoesNotContain("```", fx.App.Conversation.Text);
+        var cells = fx.App.Conversation.GetAllLines().SelectMany(line => line).ToArray();
+        if (Environment.GetEnvironmentVariable("NO_COLOR") is null)
+        {
+            Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#53B8F5"));
+            Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#EF9A70"));
+            Assert.Contains(cells, cell => cell.Attribute?.Background == new Terminal.Gui.Drawing.Color("#0A2330"));
+        }
+        Thread.Sleep(300); // Let the first styled frame render before navigating history.
+        fx.Application.Invoke(() => fx.App.Conversation.MoveEnd());
+        fx.Wait(() => fx.App.Conversation.CurrentRow > 30, "historial navegable");
+        var row = fx.App.Conversation.CurrentRow;
+        Thread.Sleep(1100); // More than two production polls, not a handler-only test.
+        Assert.Equal(row, fx.App.Conversation.CurrentRow);
+        Assert.True(fx.App.Composer!.HasFocus);
+    });
+
     // ------------------------------------------------------------------ composer: foco, tecleo, envío
 
     [Fact]
