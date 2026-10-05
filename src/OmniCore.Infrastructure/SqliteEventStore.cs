@@ -13,7 +13,7 @@ using OmniCore.Domain;
 /// mientras se comete la transacción, restaurando NORMAL en finally. Un error nunca deja la
 /// conexión en FULL. Standard conserva NORMAL.
 /// </summary>
-public sealed class SqliteEventStore : IEventStore
+public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 {
     private readonly System.Data.Common.DbConnection _conn;
 
@@ -195,6 +195,26 @@ public sealed class SqliteEventStore : IEventStore
         return result.ToArray();
     }
 
+    /// <summary>Reads one event type across all sessions in this workspace journal.</summary>
+    public IReadOnlyList<DomainEvent> ReadEvents(EventType type)
+    {
+        ArgumentNullException.ThrowIfNull(type);
+        var cmd = _conn.CreateCommand()!;
+        cmd.CommandText = "SELECT session_id, event_id, seq, event_type, schema_version, timestamp, " +
+            "causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, " +
+            "payload, artifacts FROM events WHERE event_type = :type ORDER BY id";
+        cmd.Parameters.Add(S(cmd, "type", type.ToString()));
+
+        var result = new List<DomainEvent>();
+        using var reader = cmd.ExecuteReader()!;
+        foreach (System.Data.Common.DbDataRecord row in reader)
+        {
+            result.Add(ReadRow(SessionId.Parse(_AsString(row.GetValue(0))), row, 1));
+        }
+
+        return result.ToArray();
+    }
+
     /// <summary>Cantidad de eventos persistidos de una sesión (auditoría previa a la purga).</summary>
     public long CountEvents(SessionId sessionId)
     {
@@ -262,25 +282,25 @@ public sealed class SqliteEventStore : IEventStore
         return p;
     }
 
-    private DomainEvent ReadRow(SessionId sessionId, System.Data.Common.DbDataRecord row)
+    private DomainEvent ReadRow(SessionId sessionId, System.Data.Common.DbDataRecord row, int offset = 0)
     {
         return DomainEvent.Stored(
-            EventId.Parse(_AsString(row.GetValue(0))),
+            EventId.Parse(_AsString(row.GetValue(offset))),
             sessionId,
-            _AsLong(row.GetValue(1)),
-            EventType.Of(_AsString(row.GetValue(2))),
-            (int) _AsLong(row.GetValue(3)),
-            ParseTimestamp(_AsString(row.GetValue(4))),
-            Parts.ParseCausation(_AsStringOrNull(row.GetValue(5))),
-            Parts.ParseRunId(_AsStringOrNull(row.GetValue(6))),
-            Parts.ParseRunId(_AsStringOrNull(row.GetValue(7))),
-            Parts.ParseTaskId(_AsStringOrNull(row.GetValue(8))),
-            Parts.ParseLaneId(_AsStringOrNull(row.GetValue(9))),
-            Parts.ParseTurnId(_AsStringOrNull(row.GetValue(10))),
-            Parts.ParsePlanItemId(_AsStringOrNull(row.GetValue(11))),
-            Parts.ParseToolCallId(_AsStringOrNull(row.GetValue(12))),
-            Parts.ParseArtifacts(_AsStringOrNull(row.GetValue(14))),
-            _AsString(row.GetValue(13)));
+            _AsLong(row.GetValue(offset + 1)),
+            EventType.Of(_AsString(row.GetValue(offset + 2))),
+            (int) _AsLong(row.GetValue(offset + 3)),
+            ParseTimestamp(_AsString(row.GetValue(offset + 4))),
+            Parts.ParseCausation(_AsStringOrNull(row.GetValue(offset + 5))),
+            Parts.ParseRunId(_AsStringOrNull(row.GetValue(offset + 6))),
+            Parts.ParseRunId(_AsStringOrNull(row.GetValue(offset + 7))),
+            Parts.ParseTaskId(_AsStringOrNull(row.GetValue(offset + 8))),
+            Parts.ParseLaneId(_AsStringOrNull(row.GetValue(offset + 9))),
+            Parts.ParseTurnId(_AsStringOrNull(row.GetValue(offset + 10))),
+            Parts.ParsePlanItemId(_AsStringOrNull(row.GetValue(offset + 11))),
+            Parts.ParseToolCallId(_AsStringOrNull(row.GetValue(offset + 12))),
+            Parts.ParseArtifacts(_AsStringOrNull(row.GetValue(offset + 14))),
+            _AsString(row.GetValue(offset + 13)));
     }
 
     /// <summary>

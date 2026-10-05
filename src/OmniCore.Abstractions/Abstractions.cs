@@ -22,6 +22,13 @@ public interface IEventStore
     IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive);
 }
 
+/// <summary>Optional read-only view of event types across every session in a workspace journal.</summary>
+public interface IWorkspaceJournalReader
+{
+    /// <summary>Returns all persisted events of this type across sessions, in journal order.</summary>
+    IReadOnlyList<DomainEvent> ReadEvents(EventType type);
+}
+
 /// <summary>
 /// Artifact Store inmutable y content-addressed (ADR-0001 §4–§6). Blobs en disco; la metadata
 /// en el mismo SQLite. Orden obligatorio: primero el blob, después el evento que lo referencia.

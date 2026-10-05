@@ -203,7 +203,7 @@ public sealed class ExplorerTurn
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null, pending.InteractionId);
         }
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-        var persistedSpend = ReadJournalSpend(stream, runId, today);
+        var persistedSpend = ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps);
 
         var messages = LoadConversation(stream, runId);
         var safeQuestion = isResume ? "" : _redaction.Redact(question ?? "");
@@ -646,25 +646,73 @@ public sealed class ExplorerTurn
     /// versionado que conserva la respuesta y la usage/cost metadata; el replay no depende de
     /// contadores en memoria ni de tarifas que hayan cambiado desde entonces.
     /// </summary>
-    private PersistedSpend ReadJournalSpend(EventStream stream, RunId runId, string today)
+    private PersistedSpend ReadJournalSpend(EventStream stream, SessionId sessionId, RunId runId, string today,
+        bool includeWorkspaceDaily)
     {
         decimal session = 0m, daily = 0m, run = 0m;
         var incomplete = false;
-        foreach (var evt in stream.EventsSince(1))
+        IReadOnlyList<DomainEvent>? completions = null;
+        if (includeWorkspaceDaily && _store is IWorkspaceJournalReader store)
         {
-            if (!evt.Type.ToString().Equals("model.completed", StringComparison.Ordinal)) continue;
-            var completed = _codecs.Decode(evt) as ModelCompleted;
-            if (completed?.ResponseArtifact is null) { incomplete = true; continue; }
-            var text = _artifacts.GetText(completed.ResponseArtifact.Hash);
-            if (!TryDecodeUsageEnvelope(text, out var record) || record.CostUsd is null)
+            try { completions = store.ReadEvents(EventType.Of("model.completed")); }
+            catch (Exception)
+            {
+                // A failed cross-session scan cannot establish a safe daily total.
+                incomplete = true;
+            }
+        }
+        if (completions is null)
+        {
+            // Run-cost-only callers need no workspace-wide daily view. Default caps require it.
+            if (includeWorkspaceDaily) incomplete = true;
+            completions = stream.EventsSince(1)
+                .Where(evt => evt.Type.ToString().Equals("model.completed", StringComparison.Ordinal)).ToArray();
+        }
+
+        foreach (var evt in completions)
+        {
+            ModelCompleted? completed;
+            try { completed = _codecs.Decode(evt) as ModelCompleted; }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException
+                or InvalidOperationException or FormatException or ArgumentException)
             {
                 incomplete = true;
                 continue;
             }
+            if (completed?.ResponseArtifact is null) { incomplete = true; continue; }
+            string? text;
+            try { text = _artifacts.GetText(completed.ResponseArtifact.Hash); }
+            catch (InvalidDataException)
+            {
+                incomplete = true;
+                continue;
+            }
+            UsageEnvelope record;
+            bool decoded;
+            try { decoded = TryDecodeUsageEnvelope(text, out record); }
+            catch (Exception ex) when (ex is FormatException or OverflowException)
+            {
+                incomplete = true;
+                continue;
+            }
+            if (!decoded || record.CostUsd is null)
+            {
+                incomplete = true;
+                continue;
+            }
+            if (!DateOnly.TryParseExact(record.Day, "yyyy-MM-dd",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out _)
+                || evt.RunId is null || record.RunId != evt.RunId.ToString())
+            {
+                // Invalid/mismatched metadata cannot safely exclude a record from today's or
+                // this Run's total. Keep the known cost in broad totals and fail closed below.
+                incomplete = true;
+            }
             var cost = record.CostUsd.Value;
-            session += cost;
             if (record.Day == today) daily += cost;
-            if (record.RunId == runId.ToString()) run += cost;
+            if (evt.SessionId == sessionId) session += cost;
+            if (evt.SessionId == sessionId && evt.RunId == runId) run += cost;
         }
         return new PersistedSpend(session, daily, run, incomplete);
     }
