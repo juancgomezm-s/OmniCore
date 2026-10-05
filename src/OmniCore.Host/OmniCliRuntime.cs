@@ -478,8 +478,17 @@ public sealed class OmniCliRuntime
                     workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
                     interactionResponder, interactive, locale, cancellationToken, promptOrigin);
 
-            var result = turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, cancellationToken,
-                promptOrigin);
+            var askExecution = server.ExecuteAskTurn(sessionId, runId,
+                token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
+                    promptOrigin), cancellationToken);
+            if (askExecution.Result is null
+                || askExecution.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
+            {
+                throw new InvalidOperationException(askExecution.Ack.Error
+                    ?? "internal Explorer Ask command was rejected");
+            }
+
+            var result = askExecution.Result;
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
             {
                 writeLine(InputRequiredJson(questionId, "Question"));
