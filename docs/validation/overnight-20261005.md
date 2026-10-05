@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 07:57 UTC /01:57 America/Mexico_City. Rama autorizada
+Checkpoint 08:14 UTC /02:14 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -54,6 +54,31 @@ TaskCanceledException. Root repitió ambos focales:2/2 PASS; esto NO resuelve su
 Suite funcional completa independiente en curso al checkpoint, aún sin resultado. Luna investiga
 recursos SQLite; no se debilitan assertions ni se ocultan errores de cleanup/TLS. No confundir esta
 suite solución con los anteriores conteos de OmniCore.Tests ni afirmar verde global actual.
+
+### Reparación posterior y contratos de escalación
+
+La repetición funcional del coordinador previa al nuevo probe terminó1267=1263 PASS /0 FAIL /4 SKIP.
+Después, el probe propio SqliteResourceLifetimeTests reprodujo directamente un IOException en
+File.Delete tras Close/ClearPool exclusivo/Dispose, en la iteración12 de24 journals bajo la suite
+completa. Pasaba aislado; la reproducción bajo carga fue necesaria. Los directorios de un probe
+fallido se preservan para diagnóstico y no se enmascara el fallo con cleanup en finally.
+
+`94987eb` añade using a15 DbCommands del store. No cambia permisos, pool global, transacciones,
+política de durabilidad ni assertions. Tras el fix, el worker ejecutó solución completa:
+**1326=1322 PASS /0 FAIL /4 SKIP**, y diez ejecuciones focales de FileAuditSinkTests sin fallo.
+Root auditó diff y reprodujo14/14 focales de recursos/FileAudit/escalación. Rerun funcional
+completo independiente posterior al fix está en curso al checkpoint. No se atribuye el timeout
+TLS previo al mismo defecto ni se declara garantizada la ausencia de intermitencias futuras.
+
+`b252b6d` añade TurnId?/LaneId? opcionales a las tres familias ModelEscalation v2 y upcasters v1
+(ADR0046§2). Root implementó y verificó8/8 codec/lineage; Luna revisó sin defecto reproducible y
+su suite completa incluye esos cambios. Eventos antiguos conservan campos y nulls, prioridad
+payload sobre scope y replay sin transiciones canónicas nuevas. No cambia callers actuales,
+consentimiento, routing, precios ni validación de providers.
+
+Luna tiene ahora el contrato aditivo CommandOutcome/CommandAck de ADR0046§5, pendiente entrega:
+no inferir outcome explícito desde status legacy ni implementar commands internos/transporte nuevo
+en esta ronda. M5.5 no se declara cerrado por estos contratos parciales.
 
 Ling03 recibió un paquete cerrado mínimo para pruebas CausationScope y terminó con HTTP429
 sin código visible. Ninguna entrega de esa ronda fue aplicada; logs preservados. No fallback
