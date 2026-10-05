@@ -69,6 +69,44 @@ public sealed class ExplorerTurn
         return total;
     }
 
+    private decimal? ReadTurnModelStepCost(EventStream stream, TurnId turnId)
+    {
+        decimal total = 0m;
+        var found = false;
+        var sawStart = false;
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (evt.Type.ToString().Equals("model_step.started", StringComparison.Ordinal))
+            {
+                try
+                {
+                    if (_codecs.Decode(evt) is ModelStepStarted started && started.TurnId == turnId)
+                        sawStart = true;
+                }
+                catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                    or FormatException or ArgumentException)
+                {
+                    return null;
+                }
+                continue;
+            }
+            if (!evt.Type.ToString().Equals("model_step.completed", StringComparison.Ordinal)) continue;
+            try
+            {
+                if (_codecs.Decode(evt) is not ModelStepCompleted completed || completed.TurnId != turnId) continue;
+                found = true;
+                if (completed.CostUsd is null || completed.CostUsd < 0m) return null;
+                total += completed.CostUsd.Value;
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException or OverflowException)
+            {
+                return null;
+            }
+        }
+        return sawStart && !found ? null : found ? total : 0m;
+    }
+
     private int ReadNextModelStepIndex(EventStream stream, TurnId turnId)
     {
         var max = -1;
@@ -333,10 +371,11 @@ public sealed class ExplorerTurn
                         throw new BudgetExceededException("precio desconocido: no se puede hacer cumplir el tope");
                     if (budgeted && persistedSpend.Incomplete)
                         throw new BudgetExceededException("uso histórico incompleto: no se puede hacer cumplir el tope");
-                    var accumulatedRunCost = persistedSpend.RunUsd + guard.CostUsd()
-                        + (_pricing?.CostUsd(usage) ?? 0m);
-                    var accumulatedSessionCost = persistedSpend.SessionUsd + (_pricing?.CostUsd(usage) ?? 0m);
-                    var accumulatedDailyCost = persistedSpend.DailyUsd + (_pricing?.CostUsd(usage) ?? 0m);
+                    // `usage` is the current Ask's same spend already accumulated by guard;
+                    // adding both charged a segment twice on a multi-step Turn.
+                    var accumulatedRunCost = persistedSpend.RunUsd + guard.CostUsd();
+                    var accumulatedSessionCost = persistedSpend.SessionUsd + guard.CostUsd();
+                    var accumulatedDailyCost = persistedSpend.DailyUsd + guard.CostUsd();
                     if (budget.MaxCostUsd is not null && accumulatedRunCost >= budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run alcanzado ($"
                             + budget.MaxCostUsd.Value + ")");
@@ -613,7 +652,7 @@ public sealed class ExplorerTurn
             if (finalText is not null && finalText!.Length > 0)
             {
                 var safeResponse = _redaction.Redact(finalText!);
-                var cost = _pricing?.CostUsd(turnUsage);
+                var cost = ReadTurnModelStepCost(stream, turnId);
                 var journalRecord = EncodeUsageResponse(safeResponse, turnUsage, cost, runId, today);
                 var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
                     ArtifactKind.ModelResponse, Sensitivity.Sensitive);
@@ -622,7 +661,8 @@ public sealed class ExplorerTurn
             }
 
             stream.Append(new TurnCompleted(turnId));
-            AuditSpend(sessionId, runId, laneId, turnId, stop, turnUsage);
+            AuditSpend(sessionId, runId, laneId, turnId, stop, turnUsage,
+                ReadTurnModelStepCost(stream, turnId));
             AuditPolicy(sessionId, runId, turnId, stop);
             return new TurnResult(finalText is null ? null : _redaction.Redact(finalText), stop, steps,
                 turnUsage, allToolCalls.ToArray(), artifactId);
@@ -649,7 +689,7 @@ public sealed class ExplorerTurn
     /// presupuesto por sesión/día (P1: el audit sink del turno se usa).
     /// </summary>
     private void AuditSpend(SessionId sessionId, RunId runId, LaneId laneId, TurnId turnId,
-        StopReason stop, TokenUsage usage)
+        StopReason stop, TokenUsage usage, decimal? confirmedCostUsd)
     {
         try
         {
@@ -657,8 +697,8 @@ public sealed class ExplorerTurn
             details["stop"] = stop.ToString();
             details["inputTokens"] = usage.Input.ToString();
             details["outputTokens"] = usage.Output.ToString();
-            var cost = _pricing?.CostUsd(usage);
-            if (cost is not null) details["costUsd"] = cost.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (confirmedCostUsd is not null)
+                details["costUsd"] = confirmedCostUsd.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _audit.Record(new AuditRecord("turn.spend", null, sessionId, runId, DateTimeOffset.Now,
                 turnId.ToString(), details), CancellationToken.None);
         }
