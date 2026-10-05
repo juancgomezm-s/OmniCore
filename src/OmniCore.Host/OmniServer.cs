@@ -1317,6 +1317,46 @@ public sealed class OmniServer : IOmniClient
             sessionId, sequenceBefore, commandId);
     }
 
+    internal (bool? Completed, CommandAck Ack) CheckRunCompletionAndGate(SessionId sessionId, RunId runId,
+        Func<EventStream, IReadOnlyList<ExternalCompletionGateResult>>? runExternalGates,
+        MutationLedger? mutationLedger)
+    {
+        var ambientCommand = CausationScope.Current as CommandCausation;
+        var commandId = ambientCommand?.CommandId ?? CommandId.New();
+        var commandMessageId = commandId.Value.ToString();
+        var all = _store.ReadFrom(sessionId, 1);
+        if (!all.Select(_codecs.Decode).OfType<RunCreated>().Any(created => created.RunId.Equals(runId)))
+        {
+            return (null, new CommandAck(commandMessageId, "error", "the Run does not belong to the requested Session",
+                RuntimeCommandOutcome.Rejected()));
+        }
+
+        var own = EventsForRun(all, runId);
+        var run = RunProjection.Replay(sessionId, runId, _codecs, own);
+        var tasks = TaskGraphProjection.Replay(_codecs, own);
+        var plan = PlanProjection.Replay(_codecs, own);
+        var laneProjection = LaneProjection.Replay(_codecs, own);
+        LaneId? rootLane = null;
+        if (run.RootTask is { } rootTask)
+        {
+            var runningRootLanes = laneProjection.ForTask(rootTask)
+                .Where(lane => lane.State == LaneState.Running).ToArray();
+            if (runningRootLanes.Length == 1) rootLane = runningRootLanes[0].Id;
+        }
+
+        var sequenceBefore = _store.CurrentSequence(sessionId);
+        using var internalCommand = ambientCommand is null
+            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, run.RootTask, rootLane));
+        var stream = new EventStream(_store, _codecs, sessionId);
+        var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
+            new ProgressReconciler(), _store, _codecs, sessionId, stream,
+            runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger);
+        var ack = CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+            sessionId, sequenceBefore, commandId);
+        return (completed, ack);
+    }
+
     private void AuditEffectResolutions(SessionId session, long sequenceBeforeResponse, InteractionId interaction)
     {
         WorkspaceId? workspace = null;
