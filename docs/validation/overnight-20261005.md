@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 09:17 UTC /03:17 America/Mexico_City. Rama autorizada
+Checkpoint 09:28 UTC /03:28 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -161,12 +161,23 @@ independiente tras `f331704` y los5 controles EventStream: **1307=1303 PASS /0 F
 Ese full precede al ajuste test-only `10ec78d` de RunMode.Act. Root auditó su diff y reprodujo7/7
 Ask/Act después del ajuste, incluida la assertion del modo Act real.
 
-Siguiente operación interna de Luna: RequestPlanApprovalIfNeeded conserva API y condiciones de
-autorización actuales; debe atribuir su publicación al command interno, devolver Ack/rango causal y
-clasificar como NoOp sólo sus ramas condicionales ya inefectivas. No introduce aprobación automática.
+`222b34e` convierte RequestPlanApprovalIfNeeded en operación interna, conservando API y condiciones
+de autorización actuales. Publication Accepted persiste request + RunAwaitingInput en un batch
+con CommandCausation propio y rango exacto, Run/RootTask/RootLane propios. Ramas condicionales ya
+inefectivas son NoOp sin rango. La interacción sigue requiriendo al usuario; no hay autoaprobación.
+Root reprodujo51/51 aprobación/M2/FollowUp/input y full independiente:1310 casos,1306 PASS /0 FAIL
+/4 SKIP. `47935f5` corrige la fixture para conservar CAS durante todo el test y añade fallo atómico
+de store con excepción visible, restauración de scopes ajenos y retry sin filas parciales ni
+doble publicación. Root auditó y reprodujo14/14 aprobación/Ask/Act después, sin inventar full1311.
+Siguiente bloque autorizado de Luna: sólo las tres escrituras de ModelEscalation en Host, bajo
+operaciones internas con Ack/rango. No envolver ni modificar routing, gasto, credenciales o provider.
 Un build focal del worker coincidió con la suite root y encontró locks MSB3026; lo detuvo sin tocar
 el proceso root y ya recibió aviso de compilación libre tras el resultado completo. No fue un fallo
 del producto ni una validación remota, y no se reiniciaron servidores.
+
+Runbook operativo compactado al09:26 UTC, preservando íntegra la versión previa en
+C:\Users\juanc\.codex\omni-overnight-20261005-history-0925.md. Consultar el historial sólo para
+evidencia específica; fuente vigente sigue siendo omni-overnight-20261005.md.
 No declarar todos los commands migrados ni commands internos listos. M5.5 no
 se declara cerrado; Source/fallback causal y wiring general siguen pendientes.
 
