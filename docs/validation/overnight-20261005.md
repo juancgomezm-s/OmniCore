@@ -1,6 +1,6 @@
 # Avance nocturno — 2026-10-05
 
-Checkpoint 07:46 UTC /01:46 America/Mexico_City. Rama autorizada
+Checkpoint 07:57 UTC /01:57 America/Mexico_City. Rama autorizada
 `codex/omnicore-consolidation-20261004`, base del turno `a627892`.
 Trabajo autónomo autorizado sólo hasta14:00 UTC /08:00 local. Sin push ni integración a main.
 
@@ -36,8 +36,24 @@ Relation/Supervision, además de TaskCreated v2 con ParentTaskId? y upcaster v1.
 cinco archivos y reprodujo3/3 focales y suite completa: **1260 casos,1256 PASS /0 FAIL /4 SKIP**.
 Lifecycle no cambia estados canónicos Task/Lane/Run ni implica producción/aceptación de resultado.
 No existe emisión automática ni scheduler/joins. Luna corrige cleanup exclusivo del fixture en
-commit separado y después tiene ownership de ExecutionId ambiental/envelope persistido, pendiente
-entrega y auditoría. No declarar ese cableado terminado por tener el tipo o por asignarlo.
+commit separado `be6fd80`, reproducido junto a contratos por root.
+
+`f86cc5f` añade ExecutionId opcional al envelope y scope, prioriza el campo propio del payload
+(no ParentExecutionId) y lo conserva en memoria/SQLite y lector de workspace. Migración legacy
+aditiva, idempotente y protegida por BEGIN IMMEDIATE ante aperturas simultáneas. Root auditó diff
+y reprodujo5/5 nuevos tests; batería combinada ExecutionId/AgentExecution/telemetría:10/10 PASS.
+No genera automáticamente ExecutionIds para los ejecutores del runtime.
+
+`2be0171` añade dos tests de evicción FIFO/snapshot independiente y cuatro escritores con lector
+del sink local. Implementados por coordinador, NO por Ling;2/2 PASS independientes. No exige orden
+entre writers ni una planificación concreta del sistema.
+
+Última suite **solución** del worker:1321 casos,1315 PASS /2 FAIL /4 SKIP (incluye varios proyectos).
+Fallos: FileAuditSinkTests al borrar journal aún bloqueado y SecurityP0Tests test TLS real con
+TaskCanceledException. Root repitió ambos focales:2/2 PASS; esto NO resuelve su posible flakiness.
+Suite funcional completa independiente en curso al checkpoint, aún sin resultado. Luna investiga
+recursos SQLite; no se debilitan assertions ni se ocultan errores de cleanup/TLS. No confundir esta
+suite solución con los anteriores conteos de OmniCore.Tests ni afirmar verde global actual.
 
 Ling03 recibió un paquete cerrado mínimo para pruebas CausationScope y terminó con HTTP429
 sin código visible. Ninguna entrega de esa ronda fue aplicada; logs preservados. No fallback
@@ -48,8 +64,8 @@ futuro; no se cambiaron certificados, servidores ni el entorno padre. Qwen perma
 tras length8192 sin entrega: no se
 relanzó ni se comprobó/modificó su servidor durante este checkpoint.
 
-Telemetry es opt-in y process-local; no exportadores ni readmodels durables. ExecutionScope aún
-no incorpora ExecutionId/ModelStepId; Source y eliminación del fallback de causation permanecen
+Telemetry es opt-in y process-local; no exportadores ni readmodels durables. ExecutionScope ya
+incorpora ExecutionId; ModelStepId, Source y eliminación del fallback de causation permanecen
 pendientes. M4 TTY/sesiones largas/reinicio OS y M5 cualificación/acceso real siguen abiertos.
 No se gastó presupuesto de validación real del proveedor. Main y procesos no identificados como
 propios se preservaron sin cambios.
