@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 06:27 UTC / 00:27 America/Mexico_City.
+Actualizado 2026-10-06 06:32 UTC / 00:32 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -19,6 +19,7 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 - Checkpoint ProviderState por ModelStep: replay tras reabrir SQLite/CAS, guard
   Run/Lane/Turn/modelo/ruta y retención transitiva GC; adapter Anthropic real con SSE
   de fixture. [Contrato y límites](m55-provider-state-checkpoint.md).
+  Commit `5f40a81`; uso reportado conservado incluso si falla el checkpoint.
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -56,8 +57,8 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa: 1541 casos, 1537 PASS, 0 FAIL, 4 SKIP symlink, antes de los
-  últimos ajustes CAS/cualificación.
+- Última suite completa sobre `5f40a81`: 1588 casos, 1584 PASS, 0 FAIL, 4 SKIP
+  symlink (`provider-state-accounting-full-suite.log`, 134.443 s).
 - Focal final CAS/rutas: 121 PASS.
 - Focal cualificación/routing/CLI con SQLite legacy, idempotencia y aislamiento: 87 PASS,
   build 0 warnings / 0 errores (`route-qualification-tests.log`).
@@ -75,3 +76,9 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 ```
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
+
+Próxima reproducción del integrador: revisión Luna señala que escalación `ask` solo
+registra/sugiere sin InteractionRequest y `BudgetExceeded.allow_plus` resuelve la
+interacción sin ampliar el límite durable. Revisar ModelRoutingHost/OmniCliRuntime
+TryEscalateAsync, RunControlService.Respond y tests EscalationPriceGuardBoundary/SpendPricing
+antes de implementar. No asumir cierre por contratos o por tener credenciales.
