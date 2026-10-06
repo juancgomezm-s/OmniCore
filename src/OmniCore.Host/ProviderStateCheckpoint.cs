@@ -1,0 +1,130 @@
+namespace OmniCore.Host;
+
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using OmniCore.Abstractions;
+using OmniCore.Domain;
+
+/// <summary>Persists sensitive provider continuation state outside journal payloads.</summary>
+internal static class ProviderStateCheckpoint
+{
+    private const string SafeFailure = "Provider state checkpoint is invalid.";
+    private const string MediaType = "application/vnd.omnicore.provider-state+json";
+
+    public static string? Persist(IArtifactStore artifacts, ProviderState? state, string modelId,
+        RouteId routeId, TurnId turnId, int stepIndex)
+    {
+        ArgumentNullException.ThrowIfNull(artifacts);
+        ArgumentNullException.ThrowIfNull(routeId);
+        ArgumentNullException.ThrowIfNull(turnId);
+        if (state is null) return null;
+
+        try
+        {
+            var stateJson = JsonSerializer.Serialize(state, ProviderStateCheckpointJsonContext.Default.ProviderState);
+            var stateRef = artifacts.PutText(stateJson, MediaType, ArtifactKind.ProviderOpaqueState, Sensitivity.Sensitive);
+            var utf8Size = Encoding.UTF8.GetByteCount(stateJson);
+            if (stateRef.Id is null || stateRef.Size < 0 || stateRef.MediaType != MediaType
+                || stateRef.Kind != ArtifactKind.ProviderOpaqueState
+                || stateRef.Sensitivity != Sensitivity.Sensitive
+                || stateRef.Redacted || stateRef.Size != utf8Size || !ValidSha256(stateRef.Hash)
+                || !artifacts.Verify(stateRef.Hash, stateRef.Size)
+                || !string.Equals(artifacts.GetText(stateRef.Hash), stateJson, StringComparison.Ordinal))
+                throw Invalid();
+
+            var descriptor = new ProviderStateCheckpointDescriptor
+            {
+                Version = 1,
+                ModelId = modelId,
+                RouteId = routeId.Value,
+                TurnId = turnId.ToString(),
+                StepIndex = stepIndex,
+                StateRef = stateRef,
+            };
+            return JsonSerializer.Serialize(descriptor, ProviderStateCheckpointJsonContext.Default.ProviderStateCheckpointDescriptor);
+        }
+        catch (InvalidDataException)
+        {
+            throw Invalid();
+        }
+        catch (Exception)
+        {
+            throw Invalid();
+        }
+    }
+
+    public static ProviderState? Restore(IArtifactStore artifacts, string descriptorJson, string modelId,
+        RouteId routeId, TurnId turnId, int stepIndex)
+    {
+        ArgumentNullException.ThrowIfNull(artifacts);
+        ArgumentNullException.ThrowIfNull(routeId);
+        ArgumentNullException.ThrowIfNull(turnId);
+
+        ProviderStateCheckpointDescriptor descriptor;
+        try
+        {
+            descriptor = JsonSerializer.Deserialize(descriptorJson,
+                ProviderStateCheckpointJsonContext.Default.ProviderStateCheckpointDescriptor) ?? throw Invalid();
+        }
+        catch (Exception)
+        {
+            throw Invalid();
+        }
+
+        if (descriptor.Version != 1) throw Invalid();
+        if (string.IsNullOrWhiteSpace(descriptor.ModelId) || string.IsNullOrWhiteSpace(descriptor.RouteId)
+            || string.IsNullOrWhiteSpace(descriptor.TurnId) || !Guid.TryParse(descriptor.TurnId, out _)
+            || descriptor.StateRef is null)
+            throw Invalid();
+        if (!string.Equals(descriptor.ModelId, modelId, StringComparison.Ordinal)
+            || !string.Equals(descriptor.RouteId, routeId.Value, StringComparison.Ordinal)
+            || !string.Equals(descriptor.TurnId, turnId.ToString(), StringComparison.Ordinal)
+            || descriptor.StepIndex != stepIndex)
+            return null;
+
+        var stateRef = descriptor.StateRef;
+        if (stateRef is null || stateRef.Id is null || stateRef.Hash is null || stateRef.Size < 0
+            || stateRef.MediaType != MediaType || stateRef.Kind != ArtifactKind.ProviderOpaqueState
+            || stateRef.Sensitivity != Sensitivity.Sensitive
+            || stateRef.Redacted || !ValidSha256(stateRef.Hash))
+            throw Invalid();
+
+        try
+        {
+            if (!artifacts.Verify(stateRef.Hash, stateRef.Size)) throw Invalid();
+            var content = artifacts.GetText(stateRef.Hash);
+            if (content is null || Encoding.UTF8.GetByteCount(content) != stateRef.Size) throw Invalid();
+            var state = JsonSerializer.Deserialize(content, ProviderStateCheckpointJsonContext.Default.ProviderState);
+            if (state is null || state.Kind is null || state.PayloadJson is null) throw Invalid();
+            return state;
+        }
+        catch (Exception)
+        {
+            throw Invalid();
+        }
+    }
+
+    private static bool ValidSha256(ContentHash hash) =>
+        hash is not null
+        && string.Equals(hash.Algorithm, "sha256", StringComparison.Ordinal)
+        && hash.Value is { Length: 64 } value
+        && value.All(static c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
+    private static InvalidDataException Invalid() => new(SafeFailure);
+}
+
+internal sealed record ProviderStateCheckpointDescriptor
+{
+    public required int Version { get; init; }
+    public required string ModelId { get; init; }
+    public required string RouteId { get; init; }
+    public required string TurnId { get; init; }
+    public required int StepIndex { get; init; }
+    public required ArtifactRef StateRef { get; init; }
+}
+
+[JsonSerializable(typeof(ProviderState))]
+[JsonSerializable(typeof(ProviderStateCheckpointDescriptor))]
+internal partial class ProviderStateCheckpointJsonContext : JsonSerializerContext;

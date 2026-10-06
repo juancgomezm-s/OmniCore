@@ -82,7 +82,7 @@ data: {"type":"message_stop"}
         public Secret GetSecret(string secretRef, CancellationToken cancellationToken) => Secret.Of("fixture-no-secret");
     }
 
-    private sealed class TwoSseHandler : HttpMessageHandler
+    private sealed class TwoSseHandler(string? firstStream = null) : HttpMessageHandler
     {
         private int _calls;
 
@@ -94,7 +94,7 @@ data: {"type":"message_stop"}
             if (Interlocked.Increment(ref _calls) > 2)
                 throw new InvalidOperationException("Fixture: unexpected third Anthropic call.");
             RequestBodies.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
-            return Sse(_calls == 1 ? ToolUseTurnStream : TextDoneTurnStream);
+            return Sse(_calls == 1 ? firstStream ?? ToolUseTurnStream : TextDoneTurnStream);
         }
     }
 
