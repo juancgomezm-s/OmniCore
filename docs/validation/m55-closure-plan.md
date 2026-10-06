@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 20:14 UTC / 14:14 America/Mexico_City.
+Actualizado 2026-10-06 20:31 UTC / 14:31 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -36,6 +36,27 @@ Main, cambios ajenos, credenciales y procesos no propios se preservan; no push.
 M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
+
+- M5 intentos conocidos: capacidad aditiva IModelRequestAttemptBound en adaptadores,
+  cota desde resiliencia efectivamente adquirida; default3/Codex6, long sin overflow.
+  Preflight/preview cuentan intentos conocidos y dos tests RED reales ya pasan.
+  No es factura, reserva ni garantía wire (excluye auth/redirect). Inyección legacy
+  sin bound y wrapper Telemetry pendientes de nullable/failclosed; Luna HIGH prepara
+  controles fuera del repo. Auditoría también halló subset tokens reportados incoherentes
+  aceptados: próxima regresión M5, no regla de suma de caché inventada.
+- M5.5 root: tres controles reales SQLite/CAS para éxito/deny/fallo entre dos Runs
+  de la misma Session, primero cancelado por servicio normal antes del siguiente.
+  Envelopes/UTC/prefijo histórico/refModelStep/uso sobreviven reopen sin fuga scope.
+  [Alcance y reproducción](m55-multirun-attribution-20261006.md). No prueba todavía
+  ToolCallStartedv3, suspensión/resume ni todas las Lanes/terminales.
+- Full final conjunto2111=2107PASS0FAIL4SKIPsymlink106.764s/exit0, focal282=279PASS
+  0FAIL3SKIP3.563s, arquitectura56PASS0.623s/build0/0. Full intermedia tuvo1FAIL por
+  cancelación explícita del servidor TLS privado en cleanup; fix estrecho conserva
+  las tres assertions/timeout y ninguna política TLS productiva cambia. Aislados1PASS
+  2.382s y1PASS2.343s. [Evidencia](tls-fixture-shutdown-20261006.md).
+  Ronda externa2017: Nemotron14,485tokens/coste0, propuesta rechazada por falsoDeny,
+  metadata ausente y cleanup oculto. GLM/Deep timeout240s, sin entrega, sin reintentos
+  idénticos/fallback ni código integrado. No consultas autenticadas de cualificación.
 
 - M5 descriptor ausente: el API de cualificación sin descriptor ni provider inyectado
   rechaza con CostEvidenceUnavailable antes de conectar al fallback OMNI_BASE_URL;
