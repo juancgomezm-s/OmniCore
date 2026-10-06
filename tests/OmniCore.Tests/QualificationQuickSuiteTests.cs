@@ -92,15 +92,16 @@ public sealed class QualificationQuickSuiteTests
     // ---- Runner: puntuación end-to-end con fake ----
 
     [Fact]
-    public async Task Runner_passes_all_three_quick_probes_when_answers_are_exact()
+    public async Task Runner_passes_all_quick_probes_when_answers_are_exact()
     {
-        var outputs = PromptOutputs(QuickProbeSuite.Probes(), "fox", "42", "{\"status\":\"ok\",\"count\":1}");
+        var outputs = PromptOutputs(QuickProbeSuite.Probes(),
+            QuickProbeSuite.Probes().Select(p => p.Expected).ToArray());
         var runner = new ProbeRunner(new FakeProvider(outputs));
         var requests = QuickProbeSuite.Probes().Select(Request).ToList();
 
         var results = await runner.RunSuiteAsync(requests, QualificationConsent.Local(), CancellationToken.None);
 
-        Assert.Equal(3, results.Count);
+        Assert.Equal(10, results.Count);
         foreach (var r in results)
         {
             Assert.Equal(ProbeStatus.Passed, r.Status);
@@ -225,11 +226,11 @@ public sealed class QualificationQuickSuiteTests
     // ---- Suite identity ----
 
     [Fact]
-    public void Quick_suite_has_three_probes_and_stable_identity()
+    public void Quick_suite_has_ten_probes_and_stable_identity()
     {
         var probes = QuickProbeSuite.Probes();
 
-        Assert.Equal(3, probes.Count);
+        Assert.Equal(10, probes.Count);
         Assert.Equal("omnicore-quick", QuickProbeSuite.SuiteId);
         Assert.False(string.IsNullOrEmpty(QuickProbeSuite.SuiteVersion));
         Assert.All(probes, p => Assert.Equal(0m, p.MaxCostUsd));

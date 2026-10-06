@@ -1,13 +1,14 @@
 namespace OmniCore.Qualification;
 
 using System.Security.Cryptography;
-using System.Text;
+using System.Globalization;
 using System.Text.Json;
+using System.Text;
 using OmniCore.Domain;
 
 /// <summary>
-/// Puntuador determinista de probes (ADR-0007 §6, M5). No usa LLM juez, no escribe repos reales
-/// ni ejecuta probes pagos: aplica reglas exactas sobre el texto crudo de la respuesta. El score
+/// Puntuador determinista de probes (ADR-0007 §6, M5). No usa LLM juez ni escribe repos reales:
+/// aplica reglas exactas sobre el texto crudo de la respuesta. El score
 /// está en 0..1 y el probe pasa si score >= 1.0 (regla exacta binaria para los tres tipos
 /// iniciales de la suite quick).
 /// </summary>
@@ -128,17 +129,28 @@ public static class ProbeScorer
     /// <summary>
     /// Hash canónico determinista de un conjunto de probes, para la TaskSetHash de
     /// BenchmarkIdentity (ADR-0007 §6). SHA-256 hex minúsculo de una serialización canónica
-    /// (ids y expected en orden, sin dependencias de cultura ni de plataforma).
+    /// que incluye id, tipo, prompt, respuesta esperada y tope de costo.
     /// </summary>
     public static string TaskSetHash(IReadOnlyList<Probe> probes)
     {
         using var sha = SHA256.Create();
-        var sb = new StringBuilder();
-        foreach (var p in probes.OrderBy(p => p.Id.ToString(), StringComparer.Ordinal))
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
         {
-            sb.Append(p.Id.ToString()).Append('\u0001').Append(p.Kind.ToString()).Append('\u0001').Append(p.Expected).Append('\n');
+            writer.WriteStartArray();
+            foreach (var p in probes.OrderBy(p => p.Id.ToString(), StringComparer.Ordinal))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("id", p.Id.ToString());
+                writer.WriteString("kind", p.Kind.ToString());
+                writer.WriteString("prompt", p.Prompt);
+                writer.WriteString("expected", p.Expected);
+                writer.WriteString("maxCostUsd", p.MaxCostUsd.ToString("G29", CultureInfo.InvariantCulture));
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
         }
-        return Hex(sha.ComputeHash(Encoding.UTF8.GetBytes(sb.ToString())));
+        return Hex(sha.ComputeHash(stream.ToArray()));
     }
 
     private static string Hex(byte[] bytes)
