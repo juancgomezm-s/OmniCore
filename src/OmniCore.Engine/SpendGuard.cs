@@ -29,8 +29,10 @@ public sealed class SpendGuard
     /// <summary>Avanza un turno más; lanza si excede el tope de turnos.</summary>
     public void AdvanceTurn(long turnTokens)
     {
-        _turns += 1;
-        _tokens += Math.Max(0, turnTokens);
+        var turns = checked(_turns + 1);
+        var tokens = checked(_tokens + Math.Max(0, turnTokens));
+        _turns = turns;
+        _tokens = tokens;
         if (_budget.MaxTurns is not null && _turns > _budget.MaxTurns!)
         {
             throw new BudgetExceededException("límite de turnos: " + _budget.MaxTurns);
@@ -45,7 +47,7 @@ public sealed class SpendGuard
     /// <summary>Registra una tool call; lanza si excede el tope de tool-calls.</summary>
     public void RecordToolCall()
     {
-        _toolCalls += 1;
+        _toolCalls = checked(_toolCalls + 1);
         if (_budget.MaxToolCalls is not null && _toolCalls > _budget.MaxToolCalls!)
         {
             throw new BudgetExceededException("límite de tool calls: " + _budget.MaxToolCalls);
@@ -58,7 +60,8 @@ public sealed class SpendGuard
     /// </summary>
     public void AddCostUsd(decimal usd)
     {
-        _costUsd += Math.Max(0, usd);
+        if (usd < 0) throw new ArgumentOutOfRangeException(nameof(usd), "Cost cannot be negative.");
+        _costUsd += usd;
         if (_budget.MaxCostUsd is not null && _costUsd > _budget.MaxCostUsd!)
         {
             throw new BudgetExceededException(

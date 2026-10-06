@@ -137,3 +137,60 @@ Reproducción focal: runner con las clases NativeOutputTokenLimitTests,
 ModelSelectionOutputLimitContractTests, HostOutputTokenLimitTests,
 OpenAIResponsesProviderTests, AnthropicMessagesProviderTests,
 RuntimeFingerprintFactoryTests, ModelQualificationHostTests y CliEndToEndTests.
+
+## Reportes numéricos inválidos y acumulación sin overflow
+
+Un contador negativo en cualquiera de Input, Output, CacheRead, CacheWrite o
+Reasoning invalida la valoración del reporte, aunque el campo auxiliar no esté
+marcado como disponible. `ModelPricing.CostUsd` devuelve `null`, no cero ni un
+importe negativo; una estimación que exceda `decimal` también queda no disponible.
+Un cero explícito con precios conocidos sigue siendo cero; precios desconocidos
+no se vuelven conocidos porque los tokens sean cero.
+
+Host conserva primero `ModelStepCompleted`, artifact, uso y flags originales.
+Bajo un tope monetario, el reporte inválido produce BudgetExceeded sin `allow_plus`
+antes de tools/otra llamada. Sin tope, termina con error/TurnAbandoned, sin fabricar
+una interacción de cuota. El mensaje de rechazo se conserva en la conversación,
+pero no se emite el resumen numérico `ModelCompleted` de ese turno inválido.
+El audit `turn.spend` registra `usageStatus=invalid` y omite input/output/coste,
+para no presentar un agregado parcial o cero como una medición completa.
+
+Las sumas por contador y de Input+Output se comprueban con `checked` después de
+persistir la invocación individual. Si el total no cabe en `long`, el Turn abandona:
+no hay summary `ModelCompleted` ni `TurnCompleted` de éxito. Los costes individuales
+válidos ya persistidos se conservan. La lectura de pasos de un Turn abierto detecta
+contadores negativos/sumas no representables y no autoriza nueva invocación.
+Esta protección de replay aún requiere su paquete focal dedicado de fixtures legacy;
+no confundir las pruebas de overflow en vivo con evidencia específica de ese replay.
+
+`SpendGuard` rechaza costes negativos en lugar de clamp a cero; una acumulación de
+tokens que desborda deja sus últimos contadores válidos intactos. Los contadores
+de turnos y tools también usan incrementos comprobados. No cambia los límites ni
+autoriza gasto adicional.
+
+Evidencia reproducible offline en `C:\Users\juanc\.codex\omni-m55-three-20261006`:
+
+- `invalid-step-usage-red-test.log`: 14 casos, 1 PASS/13 FAIL/0 SKIP, 1.309s;
+  control de cero medido pasa, negativos continuaban hasta EndTurn/Error sin guard.
+- `usage-overflow-red-test.log`: después del fix de negativos y antes de aplicar
+  sumas comprobadas, 25 casos, 19 PASS/6 FAIL/0 SKIP, 1.382s; los overflows terminaban
+  como EndTurn. Ninguna assertion se desactiva para corregirlos.
+- `invalid-step-usage-final-build.log`: 0 warnings/0 errores.
+- `invalid-step-usage-final-focal.log`: 80 PASS/0 FAIL/0 SKIP, 6.090s; incluye 26 casos
+  InvalidStepUsageBudgetRegression (cinco campos, campos no reportados, sin topes,
+  overflow entre pasos y de un paso, cero medido y reopen real SQLite/CAS), siete
+  controles adicionales de precios y dos de SpendGuard. El reopen conserva flags/uso
+  originales, verifica el blob CAS y bloquea nuevo gasto de otra sesión del mismo
+  workspace sin modificar la sesión original. No prueba ledger User-wide.
+- `invalid-step-usage-full.log`: versión previa al ajuste final del summary/audit,
+  1926 casos = 1922 PASS/0 FAIL/4 SKIP symlink, 274.723s, exit0. No acredita ese ajuste.
+- `invalid-step-usage-final-full.log`: versión final con summary/audit inválido
+  comprobado, 1926 casos = 1922 PASS/0 FAIL/4 SKIP symlink, 274.340s, exit0.
+  No incluye el siguiente paquete PersistedUsageReplayRegressionTests.
+
+Focales solapados; no sumarlos. Proveedores, usage y tools son fixtures scripted;
+SQLite/CAS se reabren realmente. No consultas autenticadas, cuota ni consumo real.
+Runner focal: InvalidStepUsageBudgetRegressionTests, UnknownStepUsageBudgetRegressionTests,
+SpendPricingTests, SpendGuardAccountingValidityTests, SuspendedSpendAccountingRegressionTests,
+BudgetContinuationIntegrationTests, CrossSessionDailyCapRegressionTests,
+SameSessionDailyCapControlTests y ExplorerTurnDurableProviderStateTests.

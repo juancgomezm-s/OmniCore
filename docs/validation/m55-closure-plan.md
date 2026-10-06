@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 12:11 UTC / 06:11 America/Mexico_City.
+Actualizado 2026-10-06 12:36 UTC / 06:36 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -93,10 +93,17 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
    Chat y el perfil Codex aún no tienen cota aplicada. Esta mejora no acredita reserva
    de coste, cumplimiento por el servidor, consultas autenticadas ni consumo real.
    [Contrato y evidencia](m55-budget-continuation.md#límite-solicitado-de-salida-en-rutas-nativas).
-   Auditoría posterior encontró dos casos para reproducir: uso reportado negativo
-   valorado como coste negativo y clamp a cero dentro del Ask antes de tools, y
-   overflow de CombineUsage entre steps. Aún no implementados ni probados; la suite
-   anterior no cubre esas entradas. Próximo paquete focal, sin declarar cierre.
+   Reportes negativos ya reproducidos (RED14=1PASS13FAIL) y corregidos: coste NULL,
+   evidencia por invocación original, bloqueo antes tools/otrarequest; sin topes hay
+   error/TurnAbandoned. No summary numérico falso, audit usageStatus=invalid.
+   Overflow también reproducido (RED25=19PASS6FAIL) y corregido con sumas checked
+   después del append durable; no se pierde la invocación que ya consumió recursos.
+   Focal final80PASS0FAIL0SKIP6.090s, build0warnings/errores; SQLite/CAS reopen conserva
+   el dato inválido y bloquea gasto de otra sesión del mismo journal sin contaminar
+   la sesión original. Guard de replay implementado, paquete legacy focal aún pendiente.
+   Full final1926=1922PASS0FAIL4SKIPsymlink274.340s, exit0; summary/audit verificados.
+   No incluye todavía PersistedUsageReplayRegressionTests, entregado pero no ejecutado.
+   [Contrato y evidencia](m55-budget-continuation.md#reportes-numéricos-inválidos-y-acumulación-sin-overflow).
 3. Disponibilidad desde breaker y selección por RouteId implementadas (58ee5bc); full verde.
    Afinidad del arnés TUI Init/Run reproducida (11 vs6), corregida en cd727e5;
    59 pruebas TUI verdes, con login20ciclos y resize en vivo.
