@@ -7,7 +7,7 @@ using OmniCore.Infrastructure;
 
 namespace OmniCore.Tests;
 
-/// <summary>Contract of the implemented v1 model-step events, without a model provider.</summary>
+/// <summary>Contract of additive v2 model-step events, without a model provider.</summary>
 public sealed class ModelStepEventContractTests
 {
     [Theory]
@@ -20,20 +20,38 @@ public sealed class ModelStepEventContractTests
         var context = optionalNulls ? null : Reference(ArtifactKind.ContextSnapshot);
         var response = optionalNulls ? null : Reference(ArtifactKind.ModelResponse);
         var started = new ModelStepStarted(turn, 7, "contract-model", 4_294_967_296L,
-            "Grammar", optionalNulls ? null : "Enabled", optionalNulls ? null : 4096, context);
+            "Grammar", optionalNulls ? null : "Enabled", optionalNulls ? null : 4096, context, optionalNulls ? null : 16000);
         var completed = new ModelStepCompleted(turn, 7,
             new TokenUsage(4_294_967_297L, 53, 17, 29, 41), StopReason.MaxOutputTokens,
-            response, "2026-10-04", optionalNulls ? null : 0.1234567890123456789012345678m);
+            response, "2026-10-04", optionalNulls ? null : 0.1234567890123456789012345678m,
+            optionalNulls ? null : TokenUsageFields.All);
 
         Assert.Equal("model_step.started", started.Type().Value());
         Assert.Equal("model_step.completed", completed.Type().Value());
         foreach (var payload in new DomainEventPayload[] { started, completed })
         {
-            Assert.Equal(1, payload.SchemaVersion());
-            Assert.Equal(1, codecs.CurrentVersion(payload.Type()));
+            Assert.Equal(2, payload.SchemaVersion());
+            Assert.Equal(2, codecs.CurrentVersion(payload.Type()));
             var restored = codecs.Decode(Envelope(payload, codecs));
             Assert.Equal(payload, restored);
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Legacy_v1_missing_observation_fields_remains_readable(bool completed)
+    {
+        var codecs = EventCodecs.Create();
+        var payload = Step(completed);
+        var envelope = Envelope(payload, codecs);
+        var json = JsonNode.Parse(envelope.PayloadJson)!.AsObject();
+        json.Remove("ReportedUsageFields"); json.Remove("ModelContextCapacity");
+        var legacy = DomainEvent.Create(envelope.SessionId, envelope.Type, 1, null, null, null,
+            null, null, null, null, null, [], json.ToJsonString());
+        var decoded = codecs.Decode(legacy);
+        if (completed) Assert.Null(Assert.IsType<ModelStepCompleted>(decoded).ReportedUsageFields);
+        else Assert.Null(Assert.IsType<ModelStepStarted>(decoded).ModelContextCapacity);
     }
 
     [Theory]

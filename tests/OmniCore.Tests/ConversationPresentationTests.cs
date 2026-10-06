@@ -5,6 +5,41 @@ namespace OmniCore.Tests;
 
 public sealed class ConversationPresentationTests
 {
+    [Theory]
+    [InlineData(20)]
+    [InlineData(28)]
+    [InlineData(50)]
+    [InlineData(80)]
+    [InlineData(140)]
+    public void Unicode_graphemes_and_literal_user_markdown_survive_every_wrap(int width)
+    {
+        const string text = "## literal **sin formato** é 中文 👨‍👩‍👧‍👦 😊 ┃ final";
+        var rows = ConversationPresentation.RenderCards(new[] { new ConversationBlock("qa", ConversationRole.User, text, null) }, "es", width);
+        var body = rows.Skip(1).SelectMany(row => row.Skip(1)).ToArray();
+        Assert.Equal(text, string.Concat(body.Select(span => span.Text)));
+        Assert.Contains(body, span => span.Text == "é");
+        Assert.Contains(body, span => span.Text == "👨‍👩‍👧‍👦");
+        Assert.All(body, span => Assert.Equal(ConversationStyle.Text, span.Style));
+        Assert.All(rows, row => Assert.True(Terminal.Gui.Text.StringExtensions.GetColumns(string.Concat(row.Select(span => span.Text)), false) <= width));
+    }
+
+    [Fact]
+    public void Cards_repeat_role_accents_on_wrapped_rows_without_changing_source_or_styles()
+    {
+        const string source = "Hola, este texto largo conserva palabras y símbolos 😊 ┃ intactos.";
+        var blocks = new[] { new ConversationBlock("user", ConversationRole.User, source, null),
+            new ConversationBlock("assistant", ConversationRole.Assistant, "```c#\npublic int count = 42;\n```", null) };
+        var rows = ConversationPresentation.RenderCards(blocks, "es", 26);
+        var userRows = rows.TakeWhile(row => row.Count != 0).ToArray();
+        Assert.True(userRows.Length > 2);
+        Assert.All(userRows, row => Assert.Equal(new ConversationSpan("┃  ", ConversationStyle.UserAccent), row[0]));
+        Assert.Equal(source, string.Concat(userRows.Skip(1).SelectMany(row => row.Skip(1)).Select(span => span.Text)));
+        Assert.Equal(source, blocks[0].Text);
+        Assert.Contains(rows.SelectMany(row => row), span => span.Style == ConversationStyle.AssistantAccent);
+        Assert.Contains(rows.SelectMany(row => row), span => span.Style == ConversationStyle.SyntaxKeyword);
+        Assert.All(rows, row => Assert.True(Terminal.Gui.Text.StringExtensions.GetColumns(string.Concat(row.Select(span => span.Text)), false) <= 26));
+    }
+
     private static IReadOnlyList<IReadOnlyList<ConversationSpan>> Render(string text, ConversationRole role = ConversationRole.Assistant) =>
         ConversationPresentation.Render(new[] { new ConversationBlock("test", role, text, null) }, "es");
 

@@ -93,7 +93,8 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
         Assert.Equal("high", root.GetProperty("reasoning").GetProperty("effort").GetString());
         Assert.Equal("reasoning.encrypted_content", root.GetProperty("include")[0].GetString());
         Assert.Equal("function", root.GetProperty("tools")[0].GetProperty("type").GetString());
-        Assert.Equal("filesystem.read", root.GetProperty("tools")[0].GetProperty("name").GetString());
+        Assert.Matches("^[a-zA-Z0-9_-]{1,64}$", root.GetProperty("tools")[0].GetProperty("name").GetString()!);
+        Assert.NotEqual("filesystem.read", root.GetProperty("tools")[0].GetProperty("name").GetString());
         Assert.False(root.TryGetProperty("messages", out _));
         Assert.Equal("input_text", root.GetProperty("input")[0].GetProperty("content")[0].GetProperty("type").GetString());
     }
@@ -121,6 +122,25 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
         Assert.Equal("{\"path\":\"a.cs\"}", input[2].GetProperty("arguments").GetString());
         Assert.Equal("call_9", input[3].GetProperty("call_id").GetString());
         Assert.Equal("contenido", input[3].GetProperty("output").GetString());
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Provider_tool_alias_roundtrips_to_canonical_name_without_collisions()
+    {
+        var handler = new QueueHandler(http =>
+        {
+            using var body = JsonDocument.Parse(http.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            var names = body.RootElement.GetProperty("tools").EnumerateArray().Select(t => t.GetProperty("name").GetString()!).ToArray();
+            Assert.Equal(names.Length, names.Distinct().Count());
+            Assert.All(names, name => Assert.Matches("^[a-zA-Z0-9_-]{1,64}$", name));
+            return Sse(ToolStream.Replace("filesystem.read", names[0], StringComparison.Ordinal));
+        });
+        var events = await Collect(CreateProvider(handler).StreamAsync(Request(tools: [
+            new ToolDefinition("filesystem.read", "Read", "{}"),
+            new ToolDefinition("filesystem_read", "Other", "{}"),
+            new ToolDefinition("omni_reserved", "Reserved", "{}")]), TestContext.Current.CancellationToken));
+        Assert.Equal("filesystem.read", Assert.Single(Assert.IsType<ResponseCompleted>(events[^1]).Response.Content.OfType<ToolCallBlock>()).ToolName);
+        Assert.Contains(events, e => e is BlockCompleted { Block: ToolCallBlock { ToolName: "filesystem.read" } });
     }
 
     [Fact]

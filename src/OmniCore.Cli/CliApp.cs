@@ -303,7 +303,7 @@ public sealed class CliApp
             return Task.FromResult(0);
         }
 
-        return Task.FromResult(TuiApp.Run(client, Loc().Locale));
+        return Task.FromResult(TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime)));
     }
 
     private static Task<int> RunExplain(string[] args)

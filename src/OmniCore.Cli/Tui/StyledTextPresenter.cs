@@ -12,6 +12,10 @@ namespace OmniCore.Cli;
 #pragma warning disable CS0618
 internal class StyledTextPresenter : TextView
 {
+    internal bool Dimmed { get; set; }
+    // Internal cell metadata; normalize the one-step background marker before drawing.
+    private static readonly Color AccentMarker = new("#061823");
+    private static bool IsDecoration(Cell cell) => cell.Attribute?.Background == AccentMarker;
     public StyledTextPresenter()
     {
         ReadOnly = true;
@@ -23,7 +27,7 @@ internal class StyledTextPresenter : TextView
     // Keep clipboard output independent of style serialization: extract only
     // graphemes, never attributes or terminal escape sequences.
     public new string SelectedText => string.Join(Environment.NewLine,
-        SelectedCellsList.Select(row => string.Concat(row.Select(cell => cell.Grapheme))));
+        SelectedCellsList.Select(row => string.Concat(row.Where(cell => !IsDecoration(cell)).Select(cell => cell.Grapheme))));
 
     public new void Copy() => CopySelection();
 
@@ -43,13 +47,17 @@ internal class StyledTextPresenter : TextView
             {
                 var attribute = new Terminal.Gui.Drawing.Attribute(
                     noColor ? Color.None : new Color(Foreground(span.Style)),
-                    noColor ? Color.None : new Color(IsCode(span.Style) ? "#0A2330" : "#061822"));
+                    IsAccent(span.Style) ? AccentMarker : noColor ? Color.None : new Color(IsCode(span.Style) ? "#0A2330" : "#061822"));
                 var elements = System.Globalization.StringInfo.GetTextElementEnumerator(span.Text);
-                while (elements.MoveNext()) cells.Add(new Cell(attribute, false, elements.GetTextElement()));
+                while (elements.MoveNext())
+                {
+                    var cell = new Cell(attribute, false, elements.GetTextElement());
+                    cells.Add(cell);
+                }
             }
             // Like WPF Paragraph.Background, block shading covers the viewport,
             // whereas inline-code styling applies only to its own text.
-            if (line.Count > 0 && line.All(span => IsCode(span.Style)))
+            if (line.Any(span => IsCode(span.Style)) && line.Where(span => !IsAccent(span.Style)).All(span => IsCode(span.Style)))
             {
                 var columns = line.Sum(span => Terminal.Gui.Text.StringExtensions.GetColumns(span.Text, false));
                 var padding = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color("#B5DEF3"),
@@ -61,7 +69,8 @@ internal class StyledTextPresenter : TextView
         Load(rows);
     }
 
-    private static bool IsCode(ConversationStyle style) => style >= ConversationStyle.Code;
+    private static bool IsCode(ConversationStyle style) => style is >= ConversationStyle.Code and <= ConversationStyle.SyntaxPunctuation;
+    private static bool IsAccent(ConversationStyle style) => style >= ConversationStyle.UserAccent;
 
     private static string Foreground(ConversationStyle style) => style switch
     {
@@ -78,21 +87,31 @@ internal class StyledTextPresenter : TextView
         ConversationStyle.SyntaxComment => "#91A8B8",
         ConversationStyle.SyntaxPunctuation => "#ADC4D4",
         ConversationStyle.SyntaxVariable => "#D8E5ED",
+        ConversationStyle.UserAccent => "#B47CE7",
+        ConversationStyle.AssistantAccent => "#4DBAC9",
+        ConversationStyle.ToolAccent => "#D99955",
+        ConversationStyle.NoticeAccent => "#526A7C",
         _ => "#D8E5ED",
     };
 
     protected override void OnDrawReadOnlyColor(List<Cell> line, int idxCol, int idxRow)
     {
         if (idxCol >= 0 && idxCol < line.Count && line[idxCol].Attribute is { } attribute)
-            SetAttribute(attribute);
+            PaintAttribute(attribute);
         else base.OnDrawReadOnlyColor(line, idxCol, idxRow);
     }
 
     protected override void OnDrawNormalColor(List<Cell> line, int idxCol, int idxRow)
     {
         if (idxCol >= 0 && idxCol < line.Count && line[idxCol].Attribute is { } attribute)
-            SetAttribute(attribute);
+            PaintAttribute(attribute);
         else base.OnDrawNormalColor(line, idxCol, idxRow);
+    }
+    private void PaintAttribute(Terminal.Gui.Drawing.Attribute attribute)
+    {
+        var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
+        SetAttribute(new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : Dimmed ? new Color("#405666") : attribute.Foreground,
+            noColor ? Color.None : attribute.Background == AccentMarker ? new Color("#061822") : attribute.Background));
     }
 }
 #pragma warning restore CS0618

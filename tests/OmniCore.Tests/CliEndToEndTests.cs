@@ -21,6 +21,66 @@ namespace OmniCore.Tests;
 public sealed class CliEndToEndTests
 {
     [Fact]
+    public async Task Tui_chat_rejects_file_writes_at_the_tool_boundary()
+    {
+        await InIsolatedCli(async (workspace, data, config, provider) =>
+        {
+            provider.RespondWith((index, _) => index == 0
+                ? ToolCallResponse("unrequested-write", "filesystem.write", "{\"path\":\"unrequested.txt\",\"content\":\"must not exist\"}")
+                : TextResponse("Ejemplo entregado aquí en la conversación"));
+            var runtime = OmniCliRuntime.Create(workspace);
+            var client = runtime.Connect(CancellationToken.None);
+            var host = new TuiTurnHost(runtime);
+            var diagnostics = new List<string>();
+            var exit = await host.ExecuteAsync("Dame un ejemplo aquí, no archivos", diagnostics.Add, TestContext.Current.CancellationToken);
+            Assert.Equal(0, exit);
+            Assert.False(File.Exists(Path.Combine(workspace, "unrequested.txt")));
+            var events = client.SubscribeSince(1).ToArray();
+            Assert.Contains(events, evt => evt.PayloadJson.Contains("toolcall.rejected", StringComparison.Ordinal));
+            Assert.Contains(events, evt => evt.PayloadJson.Contains("assistant_message.recorded", StringComparison.Ordinal));
+        });
+    }
+
+    [Fact]
+    public async Task Tui_follow_up_sends_previous_run_user_and_assistant_text_to_the_provider()
+    {
+        await InIsolatedCli(async (workspace, data, config, provider) =>
+        {
+            provider.RespondWith((_, _) => TextResponse("respuesta anterior única"));
+            var runtime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(runtime);
+            Assert.Equal(0, await host.ExecuteActAsync("pregunta anterior única", _ => { }, TestContext.Current.CancellationToken));
+            string? received = null;
+            provider.RespondWith((_, request) => { received = request; return TextResponse("continuación con contexto"); });
+            var messages = new List<string>();
+            Assert.True(0 == await host.ExecuteAsync("continúa el ejemplo anterior", messages.Add, TestContext.Current.CancellationToken), string.Join("\n", messages));
+            Assert.NotNull(received);
+            var decoded = System.Text.RegularExpressions.Regex.Unescape(received!);
+            Assert.Contains("pregunta anterior", decoded);
+            Assert.Contains("respuesta anterior", decoded);
+            Assert.Contains("continúa el ejemplo anterior", decoded);
+        });
+    }
+
+    [Fact]
+    public async Task Tui_turn_host_executes_real_runtime_http_and_journals_assistant_response()
+    {
+        await InIsolatedCli(async (workspace, data, config, provider) =>
+        {
+            var runtime = OmniCliRuntime.Create(workspace);
+            var client = runtime.Connect(CancellationToken.None);
+            var host = new TuiTurnHost(runtime);
+            var messages = new List<string>();
+            var code = await host.ExecuteAsync("hola", messages.Add, CancellationToken.None);
+            Assert.True(code == 0, string.Join("\n", messages));
+            Assert.True(provider.RequestCount > 0, "TUI Host debe consultar realmente el proveedor HTTP");
+            var identity = client.Query("sessionIdentity", CancellationToken.None);
+            Assert.NotNull(identity);
+            Assert.Contains("respuesta-scripted", string.Join("\n", messages));
+            Assert.Contains(client.SubscribeSince(1), envelope => envelope.PayloadJson.Contains("assistant_message.recorded"));
+        });
+    }
+    [Fact]
     public async Task M1_to_M4_cli_surface_runs_in_isolated_directories()
     {
         var repositoryRoot = FindRepositoryRoot();

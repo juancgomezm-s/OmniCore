@@ -9,7 +9,7 @@ internal static class MarkdownRenderer
 {
     internal const int MaxLength = 400_000;
 
-    internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> Render(string text)
+    internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> Render(string text, int width = 120)
     {
         var source = text.Replace("\r\n", "\n").Split('\n');
         if (text.Length > MaxLength)
@@ -20,8 +20,9 @@ internal static class MarkdownRenderer
         string? fence = null;
         string? language = null;
         var body = new List<string>();
-        foreach (var raw in source)
+        for (var sourceIndex = 0; sourceIndex < source.Length; sourceIndex++)
         {
+            var raw = source[sourceIndex];
             var line = raw.TrimStart();
             if (line.StartsWith("```", StringComparison.Ordinal) || line.StartsWith("~~~", StringComparison.Ordinal))
             {
@@ -46,6 +47,12 @@ internal static class MarkdownRenderer
                 }
             }
             if (fence is not null) { body.Add(raw); continue; }
+            if (MarkdownTableRenderer.TryRender(source, sourceIndex, width, out var table, out var consumed))
+            {
+                rows.AddRange(table);
+                sourceIndex += consumed - 1;
+                continue;
+            }
             var heading = line.TakeWhile(c => c == '#').Count();
             if (heading is > 0 and <= 6 && line.Length > heading && line[heading] == ' ')
             {
@@ -71,7 +78,7 @@ internal static class MarkdownRenderer
         }
     }
 
-    private static IReadOnlyList<ConversationSpan> Inline(string text)
+    internal static IReadOnlyList<ConversationSpan> Inline(string text)
     {
         var result = new List<ConversationSpan>();
         var cursor = 0;

@@ -20,7 +20,7 @@ public enum QuotaKind
 }
 
 /// <summary>Valor de una métrica con su disponibilidad y fuente (p. ej. <c>anthropic-ratelimit</c>).</summary>
-public sealed record Metric<T>(MetricAvailability Availability, T? Value, string? Source);
+public sealed record Metric<T>(MetricAvailability Availability, T? Value, string? Source, DateTimeOffset? AsOf = null);
 
 public sealed record Money(decimal Amount, string Currency);
 

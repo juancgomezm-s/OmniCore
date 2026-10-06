@@ -44,7 +44,7 @@ public sealed class ModelSelectionResult
 /// registra la selección por workspace. La recomendación sin evidencia empírica es siempre
 /// conservadora (ObserveOnly): el tamaño del modelo no amplía autonomía (ADR-0044 §2).
 /// </summary>
-public sealed class ModelPolicyService
+public sealed class ModelPolicyService : IDisposable
 {
     private readonly IModelPolicyStore _store;
 
@@ -59,6 +59,8 @@ public sealed class ModelPolicyService
         _store = store;
         _clock = clock ?? (static () => DateTimeOffset.UtcNow);
     }
+
+    public void Dispose() { (_store as IDisposable)?.Dispose(); GC.SuppressFinalize(this); }
 
     public StoredModelPolicy? Get(ModelPolicyKey key, CancellationToken cancellationToken) =>
         _store.Get(key, cancellationToken);
