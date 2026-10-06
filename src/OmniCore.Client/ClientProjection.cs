@@ -359,6 +359,7 @@ public sealed class ClientProjection
             AddLocalized("operation");
             Add("toolOrExecutable");
             Add("target");
+            Add("detail");
             AddLocalized("reason");
             if (root.TryGetProperty("details", out var details) && details.ValueKind == System.Text.Json.JsonValueKind.Array)
             {

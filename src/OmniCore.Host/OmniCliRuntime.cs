@@ -37,6 +37,10 @@ public sealed class OmniCliRuntime
     /// <summary>False for GUI/TUI hosts: pending interactions are rendered by the client, never Console.ReadLine.</summary>
     public bool UseConsoleInput { get; set; } = true;
 
+    /// <summary>A connected GUI/TUI client can receive and resolve interaction requests.
+    /// Disabling console input alone does not establish this capability.</summary>
+    public bool HasInteractionClient { get; set; }
+
     private string Text(LocalizedText text) => Resolve(text, Localize);
 
     private static LocalizedText Localized(string key, params (string Name, string Value)[] args) =>
@@ -553,6 +557,8 @@ public sealed class OmniCliRuntime
             }
 
             var result = askExecution.Result;
+            if (HandlePendingBudget(server, sessionId, runId, interactive, writeLine) is { } budgetCode)
+                return budgetCode;
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
             {
                 writeLine(InputRequiredJson(questionId, "Question"));
@@ -670,6 +676,8 @@ public sealed class OmniCliRuntime
 
             var result = askExecution.Result;
             origin = null;
+            if (HandlePendingBudget(server, sessionId, runId, interactive, writeLine) is { } budgetCode)
+                return budgetCode;
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
             {
                 writeLine(InputRequiredJson(questionId, "Question"));
@@ -840,11 +848,55 @@ public sealed class OmniCliRuntime
         };
     }
 
+    internal int? HandlePendingBudget(OmniServer server, SessionId session, RunId run,
+        bool interactiveConsole, Action<string> writeLine)
+    {
+        if (server.LastSessionId() != session || server.LastRunId() != run) return 1;
+        var pending = new Dictionary<InteractionId, DomainEvent>();
+        foreach (var evt in server.AcquireStore().ReadFrom(session, 1))
+        {
+            switch (server.AcquireCodecs().Decode(evt))
+            {
+                case InteractionRequested request: pending[request.InteractionId] = evt; break;
+                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+            }
+        }
+        var budget = pending.Values.OrderBy(evt => evt.Sequence)
+            .FirstOrDefault(evt => evt.RunId == run && server.AcquireCodecs().Decode(evt)
+                is InteractionRequested { Kind: InteractionKind.BudgetExceeded });
+        if (budget is null)
+        {
+            if (pending.Values.Any(evt => evt.RunId is null && server.AcquireCodecs().Decode(evt)
+                    is InteractionRequested { Kind: InteractionKind.BudgetExceeded }))
+            {
+                writeLine("Pending budget interaction has no Run attribution; execution is blocked");
+                return 1;
+            }
+            return null;
+        }
+        var requestPayload = (InteractionRequested)server.AcquireCodecs().Decode(budget);
+        if (HasInteractionClient || interactiveConsole)
+        {
+            // A live client owns the answer. Do not mistake console suppression for NoClient,
+            // and never auto-approve an increase of the spending authorization.
+            writeLine(InputRequiredJson(requestPayload.InteractionId, "BudgetExceeded"));
+            return 3;
+        }
+        var ack = server.ResolveBudgetWithoutClient(session, run, requestPayload.InteractionId);
+        if (ack.Status != "ok") writeLine(ack.Error ?? "Budget denial was rejected");
+        return 1;
+    }
+
     private Func<InteractionRequested, string?> CreateInteractionResponder(Action<string> writeLine, string locale) => request =>
     {
         if (!UseConsoleInput || Console.IsInputRedirected) return null;
-        var titleKey = request.Kind == InteractionKind.WeakSandboxConsent
-            ? "interaction.weak_sandbox.title" : "interaction.permission.title";
+        var titleKey = request.Kind switch
+        {
+            InteractionKind.WeakSandboxConsent => "interaction.weak_sandbox.title",
+            InteractionKind.BudgetExceeded => "interaction.budget_exceeded.title",
+            _ => "interaction.permission.title",
+        };
         writeLine(Text(LocalizedText.Of(titleKey)));
         if (request.Kind == InteractionKind.WeakSandboxConsent)
             writeLine(Text(LocalizedText.Of("interaction.weak_sandbox.warning")));
@@ -863,6 +915,7 @@ public sealed class OmniCliRuntime
                     "allow_once" => "interaction.permission.allow_once",
                     "allow_run" => "interaction.permission.allow_run",
                     "allow_workspace" => "interaction.permission.allow_workspace",
+                    "allow_plus" when request.Kind == InteractionKind.BudgetExceeded => "interaction.budget_exceeded.continue",
                     _ => request.Kind == InteractionKind.WeakSandboxConsent
                         ? "interaction.weak_sandbox.deny" : "interaction.permission.deny",
                 };

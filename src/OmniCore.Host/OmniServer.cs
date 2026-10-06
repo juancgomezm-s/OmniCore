@@ -1345,6 +1345,35 @@ public sealed class OmniServer : IOmniClient
         return (result, ack);
     }
 
+    internal CommandAck ResolveBudgetWithoutClient(SessionId sessionId, RunId runId, InteractionId interactionId)
+    {
+        var commandId = CommandId.New();
+        var messageId = commandId.Value.ToString();
+        var control = new RunControlService(_store, _codecs);
+        if (_lastSessionId != sessionId || _lastRunId != runId || control.ActiveRun(sessionId) != runId)
+            return new CommandAck(messageId, "error", "Budget interaction does not belong to the current active Run",
+                RuntimeCommandOutcome.Rejected());
+        var requestEvent = _store.ReadFrom(sessionId, 1).LastOrDefault(evt =>
+            _codecs.Decode(evt) is InteractionRequested request && request.InteractionId == interactionId);
+        if (requestEvent?.RunId != runId)
+            return new CommandAck(messageId, "error", "Budget interaction has no matching Run attribution",
+                RuntimeCommandOutcome.Rejected());
+        var sequenceBefore = _store.CurrentSequence(sessionId);
+        using var command = CausationScope.Begin(new CommandCausation(commandId));
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: runId));
+        try
+        {
+            control.ResolveBudgetWithoutClient(sessionId, interactionId);
+            return CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                sessionId, sequenceBefore, commandId);
+        }
+        catch (Exception ex) when (ex is InteractionNotPendingException or InvalidInteractionOptionException or RunNotActiveException)
+        {
+            return CommandOutcomeAck(messageId, "error", ex.Message, RuntimeCommandOutcome.Rejected(),
+                sessionId, sequenceBefore, commandId);
+        }
+    }
+
     internal CommandAck RecordModelEscalationRequested(SessionId sessionId, ModelEscalationRequested payload) =>
         RecordModelEscalation(sessionId, payload.RunId, payload);
 

@@ -43,16 +43,17 @@ en `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
 ## Pendientes de la frontera completa
 
-- BillingMode/SessionRoutingPolicy y consentimiento de rutas de pago/desconocidas:
+- SessionRoutingPolicy y consentimiento de rutas de pago/desconocidas:
   el routing automático actual aún no aplica esta autorización.
+  BillingMode explícito ya implementado y preservado en adapters: [contrato](m55-provider-billing.md).
 - El ledger diario actual consulta todas las sesiones del journal del workspace;
   no agrega otros workspaces del usuario. No acredita aún el tope diario User-wide.
 - Reserva atómica antes de la llamada y liquidación/liberación posterior: dos sesiones
   concurrentes pueden pasar un precheck con el mismo saldo. El postcheck no es una reserva.
-- Integración de la interacción de presupuesto en el ciclo de vida del cliente/Host:
-  NoClient y Deny deben finalizar Run Failed/BudgetExceeded, y continuar debe reanudar
-  por el flujo correcto. El efecto durable de allow_plus ya está probado; esto no
-  acredita todavía la experiencia completa de la TUI/CLI ni su terminación sin cliente.
+- NoClient/Deny ya finalizan Run Failed/BudgetExceeded con aislamiento y command
+  correlacionado: [integración y pruebas](m55-budget-lifecycle.md).
+  Continúa pendiente la reanudación automática desde el cliente; el efecto durable
+  de allow_plus no acredita por sí solo la experiencia completa de la TUI/CLI.
 - Reproducción focal de esos escenarios y cuota de IncludedQuota.
 
 No se desactivaron assertions, permisos ni redacción; no hay push ni modificación de main.
