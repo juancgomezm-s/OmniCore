@@ -5,6 +5,9 @@ public interface ITuiTurnHost
 {
     Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken);
     Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) => ExecuteAsync(input, diagnostics, cancellationToken);
+    Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        Task.FromResult(1);
+    bool HasEscalationForInteraction(string interactionId) => false;
 }
 
 public sealed class TuiTurnHost : ITuiTurnHost
@@ -21,4 +24,8 @@ public sealed class TuiTurnHost : ITuiTurnHost
         _runtime.ConversationAsync(input, diagnostics, cancellationToken);
     public Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) =>
         _runtime.ActAsync(input, diagnostics, cancellationToken);
+    public Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        _runtime.ResumeEscalationAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
+    public bool HasEscalationForInteraction(string interactionId) =>
+        _runtime.HasEscalationForInteraction(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)));
 }

@@ -21,6 +21,139 @@ namespace OmniCore.Tests;
 public sealed class CliEndToEndTests
 {
     [Fact]
+    public async Task Authorized_auto_escalation_reuses_run_and_marks_completed_only_after_target_response()
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  tiny-model: { provider: scripted, context: 4, recommendedUsableContext: 4, maxOutput: 1, aliases: [tiny] }
+                  target-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [target] }
+                routing:
+                  exploration: [tiny]
+                  escalation: { mode: auto, chain: [tiny, target] }
+                """);
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            var diagnostics = new List<string>();
+            Assert.True(0 == await host.ExecuteAsync("intención auto original", diagnostics.Add, TestContext.Current.CancellationToken),
+                string.Join("\n", diagnostics));
+            Assert.Equal(1, provider.RequestCount);
+            var events = ReadCurrentSessionEvents(workspace);
+            var run = Assert.Single(events.OfType<RunCreated>());
+            var requested = Assert.Single(events.OfType<ModelEscalationRequested>());
+            var approved = Assert.Single(events.OfType<ModelEscalationApproved>());
+            var completed = Assert.Single(events.OfType<ModelEscalationCompleted>());
+            Assert.Equal(run.RunId, requested.RunId);
+            Assert.Equal(run.RunId, approved.RunId);
+            Assert.Equal(run.RunId, completed.RunId);
+            Assert.Equal(requested.TurnId, approved.TurnId);
+            Assert.Equal(requested.TurnId, completed.TurnId);
+            Assert.Equal("target-model", Assert.Single(events.OfType<ModelStepStarted>()).ModelId);
+            Assert.DoesNotContain(events.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.ModelRouteConsent);
+            Assert.True(events.ToList().FindIndex(item => item is ModelStepCompleted)
+                < events.ToList().FindIndex(item => item is ModelEscalationCompleted));
+        });
+    }
+
+    [Theory]
+    [InlineData("deny")]
+    [InlineData("endpoint")]
+    [InlineData("billing")]
+    public async Task Escalation_resume_denies_rejected_or_changed_route_before_http(string change)
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  tiny-model: { provider: scripted, context: 4, recommendedUsableContext: 4, maxOutput: 1, aliases: [tiny] }
+                  target-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [target] }
+                routing:
+                  exploration: [tiny]
+                  escalation: { mode: ask, chain: [tiny, target] }
+                """);
+            var runtime = OmniCliRuntime.Create(workspace);
+            var client = runtime.Connect(CancellationToken.None);
+            var host = new TuiTurnHost(runtime);
+            Assert.Equal(3, await host.ExecuteAsync("original", _ => { }, TestContext.Current.CancellationToken));
+            var consent = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<InteractionRequested>(),
+                item => item.Kind == InteractionKind.ModelRouteConsent);
+            var option = change == "deny" ? "deny" : "allow_route";
+            Assert.Equal("ok", client.Send(OmniCore.Protocol.WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"interaction.respond\",\"interactionId\":\"" + consent.InteractionId
+                + "\",\"optionId\":\"" + option + "\"}"), CancellationToken.None).Status);
+            if (change == "endpoint") Environment.SetEnvironmentVariable("OMNI_BASE_URL", "http://127.0.0.1:1/v1");
+            if (change == "billing")
+                File.WriteAllText(Path.Combine(config, "providers.yaml"),
+                    "providers:\n  scripted: { family: OpenAiChatCompatible, baseUrl: '" + provider.BaseUrl + "', auth: none, billingMode: Unknown }\n");
+            Assert.Equal(1, await host.ResumeEscalationAsync(consent.InteractionId.ToString(), _ => { }, TestContext.Current.CancellationToken));
+            Assert.Equal(0, provider.RequestCount);
+            var events = ReadCurrentSessionEvents(workspace);
+            Assert.DoesNotContain(events, item => item is ModelStepStarted or ModelEscalationApproved or ModelEscalationCompleted);
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task User_consented_ask_escalation_resumes_exact_target_and_original_input_once(bool reopenRuntime)
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  tiny-model: { provider: scripted, context: 4, recommendedUsableContext: 4, maxOutput: 1, aliases: [tiny] }
+                  target-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [target] }
+                routing:
+                  exploration: [tiny]
+                  escalation: { mode: ask, chain: [tiny, target] }
+                """);
+            string? received = null;
+            provider.RespondWith((_, request) => { received = request; return TextResponse("respuesta del destino autorizado"); });
+            var runtime = OmniCliRuntime.Create(workspace);
+            var client = runtime.Connect(CancellationToken.None);
+            var host = new TuiTurnHost(runtime);
+            Assert.Equal(3, await host.ExecuteAsync("intención original durable", _ => { }, TestContext.Current.CancellationToken));
+            Assert.Equal(0, provider.RequestCount);
+            var before = ReadCurrentSessionEvents(workspace);
+            var requested = Assert.Single(before.OfType<ModelEscalationRequested>());
+            Assert.NotNull(requested.TurnId);
+            Assert.NotNull(requested.LaneId);
+            var consent = Assert.Single(before.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.ModelRouteConsent);
+            var inputCount = before.OfType<UserInputReceived>().Count();
+            Assert.Equal(1, inputCount);
+            Assert.Equal("ok", client.Send(OmniCore.Protocol.WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"session.input\",\"text\":\"follow-up reservado para después\"}"), CancellationToken.None).Status);
+            Assert.Equal("ok", client.Send(OmniCore.Protocol.WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"interaction.respond\",\"interactionId\":\"" + consent.InteractionId
+                + "\",\"optionId\":\"allow_route\"}"), CancellationToken.None).Status);
+            if (reopenRuntime)
+            {
+                runtime = OmniCliRuntime.Create(workspace);
+                client = runtime.Connect(CancellationToken.None);
+                host = new TuiTurnHost(runtime);
+            }
+            var diagnostics = new List<string>();
+            var code = await host.ResumeEscalationAsync(consent.InteractionId.ToString(), diagnostics.Add, TestContext.Current.CancellationToken);
+            Assert.True(code == 0, string.Join("\n", diagnostics));
+            Assert.Equal(1, provider.RequestCount);
+            Assert.NotNull(received);
+            Assert.Contains("target-model", received);
+            Assert.Contains("intención original durable", Regex.Unescape(received));
+            Assert.DoesNotContain("follow-up reservado", Regex.Unescape(received));
+            var after = ReadCurrentSessionEvents(workspace);
+            Assert.Single(after.OfType<ModelEscalationApproved>());
+            Assert.Single(after.OfType<ModelEscalationCompleted>());
+            Assert.Single(after.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.ModelRouteConsent);
+            Assert.All(after.OfType<ModelStepStarted>(), step => Assert.Equal("target-model", step.ModelId));
+            Assert.Equal(inputCount, after.OfType<UserInputReceived>().Count());
+            var queued = Assert.Single(after.OfType<FollowUpQueued>());
+            Assert.DoesNotContain(after.OfType<FollowUpPromoted>(), item => item.FollowUpId == queued.FollowUpId);
+            Assert.Equal(1, await host.ResumeEscalationAsync(consent.InteractionId.ToString(), _ => { }, TestContext.Current.CancellationToken));
+            Assert.Equal(1, provider.RequestCount);
+        });
+    }
+
+    [Fact]
     public async Task Tui_chat_rejects_file_writes_at_the_tool_boundary()
     {
         await InIsolatedCli(async (workspace, data, config, provider) =>
@@ -78,6 +211,8 @@ public sealed class CliEndToEndTests
             Assert.NotNull(identity);
             Assert.Contains("respuesta-scripted", string.Join("\n", messages));
             Assert.Contains(client.SubscribeSince(1), envelope => envelope.PayloadJson.Contains("assistant_message.recorded"));
+            var user = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<UserInputReceived>());
+            Assert.Contains("hola", user.InputPartsJson);
         });
     }
     [Fact]

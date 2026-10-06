@@ -62,8 +62,10 @@ No son consultas autenticadas, gasto real ni validación visual de OmniCoder.
 
 ## Pendientes explícitos
 
-- Reanudar automáticamente ask en TUI tras responder, eligiendo el destino aprobado
-  desde datos durables sin volver a preguntar ni repetir el modelo anterior.
+- La reanudación de escalación ask está implementada en el bloque siguiente,
+  descrito en [m55-routing-resume.md](m55-routing-resume.md).
+- La selección inicial de una ruta sin escalación aún no se reanuda automáticamente
+  al aceptar el permiso; no se confunde con la escalación ni se dispara con input vacío.
 - Disponibilidad real del circuit breaker y RouteCandidate.Alias → RouteId.
 - Regla IncludedQuota, ledger User-wide, reservas/liquidación y resume de allow_plus.
 - Guards universales de escritor y Source/causation; no se afirma cierre de M5.5.

@@ -768,6 +768,158 @@ public sealed class TuiWiringTests
         _ = session;
     });
 
+    [Fact]
+    public void Model_route_consent_allow_resumes_once_without_submitting_a_new_turn() => RunTuiTest(fx =>
+    {
+        var host = new RouteResumeTurnHost();
+        var (interaction, route) = PublishRouteConsent(fx);
+        host.EscalationInteractionId = interaction.ToString();
+        var inputCount = fx.Decoded<UserInputReceived>().Count();
+        fx.StartTui(turnHost: host);
+
+        fx.Wait(() => fx.App.Overlay is not null, "el consentimiento de ruta debe abrir el overlay real");
+        Assert.Equal(InteractionKind.ModelRouteConsent,
+            Assert.Single(fx.Decoded<InteractionRequested>(), item => item.InteractionId == interaction).Kind);
+        var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
+        Assert.Equal(2, buttons.Length);
+        fx.Application.Invoke(() => buttons[1].SetFocus());
+        KeyWithEffect(fx, KeyCode.Enter, () => host.ResumeCount == 1,
+            "allow_route debe iniciar una única reanudación");
+        fx.Wait(() => fx.App.Status!.Text!.ToString()!.Contains("Listo"),
+            "la reanudación aceptada debe finalizar normalmente");
+
+        Assert.Equal(interaction.ToString(), host.ResumeInteractionId);
+        Assert.Equal(0, host.ExecuteCount);
+        Assert.Equal(inputCount, fx.Decoded<UserInputReceived>().Count());
+        var resolved = Assert.Single(fx.Decoded<InteractionResolved>(), item => item.InteractionId == interaction);
+        Assert.Equal(InteractionCause.User, resolved.Cause);
+        Assert.Equal("allow_route", resolved.OptionId);
+        var revised = Assert.Single(fx.Decoded<SessionRoutingPolicyRevised>(), item => item.InteractionId == interaction);
+        Assert.True(SessionRoutingAuthorization.Read(fx.Server.AcquireStore().ReadFrom(fx.Server.LastSessionId()!, 1),
+            fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)!.Allows(route, BillingMode.MeteredCurrency));
+        _ = revised;
+    });
+
+    [Fact]
+    public void Model_route_consent_deny_never_resumes() => RunTuiTest(fx =>
+    {
+        var host = new RouteResumeTurnHost();
+        var (interaction, _) = PublishRouteConsent(fx);
+        host.EscalationInteractionId = interaction.ToString();
+        fx.StartTui(turnHost: host);
+
+        fx.Wait(() => fx.App.Overlay is not null, "el consentimiento de ruta debe abrir el overlay real");
+        var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
+        Assert.Equal(2, buttons.Length);
+        fx.Application.Invoke(() => buttons[0].SetFocus());
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null,
+            "deny debe responder y cerrar el overlay");
+
+        var resolved = Assert.Single(fx.Decoded<InteractionResolved>(), item => item.InteractionId == interaction);
+        Assert.Equal(InteractionCause.User, resolved.Cause);
+        Assert.Equal("deny", resolved.OptionId);
+        Assert.Equal(0, host.ResumeCount);
+        Assert.Equal(0, host.ExecuteCount);
+    });
+
+    [Fact]
+    public void Model_route_consent_accepted_while_originating_invocation_finishes_is_not_lost() => RunTuiTest(fx =>
+    {
+        var gate = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var host = new RouteResumeTurnHost { InvocationGate = gate };
+        try
+        {
+            fx.StartTui(turnHost: host);
+            Type(fx, "solicitud que sigue terminando");
+            KeyWithEffect(fx, KeyCode.Enter, () => host.ExecuteCount == 1, "invocación originaria aún activa");
+            var (interaction, _) = PublishRouteConsent(fx);
+            host.EscalationInteractionId = interaction.ToString();
+            fx.Wait(() => fx.App.Overlay is not null, "el polling publica el permiso antes del return 3");
+            var allow = fx.App.Overlay!.SubViews.OfType<Button>().Last();
+            fx.Application.Invoke(() => allow.InvokeCommand(Command.Accept));
+            fx.Wait(() => fx.Decoded<InteractionResolved>().Any(item => item.InteractionId == interaction), "respuesta persistida");
+            Assert.Equal(0, host.ResumeCount);
+            gate.SetResult(3);
+            fx.Wait(() => host.ResumeCount == 1, "callback diferido no se pierde cuando finaliza el origen");
+            fx.Wait(() => fx.App.Status!.Text!.ToString()!.Contains("Listo"), "destino completó el callback");
+            Assert.Equal(interaction.ToString(), host.ResumeInteractionId);
+            Assert.Equal(1, host.ExecuteCount);
+        }
+        finally { gate.TrySetResult(3); }
+    });
+
+    [Fact]
+    public void Rejected_route_response_shows_error_and_never_resumes() => RunTuiTest(fx =>
+    {
+        var host = new RouteResumeTurnHost();
+        var (interaction, _) = PublishRouteConsent(fx);
+        host.EscalationInteractionId = interaction.ToString();
+        fx.StartTui(turnHost: host);
+        fx.Wait(() => fx.App.Overlay is not null, "el consentimiento de ruta debe abrir el overlay real");
+        var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
+        Assert.Equal(2, buttons.Length);
+
+        // Consume the pending request outside the visible overlay. A subsequent UI response is
+        // rejected by OmniServer and must not be mistaken for successful consent.
+        fx.Application.Invoke(() =>
+        {
+            Assert.Equal("ok", fx.Server.RespondToInteraction(interaction, "deny").Status);
+            buttons[1].InvokeCommand(Command.Accept);
+        });
+        fx.Wait(() => fx.App.Overlay is not null && OverlayText(fx.App.Overlay!).Contains("Aviso"),
+            "la respuesta rechazada debe mostrar el aviso de error");
+
+        Assert.Equal(0, host.ResumeCount);
+        Assert.Equal(0, host.ExecuteCount);
+        Assert.DoesNotContain(fx.Decoded<SessionRoutingPolicyRevised>(), item => item.InteractionId == interaction);
+    });
+
+    private static (InteractionId Interaction, ModelRoute Route) PublishRouteConsent(TuiFixture fixture)
+    {
+        var session = fixture.Server.LastSessionId()!;
+        var run = fixture.Server.LastRunId()!;
+        Assert.Equal("ok", fixture.Server.EnsureSessionRoutingPolicy(session).Status);
+        var route = ModelRoute.DefaultForModel("paid-model", "paid-provider", "https://paid.example/v1",
+            ProviderFamily.OpenAiChatCompatible);
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: run)))
+            new EventStream(fixture.Server.AcquireStore(), fixture.Server.AcquireCodecs(), session)
+                .Append(new ModelEscalationRequested(run, "local-worker", route.ProviderModelName,
+                    EscalationCause.ContextLimit));
+        var result = fixture.Server.AuthorizeModelRoute(session, run, route, BillingMode.MeteredCurrency,
+            requireConsent: true);
+        Assert.False(result.Authorized);
+        Assert.NotNull(result.Interaction);
+        Assert.Equal("ok", result.Ack.Status);
+        return (result.Interaction!, route);
+    }
+
+    private sealed class RouteResumeTurnHost : ITuiTurnHost
+    {
+        private int _resumeCount;
+        private int _executeCount;
+        public int ResumeCount => Volatile.Read(ref _resumeCount);
+        public int ExecuteCount => Volatile.Read(ref _executeCount);
+        public string? EscalationInteractionId { get; set; }
+        public string? ResumeInteractionId { get; private set; }
+        public TaskCompletionSource<int>? InvocationGate { get; init; }
+        public bool HasEscalationForInteraction(string interactionId) =>
+            StringComparer.Ordinal.Equals(EscalationInteractionId, interactionId);
+
+        public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _executeCount);
+            return InvocationGate?.Task ?? System.Threading.Tasks.Task.FromResult(0);
+        }
+
+        public Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics,
+            CancellationToken cancellationToken)
+        {
+            ResumeInteractionId = interactionId;
+            Interlocked.Increment(ref _resumeCount);
+            return System.Threading.Tasks.Task.FromResult(0);
+        }
+    }
+
     // ------------------------------------------------------------------ cuestionario: radio real, validación, paridad plain/TUI
 
     [Fact]

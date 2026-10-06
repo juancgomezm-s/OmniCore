@@ -346,7 +346,7 @@ public sealed class ExplorerTurn
 
         var messages = LoadConversation(stream, runId);
         var safeQuestion = isResume || queuedQuestion ? "" : _redaction.Redact(question ?? "");
-        var pendingFollowUps = isResume
+        var pendingFollowUps = isResume || origin == "InteractionResponse(ModelRouteConsent)"
             ? Array.Empty<FollowUpQueue.Item>()
             : FollowUpQueue.Pending(_store, _codecs, sessionId, runId, laneId).Take(1).ToArray();
         foreach (var followUp in pendingFollowUps)
@@ -399,7 +399,16 @@ public sealed class ExplorerTurn
             // ContextOverflow: el contenido protegido no cabe ni después de recortar la conversación.
             if (materialized.Overflowed)
             {
-                stream.Append(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+                var overflowStart = new List<DomainEventPayload>();
+                if (!isResume)
+                {
+                    overflowStart.AddRange(FollowUpQueue.PromotionEvents(pendingFollowUps, runId, laneId, turnId));
+                    if (safeQuestion.Length > 0)
+                        overflowStart.Add(new UserInputReceived(runId,
+                            "\"" + System.Text.Json.JsonEncodedText.Encode(safeQuestion) + "\"", null, origin));
+                }
+                overflowStart.Add(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+                stream.AppendBatch(overflowStart, DurabilityClass.Barrier);
                 started = true;
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
                 // TurnCompleted tras Abandoned (P1: transición inválida).
@@ -415,7 +424,8 @@ public sealed class ExplorerTurn
                     startEvents.Add(new RunAwaitingInput(runId, laneId));
                 startEvents.AddRange(FollowUpQueue.PromotionEvents(pendingFollowUps, runId, laneId, turnId));
                 var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
-                if (safeQuestion.Length > 0 || pendingFollowUps.Length == 0)
+                if (safeQuestion.Length > 0 || pendingFollowUps.Length == 0
+                    && origin is not ("InteractionResponse(ModelRouteConsent)" or "AlreadyPersisted(ConversationInput)"))
                     startEvents.Add(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
                 startEvents.Add(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
                 stream.AppendBatch(startEvents, DurabilityClass.Barrier);
