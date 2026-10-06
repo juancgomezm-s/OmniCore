@@ -71,6 +71,13 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- Captura automática filesystem normal anterior al Barrier/efecto, preimagen
+  fiel UTF-8/UTF-16 en CAS, ausencia distinta de vacío, fallo seguro ante secretos
+  o CAS inválido y lease síncrona contra GC prematuro. Nuevos ancestros/links
+  permanecen Unknown; no restore M7. Focal147PASS/arquitectura56PASS, builds0/0.
+  [Contrato y reproducción](m55-filesystem-preimage-20261006.md).
+  Atribución/expiración de cuestionarios tiene RED3 pendiente; M5.5 no cerrado.
+
 - M5.5 ToolCallStarted v3: contrato init aditivo, reversibilidad Unknown por defecto,
   destino único de claims filesystem, ArtifactRef de preestado indexado en envelope,
   upcasters v1→v2→v3 y SQLite/CAS reopen/GC. RED3FAIL; focal160PASS4.485s,

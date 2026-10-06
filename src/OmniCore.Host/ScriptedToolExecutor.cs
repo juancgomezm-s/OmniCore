@@ -38,6 +38,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     private readonly bool _isInteractive;
 
+    private readonly IArtifactStore? _artifacts;
+
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy)
     {
         _catalog = catalog;
@@ -72,7 +74,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
         ModelCapabilityBoundary? boundary, IAuditSink? audit,
         Func<InteractionRequested, string?>? interactionResponder, bool isInteractive,
-        WeakSandboxConsentState? weakSandboxConsent = null)
+        WeakSandboxConsentState? weakSandboxConsent = null, IArtifactStore? artifacts = null)
     {
         _catalog = catalog;
         _policy = policy;
@@ -83,6 +85,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _audit = audit;
         _interactionResponder = interactionResponder;
         _isInteractive = isInteractive;
+        _artifacts = artifacts;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -195,7 +198,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 if (runId is null) return;
                 // Buffered before Started: its Barrier confirms this debt before ExecuteAsync.
                 emit(new PostEditValidationPending(runId, intent.ToolCallId, intent.Claims.Writes.ToArray()));
-            });
+            }, artifacts: _artifacts);
         var outcome = runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken);
         var events = buffered.ToArray();
 

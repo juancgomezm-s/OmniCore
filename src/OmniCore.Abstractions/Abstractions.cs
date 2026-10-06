@@ -45,6 +45,13 @@ public interface IArtifactStore
     bool Verify(ContentHash hash, long expectedSize);
 }
 
+/// <summary>Optional synchronous publication boundary: excludes GC until the caller has
+/// committed its referencing event. Acquire/dispose and PutText run on the owning thread.</summary>
+public interface IArtifactPublicationLease
+{
+    IDisposable AcquirePublicationLease(CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// Codificador de payloads de eventos canónicos (ADR-0013 §2). Cada EventType tiene exactamente
 /// un codec; se registran aquí sin reflexión.

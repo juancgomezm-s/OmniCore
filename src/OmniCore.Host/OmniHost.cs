@@ -287,12 +287,14 @@ public sealed class OmniHost
     public static IToolExecutor CreateActExecutor(FakeCatalog catalog, string workspaceRoot,
         ModelCapabilityBoundary boundary, IReadOnlyDictionary<string, string>? projectRestrictions = null,
         RunId? runId = null, IAuditSink? audit = null,
-        Func<InteractionRequested, string?>? interactionResponder = null, bool isInteractive = false)
+        Func<InteractionRequested, string?>? interactionResponder = null, bool isInteractive = false,
+        IArtifactStore? artifacts = null)
     {
         ArgumentNullException.ThrowIfNull(boundary);
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
         return new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary, audit,
-            interactionResponder, isInteractive, GetWeakSandboxConsentState(runId));
+            interactionResponder, isInteractive, GetWeakSandboxConsentState(runId),
+            artifacts ?? CreateArtifactStore(WorkspaceDataDirectory(CreatePlatformPaths(), workspaceRoot)));
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>

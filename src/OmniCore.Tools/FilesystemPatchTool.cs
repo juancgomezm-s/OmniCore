@@ -118,7 +118,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         }
 
         return DryRunReconciliation(context.WorkspaceRoot, intent.Intent.Claims, path, expectedVersion,
-            oldText, newText);
+            oldText, newText, context.Artifacts);
     }
 
     /// <summary>
@@ -396,7 +396,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
     /// aceptar/rechazar, solo enriquece el intent con metadatos cuando son fiables.
     /// </summary>
     private ReconciliationSpec? DryRunReconciliation(string workspaceRoot, ResourceClaims claims,
-        string path, string expectedVersion, string oldText, string newText)
+        string path, string expectedVersion, string oldText, string newText, IArtifactStore? artifacts)
     {
         if (claims.Writes.Count != 1)
         {
@@ -427,9 +427,11 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
 
             var updated = content.Substring(0, first) + newText + content.Substring(first + oldText.Length);
             var postBytes = FileVersion.Encode(updated, decoded.Encoding);
-            return new ReconciliationSpec(expectedVersion, FilesystemPatchTool.VersionToken(postBytes), null);
+            return FilesystemPreimage.Capture(new ReconciliationSpec(expectedVersion,
+                FilesystemPatchTool.VersionToken(postBytes), null),
+                FilesystemPreimage.IsLeafOnly(full, workspaceRoot) ? artifacts : null, bytes);
         }
-        catch (System.Exception)
+        catch (System.Exception ex) when (ex is not FilesystemPreimageException)
         {
             return null;
         }
