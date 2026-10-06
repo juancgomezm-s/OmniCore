@@ -7,7 +7,7 @@ namespace OmniCore.Tests;
 
 // Control companion to AutomaticEscalationMissingCredentialRegressionTests: same hermetic
 // real-child fixture, but escalation mode ask. Ask mode must surface the escalation request
-// without approving it or resolving the missing credential, and must exit 0.
+// without approving it or resolving the missing credential. NoClient denies consent and exits 1.
 public sealed class AskEscalationMissingCredentialControlTests
 {
     [Fact]
@@ -30,7 +30,7 @@ public sealed class AskEscalationMissingCredentialControlTests
         {
             File.WriteAllText(Path.Combine(config, "providers.yaml"), """
                 providers:
-                  local: { family: OpenAiChatCompatible, baseUrl: 'http://127.0.0.1:1/v1', auth: none }
+                  local: { family: OpenAiChatCompatible, baseUrl: 'http://127.0.0.1:1/v1', auth: none, billingMode: Local }
                   paid: { family: OpenAiChatCompatible, baseUrl: 'http://127.0.0.1:1/v1', authRef: synthetic-missing }
                 """);
             File.WriteAllText(Path.Combine(config, "models.yaml"), """
@@ -71,8 +71,8 @@ public sealed class AskEscalationMissingCredentialControlTests
                 throw new TimeoutException("Owned isolated CLI did not exit within 30 seconds");
             }
             await Task.WhenAll(output, error);
-            // Ask mode surfaces the request but never acts; the run exits successfully.
-            Assert.Equal(0, child.ExitCode);
+            // A redirected CLI has no consenting user; it cannot report successful escalation.
+            Assert.Equal(1, child.ExitCode);
             var journal = Assert.Single(Directory.GetFiles(data, "journal.db", SearchOption.AllDirectories));
             var session = SessionId.Parse(File.ReadAllLines(Path.Combine(Path.GetDirectoryName(journal)!, "lastsession.txt"))[0]);
             var store = new SqliteEventStore(journal);
@@ -90,6 +90,11 @@ public sealed class AskEscalationMissingCredentialControlTests
             // Ask mode must not approve or complete an escalation on its own.
             Assert.DoesNotContain(events, e => e is ModelEscalationApproved);
             Assert.DoesNotContain(events, e => e is ModelEscalationCompleted);
+            var consent = Assert.Single(events.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.ModelRouteConsent);
+            var resolution = Assert.Single(events.OfType<InteractionResolved>(), item => item.InteractionId == consent.InteractionId);
+            Assert.Equal("deny", resolution.OptionId);
+            Assert.Equal(InteractionCause.NoClient, resolution.Cause);
+            Assert.DoesNotContain(events, item => item is SessionRoutingPolicyRevised);
         }
         finally
         {

@@ -167,6 +167,7 @@ public enum InteractionKind
     BudgetExceeded,
     Question,
     AcceptanceConfirmation,
+    ModelRouteConsent,
 }
 
 /// <summary>Estado de un PlanItem (ADR-0036 §4).</summary>

@@ -110,7 +110,7 @@ public sealed class CliEndToEndTests
             await using var provider = new ScriptedHttpProvider();
             File.WriteAllText(Path.Combine(config, "providers.yaml"), string.Join(Environment.NewLine,
                 "providers:", "  scripted:", "    family: OpenAiChatCompatible", "    baseUrl: " + provider.BaseUrl,
-                "    auth: none", ""));
+                "    auth: none", "    billingMode: Local", ""));
             File.WriteAllText(Path.Combine(config, "models.yaml"), string.Join(Environment.NewLine,
                 "models:", "  scripted-model:", "    provider: scripted", "    context: 8192",
                 "    maxOutput: 2048", ""));
@@ -556,7 +556,7 @@ public sealed class CliEndToEndTests
             await using var provider = new ScriptedHttpProvider();
             File.WriteAllText(Path.Combine(config, "providers.yaml"), string.Join(Environment.NewLine,
                 "providers:", "  scripted:", "    family: OpenAiChatCompatible", "    baseUrl: " + provider.BaseUrl,
-                "    auth: none", ""));
+                "    auth: none", "    billingMode: Local", ""));
             File.WriteAllText(Path.Combine(config, "models.yaml"), string.Join(Environment.NewLine,
                 "models:", "  scripted-model:", "    provider: scripted", "    context: 8192",
                 "    maxOutput: 2048", ""));

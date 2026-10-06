@@ -13,6 +13,19 @@ using OmniCore.Models;
 /// </summary>
 public static class ModelRoutingHost
 {
+    /// <summary>One-time initial non-metered authorizations from User configuration.
+    /// Later configuration changes never expand a Session snapshot.</summary>
+    public static SessionRoutingPolicy InitialSessionPolicy(LoadedUserConfiguration loaded, string originProviderId)
+    {
+        var routes = loaded.Registry.Models().Select(model => (Model: model, Provider: loaded.Registry.Provider(model.ProviderId)))
+            .Where(pair => pair.Provider?.Id == originProviderId
+                && pair.Provider.BillingMode is BillingMode.Local or BillingMode.IncludedQuota or BillingMode.CreditBalance)
+            .Select(pair => AuthorizedModelRoute.From(RouteFor(pair.Model, pair.Provider), pair.Provider!.BillingMode))
+            .ToArray();
+        return new SessionRoutingPolicy(1, routes, routes.Select(route => route.BillingMode).Distinct().ToArray(),
+            false, loaded.SessionCapUsd, originProviderId).Freeze();
+    }
+
     /// <summary>Ruta 1:1 del YAML existente; un endpoint override define una ruta distinta.</summary>
     public static ModelRoute RouteFor(ModelDefinition model, ProviderDescriptor? provider, string? endpointOverride = null)
     {
