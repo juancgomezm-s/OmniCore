@@ -14,7 +14,10 @@ sin requisitos nuevos que reabran M5. Final167PASS/arquitectura56PASS, builds0/0
 RED de redacción confirmado en Host/CLI después de corregir cleanup.
 [Terminales, redacción y reproducción](qualification-terminal-maintenance-20261006.md).
 Full previa2240=2223PASS/13FAIL/4SKIP; M4 timeout aislado todavía pendiente de causa.
-Tope diario entre workspaces tiene RED válido2=1PASS/1FAIL, aún sin fix global.
+Tope diario entre workspaces: RED2=1PASS/1FAIL corregido en la ruta normal;
+final133PASS/arquitectura56PASS. Lectura solo lectura por journal/CAS de origen,
+sin reservas concurrentes ni cierre del consentimiento diario entre workspaces.
+[Implementación y reproducción](m55-user-daily-spend-20261006.md).
 No acreditan consultas reales ni full verde posterior.
 El objetivo activo continúa siendo M5.5 y preparación de M6, sin scheduler/joins.
 Luna HIGH terminó la matriz normativa M5 y ahora audita exclusivamente el contrato

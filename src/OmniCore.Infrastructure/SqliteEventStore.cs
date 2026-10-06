@@ -17,12 +17,35 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 {
     private readonly System.Data.Common.DbConnection _conn;
     private readonly object _connectionSync = new();
+    private readonly string _executionColumn = "execution_id";
+    private readonly string _sourceColumn = "source";
 
-    public SqliteEventStore(string filePath)
+    public SqliteEventStore(string filePath) : this(filePath, readOnly: false) { }
+
+    internal SqliteEventStore(string filePath, bool readOnly)
     {
-        var connString = "DataSource=" + filePath;
+        var connString = readOnly ? new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+        {
+            DataSource = Path.GetFullPath(filePath), Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ToString() : "DataSource=" + filePath;
         _conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!.CreateDataSource(connString)!.OpenConnection()!;
-        _InitializeSchema();
+        try
+        {
+            if (!readOnly) _InitializeSchema();
+            else
+            {
+                // Read historical envelopes without migrating another workspace's journal.
+                using var columns = _conn.CreateCommand();
+                columns.CommandText = "PRAGMA table_info(events)";
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                using var reader = columns.ExecuteReader();
+                while (reader.Read()) names.Add(reader.GetString(1));
+                if (!names.Contains("execution_id")) _executionColumn = "NULL";
+                if (!names.Contains("source")) _sourceColumn = "NULL";
+            }
+        }
+        catch { _conn.Dispose(); throw; }
     }
 
     /// <summary>
@@ -252,13 +275,24 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     public IReadOnlyList<DomainEvent> ReadEvents(EventType type)
         => WithConnection(() => ReadEventsCore(type));
 
-    private IReadOnlyList<DomainEvent> ReadEventsCore(EventType type)
+    internal IReadOnlyList<DomainEvent> ReadEventsSnapshot(IEnumerable<EventType> types)
+        => WithConnection(() =>
+        {
+            using var transaction = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: true);
+            var events = types.SelectMany(type => ReadEventsCore(type, transaction)).ToArray();
+            transaction.Commit();
+            return (IReadOnlyList<DomainEvent>)events;
+        });
+
+    private IReadOnlyList<DomainEvent> ReadEventsCore(EventType type,
+        System.Data.Common.DbTransaction? transaction = null)
     {
         ArgumentNullException.ThrowIfNull(type);
         using var cmd = _conn.CreateCommand()!;
+        cmd.Transaction = transaction;
         cmd.CommandText = "SELECT session_id, event_id, seq, event_type, schema_version, timestamp, " +
-            "causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, execution_id, " +
-            "payload, artifacts, source FROM events WHERE event_type = :type ORDER BY id";
+            "causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, " + _executionColumn + ", " +
+            "payload, artifacts, " + _sourceColumn + " FROM events WHERE event_type = :type ORDER BY id";
         cmd.Parameters.Add(S(cmd, "type", type.ToString()));
 
         var result = new List<DomainEvent>();
