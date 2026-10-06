@@ -903,6 +903,34 @@ public sealed class TuiWiringTests
         Assert.DoesNotContain(fx.Decoded<SessionRoutingPolicyRevised>(), item => item.InteractionId == interaction);
     });
 
+    [Fact]
+    public void Quota_consent_resumes_without_new_input_or_monetary_policy_revision() => RunTuiTest(fx =>
+    {
+        var host = new RouteResumeTurnHost();
+        var session = fx.Server.LastSessionId()!;
+        var run = fx.Server.LastRunId()!;
+        var interaction = InteractionId.New();
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: run)))
+            new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), session).Append(
+                new InteractionRequested(interaction, InteractionKind.BudgetExceeded,
+                    "{\"includedQuotaConsent\":1}",
+                    "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_quota\",\"intent\":\"allow\"}]",
+                    "deny", null, null, null, null, 0, 1));
+        var inputs = fx.Decoded<UserInputReceived>().Count();
+        fx.StartTui(turnHost: host);
+        fx.Wait(() => fx.App.Overlay is not null, "quota consent overlay");
+        var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
+        Assert.Equal(2, buttons.Length);
+        Assert.Contains("cuota", buttons[1].Text.ToString()!, StringComparison.OrdinalIgnoreCase);
+        fx.Invoke(() => buttons[1].SetFocus());
+        KeyWithEffect(fx, KeyCode.Enter, () => host.ResumeCount == 1, "quota callback resumes once");
+        Assert.Equal(0, host.ExecuteCount);
+        Assert.Equal(interaction.ToString(), host.ResumeInteractionId);
+        Assert.Equal(inputs, fx.Decoded<UserInputReceived>().Count());
+        Assert.Empty(fx.Decoded<SessionRoutingPolicyRevised>());
+        Assert.Equal("allow_quota", Assert.Single(fx.Decoded<InteractionResolved>()).OptionId);
+    });
+
     private static (InteractionId Interaction, ModelRoute Route) PublishRouteConsent(TuiFixture fixture)
     {
         var session = fixture.Server.LastSessionId()!;
@@ -947,6 +975,8 @@ public sealed class TuiWiringTests
             Interlocked.Increment(ref _resumeCount);
             return System.Threading.Tasks.Task.FromResult(0);
         }
+        public Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics,
+            CancellationToken cancellationToken) => ResumeEscalationAsync(interactionId, diagnostics, cancellationToken);
     }
 
     // ------------------------------------------------------------------ cuestionario: radio real, validación, paridad plain/TUI

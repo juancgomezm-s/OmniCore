@@ -17,15 +17,32 @@ public sealed class OmniCliRuntime
 {
     private readonly string _workspaceRoot;
     private readonly ProviderResilienceCatalog _providerCircuits = new();
+    private readonly Func<string, CancellationToken, Task<ProviderQuotaSnapshot>> _queryQuota;
     private OmniServer? _server;
     private string? _escalatedModel;
     private (IModelProvider Provider, ModelPricing? Pricing, string BaseUrl, IArtifactStore Artifacts)? _usageContext;
     private bool _workspaceWarningShown;
     private bool _providerDeprecationShown;
 
-    private OmniCliRuntime(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
+    private OmniCliRuntime(string workspaceRoot, Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota)
+    {
+        _workspaceRoot = Path.GetFullPath(workspaceRoot);
+        _queryQuota = queryQuota ?? QueryConfiguredQuotaAsync;
+    }
 
-    public static OmniCliRuntime Create(string workspaceRoot) => new(workspaceRoot);
+    public static OmniCliRuntime Create(string workspaceRoot,
+        Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota = null) => new(workspaceRoot, queryQuota);
+
+    private static async Task<ProviderQuotaSnapshot> QueryConfiguredQuotaAsync(string providerId, CancellationToken token)
+    {
+        var configured = OmniHost.LoadUserConfiguration(OmniHost.CreatePlatformPaths()).Registry.Provider(providerId);
+        // The accepted codex profile declares subscription identity; arbitrary aliases
+        // must not hide its reported quota. Other unknown subscriptions stay unknown.
+        var origin = configured?.Family == ProviderFamily.OpenAIResponses
+            && string.Equals(configured.Profile, "codex", StringComparison.OrdinalIgnoreCase) ? "chatgpt" : providerId;
+        var quota = await new SubscriptionQuotaService().QueryAsync(origin, token).ConfigureAwait(false);
+        return quota with { ProviderId = providerId };
+    }
 
     /// <summary>
     /// Resolución de texto localizado que aporta el cliente (clave + argumentos → frase, ADR-0040).
@@ -200,7 +217,8 @@ public sealed class OmniCliRuntime
     internal Task<int> ConversationAsync(string prompt, Action<string> writeLine, CancellationToken cancellationToken) =>
         RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true);
 
-    private sealed record RoutingResume(SessionId Session, RunId Run, InteractionId? Interaction, string Model, ModelRoute? Route = null);
+    private sealed record RoutingResume(SessionId Session, RunId Run, InteractionId? Interaction, string Model,
+        ModelRoute? Route = null, string Origin = "InteractionResponse(ModelRouteConsent)");
 
     internal bool HasEscalationForInteraction(InteractionId interaction)
     {
@@ -264,6 +282,50 @@ public sealed class OmniCliRuntime
         // A stale, denied or already consumed escalation is not executable.
         writeLine("No pending user-consented escalation for this interaction");
         return 1;
+    }
+
+    internal async Task<int> ResumeQuotaAsync(InteractionId interaction, Action<string> writeLine,
+        CancellationToken cancellationToken)
+    {
+        var server = Server();
+        if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run) return 1;
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        var origin = events.LastOrDefault(evt => evt.RunId == run && evt.LaneId == server.LastLaneId()
+            && server.AcquireCodecs().Decode(evt) is InteractionRequested request
+            && request.InteractionId == interaction && request.Kind == InteractionKind.BudgetExceeded);
+        if (origin is null || origin.TurnId is null) return 1;
+        if (!events.Any(evt => evt.RunId == run && server.AcquireCodecs().Decode(evt) is TurnStarted start
+            && start.TurnId == origin.TurnId && start.LaneId == origin.LaneId)
+            || events.Any(evt => evt.RunId == run && server.AcquireCodecs().Decode(evt) is TurnCompleted completed
+                && completed.TurnId == origin.TurnId
+                || evt.RunId == run && server.AcquireCodecs().Decode(evt) is TurnAbandoned abandoned
+                && abandoned.TurnId == origin.TurnId
+                || evt.RunId == run && server.AcquireCodecs().Decode(evt) is TurnInterrupted interrupted
+                && interrupted.TurnId == origin.TurnId)) return 1;
+        var resolved = events.Where(evt => evt.Sequence > origin.Sequence)
+            .Select(server.AcquireCodecs().Decode).OfType<InteractionResolved>()
+            .FirstOrDefault(response => response.InteractionId == interaction);
+        if (resolved is not { Cause: InteractionCause.User, OptionId: "allow_quota" }) return 1;
+        try
+        {
+            var request = (InteractionRequested)server.AcquireCodecs().Decode(origin);
+            using var json = System.Text.Json.JsonDocument.Parse(request.SubjectJson);
+            var subject = json.RootElement;
+            if (subject.GetProperty("includedQuotaConsent").GetInt32() != 1) return 1;
+            var step = subject.GetProperty("stepIndex").GetInt32();
+            if (events.Any(evt => evt.RunId == run && evt.TurnId == origin.TurnId
+                && server.AcquireCodecs().Decode(evt) is ModelStepStarted started && started.StepIndex >= step)) return 1;
+            var loaded = OmniHost.LoadUserConfiguration(OmniHost.CreatePlatformPaths());
+            var model = loaded.Registry.Models().SingleOrDefault(candidate => candidate.Id == subject.GetProperty("modelId").GetString());
+            if (model is null || model.ProviderId != subject.GetProperty("providerId").GetString()
+                || loaded.Registry.Provider(model.ProviderId)?.BillingMode != BillingMode.IncludedQuota) return 1;
+            return await RunTurnAsync("", server.CurrentRunMode() == RunMode.Act, writeLine, cancellationToken,
+                conversationOnly: server.CurrentRunMode() == RunMode.Plan,
+                routingResume: new(session, run, null, model.Id, Origin: "InteractionResponse(IncludedQuota)")).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException
+            or InvalidOperationException or FormatException) { writeLine("Quota consent is invalid; resume rejected"); return 1; }
     }
 
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
@@ -482,7 +544,7 @@ public sealed class OmniCliRuntime
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = server.LastLaneId() ?? LaneId.New();
-            var promptOrigin = routingResume is not null ? "InteractionResponse(ModelRouteConsent)"
+            var promptOrigin = routingResume is not null ? routingResume.Origin
                 : conversationOnly ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
             var followUp = server.QueueFollowUpPromptCommand(sessionId, runId, laneId, prompt, promptOrigin);
             if (followUp.Ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Rejected)
@@ -629,6 +691,18 @@ public sealed class OmniCliRuntime
                 }
                 return questionnaireService.ResolvedOutcome(sessionId, interactionId);
             }
+            if (providerDescription?.BillingMode == BillingMode.IncludedQuota)
+                await RefreshProviderQuotaAsync(providerDescription.Id, cancellationToken).ConfigureAwait(false);
+            InteractionId? QuotaAdmission(SessionId s, RunId r, LaneId l, TurnId t, int i)
+            {
+                RefreshProviderQuotaAsync(providerDescription!.Id, cancellationToken).GetAwaiter().GetResult();
+                return IncludedQuotaAdmission.Check(server, s, r, l, t, i, providerDescription.Id, model!);
+            }
+            bool QuotaAllowsMeta()
+            {
+                RefreshProviderQuotaAsync(providerDescription!.Id, cancellationToken).GetAwaiter().GetResult();
+                return IncludedQuotaAdmission.AllowsMeta(server, sessionId, providerDescription.Id);
+            }
             var turn = new ExplorerTurn((request, token) => server.Observability.Complete(sessionId, provider, request,
                 modelDefinition?.ContextWindow, token), executor,
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
@@ -638,7 +712,11 @@ public sealed class OmniCliRuntime
                 questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                 metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
                 recordEffectiveFingerprint: true,
-                userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: []);
+                userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
+                quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
+                    ? QuotaAdmission : null,
+                quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
+                    ? QuotaAllowsMeta : null);
             var instruction = TurnInstruction(executingAct);
             if (questionnaireService.Pending(sessionId).FirstOrDefault() is { } pendingQuestion)
             {
@@ -728,7 +806,11 @@ public sealed class OmniCliRuntime
                         questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                         metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
                         recordEffectiveFingerprint: true,
-                        userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: []);
+                        userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
+                        quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
+                            ? QuotaAdmission : null,
+                        quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
+                            ? QuotaAllowsMeta : null);
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",
@@ -1056,6 +1138,7 @@ public sealed class OmniCliRuntime
                     "allow_run" => "interaction.permission.allow_run",
                     "allow_workspace" => "interaction.permission.allow_workspace",
                     "allow_plus" when request.Kind == InteractionKind.BudgetExceeded => "interaction.budget_exceeded.continue",
+                    "allow_quota" when request.Kind == InteractionKind.BudgetExceeded => "interaction.budget_exceeded.allow_quota",
                     "allow_route" when request.Kind == InteractionKind.ModelRouteConsent => "interaction.model_route_consent.allow_route",
                     "deny" when request.Kind == InteractionKind.ModelRouteConsent => "interaction.model_route_consent.deny",
                     _ => request.Kind == InteractionKind.WeakSandboxConsent
@@ -1191,7 +1274,7 @@ public sealed class OmniCliRuntime
     public async Task<ProviderQuotaSnapshot?> RefreshProviderQuotaAsync(string providerId, CancellationToken cancellationToken = default)
     {
         if (_server?.LastSessionId() is not { } session) return null;
-        var quota = await new SubscriptionQuotaService().QueryAsync(providerId, cancellationToken).ConfigureAwait(false);
+        var quota = await _queryQuota(providerId, cancellationToken).ConfigureAwait(false);
         // Do not apply an asynchronous account result to another session after navigation.
         if (_server.LastSessionId() == session) _server.Observability.SetQuota(session, quota);
         return quota;

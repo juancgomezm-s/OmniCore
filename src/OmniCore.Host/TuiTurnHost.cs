@@ -8,6 +8,8 @@ public interface ITuiTurnHost
     Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         Task.FromResult(1);
     bool HasEscalationForInteraction(string interactionId) => false;
+    Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        Task.FromResult(1);
 }
 
 public sealed class TuiTurnHost : ITuiTurnHost
@@ -28,4 +30,6 @@ public sealed class TuiTurnHost : ITuiTurnHost
         _runtime.ResumeEscalationAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
     public bool HasEscalationForInteraction(string interactionId) =>
         _runtime.HasEscalationForInteraction(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)));
+    public Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        _runtime.ResumeQuotaAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
 }

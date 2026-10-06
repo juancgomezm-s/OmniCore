@@ -7,6 +7,13 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Checkpoint de verificación 2026-10-06 23:29 UTC
 
+Actualización del bloque IncludedQuota 23:45 UTC: corrección de admisión y consulta
+del Host, consentimiento por invocación, reanudación TUI y NoClient implementados.
+Focal final78PASS13.579s/build0/0 y TUI1PASS2.587s; fixtures identificados.
+[Contrato, reproducción y límites](m55-included-quota-admission-20261006.md).
+La suite completa anterior descrita abajo no incluye estos cambios; full nuevo pendiente.
+Las notas RED de abajo describen el hallazgo previo, no un fallo dejado sin corregir.
+
 Suite completa sobre `abec849`, proceso terminado con exit0:
 2272 casos = 2268 PASS / 0 FAIL / 4 SKIP por permisos symlink, 319.894s.
 Log `agent-result-immutable-full-test.log` en

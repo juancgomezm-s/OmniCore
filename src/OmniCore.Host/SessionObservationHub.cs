@@ -133,13 +133,17 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
                 record.LaneId?.ToString(), phase.Value, record.TimestampUtc, "provider-stream:" + record.Signal, phase == ChatActivityPhase.AnswerText);
         }
     }
+    internal ProviderQuotaSnapshot? Quota(SessionId session, string provider)
+    {
+        lock (_gate) return State(session).Quotas.GetValueOrDefault(provider);
+    }
     public void SetQuota(SessionId session, ProviderQuotaSnapshot quota)
     {
         lock (_gate)
         {
             var state = State(session);
             if (quota.Availability == MetricAvailability.Unknown && state.Quotas.TryGetValue(quota.ProviderId, out var prior)
-                && prior.Windows.Count > 0)
+                && prior.Availability is MetricAvailability.Reported or MetricAvailability.Stale && prior.Windows.Count > 0)
                 quota = prior with { Availability = MetricAvailability.Stale, Limitation = quota.Limitation, LastQueryAttemptAt = quota.AsOf };
             state.Quotas[quota.ProviderId] = quota;
         }

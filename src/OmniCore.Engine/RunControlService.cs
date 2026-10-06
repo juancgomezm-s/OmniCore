@@ -265,6 +265,9 @@ public sealed class RunControlService
             throw new InvalidInteractionOptionException(interaction, optionId);
         }
 
+        if (request.Kind == InteractionKind.BudgetExceeded && optionId == "allow_quota"
+            && cause != InteractionCause.User)
+            throw new InvalidInteractionOptionException(interaction, optionId);
         if (request.Kind == InteractionKind.BudgetExceeded && optionId == "allow_plus")
         {
             if (cause != InteractionCause.User)
