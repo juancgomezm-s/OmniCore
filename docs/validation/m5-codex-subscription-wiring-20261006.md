@@ -36,7 +36,8 @@ Luna HIGH construyó el fixture; root auditó y corrigió referencias de API/JSO
 reprodujo RED e implementó producción. Antes: 3 casos, 1 PASS/2 FAIL (0.413s).
 Después: 3 PASS (0.581s), build0 errores/advertencias. Focal cualificación/
 Responses/auth: 268 PASS (5.343s). Arquitectura: 56 PASS (0.750s), build0/0.
-Suite completa de este bloque pendiente al checkpoint; no atribuirle la anterior2174.
+Suite completa fresca: 2177 casos, 2173 PASS/0 FAIL/4 SKIP por permisos symlink,
+266.947s, exit0 confirmado. No es la suite anterior2174 ni consulta autenticada.
 
 Desde la raíz del worktree autorizado:
 

@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 21:14 UTC / 15:14 America/Mexico_City.
+Actualizado 2026-10-06 21:20 UTC / 15:20 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -13,8 +13,9 @@ M5.5 con paquetes independientes GLM5.3/NVIDIA, Nemotron/OpenRouter y DeepSeek/N
 inconcluso: la API disponible no admite editar su texto. Esta sección conserva las
 instrucciones nuevas; no se reactiva la automatización histórica con plazo vencido.
 Luna terminó la auditoría de traits/confidence y construyó el fixture integrado
-Codex; root conserva producción, integración y verificación. Ahora Luna audita
-cancelación/persistencia y aislamiento OAuth, solo lectura y sin consultas reales.
+Codex y la regresión de cancelación; root conserva producción, integración y
+verificación. Ahora Luna audita terminales de probes (fallos/stopreason frente a
+texto puntuable), solo lectura/propuesta externa y sin consultas reales.
 Externos2017 y2103 terminaron: GLM/Deep timeout sin entrega y Nem propuestas
 rechazadas por APIs inexistentes/ausencia de SQLite y controles requeridos.
 Logs/manifiestos preservados; no integrar propuestas sin verificación ni repetir
@@ -60,6 +61,11 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5 cancelación Host: preserva OCE del caller entre probes y antes de publicar
+  evidencia del último stream cancelado; runner NotRun compatible. Luna3fixtures,
+  rootcontrol final/CAS y fix. RED4=2PASS2FAIL0.569s; focal272PASS6.618s/build0/0,
+  arquitectura56PASS0.977s/build0/0; full nueva pendiente. No atomicidad CAS+SQLite
+  frente a cancelación concurrente prometida ni authreal. [Contrato](m5-qualification-cancellation-20261006.md).
 - Uso reportado coherente M5/M5.5: validator compartido Domain, cualificación,
   ejecución/lecturas de gasto, reporter de sesión y productor meta. Contradicciones
   reportadas no autorizan herramientas/coste/resumen de compactación; uso/máscara
@@ -87,7 +93,8 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 - M5 sesión Codex: wiring defectuoso reproducido con ruta normal Host/Responses/
   sesión sintética privada/HTTP loopback/SQLite/CAS. RED3=1PASS2FAIL; enlace de
   subscription corregido solo para perfilcodex, green3PASS, focal268PASS/arch56PASS
-  builds0/0; full fresca pendiente. No login ausente inferido ni cambio API key,
+  builds0/0; full fresca2177=2173PASS0FAIL4SKIPsymlink266.947s/exit0.
+  No login ausente inferido ni cambio API key,
   cuota/coste desconocidos no cero; no consulta autenticada real acreditada.
   [Contrato y evidencia](m5-codex-subscription-wiring-20261006.md).
 - M5.5 root: tres controles reales SQLite/CAS para éxito/deny/fallo entre dos Runs
