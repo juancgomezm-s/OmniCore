@@ -73,6 +73,27 @@ una compactación individual aún puede superar el saldo restante. Tampoco agreg
 workspaces User-wide ni completa la contabilidad de retries internos del adapter.
 Son pendientes de la frontera completa, no cierres implícitos por estas pruebas.
 
+### Diario meta tras reabrir SQLite, 2026-10-06
+
+`MetaModelDailySpendIntegrationTests` conserva dos invocaciones meta de 0.30 USD
+en sesiones independientes, cierra/reabre SQLite y consulta desde una tercera.
+El cap diario 0.50 USD bloquea antes de providers/herramientas, con cap de sesión
+100 USD. Repetir InvocationId entre sesiones no fusiona cargos. El control con
+una invocación del día UTC anterior permite continuar: timestamps históricos
+explícitos, sin cambiar el reloj del sistema. Compara todos los campos durables,
+payloads y referencias de las otras sesiones y verifica los blobs CAS.
+
+Son fixtures offline de costes y providers; la persistencia/reapertura es real.
+La propuesta Nemotron de esta ronda no se integró: confundía consumo principal
+con meta y no implementaba el reopen ni la fecha histórica. Root escribió los
+tres casos correctos; los logs de la propuesta y los fallos NVIDIA se preservan
+en `C:\Users\juanc\.codex\omni-m55-workers-20261006-1558`.
+
+Verificación conjunta con el bloque quick/preflight M5: `final-cli-focal.log`,
+131 PASS/0 FAIL/0 SKIP, 2.077s; `final-full.log`, 1991 casos = 1987 PASS/
+0 FAIL/4 SKIP por permisos symlink, 101.556s, exit0. Arquitectura56PASS0FAIL,
+0.587s; builds 0 warnings/errores. Focales solapados, no sumables.
+
 ### Uso desconocido dentro del mismo Ask
 
 Un `ModelStepCompleted` nuevo cuyo `ReportedUsageFields` no incluye ambos Input/Output
