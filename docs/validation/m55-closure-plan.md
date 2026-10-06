@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 20:31 UTC / 14:31 America/Mexico_City.
+Actualizado 2026-10-06 20:44 UTC / 14:44 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -8,10 +8,20 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 ## Instrucciones vigentes del objetivo
 
 El usuario pidió actualizar el objetivo y reanudarlo el 2026-10-06. `get_goal`
-confirmó `active` a las 18:29 UTC: la pausa de producto ya fue revocada. El texto
+confirmó `active` a las 20:37 UTC: la pausa de producto ya fue revocada. El texto
 del objetivo conserva M5.5/M6; estas instrucciones vigentes incluyen también el
 cierre de M5 y el reparto de agentes solicitado. La automatización histórica sigue
 pausada; no se crea otro objetivo ni se declara terminado el actual por un subconjunto.
+La API disponible solo cambia el estado del objetivo, no su texto ni su reanudación;
+este plan conserva la ampliación operativa solicitada sin fingir una actualización
+del texto de producto. Se continúa el objetivo existente, ya activo.
+
+Checkpoint de reanudación: HEAD ba7c2ff antes del bloque actual. Corrección
+nullable/failclosed de la cota de intentos y propagación por Telemetry verificadas.
+Regresión reproducida: 11 casos, 5 PASS/6 FAIL; después del cambio, 11 PASS
+(0.463 s), build sin errores ni advertencias. Son fixtures, no consumo autenticado.
+Luna HIGH terminó la adaptación explícita de once providers de pruebas en memoria;
+root conserva ownership de producción, auditoría, documentación y verificación.
 
 - Luna `gpt-6-luna`, esfuerzo **alto**, concentrada exclusivamente en el cierre M5.
   Prioridad: persistencia atómica de perfil/traits; coste real y desconocido sin
@@ -37,13 +47,26 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5 identidad de endpoint: control normal Host/HTTP loopback/SQLite/CAS exige diez
+  requests a B override, cero a A configurado, key/perfil/evidencia B y Get A vacío.
+  Luna HIGH fixture/root auditoría, corrección CS0136 y timeout privado; focal final
+  endpoint+cota15PASS0.683s/build0/0. No autenticación ni gasto real, ni defecto de
+  identidad demostrado; [reproducción](m5-effective-endpoint-integration-20261006.md).
 - M5 intentos conocidos: capacidad aditiva IModelRequestAttemptBound en adaptadores,
   cota desde resiliencia efectivamente adquirida; default3/Codex6, long sin overflow.
   Preflight/preview cuentan intentos conocidos y dos tests RED reales ya pasan.
   No es factura, reserva ni garantía wire (excluye auth/redirect). Inyección legacy
-  sin bound y wrapper Telemetry pendientes de nullable/failclosed; Luna HIGH prepara
-  controles fuera del repo. Auditoría también halló subset tokens reportados incoherentes
+  sin bound ahora permanece null y failclosed salvo Local explícito; wrapper Telemetry
+  propaga cota o null, evidencia captura valor/fuente preflight. Focal253PASS1.654s,
+  arquitectura56PASS0.652s/build0/0; full conjunta con endpoint2126=2122PASS0FAIL
+  4SKIPsymlink104.637s/exit0. Recompilación fresca tras CS0136 corregido en fixture.
+  [Contrato y reproducción](m5-unknown-attempt-bound-20261006.md).
+  Auditoría también halló subset tokens reportados incoherentes
   aceptados: próxima regresión M5, no regla de suma de caché inventada.
+- Auditoría adicional root: cualificación normal llama ConnectProvider sin pasar
+  subscription; factory exige subscription para perfil codex. No prueba que falte
+  login del usuario; queda pendiente verificar wiring de la sesión ya conectada,
+  reproducir ruta auténtica con control offline de credenciales y corregir wiring.
 - M5.5 root: tres controles reales SQLite/CAS para éxito/deny/fallo entre dos Runs
   de la misma Session, primero cancelado por servicio normal antes del siguiente.
   Envelopes/UTC/prefijo histórico/refModelStep/uso sobreviven reopen sin fuga scope.
