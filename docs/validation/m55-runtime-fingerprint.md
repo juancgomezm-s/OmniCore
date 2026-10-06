@@ -89,6 +89,18 @@ opaque ProviderState ni se simula soporte declarado de reasoning.
 - fingerprint-content-architecture-build.log: build sin warnings/errores;
   fingerprint-content-architecture-test.log: 56 PASS/0 FAIL/0 SKIP0.586s.
   Suite separada, no se suma a los 1970 casos funcionales.
+- fingerprint-append-build.log sin warnings/errores; fingerprint-append-focal.log:
+  32 casos/31 PASS/1 FAIL0SKIP1.254s. Fallo al borrar journal.db: el fixture liberaba
+  su pool normal pero no el pool Mode=ReadOnly que GC abre legítimamente.
+- fingerprint-append-fixed-build.log sin warnings/errores;
+  fingerprint-append-fixed-focal.log:32 PASS/0 FAIL/0 SKIP1.272s. Sólo se liberan
+  los dos pools privados de ese journal; sin ClearAllPools ni assertions debilitadas.
+  Fault injection rechaza el batch TurnStarted antes de delegar al SQLite real:
+  Ask devuelve Error, provider=0, secuencia/refs sin avance. CAS previo queda como
+  huérfano real; Sweep con reloj futuro explícito elimina EXACTAMENTE esos blobs,
+  conserva/verifica el blob anteriormente referenciado y un segundo Sweep elimina0.
+  Retry en el mismo ExplorerTurn invoca provider una vez y persiste refs completas
+  verificables en el envelope. Caso posterior test-only, no incluido full1970 anterior.
 
 Los tests de pricing/provider/secret son fixtures offline o HTTP loopback controlado;
 no son consultas autenticadas ni cualificación. tools.plan/prompt.template v2 cambian
