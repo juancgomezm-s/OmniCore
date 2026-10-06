@@ -108,7 +108,8 @@ public sealed class M5QualificationUnknownBillingGuardTests
             }
 
             Assert.Equal(1, provider.Calls);
-            Assert.Equal(ModelQualificationState.Qualified.ToString(), result.NewState);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified.ToString(), result.NewState);
+            Assert.False(result.SuiteComplete);
             Assert.Equal(0.032768m, result.EstimatedCostUsd);
             Assert.Equal("max-declared-and-configured-descriptor-token-estimate", result.EstimatedCostSource);
             var outcome = Assert.Single(result.Probes);
@@ -121,7 +122,7 @@ public sealed class M5QualificationUnknownBillingGuardTests
             var key = QualificationKey(directory);
             var profile = store.Get(key, CancellationToken.None);
             Assert.NotNull(profile);
-            Assert.Equal(ModelQualificationState.Qualified, profile!.State);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified, profile!.State);
             Assert.Equal(1L, profile.ProfileRevision);
             Assert.Contains(store.Traits(key, profile.ProfileRevision, CancellationToken.None),
                 trait => trait.Trait == "InstructionFollowing" && trait.Value == 1d
@@ -149,7 +150,8 @@ public sealed class M5QualificationUnknownBillingGuardTests
             }
 
             Assert.Equal(1, provider.Calls);
-            Assert.Equal(ModelQualificationState.Qualified.ToString(), result.NewState);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified.ToString(), result.NewState);
+            Assert.False(result.SuiteComplete);
             var outcome = Assert.Single(result.Probes);
             Assert.Equal(ProbeStatus.Passed.ToString(), outcome.Status);
             Assert.Equal(1d, outcome.Score);
@@ -160,7 +162,7 @@ public sealed class M5QualificationUnknownBillingGuardTests
             var key = QualificationKey(directory);
             var profile = store.Get(key, CancellationToken.None);
             Assert.NotNull(profile);
-            Assert.Equal(ModelQualificationState.Qualified, profile!.State);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified, profile!.State);
             Assert.Contains(store.Traits(key, profile.ProfileRevision, CancellationToken.None),
                 trait => trait.Trait == "InstructionFollowing" && trait.Value == 1d
                     && trait.Samples == 1 && trait.Source == "empirical");

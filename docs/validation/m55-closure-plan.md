@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 19:54 UTC / 13:54 America/Mexico_City.
+Actualizado 2026-10-06 20:05 UTC / 14:05 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -37,6 +37,18 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5 cobertura Quick/namespace: Qualified requiere hash del conjunto canónico completo
+  + todos Passed; subsets/modificaciones quedan Provisional, SuiteComplete explícito.
+  Snapshot de probes estable cruza awaits; rechaza empty/IDs duplicados/suite inválida
+  antes de llamadas. Writer durable admite solo User user.db; legacy otrasDB sigue.
+  Rutas SQL construidas sin interpolación de opciones, conexión no pooled.
+  RED cobertura4FAIL/namespace1FAIL/snapshot2FAIL/path1FAIL; focal final239PASS5.085s,
+  arquitectura56PASS0.855s/build0/0. Full2097=2093PASS0FAIL4SKIPsymlink113.597s,
+  exit0. Luna6 controles+audit/root7+fix.
+  Cinco fixtures de un probe corrigen estado inexacto, añaden gatefalse y preservan
+  costes/usage/calls/traits. DDL fixture comprueba schema real en vez de rowcount sticky.
+  M5/M5.5 no cerrados: siguiente RED/fix API registryOverride sin ProviderDescriptor
+  y sin provider inyectado; configuración normal valida existencia de provider.
 - M5 evidencia durable implementada: capability aditiva, schema User y marcador
   failclosed, writer con lease CAS Verify→txcommit perfil/traits/ref, metadata completa,
   historia por revisión y alias Stale/route con SourceRunRevision. Host publica JSON

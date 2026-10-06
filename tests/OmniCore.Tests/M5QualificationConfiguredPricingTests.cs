@@ -98,7 +98,8 @@ public sealed class M5QualificationConfiguredPricingTests
             }
 
             Assert.Equal(1, provider.Calls);
-            Assert.Equal(ModelQualificationState.Qualified.ToString(), result.NewState);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified.ToString(), result.NewState);
+            Assert.False(result.SuiteComplete);
             var outcome = Assert.Single(result.Probes);
             Assert.Equal(ProbeStatus.Passed.ToString(), outcome.Status);
             Assert.Equal(0.000066m, outcome.CostUsd);
@@ -108,7 +109,7 @@ public sealed class M5QualificationConfiguredPricingTests
             using var store = OmniHost.CreateModelQualificationStore(directory);
             var persisted = store.Get(identity.Key, CancellationToken.None);
             Assert.NotNull(persisted);
-            Assert.Equal(ModelQualificationState.Qualified, persisted!.State);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified, persisted!.State);
             Assert.Equal(1L, persisted.ProfileRevision);
             Assert.Single(store.List(CancellationToken.None));
         }
@@ -136,7 +137,8 @@ public sealed class M5QualificationConfiguredPricingTests
             }
 
             Assert.Equal(1, provider.Calls);
-            Assert.Equal(ModelQualificationState.Qualified.ToString(), result.NewState);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified.ToString(), result.NewState);
+            Assert.False(result.SuiteComplete);
             var outcome = Assert.Single(result.Probes);
             Assert.Equal(ProbeStatus.Passed.ToString(), outcome.Status);
             Assert.Null(outcome.CostUsd);
@@ -146,7 +148,7 @@ public sealed class M5QualificationConfiguredPricingTests
             using var store = OmniHost.CreateModelQualificationStore(directory);
             var persisted = store.Get(identity.Key, CancellationToken.None);
             Assert.NotNull(persisted);
-            Assert.Equal(ModelQualificationState.Qualified, persisted!.State);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified, persisted!.State);
             Assert.Equal(1L, persisted.ProfileRevision);
             Assert.Single(store.List(CancellationToken.None));
         }

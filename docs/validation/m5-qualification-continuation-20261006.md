@@ -420,3 +420,48 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll
 dotnet build tests/OmniCore.ArchitectureTests/OmniCore.ArchitectureTests.csproj --no-restore
 dotnet tests/OmniCore.ArchitectureTests/bin/Debug/net10.0/OmniCore.ArchitectureTests.dll
 ```
+
+## Cobertura Quick y namespace User — 2026-10-06
+
+Qualified exige todos los resultados Passed y el hash canónico del conjunto real
+igual al de Quick soportada. Un subset o una definición modificada puede guardar
+medidas, pero queda ProvisionallyClassified, no se consume como evidencia Qualified.
+La lista de probes se copia antes de validar, estimar o construir requests; esa misma
+copia se usa después del await para traits, resultados e artifact. La reordenación
+del conjunto completo mantiene el mismo hash y sigue cualificando. Suites no
+soportadas no pueden eludir la validación mediante un override; empty/IDs duplicados
+se rechazan antes de llamar al provider. JSON/outcome añaden SuiteComplete explícito,
+independiente de probeSetOverride (un override completo también puede ser válido).
+
+El nuevo writer durable solo admite el nombre exacto user.db, la base que marca GC
+User en el directorio CAS. Alternate.db se rechaza con InvalidOperationException
+antes de adquirir lease/mutar perfil o traits. Las operaciones legacy perfil/traits
+mantienen sus rutas anteriores. Cancelación se consulta primero. La conexión usa
+SqliteConnectionStringBuilder con ruta absoluta y Pooling=false: un punto y coma
+en una ruta legal no se interpreta como parámetros de conexión ni redirige la DB.
+
+RED reales conservados en workers-1558: quick-coverage-red-test.log6=2PASS4FAIL
+0.351s; evidence-namespace-red-test.log4=3PASS1FAIL0.274s;
+namespace-snapshot-red-test.log7=4PASS3FAIL0.294s (dos mutaciones async retirando
+temporalmente solo la copia; un path con punto y coma). Copia restaurada y ruta corregida.
+Luna aporta cuatro namespace y dos snapshot async; root seis gates de cobertura,
+path extra, producción y controles JSON/outcome. Un build intermedio falló por seis
+using Abstractions faltantes del fixture snapshot; namespace-path-red-build.log
+conservado y no se ejecutaron pruebas nuevas desde ese build.
+
+Cinco controles de coste previos declaraban Qualified para un único probe: se corrige
+la expectativa exacta a Provisional y se añade Assert.False(SuiteComplete), conservando
+sin cambios contadores de llamadas, precios, máscaras/usage, coste, cap y traits.
+Los controles de Quick oficial/reordenada mantienen Qualified y suiteComplete=true.
+Un contador DDL de DROP TRIGGER en un fixture Stale devolvió1 (último DML de la
+conexión), no prueba de schema: ahora se exige COUNT(*)=0 del trigger desaparecido,
+manteniendo íntegros los snapshots/rollback/idempotencia de reparación.
+Focal final239PASS0FAIL5.085s, build0/0; arquitectura56PASS0.855s.
+Full coverage-namespace-final-full.log:2097=2093PASS0FAIL4SKIPsymlink113.597s,
+exit0. Cifras solapadas/no sumables; fixtures no acreditan gasto ni autenticación.
+
+Siguiente brecha auditada Luna: configuración normal valida providers, pero el API
+registryOverride crea solo modelos; provider==null y Provider inyectado==null deja
+pasar el guard de billing y ConnectProvider usa OMNI_BASE_URL/loopback. Un provider
+ausente no acredita gratuidad. Se probará un rechazo tipado antes de conexión,
+conservando la inyección de providers de fixtures y Local explícito como controles.

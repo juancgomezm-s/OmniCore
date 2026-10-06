@@ -529,7 +529,11 @@ public sealed class M5QualificationStaleEvidenceTests
                 connection.Open();
                 using var command = connection.CreateCommand();
                 command.CommandText = "DROP TRIGGER fixture_abort_legacy_stale_repair";
-                Assert.Equal(0, command.ExecuteNonQuery());
+                command.ExecuteNonQuery();
+                // SQLite DDL can report the connection's last DML change count.
+                // Verify the actual schema postcondition instead of a stale row counter.
+                command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name='fixture_abort_legacy_stale_repair'";
+                Assert.Equal(0L, (long)command.ExecuteScalar()!);
             }
 
             using var reopened = NewStore(directory, () => time.AddHours(2));

@@ -59,6 +59,8 @@ public sealed partial class SqliteModelQualificationStore
         IReadOnlyList<ModelTraitRecord> traits, ArtifactRef artifact, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (!_isUserDatabase)
+            throw new InvalidOperationException("Durable qualification evidence requires the User user.db namespace scanned by GC.");
         ArgumentNullException.ThrowIfNull(artifact);
         if (artifact.Id.Value == Guid.Empty || string.IsNullOrWhiteSpace(artifact.MediaType)
             || !Enum.IsDefined(artifact.Kind) || !Enum.IsDefined(artifact.Sensitivity))

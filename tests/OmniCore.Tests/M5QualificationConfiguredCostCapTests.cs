@@ -194,7 +194,8 @@ public sealed class M5QualificationConfiguredCostCapTests
             }
 
             Assert.Equal(1, provider.Calls);
-            Assert.Equal(ModelQualificationState.Qualified.ToString(), result.NewState);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified.ToString(), result.NewState);
+            Assert.False(result.SuiteComplete);
             Assert.Equal(0.032768m, result.EstimatedCostUsd);
             Assert.Equal("max-declared-and-configured-descriptor-token-estimate", result.EstimatedCostSource);
             var outcome = Assert.Single(result.Probes);
@@ -209,7 +210,7 @@ public sealed class M5QualificationConfiguredCostCapTests
             var key = ModelQualificationHost.QualificationKeyFor(model, providerDescriptor);
             var profile = store.Get(key, CancellationToken.None);
             Assert.NotNull(profile);
-            Assert.Equal(ModelQualificationState.Qualified, profile!.State);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified, profile!.State);
             Assert.Equal(1L, profile.ProfileRevision);
         }
         finally
