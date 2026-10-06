@@ -56,7 +56,8 @@ public static class ModelRoutingHost
     }
 
     /// <summary>Candidatos del registro con su perfil efectivo y hechos declarados.</summary>
-    public static IReadOnlyList<RouteCandidate> Candidates(LoadedUserConfiguration loaded, Func<ModelDefinition, bool> hasWritePolicy)
+    public static IReadOnlyList<RouteCandidate> Candidates(LoadedUserConfiguration loaded, Func<ModelDefinition, bool> hasWritePolicy,
+        ProviderResilienceCatalog? circuits = null)
     {
         var resolver = new ModelProfileResolver();
         return loaded.Registry.Models().Select(model =>
@@ -64,18 +65,19 @@ public static class ModelRoutingHost
             var provider = loaded.Registry.Provider(model.ProviderId);
             var price = loaded.Pricing(model.Id)?.InputPricePerMillionUsd;
             return new RouteCandidate(model.Id, resolver.Resolve(model, provider, route: RouteFor(model, provider)),
-                provider is not null && OmniHost.IsPrivateHost(provider.BaseUrl), true, hasWritePolicy(model), price);
+                provider is not null && OmniHost.IsPrivateHost(provider.BaseUrl),
+                circuits?.Snapshot(model.ProviderId)?.CanAttempt ?? true, hasWritePolicy(model), price);
         }).ToArray();
     }
 
     /// <summary>Elige modelo para una tarea; null si no hay <c>routing:</c> configurado.</summary>
     public static RoutingDecision? Route(LoadedUserConfiguration loaded, RoutingTaskKind kind, bool requiresWrite,
-        long estimatedContextTokens, Func<ModelDefinition, bool> hasWritePolicy)
+        long estimatedContextTokens, Func<ModelDefinition, bool> hasWritePolicy, ProviderResilienceCatalog? circuits = null)
     {
         var policy = Policy(loaded);
         if (policy is null) return null;
         return ModelRouter.Select(new RoutingRequest(kind, requiresWrite, estimatedContextTokens, [], false),
-            Candidates(loaded, hasWritePolicy), policy);
+            Candidates(loaded, hasWritePolicy, circuits), policy);
     }
 
     /// <summary>
@@ -83,7 +85,7 @@ public static class ModelRoutingHost
     /// (spec §73). Null si no hay cadena, el modo es <c>deny</c> o ningún candidato sirve.
     /// </summary>
     public static RouteCandidate? NextEscalation(LoadedUserConfiguration loaded, string currentModelId, bool requiresWrite,
-        long neededContextTokens, Func<ModelDefinition, bool> hasWritePolicy)
+        long neededContextTokens, Func<ModelDefinition, bool> hasWritePolicy, ProviderResilienceCatalog? circuits = null)
     {
         var escalation = loaded.Models?.Routing?.Escalation;
         if (escalation?.Chain is not { Count: > 0 } chain || EscalationMode(loaded) == "deny") return null;
@@ -92,7 +94,7 @@ public static class ModelRoutingHost
         {
             [RoutingTaskKind.Reasoning] = chainIds,
         }, false);
-        var candidates = Candidates(loaded, hasWritePolicy);
+        var candidates = Candidates(loaded, hasWritePolicy, circuits);
         if (EscalationMode(loaded) == "auto")
         {
             // El coste pagado desconocido se excluye antes de la selección automática.

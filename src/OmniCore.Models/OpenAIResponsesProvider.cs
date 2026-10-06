@@ -74,7 +74,8 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         if (_options.Profile == ResponsesProfile.Codex && subscription is null)
             throw new ArgumentException("El perfil codex necesita una fuente de credenciales de suscripción.", nameof(subscription));
         _subscription = subscription;
-        _resilience = new ProviderResilience(_options.Resilience, descriptor.Id);
+        _resilience = _options.Resilience.CircuitCatalog?.Acquire(descriptor.Id, _options.Resilience)
+            ?? new ProviderResilience(_options.Resilience, descriptor.Id);
     }
 
     /// <summary>Informa tokens; costo y cuota no llegan en el stream.</summary>
@@ -86,20 +87,38 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        _resilience.EnterCircuit();
-        var body = BuildBody(request, _options);
-        var credential = _subscription is null ? null : await _subscription.GetAsync(cancellationToken).ConfigureAwait(false);
+        var halfOpenProbe = _resilience.EnterCircuit();
+        string body;
+        SubscriptionCredential? credential;
+        try
+        {
+            body = BuildBody(request, _options);
+            credential = _subscription is null ? null : await _subscription.GetAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _resilience.AbandonProbe(halfOpenProbe);
+            throw;
+        }
         HttpResponseMessage response;
         HttpClient http;
         try
         {
-            (response, http) = await SendAsync(body, credential, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                (response, http) = await SendAsync(body, credential, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ModelProviderException ex) when (ex.StatusCode == 401 && _subscription is not null)
+            {
+                // Un único refresh; si el 401 persiste el error se propaga como AuthenticationFailed.
+                credential = await _subscription.RefreshAsync(cancellationToken).ConfigureAwait(false);
+                (response, http) = await SendAsync(body, credential, cancellationToken).ConfigureAwait(false);
+            }
         }
-        catch (ModelProviderException ex) when (ex.StatusCode == 401 && _subscription is not null)
+        catch
         {
-            // Un único refresh; si el 401 persiste el error se propaga como AuthenticationFailed.
-            credential = await _subscription.RefreshAsync(cancellationToken).ConfigureAwait(false);
-            (response, http) = await SendAsync(body, credential, cancellationToken).ConfigureAwait(false);
+            _resilience.AbandonProbe(halfOpenProbe);
+            throw;
         }
         LastRateLimits = RateLimitQuotaParser.Parse(response.Headers, DateTimeOffset.UtcNow);
         var completed = false;
@@ -117,7 +136,11 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         {
             response.Dispose();
             http.Dispose();
-            if (!completed && !cancellationToken.IsCancellationRequested) _resilience.MarkFailure();
+            if (!completed)
+            {
+                if (cancellationToken.IsCancellationRequested) _resilience.AbandonProbe(halfOpenProbe);
+                else _resilience.MarkFailure();
+            }
         }
     }
 

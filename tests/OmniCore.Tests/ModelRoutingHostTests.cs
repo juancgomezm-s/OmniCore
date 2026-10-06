@@ -5,10 +5,63 @@ using OmniCore.Engine;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
+using OmniCore.Abstractions;
+using System.Net;
 
 /// <summary>Router por alias desde models.yaml y escalación explícita (M5, spec §21/§73).</summary>
 public sealed class ModelRoutingHostTests
 {
+    [Fact]
+    public async System.Threading.Tasks.Task Actual_open_provider_circuit_changes_candidates_routing_and_escalation_without_health_requests()
+    {
+        var loaded = Load("routing:\n  exploration: [worker, frontier]\n  escalation: { mode: ask, chain: [worker] }\n");
+        var circuits = new ProviderResilienceCatalog();
+        var now = DateTimeOffset.UnixEpoch;
+        var handler = new UnavailableHandler();
+        var provider = new OpenAiChatCompatibleProvider(loaded.Registry.Provider("local")!, new EmptySecrets(),
+            () => new HttpClient(handler, disposeHandler: false), new OpenAiProviderOptions
+            {
+                CircuitCatalog = circuits, CircuitFailureThreshold = 1, MaxRetries = 0,
+                CircuitCooldown = TimeSpan.FromSeconds(30), UtcNow = () => now,
+            });
+        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!.Chosen.Alias);
+        Assert.Null(circuits.Snapshot("cloud")); // Unknown is not an invented failed health check.
+        var request = new ModelRequest(new ModelSelection(new ModelIdValue("qwen-27b"), 4096, ToolMode.Direct, null),
+            [new ModelMessage(MessageRole.User, [new TextBlock("hello")])], null, [], ToolChoice.Auto(), null, null, null, null);
+        await Assert.ThrowsAsync<ModelProviderException>(async () =>
+        {
+            await foreach (var unused in provider.StreamAsync(request, TestContext.Current.CancellationToken)) { }
+        });
+        Assert.Equal(1, handler.Calls);
+        var decision = ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!;
+        Assert.Equal("claude-x", decision.Chosen.Alias);
+        Assert.Contains(decision.Rejected, rejected => rejected.Alias == "qwen-27b" && rejected.Reason == RouteRejection.Unavailable);
+        Assert.False(ModelRoutingHost.Candidates(loaded, _ => true, circuits).Single(candidate => candidate.Alias == "qwen-27b").Available);
+        Assert.Null(ModelRoutingHost.NextEscalation(loaded, "claude-x", false, 0, _ => true, circuits));
+        Assert.Equal(1, handler.Calls); // Routing and snapshots are reads, not authenticated probes.
+        now += TimeSpan.FromSeconds(30);
+        Assert.True(circuits.Snapshot("local")!.CanAttempt);
+        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!.Chosen.Alias);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    private sealed class UnavailableHandler : HttpMessageHandler
+    {
+        public int Calls { get; private set; }
+        protected override System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                { Content = new StringContent("fixture unavailable") });
+        }
+    }
+
+    private sealed class EmptySecrets : ISecretProvider
+    {
+        public Secret GetSecret(string secretRef, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Fixture expects no credential lookup.");
+    }
+
     private const string Providers = """
 providers:
   local: { baseUrl: http://127.0.0.1:8080, auth: none }

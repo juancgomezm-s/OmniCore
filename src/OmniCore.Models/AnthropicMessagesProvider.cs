@@ -51,7 +51,8 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
         _options = options ?? new AnthropicProviderOptions();
         if (_options.DefaultMaxOutputTokens < 1 || _options.OutputTokensAboveReasoningBudget < 1)
             throw new ArgumentOutOfRangeException(nameof(options), "Los límites de salida deben ser mayores que cero.");
-        _resilience = new ProviderResilience(_options.Resilience, descriptor.Id);
+        _resilience = _options.Resilience.CircuitCatalog?.Acquire(descriptor.Id, _options.Resilience)
+            ?? new ProviderResilience(_options.Resilience, descriptor.Id);
     }
 
     /// <summary>La API informa tokens (incluidos los de caché); no informa costo ni cuota.</summary>
@@ -63,11 +64,21 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        _resilience.EnterCircuit();
-        var body = BuildBody(request, _options);
-        var (response, http) = await _resilience.SendWithRetryAsync(_httpFactory,
-            () => CreateHttpRequest(body, cancellationToken), ProviderResilience.ErrorFromBody,
-            static status => status is 408 or 429 or 529 || status >= 500, cancellationToken).ConfigureAwait(false);
+        var halfOpenProbe = _resilience.EnterCircuit();
+        HttpResponseMessage response;
+        HttpClient http;
+        try
+        {
+            var body = BuildBody(request, _options);
+            (response, http) = await _resilience.SendWithRetryAsync(_httpFactory,
+                () => CreateHttpRequest(body, cancellationToken), ProviderResilience.ErrorFromBody,
+                static status => status is 408 or 429 or 529 || status >= 500, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _resilience.AbandonProbe(halfOpenProbe);
+            throw;
+        }
         LastRateLimits = RateLimitQuotaParser.Parse(response.Headers, DateTimeOffset.UtcNow);
         var completed = false;
         try
@@ -84,7 +95,11 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
         {
             response.Dispose();
             http.Dispose();
-            if (!completed && !cancellationToken.IsCancellationRequested) _resilience.MarkFailure();
+            if (!completed)
+            {
+                if (cancellationToken.IsCancellationRequested) _resilience.AbandonProbe(halfOpenProbe);
+                else _resilience.MarkFailure();
+            }
         }
     }
 

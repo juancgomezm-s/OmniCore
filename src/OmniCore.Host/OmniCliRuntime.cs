@@ -16,6 +16,7 @@ using System.Text.Json;
 public sealed class OmniCliRuntime
 {
     private readonly string _workspaceRoot;
+    private readonly ProviderResilienceCatalog _providerCircuits = new();
     private OmniServer? _server;
     private string? _escalatedModel;
     private (IModelProvider Provider, ModelPricing? Pricing, string BaseUrl, IArtifactStore Artifacts)? _usageContext;
@@ -337,7 +338,7 @@ public sealed class OmniCliRuntime
             try
             {
                 var decision = ModelRoutingHost.Route(loaded, act ? RoutingTaskKind.Implementation : RoutingTaskKind.Exploration,
-                    act, 0, candidate => HasWritePolicy(candidate, loaded, cancellationToken));
+                    act, 0, candidate => HasWritePolicy(candidate, loaded, cancellationToken), _providerCircuits);
                 if (decision is not null)
                 {
                     modelDefinition = registry.Model(decision.Chosen.Alias);
@@ -512,10 +513,10 @@ public sealed class OmniCliRuntime
                 server.AcquireCodecs(), sessionId)!;
             var sessionCap = Math.Min(loaded.SessionCapUsd, routingPolicy.SessionSpendLimit ?? loaded.SessionCapUsd);
             IModelProvider provider = providerDescription is null
-                ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")
+                ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "", circuits: _providerCircuits)
                 : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "",
                     string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
-                        ? OmniHost.CreateChatGptAuth(paths) : null);
+                        ? OmniHost.CreateChatGptAuth(paths) : null, _providerCircuits);
             var effectiveProfile = new ModelProfileResolver().Resolve(
                 runtimeModel,
                 providerDescription,
@@ -1203,7 +1204,7 @@ public sealed class OmniCliRuntime
     {
         if (_escalatedModel is not null || Environment.GetEnvironmentVariable("OMNI_MODEL") is not null) return null;
         var next = ModelRoutingHost.NextEscalation(loaded, currentModel, act, currentContext + 1,
-            candidate => HasWritePolicy(candidate, loaded, cancellationToken));
+            candidate => HasWritePolicy(candidate, loaded, cancellationToken), _providerCircuits);
         var server = Server();
         if (next is null || server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return null;
         var originatingTurn = server.AcquireStore().ReadFrom(session, 1)

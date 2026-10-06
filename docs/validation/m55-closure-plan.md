@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 07:49 UTC / 01:49 America/Mexico_City.
+Actualizado 2026-10-06 08:05 UTC / 02:05 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -33,6 +33,9 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   ask con cliente publica InteractionRequest real. Reanudación durable del destino
   tras aprobación, sin nuevo input/Run ni consumo prematuro de FollowUps:
   [contrato y pruebas](m55-routing-resume.md).
+- Breaker existente compartido por provider en el runtime; router inicial y escalación
+  consultan snapshots sin health requests. Pruebas HTTP loopback de las tres familias;
+  [contrato, evidencia y límites](m55-provider-circuit-routing.md).
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -55,7 +58,8 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
-3. Circuit breaker/disponibilidad real y adaptación del router de Alias a RouteId.
+3. Disponibilidad desde breaker compartido implementada; completar adaptación del router
+   de Alias a RouteId, manteniendo ModelId lógico separado y mismo endpoint efectivo.
 4. Steering explícito en fronteras de ModelStep y outcome de descarte.
 5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
@@ -73,8 +77,12 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa con resume de rutas/input único: 1682 casos,
-  1678 PASS, 0 FAIL, 4 SKIP symlink (`routing-resume-single-input-full-suite.log`, 140.553 s).
+- Última suite completa con breaker/routing: 1690 casos, 1686 PASS, 0 FAIL,
+  4 SKIP symlink (`provider-circuit-full-repeat.log`, 142.008 s). Primer intento:
+  1685 PASS, 1 FAIL login TextView Lazy, 4 SKIP (`provider-circuit-full-suite.log`);
+  aislado 1 PASS. Fallo intermitente abierto, sin afirmar causa raíz resuelta.
+- Focal breaker/router/fábrica real Host/CLI: 66 PASS, 0 FAIL, 0 SKIP;
+  `provider-circuit-focal.log`. HTTP local controlado, sin consumo autenticado.
 - Lifecycle BudgetExceeded/cliente/commands/proyecciones: 80 PASS,
   0 FAIL, 0 SKIP (`budget-lifecycle-tests-fixed.log`). Billing/YAML/factory: 32 PASS.
 - Focal final CAS/rutas: 121 PASS.
@@ -97,7 +105,7 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
 
-Próxima implementación: circuito breaker/disponibilidad real y RouteCandidate.RouteId.
+Próxima implementación: RouteCandidate.RouteId y separación ModelId/identidad física.
 Reanudación ask verificada mediante solicitud+consent User+revisión exacta Session/Run,
 Turn/Lane de origen e identidad física vigente; no usa un mensaje nuevo como sustituto.
 Focal routing/resume/SQLite/protocol/CLI/FollowUp: 61 PASS, 0 FAIL, 0 SKIP;

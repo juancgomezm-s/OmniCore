@@ -370,12 +370,12 @@ public sealed class OmniHost
     /// </list>
     /// </summary>
     public static OpenAiChatCompatibleProvider ConnectLocalChatCompletions(string baseUrl, string modelId,
-        string secretRef, string apiKey, string? trustedCertificatePath = null)
+        string secretRef, string apiKey, string? trustedCertificatePath = null, ProviderResilienceCatalog? circuits = null)
     {
         var descriptor = new ProviderDescriptor("local", ProviderFamily.OpenAiChatCompatible, baseUrl,
             apiKey.Length > 0 ? AuthConfig.ApiKey(secretRef) : AuthConfig.None(), false, false, false)
         { TrustedCertificatePath = trustedCertificatePath };
-        return (OpenAiChatCompatibleProvider)ConnectProvider(descriptor, baseUrl, secretRef, apiKey);
+        return (OpenAiChatCompatibleProvider)ConnectProvider(descriptor, baseUrl, secretRef, apiKey, circuits: circuits);
     }
 
     /// <summary>Familias con adapter nativo implementado (ADR-0005 §1); el resto falla tipado.</summary>
@@ -384,14 +384,15 @@ public sealed class OmniHost
 
     /// <summary>Conecta la implementación que corresponde a la familia declarada (ADR-0005, M5).</summary>
     public static IModelProvider ConnectProvider(ProviderDescriptor descriptor, string baseUrl,
-        string secretRef, string apiKey, ISubscriptionCredentialSource? subscription = null)
+        string secretRef, string apiKey, ISubscriptionCredentialSource? subscription = null,
+        ProviderResilienceCatalog? circuits = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         return descriptor.Family switch
         {
-            ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey),
-            ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey),
-            ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey, subscription),
+            ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey, circuits),
+            ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey, circuits),
+            ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey, subscription, circuits),
             _ => throw new ProviderFamilyNotSupportedException(descriptor.Family),
         };
     }
@@ -401,7 +402,8 @@ public sealed class OmniHost
     /// sesión OAuth de ChatGptSubscriptionAuthProvider y se conecta aparte (ADR-0011 §3.4).
     /// </summary>
     private static OpenAIResponsesProvider ConnectOpenAIResponses(ProviderDescriptor descriptor,
-        string baseUrl, string secretRef, string apiKey, ISubscriptionCredentialSource? subscription)
+        string baseUrl, string secretRef, string apiKey, ISubscriptionCredentialSource? subscription,
+        ProviderResilienceCatalog? circuits)
     {
         var codex = string.Equals(descriptor.Profile, "codex", StringComparison.Ordinal);
         if (codex && subscription is null)
@@ -416,12 +418,13 @@ public sealed class OmniHost
         };
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
         return new OpenAIResponsesProvider(configured, secrets, CreateClient,
-            new OpenAIResponsesOptions { Profile = codex ? ResponsesProfile.Codex : ResponsesProfile.Api },
+            new OpenAIResponsesOptions { Profile = codex ? ResponsesProfile.Codex : ResponsesProfile.Api,
+                Resilience = new OpenAiProviderOptions { CircuitCatalog = circuits } },
             codex ? subscription : null);
     }
 
     private static AnthropicMessagesProvider ConnectAnthropicMessages(ProviderDescriptor descriptor,
-        string baseUrl, string secretRef, string apiKey)
+        string baseUrl, string secretRef, string apiKey, ProviderResilienceCatalog? circuits)
     {
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
@@ -433,11 +436,12 @@ public sealed class OmniHost
             Timeout = System.TimeSpan.FromSeconds(600),
         };
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
-        return new AnthropicMessagesProvider(configured, secrets, CreateClient);
+        return new AnthropicMessagesProvider(configured, secrets, CreateClient,
+            new AnthropicProviderOptions { Resilience = new OpenAiProviderOptions { CircuitCatalog = circuits } });
     }
 
     private static OpenAiChatCompatibleProvider ConnectOpenAiChatCompatible(ProviderDescriptor descriptor,
-        string baseUrl, string secretRef, string apiKey)
+        string baseUrl, string secretRef, string apiKey, ProviderResilienceCatalog? circuits)
     {
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
@@ -450,7 +454,8 @@ public sealed class OmniHost
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
         // StreamAsync owns and disposes each HttpClient returned by the factory; a shared instance
         // works for the first completion only, then every follow-up Turn fails as disposed.
-        return new OpenAiChatCompatibleProvider(configured, secrets, CreateClient);
+        return new OpenAiChatCompatibleProvider(configured, secrets, CreateClient,
+            new OpenAiProviderOptions { CircuitCatalog = circuits });
     }
 
     /// <summary>Handler HTTP con la política TLS de <see cref="ConnectLocalChatCompletions"/>.</summary>
