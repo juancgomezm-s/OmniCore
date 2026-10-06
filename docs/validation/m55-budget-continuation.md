@@ -1,6 +1,6 @@
 # Presupuesto de usuario y consentimiento durable de ampliación
 
-Actualizado 2026-10-06 11:46 UTC / 05:46 America/Mexico_City.
+Actualizado 2026-10-06 14:08 UTC / 08:08 America/Mexico_City.
 
 Implementación parcial de ADR-0037 §7 / ADR-0039, no cierre de la frontera de gasto.
 
@@ -26,6 +26,52 @@ La guardia de tokens/turns/tools se conserva; la comprobación monetaria de Host
 consumo durable y actual, en lugar de un segundo guard que omita gasto anterior.
 
 ## Evidencia
+
+### Compactación: invocación separada del modelo principal
+
+ExplorerTurn incluye `meta_model.invocation_started/completed/failed` en el gasto
+histórico de Run y sesión, y del día UTC entre sesiones del mismo workspace cuando
+se aplican los topes diarios. La identidad del cargo es `(SessionId, InvocationId)`:
+un Completed seguido de Failed con uso/coste/campos idénticos no duplica el consumo.
+El día corresponde al primer resultado durable, no al momento de consultar el snapshot.
+Una segunda evidencia contradictoria, un Started sin resultado, uso negativo,
+coste desconocido, campos Input/Output ausentes o referencias CAS inválidas impiden
+autorizar una nueva llamada bajo un tope; no se convierten en cero.
+
+El guard se ejecuta antes de materializar el contexto si hay topes activos y un
+meta-modelo configurado, porque la materialización puede invocarlo. Sin meta-modelo
+se conserva el cierre durable anterior del Turn rechazado por presupuesto.
+Después de compactar, el nuevo
+cargo durable se incorpora antes del modelo principal y sus herramientas. Los
+cargos meta se releen completos en cada frontera, separados del historial/guard del
+modelo principal. No se utiliza un delta tomado después de la lectura histórica,
+que podría omitir cargos intermedios. No duplica pasos actuales ni el resumen
+final `ModelCompleted`. La compactación
+que recibe uso y luego falla conserva `MetaModelInvocationFailed.Usage/CostUsd/ReportedUsageFields`;
+el fallback determinista no elimina ese cargo.
+
+RED offline reproducido: `meta-spend-red-test.log`, 5 casos = 1 PASS/4 FAIL,
+0 SKIP, 0.796s. Los cuatro casos excedían el límite y continuaban hasta EndTurn.
+Build corregido inicial: 0 warnings/errores. `meta-spend-first-focal.log`:
+106 PASS/0 FAIL/0 SKIP, 43.833s; `meta-spend-final-focal.log`: 146 PASS,
+0 FAIL/0 SKIP, 46.194s (antes del refresco completo por frontera).
+Primera suite `meta-spend-full.log`: 1981 casos, 2 FAIL/4 SKIP, 268.425s:
+el test TUI de color heredaba NO_COLOR=1 y el guard temprano alteraba el cierre
+sin meta-modelo. Se corrigió el aislamiento del test (ambos modos explícitos) y
+se conservó la assertion/lifecycle anterior. `meta-spend-tui-color-focal.log`:
+2 PASS/0 FAIL/0 SKIP, 4.110s. Verificación final corregida:
+`meta-spend-lifecycle-final-focal.log`: 156 PASS/0 FAIL/0 SKIP, 46.565s;
+`meta-spend-final-full.log`: 1982 casos = 1978 PASS/0 FAIL/4 SKIP por
+permisos symlink, 274.147s, exit0 confirmado al checkpoint de pausa.
+Arquitectura: 56 PASS/0 FAIL/0 SKIP, 0.657s; build 0 warnings/errores.
+Los focales se solapan y no se suman. El test TUI se guardó por separado en 8a010f0.
+Proveedores y precios scripted, artifacts CAS reales; no
+consulta autenticada ni consumo facturado.
+
+Este bloque no reserva saldo antes de la invocación ni fija su coste máximo:
+una compactación individual aún puede superar el saldo restante. Tampoco agrega
+workspaces User-wide ni completa la contabilidad de retries internos del adapter.
+Son pendientes de la frontera completa, no cierres implícitos por estas pruebas.
 
 ### Uso desconocido dentro del mismo Ask
 

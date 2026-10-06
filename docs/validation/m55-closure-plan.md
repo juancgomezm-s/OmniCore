@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 13:51 UTC / 07:51 America/Mexico_City.
+Actualizado 2026-10-06 14:11 UTC / 08:11 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -112,6 +112,15 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
    Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
+   Corregida omisión de costes de compactación: las invocaciones meta se contabilizan
+   por identidad propia, sin sumar otra vez el summary del modelo principal.
+   Guard previo a materializar bajo tope y posterior al meta antes primary/tools.
+   RED5=1PASS4FAIL; focal final156PASS y full1982=1978PASS/0FAIL/4SKIPsymlink,
+   274.147s, exit0. Arquitectura56PASS. Primera full con dos fallos conservada;
+   TUI NO_COLOR y cierre sin meta corregidos sin debilitar assertions.
+   Dedup Completed+Failed, incompleto nozero y suma meta+primary tienen controles
+   offline dedicados; no equivalen a reserva ni a consumo autenticado.
+   [Contrato y evidencia](m55-budget-continuation.md#compactación-invocación-separada-del-modelo-principal).
    Corregido el bypass intraAsk: un nuevo ModelStepCompleted con CostUsd null por
    falta de uso Input/Output detiene antes de tools/nueva llamada bajo tope monetario,
    conserva completion/flags, no asume coste cero ni ofrece allow_plus. Cero medido
