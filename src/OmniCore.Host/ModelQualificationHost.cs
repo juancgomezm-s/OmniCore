@@ -228,7 +228,7 @@ public sealed partial class ModelQualificationHost : IDisposable
         var provider = _registry.Provider(model.ProviderId);
         var probes = Suite(suite);
         var configured = ConfiguredEstimate(model, Selection(model, provider),
-            _configuration?.Pricing(model.Id), probes.Count);
+            _configuration?.Pricing(model.Id), probes.Count, GenerationAttempts(provider, null));
         if (configured is { } value)
             return new QualificationCostEstimate(Math.Max(value, DeclaredEstimate(probes)),
                 "max-declared-and-configured-descriptor-token-estimate");
@@ -285,7 +285,8 @@ public sealed partial class ModelQualificationHost : IDisposable
         var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
         var pricing = _configuration?.Pricing(model.Id);
         var estimateSource = "declared-probe-maxima";
-        var configuredEstimate = ConfiguredEstimate(model, selection, pricing, probes.Count);
+        var configuredEstimate = ConfiguredEstimate(model, selection, pricing, probes.Count,
+            GenerationAttempts(provider, options.Provider));
         if (configuredEstimate is { } configured)
         {
             estimatedCost = Math.Max(estimatedCost, configured);
@@ -391,17 +392,30 @@ public sealed partial class ModelQualificationHost : IDisposable
             ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id,
             maxOutputTokens: ModelRoutingHost.OutputTokenLimit(model, provider));
 
-    // Conservative descriptor-based estimate for one invocation per probe. The model context
-    // is configured, not an authenticated token measurement. Retries/reservation are separate gates.
+    // Descriptor-based token upper estimate across known adapter generation sends. Neither
+    // this bound nor the configured context is an authenticated charge/token measurement.
     private static decimal? ConfiguredEstimate(ModelDefinition model, ModelSelection selection,
-        ModelPricing? pricing, int probeCount)
+        ModelPricing? pricing, int probeCount, long maximumAttempts)
     {
         if (pricing?.IsComplete != true || model.ContextWindow <= 0
-            || selection.MaxOutputTokens is not { } output) return null;
+            || selection.MaxOutputTokens is not { } output || maximumAttempts < 1) return null;
         var perProbe = pricing.CostUsd(new TokenUsage(model.ContextWindow, output, 0, 0, 0));
         if (perProbe is null || perProbe < 0) return null;
-        try { return checked(perProbe.Value * probeCount); }
+        try { return checked(perProbe.Value * probeCount * maximumAttempts); }
         catch (OverflowException) { return null; }
+    }
+
+    private static long GenerationAttempts(ProviderDescriptor? descriptor, IModelProvider? injected)
+    {
+        if (injected is IModelRequestAttemptBound bounded)
+            return bounded.MaximumGenerationRequestAttempts;
+        // Legacy injection has no transport contract. It remains explicitly caller-owned,
+        // not a proof of billing safety. Normal Host factories use default resilience options.
+        if (injected is not null) return 1;
+        var attempts = (long)new OpenAiProviderOptions().MaxRetries + 1;
+        return descriptor?.Family == ProviderFamily.OpenAIResponses
+            && string.Equals(descriptor.Profile, "codex", StringComparison.Ordinal)
+                ? checked(attempts * 2) : attempts;
     }
 
     /// <summary>

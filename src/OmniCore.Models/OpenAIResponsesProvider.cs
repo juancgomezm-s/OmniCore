@@ -50,7 +50,7 @@ public sealed class OpenAIResponsesOptions
 /// (<c>reasoning.encrypted_content</c>) se conserva intacto en <see cref="ProviderState"/> y solo se
 /// reenvía al MISMO modelo (ProviderOpaque, replay SameModel).
 /// </summary>
-public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
+public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits, IModelRequestAttemptBound
 {
     private const string OpaqueKindPrefix = "openai.responses.ProviderOpaque/";
     private readonly ProviderDescriptor _descriptor;
@@ -80,6 +80,8 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
 
     /// <summary>Informa tokens; costo y cuota no llegan en el stream.</summary>
     public ProviderCapabilities Capabilities { get; } = new(true, false, true);
+    public long MaximumGenerationRequestAttempts => checked(_resilience.MaximumGenerationRequestAttempts
+        * (_options.Profile == ResponsesProfile.Codex ? 2L : 1L));
 
     /// <summary>Ventanas de rate limit de la última respuesta (cuota informada, nunca estimada).</summary>
     public IReadOnlyList<RateLimitWindow> LastRateLimits { get; private set; } = [];

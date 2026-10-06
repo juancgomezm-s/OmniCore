@@ -38,7 +38,8 @@ public sealed class QualificationCostPreviewTests
         WithHost("MeteredCurrency", priced: true, host =>
         {
             var preview = host.PreviewSuiteCost("preview-model", "quick");
-            Assert.Equal(0.327680m, preview.Usd);
+            // Ten probes, three configured generation sends each (initial + two retries).
+            Assert.Equal(0.983040m, preview.Usd);
             Assert.Equal("max-declared-and-configured-descriptor-token-estimate", preview.Source);
             Assert.Throws<ModelQualificationUnsupportedSuiteException>(() =>
                 host.PreviewSuiteCost("preview-model", "full"));

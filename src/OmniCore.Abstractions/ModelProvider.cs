@@ -13,6 +13,14 @@ public interface IModelProvider
     IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken cancellationToken);
 }
 
+/// <summary>Optional finite bound on generation request sends for one StreamAsync invocation.
+/// Includes adapter retries and authentication-triggered generation resends, not credential
+/// refresh requests or transport redirects. This is not billing evidence or an account limit.</summary>
+public interface IModelRequestAttemptBound
+{
+    long MaximumGenerationRequestAttempts { get; }
+}
+
 /// <summary>Helpers sobre el contrato: agregan el stream sin formar parte de cada adapter (ADR-0005 §2).</summary>
 public static class ModelProviderExtensions
 {

@@ -28,7 +28,7 @@ public sealed class AnthropicProviderOptions
 /// se conservan intactos en <see cref="ProviderState"/> y solo se reenvían al MISMO modelo, como
 /// exige la API para continuar un turno con tools (ProviderOpaque, replay SameModel).
 /// </summary>
-public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimits
+public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimits, IModelRequestAttemptBound
 {
     private const string OpaqueKindPrefix = "anthropic.messages.ProviderOpaque/";
     private readonly ProviderDescriptor _descriptor;
@@ -57,6 +57,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
 
     /// <summary>La API informa tokens (incluidos los de caché); no informa costo ni cuota.</summary>
     public ProviderCapabilities Capabilities { get; } = new(true, false, true);
+    public long MaximumGenerationRequestAttempts => _resilience.MaximumGenerationRequestAttempts;
 
     /// <summary>Ventanas de rate limit de la última respuesta (cuota informada, nunca estimada).</summary>
     public IReadOnlyList<RateLimitWindow> LastRateLimits { get; private set; } = [];

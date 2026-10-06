@@ -492,3 +492,44 @@ Qualified expresa suite Quick completa, no nueve traits demostrados. Confianza
 persistida .7/.3 deriva del conteo de probes, no estadística ni calibración real.
 Full/calibración son M10+; sampling no enviado permanece declarado null/false.
 Pendientes M5: retries/cota monetaria y evidencia conectada; no cierre por suite verde.
+
+## Intentos conocidos de generación — 2026-10-06
+
+Contrato aditivo `IModelRequestAttemptBound.MaximumGenerationRequestAttempts`:
+cuenta envíos de generación iniciados por el adaptador en una invocación StreamAsync,
+incluidos retries y reenvíos tras renovación de autenticación. No cuenta consultas
+de credenciales ni redirects internos del transporte; no es facturación ni cuota.
+Los tres adaptadores leen la resiliencia realmente adquirida, no opciones nuevas
+que el CircuitCatalog haya descartado. Chat/Anthropic/Responses API: MaxRetries+1
+en long; Codex: dos pasadas posibles tras 401, multiplicadas por dos. Defaults3/6;
+MaxRetries0 produce1/2; int.MaxValue no desborda la suma ni el producto.
+
+La estimación configurada del Host y preview multiplica precio de contexto/salida
+declarados por probes por intentos conocidos, usando checked. La ruta normal usa
+las opciones por defecto de sus factories; un injected adapter con capacidad usa
+su cota efectiva. Fixture metered de una pasada estima .032768USD; tres intentos,
+.098304USD. Cap.05 rechaza antes de handler/perfil; cap.10 permite handler503/503/
+éxito con tres sends y solo usage17input/4output y coste calculado.000066 del éxito.
+No se atribuyen cero ni cargos inventados a los dos errores previos.
+
+Limitación pendiente explícita: inyección legacy sin capacidad conserva el camino
+caller-owned de una pasada; no acredita un límite ni binding de precio/destino.
+TelemetryObservingModelProvider todavía no propaga esta capacidad. Cerrar esa
+ausencia requiere nullable/unknown y guard failclosed más fixtures de una pasada
+con capacidad explícita; está en cola, no se declara M5 cerrado.
+
+Luna HIGH aportó M5QualificationRetryExposureTests (2) y
+ModelProviderAttemptBoundContractTests (4), incluida secuencia real de adaptador
+con handler en memoria:503/503/401→refresh→503/503/éxito, seis sends separados de
+Get/Refresh de credencial scripteada. Root reprodujo RED2FAIL0.345s y producción;
+actualizó preview10probes de.327680 a.983040 sin cambiar assertions de fuente/gates.
+Builds iniciales de fixtures tuvieron aliasTask/Collect token faltantes; factory de
+control Codex necesitaba fuente de suscripción. Logs conservados, corregidos sin
+red real ni debilitamiento de assertions. Focal conjunto231PASS1.669s/build0/0;
+arquitectura56PASS0.623s. El total focal incluye los tres controles multirun M5.5.
+
+Suite final del árbol conjunto (incluye fix de cierre del fixture TLS):
+tls-shutdown-final-full.log2111=2107PASS0FAIL4SKIPsymlink106.764s/exit0.
+La repetición anterior tuvo2106PASS1FAIL4SKIP106.468s por cancelación de cleanup
+del servidor TLS; se conserva y documenta en tls-fixture-shutdown-20261006.md.
+No se atribuye el verde a una consulta autenticada ni a cierre monetario M5.
