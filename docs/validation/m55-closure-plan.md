@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 06:17 UTC / 00:17 America/Mexico_City.
+Actualizado 2026-10-06 06:27 UTC / 00:27 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -15,6 +15,10 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   journals v1/v2 legibles y ruta conservada tras suspensión/reanudación.
 - `d2e020a`: componentes versionados del fingerprint, hash anterior compatible,
   referencias CAS indexadas y verificadas.
+- `54dfd95`: cualificación por ruta y migración legacy Stale, integrada en CLI/router.
+- Checkpoint ProviderState por ModelStep: replay tras reabrir SQLite/CAS, guard
+  Run/Lane/Turn/modelo/ruta y retención transitiva GC; adapter Anthropic real con SSE
+  de fixture. [Contrato y límites](m55-provider-state-checkpoint.md).
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -30,7 +34,8 @@ El build global explicable del fingerprint y los demás componentes reales aún 
 
 ## Cola de cierre (orden operativo)
 
-1. Replay opaco durable por ModelStep y guard misma ruta/modelo, incluido resume.
+1. Completar replay opaco: storage seguro para estados que el redactor actual alteraría,
+   ReasoningCapability y aplicación de ReasoningReplayPolicy. Checkpoint/resume básico probado.
 2. BillingMode, SessionRoutingPolicy durable y consentimiento; auto/ask no pueden
    ampliar gasto ni rutas autorizadas. Topes configurables, diario entre sesiones y continuar.
 3. Circuit breaker/disponibilidad real y adaptación del router de Alias a RouteId.
@@ -58,6 +63,8 @@ Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
   build 0 warnings / 0 errores (`route-qualification-tests.log`).
 - Integración final tras el wiring de rutas, incluyendo CLI end-to-end y codecs ModelStep:
   118 PASS, 0 FAIL (`route-qualification-final-tests.log`).
+- Checkpoint/replay: 31 PASS, 0 FAIL (`provider-state-accounting-tests.log`), incluida
+  reanudación del adapter Anthropic con SSE de fixture, sin consultas autenticadas.
 - Las cifras se solapan y no se suman; fixtures no acreditan consumo autenticado.
 
 Reproducción de este bloque:

@@ -109,6 +109,50 @@ public sealed class ExplorerTurn
         return completedIndexes.Count == 0 ? 0m : total;
     }
 
+    private ProviderState? ReadProviderContinuation(EventStream stream, RunId runId, LaneId laneId,
+        TurnId turnId)
+    {
+        const string failure = "Provider state checkpoint is invalid.";
+        var starts = new Dictionary<int, ModelStepStarted>();
+        var completions = new Dictionary<int, ModelStepCompleted>();
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (evt.RunId != runId || evt.LaneId != laneId) continue;
+            switch (_codecs.Decode(evt))
+            {
+                case ModelStepStarted start when start.TurnId == turnId:
+                    if (!starts.TryAdd(start.StepIndex, start)) throw new InvalidDataException(failure);
+                    break;
+                case ModelStepCompleted completion when completion.TurnId == turnId:
+                    if (!completions.TryAdd(completion.StepIndex, completion)) throw new InvalidDataException(failure);
+                    break;
+            }
+        }
+        if (completions.Count == 0) return null;
+        var last = completions.MaxBy(pair => pair.Key);
+        if (!starts.TryGetValue(last.Key, out var origin)) throw new InvalidDataException(failure);
+        // Legacy evidence without route identity cannot authorize opaque replay.
+        if (!Equals(origin.RouteId, _selection.RouteId)
+            || !string.Equals(origin.ModelId, _selection.Model.ToString(), StringComparison.Ordinal)) return null;
+        var response = last.Value.ResponseArtifact;
+        if (response is null) return null;
+        try
+        {
+            if (response.Kind != ArtifactKind.ModelResponse || ! _artifacts.Verify(response.Hash, response.Size))
+                throw new InvalidDataException(failure);
+            using var document = System.Text.Json.JsonDocument.Parse(_artifacts.GetText(response.Hash)!);
+            if (!document.RootElement.TryGetProperty("providerState", out var descriptor)
+                || descriptor.ValueKind == System.Text.Json.JsonValueKind.Null) return null;
+            return ProviderStateCheckpoint.Restore(_artifacts, descriptor.GetRawText(),
+                _selection.Model.ToString(), _selection.RouteId, turnId, last.Key);
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+            or IOException or ArgumentException)
+        {
+            throw new InvalidDataException(failure);
+        }
+    }
+
     private int ReadNextModelStepIndex(EventStream stream, TurnId turnId)
     {
         var max = -1;
@@ -363,8 +407,9 @@ public sealed class ExplorerTurn
 
             string? finalText = null;
             var stop = StopReason.EndTurn;
-            // Estado opaco del adapter: local a esta Ask, sin interpretación ni persistencia.
-            ProviderState? continuation = null;
+            // Replay is scoped to the same durable invocation destination, never to a session's last model.
+            ProviderState? continuation = isResume
+                ? ReadProviderContinuation(stream, runId, laneId, turnId) : null;
             for (var step = 0; step < MaxSteps; step++)
             {
                 steps = step + 1;
@@ -427,14 +472,29 @@ public sealed class ExplorerTurn
                         ? _pricing?.CostUsd(resolved.Usage) : null;
                     var completedDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
                         System.Globalization.CultureInfo.InvariantCulture);
+                    string? stateDescriptor = null;
+                    InvalidDataException? checkpointFailure = null;
+                    try
+                    {
+                        stateDescriptor = ProviderStateCheckpoint.Persist(_artifacts, resolved.State,
+                            _selection.Model.ToString(), _selection.RouteId, turnId, stepIndex);
+                    }
+                    catch (InvalidDataException)
+                    {
+                        // A provider call already consumed usage. Preserve that evidence even when
+                        // its continuation cannot be safely checkpointed; no tools run afterward.
+                        checkpointFailure = new InvalidDataException("Provider state checkpoint is invalid.");
+                    }
                     var stepArtifact = _artifacts.PutText(
-                        EncodeUsageResponse(stepResponse, resolved.Usage, stepCost, runId, completedDay),
+                        EncodeUsageResponse(stepResponse, resolved.Usage, stepCost, runId, completedDay,
+                            stateDescriptor),
                         "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse,
                         Sensitivity.Sensitive);
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
                         resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields), DurabilityClass.Barrier);
                     guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
                     if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
+                    if (checkpointFailure is not null) throw checkpointFailure;
                     if (budget.MaxCostUsd is not null
                         && persistedSpend.RunUsd + guard.CostUsd() > budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")");
@@ -976,7 +1036,7 @@ public sealed class ExplorerTurn
     }
 
     private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,
-        RunId runId, string day)
+        RunId runId, string day, string? providerStateDescriptor = null)
     {
         var costJson = cost is null ? "null" : "\""
             + cost.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\"";
@@ -987,7 +1047,8 @@ public sealed class ExplorerTurn
             + ",\"cacheRead\":" + usage.CacheRead.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ",\"cacheWrite\":" + usage.CacheWrite.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ",\"reasoning\":" + usage.Reasoning.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + ",\"costUsd\":" + costJson + "}";
+            + ",\"costUsd\":" + costJson
+            + ",\"providerState\":" + (providerStateDescriptor ?? "null") + "}";
     }
 
     private static string DecodeUsageResponse(string? text) =>
