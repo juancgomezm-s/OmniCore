@@ -185,10 +185,27 @@ public sealed class RunControlService
     }
 
     private IReadOnlyList<ExecutionScopeState?> SteeringDropScopes(IReadOnlyList<DomainEventPayload> batch,
-        IReadOnlyList<DomainEvent> events) => batch.Select(payload => payload is TurnSteeringDropped drop
-            ? new ExecutionScopeState(drop.RunId, events.Select(_codecs.Decode).OfType<LaneCreated>()
-                .First(lane => lane.LaneId == drop.LaneId).TaskId, drop.LaneId, drop.TurnId)
-            : null).ToArray();
+        IReadOnlyList<DomainEvent> events) => batch.Select(payload =>
+        {
+            if (payload is TurnSteeringDropped drop)
+                return new ExecutionScopeState(drop.RunId, events.Select(_codecs.Decode).OfType<LaneCreated>()
+                    .First(lane => lane.LaneId == drop.LaneId).TaskId, drop.LaneId, drop.TurnId);
+            // Terminal events close historical work: never inherit a foreign caller's scope.
+            var source = payload switch
+            {
+                ToolCallFailed failed => events.LastOrDefault(evt => _codecs.Decode(evt) is ToolCallStarted started
+                    && started.ToolCallId == failed.ToolCallId),
+                ToolCallCancelled cancelled => events.FirstOrDefault(evt => _codecs.Decode(evt) is ToolCallRequested requested
+                    && requested.ToolCallId == cancelled.ToolCallId),
+                InteractionExpired expired => events.FirstOrDefault(evt => _codecs.Decode(evt) is InteractionRequested requested
+                    && requested.InteractionId == expired.InteractionId),
+                TurnInterrupted interrupted => events.FirstOrDefault(evt => _codecs.Decode(evt) is TurnStarted started
+                    && started.TurnId == interrupted.TurnId),
+                _ => null,
+            };
+            return source is null ? null : new ExecutionScopeState(RunAtEvent(events, source), source.TaskId,
+                source.LaneId, source.TurnId, source.ToolCallId, source.ExecutionId);
+        }).ToArray();
 
     private IEnumerable<DomainEventPayload> PendingSteeringDrops(SessionId session, RunId run,
         IReadOnlyList<DomainEvent> events, string reason)

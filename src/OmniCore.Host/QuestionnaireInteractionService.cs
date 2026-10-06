@@ -181,6 +181,8 @@ public sealed class QuestionnaireInteractionService
         var state = cancelled ? "cancelled" : "submitted";
         var resolved = new InteractionResolved(interactionId, "", InteractionCause.User, artifact, state,
             toolCallJson);
+        // Resolution belongs to the durable request, not the caller's current Run/ambient scope.
+        using var requestScope = ExecutionScope.Begin(SourceScope(stream, interactionId) ?? new ExecutionScopeState());
         if (transitionAfterResolution is null)
             stream.Append(resolved);
         else
@@ -193,6 +195,21 @@ public sealed class QuestionnaireInteractionService
         Pending,
         Resolved,
         Unknown,
+    }
+
+    internal ExecutionScopeState? SourceScope(EventStream stream, InteractionId interactionId)
+    {
+        RunId? precedingRun = null;
+        foreach (var evt in stream.EventsSince(1))
+        {
+            var payload = _codecs.Decode(evt);
+            if (payload is RunCreated created) precedingRun = created.RunId;
+            if (payload is InteractionRequested request && request.Kind == InteractionKind.Question
+                && request.InteractionId == interactionId)
+                return new ExecutionScopeState(evt.RunId ?? precedingRun, evt.TaskId,
+                    evt.LaneId ?? request.Lane, evt.TurnId, evt.ToolCallId, evt.ExecutionId);
+        }
+        return null;
     }
 
     /// <summary>Replay del journal: ¿la interacción está pendiente, resuelta o ausente?</summary>
@@ -213,6 +230,11 @@ public sealed class QuestionnaireInteractionService
                 && res.InteractionId.ToString().Equals(id, StringComparison.Ordinal))
             {
                 return ResolutionStatus.Resolved;
+            }
+            else if (foundRequested && payload is InteractionExpired expired
+                && expired.InteractionId.ToString().Equals(id, StringComparison.Ordinal))
+            {
+                return ResolutionStatus.Resolved; // Terminal: late responses must not resurrect it.
             }
         }
 
@@ -259,6 +281,10 @@ public sealed class QuestionnaireInteractionService
             else if (payload is InteractionResolved res)
             {
                 resolved.Add(res.InteractionId.ToString());
+            }
+            else if (payload is InteractionExpired expired)
+            {
+                resolved.Add(expired.InteractionId.ToString());
             }
         }
 
