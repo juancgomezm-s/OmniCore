@@ -103,7 +103,8 @@ internal static class RuntimeFingerprintFactory
 
     internal static ExecutionFingerprint WithTurnConfiguration(ExecutionFingerprint baseline,
         FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
-        IArtifactStore? artifacts = null, ProfileId? agentProfile = null)
+        IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
+        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null)
     {
         var tools = Component("tools.plan", writer =>
         {
@@ -152,9 +153,31 @@ internal static class RuntimeFingerprintFactory
             writer.WriteString("profileId", agentProfile?.ToString());
             writer.WriteString("source", agentProfile is null ? "unavailable" : "lane.created");
         }, artifacts: artifacts);
-        var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name, profile.Name }, StringComparer.Ordinal);
+        var skills = Component("skills.active", writer =>
+        {
+            writer.WriteString("source", activeSkills is null ? "unavailable" : "provided");
+            if (activeSkills is null) writer.WriteNull("skills");
+            else
+            {
+                if (activeSkills.Any(skill => skill is null || string.IsNullOrWhiteSpace(skill.Id)
+                    || string.IsNullOrWhiteSpace(skill.Version) || skill.ContentHash is null)
+                    || activeSkills.Select(skill => skill.Id).Distinct(StringComparer.Ordinal).Count() != activeSkills.Count)
+                    throw new ArgumentException("Active skill identities must be complete and unique.", nameof(activeSkills));
+                writer.WriteStartArray("skills");
+                foreach (var skill in activeSkills.OrderBy(skill => skill.Id, StringComparer.Ordinal))
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("id", skill.Id);
+                    writer.WriteString("version", skill.Version);
+                    writer.WriteString("contentHash", skill.ContentHash.ToString());
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+            }
+        }, artifacts: artifacts);
+        var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name, profile.Name, skills.Name }, StringComparer.Ordinal);
         var components = baseline.Components.Where(component => !names.Contains(component.Name))
-            .Concat(new[] { tools, prompt, revision, profile }).ToArray();
+            .Concat(new[] { tools, prompt, revision, profile, skills }).ToArray();
         return new ExecutionFingerprint(baseline.ModelKey, baseline.HarnessPolicyHash, tools.Hash.Value,
             baseline.ContextPolicyHash, baseline.OverridesHash, baseline.Build, baseline.ModelPolicyHash,
             baseline.TokenizerHash, components);

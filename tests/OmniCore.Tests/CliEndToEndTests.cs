@@ -55,7 +55,7 @@ public sealed class CliEndToEndTests
             Assert.NotNull(turn.Fingerprint);
             Assert.Equal(RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), turn.Fingerprint.Build);
             Assert.Equal(new[] { "agent.profile", "context.policy", "model.descriptor", "model.harness", "model.profile",
-                "plan.revision", "prompt.template", "provider.adapter", "runtime.build", "tools.plan" },
+                "plan.revision", "prompt.template", "provider.adapter", "runtime.build", "skills.active", "tools.plan" },
                 turn.Fingerprint.Components.Select(component => component.Name));
             Assert.NotEqual("core-tools-1", turn.Fingerprint.ToolkitHash);
             var adapter = Assert.Single(turn.Fingerprint.Components, component => component.Name == "provider.adapter");
@@ -82,6 +82,10 @@ public sealed class CliEndToEndTests
             using var agentMetadata = JsonDocument.Parse(artifacts.GetText(agent.Hash)!);
             Assert.Equal(lane.AgentProfile.ToString(), agentMetadata.RootElement.GetProperty("profileId").GetString());
             Assert.Equal("lane.created", agentMetadata.RootElement.GetProperty("source").GetString());
+            var skills = Assert.Single(turn.Fingerprint.Components, component => component.Name == "skills.active");
+            using var skillMetadata = JsonDocument.Parse(artifacts.GetText(skills.Hash)!);
+            Assert.Equal("provided", skillMetadata.RootElement.GetProperty("source").GetString());
+            Assert.Empty(skillMetadata.RootElement.GetProperty("skills").EnumerateArray());
             Assert.All(turn.Fingerprint.Components.Where(component => component.Name != "provider.adapter"), component =>
             {
                 Assert.NotNull(component.Content);

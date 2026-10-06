@@ -36,6 +36,7 @@ public sealed class ExplorerTurn
     private readonly ExecutionFingerprint _fingerprint;
 
     private readonly bool _recordEffectiveFingerprint;
+    private readonly IReadOnlyList<ActiveSkillFingerprint>? _activeSkills;
 
     private readonly ModelSelection _selection;
 
@@ -216,7 +217,8 @@ public sealed class ExplorerTurn
         QuestionnaireInteractionService? questionnaires = null,
         Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null,
         IModelProvider? metaModelProvider = null, long? modelContextCapacity = null,
-        bool recordEffectiveFingerprint = false, UserWorkspaceSpendReader? userSpendReader = null)
+        bool recordEffectiveFingerprint = false, UserWorkspaceSpendReader? userSpendReader = null,
+        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -226,6 +228,7 @@ public sealed class ExplorerTurn
         _materializer = materializer;
         _fingerprint = fingerprint;
         _recordEffectiveFingerprint = recordEffectiveFingerprint;
+        _activeSkills = activeSkills?.ToArray();
         _selection = selection;
         _store = store;
         _codecs = codecs;
@@ -450,7 +453,7 @@ public sealed class ExplorerTurn
         var fingerprint = _recordEffectiveFingerprint
             ? RuntimeFingerprintFactory.WithTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
-                FindAgentProfileForLane(stream.EventsSince(1), runId, laneId))
+                FindAgentProfileForLane(stream.EventsSince(1), runId, laneId), _activeSkills)
             : _fingerprint;
         if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
             { Fingerprint: { } originalFingerprint } && originalFingerprint.Hash() != fingerprint.Hash())
@@ -1821,7 +1824,8 @@ public sealed class ExplorerTurn
         foreach (var contributor in _materializer.Contributors())
         {
             hasWorkingState |= contributor is WorkingStateContributor;
-            contributors.Add(new RedactingContextContributor(contributor, _redaction));
+            contributors.Add(new RedactingContextContributor(contributor, _redaction,
+                rejectSkills: _activeSkills is { Count: 0 }));
         }
 
         if (!hasWorkingState && !string.IsNullOrWhiteSpace(workingStateText))
@@ -2311,11 +2315,13 @@ public sealed class ExplorerTurn
     {
         private readonly IContextContributor _inner;
         private readonly RedactionPolicy _redaction;
+        private readonly bool _rejectSkills;
 
-        public RedactingContextContributor(IContextContributor inner, RedactionPolicy redaction)
+        public RedactingContextContributor(IContextContributor inner, RedactionPolicy redaction, bool rejectSkills = false)
         {
             _inner = inner;
             _redaction = redaction;
+            _rejectSkills = rejectSkills;
         }
 
         public async Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
@@ -2325,6 +2331,8 @@ public sealed class ExplorerTurn
             var result = new List<ContextItem>();
             foreach (var item in items)
             {
+                if (_rejectSkills && item.Kind == ContextItemKind.Skill)
+                    throw new InvalidDataException("Skill context contradicts the declared empty active skill set.");
                 var content = item.Provenance.Sensitive
                     ? "[contenido sensible omitido]"
                     : _redaction.Redact(item.Content);

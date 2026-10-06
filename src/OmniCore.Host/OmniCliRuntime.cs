@@ -638,7 +638,7 @@ public sealed class OmniCliRuntime
                 questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                 metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
                 recordEffectiveFingerprint: true,
-                userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData));
+                userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: []);
             var instruction = TurnInstruction(executingAct);
             if (questionnaireService.Pending(sessionId).FirstOrDefault() is { } pendingQuestion)
             {
@@ -728,7 +728,7 @@ public sealed class OmniCliRuntime
                         questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                         metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
                         recordEffectiveFingerprint: true,
-                        userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData));
+                        userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: []);
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",
