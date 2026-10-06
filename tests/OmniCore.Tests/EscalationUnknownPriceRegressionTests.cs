@@ -27,7 +27,7 @@ routing:
             : models;
         var loaded = new ConfigLoader().Load(providers, configuredModels);
         Assert.Equal("auto", ModelRoutingHost.EscalationMode(loaded));
-        var candidate = Assert.Single(ModelRoutingHost.Candidates(loaded, _ => true), c => c.Alias == "cloud-model");
+        var candidate = Assert.Single(ModelRoutingHost.Candidates(loaded, _ => true), c => c.ModelId == "cloud-model");
         Assert.True(candidate.Available);
         if (knownPrice)
             Assert.Equal(3m, candidate.PricePerMillionTokensUsd);
@@ -38,7 +38,7 @@ routing:
         if (knownPrice)
         {
             Assert.NotNull(next);
-            Assert.Equal("cloud-model", next.Alias);
+            Assert.Equal("cloud-model", next.ModelId);
         }
         else
             Assert.Null(next);

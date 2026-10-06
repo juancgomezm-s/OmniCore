@@ -39,13 +39,17 @@ public static class ModelRoutingHost
 
     /// <summary>Política de routing; null si el usuario no configuró <c>routing:</c> (se usa el modelo por defecto).</summary>
     public static RoutingPolicy? Policy(LoadedUserConfiguration loaded)
+        => PolicyForCandidates(loaded, Candidates(loaded, _ => false));
+
+    private static RoutingPolicy? PolicyForCandidates(LoadedUserConfiguration loaded, IReadOnlyList<RouteCandidate> candidates)
     {
         var routing = loaded.Models?.Routing;
         if (routing is null) return null;
-        var preferences = new Dictionary<RoutingTaskKind, IReadOnlyList<string>>();
+        var preferences = new Dictionary<RoutingTaskKind, IReadOnlyList<RouteId>>();
         void Add(RoutingTaskKind kind, List<string>? aliases)
         {
-            if (aliases is { Count: > 0 }) preferences[kind] = aliases.Select(a => loaded.Registry.Resolve(a).Id).ToArray();
+            if (aliases is { Count: > 0 }) preferences[kind] = aliases
+                .Select(alias => candidates.Single(candidate => candidate.ModelId == loaded.Registry.Resolve(alias).Id).RouteId).ToArray();
         }
         Add(RoutingTaskKind.Meta, routing.Meta);
         Add(RoutingTaskKind.Exploration, routing.Exploration);
@@ -60,12 +64,14 @@ public static class ModelRoutingHost
         ProviderResilienceCatalog? circuits = null)
     {
         var resolver = new ModelProfileResolver();
+        var endpointOverride = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
         return loaded.Registry.Models().Select(model =>
         {
             var provider = loaded.Registry.Provider(model.ProviderId);
             var price = loaded.Pricing(model.Id)?.InputPricePerMillionUsd;
-            return new RouteCandidate(model.Id, resolver.Resolve(model, provider, route: RouteFor(model, provider)),
-                provider is not null && OmniHost.IsPrivateHost(provider.BaseUrl),
+            var route = RouteFor(model, provider, endpointOverride ?? provider?.BaseUrl ?? "http://127.0.0.1:8080/v1");
+            return new RouteCandidate(route, model.Id, resolver.Resolve(model, provider, route: route),
+                OmniHost.IsPrivateHost(route.Endpoint),
                 circuits?.Snapshot(model.ProviderId)?.CanAttempt ?? true, hasWritePolicy(model), price);
         }).ToArray();
     }
@@ -74,10 +80,12 @@ public static class ModelRoutingHost
     public static RoutingDecision? Route(LoadedUserConfiguration loaded, RoutingTaskKind kind, bool requiresWrite,
         long estimatedContextTokens, Func<ModelDefinition, bool> hasWritePolicy, ProviderResilienceCatalog? circuits = null)
     {
-        var policy = Policy(loaded);
+        if (loaded.Models?.Routing is null) return null;
+        var candidates = Candidates(loaded, hasWritePolicy, circuits);
+        var policy = PolicyForCandidates(loaded, candidates);
         if (policy is null) return null;
         return ModelRouter.Select(new RoutingRequest(kind, requiresWrite, estimatedContextTokens, [], false),
-            Candidates(loaded, hasWritePolicy, circuits), policy);
+            candidates, policy);
     }
 
     /// <summary>
@@ -87,20 +95,30 @@ public static class ModelRoutingHost
     public static RouteCandidate? NextEscalation(LoadedUserConfiguration loaded, string currentModelId, bool requiresWrite,
         long neededContextTokens, Func<ModelDefinition, bool> hasWritePolicy, ProviderResilienceCatalog? circuits = null)
     {
+        var model = loaded.Registry.Resolve(currentModelId);
+        return NextEscalation(loaded, RouteFor(model, loaded.Registry.Provider(model.ProviderId)).Id,
+            requiresWrite, neededContextTokens, hasWritePolicy, circuits);
+    }
+
+    public static RouteCandidate? NextEscalation(LoadedUserConfiguration loaded, RouteId currentRouteId, bool requiresWrite,
+        long neededContextTokens, Func<ModelDefinition, bool> hasWritePolicy, ProviderResilienceCatalog? circuits = null)
+    {
         var escalation = loaded.Models?.Routing?.Escalation;
         if (escalation?.Chain is not { Count: > 0 } chain || EscalationMode(loaded) == "deny") return null;
-        var chainIds = chain.Select(a => loaded.Registry.Resolve(a).Id).Where(id => id != currentModelId).ToArray();
-        var policy = new RoutingPolicy(new Dictionary<RoutingTaskKind, IReadOnlyList<string>>
+        var candidates = Candidates(loaded, hasWritePolicy, circuits);
+        var chainIds = chain.Select(alias => candidates.Single(candidate => candidate.ModelId == loaded.Registry.Resolve(alias).Id).RouteId)
+            .Where(id => !id.Equals(currentRouteId)).ToArray();
+        if (chainIds.Length == 0) return null;
+        var policy = new RoutingPolicy(new Dictionary<RoutingTaskKind, IReadOnlyList<RouteId>>
         {
             [RoutingTaskKind.Reasoning] = chainIds,
         }, false);
-        var candidates = Candidates(loaded, hasWritePolicy, circuits);
         if (EscalationMode(loaded) == "auto")
         {
             // El coste pagado desconocido se excluye antes de la selección automática.
             candidates = candidates.Where(c =>
-                loaded.Registry.Provider(loaded.Registry.Resolve(c.Alias).ProviderId)?.Auth
-                    is not { Kind: AuthKind.ApiKey } || loaded.Pricing(c.Alias) is { IsComplete: true }).ToArray();
+                loaded.Registry.Provider(c.Route.ProviderId)?.Auth
+                    is not { Kind: AuthKind.ApiKey } || loaded.Pricing(c.ModelId) is { IsComplete: true }).ToArray();
         }
         try
         {

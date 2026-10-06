@@ -28,6 +28,6 @@ routing:
         Assert.Equal(15m, price.CostUsd(new TokenUsage(1_000_000, 1_000_000, 0, 0, 0)));
         var next = ModelRoutingHost.NextEscalation(loaded, "worker-model", false, 40_000, _ => true);
         Assert.NotNull(next);
-        Assert.Equal("target-model", next.Alias);
+        Assert.Equal("target-model", next.ModelId);
     }
 }

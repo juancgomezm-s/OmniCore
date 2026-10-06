@@ -200,7 +200,7 @@ public sealed class OmniCliRuntime
     internal Task<int> ConversationAsync(string prompt, Action<string> writeLine, CancellationToken cancellationToken) =>
         RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true);
 
-    private sealed record RoutingResume(SessionId Session, RunId Run, InteractionId? Interaction, string Model);
+    private sealed record RoutingResume(SessionId Session, RunId Run, InteractionId? Interaction, string Model, ModelRoute? Route = null);
 
     internal bool HasEscalationForInteraction(InteractionId interaction)
     {
@@ -233,8 +233,9 @@ public sealed class OmniCliRuntime
         foreach (var model in loaded.Registry.Models())
         {
             var provider = loaded.Registry.Provider(model.ProviderId);
+            var grantedRoute = ModelRoutingHost.RouteFor(model, provider);
             var pending = ModelEscalationConsentReplay.FindGrantedPending(events, server.AcquireCodecs(),
-                session, run, model.Id, ModelRoutingHost.RouteFor(model, provider), provider?.BillingMode ?? BillingMode.Unknown);
+                session, run, model.Id, grantedRoute, provider?.BillingMode ?? BillingMode.Unknown);
             if (pending?.InteractionId != interaction) continue;
             // Legacy/unattributed attempts cannot borrow some earlier intention from the Run.
             var originStart = events.LastOrDefault(evt => evt.RunId == run && evt.Sequence < pending.RequestSequence
@@ -251,7 +252,7 @@ public sealed class OmniCliRuntime
             var before = server.AcquireStore().CurrentSequence(session);
             var code = await RunTurnAsync("", server.CurrentRunMode() == RunMode.Act, writeLine,
                 cancellationToken, conversationOnly: server.CurrentRunMode() == RunMode.Plan,
-                routingResume: new(session, run, interaction, model.Id)).ConfigureAwait(false);
+                routingResume: new(session, run, interaction, model.Id, grantedRoute)).ConfigureAwait(false);
             // Completed means the target was actually invoked, not merely approved or deferred.
             if (server.LastSessionId() == session && server.LastRunId() == run
                 && server.AcquireStore().ReadFrom(session, before + 1).Any(evt => evt.RunId == run
@@ -307,6 +308,7 @@ public sealed class OmniCliRuntime
         }
         WriteDiagnostics(workspaceConfig.Diagnostics, writeLine);
         ModelDefinition? modelDefinition = null;
+        ModelRoute? selectedRoute = routingResume?.Route;
         NoModelConfiguredException? noModel = null;
         try
         {
@@ -341,14 +343,15 @@ public sealed class OmniCliRuntime
                     act, 0, candidate => HasWritePolicy(candidate, loaded, cancellationToken), _providerCircuits);
                 if (decision is not null)
                 {
-                    modelDefinition = registry.Model(decision.Chosen.Alias);
-                    writeLine(Text(Localized("cli.routing.chosen", ("model", decision.Chosen.Alias))));
+                    modelDefinition = registry.Model(decision.Chosen.ModelId);
+                    selectedRoute = decision.Chosen.Route;
+                    writeLine(Text(Localized("cli.routing.chosen", ("model", decision.Chosen.ModelId))));
                 }
             }
             catch (NoRouteAvailableException ex)
             {
                 writeLine(Text(Localized("cli.routing.none", ("reasons",
-                    string.Join(", ", ex.Rejected.Select(r => r.Alias + ": " + r.Reason))))));
+                    string.Join(", ", ex.Rejected.Select(r => r.ModelId + " [" + r.RouteId.Value + "]: " + r.Reason))))));
                 return 1;
             }
         }
@@ -378,7 +381,7 @@ public sealed class OmniCliRuntime
         }
         var secretRef = providerDescription?.Auth.SecretRef ?? "qwen";
         var model = modelDefinition?.Id ?? explicitModel;
-        var baseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDescription?.BaseUrl
+        var baseUrl = selectedRoute?.Endpoint ?? Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDescription?.BaseUrl
             ?? "http://127.0.0.1:8080/v1";
         if (providerDescription is not null && !OmniHost.IsProviderFamilySupported(providerDescription.Family))
         {
@@ -495,7 +498,14 @@ public sealed class OmniCliRuntime
                 : modelDefinition is not null && modelDefinition.ContextWindow > 0
                     ? modelDefinition.ContextWindow : 8192;
             var runtimeModel = modelDefinition ?? new ModelDefinition(model, "local", usableContext, usableContext, 2048);
-            var route = ModelRoutingHost.RouteFor(runtimeModel, providerDescription, baseUrl);
+            var route = selectedRoute ?? ModelRoutingHost.RouteFor(runtimeModel, providerDescription, baseUrl);
+            if (route.ProviderId != runtimeModel.ProviderId || route.ProviderModelName != model
+                || route.Protocol != (providerDescription?.Family ?? ProviderFamily.OpenAiChatCompatible)
+                || route.Profile != providerDescription?.Profile)
+            {
+                writeLine("Selected route no longer matches configured model/provider. Select a current route before sending.");
+                return 1;
+            }
             if (routingResume?.Interaction is not null)
             {
                 var pending = ModelEscalationConsentReplay.FindGrantedPending(server.AcquireStore().ReadFrom(sessionId, 1),
@@ -673,7 +683,7 @@ public sealed class OmniCliRuntime
                 ("steps", result.Steps.ToString()),
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
             if (result.StopReason == StopReason.ContextOverflow &&
-                await TryEscalateAsync(loaded, model!, usableContext, prompt, act, writeLine, cancellationToken) is { } escalatedCode)
+                await TryEscalateAsync(loaded, model!, route.Id, usableContext, prompt, act, writeLine, cancellationToken) is { } escalatedCode)
                 return escalatedCode;
 
             if (!executingAct && server.RequestPlanApprovalIfNeeded() is { } approvalId)
@@ -1199,27 +1209,27 @@ public sealed class OmniCliRuntime
     /// <c>auto</c> se aprueba por política y el mismo pedido se repite con el siguiente modelo de la
     /// cadena; en modo <c>ask</c> queda solicitada y se informa, sin inventar una aprobación.
     /// </summary>
-    private async Task<int?> TryEscalateAsync(LoadedUserConfiguration loaded, string currentModel, long currentContext,
+    private async Task<int?> TryEscalateAsync(LoadedUserConfiguration loaded, string currentModel, RouteId currentRouteId, long currentContext,
         string prompt, bool act, Action<string> writeLine, CancellationToken cancellationToken)
     {
         if (_escalatedModel is not null || Environment.GetEnvironmentVariable("OMNI_MODEL") is not null) return null;
-        var next = ModelRoutingHost.NextEscalation(loaded, currentModel, act, currentContext + 1,
+        var next = ModelRoutingHost.NextEscalation(loaded, currentRouteId, act, currentContext + 1,
             candidate => HasWritePolicy(candidate, loaded, cancellationToken), _providerCircuits);
         var server = Server();
         if (next is null || server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return null;
         var originatingTurn = server.AcquireStore().ReadFrom(session, 1)
             .Where(evt => evt.RunId == run).Select(server.AcquireCodecs().Decode).OfType<TurnStarted>().LastOrDefault();
         EnsureEscalationRecorded(server.RecordModelEscalationRequested(session,
-            new ModelEscalationRequested(run, currentModel, next.Alias, EscalationCause.ContextLimit,
+            new ModelEscalationRequested(run, currentModel, next.ModelId, EscalationCause.ContextLimit,
                 originatingTurn?.TurnId, originatingTurn?.LaneId)));
         // phaseA7 (M55): en modo auto no se aprueba la escalación si el proveedor del modelo
         // destino requiere API key y esta no está resuelta; misma semántica que RunTurnAsync,
         // sin aprobar ni completar el intento (el Requested ya registra la causa).
-        var escalatedDefinition = loaded.Registry.Model(next.Alias);
+        var escalatedDefinition = loaded.Registry.Model(next.ModelId);
         var escalatedProvider = escalatedDefinition is null ? null
             : loaded.Registry.Provider(escalatedDefinition.ProviderId);
         if (escalatedDefinition is null) return 1;
-        var escalatedRoute = ModelRoutingHost.RouteFor(escalatedDefinition, escalatedProvider);
+        var escalatedRoute = next.Route;
         var escalationMode = ModelRoutingHost.EscalationMode(loaded);
         var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
         if (AuthorizeRouteForInvocation(server, session, run, escalatedRoute,
@@ -1249,21 +1259,21 @@ public sealed class OmniCliRuntime
             }
         }
         EnsureEscalationRecorded(server.RecordModelEscalationApproved(session,
-            new ModelEscalationApproved(run, next.Alias, escalationMode == "auto" ? "policy:auto-authorized" : "interaction:user",
+            new ModelEscalationApproved(run, next.ModelId, escalationMode == "auto" ? "policy:auto-authorized" : "interaction:user",
                 originatingTurn?.TurnId, originatingTurn?.LaneId)));
-        writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.Alias))));
+        writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.ModelId))));
         var beforeTarget = server.AcquireStore().CurrentSequence(session);
-        _escalatedModel = next.Alias;
+        _escalatedModel = next.ModelId;
         try
         {
             var code = await RunTurnAsync("", act, writeLine, cancellationToken,
                 conversationOnly: !act && server.CurrentRunMode() == RunMode.Plan,
-                routingResume: new(session, run, null, next.Alias)).ConfigureAwait(false);
+                routingResume: new(session, run, null, next.ModelId, next.Route)).ConfigureAwait(false);
             if (server.LastSessionId() == session && server.LastRunId() == run
                 && server.AcquireStore().ReadFrom(session, beforeTarget + 1).Any(evt => evt.RunId == run
                     && server.AcquireCodecs().Decode(evt) is ModelStepCompleted))
                 EnsureEscalationRecorded(server.RecordModelEscalationCompleted(session,
-                    new ModelEscalationCompleted(run, next.Alias, originatingTurn?.TurnId, originatingTurn?.LaneId)));
+                    new ModelEscalationCompleted(run, next.ModelId, originatingTurn?.TurnId, originatingTurn?.LaneId)));
             return code;
         }
         finally { _escalatedModel = null; }

@@ -21,6 +21,38 @@ namespace OmniCore.Tests;
 public sealed class CliEndToEndTests
 {
     [Fact]
+    public async Task Routed_override_invokes_logical_model_and_persists_the_selected_physical_route()
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), """
+                providers:
+                  scripted: { family: OpenAiChatCompatible, baseUrl: http://127.0.0.1:1/v1, auth: none, billingMode: Local }
+                """);
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  scripted-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [worker] }
+                routing:
+                  exploration: [worker]
+                """);
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", provider.BaseUrl);
+            string? requestBody = null;
+            provider.RespondWith((_, request) => { requestBody = request; return TextResponse("ruta física seleccionada"); });
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            var output = new List<string>();
+            Assert.True(0 == await host.ExecuteAsync("hola por ruta override", output.Add, TestContext.Current.CancellationToken),
+                string.Join("\n", output));
+            Assert.Equal(1, provider.RequestCount);
+            Assert.Contains("\"model\":\"scripted-model\"", requestBody);
+            var expected = new ModelRoute("scripted", provider.BaseUrl, ProviderFamily.OpenAiChatCompatible, null, "scripted-model");
+            var started = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<ModelStepStarted>());
+            Assert.Equal("scripted-model", started.ModelId);
+            Assert.Equal(expected.Id, started.RouteId);
+            Assert.NotEqual(started.ModelId, started.RouteId!.Value);
+        });
+    }
+
+    [Fact]
     public async Task Authorized_auto_escalation_reuses_run_and_marks_completed_only_after_target_response()
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>

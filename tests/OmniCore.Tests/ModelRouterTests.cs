@@ -9,6 +9,26 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class ModelRouterTests
 {
+    [Fact]
+    public void Physical_route_preference_distinguishes_two_routes_of_the_same_logical_model()
+    {
+        var first = CreateCandidate("same-model");
+        var second = first with { Route = new ModelRoute("fixture", "http://127.0.0.1:9090/v1",
+            ProviderFamily.OpenAiChatCompatible, null, "same-model") };
+        var policy = new RoutingPolicy(new Dictionary<RoutingTaskKind, IReadOnlyList<RouteId>>
+        {
+            [RoutingTaskKind.Implementation] = [new RouteId(second.RouteId.Value)],
+        }, false);
+        var decision = ModelRouter.Select(CreateRequest(), [first, second], policy);
+        Assert.Same(second, decision.Chosen);
+        Assert.Equal("same-model", decision.Chosen.ModelId);
+        Assert.Equal(second.RouteId, decision.Chosen.RouteId);
+        var rejected = Assert.Single(decision.Rejected);
+        Assert.Equal(first.RouteId, rejected.RouteId);
+        Assert.Equal("same-model", rejected.ModelId);
+        Assert.Equal(RouteRejection.NotInPreferences, rejected.Reason);
+    }
+
     // ----- Helpers para crear perfiles y candidatos -----
 
     private static EffectiveModelProfile CreateProfile(
@@ -44,6 +64,7 @@ public sealed class ModelRouterTests
         decimal? pricePerMillionTokensUsd = null)
     {
         return new RouteCandidate(
+            ModelRoute.DefaultForModel(alias, "fixture", "http://127.0.0.1:8080/v1", ProviderFamily.OpenAiChatCompatible),
             alias,
             profile ?? CreateProfile(),
             isLocal,
@@ -66,12 +87,12 @@ public sealed class ModelRouterTests
         Dictionary<RoutingTaskKind, string[]>? preferences = null,
         bool preferLocal = false)
     {
-        var dict = new Dictionary<RoutingTaskKind, IReadOnlyList<string>>();
+        var dict = new Dictionary<RoutingTaskKind, IReadOnlyList<RouteId>>();
         if (preferences is not null)
         {
             foreach (var kvp in preferences)
             {
-                dict[kvp.Key] = kvp.Value;
+                dict[kvp.Key] = kvp.Value.Select(RouteId.ForDefaultModel).ToArray();
             }
         }
         return new RoutingPolicy(dict, preferLocal);
@@ -94,7 +115,7 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { candidateA, candidateB, candidateC }, policy);
 
-        Assert.Equal("model-c", decision.Chosen.Alias);
+        Assert.Equal("model-c", decision.Chosen.ModelId);
         Assert.Equal(2, decision.Rejected.Count);
     }
 
@@ -113,8 +134,8 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { candidateA, candidateB, candidateC }, policy);
 
-        Assert.Equal("model-b", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "model-a" && r.Reason == RouteRejection.Unavailable);
+        Assert.Equal("model-b", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "model-a" && r.Reason == RouteRejection.Unavailable);
     }
 
     // ----- 2. Unavailable skipped -----
@@ -130,8 +151,8 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { candidate, available }, policy);
 
-        Assert.Equal("available-model", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "unavailable-model" && r.Reason == RouteRejection.Unavailable);
+        Assert.Equal("available-model", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "unavailable-model" && r.Reason == RouteRejection.Unavailable);
     }
 
     // ----- 3. Context too small -----
@@ -147,8 +168,8 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { smallContext, largeContext }, policy);
 
-        Assert.Equal("large", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "small" && r.Reason == RouteRejection.ContextTooSmall);
+        Assert.Equal("large", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "small" && r.Reason == RouteRejection.ContextTooSmall);
     }
 
     // ----- 4. Missing native tools -----
@@ -164,8 +185,8 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { noNativeTools, hasNativeTools }, policy);
 
-        Assert.Equal("has-native", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "no-native" && r.Reason == RouteRejection.MissingCapability);
+        Assert.Equal("has-native", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "no-native" && r.Reason == RouteRejection.MissingCapability);
     }
 
     [Fact]
@@ -179,8 +200,8 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { noVision, hasVision }, policy);
 
-        Assert.Equal("has-vision", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "no-vision" && r.Reason == RouteRejection.MissingCapability);
+        Assert.Equal("has-vision", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "no-vision" && r.Reason == RouteRejection.MissingCapability);
     }
 
     // ----- 5. Local-only -----
@@ -196,8 +217,8 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { local, remote }, policy);
 
-        Assert.Equal("local", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "remote" && r.Reason == RouteRejection.NotLocal);
+        Assert.Equal("local", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "remote" && r.Reason == RouteRejection.NotLocal);
     }
 
     [Fact]
@@ -211,7 +232,7 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { local, remote }, policy);
 
-        Assert.Equal("local", decision.Chosen.Alias); // first in list wins when no preference
+        Assert.Equal("local", decision.Chosen.ModelId); // first in list wins when no preference
         Assert.DoesNotContain(decision.Rejected, r => r.Reason == RouteRejection.NotLocal);
     }
 
@@ -228,8 +249,8 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { noWritePolicy, hasWritePolicy }, policy);
 
-        Assert.Equal("has-write-policy", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "no-write-policy" && r.Reason == RouteRejection.NoWritePolicy);
+        Assert.Equal("has-write-policy", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "no-write-policy" && r.Reason == RouteRejection.NoWritePolicy);
     }
 
     [Fact]
@@ -243,7 +264,7 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { noWritePolicy }, policy);
 
-        Assert.Equal("no-write-policy", decision.Chosen.Alias);
+        Assert.Equal("no-write-policy", decision.Chosen.ModelId);
         Assert.Empty(decision.Rejected);
     }
 
@@ -263,9 +284,9 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { remote1, local1, remote2, local2 }, policy);
 
-        Assert.Equal("local1", decision.Chosen.Alias); // local1 estaba antes que local2 en la lista original
+        Assert.Equal("local1", decision.Chosen.ModelId); // local1 estaba antes que local2 en la lista original
         // Verificar orden en rechazados: local2, remote1, remote2 (locales primero, luego remotos, ambos estables)
-        var rejectedAliases = decision.Rejected.Select(r => r.Alias).ToArray();
+        var rejectedAliases = decision.Rejected.Select(r => r.ModelId).ToArray();
         Assert.Equal(new[] { "local2", "remote1", "remote2" }, rejectedAliases);
     }
 
@@ -283,7 +304,7 @@ public sealed class ModelRouterTests
         var decision = ModelRouter.Select(request, new[] { local, remote }, policy);
 
         // Preferencia dice "remote" primero, así que gana aunque local esté primero en la lista de candidatos
-        Assert.Equal("remote", decision.Chosen.Alias);
+        Assert.Equal("remote", decision.Chosen.ModelId);
     }
 
     // ----- 8. Kind without preferences uses given order -----
@@ -303,10 +324,10 @@ public sealed class ModelRouterTests
         var request = CreateRequest(RoutingTaskKind.Implementation);
         var decision = ModelRouter.Select(request, new[] { first, second, third }, policy);
 
-        Assert.Equal("first", decision.Chosen.Alias);
+        Assert.Equal("first", decision.Chosen.ModelId);
         Assert.Equal(2, decision.Rejected.Count);
-        Assert.Contains(decision.Rejected, r => r.Alias == "second" && r.Reason == RouteRejection.NotInPreferences);
-        Assert.Contains(decision.Rejected, r => r.Alias == "third" && r.Reason == RouteRejection.NotInPreferences);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "second" && r.Reason == RouteRejection.NotInPreferences);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "third" && r.Reason == RouteRejection.NotInPreferences);
     }
 
     [Fact]
@@ -322,7 +343,7 @@ public sealed class ModelRouterTests
         var request = CreateRequest(RoutingTaskKind.Implementation);
         var decision = ModelRouter.Select(request, new[] { first, second }, policy);
 
-        Assert.Equal("first", decision.Chosen.Alias);
+        Assert.Equal("first", decision.Chosen.ModelId);
     }
 
     // ----- 9. No route → typed error listing reasons -----
@@ -343,9 +364,9 @@ public sealed class ModelRouterTests
             ModelRouter.Select(request, new[] { candidate1, candidate2, candidate3 }, policy));
 
         Assert.Equal(3, ex.Rejected.Count);
-        Assert.Contains(ex.Rejected, r => r.Alias == "unavailable" && r.Reason == RouteRejection.Unavailable);
-        Assert.Contains(ex.Rejected, r => r.Alias == "small-context" && r.Reason == RouteRejection.ContextTooSmall);
-        Assert.Contains(ex.Rejected, r => r.Alias == "no-native-tools" && r.Reason == RouteRejection.MissingCapability);
+        Assert.Contains(ex.Rejected, r => r.ModelId == "unavailable" && r.Reason == RouteRejection.Unavailable);
+        Assert.Contains(ex.Rejected, r => r.ModelId == "small-context" && r.Reason == RouteRejection.ContextTooSmall);
+        Assert.Contains(ex.Rejected, r => r.ModelId == "no-native-tools" && r.Reason == RouteRejection.MissingCapability);
 
         // Mensaje en español
         Assert.Contains("No hay modelo disponible", ex.Message);
@@ -368,7 +389,7 @@ public sealed class ModelRouterTests
         var policy = CreatePolicy();
 
         var decision1 = ModelRouter.Select(request, new[] { alphaA, betaB }, policy);
-        Assert.Equal("alpha", decision1.Chosen.Alias); // Elige por perfil, no por nombre
+        Assert.Equal("alpha", decision1.Chosen.ModelId); // Elige por perfil, no por nombre
 
         // Caso 2: MISMOS perfiles, PERO aliases intercambiados
         // alias "alpha" -> perfil B (el malo), alias "beta" -> perfil A (el bueno)
@@ -376,10 +397,10 @@ public sealed class ModelRouterTests
         var betaA = CreateCandidate("beta", profileA);
 
         var decision2 = ModelRouter.Select(request, new[] { alphaB, betaA }, policy);
-        Assert.Equal("beta", decision2.Chosen.Alias); // Ahora gana "beta" porque tiene el buen perfil
+        Assert.Equal("beta", decision2.Chosen.ModelId); // Ahora gana "beta" porque tiene el buen perfil
 
         // La decisión sigue al PERFIL, no al NOMBRE del alias
-        Assert.NotEqual(decision1.Chosen.Alias, decision2.Chosen.Alias);
+        Assert.NotEqual(decision1.Chosen.ModelId, decision2.Chosen.ModelId);
     }
 
     [Fact]
@@ -402,7 +423,7 @@ public sealed class ModelRouterTests
 
         // "preferred-alias" está en la lista de preferencias y cumple requisitos -> gana
         // La preferencia del usuario por alias tiene prioridad sobre calidad marginal del perfil
-        Assert.Equal("preferred-alias", decision.Chosen.Alias);
+        Assert.Equal("preferred-alias", decision.Chosen.ModelId);
     }
 
     // ----- Additional: Multiple capabilities required -----
@@ -425,9 +446,9 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { hasOnlyNative, hasOnlyVision, hasBoth }, policy);
 
-        Assert.Equal("both", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "only-native" && r.Reason == RouteRejection.MissingCapability);
-        Assert.Contains(decision.Rejected, r => r.Alias == "only-vision" && r.Reason == RouteRejection.MissingCapability);
+        Assert.Equal("both", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "only-native" && r.Reason == RouteRejection.MissingCapability);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "only-vision" && r.Reason == RouteRejection.MissingCapability);
     }
 
     // ----- Additional: PreferLocal only affects survivors, not rejections -----
@@ -443,9 +464,9 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(request, new[] { localUnavailable, remoteAvailable }, policy);
 
-        Assert.Equal("remote-avail", decision.Chosen.Alias);
+        Assert.Equal("remote-avail", decision.Chosen.ModelId);
         // El local no disponible se rechaza por Unavailable, no por NotLocal
-        Assert.Contains(decision.Rejected, r => r.Alias == "local-unavail" && r.Reason == RouteRejection.Unavailable);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "local-unavail" && r.Reason == RouteRejection.Unavailable);
         Assert.DoesNotContain(decision.Rejected, r => r.Reason == RouteRejection.NotLocal);
     }
 
@@ -466,6 +487,6 @@ public sealed class ModelRouterTests
 
         var decision = ModelRouter.Select(CreateRequest(), candidates, policy);
 
-        Assert.Equal("local-a", decision.Chosen.Alias);
+        Assert.Equal("local-a", decision.Chosen.ModelId);
     }
 }
