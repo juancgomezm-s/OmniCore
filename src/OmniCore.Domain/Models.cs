@@ -84,6 +84,10 @@ public sealed record ProviderOpaque(
 public sealed record ProviderOpaqueBlock(ProviderOpaque Opaque) : ContentBlock;
 
 /// <summary>Uso de tokens normalizado (ADR-0011 §6).</summary>
+[Flags]
+public enum TokenUsageFields { None = 0, Input = 1, Output = 2, CacheRead = 4, CacheWrite = 8, Reasoning = 16, All = 31 }
+
+/// <summary>Input includes cache read/write; Output includes reasoning. Cache and reasoning must not be added again.</summary>
 public sealed record TokenUsage(
     long Input,
     long Output,
@@ -103,7 +107,7 @@ public sealed record ModelResponse(
     StopReason StopReason,
     TokenUsage Usage,
     ProviderState? State,
-    ProviderMetadata Metadata) { }
+    ProviderMetadata Metadata, TokenUsageFields ReportedUsageFields = TokenUsageFields.All) { }
 
 /// <summary>Mensaje hacia el modelo.</summary>
 public sealed record ModelMessage(MessageRole Role, IReadOnlyList<ContentBlock> Content) { }

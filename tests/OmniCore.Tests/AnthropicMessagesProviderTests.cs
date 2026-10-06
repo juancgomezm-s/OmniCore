@@ -68,7 +68,8 @@ data: {"type":"message_stop"}
         Assert.Contains(events, e => e is ToolArgumentsDelta { PartialJson: "{\"path\":" });
         var response = Assert.IsType<ResponseCompleted>(events[^1]).Response;
         Assert.Equal(StopReason.ToolUse, response.StopReason);
-        Assert.Equal(new TokenUsage(12, 42, 5, 2, 0), response.Usage);
+        // Anthropic's input_tokens excludes cache; the neutral Input counter includes it.
+        Assert.Equal(new TokenUsage(19, 42, 5, 2, 0), response.Usage);
         Assert.Equal("claude-test-resolved", response.Metadata.Model);
         var call = Assert.Single(response.Content.OfType<ToolCallBlock>());
         Assert.Equal("toolu_1", call.ProviderCallId);

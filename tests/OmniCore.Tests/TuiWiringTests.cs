@@ -38,21 +38,54 @@ public sealed class TuiWiringTests
     [InlineData(140, 40, "conversation")]
     [InlineData(100, 30, "sidebar")]
     [InlineData(100, 30, "notice")]
+    [InlineData(80, 25, "settings")]
+    [InlineData(120, 35, "settings")]
+    [InlineData(80, 25, "account")]
+    [InlineData(120, 35, "account")]
+    [InlineData(80, 25, "login")]
+    [InlineData(120, 35, "models")]
+    [InlineData(120, 35, "picker")]
+    [InlineData(80, 25, "picker")]
+    [InlineData(80, 25, "commands")]
+    [InlineData(120, 35, "commands")]
+    [InlineData(80, 25, "activity")]
+    [InlineData(120, 35, "activity")]
+    [InlineData(80, 25, "table")]
+    [InlineData(140, 40, "table")]
     public void Visual_frames_export_the_real_driver_cells(int columns, int rows, string scene) => RunTuiTest(fx =>
     {
         var lane = fx.Decoded<LaneCreated>().Last().LaneId;
-        var content = fx.Artifacts.PutText("## Conversación\nUn diseño limpio, con `código inline` y espacio para leer.\n\n"
+        var content = fx.Artifacts.PutText(scene == "table"
+            ? "## 📦 Dependencias\nUn ejemplo dentro de la conversación, sin crear archivos.\n\n| Paquete | Versión | Descripción | Estado |\n| :--- | ---: | :--- | :---: |\n| `react` | 18.2.0 | Librería UI | ✅ Activo |\n| `typescript` | 5.3.0 | Tipado estático | ✅ Activo |\n| `eslint` | 8.54.0 | Linter | ⚠ Pendiente |\n\n### Código de ejemplo\n```c#\npublic double Celsius(double value)\n{\n    return value * 9 / 5 + 32;\n}\n```"
+            : "## Conversación\nUn diseño limpio, con `código inline` y espacio para leer.\n\n"
             + "### Métodos principales\n- `AskAsync(ct)` — Explorar el proyecto\n- `ActAsync(ct)` — Ejecutar una tarea\n\n"
             + "```c#\npublic sealed class Scenarios\n{\n    // Una respuesta con estilos\n    public string Run() { return \"Listo\"; }\n    public int Count = 42;\n}\n```\n\n"
             + "La conversación conserva el foco y el historial.", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
         new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
             .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), content));
-        fx.StartTui();
+        var visualPolicies = scene is "models" or "picker" ? ModelPolicyHost.Create(Path.Combine(fx.Root, "visual-catalog")) : null;
+        if (visualPolicies is not null)
+        {
+            visualPolicies.RegisterChatGptModel("subscription-a", 8192, 2048);
+            visualPolicies.Set(new ModelPolicyKeyDto("chatgpt", "subscription-a"), 0,
+                "ObserveOnly", null, CancellationToken.None);
+        }
+        var visualTurn = scene == "activity" ? new TestTurn(fx) : null;
+        fx.StartTui(policies: visualPolicies, turnHost: visualTurn,
+            account: new TestAccount { Pending = true, Current = new(scene is "models" or "picker", null, null, false),
+                Catalog = new[] { new AvailableChatGptModel("subscription-a", "Subscription A"),
+                    new AvailableChatGptModel("subscription-b", "Subscription B") } });
         fx.Application.Invoke(() => fx.Application.Driver!.SetScreenSize(columns, rows));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == columns && fx.App.MainWindow.Frame.Height == rows,
             "el renderer debe completar el resize");
         Type(fx, "Escribe tu siguiente instrucción…");
-        if (scene == "sidebar")
+        if (scene == "activity")
+        {
+            KeyWithEffect(fx, KeyCode.Enter, () => visualTurn!.Started.IsSet, "turno activo para fotograma");
+            fx.Wait(() => fx.App.Activity!.Visible, "animación visible");
+            fx.Application.Invoke(() => { for (var tick = 0; tick < 7; tick++) fx.App.AnimateActivity(); });
+        }
+        else if (scene == "sidebar")
         {
             fx.InjectKey(new Key(KeyCode.F2));
             fx.Wait(() => fx.App.Sidebar!.Visible, "sidebar visible en fotograma");
@@ -63,6 +96,33 @@ public sealed class TuiWiringTests
             Type(fx, "/context");
             fx.InjectKey(new Key(KeyCode.Enter));
             fx.Wait(() => fx.App.Overlay is not null, "menú visible en fotograma");
+        }
+        else if (scene == "commands")
+        {
+            fx.Application.Invoke(() => fx.App.Composer!.Text = "/");
+            fx.Wait(() => fx.App.MainWindow!.SubViews.Any(view => view.Id == "omni-command-helper"), "helper disponible");
+        }
+        else if (scene is "models" or "picker")
+        {
+            if (scene == "models") OpenModelMaintenance(fx); else fx.InjectKey(new Key(KeyCode.F3));
+            fx.Wait(() => fx.App.Overlay is not null && fx.App.Overlay.SubViews.OfType<Button>()
+                .Any(b => b.Text.ToString().Contains("subscription-b"))
+                || (scene == "picker" && PickerItems(fx).Any(item => item.Contains("Subscription B"))), "catálogo descubierto visible");
+        }
+        else if (scene is "settings" or "account" or "login")
+        {
+            fx.InjectKey(new Key(KeyCode.F4));
+            fx.Wait(() => fx.App.Overlay is not null, "configuración visible");
+            if (scene != "settings")
+            {
+                Click(fx, "Cuenta ChatGPT");
+                fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Cuenta") == true, "cuenta visible");
+                if (scene == "login")
+                {
+                    Click(fx, "enlace de navegador");
+                    fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("TEST-CODE"), "autorización visible");
+                }
+            }
         }
         using var captured = new ManualResetEventSlim();
         Exception? captureError = null;
@@ -75,15 +135,68 @@ public sealed class TuiWiringTests
                 string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
-            if (!text.Contains(scene == "notice" ? "Aviso" : "Escribe tu siguiente", StringComparison.Ordinal)) return;
+            var marker = scene switch { "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            if (!text.Contains(marker, StringComparison.Ordinal)) return;
             if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
             try
             {
                 Assert.Equal(rows, cells.GetLength(0));
                 Assert.Equal(columns, cells.GetLength(1));
                 Assert.DoesNotContain("╭", text);
-                Assert.DoesNotContain("┌", text);
-                if (scene == "notice")
+                // Dialogs stay frameless; table content deliberately has grid borders.
+                if (scene != "table") Assert.DoesNotContain("┌", text);
+                if (scene is "settings" or "account" or "login")
+                {
+                    Assert.Contains(scene == "settings" ? "Modelos y permisos" : scene == "account" ? "código de dispositivo" : "Cancelar", text);
+                    Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
+                    Assert.False(fx.App.Composer!.HasFocus);
+                }
+                else if (scene == "models")
+                {
+                    Assert.Contains("Catálogo actualizado", text);
+                    Assert.Contains("subscription-a", text);
+                    Assert.Contains("Actualizar modelos", text);
+                    Assert.DoesNotContain("Registrar modelo", text);
+                    Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
+                    Assert.False(fx.App.Composer!.HasFocus);
+                }
+                else if (scene == "picker")
+                {
+                    Assert.Contains("Seleccionar modelo", text);
+                    Assert.DoesNotContain("Actualizar modelos", text);
+                    Assert.DoesNotContain("ObserveOnly", text);
+                    Assert.DoesNotContain("🗑", text);
+                }
+                else if (scene == "table")
+                {
+                    Assert.Contains("┌", text);
+                    Assert.Contains("┼", text);
+                    Assert.Contains("Paquete", text);
+                    Assert.Contains("react", text);
+                    Assert.DoesNotContain("| :---", text);
+                }
+                else if (scene == "activity")
+                {
+                    Assert.Contains("▮", text);
+                    Assert.True(fx.App.Activity!.Visible);
+                    var composer = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
+                    Assert.Equal(composer.Frame.Bottom, fx.App.Activity.Frame.Y);
+                    Assert.Equal(2, fx.App.Activity.Frame.X);
+                    Assert.Contains("Procesando", text);
+                    Assert.DoesNotContain("Procesando", fx.App.Status!.Text.ToString());
+                    Assert.DoesNotContain("%", fx.App.Status.Text.ToString());
+                }
+                else if (scene == "commands")
+                {
+                    Assert.Contains("/models", text);
+                    Assert.Contains("Seleccionar modelo", text);
+                    Assert.Contains("Tab completar", text);
+                    Assert.True(fx.App.Composer!.HasFocus);
+                    var helper = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper");
+                    var composer = fx.App.MainWindow.SubViews.Single(view => view.Id == "omni-composer");
+                    Assert.True(helper.Frame.Bottom <= composer.Frame.Y);
+                }
+                else if (scene == "notice")
                 {
                     Assert.Contains("Aviso", text);
                     Assert.Contains("OK", text);
@@ -94,7 +207,7 @@ public sealed class TuiWiringTests
                 {
                     Assert.Contains("Conversación", text);
                     Assert.Contains("AskAsync(ct)", text);
-                    Assert.Contains("Mensaje", text);
+                    Assert.DoesNotContain("Mensaje", text);
                     var inputRow = Enumerable.Range(0, rows).Single(y =>
                         string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme)).Contains("Escribe tu siguiente", StringComparison.Ordinal));
                     var helpRow = Enumerable.Range(0, rows).Single(y =>
@@ -135,6 +248,7 @@ public sealed class TuiWiringTests
         try { Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "captura del renderer completada"); }
         finally { fx.Application.LayoutAndDrawComplete -= capture; }
         if (captureError is not null) throw captureError;
+        visualTurn?.Release.Set();
     });
 
     [Fact]
@@ -178,6 +292,7 @@ public sealed class TuiWiringTests
         fx.Application.Invoke(() => fx.App.Conversation.SelectAll());
         fx.Wait(() => fx.App.Conversation.SelectedText.Contains("public void Run()"), "el código coloreado sigue siendo seleccionable");
         var selection = fx.App.Conversation.SelectedText;
+        Assert.DoesNotContain("┃", selection);
         Assert.False(selection.Contains('\u001b'), "la selección no debe incluir secuencias ANSI");
         // Exercise the actual Copy command without touching the user's clipboard.
         var clipboard = new FakeClipboard(false, false);
@@ -192,7 +307,226 @@ public sealed class TuiWiringTests
         Assert.True(fx.App.Composer!.HasFocus);
     });
 
+    [Theory]
+    [InlineData(48, false)]
+    [InlineData(80, false)]
+    [InlineData(140, false)]
+    [InlineData(48, true)]
+    [InlineData(80, true)]
+    [InlineData(140, true)]
+    public void Conversation_drawn_cells_cover_markdown_unicode_roles_and_plain_copy(int columns, bool noColor) => RunTuiTest(fx =>
+    {
+        var previous = Environment.GetEnvironmentVariable("NO_COLOR");
+        try
+        {
+            Environment.SetEnvironmentVariable("NO_COLOR", noColor ? "1" : null);
+            var run = fx.Server.LastRunId()!;
+            var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+            const string answer = "# ✅ QA título\nProsa **fuerte** y `inline`.\n- lista uno\n- lista dos 😊\n\n"
+                + "| Archivo | Estado |\n| :--- | ---: |\n| `a.cs` | ✅ |\n| `b.html` | 中文 |\n\n"
+                + "```c#\npublic int value = 42;\n```\nQA_FIN";
+            var stream = new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!);
+            Assert.Equal("ok", fx.Server.Send(WireEnvelope.Command(Ids.NewV7(),
+                "{\"cmd\":\"session.input\",\"text\":\"USER_QA **literal**\"}"), CancellationToken.None).Status);
+            var artifact = fx.Artifacts.PutText(answer, "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+            stream.Append(new AssistantMessageRecorded(run, lane, TurnId.New(), artifact));
+            fx.StartTui();
+            const int rows = 46;
+            fx.Application.Invoke(() => fx.Application.Driver!.SetScreenSize(columns, rows));
+            fx.Wait(() => fx.App.MainWindow!.Frame.Width == columns && fx.App.MainWindow.Frame.Height == rows, "tamaño de QA aplicado");
+            var frame = CaptureConversationFrame(fx, columns, rows, "QA_FIN");
+            var text = string.Join("\n", Enumerable.Range(0, rows).Select(y => string.Concat(Enumerable.Range(0, columns).Select(x => frame[y, x].Grapheme))));
+            foreach (var token in new[] { "QA título", "Prosa fuerte y inline.", "• lista uno", "• lista dos", "Archivo", "a.cs", "b.html", "public int value = 42;", "USER_QA **literal**", "┌", "┼", "└" })
+                Assert.True(text.Contains(token, StringComparison.Ordinal), "faltó contenido dibujado: " + token);
+            // A wide grapheme owns two physical cells; don't concatenate its continuation as prose.
+            var chinese = (from y in Enumerable.Range(0, rows) from x in Enumerable.Range(0, columns - 2)
+                where frame[y, x].Grapheme == "中" select (x, y)).ToArray();
+            var chineseStart = Assert.Single(chinese);
+            Assert.Equal("文", frame[chineseStart.y, chineseStart.x + 2].Grapheme);
+            Assert.False(text.Contains("```", StringComparison.Ordinal));
+            Assert.False(text.Contains("| :---", StringComparison.Ordinal));
+            Assert.False(text.Contains("Mensaje", StringComparison.Ordinal));
+            var allCells = frame.Cast<Terminal.Gui.Drawing.Cell>().ToArray();
+            Assert.Contains(allCells, cell => cell.Grapheme.Contains("😊", StringComparison.Ordinal));
+            Assert.Contains(allCells, cell => cell.Grapheme.Contains("✅", StringComparison.Ordinal));
+            if (noColor)
+            {
+                Assert.All(allCells.Where(cell => cell.Grapheme == "┃"), cell => Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Foreground));
+            }
+            else
+            {
+                foreach (var color in new[] { "#53B8F5", "#EF9A70", "#C8A0F5", "#67D4D0" })
+                    Assert.Contains(allCells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color(color));
+                Assert.Contains(allCells, cell => cell.Grapheme == "┃" && cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#B47CE7"));
+                Assert.Contains(allCells, cell => cell.Grapheme == "┃" && cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#4DBAC9"));
+                Assert.Contains(allCells, cell => cell.Attribute?.Background == new Terminal.Gui.Drawing.Color("#0A2330"));
+            }
+            var conversationRows = fx.App.Conversation!.GetAllLines();
+            Assert.All(conversationRows, line => Assert.True(Terminal.Gui.Text.StringExtensions.GetColumns(string.Concat(line.Select(cell => cell.Grapheme)), false) <= fx.App.Conversation.Viewport.Width));
+            var clipboard = new FakeClipboard(false, false);
+            fx.Application.Invoke(() =>
+            {
+                fx.Application.Driver!.Clipboard = clipboard;
+                fx.App.Conversation.SelectAll();
+                fx.App.Conversation.InvokeCommand(Command.Copy);
+            });
+            fx.Wait(() => clipboard.GetClipboardData()?.Contains("QA_FIN", StringComparison.Ordinal) == true, "contenido copiado completo");
+            var copied = clipboard.GetClipboardData()!;
+            Assert.Contains("public int value = 42;", copied);
+            Assert.Contains("USER_QA **literal**", copied);
+            Assert.Contains("😊", copied);
+            Assert.Contains("中文", copied);
+            Assert.False(copied.Contains('┃'));
+            Assert.False(copied.Contains('\u001b'));
+            Assert.True(fx.App.Composer!.HasFocus);
+        }
+        finally { Environment.SetEnvironmentVariable("NO_COLOR", previous); }
+    });
+
+    [Theory]
+    [InlineData("c#", "public int value = 42;", "public", "#C8A0F5")]
+    [InlineData("html", "<button class=\"qa\">Hola</button>", "button", "#67D4D0")]
+    [InlineData("progress", "DEFINE VARIABLE value AS INTEGER NO-UNDO.", "DEFINE", "#C8A0F5")]
+    public void Requested_languages_are_drawn_as_code_and_copied_without_markup_loss(string language, string source, string token, string color) => RunTuiTest(fx =>
+    {
+        var previous = Environment.GetEnvironmentVariable("NO_COLOR");
+        try
+        {
+            Environment.SetEnvironmentVariable("NO_COLOR", null);
+            var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+            var artifact = fx.Artifacts.PutText("```" + language + "\n" + source + "\n```\nQA_LANG_FIN", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+            new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+                .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), artifact));
+            fx.StartTui();
+            var frame = CaptureConversationFrame(fx, 80, 25, "QA_LANG_FIN");
+            var lines = Enumerable.Range(0, 25).Select(y => string.Concat(Enumerable.Range(0, 80).Select(x => frame[y, x].Grapheme))).ToArray();
+            var row = Array.FindIndex(lines, line => line.Contains(source, StringComparison.Ordinal));
+            Assert.True(row >= 0, "el código completo debe dibujarse literalmente");
+            var tokenStart = lines[row].IndexOf(token, StringComparison.Ordinal);
+            for (var offset = 0; offset < token.Length; offset++)
+                Assert.Equal(new Terminal.Gui.Drawing.Color(color), frame[row, tokenStart + offset].Attribute?.Foreground);
+            var clipboard = new FakeClipboard(false, false);
+            fx.Application.Invoke(() =>
+            {
+                fx.Application.Driver!.Clipboard = clipboard;
+                fx.App.Conversation!.SelectAll();
+                fx.App.Conversation.InvokeCommand(Command.Copy);
+            });
+            fx.Wait(() => clipboard.GetClipboardData()?.Contains(source, StringComparison.Ordinal) == true, "copia literal del código");
+            Assert.False(clipboard.GetClipboardData()!.Contains('\u001b'));
+        }
+        finally { Environment.SetEnvironmentVariable("NO_COLOR", previous); }
+    });
+
+    private static Terminal.Gui.Drawing.Cell[,] CaptureConversationFrame(TuiFixture fx, int columns, int rows, string marker)
+    {
+        using var captured = new ManualResetEventSlim();
+        Terminal.Gui.Drawing.Cell[,]? result = null;
+        EventHandler<EventArgs> handler = (_, _) =>
+        {
+            if (captured.IsSet) return;
+            var cells = fx.Application.Driver!.Contents!;
+            if (cells.GetLength(0) != rows || cells.GetLength(1) != columns) return;
+            var drawn = string.Join("\n", Enumerable.Range(0, rows).Select(y => string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
+            if (!drawn.Contains(marker, StringComparison.Ordinal)) return;
+            result = (Terminal.Gui.Drawing.Cell[,])cells.Clone();
+            captured.Set();
+        };
+        fx.Application.LayoutAndDrawComplete += handler;
+        try
+        {
+            fx.Application.Invoke(() => { fx.App.MainWindow!.SetNeedsLayout(); fx.App.MainWindow.SetNeedsDraw(); });
+            Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "fotograma completo de conversación dibujado");
+            Assert.Null(fx.LoopError);
+            return Assert.IsType<Terminal.Gui.Drawing.Cell[,]>(result);
+        }
+        finally { fx.Application.LayoutAndDrawComplete -= handler; }
+    }
+
+    [Fact]
+    public void Composer_grows_wraps_and_sends_all_lines_with_a_block_cursor() => RunTuiTest(fx =>
+    {
+        var host = new TestTurn(fx);
+        fx.StartTui(turnHost: host);
+        Type(fx, "primera línea");
+        fx.InjectKey(new Key(KeyCode.Enter | KeyCode.ShiftMask));
+        fx.Wait(() => fx.App.Composer!.Text.Contains('\n'), "Shift+Enter agrega salto sin enviar");
+        Assert.Equal(0, host.Calls);
+        foreach (var character in "segunda línea") fx.InjectKey(new Key(character));
+        fx.Wait(() => fx.App.Composer!.Text.Replace("\r\n", "\n") == "primera línea\nsegunda línea",
+            "la segunda línea se edita sin borrar la primera");
+        Assert.True(fx.App.Composer!.Multiline);
+        Assert.True(fx.App.Composer.WordWrap);
+        fx.Wait(() => fx.App.Composer!.Frame.Height == 2, "composer crece por salto de línea");
+        var panel = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
+        Assert.Equal(4, panel.Frame.Height);
+        fx.Wait(() => fx.App.Composer!.Cursor.Style == CursorStyle.SteadyBlock, "cursor de bloque dibujado");
+        Assert.True(fx.App.Composer!.Multiline);
+        Assert.True(fx.App.Composer.WordWrap);
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "Enter envía sin insertar otro salto");
+        Assert.Equal("primera línea\nsegunda línea", host.Input!.Replace("\r\n", "\n"));
+        fx.Wait(() => fx.App.Composer!.Frame.Height == 1, "composer vuelve a altura mínima");
+        host.Release.Set();
+        fx.Wait(() => !fx.App.Activity!.Visible, "turno finaliza");
+        Type(fx, new string('a', 100));
+        fx.Wait(() => fx.App.Composer!.Frame.Height >= 2, "texto largo crece por ajuste visual");
+    });
+
+    [Fact]
+    public void New_turn_follows_the_bottom_but_new_content_does_not_drag_a_reader() => RunTuiTest(fx =>
+    {
+        var host = new TestTurn(fx);
+        var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+        var artifact = fx.Artifacts.PutText(string.Join('\n', Enumerable.Range(0, 70).Select(i => "history " + i)), "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+        var stream = new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!);
+        stream.Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), artifact));
+        fx.StartTui(turnHost: host);
+        Type(fx, "siguiente pregunta");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "se envía turno nuevo");
+        fx.Wait(() => fx.App.Conversation!.CurrentRow >= 70, "enviar lleva al final del historial");
+        host.Release.Set();
+        fx.Wait(() => fx.App.Conversation!.Text.Contains("respuesta conectada"), "respuesta durable");
+        fx.Wait(() => fx.App.Conversation!.CurrentRow == fx.App.Conversation.GetAllLines().Count - 1,
+            "respuesta conserva seguimiento al final: cursor=" + fx.App.Conversation!.CurrentRow + " filas=" + fx.App.Conversation.GetAllLines().Count
+            + " scroll=" + fx.App.Conversation.VerticalScrollBar.Value + " visible=" + fx.App.Conversation.VerticalScrollBar.VisibleContentSize + " total=" + fx.App.Conversation.VerticalScrollBar.ScrollableContentSize);
+        fx.Application.Invoke(() => fx.App.Conversation!.SetFocus());
+        fx.InjectKey(new Key(KeyCode.Home | KeyCode.CtrlMask));
+        fx.Wait(() => fx.App.Conversation!.CurrentRow == 0, "usuario relee inicio");
+        var newArtifact = fx.Artifacts.PutText("mensaje mientras relees", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+        var currentLane = fx.Decoded<LaneCreated>().Last().LaneId;
+        new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+            .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, currentLane, TurnId.New(), newArtifact));
+        fx.Wait(() => fx.App.Conversation!.Text.Contains("mensaje mientras relees"), "contenido nuevo recibido");
+        Assert.Equal(0, fx.App.Conversation!.CurrentRow);
+        Assert.Equal(0, fx.App.Conversation.Viewport.Y);
+    });
+
     // ------------------------------------------------------------------ composer: foco, tecleo, envío
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Conversation_accents_do_not_leak_into_copy_even_without_color(bool noColor) => RunTuiTest(fx =>
+    {
+        var previous = Environment.GetEnvironmentVariable("NO_COLOR");
+        try
+        {
+            Environment.SetEnvironmentVariable("NO_COLOR", noColor ? "1" : null);
+            var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+            var text = "Literal ┃ must remain\n```c#\n    int x = 42;\n```";
+            var artifact = fx.Artifacts.PutText(text, "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+            new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+                .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), artifact));
+            fx.StartTui();
+            fx.Application.Invoke(() => fx.App.Conversation!.SelectAll());
+            fx.Wait(() => fx.App.Conversation!.SelectedText.Contains("int x = 42;"), "copiar cuerpo completo");
+            var selected = fx.App.Conversation!.SelectedText;
+            Assert.Equal(1, selected.Count(character => character == '┃'));
+            Assert.Contains("Literal ┃ must remain", selected);
+            Assert.DoesNotContain("┃  ◈", selected);
+            Assert.False(selected.Contains('\u001b'));
+        }
+        finally { Environment.SetEnvironmentVariable("NO_COLOR", previous); }
+    });
 
     [Fact]
     public void Composer_receives_initial_focus_types_and_submits_to_the_journal() => RunTuiTest(fx =>
@@ -220,6 +554,55 @@ public sealed class TuiWiringTests
     // ------------------------------------------------------------------ sidebar: F2 + resizes reales
 
     [Fact]
+    public void Composer_calls_turn_host_and_projects_its_durable_answer_without_blocking_keyboard() => RunTuiTest(fx =>
+    {
+        var host = new TestTurn(fx);
+        fx.StartTui(turnHost: host);
+        Type(fx, "hola conectado");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "Enter debe iniciar el runtime");
+        fx.Wait(() => fx.App.Activity?.Visible == true, "barra visible durante inferencia");
+        Assert.Equal(11, fx.App.Activity!.SubViews.Count);
+        var firstFrame = fx.App.Activity.SubViews.Select(cell => cell.GetScheme().Normal).ToArray();
+        Assert.All(firstFrame, cell => Assert.Contains(cell.Foreground,
+            new[] { "#12303D", "#205061", "#30788B", "#4DBAC9", "#83C6DE", "#B47CE7" }
+                .Select(value => new Terminal.Gui.Drawing.Color(value))));
+        fx.Application.Invoke(() => { for (var tick = 0; tick < 5; tick++) fx.App.AnimateActivity(); });
+        fx.Wait(() => !firstFrame.SequenceEqual(fx.App.Activity.SubViews.Select(cell => cell.GetScheme().Normal)), "la barra debe animarse");
+        Type(fx, "borrador");
+        fx.Wait(() => fx.App.Composer!.Text == "borrador", "el teclado sigue disponible durante inferencia");
+        Assert.Equal(1, host.Calls);
+        host.Release.Set();
+        fx.Wait(() => fx.App.Conversation!.Text.Contains("respuesta conectada"), "respuesta del runtime proyectada desde journal");
+        fx.Wait(() => fx.App.Activity.Visible == false, "la barra desaparece al terminar");
+        Assert.Contains("semilla de prueba", fx.App.Conversation!.Text);
+        fx.Wait(() => fx.App.Status!.Text!.ToString()!.Contains("Listo"), "estado completado visible");
+        Assert.Equal("borrador", fx.App.Composer!.Text);
+    });
+
+    private sealed class TestTurn(TuiFixture fixture) : ITuiTurnHost
+    {
+        public readonly ManualResetEventSlim Started = new(false);
+        public readonly ManualResetEventSlim Release = new(false);
+        public int Calls;
+        public string? Input;
+        public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Calls);
+            Input = input;
+            fixture.Server.Send(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"act\"," + JsonObj.Field("objective", input) + "}"), cancellationToken);
+            fixture.Server.Send(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"session.input\"," + JsonObj.Field("text", input) + "}"), cancellationToken);
+            Started.Set();
+            Release.Wait(cancellationToken);
+            var lane = fixture.Server.AcquireStore().ReadFrom(fixture.Server.LastSessionId()!, 1)
+                .Select(e => fixture.Server.AcquireCodecs().Decode(e)).OfType<LaneCreated>().Last().LaneId;
+            var content = fixture.Artifacts.PutText("respuesta conectada", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+            new EventStream(fixture.Server.AcquireStore(), fixture.Server.AcquireCodecs(), fixture.Server.LastSessionId()!)
+                .Append(new AssistantMessageRecorded(fixture.Server.LastRunId()!, lane, TurnId.New(), content));
+            return System.Threading.Tasks.Task.FromResult(0);
+        }
+    }
+
+    [Fact]
     public void Sidebar_and_conversation_respond_to_f2_and_real_screen_resizes() => RunTuiTest(fx =>
     {
         fx.StartTui();
@@ -238,6 +621,8 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.Sidebar!.Visible, "F2 debe abrir el sidebar");
         fx.Wait(() => fx.App.Sidebar!.Frame.Width == 44, "a 80 cols el sidebar Overlay mide 44");
         Assert.Equal(80, conversation.Frame.Width);
+        Assert.Equal(0, fx.App.Sidebar!.Frame.Y);
+        Assert.Equal(25, fx.App.Sidebar.Frame.Height);
 
         // Terminal ancha (120): el resize real del driver reencuadra la ventana; sidebar apilado a la derecha.
         fx.Application.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 120, 40));
@@ -245,11 +630,19 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.Sidebar!.Frame.Width == 40, "a 120 cols el sidebar apilado mide 40");
         Assert.Equal(80, fx.App.Sidebar!.Frame.X);
         Assert.Equal(80, conversation.Frame.Width); // 120 - 40 sidebar; no outer chrome
+        fx.Wait(() => fx.App.Composer!.SuperView!.Frame.Width == 78 && fx.App.Sidebar!.Frame.Height == 40,
+            "el compositor se limita a la columna izquierda y el panel ocupa toda la altura");
+        var composerFrame = fx.App.Composer!.SuperView!.Frame;
+        Assert.Equal(0, fx.App.Sidebar.Frame.Y);
+        Assert.Equal(40, fx.App.Sidebar.Frame.Height);
+        Assert.True(composerFrame.Right < fx.App.Sidebar.Frame.X);
+        Assert.Equal(80, fx.App.Status!.Frame.Width);
 
         // F2 cierra el sidebar: la conversación recupera el ancho completo.
         fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => !fx.App.Sidebar!.Visible, "F2 debe cerrar el sidebar");
         fx.Wait(() => conversation.Frame.Width == 120, "sin sidebar la conversación ocupa 120");
+        fx.Wait(() => fx.App.Composer!.SuperView!.Frame.Width == 118, "cerrar panel recupera el ancho del mensaje");
 
         // Vuelta a estrecho sin errores de layout.
         fx.Application.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 80, 25));
@@ -268,14 +661,45 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.Completion!.Text?.ToString().Contains("/plan") == true, "el catálogo real del Host completa /plan");
         Assert.Same(fx.App.MainWindow, fx.App.Completion!.SuperView);
         var composerPanel = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
-        Assert.True(fx.App.Completion.Frame.Y >= composerPanel.Frame.Bottom,
-            "las sugerencias de comandos deben quedar fuera y debajo del mensaje");
+        var helper = fx.App.MainWindow.SubViews.Single(view => view.Id == "omni-command-helper");
+        fx.Wait(() => helper.Frame.Height > 0, "helper dibujado");
+        Assert.True(helper.Frame.Bottom <= composerPanel.Frame.Y,
+            "el helper debe quedar encima del mensaje, sin taparlo");
+        Assert.Contains("Consultar el plan actual", helper.SubViews.OfType<ListView>().Single().Source!.ToList().Cast<object>().Single().ToString());
 
         fx.Application.Invoke(() => fx.App.Composer!.Text = "");
         Type(fx, "@src/");
         fx.Wait(() => fx.App.Completion!.Text?.ToString().Contains("src/Alpha.cs") == true, "el workspace real completa src/Alpha.cs");
         Assert.Contains("src/Beta.cs", fx.App.Completion!.Text?.ToString() ?? "");
         Assert.DoesNotContain(".git", fx.App.Completion!.Text?.ToString() ?? "");
+    });
+
+    [Fact]
+    public void Slash_helper_navigates_completes_and_esc_preserves_the_draft() => RunTuiTest(fx =>
+    {
+        fx.StartTui();
+        Type(fx, "/");
+        fx.Wait(() => fx.App.MainWindow!.SubViews.Any(view => view.Id == "omni-command-helper"), "slash abre helper");
+        var helper = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper");
+        var list = helper.SubViews.OfType<ListView>().Single();
+        Assert.True(list.Source!.Count > 5);
+        Assert.True(fx.App.Composer!.HasFocus);
+        KeyWithEffect(fx, KeyCode.CursorDown, () => list.SelectedItem == 1, "abajo selecciona siguiente comando");
+        KeyWithEffect(fx, KeyCode.CursorUp, () => list.SelectedItem == 0, "arriba recupera primero");
+        KeyWithEffect(fx, KeyCode.CursorUp, () => list.SelectedItem == list.Source.Count - 1, "wrap al último");
+        var expected = list.Source.ToList()[list.SelectedItem!.Value]!.ToString()!.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == expected + " ", "Tab completa sin ejecutar");
+        Assert.Null(fx.App.Overlay);
+        Assert.DoesNotContain(fx.App.MainWindow.SubViews, view => view.Id == "omni-command-helper");
+        fx.Application.Invoke(() => fx.App.Composer.Text = "/mod");
+        fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/models ", "Enter completa prefijo sin ejecutarlo");
+        Assert.Null(fx.App.Overlay);
+        fx.Application.Invoke(() => fx.App.Composer.Text = "/pl");
+        fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "helper reabierto");
+        KeyWithEffect(fx, KeyCode.Esc, () => !fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "Esc cierra solo sugerencias");
+        Assert.Equal("/pl", fx.App.Composer.Text);
+        Assert.True(fx.App.Composer.HasFocus);
     });
 
     // ------------------------------------------------------------------ comandos slash → overlays con datos del Host
@@ -444,7 +868,7 @@ public sealed class TuiWiringTests
         fx.StartTui(ModelPolicyHost.Create(Path.Combine(fx.Root, "policies"),
             new[] { new ModelRegistryModelDescriptor("model", "local", 4096, 3072, 1024) }));
 
-        KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "F3 no abre el overlay de modelos");
+        OpenModelMaintenance(fx);
         fx.Wait(() => fx.App.Overlay is not null, "F3 abre el overlay de modelos");
         var select = fx.App.Overlay!.SubViews.OfType<Button>()
             .Single(button => (button.Text?.ToString() ?? "").Contains("local/model"));
@@ -465,8 +889,23 @@ public sealed class TuiWiringTests
 
         // Borrar la política re-dispara el onboarding la próxima vez (ADR-0044 §5).
         var delete = fx.App.Overlay!.SubViews.OfType<Button>()
-            .Single(button => (button.Text?.ToString() ?? "").Contains("Eliminar política"));
+            .Single(button => button.Id == "delete-policy-model");
+        Assert.Equal("🗑", delete.Text);
+        var modelRow = fx.App.Overlay.SubViews.OfType<Button>().Single(b => b.Text.ToString().Contains("local/model"));
+        fx.Wait(() => delete.Frame.Width > 0, "fila de modelos dibujada");
+        Assert.Equal(modelRow.Frame.Y, delete.Frame.Y);
+        Assert.True(modelRow.Frame.Right <= delete.Frame.X, "el icono no se superpone al modelo");
         fx.Application.Invoke(() => delete.InvokeCommand(Command.Accept));
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Eliminar política") == true, "borrado pide confirmación");
+        Assert.NotNull(fx.App.Policies.Get(key, CancellationToken.None));
+        Click(fx, "Cancelar");
+        fx.Wait(() => fx.App.Overlay?.SubViews.OfType<Button>().Any(b => b.Id == "delete-policy-model") == true, "cancelar vuelve al listado");
+        Assert.NotNull(fx.App.Policies.Get(key, CancellationToken.None));
+        var deleteAgain = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Id == "delete-policy-model");
+        fx.Application.Invoke(() => deleteAgain.InvokeCommand(Command.Accept));
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Eliminar política") == true, "confirmación visible");
+        Click(fx, "Eliminar");
+        fx.Wait(() => fx.App.Policies.Get(key, CancellationToken.None) is null, "confirmar elimina la política");
         Assert.Null(fx.App.Policies.Get(key, CancellationToken.None));
         fx.Wait(() => fx.App.Overlay!.SubViews.OfType<Button>()
             .Any(button => (button.Text?.ToString() ?? "").Contains("requiere configuración")), "el listado vuelve a mostrar el modelo sin configurar");
@@ -475,6 +914,285 @@ public sealed class TuiWiringTests
         fx.Application.Invoke(() => selectAgain.InvokeCommand(Command.Accept));
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Configurar modelo") == true, "el onboarding reaparece tras borrar la política");
     });
+
+    [Fact]
+    public void Settings_account_navigation_does_not_start_login_and_logout_requires_confirmation() => RunTuiTest(fx =>
+    {
+        var account = new TestAccount { Current = new(true, "***1234", null, false) };
+        fx.StartTui(account: account);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "F4 abre configuración");
+        Click(fx, "Cuenta ChatGPT");
+        fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("***1234"), "estado enmascarado visible");
+        Assert.Equal(0, account.LoginCalls);
+        Click(fx, "Cerrar sesión…");
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("¿Cerrar") == true, "confirmación visible");
+        Assert.Equal(0, account.LogoutCalls);
+        Click(fx, "Cancelar");
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Cuenta") == true, "cancelar conserva cuenta");
+        Assert.Equal(0, account.LogoutCalls);
+        Click(fx, "Cerrar sesión…");
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("¿Cerrar") == true, "confirmación visible");
+        Click(fx, "Sí, cerrar sesión");
+        fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("Sin sesión"), "logout actualiza estado");
+        Assert.Equal(1, account.LogoutCalls);
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Login_completes_or_shows_safe_error_without_leaving_orphan_panel(bool fail) => RunTuiTest(fx =>
+    {
+        var account = new TestAccount { Fail = fail };
+        fx.StartTui(account: account);
+        Type(fx, "/login"); fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Cuenta") == true, "login accesible por comando");
+        Click(fx, "código de dispositivo");
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Aviso") == true, "resultado de login visible");
+        Assert.Equal(1, account.LoginCalls);
+        Assert.True(account.DeviceCode);
+        Assert.Contains(fail ? "No se pudo iniciar" : "correctamente", OverlayText(fx.App.Overlay!));
+        Assert.DoesNotContain("SECRET", OverlayText(fx.App.Overlay!));
+        Assert.Single(fx.App.MainWindow!.SubViews.OfType<FrameView>(), v => v.Title?.Contains("Login") == true || v.Title?.Contains("Cuenta") == true || v.Title?.Contains("Aviso") == true);
+        fx.InjectKey(new Key(KeyCode.Esc)); fx.Wait(() => fx.App.Overlay is null, "Esc vuelve al compositor");
+        Assert.True(fx.App.Composer!.HasFocus);
+    });
+
+    [Fact]
+    public void Esc_cancels_pending_login_and_ignores_late_progress() => RunTuiTest(fx =>
+    {
+        var account = new TestAccount { Pending = true };
+        fx.StartTui(account: account);
+        Type(fx, "/login"); fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => fx.App.Overlay is not null, "cuenta visible");
+        Click(fx, "enlace de navegador");
+        fx.Wait(() => account.LoginCalls == 1, "login iniciado explícitamente");
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.Wait(() => account.Cancelled && fx.App.Overlay is null, "Esc cancela petición propia");
+        fx.Application.Invoke(() => fx.App.PollOnce());
+        Assert.Null(fx.App.Overlay);
+        Assert.True(fx.App.Composer!.HasFocus);
+    });
+
+    [Fact]
+    public void Model_catalog_scrolls_and_wraps_in_both_directions_without_switching_until_enter() => RunTuiTest(fx =>
+    {
+        var models = Enumerable.Range(0, 30).Select(i => new ModelRegistryModelDescriptor($"model{i:00}", "local", 4096, 3072, 1024)).ToArray();
+        var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "paged-policies"), models);
+        policies.Set(new ModelPolicyKeyDto("local", "model29"), 0, "PatchOnly", null, CancellationToken.None);
+        fx.StartTui(policies);
+        KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "modelos visibles");
+        var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+        Assert.Equal(30, list.Source!.Count);
+        Assert.True(list.HasFocus);
+        Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay.BorderStyle);
+        Assert.True(fx.App.Overlay.SubViews.Single(v => v.Id == "omni-menu-title").Visible);
+        Assert.True(fx.App.Overlay.ViewportSettings.HasFlag(ViewportSettingsFlags.Transparent));
+        KeyWithEffect(fx, KeyCode.CursorUp, () => list.SelectedItem == 29, "arriba desde primero vuelve al último");
+        Assert.True(list.Viewport.Y > 0);
+        Assert.Null(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default));
+        KeyWithEffect(fx, KeyCode.CursorDown, () => list.SelectedItem == 0, "abajo desde último vuelve al primero");
+        Assert.Equal(0, list.Viewport.Y);
+        for (var index = 1; index < 30; index++)
+        {
+            var expected = index;
+            KeyWithEffect(fx, KeyCode.CursorDown, () => list.SelectedItem == expected, "desplazar lista");
+        }
+        Assert.True(list.Viewport.Y > 0);
+        fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => fx.App.Overlay is null, "seleccionar cierra el selector sin abrir mantenimiento");
+        Assert.DoesNotContain(fx.App.MainWindow!.SubViews.OfType<FrameView>(), v => v.Title?.Contains("Modelos") == true);
+        Assert.Contains("model29", fx.App.Status!.Text.ToString());
+        Assert.True(fx.App.Composer!.HasFocus);
+    });
+
+    [Fact]
+    public void Logged_in_user_discovers_and_selects_subscription_models_without_manual_ids() => RunTuiTest(fx =>
+    {
+        var account = new TestAccount { Current = new(true, "***1234", null, false),
+            Catalog = new[] { new AvailableChatGptModel("subscription-test-model", "Subscription Test", 8192, 2048) } };
+        var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "catalog"));
+        fx.StartTui(policies, account);
+        KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "modelos visibles");
+        fx.Wait(() => PickerItems(fx).Any(item => item.Contains("Subscription Test")), "catálogo consultado automáticamente");
+        Assert.DoesNotContain(fx.App.Overlay!.SubViews.OfType<Button>(), b => b.Text.ToString().Contains("Añadir"));
+        ChoosePickerItem(fx, "Subscription Test");
+        fx.Wait(() => fx.App.Overlay is null, "selección rápida sin formulario de política");
+        Assert.True(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.ObserveOnly);
+        Assert.Contains("subscription-test-model", fx.App.Status!.Text.ToString());
+        Assert.Equal("chatgpt", policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.Key.ProviderId);
+        Assert.Equal(0, account.LoginCalls);
+    });
+
+    [Fact]
+    public void Refreshed_catalog_replaces_retired_model_and_failure_preserves_selection() => RunTuiTest(fx =>
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "live-catalog"));
+        var workspace = ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory);
+        policies.RegisterChatGptModel("retired-test", 8192, 2048);
+        policies.Select(workspace, new ModelPolicyKeyDto("chatgpt", "retired-test"), "retired-test", true, ct);
+        var account = new TestAccount { Current = new(true, "***1234", null, false),
+            Catalog = new[] { new AvailableChatGptModel("available-test", "Available test") } };
+        fx.StartTui(policies, account);
+        OpenModelMaintenance(fx);
+        fx.Wait(() => fx.App.Status!.Text.ToString().Contains("available-test"), "modelo retirado sustituido");
+        Assert.Equal("available-test", policies.CurrentSelection(workspace, ct)!.ModelId);
+        Assert.True(policies.CurrentSelection(workspace, ct)!.ObserveOnly);
+        fx.Wait(() => fx.App.Overlay?.SubViews.OfType<Button>()
+            .Any(b => b.Text.ToString().Contains("available-test")) == true,
+            "el menú reconstruido debe estar disponible antes de inspeccionarlo");
+        Assert.DoesNotContain(fx.App.Overlay!.SubViews.OfType<Button>(), b => b.Text.ToString().Contains("retired-test"));
+        account.FailCatalog = true;
+        Click(fx, "Actualizar modelos");
+        fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Consulta fallida"), "error visible sin perder selección");
+        Assert.Equal("available-test", policies.CurrentSelection(workspace, ct)!.ModelId);
+        Assert.DoesNotContain("SECRET", OverlayText(fx.App.Overlay!));
+        Assert.True(account.CatalogCalls >= 2);
+        Assert.Equal(0, account.LoginCalls);
+    });
+
+    private static void Click(TuiFixture fx, string text)
+    {
+        var button = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Text.ToString().Contains(text));
+        fx.Application.Invoke(() => button.InvokeCommand(Command.Accept));
+    }
+
+    private static string[] PickerItems(TuiFixture fx) => fx.App.Overlay?.SubViews.OfType<ListView>().SingleOrDefault()
+        ?.Source?.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray() ?? Array.Empty<string>();
+
+    [Fact]
+    public void Model_palette_search_filters_safely_and_shortcuts_open_maintenance() => RunTuiTest(fx =>
+    {
+        var models = new[] { new ModelRegistryModelDescriptor("alpha", "local", 4096, 3072, 1024),
+            new ModelRegistryModelDescriptor("beta", "local", 4096, 3072, 1024) };
+        var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "search-policies"), models);
+        fx.StartTui(policies);
+        KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "selector visible");
+        var search = fx.App.Overlay!.SubViews.OfType<TextField>().Single();
+        Assert.True(fx.App.Conversation!.Dimmed);
+        KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "Ctrl+F enfoca búsqueda");
+        fx.Application.Invoke(() => search.Text = "BETA");
+        fx.Wait(() => PickerItems(fx).Length == 1, "filtro ignora mayúsculas");
+        Assert.Contains("beta", PickerItems(fx).Single());
+        fx.Application.Invoke(() => search.Text = "no-such-model");
+        fx.Wait(() => PickerItems(fx).Length == 0, "búsqueda vacía segura");
+        fx.InjectKey(new Key(KeyCode.Enter));
+        Assert.NotNull(fx.App.Overlay);
+        Assert.Null(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default));
+        fx.Application.Invoke(() => search.Text = "");
+        fx.Wait(() => PickerItems(fx).Length == 2, "limpiar recupera lista completa");
+        KeyWithEffect(fx, KeyCode.M | KeyCode.CtrlMask, () => fx.App.Overlay?.Id == "omni-panel", "Ctrl+M abre mantenimiento");
+        Assert.Contains("Modelos", fx.App.Overlay!.Title);
+        Assert.False(fx.App.Conversation!.Dimmed);
+    });
+
+    private static void ChoosePickerItem(TuiFixture fx, string text)
+    {
+        var index = Array.FindIndex(PickerItems(fx), item => item.Contains(text));
+        Assert.True(index >= 0);
+        fx.Application.Invoke(() =>
+        {
+            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+            list.SelectedItem = index;
+            list.InvokeCommand(Command.Accept);
+        });
+    }
+
+    private static void OpenModelMaintenance(TuiFixture fx)
+    {
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        Click(fx, "Modelos y permisos");
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Modelos") == true, "mantenimiento de modelos visible");
+    }
+
+    [Fact]
+    public void Maintenance_arrows_move_vertically_and_scroll_without_page_buttons() => RunTuiTest(fx =>
+    {
+        var models = Enumerable.Range(0, 30).Select(i => new ModelRegistryModelDescriptor($"model{i:00}", "local", 4096, 3072, 1024)).ToArray();
+        var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "scrolling-maintenance"), models);
+        fx.StartTui(policies);
+        OpenModelMaintenance(fx);
+        bool Focused(string id) => fx.App.Overlay?.SubViews.OfType<Button>().Any(b => b.Id == id && b.HasFocus) == true;
+        fx.Wait(() => Focused("model-policy-model00"), "primera fila enfocada");
+        Assert.DoesNotContain(fx.App.Overlay!.SubViews.OfType<Button>(), b => b.Text.ToString() is "Anterior" or "Siguiente");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => Focused("model-policy-model01"), "abajo no salta al checkbox");
+        KeyWithEffect(fx, KeyCode.CursorRight, () => Focused("model-visibility-model01"), "derecha sí pasa a acciones");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => Focused("model-visibility-model02"), "bajar conserva columna de acciones");
+        KeyWithEffect(fx, KeyCode.CursorLeft, () => Focused("model-policy-model02"), "izquierda vuelve a la fila");
+        for (var index = 3; index < 30; index++)
+        {
+            var id = $"model-policy-model{index:00}";
+            KeyWithEffect(fx, KeyCode.CursorDown, () => Focused(id), "desplazamiento continuo hasta el final");
+        }
+        KeyWithEffect(fx, KeyCode.CursorDown, () => Focused("model-policy-model00"), "final vuelve al inicio");
+        KeyWithEffect(fx, KeyCode.CursorUp, () => Focused("model-policy-model29"), "inicio vuelve al final");
+        Assert.Null(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default));
+        Assert.All(models, model => Assert.True(policies.IsVisibleInPicker(model.ProviderId, model.Id)));
+    });
+
+    [Fact]
+    public void Picker_visibility_is_persistent_and_independent_of_policy_and_selection() => RunTuiTest(fx =>
+    {
+        var directory = Path.Combine(fx.Root, "visibility-policies");
+        var models = new[] { new ModelRegistryModelDescriptor("visible-model", "local", 8192, 8192, 2048) };
+        var policies = ModelPolicyHost.Create(directory, models);
+        var key = new ModelPolicyKeyDto("local", "visible-model");
+        policies.Set(key, 0, "PatchOnly", null, CancellationToken.None);
+        var workspace = ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory);
+        policies.Select(workspace, key, key.ModelId, false, CancellationToken.None);
+        fx.StartTui(policies);
+        OpenModelMaintenance(fx);
+        var toggle = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Id == "model-visibility-visible-model");
+        fx.Application.Invoke(() => toggle.InvokeCommand(Command.Accept));
+        fx.Wait(() => !policies.IsVisibleInPicker("local", "visible-model"), "ocultar preferencia persistida");
+        Assert.Equal("PatchOnly", policies.Get(key, CancellationToken.None)!.Category);
+        Assert.Equal("visible-model", policies.CurrentSelection(workspace, CancellationToken.None)!.ModelId);
+        using (var reopened = ModelPolicyHost.Create(directory, models))
+            Assert.False(reopened.IsVisibleInPicker("local", "visible-model"));
+        fx.InjectKey(new Key(KeyCode.Esc)); fx.Wait(() => fx.App.Overlay is null, "mantenimiento cerrado");
+        KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "selector vacío visible");
+        Assert.DoesNotContain(PickerItems(fx), item => item.Contains("visible-model"));
+        Assert.DoesNotContain(fx.App.Overlay.SubViews.OfType<Button>(), b => b.Id?.StartsWith("delete-policy-") == true);
+        fx.InjectKey(new Key(KeyCode.Esc)); fx.Wait(() => fx.App.Overlay is null, "selector cerrado");
+        OpenModelMaintenance(fx);
+        var show = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Id == "model-visibility-visible-model");
+        fx.Application.Invoke(() => show.InvokeCommand(Command.Accept));
+        fx.Wait(() => policies.IsVisibleInPicker("local", "visible-model"), "mostrar nuevamente");
+        fx.InjectKey(new Key(KeyCode.Esc)); fx.Wait(() => fx.App.Overlay is null, "mantenimiento cerrado");
+        KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "selector visible");
+        Assert.Contains(PickerItems(fx), item => item.Contains("visible-model"));
+    });
+
+    private sealed class TestAccount : ITuiAccountHost
+    {
+        public ChatGptSessionStatus Current = new(false, null, null, false);
+        public bool Fail, Pending, DeviceCode;
+        public volatile bool Cancelled;
+        public int LoginCalls, LogoutCalls, CatalogCalls;
+        public bool FailCatalog;
+        public IReadOnlyList<AvailableChatGptModel> Catalog = Array.Empty<AvailableChatGptModel>();
+        public Task<IReadOnlyList<AvailableChatGptModel>> ListModelsAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref CatalogCalls);
+            return FailCatalog
+                ? System.Threading.Tasks.Task.FromException<IReadOnlyList<AvailableChatGptModel>>(new IOException("SECRET catalog error"))
+                : System.Threading.Tasks.Task.FromResult(Catalog);
+        }
+        public ChatGptSessionStatus Status() => Current;
+        public void Logout() { LogoutCalls++; Current = new(false, null, null, false); }
+        public async Task<ChatGptSessionStatus> LoginAsync(bool deviceCode, Action<string> progress, CancellationToken cancellationToken)
+        {
+            DeviceCode = deviceCode; Interlocked.Increment(ref LoginCalls);
+            progress("https://example.invalid/authorize\nTEST-CODE");
+            if (Pending)
+            {
+                try { await System.Threading.Tasks.Task.Delay(System.Threading.Timeout.Infinite, cancellationToken); }
+                catch (OperationCanceledException) { Cancelled = true; progress("late progress"); throw; }
+            }
+            if (Fail) throw new InvalidOperationException("SECRET raw provider failure");
+            Current = new(true, "***1234", null, false); return Current;
+        }
+    }
 
     // ------------------------------------------------------------------ fixture
 
@@ -566,6 +1284,7 @@ public sealed class TuiWiringTests
         public OmniServer Server = null!;
         public IArtifactStore Artifacts = null!;
         public TuiApp App = null!;
+        private ModelPolicyHost? _fixturePolicies;
         public IApplication Application = null!;
         public IInputInjector Injector = null!;
 
@@ -614,8 +1333,12 @@ public sealed class TuiWiringTests
                 Assert.Fail(message + " (loop de la TUI caido: " + LoopError + ")");
         }
 
-        public void StartTui(ModelPolicyHost? policies = null)
+        public void StartTui(ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null)
         {
+            // Wiring tests must never discover models with the developer's real account.
+            _fixturePolicies = policies ?? ModelPolicyHost.Create(Path.Combine(Root, "fixture-policies"),
+                new[] { new ModelRegistryModelDescriptor("local-worker", "local", 8192, 8192, 2048) });
+            account ??= new TestAccount();
             // El build 2.6.0-develop.61 de Terminal.Gui tiene una ventana de carrera en
             // View.RenderLineCanvas (relee _pendingOverlappedCellMaps sin guard tras el null-check)
             // que a veces vuelca Begin/LayoutAndDraw en procesos sin TTY. Un vuelco mataría el
@@ -624,7 +1347,7 @@ public sealed class TuiWiringTests
             for (var attempt = 1; ; attempt++)
             {
                 _loopError = null;
-                App = new TuiApp(Server, "es", policies);
+            App = new TuiApp(Server, "es", _fixturePolicies, account, turnHost);
                 Application = Terminal.Gui.App.Application.Create();
                 try
                 {
@@ -744,6 +1467,7 @@ public sealed class TuiWiringTests
             try { Application?.RequestStop(); } catch (Exception) { }
             try { Loop?.Join(5000); } catch (Exception) { }
             try { Application?.Dispose(); } catch (Exception) { }
+            _fixturePolicies?.Dispose();
             try { Directory.Delete(Root, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }

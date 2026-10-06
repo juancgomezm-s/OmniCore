@@ -47,7 +47,7 @@ public sealed class ModelPolicyCommands
     }
 
     /// <summary>Entrada desde CliApp. input/output/interactive inyectables para tests.</summary>
-    public static System.Threading.Tasks.Task<int> Run(string[] args, TextReader? input = null,
+    public static async System.Threading.Tasks.Task<int> Run(string[] args, TextReader? input = null,
         TextWriter? output = null, bool? interactive = null, string? dataDirectoryOverride = null,
         IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null,
         CancellationToken cancellationToken = default)
@@ -57,7 +57,21 @@ public sealed class ModelPolicyCommands
         var tty = interactive ?? (!Console.IsInputRedirected && !Console.IsOutputRedirected);
         // null → DefaultPlatformPaths aplica OMNICORE_DATA_DIR o el directorio de la plataforma.
         // providers.yaml/models.yaml del usuario, nunca del cwd (INV-029, ADR-0039).
-        var host = ModelPolicyHost.Create(dataDirectoryOverride, registryOverride);
+        using var host = ModelPolicyHost.Create(dataDirectoryOverride, registryOverride);
+        if (args.Length >= 2 && args[1] == "refresh")
+        {
+            try
+            {
+                var catalog = await new TuiAccountHost().ListModelsAsync(cancellationToken,
+                    args.Contains("--diagnose") ? writer.WriteLine : null).ConfigureAwait(false);
+                var changed = host.ApplyChatGptCatalog(catalog, ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), cancellationToken);
+                writer.WriteLine("ChatGPT: " + catalog.Count + " modelos disponibles");
+                foreach (var model in catalog) writer.WriteLine(model.Id + " · " + model.DisplayName);
+                if (changed is not null) writer.WriteLine(changed);
+                return 0;
+            }
+            catch (Exception) { writer.WriteLine("No se pudo consultar el catálogo ChatGPT. Selección conservada."); return 1; }
+        }
         // Mismo data dir y registro: la cualificación comparte el user.db del usuario (M5).
         var qualification = ModelQualificationHost.Create(dataDirectoryOverride, registryOverride);
         var loc = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
@@ -67,7 +81,7 @@ public sealed class ModelPolicyCommands
         var workspace = "cli|" + Path.GetFullPath(".");
         var commands = new ModelPolicyCommands(host, qualification, loc, reader, writer, tty,
             workspace, cancellationToken);
-        return System.Threading.Tasks.Task.FromResult(commands.Dispatch(args));
+        return commands.Dispatch(args);
     }
 
     private int Dispatch(string[] args)
@@ -644,7 +658,8 @@ public sealed class ModelPolicyCommands
 
     private void Usage()
     {
-        _output.WriteLine("uso: omni model list | select <modelo> | policy show|set|delete|history <modelo> | qualify <modelo>");
+        _output.WriteLine("uso: omni model list | refresh | select <modelo> | policy show|set|delete|history <modelo> | qualify <modelo>");
+        _output.WriteLine("  omni model refresh  consulta el catálogo ChatGPT actual sin generar ni usar API keys");
         _output.WriteLine("  omni model select <m>       selecciona y abre onboarding si no hay política");
         _output.WriteLine("  omni model policy set <m> --category <c> [--revision N] [--note \"t\"]");
         _output.WriteLine("  omni model policy delete <m> [--revision N]");

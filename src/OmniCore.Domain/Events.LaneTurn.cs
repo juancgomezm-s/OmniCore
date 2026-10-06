@@ -93,18 +93,18 @@ public record ModelCompleted(TurnId TurnId, ArtifactRef? ResponseArtifact) : Dom
 /// <summary>Una invocación concreta al modelo comienza; no contiene estado opaco del provider.</summary>
 public record ModelStepStarted(TurnId TurnId, int StepIndex, string ModelId, long ContextBudget,
     string ToolMode, string? ReasoningKind, int? ReasoningBudgetTokens,
-    ArtifactRef? ContextSnapshotRef) : DomainEventPayload
+    ArtifactRef? ContextSnapshotRef, long? ModelContextCapacity = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("model_step.started");
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>Uso confirmado de una invocación, durable aunque el Turn luego quede suspendido.</summary>
 public record ModelStepCompleted(TurnId TurnId, int StepIndex, TokenUsage Usage, StopReason StopReason,
-    ArtifactRef? ResponseArtifact, string Day, decimal? CostUsd) : DomainEventPayload
+    ArtifactRef? ResponseArtifact, string Day, decimal? CostUsd, TokenUsageFields? ReportedUsageFields = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("model_step.completed");
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>TurnCompleted: el Turn terminó normalmente.</summary>

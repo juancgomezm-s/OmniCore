@@ -66,6 +66,8 @@ public sealed record ModelPolicySelectionDto(
     ModelPolicyRecordDto? Policy,
     ModelPolicyDraftDto? Draft);
 
+public sealed record WorkspaceModelSelectionDto(ModelPolicyKeyDto Key, string ModelId, bool ObserveOnly);
+
 /// <summary>Entrada primitiva del historial de políticas.</summary>
 public sealed record ModelPolicyHistoryEntryDto(
     long Revision,
@@ -91,10 +93,18 @@ public sealed class ModelPolicyRevisionConflict : Exception
 /// API de políticas de modelo para clientes. Los tipos de dominio, persistencia y registro quedan
 /// detrás de esta frontera; las operaciones propagan el token de cancelación al servicio subyacente.
 /// </summary>
-public sealed class ModelPolicyHost
+public sealed class ModelPolicyHost : IDisposable
 {
     private readonly ModelPolicyService _service;
-    private readonly IReadOnlyList<ModelRegistryModelDescriptor> _models;
+    private ModelPickerPreferences _pickerPreferences = null!;
+    private IReadOnlyList<ModelRegistryModelDescriptor> _models;
+    private string? _configDirectory;
+    private string? _discoveredProvider;
+    private IReadOnlyList<AvailableChatGptModel>? _availableChatGptModels;
+    public bool SupportsDiscovery => _configDirectory is not null;
+    public bool IsSubscriptionModel(string id) => _configDirectory is not null
+        && OmniHost.LoadModelRegistry(_configDirectory) is { } registry
+        && registry.Model(id) is { } model && registry.Provider(model.ProviderId)?.Profile == "codex";
 
     private ModelPolicyHost(ModelPolicyService service, ModelRegistry registry)
     {
@@ -105,6 +115,11 @@ public sealed class ModelPolicyHost
     /// <summary>Modelos configurados en el orden del registro, representados solo con campos primitivos.</summary>
     public IReadOnlyList<ModelRegistryModelDescriptor> Models => _models;
 
+    public bool IsVisibleInPicker(string providerId, string modelId) => _pickerPreferences.IsVisible(providerId, modelId);
+    public void SetVisibleInPicker(string providerId, string modelId, bool visible, CancellationToken ct) =>
+        _pickerPreferences.SetVisible(providerId, modelId, visible, ct);
+    public void Dispose() { _pickerPreferences.Dispose(); _service.Dispose(); GC.SuppressFinalize(this); }
+
     /// <summary>Crea una fachada respaldada por el almacén de políticas y el registro de modelos del usuario.</summary>
     public static ModelPolicyHost Create(string? dataDirectoryOverride = null,
         IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null)
@@ -113,7 +128,55 @@ public sealed class ModelPolicyHost
         var registry = registryOverride is null
             ? OmniHost.LoadUserModelRegistry(OmniHost.CreatePlatformPaths(dataDirectoryOverride))
             : ToRegistry(registryOverride);
-        return new ModelPolicyHost(service, registry);
+        return new ModelPolicyHost(service, registry) { _pickerPreferences = new ModelPickerPreferences(OmniHost.CreatePlatformPaths(dataDirectoryOverride).UserDatabasePath), _configDirectory = registryOverride is null
+            ? OmniHost.CreatePlatformPaths(dataDirectoryOverride).ConfigDirectory : null };
+    }
+
+    public static string WorkspaceSelectionId(string workspaceRoot) => "cli|" + Path.GetFullPath(workspaceRoot);
+
+    public WorkspaceModelSelectionDto? CurrentSelection(string workspaceId, CancellationToken cancellationToken)
+    {
+        var selection = _service.CurrentSelection(workspaceId, cancellationToken);
+        return selection is null ? null : new(ToDtoKey(selection.Key), selection.ModelId, selection.EphemeralObserveOnly);
+    }
+
+    public void ReloadModels()
+    {
+        if (_configDirectory is not null) _models = OmniHost.LoadModelRegistry(_configDirectory).Models().Select(ToDescriptor).ToArray();
+        if (_availableChatGptModels is not null)
+        {
+            var known = _models;
+            _models = known.Where(m => m.ProviderId != _discoveredProvider)
+                .Concat(_availableChatGptModels.Select(m => known.Single(k => k.Id == m.Id && k.ProviderId == _discoveredProvider))).ToArray();
+        }
+    }
+
+    public string? DisplayName(string modelId) => _availableChatGptModels?.FirstOrDefault(m => m.Id == modelId)?.DisplayName;
+
+    /// <summary>Apply only a successfully fetched account catalog; never infer withdrawal from errors.</summary>
+    public string? ApplyChatGptCatalog(IReadOnlyList<AvailableChatGptModel> catalog, string workspaceId, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (_configDirectory is null) throw new InvalidOperationException("Catalog is read-only.");
+        var providerId = ModelCatalogRegistration.RegisterChatGpt(_configDirectory, catalog);
+        _discoveredProvider = providerId;
+        _availableChatGptModels = catalog.ToArray();
+        ReloadModels();
+        var current = CurrentSelection(workspaceId, ct);
+        if (current?.Key.ProviderId != providerId || catalog.Any(m => m.Id == current.ModelId)) return null;
+        var replacement = catalog.FirstOrDefault(m => m.IsDefault) ?? catalog.FirstOrDefault();
+        if (replacement is null) return "No hay modelos disponibles en esta cuenta; no se enviarán solicitudes.";
+        // A replacement must not inherit mutation/tool permissions from the old model.
+        Select(workspaceId, new ModelPolicyKeyDto(providerId, replacement.Id), replacement.Id, true, ct);
+        return current.ModelId + " → " + replacement.Id + " (ObserveOnly)";
+    }
+
+    /// <summary>Registers a user-entered subscription model, without discovery, tokens or inference calls.</summary>
+    public void RegisterChatGptModel(string modelId, int contextWindow, int maxOutput)
+    {
+        if (_configDirectory is null) throw new InvalidOperationException("catalog is read-only");
+        ModelCatalogRegistration.RegisterChatGpt(_configDirectory, modelId, contextWindow, maxOutput);
+        ReloadModels();
     }
 
     /// <summary>Lista todas las políticas de modelo almacenadas.</summary>

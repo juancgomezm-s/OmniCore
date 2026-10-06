@@ -127,6 +127,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         var tools = new SortedDictionary<int, ToolAccumulator>();
         var opaqueFields = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         var usage = new TokenUsage(0, 0, 0, 0, 0);
+        var usageReported = false;
         var stop = StopReason.EndTurn;
         var sawChunk = false;
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
@@ -146,6 +147,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
                 sawChunk = true;
                 if (chunk.Usage is not null)
                 {
+                    usageReported = true;
                     usage = new TokenUsage(chunk.Usage.PromptTokens, chunk.Usage.CompletionTokens, 0, 0, 0);
                     yield return new UsageUpdated(usage);
                 }
@@ -214,7 +216,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
             JsonSerializer.Serialize(opaqueFields, OpenAiJsonContext.Default.DictionaryStringJsonElement));
         var finalResponse = new ModelResponse(content, stop, usage, state,
             new ProviderMetadata(response.Headers.TryGetValues("x-request-id", out var ids) ? ids.FirstOrDefault() ?? "" : "",
-                request.Model.Model.ToString(), null));
+                request.Model.Model.ToString(), null), usageReported ? TokenUsageFields.Input | TokenUsageFields.Output : TokenUsageFields.None);
         yield return new ResponseCompleted(finalResponse);
     }
 
@@ -371,7 +373,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
             new ProviderState("openai.chat.ProviderOpaque/" + (string.IsNullOrEmpty(model) ? response.Model ?? "" : model),
                 JsonSerializer.Serialize(opaque, OpenAiJsonContext.Default.DictionaryStringJsonElement));
         return new ModelResponse(content, MapFinishReason(choice?.FinishReason), usage, state,
-            new ProviderMetadata(requestId, response.Model ?? model, null));
+            new ProviderMetadata(requestId, response.Model ?? model, null), response.Usage is null ? TokenUsageFields.None : TokenUsageFields.Input | TokenUsageFields.Output);
     }
 
     private static StopReason MapFinishReason(string? finish) => finish switch

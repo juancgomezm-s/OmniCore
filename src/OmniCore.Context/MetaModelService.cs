@@ -14,15 +14,17 @@ public sealed class MetaModelService
     private readonly IContextEventSink _events;
     private readonly ModelSelection _selection;
     private readonly Func<string, string> _redact;
+    private readonly Func<TokenUsage, decimal?>? _costEstimator;
 
     public MetaModelService(IModelProvider provider, IArtifactStore artifacts, IContextEventSink events,
-        ModelSelection selection, Func<string, string>? redact = null)
+        ModelSelection selection, Func<string, string>? redact = null, Func<TokenUsage, decimal?>? costEstimator = null)
     {
         _provider = provider;
         _artifacts = artifacts;
         _events = events;
         _selection = selection;
         _redact = redact ?? (text => text);
+        _costEstimator = costEstimator;
     }
 
     public string Fingerprint(string operation)
@@ -54,6 +56,10 @@ public sealed class MetaModelService
                 + safeInput) }) },
             "You are a deterministic context summarization service. Preserve uncertainty and redact secrets.",
             Array.Empty<ToolDefinition>(), ToolChoice.None(), null, null, null, null);
+        TokenUsage? usage = null;
+        var fields = TokenUsageFields.None;
+        decimal? Cost() => usage is not null && fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
+            ? _costEstimator?.Invoke(usage) : null;
         try
         {
             var result = "";
@@ -61,7 +67,11 @@ public sealed class MetaModelService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (evt is ResponseCompleted completed)
+                {
+                    usage = completed.Response.Usage;
+                    fields = completed.Response.ReportedUsageFields;
                     result = string.Join("\n", completed.Response.Content.OfType<TextBlock>().Select(b => b.Text));
+                }
                 else if (evt is ResponseFailed failed)
                     throw new InvalidOperationException("MetaModelService failed: " + failed.ErrorType);
             }
@@ -71,13 +81,13 @@ public sealed class MetaModelService
             if (result.Length > maxCharacters) result = result[..maxCharacters].TrimEnd() + "…";
             var output = _artifacts.PutText(result, "text/plain", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
             await _events.AppendAsync(new MetaModelInvocationCompleted(invocationId, runId, operation,
-                modelFingerprint, output), cancellationToken).ConfigureAwait(false);
+                modelFingerprint, output, usage, Cost(), fields), cancellationToken).ConfigureAwait(false);
             return result;
         }
         catch (Exception ex)
         {
             await _events.AppendAsync(new MetaModelInvocationFailed(invocationId, runId, operation,
-                modelFingerprint, ex.GetType().Name), cancellationToken).ConfigureAwait(false);
+                modelFingerprint, ex.GetType().Name, usage, Cost(), fields), CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }

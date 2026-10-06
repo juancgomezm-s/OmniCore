@@ -117,6 +117,10 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_failed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1))
@@ -554,10 +558,10 @@ public sealed class Typed
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
 
     public static CodecPair ModelStepStarted() =>
-        Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted);
+        Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 2);
 
     public static CodecPair ModelStepCompleted() =>
-        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted);
+        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 2);
 
     public static CodecPair TurnCompleted() =>
         Of(EventType.Of("turn.completed"), EventJsonContext.Default.TurnCompleted);
@@ -668,8 +672,8 @@ public sealed class Typed
         Of(EventType.Of("meta_model.invocation_started"), EventJsonContext.Default.MetaModelInvocationStarted);
 
     public static CodecPair MetaModelInvocationCompleted() =>
-        Of(EventType.Of("meta_model.invocation_completed"), EventJsonContext.Default.MetaModelInvocationCompleted);
+        Of(EventType.Of("meta_model.invocation_completed"), EventJsonContext.Default.MetaModelInvocationCompleted, currentVersion: 2);
 
     public static CodecPair MetaModelInvocationFailed() =>
-        Of(EventType.Of("meta_model.invocation_failed"), EventJsonContext.Default.MetaModelInvocationFailed);
+        Of(EventType.Of("meta_model.invocation_failed"), EventJsonContext.Default.MetaModelInvocationFailed, currentVersion: 2);
 }

@@ -25,6 +25,7 @@ public sealed class ExplorerTurn
     private readonly Func<ModelRequest, CancellationToken, ModelResponse> _complete;
 
     private readonly IModelProvider? _metaModelProvider;
+    private readonly long? _modelContextCapacity;
 
     private readonly IToolExecutor _tools;
 
@@ -159,7 +160,7 @@ public sealed class ExplorerTurn
         bool enforceDefaultSpendCaps = false, decimal sessionCapUsd = 5m, decimal dailyCapUsd = 20m,
         QuestionnaireInteractionService? questionnaires = null,
         Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null,
-        IModelProvider? metaModelProvider = null)
+        IModelProvider? metaModelProvider = null, long? modelContextCapacity = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -183,6 +184,7 @@ public sealed class ExplorerTurn
         _questionnaires = questionnaires;
         _questionnaireResponder = questionnaireResponder;
         _metaModelProvider = metaModelProvider;
+        _modelContextCapacity = modelContextCapacity;
     }
 
     /// <summary>Journal del Turn (tests: para abrir en él el Run al que pertenece el Turn).</summary>
@@ -413,14 +415,15 @@ public sealed class ExplorerTurn
                     stream.Append(new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
                         _selection.ContextBudget, _selection.ToolMode.ToString(),
                         _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
-                        PersistContextSnapshot(materialized, _selection.ContextBudget)), DurabilityClass.Barrier);
+                        PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity), DurabilityClass.Barrier);
                     resolved = _complete(request, cancellationToken);
                     continuation = resolved.State;
                     usage = CombineUsage(usage, resolved.Usage);
                     turnUsage = CombineUsage(turnUsage, resolved.Usage);
                     var stepResponse = string.Join("\n", resolved.Content.OfType<TextBlock>()
                         .Select(block => _redaction.Redact(block.Text)));
-                    var stepCost = _pricing?.CostUsd(resolved.Usage);
+                    var stepCost = resolved.ReportedUsageFields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
+                        ? _pricing?.CostUsd(resolved.Usage) : null;
                     var completedDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
                         System.Globalization.CultureInfo.InvariantCulture);
                     var stepArtifact = _artifacts.PutText(
@@ -428,7 +431,7 @@ public sealed class ExplorerTurn
                         "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse,
                         Sensitivity.Sensitive);
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
-                        resolved.StopReason, stepArtifact, completedDay, stepCost), DurabilityClass.Barrier);
+                        resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields), DurabilityClass.Barrier);
                     guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
                     if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
                     if (budget.MaxCostUsd is not null
@@ -682,7 +685,13 @@ public sealed class ExplorerTurn
                 var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
                     ArtifactKind.ModelResponse, Sensitivity.Sensitive);
                 artifactId = artifact.Hash.ToString();
-                stream.Append(new ModelCompleted(turnId, artifact));
+                var conversation = _artifacts.PutText(safeResponse, "text/markdown",
+                    ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+                stream.AppendBatch(new DomainEventPayload[]
+                {
+                    new ModelCompleted(turnId, artifact),
+                    new AssistantMessageRecorded(runId, laneId, turnId, conversation),
+                }, DurabilityClass.Standard);
             }
 
             stream.Append(new TurnCompleted(turnId));
@@ -698,13 +707,15 @@ public sealed class ExplorerTurn
             {
                 // Started → … → Abandoned (terminal); NUNCA Completed tras Abandoned (state machine).
                 if (started)
-                    stream.Append(new TurnAbandoned(turnId, "turn falló: " + _redaction.Redact(ex.Message ?? "")));
+                    stream.Append(ex is OperationCanceledException
+                        ? new TurnInterrupted(turnId)
+                        : new TurnAbandoned(turnId, "turn falló: " + _redaction.Redact(ex.Message ?? "")));
             }
             catch (Exception)
             {
             }
 
-            return new TurnResult(null, StopReason.Error, steps, usage, allToolCalls.ToArray(), null);
+            return new TurnResult(null, ex is OperationCanceledException ? StopReason.Cancelled : StopReason.Error, steps, usage, allToolCalls.ToArray(), null);
         }
     }
 
@@ -1140,7 +1151,7 @@ public sealed class ExplorerTurn
         return string.Join("\n", parts.ToArray());
     }
 
-    private List<ModelMessage> LoadConversation(EventStream stream, RunId runId)
+    internal List<ModelMessage> LoadConversation(EventStream stream, RunId runId)
     {
         var history = new List<ModelMessage>();
         var questionnaireCalls = new HashSet<string>(StringComparer.Ordinal);
@@ -1188,12 +1199,13 @@ public sealed class ExplorerTurn
 
         foreach (var evt in stream.EventsSince(1))
         {
+            var type = evt.Type.ToString();
             if (evt.RunId is null || !evt.RunId.ToString().Equals(runId.ToString(), StringComparison.Ordinal))
             {
-                continue;
+                // The chat belongs to the session. Only plain user/assistant history crosses Runs;
+                // tool calls, results, plans and interactions retain their original Run boundary.
+                if (evt.RunId is null || type is not ("user_input.received" or "model.completed")) continue;
             }
-
-            var type = evt.Type.ToString();
             if (type == "user_input.received")
             {
                 var input = _codecs.Decode(evt) as UserInputReceived;
@@ -1434,7 +1446,7 @@ public sealed class ExplorerTurn
             if (_metaModelProvider is not null)
             {
                 metaModel = new MetaModelService(_metaModelProvider, _artifacts,
-                    new ContextStreamEventSink(stream), _selection, _redaction.Redact);
+                    new ContextStreamEventSink(stream), _selection, _redaction.Redact, usage => _pricing?.CostUsd(usage));
                 try
                 {
                     summary = metaModel.SummarizeAsync(runId, "CompressContext", material,

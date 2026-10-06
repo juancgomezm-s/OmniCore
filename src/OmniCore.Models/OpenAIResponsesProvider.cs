@@ -188,7 +188,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                 {
                     w.WriteStartObject();
                     w.WriteString("type", "function");
-                    w.WriteString("name", tool.Name);
+                    w.WriteString("name", WireToolName(tool.Name));
                     w.WriteString("description", tool.Description);
                     w.WritePropertyName("parameters");
                     WriteRawJsonOrEmptyObject(w, tool.InputSchemaJson);
@@ -199,7 +199,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                 {
                     w.WriteStartObject("tool_choice");
                     w.WriteString("type", "function");
-                    w.WriteString("name", request.ToolChoice.ToolName);
+                    w.WriteString("name", WireToolName(request.ToolChoice.ToolName));
                     w.WriteEndObject();
                 }
                 else
@@ -263,7 +263,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         w.WriteStartObject();
                         w.WriteString("type", "function_call");
                         w.WriteString("call_id", ids[call.Id.ToString()]);
-                        w.WriteString("name", call.ToolName);
+                        w.WriteString("name", WireToolName(call.ToolName));
                         w.WriteString("arguments", string.IsNullOrWhiteSpace(call.ArgumentsJson) ? "{}" : call.ArgumentsJson);
                         w.WriteEndObject();
                         break;
@@ -379,7 +379,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         var item = root.GetProperty("item");
                         if (!items.TryGetValue(index, out var acc)) items[index] = acc = new ItemAccumulator(Str(item, "type") ?? "");
                         acc.Done = item.Clone();
-                        if (acc.ToContentBlock() is { } block) yield return new BlockCompleted(index, block);
+                        if (acc.ToContentBlock() is { } block) yield return new BlockCompleted(index, RestoreToolName(block, request));
                         break;
                     }
                     case "response.completed":
@@ -413,8 +413,9 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         var input = Long(u, "input_tokens");
         var output = Long(u, "output_tokens");
         var cached = u.TryGetProperty("input_tokens_details", out var id) && id.ValueKind == JsonValueKind.Object ? Long(id, "cached_tokens") : 0;
+        var written = id.ValueKind == JsonValueKind.Object ? Long(id, "cache_write_tokens") : 0;
         var reasoning = u.TryGetProperty("output_tokens_details", out var od) && od.ValueKind == JsonValueKind.Object ? Long(od, "reasoning_tokens") : 0;
-        return new TokenUsage(input, output, cached, 0, reasoning);
+        return new TokenUsage(input, output, cached, written, reasoning);
     }
 
     private static ModelResponse BuildResponse(JsonElement body, SortedDictionary<int, ItemAccumulator> items, TokenUsage usage,
@@ -424,7 +425,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         var reasoningItems = new List<JsonElement>();
         foreach (var acc in items.Values)
         {
-            if (acc.ToContentBlock() is { } block) content.Add(block);
+            if (acc.ToContentBlock() is { } block) content.Add(RestoreToolName(block, request));
             if (acc.Kind == "reasoning" && acc.Done is { } done && done.TryGetProperty("encrypted_content", out var enc) &&
                 enc.ValueKind == JsonValueKind.String)
                 reasoningItems.Add(done);
@@ -456,7 +457,36 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         }
         var requestId = http.Headers.TryGetValues("x-request-id", out var ids) ? ids.FirstOrDefault() ?? "" : "";
         return new ModelResponse(content, stop, usage, state,
-            new ProviderMetadata(requestId, Str(body, "model") ?? request.Model.Model.ToString(), Str(body, "service_tier")));
+            new ProviderMetadata(requestId, Str(body, "model") ?? request.Model.Model.ToString(), Str(body, "service_tier")), UsageFields(body));
+    }
+
+    private static TokenUsageFields UsageFields(JsonElement body)
+    {
+        if (!body.TryGetProperty("usage", out var u) || u.ValueKind != JsonValueKind.Object) return TokenUsageFields.None;
+        var fields = TokenUsageFields.None;
+        if (u.TryGetProperty("input_tokens", out var input) && input.TryGetInt64(out _)) fields |= TokenUsageFields.Input;
+        if (u.TryGetProperty("output_tokens", out var output) && output.TryGetInt64(out _)) fields |= TokenUsageFields.Output;
+        if (u.TryGetProperty("input_tokens_details", out var i) && i.ValueKind == JsonValueKind.Object)
+        {
+            if (i.TryGetProperty("cached_tokens", out var read) && read.TryGetInt64(out _)) fields |= TokenUsageFields.CacheRead;
+            if (i.TryGetProperty("cache_write_tokens", out var write) && write.TryGetInt64(out _)) fields |= TokenUsageFields.CacheWrite;
+        }
+        if (u.TryGetProperty("output_tokens_details", out var o) && o.ValueKind == JsonValueKind.Object &&
+            o.TryGetProperty("reasoning_tokens", out var reasoning) && reasoning.TryGetInt64(out _)) fields |= TokenUsageFields.Reasoning;
+        return fields;
+    }
+
+    // Provider aliases never become canonical tool IDs or bypass the effective catalog.
+    internal static string WireToolName(string name) => name.Length is > 0 and <= 64
+        && !name.StartsWith("omni_", StringComparison.Ordinal)
+        && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-') ? name
+        : "omni_" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(name))).ToLowerInvariant()[..48];
+
+    private static ContentBlock RestoreToolName(ContentBlock block, ModelRequest request)
+    {
+        if (block is not ToolCallBlock call) return block;
+        var definition = request.Tools.FirstOrDefault(tool => WireToolName(tool.Name) == call.ToolName);
+        return definition is null ? block : call with { ToolName = definition.Name };
     }
 
     private static string? Str(JsonElement obj, string name) =>

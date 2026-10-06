@@ -34,6 +34,8 @@ public sealed class OmniCliRuntime
 
     /// <summary>Entrada plain provista por OmniCore.Cli; null cuando no existe un TTY interactivo.</summary>
     public Func<QuestionnairePromptDto, QuestionnaireResponseDto?>? QuestionnaireInput { get; set; }
+    /// <summary>False for GUI/TUI hosts: pending interactions are rendered by the client, never Console.ReadLine.</summary>
+    public bool UseConsoleInput { get; set; } = true;
 
     private string Text(LocalizedText text) => Resolve(text, Localize);
 
@@ -67,6 +69,15 @@ public sealed class OmniCliRuntime
         cancellationToken.ThrowIfCancellationRequested();
         return Server();
     }
+
+    /// <summary>Output guidance, not a substitute for tool permissions or completion gates.</summary>
+    internal static string TurnInstruction(bool executingAct) =>
+        (executingAct
+            ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
+            : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.")
+        + " Answer in the conversation. For examples, demonstrations, or rendering tests, include the requested code, Markdown tables, and explanation directly in your final response."
+        + " Do not create or modify workspace files unless the user explicitly requests file changes. Do not replace a requested inline answer with links to generated files."
+        + " A conversational example does not require filesystem tools or a new plan. Preserve explicit user requests to edit files and all approval and completion requirements.";
 
     /// <summary>Ejecuta un turno Explorer real, componiendo provider, políticas y persistencia.</summary>
     public Task<int> AskAsync(string question, Action<string> writeLine, CancellationToken cancellationToken)
@@ -181,8 +192,11 @@ public sealed class OmniCliRuntime
         SessionId session, RunId run, LaneId lane, string prompt, string? origin) =>
         FollowUpQueue.TryQueue(store, codecs, session, run, lane, prompt, origin);
 
+    internal Task<int> ConversationAsync(string prompt, Action<string> writeLine, CancellationToken cancellationToken) =>
+        RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true);
+
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool conversationOnly = false)
     {
         var paths = OmniHost.CreatePlatformPaths();
         var workspaceData = OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
@@ -195,6 +209,9 @@ public sealed class OmniCliRuntime
         }
         var registry = loaded.Registry;
         var trust = new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+        using var policyService = OmniHost.CreateModelPolicyService(null);
+        var workspaceSelectionId = ModelPolicyHost.WorkspaceSelectionId(_workspaceRoot);
+        var storedSelection = policyService.CurrentSelection(workspaceSelectionId, cancellationToken);
         WorkspaceConfigurationResult workspaceConfig;
         try
         {
@@ -236,8 +253,16 @@ public sealed class OmniCliRuntime
         // Elección explícita (escalación en curso, OMNI_MODEL o defaultModel del workspace) siempre gana;
         // si no la hay y el usuario configuró routing:, elige el router por tipo de tarea (M5).
         var explicitModel = _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
-            ?? workspaceConfig.Settings?.DefaultModel;
-        if (_escalatedModel is not null) modelDefinition = registry.Model(_escalatedModel);
+            ?? workspaceConfig.Settings?.DefaultModel ?? storedSelection?.ModelId;
+        if (explicitModel is not null)
+        {
+            modelDefinition = ResolveExplicitModel(loaded, explicitModel);
+            if (modelDefinition is null)
+            {
+                writeLine("Selected model is not registered. Open Models and select a configured model.");
+                return 1;
+            }
+        }
         else if (explicitModel is null)
         {
             try
@@ -258,9 +283,31 @@ public sealed class OmniCliRuntime
             }
         }
         var providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
+        if (providerDescription?.Profile == "codex")
+        {
+            try
+            {
+                using var catalogPolicies = ModelPolicyHost.Create();
+                var catalog = await new TuiAccountHost().ListModelsAsync(cancellationToken).ConfigureAwait(false);
+                var changed = catalogPolicies.ApplyChatGptCatalog(catalog, workspaceSelectionId, cancellationToken);
+                if (changed is not null) writeLine(changed);
+                storedSelection = policyService.CurrentSelection(workspaceSelectionId, cancellationToken);
+                if (_escalatedModel is null && Environment.GetEnvironmentVariable("OMNI_MODEL") is null
+                    && workspaceConfig.Settings?.DefaultModel is null && storedSelection is not null)
+                    explicitModel = storedSelection.ModelId;
+                if (!catalog.Any(m => m.Id == (explicitModel ?? modelDefinition?.Id)))
+                {
+                    writeLine("No available ChatGPT model. Refresh Models or sign in again."); return 1;
+                }
+                loaded = OmniHost.LoadUserConfiguration(paths); registry = loaded.Registry;
+                modelDefinition = registry.Model(explicitModel ?? modelDefinition!.Id);
+                providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception) { writeLine("ChatGPT catalog unavailable; selection preserved. Retry before sending."); return 1; }
+        }
         var secretRef = providerDescription?.Auth.SecretRef ?? "qwen";
-        var model = _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL") ?? workspaceConfig.Settings?.DefaultModel
-            ?? modelDefinition?.Id;
+        var model = modelDefinition?.Id ?? explicitModel;
         var baseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? providerDescription?.BaseUrl
             ?? "http://127.0.0.1:8080/v1";
         if (providerDescription is not null && !OmniHost.IsProviderFamilySupported(providerDescription.Family))
@@ -307,7 +354,15 @@ public sealed class OmniCliRuntime
 
             var server = Server(workspaceData);
             string workingState = "";
-            if (!act)
+            if (conversationOnly)
+            {
+                var input = server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
+                    + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt)
+                    + "," + JsonObj.Field("mode", "plan") + "}"), cancellationToken);
+                if (input.Status != "ok") throw new InvalidOperationException(input.Error ?? "Conversation input rejected");
+                workingState = ReadWorkingState(server, cancellationToken);
+            }
+            else if (!act)
             {
                 workingState = ReadWorkingState(server, cancellationToken);
                 if (workingState.Length == 0)
@@ -376,13 +431,14 @@ public sealed class OmniCliRuntime
             var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(harnessValue)));
             var contextPolicyHash = ComputeContextPolicyHash(harness.ContextManagement, usableContext);
-            var policyService = OmniHost.CreateModelPolicyService(
-                act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"));
             var modelKey = ModelPolicyKey.For(modelDefinition?.ProviderId ?? "local", model);
             EffectiveModelPolicy effectivePolicy;
             try
             {
-                effectivePolicy = policyService.Effective(modelKey, harness, cancellationToken);
+                effectivePolicy = storedSelection is not null && storedSelection.ModelId == modelDefinition?.Id
+                    && storedSelection.Key.ProviderId == modelDefinition.ProviderId
+                    ? policyService.EffectiveForSelection(workspaceSelectionId, harness, cancellationToken)
+                    : policyService.Effective(modelKey, harness, cancellationToken);
             }
             catch (Exception)
             {
@@ -419,7 +475,7 @@ public sealed class OmniCliRuntime
                 writeLine(Text(LocalizedText.Of("cli.runtime.managedHost.active")));
             }
 
-            var executingAct = act || server.CurrentRunMode() == RunMode.Act;
+            var executingAct = !conversationOnly && (act || server.CurrentRunMode() == RunMode.Act);
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             _usageContext = (provider, loaded.Pricing(model), baseUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
@@ -431,7 +487,7 @@ public sealed class OmniCliRuntime
             var workspaceRoot = _workspaceRoot;
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
             var audit = new FileAuditSink(paths.DataDirectory);
-            var interactive = !Console.IsInputRedirected;
+            var interactive = UseConsoleInput && !Console.IsInputRedirected;
             var interactionResponder = CreateInteractionResponder(writeLine, locale);
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
@@ -458,15 +514,14 @@ public sealed class OmniCliRuntime
                 }
                 return questionnaireService.ResolvedOutcome(sessionId, interactionId);
             }
-            var turn = new ExplorerTurn((request, token) => provider.Complete(request, token), executor,
+            var turn = new ExplorerTurn((request, token) => server.Observability.Complete(sessionId, provider, request,
+                modelDefinition?.ContextWindow, token), executor,
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
                 server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
                 loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey,
                 questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
-                metaModelProvider: provider);
-            var instruction = executingAct
-                ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
-                : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.";
+                metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
+            var instruction = TurnInstruction(executingAct);
             if (questionnaireService.Pending(sessionId).FirstOrDefault() is { } pendingQuestion)
             {
                 var pendingSchema = questionnaireService.SchemaFor(
@@ -543,13 +598,14 @@ public sealed class OmniCliRuntime
                     var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive);
-                    var actTurn = new ExplorerTurn((request, token) => provider.Complete(request, token),
+                    var actTurn = new ExplorerTurn((request, token) => server.Observability.Complete(sessionId, provider, request,
+                        modelDefinition?.ContextWindow, token),
                         actExecutor, actTools.Catalog(), materializer, fingerprint, selection,
                         server.AcquireStore(), server.AcquireCodecs(), artifacts, audit,
                         new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
                         providerDescription?.Auth.Kind == AuthKind.ApiKey,
                         questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
-                 metaModelProvider: provider);
+                        metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",
@@ -623,6 +679,12 @@ public sealed class OmniCliRuntime
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
             if (result.StopReason != StopReason.EndTurn || result.FinalText is null)
             {
+                if (result.StopReason == StopReason.Error)
+                {
+                    var failure = server.AcquireStore().ReadFrom(sessionId, 1)
+                        .Select(server.AcquireCodecs().Decode).OfType<TurnAbandoned>().LastOrDefault();
+                    if (failure is not null) writeLine(RedactSensitive(failure.Reason));
+                }
                 writeLine(Text(LocalizedText.Of("coder.completion.invalid")));
                 return 1;
             }
@@ -776,7 +838,7 @@ public sealed class OmniCliRuntime
 
     private Func<InteractionRequested, string?> CreateInteractionResponder(Action<string> writeLine, string locale) => request =>
     {
-        if (Console.IsInputRedirected) return null;
+        if (!UseConsoleInput || Console.IsInputRedirected) return null;
         var titleKey = request.Kind == InteractionKind.WeakSandboxConsent
             ? "interaction.weak_sandbox.title" : "interaction.permission.title";
         writeLine(Text(LocalizedText.Of(titleKey)));
@@ -816,7 +878,7 @@ public sealed class OmniCliRuntime
 
     private string? ReadPlanApprovalOption(Action<string> writeLine, string locale)
     {
-        if (Console.IsInputRedirected) return null;
+        if (!UseConsoleInput || Console.IsInputRedirected) return null;
         writeLine(Text(LocalizedText.Of("interaction.plan_approval.title")));
         writeLine("[1] " + Text(LocalizedText.Of("interaction.plan_approval.approve_execute")));
         writeLine("[2] " + Text(LocalizedText.Of("interaction.plan_approval.approve_only")));
@@ -906,6 +968,12 @@ public sealed class OmniCliRuntime
     public static void LogoutChatGpt() =>
         OmniHost.CreateChatGptAuth(OmniHost.CreatePlatformPaths()).Logout(CancellationToken.None);
 
+    internal static ModelDefinition? ResolveExplicitModel(LoadedUserConfiguration loaded, string modelId)
+    {
+        try { return loaded.Registry.Resolve(modelId); }
+        catch (UnknownModelException) { return null; }
+    }
+
     /// <summary>
     /// Uso de la sesión para la status line (ADR-0031 §3): tokens y costo desde el journal, cuota solo
     /// si el provider la informó. Null si todavía no hubo ningún Turn con modelo en este proceso.
@@ -918,6 +986,16 @@ public sealed class OmniCliRuntime
         var windows = context.Provider is IReportsRateLimits reporter ? reporter.LastRateLimits : [];
         return SessionUsageReporter.Build(tokens, cost, complete, context.Pricing?.IsComplete == true,
             OmniHost.IsPrivateHost(context.BaseUrl), windows, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>Read-only account queries through official CLI login; no model prompt and no renderer credentials.</summary>
+    public async Task<ProviderQuotaSnapshot?> RefreshProviderQuotaAsync(string providerId, CancellationToken cancellationToken = default)
+    {
+        if (_server?.LastSessionId() is not { } session) return null;
+        var quota = await new SubscriptionQuotaService().QueryAsync(providerId, cancellationToken).ConfigureAwait(false);
+        // Do not apply an asynchronous account result to another session after navigation.
+        if (_server.LastSessionId() == session) _server.Observability.SetQuota(session, quota);
+        return quota;
     }
 
     /// <summary>ADR-0044: el router no manda una tarea escritora a un modelo sin política de mutación suficiente.</summary>

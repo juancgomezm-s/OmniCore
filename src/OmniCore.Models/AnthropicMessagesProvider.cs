@@ -278,6 +278,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     {
         var blocks = new SortedDictionary<int, BlockAccumulator>();
         long input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
+        var usageFields = TokenUsageFields.None;
         var stop = StopReason.EndTurn;
         var model = request.Model.Model.ToString();
         var sawMessageStop = false;
@@ -322,10 +323,14 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                             if (message.TryGetProperty("usage", out var u))
                             {
                                 input = Long(u, "input_tokens");
+                                if (u.TryGetProperty("input_tokens", out _)) usageFields |= TokenUsageFields.Input;
+                                if (u.TryGetProperty("output_tokens", out _)) usageFields |= TokenUsageFields.Output;
+                                if (u.TryGetProperty("cache_read_input_tokens", out _)) usageFields |= TokenUsageFields.CacheRead;
+                                if (u.TryGetProperty("cache_creation_input_tokens", out _)) usageFields |= TokenUsageFields.CacheWrite;
                                 cacheRead = Long(u, "cache_read_input_tokens");
                                 cacheWrite = Long(u, "cache_creation_input_tokens");
                                 output = Long(u, "output_tokens");
-                                yield return new UsageUpdated(new TokenUsage(input, output, cacheRead, cacheWrite, 0));
+                                yield return new UsageUpdated(new TokenUsage(input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, 0));
                             }
                         }
                         break;
@@ -393,7 +398,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                             input = Long(mu, "input_tokens", input);
                             cacheRead = Long(mu, "cache_read_input_tokens", cacheRead);
                             cacheWrite = Long(mu, "cache_creation_input_tokens", cacheWrite);
-                            yield return new UsageUpdated(new TokenUsage(input, output, cacheRead, cacheWrite, 0));
+                            yield return new UsageUpdated(new TokenUsage(input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, 0));
                         }
                         break;
                     case "message_stop":
@@ -435,7 +440,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
         if (stop == StopReason.EndTurn && content.OfType<ToolCallBlock>().Any()) stop = StopReason.ToolUse;
         var requestId = response.Headers.TryGetValues("request-id", out var ids) ? ids.FirstOrDefault() ?? "" : "";
         yield return new ResponseCompleted(new ModelResponse(content, stop,
-            new TokenUsage(input, output, cacheRead, cacheWrite, 0), state, new ProviderMetadata(requestId, model, null)));
+            new TokenUsage(input + cacheRead + cacheWrite, output, cacheRead, cacheWrite, 0), state, new ProviderMetadata(requestId, model, null), usageFields));
     }
 
     private static long Long(JsonElement obj, string name, long fallback = 0) =>

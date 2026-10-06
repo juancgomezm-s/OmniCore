@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup>
+  <TargetFramework>net10.0-windows</TargetFramework><OutputType>Exe</OutputType><UseWPF>true</UseWPF>
+  <OmniCoderRoot Condition="'$(OmniCoderRoot)' == ''">C:\Users\juanc\source\repos\OmniCoder</OmniCoderRoot>
+ </PropertyGroup>
+ <ItemGroup>
+  <ProjectReference Include="..\..\src\OmniCore.Host\OmniCore.Host.csproj" />
+  <ProjectReference Include="$(OmniCoderRoot)\src\OmniCoder.OmniCore\OmniCoder.OmniCore.csproj" />
+ </ItemGroup>
+</Project>

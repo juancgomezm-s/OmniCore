@@ -38,6 +38,10 @@ public sealed class CliAssemblyReferenceTests
 
     private static string CliAssemblyPath()
     {
+        // Inspect the CLI copied from this build's ProjectReference, including isolated
+        // outputs used while a user is running the normal bin/Debug executable.
+        var adjacent = Path.Combine(AppContext.BaseDirectory, "omni.dll");
+        if (File.Exists(adjacent)) return adjacent;
         var root = RepositoryRoot();
         var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent?.Name ?? "Debug";
         var path = Path.Combine(root, "src", "OmniCore.Cli", "bin", configuration, "net10.0", "omni.dll");

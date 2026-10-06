@@ -16,6 +16,7 @@ using OmniCore.Domain;
 public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 {
     private readonly System.Data.Common.DbConnection _conn;
+    private readonly object _connectionSync = new();
 
     public SqliteEventStore(string filePath)
     {
@@ -135,6 +136,12 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     private void InsertRows(SessionId sessionId, IReadOnlyList<DomainEvent> events,
         DurabilityClass durability, CancellationToken cancellationToken)
     {
+        lock (_connectionSync) InsertRowsCore(sessionId, events, durability, cancellationToken);
+    }
+
+    private void InsertRowsCore(SessionId sessionId, IReadOnlyList<DomainEvent> events,
+        DurabilityClass durability, CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(events);
         cancellationToken.ThrowIfCancellationRequested();
         if (events.Count == 0)
@@ -179,7 +186,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         cmd.ExecuteNonQuery();
     }
 
-    public long CurrentSequence(SessionId sessionId) => CurrentSequence(sessionId, null);
+    public long CurrentSequence(SessionId sessionId) => WithConnection(() => CurrentSequence(sessionId, null));
 
     private long ReadSynchronousLevel(System.Data.Common.DbTransaction tx)
     {
@@ -203,6 +210,9 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     }
 
     public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive)
+        => WithConnection(() => ReadFromCore(sessionId, fromSequenceInclusive));
+
+    private IReadOnlyList<DomainEvent> ReadFromCore(SessionId sessionId, long fromSequenceInclusive)
     {
         using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "SELECT event_id, seq, event_type, schema_version, timestamp, causation, correlation, " +
@@ -229,6 +239,9 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     /// <summary>Reads one event type across all sessions in this workspace journal.</summary>
     public IReadOnlyList<DomainEvent> ReadEvents(EventType type)
+        => WithConnection(() => ReadEventsCore(type));
+
+    private IReadOnlyList<DomainEvent> ReadEventsCore(EventType type)
     {
         ArgumentNullException.ThrowIfNull(type);
         using var cmd = _conn.CreateCommand()!;
@@ -249,6 +262,9 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     /// <summary>Cantidad de eventos persistidos de una sesión (auditoría previa a la purga).</summary>
     public long CountEvents(SessionId sessionId)
+        => WithConnection(() => CountEventsCore(sessionId));
+
+    private long CountEventsCore(SessionId sessionId)
     {
         using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "SELECT COUNT(*) FROM events WHERE session_id = :sid";
@@ -258,6 +274,9 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     /// <summary>Elimina atómicamente los eventos de una sesión después de auditar la purga.</summary>
     public long PurgeSession(SessionId sessionId, CancellationToken cancellationToken)
+        => WithConnection(() => PurgeSessionCore(sessionId, cancellationToken));
+
+    private long PurgeSessionCore(SessionId sessionId, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var tx = _conn.BeginTransaction();
@@ -272,10 +291,22 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     public void Close()
     {
+        lock (_connectionSync) CloseCore();
+    }
+
+    private void CloseCore()
+    {
         if (_conn is not null)
         {
             _conn.Close();
         }
+    }
+
+    // A background model turn and the TUI poll share this connection. Hold the lock
+    // through reader materialization / the entire transaction, never over provider I/O.
+    private T WithConnection<T>(Func<T> operation)
+    {
+        lock (_connectionSync) return operation();
     }
 
     private void InsertRow(SessionId sessionId, DomainEvent evt, long sequence, System.Data.Common.DbTransaction tx)

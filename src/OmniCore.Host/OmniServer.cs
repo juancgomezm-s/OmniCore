@@ -57,6 +57,7 @@ public sealed class OmniServer : IOmniClient
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
+    public SessionObservationHub Observability { get; }
 
     private string? _workspaceRoot;
 
@@ -70,6 +71,7 @@ public sealed class OmniServer : IOmniClient
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        Observability = new SessionObservationHub(store, codecs, artifacts);
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = null;
         LoadLastSession();
@@ -85,6 +87,7 @@ public sealed class OmniServer : IOmniClient
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        Observability = new SessionObservationHub(store, codecs, artifacts);
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = stateFile;
         LoadLastSession();
@@ -771,6 +774,12 @@ public sealed class OmniServer : IOmniClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == "sessionObservability" || name.StartsWith("sessionObservability:", StringComparison.Ordinal))
+        {
+            if (_lastSessionId is null) return new SessionQueryResult("sessionObservability", "null");
+            var after = name.Contains(':') && long.TryParse(name[(name.IndexOf(':') + 1)..], out var cursor) ? cursor : 0;
+            return new SessionQueryResult("sessionObservability", ObservabilityJson.Encode(Observability.Snapshot(_lastSessionId, after)));
+        }
         if (name == "commands")
             return new SessionQueryResult("commands", "{\"commands\":[\"explain\"]}");
         if (name == "workspaceStatus")
@@ -829,6 +838,9 @@ public sealed class OmniServer : IOmniClient
                 + JsonObj.Field("runState", run)
                 + "," + JsonObj.Field("recovery", _recoveryProblem is null ? "ok" : "blocked") + "}");
         }
+
+        if (name == "sessionIdentity")
+            return new SessionQueryResult("sessionIdentity", "{" + JsonObj.Field("sessionId", _lastSessionId?.ToString() ?? "") + "}");
 
         if (name == "commandOutcome")
         {

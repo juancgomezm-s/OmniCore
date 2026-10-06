@@ -7,7 +7,7 @@ const directory = process.argv[2];
 if (!directory) throw new Error('A snapshot directory is required.');
 const sharp = require(process.argv[3] || 'sharp');
 async function render() {
-  const files = fs.readdirSync(directory).filter(name => /^(conversation|sidebar|notice)-\d+x\d+\.svg$/.test(name));
+  const files = fs.readdirSync(directory).filter(name => /^(conversation|sidebar|notice|settings|account|login|models|picker|commands|activity|table)-\d+x\d+\.svg$/.test(name));
   if (!files.length) throw new Error('No real driver snapshots found.');
   for (const name of files) {
     const destination = path.join(directory, name.replace(/\.svg$/, '.png'));

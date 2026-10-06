@@ -87,6 +87,37 @@ public sealed class SqliteEventStoreDurabilityTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Background_turn_writes_and_ui_reads_share_connection_safely()
+    {
+        var journal = TempJournal();
+        var store = new SqliteEventStore(journal);
+        var session = SessionId.New();
+        try
+        {
+            var testCancellation = TestContext.Current.CancellationToken;
+            var writer = System.Threading.Tasks.Task.Run(() =>
+            {
+                for (var i = 0; i < 120; i++)
+                    store.Append(session, Event(session, "test.concurrent"),
+                        i % 5 == 0 ? DurabilityClass.Barrier : DurabilityClass.Standard, CancellationToken.None);
+            }, testCancellation);
+            var readers = Enumerable.Range(0, 3).Select(_ => System.Threading.Tasks.Task.Run(() =>
+            {
+                for (var i = 0; i < 120; i++)
+                {
+                    var events = store.ReadFrom(session, 1);
+                    Assert.Equal(Enumerable.Range(1, events.Count).Select(n => (long)n), events.Select(e => e.Sequence));
+                    store.CurrentSequence(session);
+                }
+            }, testCancellation)).ToArray();
+            await System.Threading.Tasks.Task.WhenAll(readers.Append(writer));
+            Assert.Equal(120, store.ReadFrom(session, 1).Count);
+            AssertSynchronousEquals(store, Normal, "Barrier restaura NORMAL con lectores concurrentes");
+        }
+        finally { store.Close(); TryDelete(journal); }
+    }
+
+    [Fact]
     public void Barrier_followed_by_Standard_leaves_synchronous_NORMAL()
     {
         var journal = TempJournal();
