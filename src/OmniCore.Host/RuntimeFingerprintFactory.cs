@@ -14,12 +14,15 @@ internal static class RuntimeFingerprintFactory
     internal static ExecutionFingerprint Create(ModelDefinition model, EffectiveModelProfile profile,
         HarnessPolicy harness, ModelSelection selection, string harnessHash, string contextPolicyHash,
         string modelPolicyHash, string tokenizerIdentity, IModelProvider? provider = null,
-        ModelQualificationSnapshot? qualification = null)
+        ModelQualificationSnapshot? qualification = null, IArtifactStore? artifacts = null)
     {
+        FingerprintComponent ResolvedComponent(string name, Action<Utf8JsonWriter> write, string version = "1") =>
+            Component(name, write, version, artifacts);
         var components = new List<FingerprintComponent>
         {
-            RuntimeBuildIdentity.ComponentFor(typeof(OmniCliRuntime).Assembly),
-            Component("model.descriptor", writer =>
+            HashComponent(RuntimeBuildIdentity.FingerprintComponentName, RuntimeBuildIdentity.FingerprintComponentVersion,
+                RuntimeBuildIdentity.CanonicalJsonFor(typeof(OmniCliRuntime).Assembly), artifacts),
+            ResolvedComponent("model.descriptor", writer =>
             {
                 writer.WriteString("modelId", model.Id);
                 writer.WriteString("providerId", model.ProviderId);
@@ -41,7 +44,7 @@ internal static class RuntimeFingerprintFactory
                 if (selection.Reasoning?.BudgetTokens is { } tokens) writer.WriteNumber("reasoningBudgetTokens", tokens);
                 else writer.WriteNull("reasoningBudgetTokens");
             }),
-            Component("model.profile", writer =>
+            ResolvedComponent("model.profile", writer =>
             {
                 writer.WriteString("modelId", profile.ModelId);
                 writer.WriteString("routeId", profile.RouteId.Value);
@@ -72,7 +75,7 @@ internal static class RuntimeFingerprintFactory
                     writer.WriteString("qualificationState", qualification.State.ToString());
                 }
             }, "2"),
-            Component("model.harness", writer =>
+            ResolvedComponent("model.harness", writer =>
             {
                 writer.WriteString("toolCallFormat", harness.ToolCallFormat.ToString());
                 writer.WriteString("toolMode", harness.ToolMode.ToString());
@@ -83,7 +86,7 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteNumber("stallThresholdTurns", harness.StallThresholdTurns);
                 WriteContextPolicy(writer, harness.ContextManagement);
             }),
-            Component("context.policy", writer =>
+            ResolvedComponent("context.policy", writer =>
             {
                 WriteContextPolicy(writer, harness.ContextManagement);
                 writer.WriteNumber("contextBudget", selection.ContextBudget);
@@ -99,7 +102,8 @@ internal static class RuntimeFingerprintFactory
     }
 
     internal static ExecutionFingerprint WithTurnConfiguration(ExecutionFingerprint baseline,
-        FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan)
+        FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
+        IArtifactStore? artifacts = null)
     {
         var tools = Component("tools.plan", writer =>
         {
@@ -113,6 +117,7 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteString("toolId", descriptor.Id.ToString());
                 writer.WriteString("description", visible.Description);
                 writer.WriteString("schemaHash", Digest(visible.InputSchemaJson));
+                writer.WriteString("inputSchemaJson", visible.InputSchemaJson);
                 writer.WriteString("sourceKind", descriptor.Source.Kind.ToString());
                 writer.WriteString("sourceScope", descriptor.Source.Scope.ToString());
                 writer.WriteString("sourceTrust", descriptor.Source.Trust.ToString());
@@ -129,18 +134,19 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
-        });
+        }, "2", artifacts);
         var prompt = Component("prompt.template", writer =>
         {
             writer.WriteString("templateId", "ExplorerTurn.SystemPrompt");
             writer.WriteString("renderedHash", Digest(systemPrompt));
-        });
+            writer.WriteString("renderedText", systemPrompt);
+        }, "2", artifacts);
         var revision = Component("plan.revision", writer =>
         {
             writer.WriteString("planId", plan?.Id.ToString());
             if (plan is null) writer.WriteNull("revision");
             else writer.WriteNumber("revision", plan.Revision);
-        });
+        }, artifacts: artifacts);
         var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name }, StringComparer.Ordinal);
         var components = baseline.Components.Where(component => !names.Contains(component.Name))
             .Concat(new[] { tools, prompt, revision }).ToArray();
@@ -158,7 +164,8 @@ internal static class RuntimeFingerprintFactory
         writer.WriteNumber("maxCheckpointCharacters", policy.MaxCheckpointCharacters);
     }
 
-    private static FingerprintComponent Component(string name, Action<Utf8JsonWriter> write, string version = "1")
+    private static FingerprintComponent Component(string name, Action<Utf8JsonWriter> write, string version = "1",
+        IArtifactStore? artifacts = null)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -167,7 +174,7 @@ internal static class RuntimeFingerprintFactory
             write(writer);
             writer.WriteEndObject();
         }
-        return HashComponent(name, version, Encoding.UTF8.GetString(stream.ToArray()));
+        return HashComponent(name, version, Encoding.UTF8.GetString(stream.ToArray()), artifacts);
     }
 
     private static string Digest(string value) =>
@@ -200,6 +207,24 @@ internal static class RuntimeFingerprintFactory
 
     private static FingerprintComponent HashComponent(string name, string value) => HashComponent(name, "1", value);
 
-    private static FingerprintComponent HashComponent(string name, string version, string value) => new(name, version,
-        ContentHash.Sha256(Digest(value)));
+    private static FingerprintComponent HashComponent(string name, string version, string value,
+        IArtifactStore? artifacts = null)
+    {
+        var hash = ContentHash.Sha256(Digest(value));
+        ArtifactRef? content = null;
+        if (artifacts is not null)
+        {
+            // ADR0018 still applies: never bypass the text store's redactor. A redacted
+            // representation is not the exact configuration and must not masquerade as it.
+            var stored = artifacts.PutText(value, "application/vnd.omnicore.fingerprint-component+json",
+                ArtifactKind.Other, Sensitivity.Sensitive);
+            if (!stored.Redacted)
+            {
+                if (stored.Hash != hash || !artifacts.Verify(stored.Hash, stored.Size))
+                    throw new InvalidDataException("Fingerprint component artifact failed integrity verification.");
+                content = stored;
+            }
+        }
+        return new FingerprintComponent(name, version, hash, content);
+    }
 }

@@ -73,7 +73,19 @@ public sealed class CliEndToEndTests
             }
             Assert.Equal(ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(
                 adapterMetadata.ToArray()))), adapter.Hash);
-            Assert.All(turn.Fingerprint.Components, component => Assert.Null(component.Content));
+            Assert.Null(adapter.Content); // The private physical route remains digest-only.
+            var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(
+                OmniHost.CreatePlatformPaths(), workspace));
+            Assert.All(turn.Fingerprint.Components.Where(component => component.Name != "provider.adapter"), component =>
+            {
+                Assert.NotNull(component.Content);
+                Assert.Equal(component.Hash, component.Content.Hash);
+                Assert.False(component.Content.Redacted);
+                Assert.True(artifacts.Verify(component.Hash, component.Content.Size));
+                using var content = JsonDocument.Parse(artifacts.GetText(component.Hash)!);
+                Assert.Equal(JsonValueKind.Object, content.RootElement.ValueKind);
+                Assert.DoesNotContain(provider.BaseUrl, content.RootElement.GetRawText());
+            });
         });
     }
 
@@ -132,7 +144,14 @@ public sealed class CliEndToEndTests
             Assert.NotNull(turn.Fingerprint);
             var actualProfile = Assert.Single(turn.Fingerprint.Components, part => part.Name == "model.profile");
             Assert.Equal("2", actualProfile.Version);
-            Assert.Equal(Assert.Single(expected.Components, part => part.Name == "model.profile"), actualProfile);
+            Assert.Equal(Assert.Single(expected.Components, part => part.Name == "model.profile"),
+                actualProfile with { Content = null });
+            Assert.NotNull(actualProfile.Content);
+            var profileArtifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(
+                OmniHost.CreatePlatformPaths(), workspace));
+            Assert.Equal(actualProfile.Hash, actualProfile.Content.Hash);
+            Assert.False(actualProfile.Content.Redacted);
+            Assert.True(profileArtifacts.Verify(actualProfile.Hash, actualProfile.Content.Size));
             if (!qualifyEffectiveEndpoint)
             {
                 var wrongProfile = new ModelProfileResolver().Resolve(model, descriptor, empiricalTraits: traits, route: route);
@@ -141,7 +160,8 @@ public sealed class CliEndToEndTests
                         route.Id, route), "unused", "unused", "unused", "unused",
                     qualification: new ModelQualificationSnapshot(key, key.QualificationKeyHash(),
                         persisted.ProfileRevision, persisted.State, traits));
-                Assert.NotEqual(Assert.Single(wrong.Components, part => part.Name == "model.profile"), actualProfile);
+                Assert.NotEqual(Assert.Single(wrong.Components, part => part.Name == "model.profile"),
+                    actualProfile with { Content = null });
             }
         });
     }

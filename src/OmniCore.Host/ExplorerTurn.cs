@@ -358,7 +358,7 @@ public sealed class ExplorerTurn
             || evt.Sequence <= originalStart.Sequence).ToArray();
         var fingerprint = _recordEffectiveFingerprint
             ? RuntimeFingerprintFactory.WithTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
-                EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest())
+                EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts)
             : _fingerprint;
         if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
             { Fingerprint: { } originalFingerprint } && originalFingerprint.Hash() != fingerprint.Hash())

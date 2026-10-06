@@ -25,15 +25,28 @@ Componentes versionados, JSON escrito explícitamente y SHA-256 (v1 salvo donde 
   Un wrapper futuro identificaría su tipo exterior; no se inspeccionan campos privados
   ni se afirma identificar un adapter interior. No se serializa el objeto del provider.
 - `runtime.build`: metadatos reales del assembly.
-- `tools.plan`: las herramientas realmente visibles tras el filtro del harness/boundary,
+- `tools.plan` v2: las herramientas realmente visibles tras el filtro del harness/boundary,
   en su orden efectivo; nombres → ToolId, hash del schema, descripción, Source completo,
   versión declarada de Source y flags/riesgo/protección/efecto/tags del descriptor.
-- `prompt.template`: ID `ExplorerTurn.SystemPrompt` y hash del prompt efectivo renderizado
+  Incluye ahora InputSchemaJson completo además de su hash.
+- `prompt.template` v2: ID `ExplorerTurn.SystemPrompt`, texto y hash del prompt efectivo renderizado
   y redactado, no una etiqueta M2/M3 ni el texto del usuario.
 - `plan.revision`: PlanId y revisión inicial del Turn; ambos null cuando no hay plan.
 
-Son componentes hash-only: `Content=null`. No se copia el endpoint ni configuración
-privada a un artifact o al journal. GC distingue estos digests de las referencias CAS;
+La CLI persiste los cinco componentes resueltos (build, descriptor, perfil, harness,
+contexto) y ExplorerTurn los tres componentes por Turn (tools, prompt, revisión) en
+el CAS de texto existente ANTES del evento que los referencia. El blob se verifica
+contra hash/size y `Content.Hash == Hash`; múltiples escrituras deduplican el blob,
+aunque cada receipt tenga un ArtifactId distinto. El agregado no incluye ArtifactId.
+`provider.adapter` conserva `Content=null`: no se copia su endpoint privado a CAS.
+No se serializa el objeto IModelProvider ni se desactiva el redactor ADR0018.
+Si el store marca una representación como Redacted, su ref NO se presenta como la
+configuración exacta: se conserva el hash de la configuración y Content=null.
+El texto redactado puede quedar como blob huérfano elegible para GC; no se referencia
+desde el fingerprint. Una ref declarada exacta con hash distinto o Verify=false
+produce InvalidDataException antes del Turn/provider. Los fallos I/O se propagan.
+Esto no acredita contenido explicable para un componente privado/redactado.
+GC distingue estos digests de las referencias CAS;
 si un componente sí contiene `Content`, sigue transitivamente esa referencia y falla
 sin barrer cuando el blob falta. La retención conservadora de hashes del payload permanece.
 
@@ -44,6 +57,45 @@ explicable en CAS, así como otros componentes de ADR-0017 donde estén configur
 ya reemplaza `core-tools-1` por el digest del plan de herramientas visible. La versión
 de Source es la declarada por el descriptor, no una versión de tool inventada.
 Los digests tampoco acreditan contenido CAS explicable cuando `Content` es null.
+La clave completa de cualificación, contributor/version, AgentProfile y demás
+componentes aplicables de ADR0017 siguen pendientes. No se cambia el contrato de
+opaque ProviderState ni se simula soporte declarado de reasoning.
+
+### Persistencia CAS y política efectiva — 2026-10-06
+
+- effective-policy-build.log: fallo de import PathBoundaryValidator; añadido
+  OmniCore.Execution. effective-policy-fixed-build.log sin warnings/errores.
+- effective-policy-focal.log: 10 PASS/0 FAIL/0 SKIP, 0.763s antes del bloque CAS.
+  ExplorerTurn real, HostTools/boundary y respuestas scripted: ObserveOnly vs PatchOnly
+  cambia tools realmente enviadas y fingerprint durable; repetición conserva hash
+  pese a Session/Run/Turn distintos. No AgentProfile/overrides inventados.
+- fingerprint-content-red-build.log: fixture intentaba using SqliteEventStore,
+  que expone Close, no IDisposable; corregido con Close y pool privado antes cleanup.
+- fingerprint-content-red-fixed-build.log sin warnings/errores; red-test.log:
+  1 caso/1 FAIL/0 SKIP0.608s, TurnStarted carecía de Content en sus tres componentes.
+- fingerprint-content-focal.log: 84 casos/79 PASS/5 FAIL0SKIP7.518s. Cuatro CLI
+  esperaban el contrato anterior sin Content; la integración policy comparaba
+  ArtifactId entre receipts distintos del mismo hash. Se actualizan assertions al
+  contrato CAS: igualdad EXACTA de nombre/versión/hash más ref/hash/size/Verify,
+  no se excluye ni tolera diferencia de configuración.
+- fingerprint-content-final-build.log sin warnings/errores.
+- fingerprint-content-final-focal.log: 84 PASS/0 FAIL/0 SKIP7.565s. Reopen real
+  SQLite/CAS con refs del envelope; schemas/texto recuperables, deduplicación física,
+  hash estable con/sin ref, ruta privada ausente, redactor fixture sin fuga, rechazo
+  de refs exactas inválidas, CLI HTTP loopback y controles existentes de resume/GC.
+- fingerprint-content-full.log: 1970 casos = 1966 PASS/0 FAIL/4 SKIP por permisos
+  symlink, 267.460s, runner exit0. Incluye los seis casos nuevos CAS/policy; no incluye
+  FingerprintContentAppendFailureTests entregado después del build, todavía sin ejecutar.
+- fingerprint-content-architecture-build.log: build sin warnings/errores;
+  fingerprint-content-architecture-test.log: 56 PASS/0 FAIL/0 SKIP0.586s.
+  Suite separada, no se suma a los 1970 casos funcionales.
+
+Los tests de pricing/provider/secret son fixtures offline o HTTP loopback controlado;
+no son consultas autenticadas ni cualificación. tools.plan/prompt.template v2 cambian
+el agregado: el guard de drift existente sigue rechazando Turns abiertos que tengan
+fingerprint anterior no-null. No se reescribe journal ni se promete migración transparente.
+La mera adición de Content no cambia el agregado. Legacy sin fingerprint mantiene
+su comportamiento previo, no se presenta como validación de configuración.
 
 ## Reanudación y estabilidad por Turn
 

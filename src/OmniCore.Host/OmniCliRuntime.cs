@@ -581,9 +581,10 @@ public sealed class OmniCliRuntime
             }
             var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null, route.Id, route,
                 ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription));
+            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             var fingerprint = RuntimeFingerprintFactory.Create(runtimeModel, effectiveProfile, harness,
                 selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value,
-                provider, qualification);
+                provider, qualification, artifacts);
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
             {
@@ -591,7 +592,6 @@ public sealed class OmniCliRuntime
             }
 
             var executingAct = !conversationOnly && (act || server.CurrentRunMode() == RunMode.Act);
-            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             _usageContext = (provider, loaded.Pricing(model), baseUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
             var hostTools = executingAct
