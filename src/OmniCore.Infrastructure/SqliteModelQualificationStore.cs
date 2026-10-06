@@ -15,11 +15,12 @@ using OmniCore.Domain;
 /// la versión que lo volvió Stale en `stale_by_suite_version`, conservando suite_version (la suite
 /// que produjo el perfil), key_json y el historial de traits (ADR-0007 §4).
 /// </summary>
-public sealed class SqliteModelQualificationStore : IModelQualificationStore, IDisposable
+public sealed partial class SqliteModelQualificationStore : IModelQualificationStore, IModelQualificationEvidenceStore, IDisposable
 {
     private readonly DbConnection _conn;
 
     private readonly Func<DateTimeOffset> _clock;
+    private readonly string _dataDirectory;
 
     public void Dispose()
     {
@@ -35,6 +36,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
     public SqliteModelQualificationStore(string databasePath, Func<DateTimeOffset>? clock)
     {
         _clock = clock ?? (static () => DateTimeOffset.UtcNow);
+        _dataDirectory = Path.GetDirectoryName(Path.GetFullPath(databasePath))!;
         var parent = Path.GetDirectoryName(databasePath);
         if (parent is not null && parent!.Length > 0 && !Directory.Exists(parent!))
         {
@@ -244,6 +246,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             Add(traits, "previous", existing.ProfileRevision);
             traits.ExecuteNonQuery();
         }
+        CopyEvidence(keyHash, existing.ProfileRevision, nextRevision, tx);
         cancellationToken.ThrowIfCancellationRequested();
         tx.Commit();
         return new ModelQualificationProfile(key, ModelQualificationState.Stale, nextRevision,
@@ -411,6 +414,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         using var migrationTransaction = _conn.BeginTransaction();
         RepairSuiteStaleTraitCopies(migrationTransaction);
         MigrateLegacyRouteProfiles(migrationTransaction);
+        InitializeEvidenceSchema(migrationTransaction);
         migrationTransaction.Commit();
     }
 
@@ -515,6 +519,11 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 """;
             Add(traits, "next", checked(revision + 1)); Add(traits, "h", hash); Add(traits, "rev", revision);
             traits.ExecuteNonQuery();
+            using var evidenceTable = _conn.CreateCommand();
+            evidenceTable.Transaction = tx;
+            evidenceTable.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_qualification_evidence'";
+            if (Convert.ToInt64(evidenceTable.ExecuteScalar()) != 0)
+                CopyEvidence(hash, revision, checked(revision + 1), tx);
         }
         using var marker = _conn.CreateCommand();
         marker.Transaction = tx;
