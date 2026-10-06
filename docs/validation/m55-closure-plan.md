@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 19:15 UTC / 13:15 America/Mexico_City.
+Actualizado 2026-10-06 19:21 UTC / 13:21 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -44,9 +44,16 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   y overflow directo. RED reproducido antes de correcciones, sin assertions debilitadas.
   Focal207PASS; full2035=2031PASS0FAIL4SKIPsymlink107.362s; arquitectura56PASS0.662s.
   Fixtures privados, no consultas autenticadas ni garantía monetaria remota.
-  Próximo: resolver guard de Unknown sin precios conforme a su tratamiento
-  potencialmente pagado en ADR0046; después CAS/evidencia y raíces de GC user.db.
+  Guard Unknown configurado sin precios completos implementado en el bloque siguiente;
+  después CAS/evidencia y raíces de GC user.db.
   Reintentos y reserva/liquidación siguen pendientes; M5/M5.5 no están cerrados.
+- M5 Unknown: Host rechaza antes del provider una estimación incompleta en rutas
+  configuradas Unknown, incluso con consentimiento y cap positivo. Luna aporta cinco
+  regresiones; root reproduce3FAIL y corrige guard/CLI, conserva assertions anteriores
+  con fixture Local explícito. Focal212PASS2.170s, arquitectura56PASS0.798s.
+  Full2040=2036PASS0FAIL4SKIPsymlink116.037s, build0warnings/errores;
+  no cerrar por controles privados. Falta revisar el camino
+  legacy sin descriptor (incluido registryOverride), reservas/retries y CAS durable.
 - M5 uso/coste: null cuando falta uso reportado o tarifas completas, precios explícitos
   reutilizados de configuración modelo/provider, máscara conservada y contadores nullable
   en Host; CLI bilingüe sin cero ficticio. Luna aportó RED, CLI HTTP y tarifas/SQLite;

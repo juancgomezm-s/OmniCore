@@ -194,7 +194,7 @@ El tope0 y un tope positivo0.01 se rechazan antes de conectar/llamar o guardar p
 El control cap1 produce quote0.000066 USD con usage17/4 y conserva estimate0.032768.
 `QualificationRunResult.EstimatedCostSource` distingue esa procedencia del gasto medido.
 
-MeteredCurrency sin tarifas completas o límite aplicable no puede fabricar una
+MeteredCurrency o Unknown configurado sin tarifas completas o límite aplicable no puede fabricar una
 estimación: lanza ModelQualificationCostEvidenceUnavailableException antes de conectar.
 La suma declarada no representable también falla con ese error tipado; el runner usa
 QualificationCostEstimateUnavailableException y Host lo traduce para mantener IL del CLI.
@@ -225,8 +225,36 @@ Fixtures in-memory y configuración/SQLite privados, no consumo autenticado.
 Gates todavía abiertos: ContextWindow es DECLARADO, no tokenización/medición remota;
 la estimación cubre una invocación por probe, no una reserva contra gasto concurrente
 ni todos los reintentos, tarifas de caché específicas, cargos sin usage o gasto de
-rutas Unknown sin precios. No se afirma garantía monetaria end-to-end ni cierre M5.
+rutas sin descriptor y otros modos de facturación. No se afirma garantía monetaria end-to-end ni cierre M5.
 
 Los fixtures no acreditan consumo real o consultas autenticadas. Siguen pendientes
 las cotas monetarias pre-call derivadas de límites realmente enviados, el tratamiento
 de reintentos/errores sin usage, evidencia CAS completa y BenchmarkIdentity.
+
+## Guard de facturación desconocida — 2026-10-06
+
+ADR0007 §7 exige consentimiento y presupuesto máximo para proveedores de pago;
+ADR0046 §3 trata Unknown como potencialmente pagado, no como Local implícito.
+La cualificación explícita consentida no equivale a routing automático; aun así,
+sin una estimación configurada completa no hay evidencia para aceptar su tope.
+Host rechaza ahora también el descriptor Unknown antes de construir/invocar provider.
+El consentimiento no convierte desconocido en cero. CLI es/en explica ambos modos.
+
+Luna HIGH aportó cinco regresiones offline; root reprodujo RED
+`unknown-billing-red-test.log`: 5 = 2 PASS/3 FAIL, 0.449s, build0warnings/errores.
+Fallaban Unknown sin precios con cap0/cap1 y Unknown con precio parcial.
+Controles mantienen Unknown con precios completos y Local explícito sin precios.
+Los bloqueos verifican calls0, perfil ausente, traits vacíos y store vacío;
+los controles verifican score1, uso reportado y traits persistidos, sin precio ficticio.
+El fixture previo de precio parcial declara Local explícito para mantener su propósito
+de coste medido ausente; sus assertions originales no se debilitan y el comportamiento
+Unknown se cubre en la suite independiente.
+
+Focal `unknown-billing-fixed-focal.log`: 212 PASS/0 FAIL/0 SKIP, 2.170s.
+Arquitectura: 56 PASS/0 FAIL/0 SKIP, 0.798s, build0warnings/errores.
+Full `unknown-billing-final-full.log`: 2040 casos = 2036 PASS/0 FAIL/4 SKIP
+por permisos symlink, 116.037s, exit0; build final0warnings/errores.
+Fixtures privados no acreditan
+consultas autenticadas ni garantía de gasto. registryOverride sin descriptor conserva
+su camino legacy; no se declara gratuito por URL/auth/nombre y requiere revisión aparte.
+Reservas, reintentos y evidencia CAS siguen siendo gates abiertos de M5.
