@@ -40,6 +40,7 @@ public sealed class M4ProcessRecoveryTests
         var directory = Path.Combine(Path.GetTempPath(), "omnicore-m4-process-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         // Preserve the independent-process journal and evidence for terminal validation.
+        TestContext.Current.TestOutputHelper!.WriteLine("M4 evidence: " + directory);
         var first = await Child("seed", directory);
         var second = await Child("restore", directory);
         Assert.NotEqual(first, second);
@@ -61,16 +62,27 @@ public sealed class M4ProcessRecoveryTests
         var stdout = child.StandardOutput.ReadToEndAsync();
         var stderr = child.StandardError.ReadToEndAsync();
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var output = "";
         try { await child.WaitForExitAsync(deadline.Token); }
-        catch { if (!child.HasExited) child.Kill(entireProcessTree: true); throw; }
-        var output = await stdout + await stderr;
-        File.WriteAllText(Path.Combine(root, phase + "-process.log"), output);
+        catch
+        {
+            if (!child.HasExited) child.Kill(entireProcessTree: true);
+            await child.WaitForExitAsync();
+            throw;
+        }
+        finally
+        {
+            output = await stdout + await stderr;
+            File.WriteAllText(Path.Combine(root, phase + "-process.log"), output);
+        }
         Assert.True(child.ExitCode == 0, output);
         return pid;
     }
 
     private static void Seed(string root)
     {
+        var elapsed = Stopwatch.StartNew();
+        Progress(root, "seed-start", 0, 0, elapsed.Elapsed, TimeSpan.Zero);
         var journal = Path.Combine(root, "journal.db");
         var server = OmniHost.OpenPersistentServer(journal);
         Assert.Equal("ok", server.Send(OmniCore.Protocol.WireEnvelope.Command(Ids.NewV7(),
@@ -98,8 +110,14 @@ public sealed class M4ProcessRecoveryTests
             codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(), harness,
             metaModelProvider: new SummaryProvider());
         for (var i = 0; i < 200; i++)
+        {
+            var before = elapsed.Elapsed;
             Assert.Equal(StopReason.EndTurn, turn.Ask("turn-" + i + " " + string.Join(' ', Enumerable.Repeat("question", 40)),
                 "Keep this run focused", session, run, lane, Objective + "; M4 pending tests", CancellationToken.None).StopReason);
+            if ((i + 1) % 10 == 0)
+                Progress(root, "turn-completed", i + 1, store.CurrentSequence(session), elapsed.Elapsed, elapsed.Elapsed - before);
+        }
+        Progress(root, "questionnaire-start", 200, store.CurrentSequence(session), elapsed.Elapsed, TimeSpan.Zero);
         var schema = new QuestionnaireSchema("M4 restart questionnaire", null, new QuestionField[] {
             new("single", "Proceed?", null, QuestionKind.SingleChoice, new[] { new QuestionOption("yes", "Yes", null),
                 new QuestionOption("no", "No", null) }, null, true, null, null, null) });
@@ -109,7 +127,19 @@ public sealed class M4ProcessRecoveryTests
         var all = store.ReadFrom(session, 1);
         File.WriteAllText(Path.Combine(root, "baseline.json"), JsonSerializer.Serialize(all.Select(e => e.PayloadJson).ToArray()));
         Validate(store, codecs, artifacts, session);
+        Progress(root, "seed-validated", 200, store.CurrentSequence(session), elapsed.Elapsed, TimeSpan.Zero);
         ((SqliteEventStore)store).Close();
+    }
+
+    private static void Progress(string root, string phase, int turns, long sequence, TimeSpan elapsed, TimeSpan lastTurn)
+    {
+        using var file = new FileStream(Path.Combine(root, "seed-progress.jsonl"), FileMode.Append,
+            FileAccess.Write, FileShare.Read);
+        using var writer = new StreamWriter(file, System.Text.Encoding.UTF8, leaveOpen: true);
+        writer.WriteLine(JsonSerializer.Serialize(new { utc = DateTimeOffset.UtcNow, phase, turns, sequence,
+            elapsedMs = elapsed.TotalMilliseconds, lastTurnMs = lastTurn.TotalMilliseconds, pid = Environment.ProcessId }));
+        writer.Flush();
+        file.Flush(flushToDisk: true);
     }
 
     private static void Restore(string root)

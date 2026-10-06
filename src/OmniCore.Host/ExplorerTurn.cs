@@ -475,9 +475,14 @@ public sealed class ExplorerTurn
                 pendingInteraction.InteractionId);
         }
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        var budget = ReadRunBudget(stream, runId);
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
         // at each boundary, avoiding a gap/overlap between a historical scan and a sequence delta.
-        var persistedSpend = ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps);
+        // Without a monetary limit these receipts cannot affect admission. Current step usage
+        // and durable reporting still run; do not repeatedly verify the whole session's CAS.
+        var persistedSpend = _enforceDefaultSpendCaps || budget.MaxCostUsd is not null
+            ? ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)
+            : new PersistedSpend(0m, 0m, 0m, false);
 
         var messages = LoadConversation(stream, runId);
         var safeQuestion = isResume || queuedQuestion ? "" : _redaction.Redact(question ?? "");
@@ -500,7 +505,6 @@ public sealed class ExplorerTurn
         var turnUsage = ReadTurnModelStepUsage(stream, turnId, out var invalidPersistedUsage);
         var invalidUsageObserved = false;
 
-        var budget = ReadRunBudget(stream, runId);
         var configuredRunCap = budget.MaxCostUsd;
         var sessionCap = BudgetContinuation.Limit(stream.EventsSince(1), _codecs, sessionId, runId,
             today, "session", _sessionCapUsd);
@@ -527,7 +531,9 @@ public sealed class ExplorerTurn
         var steps = 1;
         var started = false;
 
-        PersistedSpend CurrentSpend() => CombineSpend(CombineSpend(persistedSpend,
+        PersistedSpend CurrentSpend() => !_enforceDefaultSpendCaps && budget.MaxCostUsd is null
+            ? new PersistedSpend(0m, 0m, 0m, false)
+            : CombineSpend(CombineSpend(persistedSpend,
             ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)),
             ReadOtherWorkspaceSpend(stream, sessionId, runId, today));
 

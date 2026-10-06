@@ -20,12 +20,12 @@ internal static class TestRun
 
     /// <summary>Igual, escribiendo con un stream dado (p. ej. para que sea el único escritor).</summary>
     public static Opened Open(EventStream stream, SessionId sessionId, string objective = "objetivo de test",
-        RunMode mode = RunMode.Act, ProfileId? agentProfile = null)
+        RunMode mode = RunMode.Act, ProfileId? agentProfile = null, TaskBudget? taskBudget = null)
     {
         var run = RunId.New();
         var task = TaskId.New();
         var lane = LaneId.New();
-        var budget = new TaskBudget(null, null, null, null);
+        var budget = taskBudget ?? new TaskBudget(null, null, null, null);
         stream.AppendBatch(new DomainEventPayload[] {
             new RunCreated(run, sessionId, objective, mode, ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
                 budget, task, DateTimeOffset.UtcNow),
