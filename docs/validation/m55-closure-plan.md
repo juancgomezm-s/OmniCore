@@ -1,0 +1,70 @@
+# Objetivo activo: llegar a M6
+
+Actualizado 2026-10-06 06:17 UTC / 00:17 America/Mexico_City.
+Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
+No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
+
+Rama: `codex/omnicore-consolidation-20261004`, worktree `m55-artifactrefs-roundtrip`.
+Main, cambios ajenos, credenciales y procesos no propios se preservan; no push.
+M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
+
+## Avance verificado
+
+- `de76958`: checkpoint de TUI/runtime y observabilidad de sesión.
+- `ad65f0f`: ModelRoute/RouteId y emisión durable en ModelStepStarted v3;
+  journals v1/v2 legibles y ruta conservada tras suspensión/reanudación.
+- `d2e020a`: componentes versionados del fingerprint, hash anterior compatible,
+  referencias CAS indexadas y verificadas.
+- Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
+  asociación opcional del EffectiveModelProfile con RouteId.
+- Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
+  suite ni evidencia. Revisión incrementada, traits históricos preservados y copiados
+  a la nueva revisión. Causa `route-identity-migration`, separada de la versión de suite.
+  Una identidad corrupta aborta la migración; no se modifica el estado del perfil.
+
+La clave nueva utiliza el endpoint efectivo (`OMNI_BASE_URL` si existe) y el build del
+Host identificado por versión/MVID. No se transfiere cualificación de un endpoint a otro.
+El perfil, router y selección del runtime reciben la misma ruta; los overrides de endpoint
+tienen identidad distinta, mientras la ruta configurada 1:1 conserva el ID anterior.
+El build global explicable del fingerprint y los demás componentes reales aún están pendientes.
+
+## Cola de cierre (orden operativo)
+
+1. Replay opaco durable por ModelStep y guard misma ruta/modelo, incluido resume.
+2. BillingMode, SessionRoutingPolicy durable y consentimiento; auto/ask no pueden
+   ampliar gasto ni rutas autorizadas. Topes configurables, diario entre sesiones y continuar.
+3. Circuit breaker/disponibilidad real y adaptación del router de Alias a RouteId.
+4. Steering explícito en fronteras de ModelStep y outcome de descarte.
+5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
+6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
+7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
+   ResultDisposition; sin scheduler ni joins ejecutables.
+8. Poblar los componentes reales del fingerprint y build real; cerrar CommandOutcome
+   correlacionado en todos los commands de frontera y guards de arquitectura.
+9. Reproducir los siete criterios de salida de ADR-0046, actualizar docs y registrar
+   exactamente qué evidencia real de providers pertenece a M5, sin convertir fixtures en éxito real.
+
+## Ownership / pruebas
+
+Luna implementó contratos de rutas y qualification key; el integrador audita, cablea,
+migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron código en
+la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
+Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
+
+- Última suite completa: 1541 casos, 1537 PASS, 0 FAIL, 4 SKIP symlink, antes de los
+  últimos ajustes CAS/cualificación.
+- Focal final CAS/rutas: 121 PASS.
+- Focal cualificación/routing/CLI con SQLite legacy, idempotencia y aislamiento: 87 PASS,
+  build 0 warnings / 0 errores (`route-qualification-tests.log`).
+- Integración final tras el wiring de rutas, incluyendo CLI end-to-end y codecs ModelStep:
+  118 PASS, 0 FAIL (`route-qualification-final-tests.log`).
+- Las cifras se solapan y no se suman; fixtures no acreditan consumo autenticado.
+
+Reproducción de este bloque:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*RouteQualificationKeyTests' -class '*RouteQualificationMigrationTests' -class '*ModelQualificationKeyTests' -class '*ModelQualificationStoreTests' -class '*ModelQualificationHostTests' -class '*ModelQualificationCliTests' -class '*ModelRoutingHostTests'
+```
+
+M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.

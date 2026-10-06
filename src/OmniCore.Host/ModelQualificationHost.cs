@@ -225,7 +225,7 @@ public sealed class ModelQualificationHost : IDisposable
         // ProbeTimeoutException tipados); nada se persiste si la suite no se completa.
         var selection = new ModelSelection(new ModelIdValue(model.Id),
             model.RecommendedUsableContext > 0 ? model.RecommendedUsableContext : model.ContextWindow,
-            ToolMode.Direct, null);
+            ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id);
         var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
         var runner = new ProbeRunner(ConnectProvider(model, provider, options),
             options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout);
@@ -337,13 +337,19 @@ public sealed class ModelQualificationHost : IDisposable
     /// declaradas del provider. El ToolCallFormat se deriva igual que en
     /// <see cref="ModelProfileResolver"/>; los probes corren en ToolMode.Direct.
     /// </summary>
-    public static ModelQualificationKey QualificationKeyFor(ModelDefinition model, ProviderDescriptor? provider)
+    public static ModelQualificationKey QualificationKeyFor(ModelDefinition model, ProviderDescriptor? provider,
+        string? endpointOverride = null, string? runtimeBuildOverride = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         var format = provider?.SupportsNativeToolCalls == true ? ToolCallFormat.Native
             : provider?.SupportsGrammarPerRequest == true ? ToolCallFormat.Grammar
             : ToolCallFormat.PromptedJson;
-        return ModelQualificationKey.For(model.ProviderId, model.Id, format, ToolMode.Direct);
+        var route = ModelRoutingHost.RouteFor(model, provider, endpointOverride);
+        var assembly = typeof(ModelQualificationHost).Assembly;
+        var build = runtimeBuildOverride ?? assembly.GetName().Version + "/" + assembly.ManifestModule.ModuleVersionId.ToString("D");
+        return new ModelQualificationKey(model.ProviderId, model.Id, null, null, Array.Empty<string>(),
+            null, null, null, provider?.Profile ?? "default", format, ToolMode.Direct, "v1",
+            route.Endpoint, route.Protocol.ToString(), build);
     }
 
     private static IReadOnlyList<Probe> Suite(string suite) => suite switch

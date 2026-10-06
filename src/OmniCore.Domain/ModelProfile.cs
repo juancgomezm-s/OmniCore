@@ -8,6 +8,9 @@ public sealed class EffectiveModelProfile
 {
     public string ModelId { get; }
 
+    /// <summary>Ruta de la configuración efectiva; las APIs anteriores conservan su ruta por defecto.</summary>
+    public RouteId RouteId { get; }
+
     public long ContextWindow { get; }
 
     public long RecommendedUsableContext { get; }
@@ -25,9 +28,10 @@ public sealed class EffectiveModelProfile
 
     public EffectiveModelProfile(string modelId, long contextWindow, long recommendedUsableContext,
         long maxOutputTokens, IReadOnlyList<string> inputModalities, IReadOnlyList<ToolCallFormat> toolCallFormats,
-        bool supportsParallelTools, IReadOnlyDictionary<string, double> traits)
+        bool supportsParallelTools, IReadOnlyDictionary<string, double> traits, RouteId? routeId = null)
     {
         ModelId = modelId;
+        RouteId = routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(modelId);
         ContextWindow = contextWindow;
         RecommendedUsableContext = recommendedUsableContext;
         MaxOutputTokens = maxOutputTokens;
