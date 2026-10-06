@@ -134,6 +134,12 @@ explicable completa; no se declara cerrado el fingerprint de M5.5.
 8. Completar los componentes reales del fingerprint (build y configuración resuelta
    conectados; tools/prompt/plan por Turn aún pendientes); cerrar CommandOutcome
    correlacionado en todos los commands de frontera y guards de arquitectura.
+   Hallazgo de auditoría: resume de Turn abierto puede conservar fingerprint A en
+   TurnStarted y persistir contexto con fingerprint B de la instancia actual.
+   Repro base: QuestionnaireTurnTests con reopen SQLite/CAS y cambio de config.
+   Verificar handoffs/escalación de ruta autorizados existentes antes de introducir
+   un guard de drift que pudiera romperlos; no sobrescribir TurnStarted ni inventar
+   una revisión de configuración por paso sin contrato.
 9. Reproducir los siete criterios de salida de ADR-0046, actualizar docs y registrar
    exactamente qué evidencia real de providers pertenece a M5, sin convertir fixtures en éxito real.
 
