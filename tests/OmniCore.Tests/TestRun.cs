@@ -20,7 +20,7 @@ internal static class TestRun
 
     /// <summary>Igual, escribiendo con un stream dado (p. ej. para que sea el único escritor).</summary>
     public static Opened Open(EventStream stream, SessionId sessionId, string objective = "objetivo de test",
-        RunMode mode = RunMode.Act)
+        RunMode mode = RunMode.Act, ProfileId? agentProfile = null)
     {
         var run = RunId.New();
         var task = TaskId.New();
@@ -32,7 +32,7 @@ internal static class TestRun
             new RunStarted(run),
             new TaskCreated(task, run, objective, Array.Empty<TaskDependency>(), budget),
             new TaskReady(task),
-            new LaneCreated(lane, task, ProfileId.New()),
+            new LaneCreated(lane, task, agentProfile ?? ProfileId.New()),
             new LaneStarted(lane),
             new TaskStarted(task, lane),
         }, DurabilityClass.Standard);

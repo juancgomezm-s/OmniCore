@@ -4,6 +4,8 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Host;
 using OmniCore.Tools;
+using OmniCore.Infrastructure;
+using System.Text.Json;
 
 public sealed class RuntimeTurnFingerprintFactoryTests
 {
@@ -17,6 +19,29 @@ public sealed class RuntimeTurnFingerprintFactoryTests
         IReadOnlyList<ToolDefinition>? visibleTools = null) =>
         RuntimeFingerprintFactory.WithTurnConfiguration(Baseline, catalog,
             visibleTools ?? catalog.Definitions(), prompt, plan);
+
+    [Fact]
+    public void Missing_profile_is_explicitly_unavailable_and_never_inferred_from_baseline()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-missing-profile-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new FileArtifactStore(root);
+            var catalog = new FakeCatalog();
+            var known = RuntimeFingerprintFactory.WithTurnConfiguration(Baseline, catalog, catalog.Definitions(),
+                "system prompt", null, store, ProfileId.New());
+            var unknown = RuntimeFingerprintFactory.WithTurnConfiguration(known, catalog, catalog.Definitions(),
+                "system prompt", null, store);
+            var component = Component(unknown, "agent.profile");
+            Assert.NotEqual(Component(known, "agent.profile").Hash, component.Hash);
+            Assert.NotNull(component.Content);
+            using var json = JsonDocument.Parse(store.GetText(component.Content.Hash)!);
+            Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("profileId").ValueKind);
+            Assert.Equal("unavailable", json.RootElement.GetProperty("source").GetString());
+        }
+        finally { Directory.Delete(root, true); }
+    }
 
     [Fact]
     public void Hidden_catalog_tool_does_not_change_visible_tools_fingerprint()
@@ -96,8 +121,8 @@ public sealed class RuntimeTurnFingerprintFactoryTests
         var twice = RuntimeFingerprintFactory.WithTurnConfiguration(once, catalog,
             catalog.Definitions(), "system prompt", null);
 
-        Assert.Equal(3, once.Components.Count);
-        Assert.Equal(3, twice.Components.Count);
+        Assert.Equal(4, once.Components.Count);
+        Assert.Equal(4, twice.Components.Count);
         Assert.Equal(once.Hash(), twice.Hash());
         Assert.Empty(Baseline.Components);
         Assert.Equal(originalComponents, Baseline.Components);

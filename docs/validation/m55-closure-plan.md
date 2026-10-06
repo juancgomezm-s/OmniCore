@@ -22,6 +22,10 @@ sin reservas concurrentes. Consentimiento diario entre workspaces corregido:
 [Implementación y reproducción](m55-user-daily-spend-20261006.md).
 No acreditan consultas reales ni full verde posterior.
 El objetivo activo continúa siendo M5.5 y preparación de M6, sin scheduler/joins.
+Fingerprint AgentProfile de LaneCreated implementado en ruta Explorer/CLI,
+final83PASS/arquitectura56PASS. Solo identidad durable disponible, sin inventar
+registro de perfiles ni skills; el resto de fronteras sigue abierto.
+[Perfil de lane y reproducción](m55-agent-profile-fingerprint-20261006.md).
 Luna HIGH terminó la matriz normativa M5 y ahora audita exclusivamente el contrato
 ToolCallStarted v3; root conserva implementación, tests, integración y commits.
 

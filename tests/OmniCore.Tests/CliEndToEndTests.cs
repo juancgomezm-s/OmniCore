@@ -54,7 +54,7 @@ public sealed class CliEndToEndTests
             var turn = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<TurnStarted>());
             Assert.NotNull(turn.Fingerprint);
             Assert.Equal(RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), turn.Fingerprint.Build);
-            Assert.Equal(new[] { "context.policy", "model.descriptor", "model.harness", "model.profile",
+            Assert.Equal(new[] { "agent.profile", "context.policy", "model.descriptor", "model.harness", "model.profile",
                 "plan.revision", "prompt.template", "provider.adapter", "runtime.build", "tools.plan" },
                 turn.Fingerprint.Components.Select(component => component.Name));
             Assert.NotEqual("core-tools-1", turn.Fingerprint.ToolkitHash);
@@ -76,6 +76,12 @@ public sealed class CliEndToEndTests
             Assert.Null(adapter.Content); // The private physical route remains digest-only.
             var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(
                 OmniHost.CreatePlatformPaths(), workspace));
+            var lane = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<LaneCreated>(),
+                created => created.LaneId == turn.LaneId);
+            var agent = Assert.Single(turn.Fingerprint.Components, component => component.Name == "agent.profile");
+            using var agentMetadata = JsonDocument.Parse(artifacts.GetText(agent.Hash)!);
+            Assert.Equal(lane.AgentProfile.ToString(), agentMetadata.RootElement.GetProperty("profileId").GetString());
+            Assert.Equal("lane.created", agentMetadata.RootElement.GetProperty("source").GetString());
             Assert.All(turn.Fingerprint.Components.Where(component => component.Name != "provider.adapter"), component =>
             {
                 Assert.NotNull(component.Content);
