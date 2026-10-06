@@ -72,5 +72,6 @@ No transforma costes desconocidos en cero en los eventos ni en el reporting.
 M4 sobre la corrección: 1 PASS / 0 FAIL, 94.418 s, mismos 200 turnos y plazo.
 Arquitectura sobre la corrección: 56 PASS, 1.381 s.
 Logs: monetary-replay-correction-build/test/m4-test/architecture-test.log en el
-directorio de evidencia anterior. Suite completa sobre la corrección pendiente;
-estos resultados no cierran M5.5 solos.
+directorio de evidencia anterior. Suite completa sobre 5fa5cf2:
+2260 casos / 2256 PASS / 0 FAIL / 4 SKIP por permisos symlink, 318.331 s.
+Log: monetary-replay-correction-full-test.log. Estos resultados no cierran M5.5 solos.
