@@ -17,6 +17,75 @@ public sealed class MetaModelDailySpendIntegrationTests
 {
     [Theory]
     [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void Other_workspace_meta_spend_uses_its_own_cas_and_utc_day(bool yesterday, bool missingEvidence)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-user-meta-daily-" + Guid.NewGuid().ToString("N"));
+        var source = Path.Combine(root, "workspaces", "source");
+        var current = Path.Combine(root, "workspaces", "current");
+        Directory.CreateDirectory(source);
+        Directory.CreateDirectory(current);
+        var sourceJournal = Path.Combine(source, "journal.db");
+        var currentJournal = Path.Combine(current, "journal.db");
+        var codecs = EventCodecs.Create();
+        var sourceStore = new SqliteEventStore(sourceJournal);
+        var currentStore = new SqliteEventStore(currentJournal);
+        try
+        {
+            var sourceRun = TestRun.Open(sourceStore, SessionId.New());
+            var sourceArtifacts = new FileArtifactStore(source);
+            var timestamp = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
+            AppendMeta(sourceStore, codecs, sourceArtifacts, sourceRun, "other-workspace-charge",
+                yesterday ? timestamp.AddDays(-1) : timestamp);
+            sourceStore.Close();
+            if (missingEvidence)
+                foreach (var file in Directory.GetFiles(Path.Combine(source, "blobs"), "*", SearchOption.AllDirectories))
+                    File.Delete(file); // Only this fixture's CAS; a missing receipt must not become zero spend.
+            var requester = TestRun.Open(currentStore, SessionId.New());
+            var calls = 0;
+            var turn = new ExplorerTurn((_, _) =>
+            {
+                calls++;
+                return new ModelResponse(new ContentBlock[] { new TextBlock("fixture done") }, StopReason.EndTurn,
+                    new TokenUsage(0, 0, 0, 0, 0), null,
+                    new ProviderMetadata("fixture", "fixture-model", null), TokenUsageFields.All);
+            }, new NoTools(), new FakeCatalog(),
+                new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+                new ExecutionFingerprint("fixture-model", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null),
+                currentStore, codecs, new FileArtifactStore(current), new InMemoryAuditSink(), new RedactionPolicy(),
+                pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: true,
+                sessionCapUsd: 100m, dailyCapUsd: 0.20m,
+                userSpendReader: new UserWorkspaceSpendReader(root, current));
+            var result = turn.Ask("continue", "system", requester.SessionId, requester.RunId,
+                requester.RootLane, "", CancellationToken.None);
+            var allowed = yesterday && !missingEvidence;
+            Assert.Equal(allowed ? 1 : 0, calls);
+            Assert.Equal(allowed ? StopReason.EndTurn : StopReason.Cancelled, result.StopReason);
+            var events = currentStore.ReadFrom(requester.SessionId, 1).Select(codecs.Decode).ToArray();
+            if (allowed) Assert.Single(events.OfType<ModelStepCompleted>());
+            else
+            {
+                Assert.Contains(events, evt => evt is InteractionRequested request
+                    && request.Kind == InteractionKind.BudgetExceeded);
+                Assert.DoesNotContain(events, evt => evt is ModelStepStarted or ModelStepCompleted);
+            }
+        }
+        finally
+        {
+            sourceStore.Close();
+            currentStore.Close();
+            using var sourceConnection = new SqliteConnection("DataSource=" + sourceJournal);
+            using var currentConnection = new SqliteConnection("DataSource=" + currentJournal);
+            SqliteConnection.ClearPool(sourceConnection);
+            SqliteConnection.ClearPool(currentConnection);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, true)]
     public void Daily_meta_spend_survives_reopen_and_invocation_identity_is_session_scoped(

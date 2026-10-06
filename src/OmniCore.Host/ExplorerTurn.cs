@@ -44,6 +44,7 @@ public sealed class ExplorerTurn
     private readonly IEventCodecRegistry _codecs;
 
     private readonly IArtifactStore _artifacts;
+    private readonly UserWorkspaceSpendReader? _userSpendReader;
 
     private readonly IAuditSink _audit;
 
@@ -215,7 +216,7 @@ public sealed class ExplorerTurn
         QuestionnaireInteractionService? questionnaires = null,
         Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null,
         IModelProvider? metaModelProvider = null, long? modelContextCapacity = null,
-        bool recordEffectiveFingerprint = false)
+        bool recordEffectiveFingerprint = false, UserWorkspaceSpendReader? userSpendReader = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -229,6 +230,7 @@ public sealed class ExplorerTurn
         _store = store;
         _codecs = codecs;
         _artifacts = artifacts;
+        _userSpendReader = userSpendReader;
         _audit = audit;
         _redaction = redaction;
         _harness = harness;
@@ -278,8 +280,9 @@ public sealed class ExplorerTurn
     // Meta-model calls are independent billable invocations, not part of ModelCompleted's
     // primary-model summary. Completed followed by Failed for the same invocation is one charge.
     private PersistedSpend ReadMetaSpend(IEnumerable<DomainEvent> events, SessionId sessionId,
-        RunId runId, string today)
+        RunId runId, string today, IArtifactStore? evidenceArtifacts = null)
     {
+        var artifacts = evidenceArtifacts ?? _artifacts;
         decimal? session = 0m, daily = 0m, run = 0m;
         var incomplete = false;
         var starts = new Dictionary<(SessionId, string), (DomainEvent Event, MetaModelInvocationStarted Payload)>();
@@ -295,7 +298,7 @@ public sealed class ExplorerTurn
                     if (string.IsNullOrWhiteSpace(start.InvocationId) || string.IsNullOrWhiteSpace(start.Operation)
                         || string.IsNullOrWhiteSpace(start.ModelFingerprint) || evt.RunId != start.RunId
                         || start.InputArtifact is not { } input || input.Kind != ArtifactKind.Other
-                        || !_artifacts.Verify(input.Hash, input.Size)
+                        || !artifacts.Verify(input.Hash, input.Size)
                         || !starts.TryAdd((evt.SessionId, start.InvocationId), (evt, start))) incomplete = true;
                     continue;
                 }
@@ -321,7 +324,7 @@ public sealed class ExplorerTurn
                         != (TokenUsageFields.Input | TokenUsageFields.Output)
                     || payload is MetaModelInvocationCompleted completed
                         && (completed.OutputArtifact is not { } output || output.Kind != ArtifactKind.ModelResponse
-                            || !_artifacts.Verify(output.Hash, output.Size)))
+                            || !artifacts.Verify(output.Hash, output.Size)))
                 {
                     incomplete = true;
                     continue;
@@ -521,8 +524,9 @@ public sealed class ExplorerTurn
         var steps = 1;
         var started = false;
 
-        PersistedSpend CurrentSpend() => CombineSpend(persistedSpend,
-            ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps));
+        PersistedSpend CurrentSpend() => CombineSpend(CombineSpend(persistedSpend,
+            ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)),
+            ReadOtherWorkspaceSpend(stream, sessionId, runId, today));
 
         void ValidateBeforeInvocation()
         {
@@ -1095,14 +1099,16 @@ public sealed class ExplorerTurn
     /// contadores en memoria ni de tarifas que hayan cambiado desde entonces.
     /// </summary>
     private PersistedSpend ReadJournalSpend(EventStream stream, SessionId sessionId, RunId runId, string today,
-        bool includeWorkspaceDaily)
+        bool includeWorkspaceDaily, IReadOnlyList<DomainEvent>? evidenceEvents = null,
+        IArtifactStore? evidenceArtifacts = null)
     {
+        var artifacts = evidenceArtifacts ?? _artifacts;
         decimal? session = 0m, daily = 0m, run = 0m;
         var incomplete = false;
-        IReadOnlyList<DomainEvent>? stepStarts = null;
-        IReadOnlyList<DomainEvent>? stepCompletions = null;
-        IReadOnlyList<DomainEvent>? completions = null;
-        if (includeWorkspaceDaily && _store is IWorkspaceJournalReader store)
+        IReadOnlyList<DomainEvent>? stepStarts = evidenceEvents?.Where(evt => evt.Type.ToString() == "model_step.started").ToArray();
+        IReadOnlyList<DomainEvent>? stepCompletions = evidenceEvents?.Where(evt => evt.Type.ToString() == "model_step.completed").ToArray();
+        IReadOnlyList<DomainEvent>? completions = evidenceEvents?.Where(evt => evt.Type.ToString() == "model.completed").ToArray();
+        if (evidenceEvents is null && includeWorkspaceDaily && _store is IWorkspaceJournalReader store)
         {
             try
             {
@@ -1190,8 +1196,8 @@ public sealed class ExplorerTurn
                     && responseRef.MediaType == "application/vnd.omnicore.model-usage+json"
                     && responseRef.Hash is not null
                     && string.Equals(responseRef.Hash.Algorithm, "sha256", StringComparison.Ordinal)
-                    && _artifacts.Verify(responseRef.Hash, responseRef.Size);
-                var artifactText = artifactMetadataValid ? _artifacts.GetText(responseRef!.Hash!) : null;
+                    && artifacts.Verify(responseRef.Hash, responseRef.Size);
+                var artifactText = artifactMetadataValid ? artifacts.GetText(responseRef!.Hash!) : null;
                 artifactValid = TryDecodeUsageEnvelope(artifactText, out stepEnvelope);
             }
             catch (Exception ex) when (ex is InvalidDataException or FormatException or OverflowException)
@@ -1242,7 +1248,7 @@ public sealed class ExplorerTurn
             }
             if (completed?.ResponseArtifact is null) { incomplete = true; continue; }
             string? text;
-            try { text = _artifacts.GetText(completed.ResponseArtifact.Hash); }
+            try { text = artifacts.GetText(completed.ResponseArtifact.Hash); }
             catch (InvalidDataException)
             {
                 incomplete = true;
@@ -1284,6 +1290,27 @@ public sealed class ExplorerTurn
         }
         return new PersistedSpend(session, daily, run,
             incomplete || session is null || daily is null || run is null);
+    }
+
+    private PersistedSpend ReadOtherWorkspaceSpend(EventStream stream, SessionId sessionId, RunId runId, string today)
+    {
+        if (!_enforceDefaultSpendCaps || _userSpendReader is null) return new(0m, 0m, 0m, false);
+        decimal? daily = 0m;
+        var incomplete = false;
+        try
+        {
+            foreach (var evidence in _userSpendReader.ReadOtherWorkspaces())
+            {
+                var primary = ReadJournalSpend(stream, sessionId, runId, today, true, evidence.Events, evidence.Artifacts);
+                var meta = ReadMetaSpend(evidence.Events, sessionId, runId, today, evidence.Artifacts);
+                var combined = CombineSpend(primary, meta);
+                daily = combined.DailyUsd is { } value ? AddHistoricalSpend(daily, value) : null;
+                incomplete |= combined.Incomplete;
+            }
+            // Session and Run budgets remain scoped to their own workspace, even if IDs were copied.
+            return new(0m, daily, 0m, incomplete || daily is null);
+        }
+        catch (Exception) { return new(0m, null, 0m, true); }
     }
 
     private PersistedSpend ReadMetaJournalSpend(EventStream stream, SessionId sessionId, RunId runId,
