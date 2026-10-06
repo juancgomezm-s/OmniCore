@@ -63,6 +63,20 @@ public sealed class RunResumeService
             }
         }
 
+        // Reconciliation outcomes may be appended after later Runs were created. ToolCallId is
+        // the durable identity for an outcome, so include session-wide terminal outcomes when
+        // deciding whether an older Run's unknown effect is still pending.
+        var resolvedAcrossSession = new HashSet<ToolCallId>();
+        foreach (var evt in tail)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ToolCallReconciled reconciled: resolvedAcrossSession.Add(reconciled.ToolCallId); break;
+                case ToolCallSucceeded succeeded: resolvedAcrossSession.Add(succeeded.ToolCallId); break;
+                case ToolCallFailed failed: resolvedAcrossSession.Add(failed.ToolCallId); break;
+            }
+        }
+
         var stream = new EventStream(_store, _codecs, sessionId);
         var count = 0;
         for (var k = 0; k < starts.Count; k++)
@@ -77,23 +91,40 @@ public sealed class RunResumeService
             }
 
             var started = new Dictionary<ToolCallId, ToolCallStarted>();
-            var unknown = new List<ToolCallId>();
+            var startedEvents = new Dictionary<ToolCallId, DomainEvent>();
+            var unknown = new Dictionary<ToolCallId, DomainEvent>();
             var resolved = new HashSet<ToolCallId>();
             foreach (var evt in slice)
             {
                 switch (_codecs.Decode(evt))
                 {
-                    case ToolCallStarted st: started[st.ToolCallId] = st; break;
-                    case ToolCallEffectUnknown u: unknown.Add(u.ToolCallId); break;
+                    case ToolCallStarted st:
+                        started[st.ToolCallId] = st;
+                        startedEvents[st.ToolCallId] = evt;
+                        break;
+                    case ToolCallEffectUnknown u: unknown[u.ToolCallId] = evt; break;
                     case ToolCallReconciled r: resolved.Add(r.ToolCallId); break;
                     case ToolCallSucceeded su: resolved.Add(su.ToolCallId); break;
                     case ToolCallFailed f: resolved.Add(f.ToolCallId); break;
                 }
             }
 
-            foreach (var id in unknown.Where(id => !resolved.Contains(id)))
+            foreach (var (id, origin) in unknown.Where(pair => !resolved.Contains(pair.Key)
+                && !resolvedAcrossSession.Contains(pair.Key)))
             {
                 var json = started.TryGetValue(id, out var st) ? st.ReconciliationJson : null;
+                startedEvents.TryGetValue(id, out var startedEvent);
+                // A terminal Run can be older than the session's current Run. Attribute this
+                // reconciliation to its own source effect and restore only entity ids recorded
+                // on that source/ToolCallStarted envelope; never inherit the stream's last Run.
+                using var execution = ExecutionScope.Begin(new ExecutionScopeState(
+                    RunId: runId,
+                    TaskId: origin.TaskId ?? startedEvent?.TaskId,
+                    LaneId: origin.LaneId ?? startedEvent?.LaneId,
+                    TurnId: origin.TurnId ?? startedEvent?.TurnId,
+                    ToolCallId: id,
+                    ExecutionId: origin.ExecutionId ?? startedEvent?.ExecutionId));
+                using var causation = CausationScope.Begin(new EventCausation(origin.EventId));
                 stream.Append(ReconcileCall(id, json));
                 count += 1;
             }

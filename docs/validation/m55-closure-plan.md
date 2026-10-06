@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 08:29 UTC / 02:29 America/Mexico_City.
+Actualizado 2026-10-06 08:43 UTC / 02:43 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -57,6 +57,10 @@ El build global explicable del fingerprint y los demás componentes reales aún 
 
 1. Completar replay opaco: storage seguro para estados que el redactor actual alteraría,
    ReasoningCapability y aplicación de ReasoningReplayPolicy. Checkpoint/resume básico probado.
+   Binding físico de checkpointv2 implementado: cambiar endpoint configurado aunque
+   conserve RouteId legacy no autoriza replay. Focal62PASS/native58PASS;
+   full1706=1702PASS/0FAIL/4SKIP symlink,204.762s (cifras solapadas).
+   [Contrato y evidencia](m55-provider-state-physical-binding.md).
    IArtifactStore sólo tiene PutText/GetText/Verify; PutText redacta antes del hash.
    ADR0005/0046 exige opaque exacto, ADR0018 texto redactado. Mantener fail-closed;
    resolver explícitamente ese contrato antes de añadir storage, no bypass del redactor.
@@ -65,11 +69,16 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
-3. Disponibilidad desde breaker y selección por RouteId implementadas; cerrar prueba full.
-   Afinidad del arnés TUI Init/Run en hilos distintos reproducida (11 vs6), corrección en curso.
+3. Disponibilidad desde breaker y selección por RouteId implementadas (58ee5bc); full verde.
+   Afinidad del arnés TUI Init/Run reproducida (11 vs6), corregida en cd727e5;
+   59 pruebas TUI verdes, con login20ciclos y resize en vivo.
    No equiparar fixes de fixtures con cierre de defectos del framework o producción.
 4. Steering explícito en fronteras de ModelStep y outcome de descarte.
 5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
+   Reconciliación terminal multi-Run corregida: ids/cause de origen e idempotencia
+   sobre outcomes de toda la sesión, no slice cronológico incompleto. RED reproducido,
+   focal52PASS/combined110PASS; [evidencia](m55-terminal-reconciliation-attribution.md).
+   Fallback global EventStream y scopes de interacción por conflicto siguen pendientes.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
@@ -85,7 +94,13 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa con breaker/routing: 1690 casos, 1686 PASS, 0 FAIL,
+- Última suite completa binding/reconciliación: 1706 casos, 1702 PASS, 0 FAIL,
+  4 SKIP symlink (`reconciliation-binding-full-final.log`, 204.762 s).
+  Combined focal110PASS, con adapter nativo Anthropic/SSE fixture y SQLite real.
+- Suite previa routing/afinidad: 1696 casos, 1692 PASS, 0 FAIL,
+  4 SKIP symlink (`routeid-router-affinity-full-suite.log`, 201.818 s).
+  Core focal102PASS y TUI59PASS se solapan con ella. No prueba consumo autenticado.
+- Suite anterior con breaker/routing: 1690 casos, 1686 PASS, 0 FAIL,
   4 SKIP symlink (`provider-circuit-full-repeat.log`, 142.008 s). Primer intento:
   1685 PASS, 1 FAIL login TextView Lazy, 4 SKIP (`provider-circuit-full-suite.log`);
   aislado 1 PASS. Fallo intermitente abierto, sin afirmar causa raíz resuelta.
