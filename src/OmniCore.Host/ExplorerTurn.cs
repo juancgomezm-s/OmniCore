@@ -415,7 +415,8 @@ public sealed class ExplorerTurn
                     stream.Append(new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
                         _selection.ContextBudget, _selection.ToolMode.ToString(),
                         _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
-                        PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity), DurabilityClass.Barrier);
+                        PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
+                        _selection.RouteId), DurabilityClass.Barrier);
                     resolved = _complete(request, cancellationToken);
                     continuation = resolved.State;
                     usage = CombineUsage(usage, resolved.Usage);

@@ -44,7 +44,8 @@ public sealed class ExplorerTurnSuspendedUsageRegressionTests
             var catalog = new FakeCatalog().Add(new UserAskTool());
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
-            var selection = new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null);
+            var selection = new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null,
+                new RouteId("scripted/suspension-route"));
             var fingerprint = new ExecutionFingerprint("scripted", "h", "t", "c", "o", "M3");
 
             ExplorerTurn MakeTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete) =>
@@ -137,6 +138,7 @@ public sealed class ExplorerTurnSuspendedUsageRegressionTests
                 .OfType<ModelStepCompleted>().Where(step => step.TurnId == originalTurn)
                 .OrderBy(step => step.StepIndex).ToArray();
             Assert.Equal(new[] { 0, 1 }, stepStarts.Select(step => step.StepIndex));
+            Assert.All(stepStarts, step => Assert.Equal(selection.RouteId, step.RouteId));
             Assert.Equal(new[] { 0, 1 }, stepCompletions.Select(step => step.StepIndex));
             Assert.Equal(new long[] { 10, 4 }, stepCompletions.Select(step => step.Usage.Input));
             Assert.Equal(new long[] { 2, 1 }, stepCompletions.Select(step => step.Usage.Output));
