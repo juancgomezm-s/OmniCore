@@ -44,8 +44,9 @@ Los catches de RunSim/ResumeSim devuelven un ack correlacionado:
 
 No se borra ningún evento ni se anuncia éxito de ejecución después del fallo.
 La clasificación anterior requiere un journal consultable. La caída del propio
-ReadFrom durante la construcción del ack todavía requiere un caso específico;
-no se interpreta como prueba de cero consumo ni de cero efectos.
+ReadFrom durante la construcción del ack se cubre en el bloque posterior de
+[confirmación durable y rangos causales](m55-command-causal-ranges.md):
+Deferred(JournalOutcomeUnavailable), sin inferir cero consumo ni cero efectos.
 
 ## Evidencia
 

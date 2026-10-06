@@ -1276,15 +1276,51 @@ public sealed class OmniServer : IOmniClient
             return new CommandAck(commandMessageId, status, error, outcome);
         }
 
-        var causedSequences = _store.ReadFrom(session, sequenceBefore + 1)
-            .Where(evt => evt.Causation is CommandCausation causation
-                && causation.CommandId == commandId)
-            .Select(evt => evt.Sequence)
-            .ToArray();
+        long[] causedSequences;
+        try
+        {
+            causedSequences = CommandResultEvents(session, sequenceBefore, commandId)
+                .Select(evt => evt.Sequence)
+                .ToArray();
+        }
+        catch (Exception)
+        {
+            return UnavailableCommandOutcome(commandMessageId);
+        }
         return causedSequences.Length == 0
             ? new CommandAck(commandMessageId, status, error, outcome)
             : new CommandAck(commandMessageId, status, error, outcome,
                 causedSequences.Min(), causedSequences.Max());
+    }
+
+    // Deferred confirmation is not proof of rejection or zero effects. Never expose the
+    // journal exception, invent a range, or blindly retry a possibly persisted command.
+    private static CommandAck UnavailableCommandOutcome(string commandMessageId) =>
+        new(commandMessageId, "error", "No se pudo confirmar el resultado durable del command.",
+            RuntimeCommandOutcome.Deferred("JournalOutcomeUnavailable"));
+
+    private DomainEvent[] CommandResultEvents(SessionId session, long sequenceBefore, CommandId commandId) =>
+        SelectCommandResultEvents(_store.ReadFrom(session, sequenceBefore + 1), session, sequenceBefore, commandId);
+
+    internal static DomainEvent[] SelectCommandResultEvents(IReadOnlyList<DomainEvent> events,
+        SessionId session, long sequenceBefore, CommandId commandId)
+    {
+        var causedIds = new HashSet<EventId>();
+        var result = new List<DomainEvent>();
+        // Causal parents precede their children in the session journal. Only roots appended
+        // after this invocation and their descendants qualify; chronological adjacency,
+        // Run identity, and causes from an earlier invocation are not sufficient.
+        foreach (var evt in events.OrderBy(evt => evt.Sequence))
+        {
+            if (evt.SessionId != session || evt.Sequence <= sequenceBefore) continue;
+            if (evt.Causation is CommandCausation command && command.CommandId == commandId
+                || evt.Causation is EventCausation parent && causedIds.Contains(parent.EventId))
+            {
+                causedIds.Add(evt.EventId);
+                result.Add(evt);
+            }
+        }
+        return result.ToArray();
     }
 
     /// <summary>Authoritative admission only; consumption belongs to a ModelStep boundary.</summary>
@@ -1669,9 +1705,15 @@ public sealed class OmniServer : IOmniClient
         long sequenceBefore, string error, bool newSession = false)
     {
         var commandId = new CommandId(Guid.Parse(command.MessageId));
-        var persisted = _store.ReadFrom(session, sequenceBefore + 1)
-            .Where(evt => evt.Causation is CommandCausation cause && cause.CommandId == commandId)
-            .ToArray();
+        DomainEvent[] persisted;
+        try
+        {
+            persisted = CommandResultEvents(session, sequenceBefore, commandId);
+        }
+        catch (Exception)
+        {
+            return UnavailableCommandOutcome(command.MessageId);
+        }
         if (persisted.Length == 0)
             return new CommandAck(command.MessageId, "error", error, RuntimeCommandOutcome.Rejected());
 
