@@ -179,6 +179,15 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
 
     internal static string BuildBody(ModelRequest request, OpenAIResponsesOptions options)
     {
+        var maxOutput = request.Model.MaxOutputTokens;
+        if (options.MaxOutputTokens is { } configured)
+            maxOutput = maxOutput is { } selected ? Math.Min(selected, configured) : configured;
+        // The subscription backend has not qualified this API parameter. Do not
+        // claim an enforced bound there, or silently discard an explicit bound.
+        if (options.Profile == ResponsesProfile.Codex && maxOutput is not null)
+            throw new NotSupportedException("Explicit output token limits are not qualified for the Codex profile.");
+        if (maxOutput is < 16)
+            throw new ArgumentOutOfRangeException(nameof(request), "Responses API max_output_tokens must be at least 16.");
         var buffer = new ArrayBufferWriter<byte>();
         using (var w = new Utf8JsonWriter(buffer))
         {
@@ -187,7 +196,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             w.WriteBoolean("stream", true);
             w.WriteBoolean("store", false);
             if (!string.IsNullOrEmpty(request.Instructions)) w.WriteString("instructions", request.Instructions);
-            if (options.MaxOutputTokens is { } max) w.WriteNumber("max_output_tokens", max);
+            if (maxOutput is { } max) w.WriteNumber("max_output_tokens", max);
 
             var reasoning = request.Reasoning ?? request.Model.Reasoning;
             var effort = reasoning?.Kind is "minimal" or "low" or "medium" or "high" ? reasoning.Kind : null;

@@ -11,6 +11,21 @@ using OmniCore.Models;
 /// <summary>Adaptador nativo de la Responses API (perfiles api y codex), con SSE guionado sin red.</summary>
 public sealed class OpenAIResponsesProviderTests
 {
+    [Fact]
+    public async System.Threading.Tasks.Task Host_native_limit_reaches_the_http_request()
+    {
+        var descriptor = Descriptor("https://api.example.test/v1", AuthConfig.None());
+        var model = new ModelDefinition("gpt-test", descriptor.Id, 4096, 4096, 2048);
+        var limit = OmniCore.Host.ModelRoutingHost.OutputTokenLimit(model, descriptor);
+        Assert.Equal(2048L, limit);
+        var handler = new QueueHandler(_ => Sse(MinimalStream("bounded")));
+        var events = await Collect(CreateProvider(handler).StreamAsync(Request(maxOutputTokens: limit),
+            TestContext.Current.CancellationToken));
+        using var body = JsonDocument.Parse(Assert.Single(handler.Requests).Body);
+        Assert.Equal(2048L, body.RootElement.GetProperty("max_output_tokens").GetInt64());
+        Assert.IsType<ResponseCompleted>(events[^1]);
+    }
+
     private const string ToolStream = """
 event: response.created
 data: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}
@@ -293,8 +308,8 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 
     private static ModelRequest Request(string model = "gpt-test", IReadOnlyList<ModelMessage>? messages = null,
         string? instructions = null, IReadOnlyList<ToolDefinition>? tools = null, ReasoningRequest? reasoning = null,
-        ProviderState? continuation = null) =>
-        new(new ModelSelection(new ModelIdValue(model), 4096, ToolMode.Direct, null),
+        ProviderState? continuation = null, long? maxOutputTokens = null) =>
+        new(new ModelSelection(new ModelIdValue(model), 4096, ToolMode.Direct, null, maxOutputTokens: maxOutputTokens),
             messages ?? [new ModelMessage(MessageRole.User, [new TextBlock("hola")])], instructions, tools ?? [],
             ToolChoice.Auto(), null, reasoning, null, continuation);
 

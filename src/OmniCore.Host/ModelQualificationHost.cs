@@ -225,7 +225,8 @@ public sealed class ModelQualificationHost : IDisposable
         // ProbeTimeoutException tipados); nada se persiste si la suite no se completa.
         var selection = new ModelSelection(new ModelIdValue(model.Id),
             model.RecommendedUsableContext > 0 ? model.RecommendedUsableContext : model.ContextWindow,
-            ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id);
+            ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id,
+            maxOutputTokens: ModelRoutingHost.OutputTokenLimit(model, provider));
         var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
         var runner = new ProbeRunner(ConnectProvider(model, provider, options),
             options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout);

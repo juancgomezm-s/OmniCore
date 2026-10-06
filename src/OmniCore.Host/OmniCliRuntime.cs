@@ -577,7 +577,8 @@ public sealed class OmniCliRuntime
                 }
                 if (selected is "approve_only" or "reject") return 0;
             }
-            var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null, route.Id, route);
+            var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null, route.Id, route,
+                ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription));
             var fingerprint = RuntimeFingerprintFactory.Create(runtimeModel, effectiveProfile, harness,
                 selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value);
             var localHost = OmniHost.CreateLocalModelHost();

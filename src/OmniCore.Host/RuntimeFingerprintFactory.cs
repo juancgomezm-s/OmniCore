@@ -33,6 +33,8 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteString("selectedModel", selection.Model.ToString());
                 writer.WriteString("routeId", selection.RouteId.Value);
                 writer.WriteNumber("contextBudget", selection.ContextBudget);
+                if (selection.MaxOutputTokens is { } outputLimit) writer.WriteNumber("requestedMaxOutputTokens", outputLimit);
+                else writer.WriteNull("requestedMaxOutputTokens");
                 writer.WriteString("toolMode", selection.ToolMode.ToString());
                 writer.WriteString("reasoningKind", selection.Reasoning?.Kind);
                 if (selection.Reasoning?.BudgetTokens is { } tokens) writer.WriteNumber("reasoningBudgetTokens", tokens);

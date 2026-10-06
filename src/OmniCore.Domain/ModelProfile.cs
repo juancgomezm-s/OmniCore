@@ -144,10 +144,18 @@ public sealed class ModelSelection
     /// <summary>Descripción física de la ruta seleccionada, si está disponible.</summary>
     public ModelRoute? Route { get; }
 
+    /// <summary>
+    /// Cota de tokens de salida solicitada para esta invocación, si está declarada.
+    /// Null significa que no se especificó una cota y no es evidencia de una reserva segura.
+    /// </summary>
+    public long? MaxOutputTokens { get; }
+
     public ModelSelection(ModelIdValue model, long contextBudget, ToolMode toolMode, ReasoningRequest? reasoning,
-        RouteId? routeId = null, ModelRoute? route = null)
+        RouteId? routeId = null, ModelRoute? route = null, long? maxOutputTokens = null)
     {
         ArgumentNullException.ThrowIfNull(model);
+        if (maxOutputTokens is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxOutputTokens), "Output token limit must be positive.");
         if (route is not null && routeId is not null && !route.Id.Equals(routeId))
             throw new ArgumentException("Route identity must match the selected route id.", nameof(routeId));
         if (route is not null && route.Id.Equals(OmniCore.Domain.RouteId.ForDefaultModel(model.ToString()))
@@ -161,6 +169,7 @@ public sealed class ModelSelection
         RouteId = route?.Id ?? routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(model.ToString());
         RouteIdentityHash = route is null ? null
             : AuthorizedModelRoute.From(route, BillingMode.Unknown).IdentityHash;
+        MaxOutputTokens = maxOutputTokens;
     }
 }
 

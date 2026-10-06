@@ -123,14 +123,21 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     /// <summary>Construye el body de la Messages API (público para tests deterministas).</summary>
     internal static string BuildBody(ModelRequest request, AnthropicProviderOptions options)
     {
+        var reasoning = request.Reasoning ?? request.Model.Reasoning;
+        var budget = reasoning?.BudgetTokens is > 0 ? reasoning.BudgetTokens.Value : 0;
+        if (budget is > 0 and < 1024)
+            throw new ArgumentOutOfRangeException(nameof(request), "Manual thinking budget must be at least 1024 tokens.");
+        var maxOutput = request.Model.MaxOutputTokens ?? (budget > 0
+            ? (long)budget + options.OutputTokensAboveReasoningBudget
+            : options.DefaultMaxOutputTokens);
+        if (maxOutput <= budget)
+            throw new ArgumentOutOfRangeException(nameof(request), "max_tokens must exceed the manual thinking budget.");
         var buffer = new ArrayBufferWriter<byte>();
         using (var w = new Utf8JsonWriter(buffer))
         {
             w.WriteStartObject();
             w.WriteString("model", request.Model.Model.ToString());
-            var reasoning = request.Reasoning ?? request.Model.Reasoning;
-            var budget = reasoning?.BudgetTokens is > 0 ? reasoning.BudgetTokens.Value : 0;
-            w.WriteNumber("max_tokens", budget > 0 ? budget + options.OutputTokensAboveReasoningBudget : options.DefaultMaxOutputTokens);
+            w.WriteNumber("max_tokens", maxOutput);
             w.WriteBoolean("stream", true);
             if (budget > 0)
             {
