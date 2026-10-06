@@ -26,8 +26,16 @@ public sealed class CanonicalStateTracker
 
     private readonly Dictionary<PlanItemId, PlanItemState> _planItems;
 
+    // Identity relationships are retained separately from lifecycle states. Older TurnStarted
+    // payloads remain readable, but steering must name an existing, matching Run/Task/Lane/Turn.
+    private readonly Dictionary<TaskId, RunId> _taskRuns;
+    private readonly Dictionary<LaneId, TaskId> _laneTasks;
+    private readonly Dictionary<TurnId, LaneId> _turnLanes;
+    private sealed record SteeringEntry(RunId Run, LaneId Lane, TurnId Turn, string State);
+    private readonly Dictionary<SteeringId, SteeringEntry> _steering;
+
     public CanonicalStateTracker()
-        : this(new(), new(), new(), new(), new(), new(), new())
+        : this(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new())
     {
     }
 
@@ -35,7 +43,9 @@ public sealed class CanonicalStateTracker
         Dictionary<LaneId, LaneState> lanes, Dictionary<TurnId, TurnState> turns,
         Dictionary<ToolCallId, ToolCallState> toolCalls,
         Dictionary<ToolCallId, ReconciliationOutcome> toolCallReconciliationOutcomes,
-        Dictionary<PlanItemId, PlanItemState> planItems)
+        Dictionary<PlanItemId, PlanItemState> planItems, Dictionary<TaskId, RunId> taskRuns,
+        Dictionary<LaneId, TaskId> laneTasks, Dictionary<TurnId, LaneId> turnLanes,
+        Dictionary<SteeringId, SteeringEntry> steering)
     {
         _runs = runs;
         _tasks = tasks;
@@ -44,6 +54,10 @@ public sealed class CanonicalStateTracker
         _toolCalls = toolCalls;
         _toolCallReconciliationOutcomes = toolCallReconciliationOutcomes;
         _planItems = planItems;
+        _taskRuns = taskRuns;
+        _laneTasks = laneTasks;
+        _turnLanes = turnLanes;
+        _steering = steering;
     }
 
     /// <summary>Reconstruye el estado aplicando (y validando) todos los eventos en orden.</summary>
@@ -60,7 +74,8 @@ public sealed class CanonicalStateTracker
 
     /// <summary>Copia independiente (para validar un lote sin tocar el estado si falla).</summary>
     public CanonicalStateTracker Clone() => new(new(_runs), new(_tasks), new(_lanes), new(_turns),
-        new(_toolCalls), new(_toolCallReconciliationOutcomes), new(_planItems));
+        new(_toolCalls), new(_toolCallReconciliationOutcomes), new(_planItems), new(_taskRuns),
+        new(_laneTasks), new(_turnLanes), new(_steering));
 
     /// <summary>
     /// Foto canónica y ordenada de todos los estados ("entidad:id=estado"), para comparar dos
@@ -75,6 +90,7 @@ public sealed class CanonicalStateTracker
         lines.AddRange(_turns.Select(kv => "turn:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_toolCalls.Select(kv => "toolcall:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_planItems.Select(kv => "plan_item:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_steering.Select(kv => "steering:" + kv.Key + "=" + kv.Value.State));
         lines.Sort(StringComparer.Ordinal);
         return lines;
     }
@@ -118,6 +134,7 @@ public sealed class CanonicalStateTracker
             case TaskCreated created:
                 RequireNonTerminalRun(created.RunId, payload);
                 Create(_tasks, created.TaskId, TaskState.Pending, "task", payload);
+                _taskRuns[created.TaskId] = created.RunId;
                 break;
             case TaskReady e: Transition(_tasks, e.TaskId, "task", payload, StateMachines.ApplyTask); break;
             case TaskStarted e: Transition(_tasks, e.TaskId, "task", payload, StateMachines.ApplyTask); break;
@@ -132,6 +149,7 @@ public sealed class CanonicalStateTracker
             case LaneCreated created:
                 Require(_tasks, created.TaskId, "task", payload);
                 Create(_lanes, created.LaneId, LaneState.Queued, "lane", payload);
+                _laneTasks[created.LaneId] = created.TaskId;
                 break;
             case LaneProvisioning e: Transition(_lanes, e.LaneId, "lane", payload, StateMachines.ApplyLane); break;
             case LaneStarted e: Transition(_lanes, e.LaneId, "lane", payload, StateMachines.ApplyLane); break;
@@ -144,11 +162,33 @@ public sealed class CanonicalStateTracker
             // ── Turn ──
             case TurnStarted started:
                 Create(_turns, started.TurnId, TurnState.Started, "turn", payload);
+                _turnLanes[started.TurnId] = started.LaneId;
                 break;
             case ModelCompleted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
             case TurnCompleted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
             case TurnInterrupted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
             case TurnAbandoned e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
+
+            case TurnSteeringReceived received:
+                RequireOpenSteeringDestination(received.RunId, received.LaneId, received.TurnId, payload);
+                if (_steering.ContainsKey(received.SteeringId))
+                    throw new InvalidStateTransitionException("steering", "duplicate identity", payload.Type().ToString());
+                _steering.Add(received.SteeringId, new(received.RunId, received.LaneId, received.TurnId, "Pending"));
+                break;
+            case TurnSteeringApplied applied:
+                var toApply = RequirePendingSteering(applied.SteeringId, applied.RunId, applied.LaneId, applied.TurnId, payload);
+                RequireOpenSteeringDestination(applied.RunId, applied.LaneId, applied.TurnId, payload);
+                if (applied.StepIndex < 0)
+                    throw new InvalidStateTransitionException("steering", "negative step index", payload.Type().ToString());
+                _steering[applied.SteeringId] = toApply with { State = "Applied" };
+                break;
+            case TurnSteeringDropped dropped:
+                var toDrop = RequirePendingSteering(dropped.SteeringId, dropped.RunId, dropped.LaneId, dropped.TurnId, payload);
+                if (string.IsNullOrWhiteSpace(dropped.Reason))
+                    throw new InvalidStateTransitionException("steering", "empty drop reason", payload.Type().ToString());
+                // Drop is legal during cancellation after the Run/Lane/Turn terminal event.
+                _steering[dropped.SteeringId] = toDrop with { State = "Dropped" };
+                break;
 
             // ── ToolCall (ADR-0004 §2, ADR-0036 §5) ──
             case PostEditValidationPending e:
@@ -205,6 +245,26 @@ public sealed class CanonicalStateTracker
 
     private void ToolCallTransition(ToolCallId id, DomainEventPayload payload) =>
         Transition(_toolCalls, id, "toolcall", payload, StateMachines.ApplyToolCall);
+
+    private void RequireOpenSteeringDestination(RunId run, LaneId lane, TurnId turn, DomainEventPayload payload)
+    {
+        RequireNonTerminalRun(run, payload);
+        var laneState = Require(_lanes, lane, "lane", payload);
+        var turnState = Require(_turns, turn, "turn", payload);
+        if (StateMachines.IsLaneTerminal(laneState) || turnState is not (TurnState.Started or TurnState.ModelCompleted)
+            || !_turnLanes.TryGetValue(turn, out var turnLane) || turnLane != lane
+            || !_laneTasks.TryGetValue(lane, out var task) || !_taskRuns.TryGetValue(task, out var taskRun) || taskRun != run)
+            throw new InvalidStateTransitionException("steering", "destination closed or out of scope", payload.Type().ToString());
+    }
+
+    private SteeringEntry RequirePendingSteering(SteeringId id, RunId run, LaneId lane, TurnId turn,
+        DomainEventPayload payload)
+    {
+        var item = Require(_steering, id, "steering", payload);
+        if (item.State != "Pending" || item.Run != run || item.Lane != lane || item.Turn != turn)
+            throw new InvalidStateTransitionException("steering", "not pending or different scope", payload.Type().ToString());
+        return item;
+    }
 
     private void ApplyToolCallReconciled(ToolCallReconciled reconciled, DomainEventPayload payload)
     {

@@ -149,36 +149,39 @@ public sealed class SteeringQueueTests
         var fixture = new Fixture();
         var id = SteeringId.New();
         var received = new TurnSteeringReceived(id, fixture.Run, fixture.Lane, fixture.Turn, "[\"safe\"]");
+        // Deliberately malformed persisted input: bypass EventStream only in this fixture.
+        // Production EventStream now rejects these transitions BEFORE writing; the independent
+        // projection must still reject imported/corrupt journals when replaying raw store data.
         switch (invalid)
         {
             case "duplicate-receive":
-                fixture.Append(received);
-                fixture.Append(received);
+                fixture.AppendRaw(received);
+                fixture.AppendRaw(received);
                 break;
             case "apply-before-receive":
-                fixture.Append(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, 0));
+                fixture.AppendRaw(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, 0));
                 break;
             case "double-apply":
-                fixture.Append(received);
-                fixture.Append(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, 0));
-                fixture.Append(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, 1));
+                fixture.AppendRaw(received);
+                fixture.AppendRaw(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, 0));
+                fixture.AppendRaw(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, 1));
                 break;
             case "double-drop":
-                fixture.Append(received);
-                fixture.Append(new TurnSteeringDropped(id, fixture.Run, fixture.Lane, fixture.Turn, "discard"));
-                fixture.Append(new TurnSteeringDropped(id, fixture.Run, fixture.Lane, fixture.Turn, "discard again"));
+                fixture.AppendRaw(received);
+                fixture.AppendRaw(new TurnSteeringDropped(id, fixture.Run, fixture.Lane, fixture.Turn, "discard"));
+                fixture.AppendRaw(new TurnSteeringDropped(id, fixture.Run, fixture.Lane, fixture.Turn, "discard again"));
                 break;
             case "negative-step":
-                fixture.Append(received);
-                fixture.Append(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, -1));
+                fixture.AppendRaw(received);
+                fixture.AppendRaw(new TurnSteeringApplied(id, fixture.Run, fixture.Lane, fixture.Turn, -1));
                 break;
             case "empty-reason":
-                fixture.Append(received);
-                fixture.Append(new TurnSteeringDropped(id, fixture.Run, fixture.Lane, fixture.Turn, ""));
+                fixture.AppendRaw(received);
+                fixture.AppendRaw(new TurnSteeringDropped(id, fixture.Run, fixture.Lane, fixture.Turn, ""));
                 break;
             case "cross-scope":
-                fixture.Append(received);
-                fixture.Append(new TurnSteeringApplied(id, fixture.Run, LaneId.New(), fixture.Turn, 0));
+                fixture.AppendRaw(received);
+                fixture.AppendRaw(new TurnSteeringApplied(id, fixture.Run, LaneId.New(), fixture.Turn, 0));
                 break;
         }
 
@@ -227,6 +230,21 @@ public sealed class SteeringQueueTests
         {
             using (ExecutionScope.Begin(new ExecutionScopeState(Run, Task, Lane, Turn)))
                 new EventStream(Store, Codecs, Session).Append(payload, DurabilityClass.Standard);
+        }
+
+        public void AppendRaw(DomainEventPayload payload)
+        {
+            var (run, lane, turn) = payload switch
+            {
+                TurnSteeringReceived item => (item.RunId, item.LaneId, item.TurnId),
+                TurnSteeringApplied item => (item.RunId, item.LaneId, item.TurnId),
+                TurnSteeringDropped item => (item.RunId, item.LaneId, item.TurnId),
+                _ => throw new ArgumentException("Only malformed steering fixture payloads are supported.", nameof(payload)),
+            };
+            var evt = DomainEvent.Create(Session, payload.Type(), payload.SchemaVersion(), null,
+                run, run, Task, lane, turn, null, null, Array.Empty<ArtifactRef>(),
+                Codecs.CodecFor(payload.Type()).Encode(payload));
+            Store.Append(Session, evt, DurabilityClass.Standard, CancellationToken.None);
         }
 
         public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads)
