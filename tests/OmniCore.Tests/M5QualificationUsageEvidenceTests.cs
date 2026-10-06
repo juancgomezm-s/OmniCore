@@ -122,7 +122,12 @@ public sealed class M5QualificationUsageEvidenceTests
         var result = await new ProbeRunner(new FixtureProvider([new ResponseCompleted(
             CompleteResponse("measured", usage, TokenUsageFields.All))]), TimeSpan.FromSeconds(10),
             _ => { calls++; return 0m; }).RunProbeAsync(Request(), CancellationToken.None);
-        AssertScoredResponse(result);
+        Assert.Equal(ProbeStatus.Error, result.Status);
+        Assert.Equal(0d, result.Score);
+        Assert.Null(result.Output);
+        Assert.Equal("provider reported inconsistent token usage", result.Error);
+        Assert.Equal(TokenUsageFields.All, result.ReportedUsageFields);
+        Assert.InRange(result.Duration, TimeSpan.Zero, TimeSpan.FromMinutes(1));
         Assert.Equal(usage, result.Usage);
         Assert.Null(result.CostUsd);
         Assert.Equal(0, calls);

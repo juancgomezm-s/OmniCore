@@ -59,6 +59,7 @@ public sealed class MetaModelService
         TokenUsage? usage = null;
         var fields = TokenUsageFields.None;
         decimal? Cost() => usage is not null && fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
+            && !TokenUsageValidation.IsInvalid(usage, fields)
             ? _costEstimator?.Invoke(usage) : null;
         try
         {
@@ -70,6 +71,8 @@ public sealed class MetaModelService
                 {
                     usage = completed.Response.Usage;
                     fields = completed.Response.ReportedUsageFields;
+                    if (TokenUsageValidation.IsInvalid(usage, fields))
+                        throw new InvalidDataException("Provider token usage is invalid.");
                     result = string.Join("\n", completed.Response.Content.OfType<TextBlock>().Select(b => b.Text));
                 }
                 else if (evt is ResponseFailed failed)

@@ -131,6 +131,11 @@ public sealed class ProbeRunner
                 failureMessage ?? "el provider no devolvió una respuesta completa", sw.Elapsed, null);
         }
 
+        if (TokenUsageValidation.IsInvalid(response.Usage, response.ReportedUsageFields))
+            return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
+                "provider reported inconsistent token usage", sw.Elapsed, null,
+                response.Usage, response.ReportedUsageFields);
+
         var text = ProbeScorer.ExtractText(response);
         var score = ProbeScorer.Score(request.Probe.Kind, text, request.Probe.Expected);
         var passed = score >= 1.0;
@@ -143,9 +148,7 @@ public sealed class ProbeRunner
         var required = TokenUsageFields.Input | TokenUsageFields.Output;
         if (response is null || _quoteCost is null
             || (response.ReportedUsageFields & required) != required
-            || response.Usage.Input < 0 || response.Usage.Output < 0
-            || response.Usage.CacheRead < 0 || response.Usage.CacheWrite < 0
-            || response.Usage.Reasoning < 0) return null;
+            || TokenUsageValidation.IsInvalid(response.Usage, response.ReportedUsageFields)) return null;
         try
         {
             var cost = _quoteCost(response.Usage);

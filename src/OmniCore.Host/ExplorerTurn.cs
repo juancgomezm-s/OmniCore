@@ -63,7 +63,8 @@ public sealed class ExplorerTurn
                 if (_codecs.Decode(evt) is ModelStepCompleted completed && completed.TurnId == turnId
                     && completed.Usage is not null)
                 {
-                    if (InvalidUsage(completed.Usage)) { invalid = true; continue; }
+                    if (TokenUsageValidation.IsInvalid(completed.Usage, completed.ReportedUsageFields
+                        ?? (TokenUsageFields.Input | TokenUsageFields.Output))) { invalid = true; continue; }
                     try { total = CombineUsage(total, completed.Usage); }
                     catch (OverflowException) { invalid = true; }
                 }
@@ -103,7 +104,9 @@ public sealed class ExplorerTurn
             {
                 if (_codecs.Decode(evt) is not ModelStepCompleted completed || completed.TurnId != turnId) continue;
                 if (!completedIndexes.Add(completed.StepIndex)) return null;
-                if (completed.CostUsd is null || completed.CostUsd < 0m) return null;
+                if (completed.CostUsd is null || completed.CostUsd < 0m || completed.Usage is null
+                    || TokenUsageValidation.IsInvalid(completed.Usage, completed.ReportedUsageFields
+                        ?? (TokenUsageFields.Input | TokenUsageFields.Output))) return null;
                 total += completed.CostUsd.Value;
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
@@ -310,7 +313,8 @@ public sealed class ExplorerTurn
                 if (!starts.TryGetValue(key, out var origin) || origin.Event.Sequence >= evt.Sequence
                     || evt.RunId != identity.RunId || origin.Payload.RunId != identity.RunId
                     || origin.Payload.Operation != identity.Operation || origin.Payload.ModelFingerprint != identity.ModelFingerprint
-                    || identity.Usage is null || InvalidUsage(identity.Usage)
+                    || identity.Usage is null || TokenUsageValidation.IsInvalid(identity.Usage,
+                        identity.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output))
                     || identity.CostUsd is null || identity.CostUsd < 0m
                     || identity.ReportedUsageFields is not { } fields
                     || (fields & (TokenUsageFields.Input | TokenUsageFields.Output))
@@ -665,8 +669,7 @@ public sealed class ExplorerTurn
                     continuation = resolved.State;
                     var stepResponse = string.Join("\n", resolved.Content.OfType<TextBlock>()
                         .Select(block => _redaction.Redact(block.Text)));
-                    var stepCost = resolved.ReportedUsageFields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
-                        ? _pricing?.CostUsd(resolved.Usage) : null;
+                    var stepCost = _pricing?.CostUsd(resolved.Usage, resolved.ReportedUsageFields);
                     var completedDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
                         System.Globalization.CultureInfo.InvariantCulture);
                     string? stateDescriptor = null;
@@ -689,7 +692,7 @@ public sealed class ExplorerTurn
                         Sensitivity.Sensitive);
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
                         resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields), DurabilityClass.Barrier);
-                    if (InvalidUsage(resolved.Usage))
+                    if (TokenUsageValidation.IsInvalid(resolved.Usage, resolved.ReportedUsageFields))
                     {
                         invalidUsageObserved = true;
                         if (budgeted)
@@ -1167,8 +1170,8 @@ public sealed class ExplorerTurn
             if (completed is null || completed.StepIndex < 0 || evt.TurnId is null
                 || evt.TurnId.ToString() != completed.TurnId.ToString()
                 || completed.Usage is null
-                || completed.Usage.Input < 0 || completed.Usage.Output < 0 || completed.Usage.CacheRead < 0
-                || completed.Usage.CacheWrite < 0 || completed.Usage.Reasoning < 0
+                || TokenUsageValidation.IsInvalid(completed.Usage, completed.ReportedUsageFields
+                    ?? (TokenUsageFields.Input | TokenUsageFields.Output))
                 || !Enum.IsDefined(completed.StopReason)
                 || !completedKeys.Add((evt.SessionId.ToString(), completed.TurnId.ToString(), completed.StepIndex)))
             {
@@ -2356,9 +2359,6 @@ public sealed class ExplorerTurn
     private static TokenUsage CombineUsage(TokenUsage a, TokenUsage b) =>
         new TokenUsage(checked(a.Input + b.Input), checked(a.Output + b.Output), checked(a.CacheRead + b.CacheRead),
             checked(a.CacheWrite + b.CacheWrite), checked(a.Reasoning + b.Reasoning));
-
-    private static bool InvalidUsage(TokenUsage usage) => usage.Input < 0 || usage.Output < 0
-        || usage.CacheRead < 0 || usage.CacheWrite < 0 || usage.Reasoning < 0;
 
     private static bool HasWorkingStateContributor(List<OmniCore.Context.IContextContributor> contributors)
     {

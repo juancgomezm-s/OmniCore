@@ -61,7 +61,8 @@ public static partial class SessionUsageReporter
             }
             Complete("legacy:" + turn, usage, cost);
         }
-        var measured = steps.Values.Where(s => s.Usage is { Input: >= 0, Output: >= 0, CacheRead: >= 0, CacheWrite: >= 0 }).ToArray();
+        var measured = steps.Values.Where(s => s.Usage is not null
+            && !TokenUsageValidation.IsInvalid(s.Usage, s.Fields)).ToArray();
         var tokens = new TokenTotals(measured.Sum(s => s.Usage!.Input), measured.Sum(s => s.Usage!.Output),
             measured.Sum(s => s.Usage!.CacheRead), measured.Sum(s => s.Usage!.CacheWrite));
         var incomplete = steps.Count - measured.Count(s => s.Fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output));
@@ -72,7 +73,7 @@ public static partial class SessionUsageReporter
             ? MetricAvailability.Reported : MetricAvailability.Unknown,
             !conflict && incomplete == 0 && measured.All(s => s.Fields.HasFlag(field)) ? sum : null, "journal:provider-reported-fields", date);
         return new(session.ToString(), new(allTokens ? MetricAvailability.Reported : MetricAvailability.Unknown,
-                tokens, "journal:model_step+meta_model;legacy-fallback", date),
+                allTokens ? tokens : null, "journal:model_step+meta_model;legacy-fallback", date),
             new(allTokens ? MetricAvailability.Reported : MetricAvailability.Unknown,
                 allTokens ? tokens.Input + tokens.Output : null, "journal:unique-invocations", date),
             new(allCost ? MetricAvailability.Estimated : MetricAvailability.Unknown,
