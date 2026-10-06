@@ -202,7 +202,8 @@ public sealed class ArtifactGc
         };
     }
 
-    private static void CollectContentHashes(System.Text.Json.JsonElement element, Queue<string> hashes)
+    private static void CollectContentHashes(System.Text.Json.JsonElement element, Queue<string> hashes,
+        bool fingerprintComponent = false)
     {
         if (element.ValueKind == System.Text.Json.JsonValueKind.Object)
         {
@@ -218,7 +219,22 @@ public sealed class ArtifactGc
                     value = property.Value.GetString();
             }
             if (algorithm == "sha256" && value is not null && IsSha256Hex(value)) hashes.Enqueue(value);
-            foreach (var property in element.EnumerateObject()) CollectContentHashes(property.Value, hashes);
+            var isFingerprint = element.EnumerateObject().Any(property =>
+                property.Name.Equals("modelKey", StringComparison.OrdinalIgnoreCase));
+            foreach (var property in element.EnumerateObject())
+            {
+                // A component Hash is a configuration digest, not a CAS reference. Its
+                // optional Content carries the real reference and must still be traversed.
+                if (fingerprintComponent && property.Name.Equals("hash", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (isFingerprint && property.Name.Equals("components", StringComparison.OrdinalIgnoreCase)
+                    && property.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    foreach (var component in property.Value.EnumerateArray())
+                        CollectContentHashes(component, hashes, fingerprintComponent: true);
+                }
+                else CollectContentHashes(property.Value, hashes);
+            }
         }
         else if (element.ValueKind == System.Text.Json.JsonValueKind.Array)
             foreach (var item in element.EnumerateArray()) CollectContentHashes(item, hashes);
