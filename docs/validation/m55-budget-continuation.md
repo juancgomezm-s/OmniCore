@@ -210,3 +210,52 @@ si perteneciera al Turn actual. No deshabilita el guard de CanonicalStateTracker
 casos a las clases focales anteriores. La última suite completa sigue siendo 1926
 (no incluye estos tres casos); no presentar este focal como full1929 ni sumarlo.
 No cambia producción: añade evidencia al guard ya implementado.
+
+## Sumas monetarias no representables
+
+Los costes individuales y sus artifacts se conservan aunque una suma histórica de
+Run/Session/día exceda decimal.MaxValue. ReadJournalSpend devuelve null para el total
+no representable y lo marca incompleto; no publica cero, saturación ni total parcial
+como medición. La lectura de invocaciones y de resúmenes legacy usa el mismo guard.
+Con tope, la invocación siguiente se bloquea con BudgetExceeded, sin allow_plus para
+un total desconocido. Sin topes, Ask devuelve Error y TurnAbandoned, no una excepción
+que escape por encima del outcome. Un uso histórico simplemente desconocido sigue
+conservando el comportamiento uncapped existente: no se confunde con overflow.
+
+La suma del historial más el segmento actual se verifica antes de invocar y después
+de persistir ModelStepCompleted, antes de tools. Si desborda tras un paso, se conserva
+ese paso con su coste/usage/artifact; no se ejecuta su herramienta ni otro provider.
+También se convierte de manera controlada un overflow del subtotal SpendGuard.
+La suma decimal fallida de SpendGuard no altera el último total válido.
+
+Pruebas y logs en omni-m55-three-20261006:
+
+- money-overflow-red-test.log: 6 casos, 2 PASS/4 FAIL, 0.868s. Costes de historial
+  sintéticos individualmente válidos 5e28 y4e28; overflow escapaba de Ask antes del try.
+- money-overflow-fixed-focal.log: 66 casos, 4 FAIL. El outcome ya era correcto;
+  la assertion del fixture comparaba DomainEvent por referencia después de reopen.
+  Se sustituyó por comparación de TODOS los campos durables y refs, no se omitió historial.
+- money-overflow-daily-focal.log: 69 PASS/0 FAIL/0 SKIP, 4.145s. Incluye diario entre
+  dos sesiones: sólo la solicitante se bloquea, secuencia/envelope/payload/refs de la
+  otra permanecen iguales, sin ampliación de presupuesto para un total no representable.
+- money-overflow-current-focal.log: 75 casos, 4 FAIL por expectativa de string '2'
+  frente a decimal legítimo '2.000000'; la prueba final compara importe EXACTO2m y
+  verifica hash/size del artifact. Sin tolerancias ni redondeo.
+- money-current-red-test.log: 6 casos, 2 PASS/4 FAIL, 0.735s. Se conservó el fix de
+  lectura histórica y se retiró sólo el nuevo guard posterior al paso para reproducir
+  el caso current: históricoMax-1 + coste actual2 desborda, frente al controlMax-3+2.
+  Capped devolvía Error en lugar del bloqueo y uncapped ejecutaba la herramienta antes
+  de detectar el overflow en la frontera siguiente. No afirmar que este RED es HEAD entero.
+- money-overflow-restored-final-build.log: 0 warnings/0 errores.
+- money-overflow-restored-final-focal.log: 75 PASS/0 FAIL/0 SKIP, 4.203s.
+- money-overflow-full.log: 1964 casos = 1960 PASS/0 FAIL/4 SKIP por permisos
+  symlink, 266.765s; runner terminó exit0. Incluye los 15 casos nuevos monetarios.
+
+Son fixtures de costes, precios y providers; SQLite/CAS se reabren realmente en los
+tests históricos. El coste actual2 usa el cálculo de pricing real contra respuesta
+scripted (1 token a2M/M), no consumo autenticado ni una factura de proveedor.
+Esto no completa ledger User cross-workspace, reservas/liquidación ni retries facturables.
+
+Reproducción focal: runner xunitv3 con -class '*PersistedMonetaryOverflowRegressionTests'
+-class '*CurrentMonetaryOverflowRegressionTests' -class '*SpendGuardAccountingValidityTests'
+y las clases de presupuesto/replay indicadas arriba. Focales solapados, no sumables.

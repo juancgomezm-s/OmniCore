@@ -264,7 +264,25 @@ public sealed class ExplorerTurn
     {
     }
 
-    private sealed record PersistedSpend(decimal SessionUsd, decimal DailyUsd, decimal RunUsd, bool Incomplete);
+    private sealed record PersistedSpend(decimal? SessionUsd, decimal? DailyUsd, decimal? RunUsd, bool Incomplete);
+
+    // Null is an unrepresentable total, not a measured zero or a saturated amount.
+    private static decimal? AddHistoricalSpend(decimal? total, decimal cost)
+    {
+        if (total is null) return null;
+        try { return checked(total.Value + cost); }
+        catch (OverflowException) { return null; }
+    }
+
+    private static Exception UnrepresentableSpend(bool budgeted) => budgeted
+        ? new BudgetExceededException("suma monetaria no representable: no se puede hacer cumplir el tope")
+        : new InvalidDataException("Monetary total cannot be represented safely.");
+
+    private static decimal AccumulatedSpend(decimal? persisted, decimal current, bool budgeted)
+    {
+        var total = AddHistoricalSpend(persisted, current);
+        return total ?? throw UnrepresentableSpend(budgeted);
+    }
 
     private sealed record UsageEnvelope(string Response, string RunId, string Day, decimal? CostUsd,
         TokenUsage? Usage);
@@ -508,9 +526,9 @@ public sealed class ExplorerTurn
                         throw new BudgetExceededException("uso histórico incompleto: no se puede hacer cumplir el tope");
                     // `usage` is the current Ask's same spend already accumulated by guard;
                     // adding both charged a segment twice on a multi-step Turn.
-                    var accumulatedRunCost = persistedSpend.RunUsd + guard.CostUsd();
-                    var accumulatedSessionCost = persistedSpend.SessionUsd + guard.CostUsd();
-                    var accumulatedDailyCost = persistedSpend.DailyUsd + guard.CostUsd();
+                    var accumulatedRunCost = AccumulatedSpend(persistedSpend.RunUsd, guard.CostUsd(), budgeted);
+                    var accumulatedSessionCost = AccumulatedSpend(persistedSpend.SessionUsd, guard.CostUsd(), budgeted);
+                    var accumulatedDailyCost = AccumulatedSpend(persistedSpend.DailyUsd, guard.CostUsd(), budgeted);
                     if (budget.MaxCostUsd is not null && accumulatedRunCost >= budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run alcanzado ($"
                             + budget.MaxCostUsd.Value + ")", new("run", configuredRunCap!.Value,
@@ -571,22 +589,27 @@ public sealed class ExplorerTurn
                     usage = CombineUsage(usage, resolved.Usage);
                     turnUsage = CombineUsage(turnUsage, resolved.Usage);
                     guard.AdvanceTurn(checked(resolved.Usage.Input + resolved.Usage.Output));
-                    if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
+                    if (stepCost is not null)
+                    {
+                        try { guard.AddCostUsd(stepCost.Value); }
+                        catch (OverflowException) { throw UnrepresentableSpend(budgeted); }
+                    }
                     if (checkpointFailure is not null) throw checkpointFailure;
                     // This invocation is already durable, but unreported usage cannot
                     // authorize tools or another invocation within the same Ask. Checking
                     // only the history loaded at entry would defer this guard until resume.
                     if (budgeted && stepCost is null)
                         throw new BudgetExceededException("uso del paso incompleto: no se puede hacer cumplir el tope");
+                    var runCost = AccumulatedSpend(persistedSpend.RunUsd, guard.CostUsd(), budgeted);
+                    var sessionCost = AccumulatedSpend(persistedSpend.SessionUsd, guard.CostUsd(), budgeted);
+                    var dailyCost = AccumulatedSpend(persistedSpend.DailyUsd, guard.CostUsd(), budgeted);
                     if (budget.MaxCostUsd is not null
-                        && persistedSpend.RunUsd + guard.CostUsd() > budget.MaxCostUsd.Value)
+                        && runCost > budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
                             new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
                     if (_enforceDefaultSpendCaps)
                     {
-                        var turnCost = guard.CostUsd();
-                        ValidateSessionDaily(persistedSpend.SessionUsd + turnCost,
-                            persistedSpend.DailyUsd + turnCost, sessionCap, dailyCap, today);
+                        ValidateSessionDaily(sessionCost, dailyCost, sessionCap, dailyCap, today);
                     }
                 }
                 catch (BudgetExceededException budgetEx)
@@ -958,7 +981,7 @@ public sealed class ExplorerTurn
     private PersistedSpend ReadJournalSpend(EventStream stream, SessionId sessionId, RunId runId, string today,
         bool includeWorkspaceDaily)
     {
-        decimal session = 0m, daily = 0m, run = 0m;
+        decimal? session = 0m, daily = 0m, run = 0m;
         var incomplete = false;
         IReadOnlyList<DomainEvent>? stepStarts = null;
         IReadOnlyList<DomainEvent>? stepCompletions = null;
@@ -1074,9 +1097,9 @@ public sealed class ExplorerTurn
             }
             var cost = completed.CostUsd.Value;
             if (cost < 0) { incomplete = true; continue; }
-            if (completed.Day == today) daily += cost;
-            if (evt.SessionId == sessionId) session += cost;
-            if (evt.SessionId == sessionId && evt.RunId == runId) run += cost;
+            if (completed.Day == today) daily = AddHistoricalSpend(daily, cost);
+            if (evt.SessionId == sessionId) session = AddHistoricalSpend(session, cost);
+            if (evt.SessionId == sessionId && evt.RunId == runId) run = AddHistoricalSpend(run, cost);
         }
         if (startedKeys.Any(key => !completedKeys.Contains(key))) incomplete = true;
         foreach (var group in startedKeys.GroupBy(key => (key.Session, key.Turn)))
@@ -1139,11 +1162,12 @@ public sealed class ExplorerTurn
                 incomplete = true;
                 continue;
             }
-            if (record.Day == today) daily += cost;
-            if (evt.SessionId == sessionId) session += cost;
-            if (evt.SessionId == sessionId && evt.RunId == runId) run += cost;
+            if (record.Day == today) daily = AddHistoricalSpend(daily, cost);
+            if (evt.SessionId == sessionId) session = AddHistoricalSpend(session, cost);
+            if (evt.SessionId == sessionId && evt.RunId == runId) run = AddHistoricalSpend(run, cost);
         }
-        return new PersistedSpend(session, daily, run, incomplete);
+        return new PersistedSpend(session, daily, run,
+            incomplete || session is null || daily is null || run is null);
     }
 
     private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,

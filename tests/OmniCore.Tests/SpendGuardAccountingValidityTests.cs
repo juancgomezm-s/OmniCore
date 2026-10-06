@@ -25,4 +25,13 @@ public sealed class SpendGuardAccountingValidityTests
         guard.AddCostUsd(0m);
         Assert.Equal(.5m, guard.CostUsd());
     }
+
+    [Fact]
+    public void Monetary_overflow_preserves_the_last_valid_total_instead_of_saturating()
+    {
+        var guard = new SpendGuard(new TaskBudget(null, null, null, null));
+        guard.AddCostUsd(decimal.MaxValue - 1m);
+        Assert.Throws<OverflowException>(() => guard.AddCostUsd(2m));
+        Assert.Equal(decimal.MaxValue - 1m, guard.CostUsd());
+    }
 }
