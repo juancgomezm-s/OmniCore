@@ -682,6 +682,12 @@ public sealed class JournalVerifier
     private static List<(ArtifactRef Ref, string Field)> PayloadArtifactRefs(DomainEventPayload payload)
     {
         var refs = new List<(ArtifactRef, string)>();
+        if (payload is TurnStarted turn)
+        {
+            foreach (var component in turn.Fingerprint?.Components ?? Array.Empty<FingerprintComponent>())
+                if (component.Content is not null)
+                    refs.Add((component.Content, "fingerprint.components." + component.Name + ".content"));
+        }
         if (payload is UserInputReceived input && input.ContentRef is not null)
         {
             refs.Add((input.ContentRef, "contentRef"));
