@@ -78,9 +78,11 @@ public sealed class M5QualificationQuickCoverageTests
         Assert.Empty(store.List(CancellationToken.None));
     }
 
-    private sealed class Provider(IReadOnlyList<Probe> probes) : IModelProvider
+    // Scripted fixture has one generation response per StreamAsync invocation; this is not a billing guarantee.
+    private sealed class Provider(IReadOnlyList<Probe> probes) : IModelProvider, IModelRequestAttemptBound
     {
         public int Calls { get; private set; }
+        public long? MaximumGenerationRequestAttempts => 1;
         public ProviderCapabilities Capabilities => new(true, false, false);
         public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken)

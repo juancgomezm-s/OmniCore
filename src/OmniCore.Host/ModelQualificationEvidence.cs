@@ -11,7 +11,8 @@ public sealed partial class ModelQualificationHost
     // remains null; reported cache/reasoning are subsets, not extra additive consumption.
     private static string QualificationEvidenceJson(ModelQualificationKey key, long revision,
         QualificationOptions options, bool suiteComplete, IReadOnlyList<Probe> probes, IReadOnlyList<ProbeResult> results,
-        IReadOnlyList<QualificationTraitValue> traits, decimal estimate, string estimateSource)
+        IReadOnlyList<QualificationTraitValue> traits, decimal estimate, string estimateSource,
+        long? generationAttempts)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -36,6 +37,11 @@ public sealed partial class ModelQualificationHost
             writer.WriteEndObject();
             writer.WriteNumber("estimatedCostUsd", estimate);
             writer.WriteString("estimatedCostSource", estimateSource);
+            if (generationAttempts is { } attempts)
+                writer.WriteNumber("maximumGenerationRequestAttempts", attempts);
+            else writer.WriteNull("maximumGenerationRequestAttempts");
+            writer.WriteString("generationAttemptBoundSource", generationAttempts is null ? "unavailable"
+                : options.Provider is null ? "configured-factory-default" : "injected-provider-capability");
             writer.WriteNumber("costCapUsd", options.MaxTotalCostUsd);
             writer.WriteString("currency", "USD");
             writer.WriteString("costSource", "computed-from-reported-usage-and-explicit-prices-not-account-debit");

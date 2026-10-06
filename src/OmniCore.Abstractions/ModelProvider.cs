@@ -18,7 +18,8 @@ public interface IModelProvider
 /// refresh requests or transport redirects. This is not billing evidence or an account limit.</summary>
 public interface IModelRequestAttemptBound
 {
-    long MaximumGenerationRequestAttempts { get; }
+    /// <summary>Null means no finite bound is known; a known bound must be positive.</summary>
+    long? MaximumGenerationRequestAttempts { get; }
 }
 
 /// <summary>Helpers sobre el contrato: agregan el stream sin formar parte de cada adapter (ADR-0005 §2).</summary>

@@ -32,9 +32,11 @@ public sealed class ModelQualificationHostTests
 
     // ---- Provider scripteado local (mismo patrón que QualificationQuickSuiteTests) ----
 
-    private sealed class ScriptedProvider : IModelProvider
+    // Scripted fixture has one generation response per StreamAsync invocation; this is not a billing guarantee.
+    private sealed class ScriptedProvider : IModelProvider, IModelRequestAttemptBound
     {
         private readonly Dictionary<string, string?> _outputsByPrompt;
+        public long? MaximumGenerationRequestAttempts => 1;
 
         public ScriptedProvider(Dictionary<string, string?> outputsByPrompt) => _outputsByPrompt = outputsByPrompt;
 

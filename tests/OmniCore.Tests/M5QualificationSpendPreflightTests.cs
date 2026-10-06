@@ -15,9 +15,12 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class M5QualificationSpendPreflightTests
 {
-    private sealed class CountingProvider : IModelProvider
+    // Counting fixture never delegates to a transport and has one generation response per invocation.
+    // Its bound is local test scope only, not a billing guarantee.
+    private sealed class CountingProvider : IModelProvider, IModelRequestAttemptBound
     {
         public int StreamCalls { get; private set; }
+        public long? MaximumGenerationRequestAttempts => 1;
 
         public ProviderCapabilities Capabilities => new(true, false, false);
 

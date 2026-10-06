@@ -219,11 +219,13 @@ public sealed class M5QualificationUnknownBillingGuardTests
         Directory.Delete(directory, recursive: true);
     }
 
-    private sealed class FixtureProvider : IModelProvider
+    // In-memory fixture has one generation response per StreamAsync invocation; this is not a billing guarantee.
+    private sealed class FixtureProvider : IModelProvider, IModelRequestAttemptBound
     {
         private readonly string _answer;
 
         public int Calls { get; private set; }
+        public long? MaximumGenerationRequestAttempts => 1;
 
         public ProviderCapabilities Capabilities => new(reportsUsage: true, reportsCost: false,
             reportsQuota: false);
