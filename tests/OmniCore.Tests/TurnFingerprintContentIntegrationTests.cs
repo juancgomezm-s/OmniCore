@@ -41,7 +41,7 @@ public sealed class TurnFingerprintContentIntegrationTests
                 Assert.Equal(StopReason.EndTurn, result.StopReason);
                 recorded = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>()).Fingerprint!;
                 Assert.NotNull(recorded);
-                Assert.Equal(3, recorded.Components.Count);
+                Assert.Equal(4, recorded.Components.Count);
                 foreach (var component in recorded.Components)
                 {
                     Assert.NotNull(component.Content);

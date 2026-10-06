@@ -103,7 +103,7 @@ internal static class RuntimeFingerprintFactory
 
     internal static ExecutionFingerprint WithTurnConfiguration(ExecutionFingerprint baseline,
         FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null, ProfileId? agentProfile = null)
     {
         var tools = Component("tools.plan", writer =>
         {
@@ -147,9 +147,14 @@ internal static class RuntimeFingerprintFactory
             if (plan is null) writer.WriteNull("revision");
             else writer.WriteNumber("revision", plan.Revision);
         }, artifacts: artifacts);
-        var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name }, StringComparer.Ordinal);
+        var profile = Component("agent.profile", writer =>
+        {
+            writer.WriteString("profileId", agentProfile?.ToString());
+            writer.WriteString("source", agentProfile is null ? "unavailable" : "lane.created");
+        }, artifacts: artifacts);
+        var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name, profile.Name }, StringComparer.Ordinal);
         var components = baseline.Components.Where(component => !names.Contains(component.Name))
-            .Concat(new[] { tools, prompt, revision }).ToArray();
+            .Concat(new[] { tools, prompt, revision, profile }).ToArray();
         return new ExecutionFingerprint(baseline.ModelKey, baseline.HarnessPolicyHash, tools.Hash.Value,
             baseline.ContextPolicyHash, baseline.OverridesHash, baseline.Build, baseline.ModelPolicyHash,
             baseline.TokenizerHash, components);

@@ -13,6 +13,7 @@ namespace OmniCore.Tests;
 
 public sealed class EffectivePolicyTurnFingerprintIntegrationTests
 {
+    private static readonly ProfileId SameAgentProfile = ProfileId.New();
     [Fact]
     public void Effective_policy_controls_the_sent_tool_set_and_durable_turn_fingerprint()
     {
@@ -72,7 +73,8 @@ public sealed class EffectivePolicyTurnFingerprintIntegrationTests
         var store = new InMemoryEventStore();
         var codecs = EventCodecs.Create();
         var session = SessionId.New();
-        var run = TestRun.Open(new EventStream(store, codecs, session), session, "policy fingerprint integration");
+        var run = TestRun.Open(new EventStream(store, codecs, session), session, "policy fingerprint integration",
+            agentProfile: SameAgentProfile);
         var boundary = new ModelCapabilityBoundary(policy, ModelCapabilityBoundary.CoreTools,
             new FileReadRegistry(workspace));
         var requestToolNames = new List<string>();

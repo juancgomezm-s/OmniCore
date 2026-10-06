@@ -449,7 +449,8 @@ public sealed class ExplorerTurn
             || evt.Sequence <= originalStart.Sequence).ToArray();
         var fingerprint = _recordEffectiveFingerprint
             ? RuntimeFingerprintFactory.WithTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
-                EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts)
+                EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
+                FindAgentProfileForLane(stream.EventsSince(1), runId, laneId))
             : _fingerprint;
         if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
             { Fingerprint: { } originalFingerprint } && originalFingerprint.Hash() != fingerprint.Hash())
@@ -1696,6 +1697,17 @@ public sealed class ExplorerTurn
                 return created.TaskId;
         }
 
+        return null;
+    }
+
+    private ProfileId? FindAgentProfileForLane(IReadOnlyList<DomainEvent> events, RunId runId, LaneId laneId)
+    {
+        foreach (var evt in events)
+        {
+            if (evt.RunId != runId) continue;
+            if (_codecs.Decode(evt) is LaneCreated created && created.LaneId == laneId)
+                return created.AgentProfile;
+        }
         return null;
     }
 
