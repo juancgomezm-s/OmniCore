@@ -20,8 +20,8 @@ Full posterior a 36a5260: 2258 casos, 2250PASS/4FAIL/4SKIP, 314.973s.
 Cuatro controles de overflow sin topes detectaron que la optimización era demasiado
 amplia. Corrección conserva replay con precio actual o evidencia monetaria histórica,
 incluidos legacy y cambio a modelo sin precio; focal54PASS8.248s/build0/0.
-M4 corregido1PASS94.418s/arquitectura56PASS1.381s. Full sobre la corrección pendiente;
-no acreditar cierre con el resultado previo.
+M4 corregido1PASS94.418s/arquitectura56PASS1.381s. Full sobre5fa5cf2:
+2260=2256PASS/0FAIL/4SKIPsymlink318.331s. No equivale al cierre de las fronteras pendientes.
 Tope diario entre workspaces: RED2=1PASS/1FAIL corregido en la ruta normal;
 final133PASS/arquitectura56PASS. Lectura solo lectura por journal/CAS de origen,
 sin reservas concurrentes. Consentimiento diario entre workspaces corregido:
@@ -30,6 +30,16 @@ sin reservas concurrentes. Consentimiento diario entre workspaces corregido:
 [Implementación y reproducción](m55-user-daily-spend-20261006.md).
 No acreditan consultas reales ni full verde posterior.
 El objetivo activo continúa siendo M5.5 y preparación de M6, sin scheduler/joins.
+Escalaciones legacy: EscalationV1ReopenRegressionTests persiste Requested/Approved/
+Completed v1 y sus contrastes v2, cierra/reabre SQLite y aplica codecs/upcasters.
+Comprueba Turn/Lane null en v1, atribución v2, modelos/causa/aprobador, UTC,
+secuencia, Source/Causation y JSON/schema persistidos sin reescritura; el replay
+mantiene Run/Task/Lane Running. Propuesta Luna auditada e integrada por root.
+Final47PASS/0FAIL/0SKIP12.920s/build0/0 con filtros '*Escalation*',
+'*AgentExecution*', '*Lineage*'. Fixture offline SQLite real privado, no proveedor
+autenticado ni consumo real. Logs escalation-v1-reopen-final-build/test.log en
+C:/Users/juanc/.codex/omni-m55-workers-20261006-2103/.
+Este control no sustituye los contratos de Delegation/Wake/mailbox aún pendientes.
 Fingerprint AgentProfile de LaneCreated implementado en ruta Explorer/CLI,
 final83PASS/arquitectura56PASS. Solo identidad durable disponible, sin inventar
 registro de perfiles ni skills; el resto de fronteras sigue abierto.
