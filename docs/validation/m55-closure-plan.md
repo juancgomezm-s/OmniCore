@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 12:36 UTC / 06:36 America/Mexico_City.
+Actualizado 2026-10-06 12:44 UTC / 06:44 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -100,9 +100,11 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
    después del append durable; no se pierde la invocación que ya consumió recursos.
    Focal final80PASS0FAIL0SKIP6.090s, build0warnings/errores; SQLite/CAS reopen conserva
    el dato inválido y bloquea gasto de otra sesión del mismo journal sin contaminar
-   la sesión original. Guard de replay implementado, paquete legacy focal aún pendiente.
+   la sesión original. Guard de replay implementado y verificado con tres fixtures
+   legacy sintéticas: abierto negativo/overflow falla antes del provider y un dato
+   inválido de otro Turn cerrado no bloquea al nuevo. Focal83PASS6.229s, build0/0.
    Full final1926=1922PASS0FAIL4SKIPsymlink274.340s, exit0; summary/audit verificados.
-   No incluye todavía PersistedUsageReplayRegressionTests, entregado pero no ejecutado.
+   Full no incluye PersistedUsageReplayRegressionTests; sí lo incluye el focal83.
    [Contrato y evidencia](m55-budget-continuation.md#reportes-numéricos-inválidos-y-acumulación-sin-overflow).
 3. Disponibilidad desde breaker y selección por RouteId implementadas (58ee5bc); full verde.
    Afinidad del arnés TUI Init/Run reproducida (11 vs6), corregida en cd727e5;

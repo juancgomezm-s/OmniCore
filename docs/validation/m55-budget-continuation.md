@@ -160,8 +160,8 @@ persistir la invocación individual. Si el total no cabe en `long`, el Turn aban
 no hay summary `ModelCompleted` ni `TurnCompleted` de éxito. Los costes individuales
 válidos ya persistidos se conservan. La lectura de pasos de un Turn abierto detecta
 contadores negativos/sumas no representables y no autoriza nueva invocación.
-Esta protección de replay aún requiere su paquete focal dedicado de fixtures legacy;
-no confundir las pruebas de overflow en vivo con evidencia específica de ese replay.
+El replay tiene controles dedicados de fixtures legacy sintéticas, descritos abajo;
+no confundirlas con respuestas autenticadas ni con datos válidos de facturación.
 
 `SpendGuard` rechaza costes negativos en lugar de clamp a cero; una acumulación de
 tokens que desborda deja sus últimos contadores válidos intactos. Los contadores
@@ -194,3 +194,19 @@ Runner focal: InvalidStepUsageBudgetRegressionTests, UnknownStepUsageBudgetRegre
 SpendPricingTests, SpendGuardAccountingValidityTests, SuspendedSpendAccountingRegressionTests,
 BudgetContinuationIntegrationTests, CrossSessionDailyCapRegressionTests,
 SameSessionDailyCapControlTests y ExplorerTurnDurableProviderStateTests.
+
+### Replay legacy: atribución y rechazo antes de invocar
+
+`PersistedUsageReplayRegressionTests` agrega tres casos black-box sobre filas legacy
+sintéticas, sin fingerprint, artifact ni coste autenticado. Dos Turns abiertos tienen
+un contador negativo o dos pasos cuya suma desborda; al reanudar se abandona el mismo
+Turn con motivo explícito, cero llamadas, sin nuevos ModelStepStarted ni summary de
+éxito. El control negativo está en un Turn ya cerrado distinto: el nuevo Turn sí
+invoca y completa. La protección no utiliza el último dato de toda la sesión como
+si perteneciera al Turn actual. No deshabilita el guard de CanonicalStateTracker.
+
+`persisted-usage-replay-build.log`: 0 warnings/0 errores.
+`persisted-usage-replay-focal.log`: 83 PASS/0 FAIL/0 SKIP, 6.229s, añade estos tres
+casos a las clases focales anteriores. La última suite completa sigue siendo 1926
+(no incluye estos tres casos); no presentar este focal como full1929 ni sumarlo.
+No cambia producción: añade evidencia al guard ya implementado.
