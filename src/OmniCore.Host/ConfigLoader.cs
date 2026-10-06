@@ -24,7 +24,7 @@ public sealed class ConfigLoader
         ParseSettings(settingsYaml, diagnostics);
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
             new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth",
-                "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
+                "billingMode", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models", "routing" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
                 "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases" });
@@ -38,7 +38,8 @@ public sealed class ConfigLoader
         var registry = new ModelRegistry();
         if (providerFile?.Providers is null)
             registry.Add(new ProviderDescriptor("local", ProviderFamily.OpenAiChatCompatible,
-                "http://127.0.0.1:8080", AuthConfig.None(), true, true, true));
+                "http://127.0.0.1:8080", AuthConfig.None(), true, true, true)
+            { BillingMode = BillingMode.Local });
         if (providerFile?.Providers is not null)
         {
             foreach (var pair in providerFile.Providers)
@@ -57,7 +58,19 @@ public sealed class ConfigLoader
                 };
                 registry.Add(new ProviderDescriptor(pair.Key, family, values.BaseUrl!,
                     auth,
-                    true, true, true) { TrustedCertificatePath = values.CaCertificate, Profile = values.Profile });
+                    true, true, true)
+                {
+                    TrustedCertificatePath = values.CaCertificate,
+                    Profile = values.Profile,
+                    BillingMode = values.BillingMode switch
+                    {
+                        "Local" => BillingMode.Local,
+                        "IncludedQuota" => BillingMode.IncludedQuota,
+                        "CreditBalance" => BillingMode.CreditBalance,
+                        "MeteredCurrency" => BillingMode.MeteredCurrency,
+                        _ => BillingMode.Unknown,
+                    },
+                });
             }
         }
 
@@ -213,6 +226,14 @@ public sealed class ConfigLoader
                 if (hasAuthRef && string.IsNullOrWhiteSpace(Scalar(values, "authRef")))
                     AddAtNode(diagnostics, "providers.yaml", path + ".authRef", "config.missingRequired", authRefNode!);
                 if (hasAuth) ValidateLegacyAuth(authNode!, path, diagnostics);
+                if (values.Children.TryGetValue(new YamlScalarNode("billingMode"), out var billingModeNode))
+                {
+                    if (!IsYamlString(billingModeNode))
+                        AddAtNode(diagnostics, "providers.yaml", path + ".billingMode", "config.wrongType", billingModeNode);
+                    else if (Scalar(values, "billingMode") is not ("Unknown" or "Local" or "IncludedQuota"
+                        or "CreditBalance" or "MeteredCurrency"))
+                        AddAtNode(diagnostics, "providers.yaml", path + ".billingMode", "config.outOfRange", billingModeNode);
+                }
             }
         }
 
@@ -261,6 +282,7 @@ public sealed class ConfigLoader
                 BaseUrl = Scalar(values, "baseUrl"),
                 CaCertificate = Scalar(values, "caCertificate"),
                 Profile = Scalar(values, "profile"),
+                BillingMode = Scalar(values, "billingMode"),
                 AuthRef = Scalar(values, "authRef"),
                 InputPricePerMillionUsd = Decimal(values, "inputPricePerMillionUsd"),
                 OutputPricePerMillionUsd = Decimal(values, "outputPricePerMillionUsd"),
@@ -352,6 +374,10 @@ public sealed class ConfigLoader
             else if (key == "auth")
             {
                 // Validated as the supported legacy scalar/mapping union in ValidateLegacyAuth.
+            }
+            else if (key == "billingMode")
+            {
+                // Type and exact enum-name validation is provider-specific in ValidateRequiredAndRanges.
             }
             else if (pair.Value is not YamlScalarNode)
                 AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
