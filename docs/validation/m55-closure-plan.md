@@ -231,6 +231,19 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
 
 ## Ownership / pruebas
 
+Ronda manual 2026-10-06 16:14 UTC: Luna gpt-6-luna HIGH concentrada en M5,
+quick10/preflight de coste/hash canónico; evidencia y pendientes en
+[continuación M5](m5-qualification-continuation-20261006.md).
+Root implementó tres controles SQLite meta diario/reopen después de rechazar la
+propuesta Nemotron por no probar lo encargado. GLM5.3 y DeepSeek4.1/NVIDIA tuvieron
+TimeoutError sin entrega en cuatro minutos, sin retry ni sustitutos. Logs de esta
+ronda en `C:\Users\juanc\.codex\omni-m55-workers-20261006-1558`. Nemotron/OpenRouter
+sí respondió, precio cero reportado, pero eso no acredita cualificación del proyecto.
+Focal conjunto 131 PASS/0 FAIL/0 SKIP, 2.077s; build 0 warnings/errores.
+Full conjunto final: 1991 casos = 1987 PASS/0 FAIL/4 SKIP symlink,
+101.556s; arquitectura 56 PASS/0 FAIL, 0.587s. Focales solapados, no sumar.
+No modifica los pendientes M5.5 enumerados arriba ni habilita scheduler/joins M6.
+
 Luna implementó contratos de rutas y qualification key; el integrador audita, cablea,
 migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron código en
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
