@@ -14,7 +14,8 @@ namespace OmniCore.Tests;
 /// <summary>Qualification must use one immutable probe set from validation through evidence commit.</summary>
 public sealed class M5QualificationProbeSnapshotTests
 {
-    private sealed class BlockingPassingProvider : IModelProvider
+    // Blocking scripted fixture performs one generation response per invocation; not a billing guarantee.
+    private sealed class BlockingPassingProvider : IModelProvider, IModelRequestAttemptBound
     {
         private readonly Dictionary<string, string> _expectedByPrompt = QuickProbeSuite.Probes()
             .ToDictionary(probe => probe.Prompt, probe => probe.Expected, StringComparer.Ordinal);
@@ -23,6 +24,7 @@ public sealed class M5QualificationProbeSnapshotTests
         private readonly TaskCompletionSource _releaseFirst =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _blocked;
+        public long? MaximumGenerationRequestAttempts => 1;
 
         public ProviderCapabilities Capabilities => new(true, false, false);
         public TaskCompletionSource<ModelRequest> FirstRequest => _firstRequest;

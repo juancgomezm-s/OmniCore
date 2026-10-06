@@ -194,10 +194,12 @@ public sealed class M5QualificationUsageEvidenceTests
         Assert.False(cost.HasValue);
     }
 
-    private sealed class FixtureProvider : IModelProvider
+    // Scripted event fixture has one generation response per StreamAsync invocation; not a billing guarantee.
+    private sealed class FixtureProvider : IModelProvider, IModelRequestAttemptBound
     {
         private readonly IReadOnlyList<ModelStreamEvent> _events;
         public int Calls { get; private set; }
+        public long? MaximumGenerationRequestAttempts => 1;
 
         public FixtureProvider(IReadOnlyList<ModelStreamEvent> events) => _events = events;
 

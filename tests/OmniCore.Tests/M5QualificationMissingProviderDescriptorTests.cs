@@ -175,12 +175,14 @@ public sealed class M5QualificationMissingProviderDescriptorTests
             """);
     }
 
-    private sealed class PassingFixtureProvider : IModelProvider
+    // Scripted fixture has one generation response per StreamAsync invocation; this is not a billing guarantee.
+    private sealed class PassingFixtureProvider : IModelProvider, IModelRequestAttemptBound
     {
         private readonly Dictionary<string, string> _answers = QuickProbeSuite.Probes()
             .ToDictionary(probe => probe.Prompt, probe => probe.Expected, StringComparer.Ordinal);
 
         public int Calls { get; private set; }
+        public long? MaximumGenerationRequestAttempts => 1;
         public ProviderCapabilities Capabilities => new(true, false, false);
 
         public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,

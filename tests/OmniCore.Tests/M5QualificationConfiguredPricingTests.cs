@@ -158,11 +158,13 @@ public sealed class M5QualificationConfiguredPricingTests
         }
     }
 
-    private sealed class FixtureProvider : IModelProvider
+    // In-memory fixture has one generation response per StreamAsync invocation; this is not a billing guarantee.
+    private sealed class FixtureProvider : IModelProvider, IModelRequestAttemptBound
     {
         private readonly string _answer;
 
         public int Calls { get; private set; }
+        public long? MaximumGenerationRequestAttempts => 1;
 
         public FixtureProvider(string answer) => _answer = answer;
 

@@ -14,8 +14,10 @@ namespace OmniCore.Tests;
 /// <summary>Real Host/store/CAS integration with a scripted provider, not authenticated usage.</summary>
 public sealed class M5QualificationEvidenceHostTests
 {
-    private sealed class Provider : IModelProvider
+    // Scripted fixture has one generation response per StreamAsync invocation; this is not a billing guarantee.
+    private sealed class Provider : IModelProvider, IModelRequestAttemptBound
     {
+        public long? MaximumGenerationRequestAttempts => 1;
         public ProviderCapabilities Capabilities => new(true, false, false);
         public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken)

@@ -80,7 +80,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
 
     /// <summary>Informa tokens; costo y cuota no llegan en el stream.</summary>
     public ProviderCapabilities Capabilities { get; } = new(true, false, true);
-    public long MaximumGenerationRequestAttempts => checked(_resilience.MaximumGenerationRequestAttempts
+    public long? MaximumGenerationRequestAttempts => checked(_resilience.MaximumGenerationRequestAttempts
         * (_options.Profile == ResponsesProfile.Codex ? 2L : 1L));
 
     /// <summary>Ventanas de rate limit de la última respuesta (cuota informada, nunca estimada).</summary>

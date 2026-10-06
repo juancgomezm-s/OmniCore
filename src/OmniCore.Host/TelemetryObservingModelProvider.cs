@@ -4,7 +4,7 @@ using OmniCore.Abstractions;
 using OmniCore.Engine;
 
 /// <summary>Observes numeric stream metadata while forwarding each provider event unchanged.</summary>
-public sealed class TelemetryObservingModelProvider : IModelProvider
+public sealed class TelemetryObservingModelProvider : IModelProvider, IModelRequestAttemptBound
 {
     private readonly IModelProvider _inner;
     private readonly ITelemetrySink _sink;
@@ -17,6 +17,8 @@ public sealed class TelemetryObservingModelProvider : IModelProvider
     }
 
     public ProviderCapabilities Capabilities => _inner.Capabilities;
+    public long? MaximumGenerationRequestAttempts =>
+        (_inner as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts;
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)

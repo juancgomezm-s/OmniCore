@@ -64,7 +64,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
     }
 
     public string ProviderKey { get; }
-    public long MaximumGenerationRequestAttempts => _resilience.MaximumGenerationRequestAttempts;
+    public long? MaximumGenerationRequestAttempts => _resilience.MaximumGenerationRequestAttempts;
     public ProviderCapabilities Capabilities => ProviderCapabilities.Local();
 
     /// <summary>Agrega el stream para los consumidores síncronos heredados.</summary>
