@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 11:01 UTC / 05:01 America/Mexico_City.
+Actualizado 2026-10-06 11:08 UTC / 05:08 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -124,6 +124,10 @@ explicable completa; no se declara cerrado el fingerprint de M5.5.
    retenida y batch de Session/política (RED1FAIL adicional). Focal50PASS/0FAIL/0SKIP;
    [contrato y evidencia](m55-atomic-run-admission.md). Full1814=1810PASS/0FAIL/
    4SKIPsymlink210.307s, exit0; helper/tests nuevos de RuntimeBuild no incluidos.
+   Auditoría posterior: path inválido act escapaba sin ACK y selección de nuevoRun
+   en mismaSession tras fallo de input exponía cache anterior. RED3FAIL reales tras
+   corregir type del fixture; fixes con rechazo pre-write e invalidación por Run.
+   Focal57PASS/0FAIL/0SKIP; full1826=1822PASS/0FAIL/4SKIPsymlink209.921s, exit0.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
