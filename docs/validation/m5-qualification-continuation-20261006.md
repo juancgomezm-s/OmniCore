@@ -354,3 +354,69 @@ son correctos. La ausencia de tabla se tolera como legado; el schema productivo
 debe añadir un marcador durable para rechazar una tabla borrada tras instalar evidencia.
 Un override User de CAS compartido con workspace no incluye raíces de sus journals:
 no usar este comando para un namespace compartido; no se acredita soporte de ese caso.
+
+## Contrato de evidencia durable por revisión — 2026-10-06
+
+Capability aditiva `IModelQualificationEvidenceStore`, separada del store legacy:
+`UpsertWithTraitsAndEvidence` publica la siguiente revisión junto a sus traits y
+una ArtifactRef verificada; `Evidence(key, revision)` devuelve la referencia exacta
+y SourceRunRevision, o null para revisiones antiguas sin evidencia. No backfill inventado.
+El JSON se publica primero en el CAS User; después el writer adquiere el lease de GC,
+verifica hash/tamaño y confirma perfil/traits/ref en una transacción. Si GC recogió
+el blob antes del lease, el writer falla sin dejar perfil parcial. Nunca llama PutText
+dentro del lease no reentrante. Conflicto, fallo SQL o cancelación anterior al commit
+revierten la operación completa. Un blob publicado sin commit puede quedar huérfano.
+
+Schema productivo `model_qualification_evidence`: PK(key_hash,profile_revision),
+source_run_revision y metadata íntegra ArtifactRef (id, algorithm/hash/size, media_type,
+kind, sensitivity, redacted). El marcador `m5-qualification-evidence-v1` vive en
+model_profile_migrations y se instala en la transacción de upgrade. Store y GC
+rechazan una tabla ausente después del marcador, sin recrearla ni barrer blobs.
+MarkStale copia la referencia conservando SourceRunRevision y los registros históricos;
+la migración de ruta también conserva refs si existen. Legacy sin resultados sigue null.
+
+Host almacena `application/vnd.omnicore.model-qualification+json`, schema
+`omnicore.model-qualification.v1`, Sensitive/Other. Incluye clave canónica/hash,
+sourceRunRevision, UTC recordedAt, origen configured-provider/injected-provider,
+probeSetOverride, BenchmarkIdentity (suite/version, hash del conjunto real ejecutado,
+seed/temperature null, samplingParametersSent=false, assemblyVersion/MVID real),
+estimación y fuente/cap/moneda, cada definición prompt/expected/maxCost, cada resultado
+output/error/status/score/durationTicks/cost nullable, máscara y usage nullable, y traits.
+Cache y reasoning son subconjuntos, no sumas adicionales; coste computado no es débito.
+FileArtifactStore redacta secretos antes de hash/publicación: ArtifactRef.Redacted
+identifica esta transformación, no se promete conservar secretos crudos para auditoría.
+QualificationRunResult agrega EvidenceHash/EvidenceRedacted como datos primitivos.
+
+Integración Host real con provider scripteado: dos ejecuciones completas, reopen,
+Stale y GC sin gracia conservan ambas evidencias; subset inyectado conserva su hash
+real y provenance, no se confunde con el conjunto quick completo. Estas son fixtures,
+no consultas autenticadas ni evidencia de gasto real.
+
+Luna entregó12 casos de store; root leyó y corrigió el using Abstractions y el
+snapshot esperado de traits en la revisión alias (rev3, no rev2), sin cambiar los
+valores. Build de seis errores de fixture conservado en evidence-subset-build.log;
+su ejecución posterior usó el binario anterior y NO acredita esas pruebas nuevas.
+Root añadió dos pruebas de Host y tres controles de recalificación Calibrated y
+lease OS retenido en tx. Focal final226PASS0FAIL0SKIP5.053s, build0/0,
+arquitectura56PASS0.508s. Full evidence-final-full.log:2084=2080PASS0FAIL4SKIP
+symlink106.245s, exit0. Cifras solapadas/no sumables. No cierre M5 por este bloque.
+
+Auditoría Luna readonly confirmó orden lease/verify/transaction y alias histórico;
+el control adicional root ya prueba rollback sobre Calibrated. Hallazgo siguiente:
+un override de dos probes que pasan puede marcar el perfil Qualified bajo el id de
+Quick aunque no haya ejecutado toda Quick. El JSON del bloque hace visible su hash
+y probeSetOverride, pero no corrige aún esa clasificación preexistente. Debe probarse
+RED y corregirse la frontera de cobertura sin rebajar la evidencia de los controles
+de costes/rutas. Otro límite de API a comprobar: constructor legacy del store permite
+nombres DB arbitrarios, mientras GC User solo consulta user.db; el writer de evidencia
+no debe confirmar una ref fuera del namespace de raíces que GC sabe marcar.
+
+Reproducción local (fixtures, sin consultas autenticadas):
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -class '*Qualification*' -class '*Gc*'
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll
+dotnet build tests/OmniCore.ArchitectureTests/OmniCore.ArchitectureTests.csproj --no-restore
+dotnet tests/OmniCore.ArchitectureTests/bin/Debug/net10.0/OmniCore.ArchitectureTests.dll
+```

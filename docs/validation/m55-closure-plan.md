@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 19:45 UTC / 13:45 America/Mexico_City.
+Actualizado 2026-10-06 19:54 UTC / 13:54 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -37,6 +37,19 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5 evidencia durable implementada: capability aditiva, schema User y marcador
+  failclosed, writer con lease CAS Verify→txcommit perfil/traits/ref, metadata completa,
+  historia por revisión y alias Stale/route con SourceRunRevision. Host publica JSON
+  completo de probes/respuestas/puntajes/usage nullable/identidad build y taskSetHash
+  real; sampling no enviado se registra null/false, override de probes explícito.
+  Luna aporta12 casos de store; root producción, dos Host y tres controles extra,
+  auditoría e integración. Focal226PASS5.053s, arquitectura56PASS0.508s, builds0/0.
+  Full2084=2080PASS0FAIL4SKIPsymlink106.245s evidence-final-full.log, exit0.
+  Fixtures no acreditan consumo autenticado. Auditoría Luna detecta Qualified
+  incorrecto para subsets de probes: próximo RED/fix de cobertura Quick; verificar
+  también writer con nombreDB legacy distinto de user.db frente namespace de GC.
+  Pendientes M5: límites reales/reservas/retries, ruta sin descriptor, validación conectada
+  y auditoría de cobertura quick frente traits mínimos; no cierre por guardar artifacts.
 - Reanudación confirmada: objetivo de producto ACTIVE a las19:44UTC. Se mantienen
   M5 + M5.5 y preparación M6, Luna HIGH y paquetes externos autorizados; la
   automatización nocturna histórica permanece pausada.

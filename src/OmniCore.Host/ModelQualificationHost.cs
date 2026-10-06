@@ -89,6 +89,9 @@ public sealed record QualificationRunResult(
 {
     /// <summary>Provenance of the pre-call estimate, not a provider billing measurement.</summary>
     public string EstimatedCostSource { get; init; } = "declared-probe-maxima";
+    /// <summary>User CAS audit artifact; content may be secret-redacted before hashing.</summary>
+    public string? EvidenceHash { get; init; }
+    public bool EvidenceRedacted { get; init; }
 }
 
 /// <summary>
@@ -167,7 +170,7 @@ public sealed class ModelQualificationUnsupportedSuiteException : Exception
 /// Los errores tipados del módulo se envuelven en excepciones de Host (patrón de
 /// <see cref="ModelPolicyRevisionConflict"/>) para mantener la frontera binaria del CLI.
 /// </summary>
-public sealed class ModelQualificationHost : IDisposable
+public sealed partial class ModelQualificationHost : IDisposable
 {
     private readonly SqliteModelQualificationStore _store;
 
@@ -335,11 +338,15 @@ public sealed class ModelQualificationHost : IDisposable
 
         var expectedRevision = existing?.ProfileRevision ?? 0;
         var nextRevision = checked(expectedRevision + 1);
-        var profile = _store.UpsertWithTraits(key, expectedRevision, newState,
+        var evidence = new FileArtifactStore(_paths.DataDirectory).PutText(
+            QualificationEvidenceJson(key, nextRevision, options, probes, results, traits,
+                estimatedCost, estimateSource), "application/vnd.omnicore.model-qualification+json",
+            ArtifactKind.Other, Sensitivity.Sensitive);
+        var profile = _store.UpsertWithTraitsAndEvidence(key, expectedRevision, newState,
             QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion,
             traits.Select(trait => new ModelTraitRecord(key.QualificationKeyHash(), nextRevision,
                 trait.Trait, trait.Value, trait.Confidence, trait.Samples, trait.Source)).ToArray(),
-            cancellationToken);
+            evidence, cancellationToken);
 
         // Recomendación de política operativa (ADR-0044 §6): se calcula y se muestra, pero solo el
         // flujo explícito `omni model policy set` puede aplicarla. Nunca amplía la política.
@@ -362,7 +369,8 @@ public sealed class ModelQualificationHost : IDisposable
             recommendation.MutationPolicy.MaxRewriteRatio,
             recommendation.Notes,
             estimatedCost,
-            options.MaxTotalCostUsd) { EstimatedCostSource = estimateSource };
+            options.MaxTotalCostUsd) { EstimatedCostSource = estimateSource,
+                EvidenceHash = evidence.Hash.ToString(), EvidenceRedacted = evidence.Redacted };
     }
 
     private static ModelSelection Selection(ModelDefinition model, ProviderDescriptor? provider) =>

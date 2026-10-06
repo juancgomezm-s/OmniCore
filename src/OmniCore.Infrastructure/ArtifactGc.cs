@@ -183,7 +183,19 @@ public sealed class ArtifactGc
             {
                 schema.CommandText = "SELECT type FROM sqlite_master WHERE name = 'model_qualification_evidence' COLLATE NOCASE";
                 var type = schema.ExecuteScalar();
-                if (type is null) return; // Older databases have no qualification evidence roots.
+                if (type is null)
+                {
+                    using var migrations = connection.CreateCommand();
+                    migrations.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_profile_migrations'";
+                    if (Convert.ToInt64(migrations.ExecuteScalar()) != 0)
+                    {
+                        migrations.CommandText = "SELECT COUNT(*) FROM model_profile_migrations WHERE name=$marker";
+                        migrations.Parameters.AddWithValue("$marker", SqliteModelQualificationStore.EvidenceSchemaMarker);
+                        if (Convert.ToInt64(migrations.ExecuteScalar()) != 0)
+                            throw new InvalidDataException("GC: falta la tabla de evidencia User instalada.");
+                    }
+                    return; // Truly legacy databases have no declared evidence capability.
+                }
                 if (!Equals(type, "table"))
                     throw new InvalidDataException("GC: el registro de evidencia User no es una tabla.");
             }
