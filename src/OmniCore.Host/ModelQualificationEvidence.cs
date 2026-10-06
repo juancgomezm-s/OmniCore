@@ -10,7 +10,7 @@ public sealed partial class ModelQualificationHost
     // Explicit writer avoids reflection serialization/AOT dependencies. Unknown usage/cost
     // remains null; reported cache/reasoning are subsets, not extra additive consumption.
     private static string QualificationEvidenceJson(ModelQualificationKey key, long revision,
-        QualificationOptions options, IReadOnlyList<Probe> probes, IReadOnlyList<ProbeResult> results,
+        QualificationOptions options, bool suiteComplete, IReadOnlyList<Probe> probes, IReadOnlyList<ProbeResult> results,
         IReadOnlyList<QualificationTraitValue> traits, decimal estimate, string estimateSource)
     {
         using var stream = new MemoryStream();
@@ -25,6 +25,7 @@ public sealed partial class ModelQualificationHost
             writer.WriteString("recordedAt", DateTimeOffset.UtcNow);
             writer.WriteString("source", options.Provider is null ? "configured-provider" : "injected-provider");
             writer.WriteBoolean("probeSetOverride", options.Probes is not null);
+            writer.WriteBoolean("suiteComplete", suiteComplete);
             writer.WritePropertyName("benchmarkIdentity"); writer.WriteStartObject();
             writer.WriteString("suiteId", QuickProbeSuite.SuiteId);
             writer.WriteString("suiteVersion", QuickProbeSuite.SuiteVersion);

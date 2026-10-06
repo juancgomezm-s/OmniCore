@@ -92,6 +92,8 @@ public sealed record QualificationRunResult(
     /// <summary>User CAS audit artifact; content may be secret-redacted before hashing.</summary>
     public string? EvidenceHash { get; init; }
     public bool EvidenceRedacted { get; init; }
+    /// <summary>True only when the executed task set exactly matches the supported suite.</summary>
+    public bool SuiteComplete { get; init; }
 }
 
 /// <summary>
@@ -257,7 +259,11 @@ public sealed partial class ModelQualificationHost : IDisposable
                 "la suite de cualificación requiere consentimiento explícito (--yes o confirmación interactiva)");
         }
 
-        var probes = options.Probes ?? Suite(options.Suite);
+        var suiteProbes = Suite(options.Suite);
+        IReadOnlyList<Probe> probes = (options.Probes ?? suiteProbes).ToArray();
+        if (probes.Count == 0 || probes.Select(probe => probe.Id.ToString()).Distinct(StringComparer.Ordinal).Count() != probes.Count)
+            throw new ArgumentException("Qualification probes must be nonempty and have unique IDs.", nameof(options));
+        var suiteComplete = ProbeScorer.TaskSetHash(probes) == ProbeScorer.TaskSetHash(suiteProbes);
         var key = QualificationKeyFor(model, provider);
         var existing = _store.Get(key, cancellationToken);
         var previousState = existing?.State ?? ModelQualificationState.Declared;
@@ -328,7 +334,7 @@ public sealed partial class ModelQualificationHost : IDisposable
 
         // Transición de estado (ADR-0007 §4): suite completa y toda Passed → Qualified;
         // con fallos exactos el perfil queda ProvisionallyClassified con los traits medidos.
-        var newState = results.All(result => result.Status == ProbeStatus.Passed)
+        var newState = suiteComplete && results.All(result => result.Status == ProbeStatus.Passed)
             ? ModelQualificationState.Qualified
             : ModelQualificationState.ProvisionallyClassified;
 
@@ -339,7 +345,7 @@ public sealed partial class ModelQualificationHost : IDisposable
         var expectedRevision = existing?.ProfileRevision ?? 0;
         var nextRevision = checked(expectedRevision + 1);
         var evidence = new FileArtifactStore(_paths.DataDirectory).PutText(
-            QualificationEvidenceJson(key, nextRevision, options, probes, results, traits,
+            QualificationEvidenceJson(key, nextRevision, options, suiteComplete, probes, results, traits,
                 estimatedCost, estimateSource), "application/vnd.omnicore.model-qualification+json",
             ArtifactKind.Other, Sensitivity.Sensitive);
         var profile = _store.UpsertWithTraitsAndEvidence(key, expectedRevision, newState,
@@ -370,7 +376,8 @@ public sealed partial class ModelQualificationHost : IDisposable
             recommendation.Notes,
             estimatedCost,
             options.MaxTotalCostUsd) { EstimatedCostSource = estimateSource,
-                EvidenceHash = evidence.Hash.ToString(), EvidenceRedacted = evidence.Redacted };
+                EvidenceHash = evidence.Hash.ToString(), EvidenceRedacted = evidence.Redacted,
+                SuiteComplete = suiteComplete };
     }
 
     private static ModelSelection Selection(ModelDefinition model, ProviderDescriptor? provider) =>

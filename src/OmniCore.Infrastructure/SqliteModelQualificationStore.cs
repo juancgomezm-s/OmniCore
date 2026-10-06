@@ -21,6 +21,7 @@ public sealed partial class SqliteModelQualificationStore : IModelQualificationS
 
     private readonly Func<DateTimeOffset> _clock;
     private readonly string _dataDirectory;
+    private readonly bool _isUserDatabase;
 
     public void Dispose()
     {
@@ -37,13 +38,18 @@ public sealed partial class SqliteModelQualificationStore : IModelQualificationS
     {
         _clock = clock ?? (static () => DateTimeOffset.UtcNow);
         _dataDirectory = Path.GetDirectoryName(Path.GetFullPath(databasePath))!;
+        _isUserDatabase = Path.GetFileName(Path.GetFullPath(databasePath)) == "user.db";
         var parent = Path.GetDirectoryName(databasePath);
         if (parent is not null && parent!.Length > 0 && !Directory.Exists(parent!))
         {
             Directory.CreateDirectory(parent!);
         }
 
-        var connString = "DataSource=" + databasePath;
+        var connString = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+        {
+            DataSource = Path.GetFullPath(databasePath),
+            Pooling = false,
+        }.ToString();
         _conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!.CreateDataSource(connString)!.OpenConnection()!;
         try { InitializeSchema(); }
         catch { _conn.Dispose(); throw; }

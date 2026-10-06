@@ -41,9 +41,12 @@ public sealed class M5QualificationEvidenceHostTests
                 [new ModelRegistryModelDescriptor("fixture-model", "local", 8192, 8192, 2048)]);
             var result = await host.QualifyAsync("fixture-model", new QualificationOptions
             { ConsentGiven = true, Provider = new Provider(), Probes = subset }, CancellationToken.None);
+            Assert.Equal(ModelQualificationState.ProvisionallyClassified.ToString(), result.NewState);
+            Assert.False(result.SuiteComplete);
             var hash = ContentHash.Sha256(result.EvidenceHash!["sha256:".Length..]);
             using var json = JsonDocument.Parse(new FileArtifactStore(dir).GetText(hash)!);
             Assert.True(json.RootElement.GetProperty("probeSetOverride").GetBoolean());
+            Assert.False(json.RootElement.GetProperty("suiteComplete").GetBoolean());
             Assert.Equal(2, json.RootElement.GetProperty("probes").GetArrayLength());
             var taskHash = json.RootElement.GetProperty("benchmarkIdentity").GetProperty("taskSetHash").GetString();
             Assert.Equal(ProbeScorer.TaskSetHash(subset), taskHash);
@@ -74,6 +77,7 @@ public sealed class M5QualificationEvidenceHostTests
                     var result = await host.QualifyAsync("fixture-model", new QualificationOptions
                     { ConsentGiven = true, Provider = new Provider(), MaxTotalCostUsd = 1 }, CancellationToken.None);
                     Assert.Equal(revision, result.ProfileRevision);
+                    Assert.True(result.SuiteComplete);
                     Assert.StartsWith("sha256:", result.EvidenceHash!);
                     using var store = new SqliteModelQualificationStore(Path.Combine(dir, "user.db"));
                     var evidence = Assert.IsType<ModelQualificationEvidence>(store.Evidence(key, revision, CancellationToken.None));
@@ -85,6 +89,7 @@ public sealed class M5QualificationEvidenceHostTests
                     Assert.Equal("omnicore.model-qualification.v1", root.GetProperty("schema").GetString());
                     Assert.Equal("injected-provider", root.GetProperty("source").GetString());
                     Assert.False(root.GetProperty("probeSetOverride").GetBoolean());
+                    Assert.True(root.GetProperty("suiteComplete").GetBoolean());
                     var identity = root.GetProperty("benchmarkIdentity");
                     Assert.Equal(ProbeScorer.TaskSetHash(QuickProbeSuite.Probes()), identity.GetProperty("taskSetHash").GetString());
                     Assert.False(identity.GetProperty("samplingParametersSent").GetBoolean());
