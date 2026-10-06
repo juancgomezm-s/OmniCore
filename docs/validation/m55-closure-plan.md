@@ -16,7 +16,12 @@ RED de redacción confirmado en Host/CLI después de corregir cleanup.
 Full previa2240=2223PASS/13FAIL/4SKIP. M4 timeout reproducido con marcadores;
 eliminar replay monetario inútil sin topes dio 1PASS94.749s (200turnos/plazo sin cambios),
 119PASS focales y arquitectura56PASS. [Diagnóstico](m55-uncapped-replay-m4-recovery-20261006.md).
-Full posterior todavía pendiente.
+Full posterior a 36a5260: 2258 casos, 2250PASS/4FAIL/4SKIP, 314.973s.
+Cuatro controles de overflow sin topes detectaron que la optimización era demasiado
+amplia. Corrección conserva replay con precio actual o evidencia monetaria histórica,
+incluidos legacy y cambio a modelo sin precio; focal54PASS8.248s/build0/0.
+M4 corregido1PASS94.418s/arquitectura56PASS1.381s. Full sobre la corrección pendiente;
+no acreditar cierre con el resultado previo.
 Tope diario entre workspaces: RED2=1PASS/1FAIL corregido en la ruta normal;
 final133PASS/arquitectura56PASS. Lectura solo lectura por journal/CAS de origen,
 sin reservas concurrentes. Consentimiento diario entre workspaces corregido:
