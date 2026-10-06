@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 11:08 UTC / 05:08 America/Mexico_City.
+Actualizado 2026-10-06 11:25 UTC / 05:25 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -54,8 +54,10 @@ tienen identidad distinta, mientras la ruta configurada 1:1 conserva el ID anter
 El runtime ya registra build real y digests de descriptor/selección, perfil, harness,
 contexto y ruta física. [Contrato parcial y evidencia](m55-runtime-fingerprint.md).
 Focal86PASS; full1823=1819PASS/0FAIL/4SKIPsymlink210.175s, exit0.
-Faltan herramientas/prompt/plan por Turn, AgentProfile/skills efectivos y trazabilidad
-explicable completa; no se declara cerrado el fingerprint de M5.5.
+La CLI también compone herramientas visibles/prompt/revisión inicial del plan porTurn;
+guard de drift en el mismo Turn abierto y snapshots consistentes, focal89PASS.
+Faltan AgentProfile/skills efectivos y trazabilidad explicable completa; no se declara
+cerrado el fingerprint de M5.5. Full1834=1830PASS/0FAIL/4SKIPsymlink213.545s, exit0.
 
 ## Cola de cierre (orden operativo)
 
@@ -131,15 +133,17 @@ explicable completa; no se declara cerrado el fingerprint de M5.5.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
-8. Completar los componentes reales del fingerprint (build y configuración resuelta
-   conectados; tools/prompt/plan por Turn aún pendientes); cerrar CommandOutcome
+8. Completar los componentes reales del fingerprint (build/configuración resuelta y
+   tools/prompt/plan por Turn conectados; AgentProfile/skills/CAS completos pendientes); cerrar CommandOutcome
    correlacionado en todos los commands de frontera y guards de arquitectura.
    Hallazgo de auditoría: resume de Turn abierto puede conservar fingerprint A en
    TurnStarted y persistir contexto con fingerprint B de la instancia actual.
    Repro base: QuestionnaireTurnTests con reopen SQLite/CAS y cambio de config.
-   Verificar handoffs/escalación de ruta autorizados existentes antes de introducir
-   un guard de drift que pudiera romperlos; no sobrescribir TurnStarted ni inventar
-   una revisión de configuración por paso sin contrato.
+   Verificado: escalación autorizada por overflow abandona Turn anterior y comienza
+   otro; no requiere exención del guard sameTurn. Guard aplicado antes de FollowUp /
+   ModelStep / provider y recuperación con config original, sin sobrescribir eventos
+   ni inventar revisión por paso. Plan inicial congelado para no rechazar mutaciones
+   legítimas del propio Turn. Fixture reopen y controles de escalación/filtro/snapshot.
 9. Reproducir los siete criterios de salida de ADR-0046, actualizar docs y registrar
    exactamente qué evidencia real de providers pertenece a M5, sin convertir fixtures en éxito real.
 

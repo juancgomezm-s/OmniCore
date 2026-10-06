@@ -632,7 +632,8 @@ public sealed class OmniCliRuntime
                 loaded.Pricing(model), providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
                 sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
                 questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
-                metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
+                metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
+                recordEffectiveFingerprint: true);
             var instruction = TurnInstruction(executingAct);
             if (questionnaireService.Pending(sessionId).FirstOrDefault() is { } pendingQuestion)
             {
@@ -720,7 +721,8 @@ public sealed class OmniCliRuntime
                         providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
                         sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
                         questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
-                        metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
+                        metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
+                        recordEffectiveFingerprint: true);
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",

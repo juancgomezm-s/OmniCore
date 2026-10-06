@@ -53,7 +53,9 @@ public sealed class CliEndToEndTests
             Assert.NotNull(turn.Fingerprint);
             Assert.Equal(RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), turn.Fingerprint.Build);
             Assert.Equal(new[] { "context.policy", "model.descriptor", "model.harness", "model.profile",
-                "provider.adapter", "runtime.build" }, turn.Fingerprint.Components.Select(component => component.Name));
+                "plan.revision", "prompt.template", "provider.adapter", "runtime.build", "tools.plan" },
+                turn.Fingerprint.Components.Select(component => component.Name));
+            Assert.NotEqual("core-tools-1", turn.Fingerprint.ToolkitHash);
             var adapter = Assert.Single(turn.Fingerprint.Components, component => component.Name == "provider.adapter");
             Assert.Equal(ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(
                 Encoding.UTF8.GetBytes(expected.CanonicalJson())))), adapter.Hash);
