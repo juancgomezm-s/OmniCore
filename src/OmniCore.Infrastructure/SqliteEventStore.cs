@@ -68,6 +68,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
                 plan_item_id TEXT,
                 toolcall_id TEXT,
                 execution_id TEXT,
+                source TEXT,
                 payload TEXT NOT NULL,
                 artifacts TEXT NOT NULL
             )
@@ -75,7 +76,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         ddl.ExecuteNonQuery();
 
         // Additive, idempotent envelope migration. Existing payloads and sequence indexes stay
-        // untouched; historical rows naturally read with a NULL ExecutionId.
+        // untouched; historical rows naturally read with NULL ExecutionId / Source.
         // BEGIN IMMEDIATE serializes the existence check with ALTER TABLE. A second host opening
         // this legacy journal waits, then observes the migrated schema instead of racing an ALTER.
         using var migration = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: false);
@@ -83,6 +84,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         columns.Transaction = migration;
         columns.CommandText = "PRAGMA table_info(events)";
         var hasExecutionId = false;
+        var hasSource = false;
         using (var reader = columns.ExecuteReader()!)
         {
             while (reader.Read())
@@ -90,8 +92,9 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
                 if (string.Equals(reader.GetString(1), "execution_id", StringComparison.OrdinalIgnoreCase))
                 {
                     hasExecutionId = true;
-                    break;
                 }
+                if (string.Equals(reader.GetString(1), "source", StringComparison.OrdinalIgnoreCase))
+                    hasSource = true;
             }
         }
 
@@ -100,6 +103,14 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
             using var migrate = _conn.CreateCommand()!;
             migrate.Transaction = migration;
             migrate.CommandText = "ALTER TABLE events ADD COLUMN execution_id TEXT";
+            migrate.ExecuteNonQuery();
+        }
+
+        if (!hasSource)
+        {
+            using var migrate = _conn.CreateCommand()!;
+            migrate.Transaction = migration;
+            migrate.CommandText = "ALTER TABLE events ADD COLUMN source TEXT";
             migrate.ExecuteNonQuery();
         }
 
@@ -216,7 +227,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     {
         using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "SELECT event_id, seq, event_type, schema_version, timestamp, causation, correlation, " +
-            "run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, execution_id, payload, artifacts " +
+            "run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, execution_id, payload, artifacts, source " +
             "FROM events WHERE session_id = :sid AND seq >= :from ORDER BY seq";
         var ps = cmd.CreateParameter()!;
         ps.ParameterName = "sid";
@@ -247,7 +258,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         using var cmd = _conn.CreateCommand()!;
         cmd.CommandText = "SELECT session_id, event_id, seq, event_type, schema_version, timestamp, " +
             "causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, execution_id, " +
-            "payload, artifacts FROM events WHERE event_type = :type ORDER BY id";
+            "payload, artifacts, source FROM events WHERE event_type = :type ORDER BY id";
         cmd.Parameters.Add(S(cmd, "type", type.ToString()));
 
         var result = new List<DomainEvent>();
@@ -315,8 +326,8 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         cmd.Transaction = tx;
         cmd.CommandText = "INSERT INTO events (session_id, seq, event_id, event_type, schema_version, " +
             "timestamp, causation, correlation, run_id, task_id, lane_id, turn_id, plan_item_id, " +
-            "toolcall_id, execution_id, payload, artifacts) " +
-            "VALUES (:sid, :seq, :eid, :etype, :sver, :ts, :caus, :corr, :rid, :tid, :lid, :turn, :piid, :tcid, :xid, :payload, :art)";
+            "toolcall_id, execution_id, payload, artifacts, source) " +
+            "VALUES (:sid, :seq, :eid, :etype, :sver, :ts, :caus, :corr, :rid, :tid, :lid, :turn, :piid, :tcid, :xid, :payload, :art, :source)";
         cmd.Parameters.Add(S(cmd, "sid", sessionId.ToString()));
         cmd.Parameters.Add(S(cmd, "seq", sequence));
         cmd.Parameters.Add(S(cmd, "eid", evt.EventId.ToString()));
@@ -335,6 +346,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         cmd.Parameters.Add(S(cmd, "xid", evt.ExecutionId is null ? null : evt.ExecutionId.ToString()));
         cmd.Parameters.Add(S(cmd, "payload", evt.PayloadJson));
         cmd.Parameters.Add(S(cmd, "art", Parts.Artifacts(evt.ArtifactRefs)));
+        cmd.Parameters.Add(S(cmd, "source", evt.Source));
         cmd.ExecuteNonQuery();
     }
 
@@ -365,7 +377,8 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
             Parts.ParseToolCallId(_AsStringOrNull(row.GetValue(offset + 12))),
             Parts.ParseArtifacts(_AsStringOrNull(row.GetValue(offset + 15))),
             _AsString(row.GetValue(offset + 14)),
-            Parts.ParseExecutionId(_AsStringOrNull(row.GetValue(offset + 13))));
+            Parts.ParseExecutionId(_AsStringOrNull(row.GetValue(offset + 13))),
+            row.IsDBNull(offset + 16) ? null : _AsString(row.GetValue(offset + 16)));
     }
 
     /// <summary>

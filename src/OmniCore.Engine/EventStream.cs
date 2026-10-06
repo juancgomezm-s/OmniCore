@@ -174,7 +174,8 @@ public sealed class EventStream
         var run = runId ?? pendingRunId;
         var artifactRefs = ArtifactRefExtractor.Extract(payload);
         var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, taskId,
-            laneId, turnId, ids.PlanItemId, toolCallId, artifactRefs, json, executionId);
+            laneId, turnId, ids.PlanItemId, toolCallId, artifactRefs, json, executionId,
+            source: "OmniCore.Engine.EventStream");
         return envelope;
     }
 

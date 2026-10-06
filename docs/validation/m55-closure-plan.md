@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 10:10 UTC / 04:10 America/Mexico_City.
+Actualizado 2026-10-06 10:21 UTC / 04:21 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -100,7 +100,10 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    Guard de escritor IL implementado y verificado con controles positivos async;
    integración SQLite demuestra que deltas no llegan al journal. Focal45PASS;
    full1795=1791PASS/0FAIL/4SKIPsymlink209.877s, exit0.
-   Source sigue pendiente; SourceKind/ComponentSource
+   Source nullable implementado: EventStream identifica al escritor de forma fija,
+   Memory/SQLite preservan metadata y legacy null, wire aditivo sin nueva versión.
+   Focal32PASS/0FAIL/0SKIP1.503s; full1802=1798PASS/0FAIL/4SKIPsymlink211.288s.
+   [Contrato y reproducción](m55-event-source.md). SourceKind/ComponentSource
    describen componentes registrados, no se reutilizan como origen de eventos.
    Catches excepcionales RunSim/ResumeSim corregidos: rango de eventos realmente
    persistidos, reintento parcial sin duplicar Unknown y sesión nueva sin Run ajeno.
@@ -158,8 +161,9 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
 
-Próxima implementación tras verificación RouteId: steering y Source/causation en fronteras,
-además de resolver el contrato de almacenamiento/replay opaco señalado arriba.
+Próximas implementaciones: ToolCallStarted v3, contratos congelados de M6, presupuesto
+y fingerprint; además de resolver almacenamiento/replay opaco y la auditoría final
+de commands. Steering y Source/causation ya tienen evidencia focal y full propia.
 Reanudación ask verificada mediante solicitud+consent User+revisión exacta Session/Run,
 Turn/Lane de origen e identidad física vigente; no usa un mensaje nuevo como sustituto.
 Focal routing/resume/SQLite/protocol/CLI/FollowUp: 61 PASS, 0 FAIL, 0 SKIP;
