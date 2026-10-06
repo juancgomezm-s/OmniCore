@@ -14,7 +14,7 @@ public sealed class ModelProfileResolver
 {
     public EffectiveModelProfile Resolve(ModelDefinition model, ProviderDescriptor? provider,
         IReadOnlyDictionary<string, double>? overrides = null,
-        IReadOnlyDictionary<string, double>? empiricalTraits = null)
+        IReadOnlyDictionary<string, double>? empiricalTraits = null, ModelRoute? route = null)
     {
         var size = model.ParameterCountBillions;
         var provisional = size is null ? 0.5 : size <= 9 ? 0.35 : size < 27 ? 0.55 : 0.7;
@@ -51,6 +51,6 @@ public sealed class ModelProfileResolver
         if (provider?.SupportsGrammarPerRequest == true) formats.Add(ToolCallFormat.Grammar);
         if (formats.Count == 0) formats.Add(ToolCallFormat.PromptedJson);
         return new EffectiveModelProfile(model.Id, model.ContextWindow, model.RecommendedUsableContext,
-            model.MaxOutputTokens, new[] { "text" }, formats, false, traits);
+            model.MaxOutputTokens, new[] { "text" }, formats, false, traits, route?.Id);
     }
 }

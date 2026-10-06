@@ -42,7 +42,8 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
         var connString = "DataSource=" + databasePath;
         _conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!.CreateDataSource(connString)!.OpenConnection()!;
-        InitializeSchema();
+        try { InitializeSchema(); }
+        catch { _conn.Dispose(); throw; }
     }
 
     public ModelQualificationProfile? Get(ModelQualificationKey key, CancellationToken cancellationToken)
@@ -114,7 +115,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             update.CommandText = """
                 UPDATE model_profiles SET
                     state = :st, profile_revision = :rev, suite_id = :sid, suite_version = :sver,
-                    updated_at = :now
+                    updated_at = :now, stale_by_suite_version = NULL, stale_reason = NULL
                 WHERE key_hash = :h AND profile_revision = :expected
             """;
             Add(update, "st", state.ToString());
@@ -318,6 +319,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 suite_id TEXT NOT NULL,
                 suite_version TEXT NOT NULL,
                 stale_by_suite_version TEXT,
+                stale_reason TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -327,6 +329,8 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         {
             Exec("ALTER TABLE model_profiles ADD COLUMN stale_by_suite_version TEXT");
         }
+        if (!ColumnExists("model_profiles", "stale_reason"))
+            Exec("ALTER TABLE model_profiles ADD COLUMN stale_reason TEXT");
         Exec("""
             CREATE TABLE IF NOT EXISTS model_traits (
                 key_hash TEXT NOT NULL,
@@ -339,6 +343,75 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             )
         """);
         Exec("CREATE INDEX IF NOT EXISTS ix_model_traits_key ON model_traits (key_hash, profile_revision)");
+        MigrateLegacyRouteProfiles();
+    }
+
+    private void MigrateLegacyRouteProfiles()
+    {
+        const string migration = "adr0046-route-qualification-v1";
+        Exec("CREATE TABLE IF NOT EXISTS model_profile_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
+        using var tx = _conn.BeginTransaction();
+        using (var check = _conn.CreateCommand())
+        {
+            check.Transaction = tx;
+            check.CommandText = "SELECT COUNT(*) FROM model_profile_migrations WHERE name = :name";
+            Add(check, "name", migration);
+            if (Convert.ToInt64(check.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) > 0)
+            {
+                tx.Commit();
+                return;
+            }
+        }
+        var legacy = new List<(string Hash, long Revision)>();
+        using (var select = _conn.CreateCommand())
+        {
+            select.Transaction = tx;
+            select.CommandText = "SELECT key_hash, key_json, profile_revision, state FROM model_profiles";
+            using var reader = select.ExecuteReader();
+            while (reader.Read())
+            {
+                using var json = JsonDocument.Parse(reader.GetString(1));
+                var key = json.RootElement;
+                if (OptionalRouteString(key, "endpoint") is null && OptionalRouteString(key, "protocol") is null &&
+                    OptionalRouteString(key, "runtimeBuild") is null && reader.GetString(3) != "Stale")
+                {
+                    var parsed = ModelQualificationKeyFromJson(reader.GetString(1));
+                    if (parsed.QualificationKeyHash() != reader.GetString(0) || parsed.CanonicalJson() != reader.GetString(1))
+                        throw new InvalidDataException("No se puede migrar una clave de cualificación corrupta.");
+                    legacy.Add((reader.GetString(0), reader.GetInt64(2)));
+                }
+            }
+        }
+        var now = Iso(_clock());
+        foreach (var (hash, revision) in legacy)
+        {
+            using var update = _conn.CreateCommand();
+            update.Transaction = tx;
+            update.CommandText = """
+                UPDATE model_profiles SET state = 'Stale', profile_revision = :next,
+                    stale_reason = 'route-identity-migration', updated_at = :now
+                WHERE key_hash = :h AND profile_revision = :rev
+                """;
+            Add(update, "next", checked(revision + 1)); Add(update, "now", now);
+            Add(update, "h", hash); Add(update, "rev", revision);
+            update.ExecuteNonQuery();
+            // Preserve the historical traits and expose a copy under the new profile revision.
+            using var traits = _conn.CreateCommand();
+            traits.Transaction = tx;
+            traits.CommandText = """
+                INSERT INTO model_traits (key_hash, profile_revision, trait, value, confidence, samples, source)
+                SELECT key_hash, :next, trait, value, confidence, samples, source FROM model_traits
+                WHERE key_hash = :h AND profile_revision = :rev
+                """;
+            Add(traits, "next", checked(revision + 1)); Add(traits, "h", hash); Add(traits, "rev", revision);
+            traits.ExecuteNonQuery();
+        }
+        using var marker = _conn.CreateCommand();
+        marker.Transaction = tx;
+        marker.CommandText = "INSERT INTO model_profile_migrations (name, applied_at) VALUES (:name, :now)";
+        Add(marker, "name", migration); Add(marker, "now", now);
+        marker.ExecuteNonQuery();
+        tx.Commit();
     }
 
     private void AddProfileParams(DbCommand cmd, ModelQualificationKey key, string keyHash,
@@ -369,12 +442,14 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
         var staleByOrdinal = reader.GetOrdinal("stale_by_suite_version");
         var staleBy = reader.IsDBNull(staleByOrdinal) ? null : Text(reader, "stale_by_suite_version");
+        var staleReasonOrdinal = reader.GetOrdinal("stale_reason");
+        var staleReason = reader.IsDBNull(staleReasonOrdinal) ? null : Text(reader, "stale_reason");
 
         return new ModelQualificationProfile(key,
             Enum.Parse<ModelQualificationState>(Text(reader, "state")),
             reader.GetInt64(reader.GetOrdinal("profile_revision")),
             Text(reader, "suite_id"), Text(reader, "suite_version"), staleBy,
-            ParseIso(Text(reader, "created_at")), ParseIso(Text(reader, "updated_at")));
+            ParseIso(Text(reader, "created_at")), ParseIso(Text(reader, "updated_at")), staleReason);
     }
 
     /// <summary>Reconstruye la clave exacta desde su JSON canónico persistido.</summary>
@@ -400,8 +475,13 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             root.GetProperty("adapterProfile").GetString()!,
             Enum.Parse<ToolCallFormat>(root.GetProperty("toolCallFormat").GetString()!),
             Enum.Parse<ToolMode>(root.GetProperty("toolMode").GetString()!),
-            root.GetProperty("promptProfileVersion").GetString()!);
+            root.GetProperty("promptProfileVersion").GetString()!,
+            OptionalRouteString(root, "endpoint"), OptionalRouteString(root, "protocol"),
+            OptionalRouteString(root, "runtimeBuild"));
     }
+
+    private static string? OptionalRouteString(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind != JsonValueKind.Null ? value.GetString() : null;
 
     private static string? OptionalString(JsonElement root, string name)
     {

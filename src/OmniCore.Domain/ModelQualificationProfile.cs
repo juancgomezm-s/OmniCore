@@ -44,6 +44,9 @@ public sealed class ModelQualificationProfile
     /// </summary>
     public string? StaleBySuiteVersion { get; }
 
+    /// <summary>Causa de migración, separada de la versión de suite que produjo la evidencia.</summary>
+    public string? StaleReason { get; }
+
     public DateTimeOffset CreatedAt { get; }
 
     public DateTimeOffset UpdatedAt { get; }
@@ -57,7 +60,7 @@ public sealed class ModelQualificationProfile
 
     public ModelQualificationProfile(ModelQualificationKey key, ModelQualificationState state,
         long profileRevision, string suiteId, string suiteVersion, string? staleBySuiteVersion,
-        DateTimeOffset createdAt, DateTimeOffset updatedAt)
+        DateTimeOffset createdAt, DateTimeOffset updatedAt, string? staleReason = null)
     {
         Key = key;
         KeyHash = key.QualificationKeyHash();
@@ -66,6 +69,7 @@ public sealed class ModelQualificationProfile
         SuiteId = suiteId;
         SuiteVersion = suiteVersion;
         StaleBySuiteVersion = staleBySuiteVersion;
+        StaleReason = staleReason;
         CreatedAt = createdAt;
         UpdatedAt = updatedAt;
     }

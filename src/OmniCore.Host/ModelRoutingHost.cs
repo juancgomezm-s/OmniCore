@@ -13,6 +13,17 @@ using OmniCore.Models;
 /// </summary>
 public static class ModelRoutingHost
 {
+    /// <summary>Ruta 1:1 del YAML existente; un endpoint override define una ruta distinta.</summary>
+    public static ModelRoute RouteFor(ModelDefinition model, ProviderDescriptor? provider, string? endpointOverride = null)
+    {
+        var configured = provider?.BaseUrl ?? "http://127.0.0.1:8080/v1";
+        var endpoint = endpointOverride ?? Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? configured;
+        var protocol = provider?.Family ?? ProviderFamily.OpenAiChatCompatible;
+        return string.Equals(endpoint, configured, StringComparison.Ordinal)
+            ? ModelRoute.DefaultForModel(model.Id, model.ProviderId, endpoint, protocol, provider?.Profile)
+            : new ModelRoute(model.ProviderId, endpoint, protocol, provider?.Profile, model.Id);
+    }
+
     /// <summary>Política de routing; null si el usuario no configuró <c>routing:</c> (se usa el modelo por defecto).</summary>
     public static RoutingPolicy? Policy(LoadedUserConfiguration loaded)
     {
@@ -39,7 +50,7 @@ public static class ModelRoutingHost
         {
             var provider = loaded.Registry.Provider(model.ProviderId);
             var price = loaded.Pricing(model.Id)?.InputPricePerMillionUsd;
-            return new RouteCandidate(model.Id, resolver.Resolve(model, provider),
+            return new RouteCandidate(model.Id, resolver.Resolve(model, provider, route: RouteFor(model, provider)),
                 provider is not null && OmniHost.IsPrivateHost(provider.BaseUrl), true, hasWritePolicy(model), price);
         }).ToArray();
     }

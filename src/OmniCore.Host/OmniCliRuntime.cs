@@ -416,12 +416,14 @@ public sealed class OmniCliRuntime
                 ? modelDefinition.RecommendedUsableContext
                 : modelDefinition is not null && modelDefinition.ContextWindow > 0
                     ? modelDefinition.ContextWindow : 8192;
+            var runtimeModel = modelDefinition ?? new ModelDefinition(model, "local", usableContext, usableContext, 2048);
+            var route = ModelRoutingHost.RouteFor(runtimeModel, providerDescription, baseUrl);
             var effectiveProfile = new ModelProfileResolver().Resolve(
-                modelDefinition ?? new ModelDefinition(model, "local", usableContext, usableContext, 2048),
+                runtimeModel,
                 providerDescription,
                 overrides: null,
                 empiricalTraits: EmpiricalTraits(modelDefinition, providerDescription,
-                    act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken));
+                    act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken), route: route);
             var harness = new HarnessPolicyResolver().Resolve(effectiveProfile);
             var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
                 harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
@@ -468,7 +470,7 @@ public sealed class OmniCliRuntime
             }
             var fingerprint = new ExecutionFingerprint(model, harnessHash, "core-tools-1", contextPolicyHash,
                 "none", act ? "M3" : "M2", effectivePolicy.Fingerprint(), tokenCounter.Id.Value);
-            var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null);
+            var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null, route.Id);
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
             {
@@ -1002,7 +1004,8 @@ public sealed class OmniCliRuntime
     private static bool HasWritePolicy(ModelDefinition candidate, LoadedUserConfiguration loaded, CancellationToken cancellationToken)
     {
         var provider = loaded.Registry.Provider(candidate.ProviderId);
-        var harness = new HarnessPolicyResolver().Resolve(new ModelProfileResolver().Resolve(candidate, provider));
+        var harness = new HarnessPolicyResolver().Resolve(new ModelProfileResolver().Resolve(candidate, provider,
+            route: ModelRoutingHost.RouteFor(candidate, provider)));
         try
         {
             var effective = OmniHost.CreateModelPolicyService(null)
@@ -1125,7 +1128,8 @@ public sealed class OmniCliRuntime
         var provider = registry.Provider(definition.ProviderId);
         var profile = new ModelProfileResolver().Resolve(definition, provider,
             empiricalTraits: EmpiricalTraits(definition, provider,
-                Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken));
+                Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken),
+            route: ModelRoutingHost.RouteFor(definition, provider));
         var harness = new HarnessPolicyResolver().Resolve(profile);
         var key = ModelPolicyKey.For(definition.ProviderId, model);
         EffectiveModelPolicy effective;

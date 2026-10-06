@@ -51,9 +51,16 @@ public sealed class ModelQualificationKey
 
     public string PromptProfileVersion { get; }
 
+    public string? Endpoint { get; }
+
+    public string? Protocol { get; }
+
+    public string? RuntimeBuild { get; }
+
     public ModelQualificationKey(string providerId, string modelId, string? modelRevision, string? quantization,
         IReadOnlyList<string> adapters, string? backend, string? backendBuild, string? chatTemplateHash,
-        string adapterProfile, ToolCallFormat toolCallFormat, ToolMode toolMode, string promptProfileVersion)
+        string adapterProfile, ToolCallFormat toolCallFormat, ToolMode toolMode, string promptProfileVersion,
+        string? endpoint = null, string? protocol = null, string? runtimeBuild = null)
     {
         if (providerId is null || providerId!.Length == 0)
         {
@@ -103,13 +110,17 @@ public sealed class ModelQualificationKey
         ToolCallFormat = toolCallFormat;
         ToolMode = toolMode;
         PromptProfileVersion = promptProfileVersion;
+        Endpoint = endpoint;
+        Protocol = protocol;
+        RuntimeBuild = runtimeBuild;
     }
 
     /// <summary>Clave para una configuración local sin metadatos finos.</summary>
     public static ModelQualificationKey For(string providerId, string modelId,
-        ToolCallFormat toolCallFormat, ToolMode toolMode)
+        ToolCallFormat toolCallFormat, ToolMode toolMode, string? endpoint = null,
+        string? protocol = null, string? runtimeBuild = null)
         => new(providerId, modelId, null, null, Array.Empty<string>(), null, null, null,
-            "default", toolCallFormat, toolMode, "v1");
+            "default", toolCallFormat, toolMode, "v1", endpoint, protocol, runtimeBuild);
 
     /// <summary>JSON canónico determinista (orden fijo de campos; null explícito; adapters en orden de entrada).</summary>
     public string CanonicalJson()
@@ -179,6 +190,13 @@ public sealed class ModelQualificationKey
             writer.WriteString("toolCallFormat", ToolCallFormat.ToString());
             writer.WriteString("toolMode", ToolMode.ToString());
             writer.WriteString("promptProfileVersion", PromptProfileVersion);
+            // Preserve byte-for-byte legacy JSON when all route-specific fields are absent.
+            if (Endpoint is not null || Protocol is not null || RuntimeBuild is not null)
+            {
+                if (Endpoint is null) writer.WriteNull("endpoint"); else writer.WriteString("endpoint", Endpoint);
+                if (Protocol is null) writer.WriteNull("protocol"); else writer.WriteString("protocol", Protocol);
+                if (RuntimeBuild is null) writer.WriteNull("runtimeBuild"); else writer.WriteString("runtimeBuild", RuntimeBuild);
+            }
             writer.WriteEndObject();
         }
 
@@ -207,7 +225,10 @@ public sealed class ModelQualificationKey
             && Ordinal(AdapterProfile, k.AdapterProfile)
             && ToolCallFormat == k.ToolCallFormat
             && ToolMode == k.ToolMode
-            && Ordinal(PromptProfileVersion, k.PromptProfileVersion);
+            && Ordinal(PromptProfileVersion, k.PromptProfileVersion)
+            && OrdinalNull(Endpoint, k.Endpoint)
+            && OrdinalNull(Protocol, k.Protocol)
+            && OrdinalNull(RuntimeBuild, k.RuntimeBuild);
     }
 
     public override int GetHashCode()
@@ -229,6 +250,9 @@ public sealed class ModelQualificationKey
         hash = hash * 31 + (int)ToolCallFormat;
         hash = hash * 31 + (int)ToolMode;
         hash = hash * 31 + PromptProfileVersion.GetHashCode(StringComparison.Ordinal);
+        hash = hash * 31 + (Endpoint?.GetHashCode(StringComparison.Ordinal) ?? 0);
+        hash = hash * 31 + (Protocol?.GetHashCode(StringComparison.Ordinal) ?? 0);
+        hash = hash * 31 + (RuntimeBuild?.GetHashCode(StringComparison.Ordinal) ?? 0);
         return hash;
     }
 
