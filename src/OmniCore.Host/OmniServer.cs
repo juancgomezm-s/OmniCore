@@ -619,33 +619,44 @@ public sealed class OmniServer : IOmniClient
         var stream = new EventStream(_store, _codecs, sessionId);
         var now = DateTimeOffset.UtcNow;
         var budget = new TaskBudget(null, null, null, null);
-        var physicalWorkspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspacePath);
-        stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalWorkspaceRoot)).ToString(),
-            workspacePath, ProfileId.New(), now));
-        stream.Append(new SessionRoutingPolicySet(sessionId, _newSessionRoutingPolicy));
-        // Origen explícito y seguro de la raíz del run real (ADR-0004 §5): se fija aquí, en la
-        // creación de la sesión, y es lo único que la recuperación acepta al arrancar. Nunca se
-        // usa el cwd de un proceso posterior ni WorkspaceDisplayPath como autoridad. Se registra
-        // además la identidad durable (ruta física resuelta) para que la recuperación verifique
-        // que la ruta no fue sustituida por symlink/junction.
-        var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
-        stream.Append(new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity));
-        stream.Append(new RunCreated(runId, sessionId, objective, mode,
-            ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, taskId, now));
-        stream.Append(new RunStarted(runId));
-        stream.Append(new TaskCreated(taskId, runId, objective, Array.Empty<TaskDependency>(), budget));
-        stream.Append(new TaskReady(taskId));
-        stream.Append(new LaneCreated(laneId, taskId, ProfileId.New()));
-        stream.Append(new LaneStarted(laneId));
-        stream.Append(new TaskStarted(taskId, laneId)); // Ready → Running al arrancar su Lane (ADR-0036 §2)
-        stream.Append(new PlanCreated(planId, runId, PlanItemId.New(), objective));
+        try
+        {
+            var physicalWorkspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspacePath);
+            // Establish the existing workspace marker before committing its reference. The
+            // journal initialization is all-or-nothing; no incomplete Run becomes selectable.
+            var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
+            stream.AppendBatch(new DomainEventPayload[]
+            {
+                new SessionCreated(sessionId,
+                    WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalWorkspaceRoot)).ToString(),
+                    workspacePath, ProfileId.New(), now),
+                new SessionRoutingPolicySet(sessionId, _newSessionRoutingPolicy),
+                new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity),
+                new RunCreated(runId, sessionId, objective, mode,
+                    ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, taskId, now),
+                new RunStarted(runId),
+                new TaskCreated(taskId, runId, objective, Array.Empty<TaskDependency>(), budget),
+                new TaskReady(taskId),
+                new LaneCreated(laneId, taskId, ProfileId.New()),
+                new LaneStarted(laneId),
+                new TaskStarted(taskId, laneId),
+                new PlanCreated(planId, runId, PlanItemId.New(), objective),
+            }, DurabilityClass.Barrier);
 
-        _lastSessionId = sessionId;
-        _lastRunId = runId;
-        _lastSnapshot = MaterializeFromJournal(sessionId, runId);
-        SaveLastSession();
-        return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(), sessionId, 0,
-            new CommandId(Guid.Parse(command.MessageId)));
+            _lastSessionId = sessionId;
+            _lastRunId = runId;
+            _lastSnapshot = null;
+            _lastWorkingStateText = "";
+            _lastSnapshot = MaterializeFromJournal(sessionId, runId);
+            SaveLastSession();
+            return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(), sessionId, 0,
+                new CommandId(Guid.Parse(command.MessageId)));
+        }
+        catch (Exception)
+        {
+            return FailedDurableCommandAck(command, sessionId, 0,
+                "No se pudo completar la creación del Run.", newSession: true);
+        }
     }
 
     /// <summary>Store del servidor (para el Turn de Explorer, que persiste en el mismo journal).</summary>
@@ -985,7 +996,7 @@ public sealed class OmniServer : IOmniClient
                 ? "Evento " + parse.EventType + ": " + (parse.Detail ?? "?")
                 : (ex.Message ?? "exception");
             var stack = ex.StackTrace is null ? "" : string.Join("; ", ex.StackTrace);
-            return FailedSimulationAck(command, attemptSession, 0, detail + " :: " + stack, newSession: true);
+            return FailedDurableCommandAck(command, attemptSession, 0, detail + " :: " + stack, newSession: true);
         }
     }
 
@@ -1172,8 +1183,12 @@ public sealed class OmniServer : IOmniClient
 
                     outcomeSession = _lastSessionId;
                     outcomeSequenceBefore = outcomeSession is null ? 0 : _store.CurrentSequence(outcomeSession);
-                    var session = outcomeSession ?? StartSession();
-                    outcomeSession = session;
+                    var session = outcomeSession ?? SessionId.New();
+                    if (outcomeSession is null)
+                    {
+                        outcomeSession = session; // keep the attempted identity even if initialization fails
+                        StartSession(session);
+                    }
                     var mode = fields.TryGetValue("mode", out var m) && m == "plan" ? RunMode.Plan : RunMode.Act;
                     _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin());
                     _lastSessionId = session;
@@ -1265,6 +1280,13 @@ public sealed class OmniServer : IOmniClient
             }
 
             return CommandAck.Fail(command.MessageId, ex.Message);
+        }
+        catch (Exception)
+        {
+            return outcomeSession is null
+                ? UnavailableCommandOutcome(command.MessageId)
+                : FailedDurableCommandAck(command, outcomeSession, outcomeSequenceBefore,
+                    "No se pudo completar el command de control.", newSession: _lastSessionId != outcomeSession);
         }
     }
 
@@ -1664,14 +1686,15 @@ public sealed class OmniServer : IOmniClient
             : _lastRunId ?? throw new FormatException("falta runId y no hay un Run en curso");
 
     /// <summary>Crea una sesión nueva en el journal (primer input sin sesión previa).</summary>
-    private SessionId StartSession()
+    private void StartSession(SessionId session)
     {
-        var session = SessionId.New();
         var workspace = Path.GetFullPath(".");
-        new EventStream(_store, _codecs, session).Append(new SessionCreated(session,
-            WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(), workspace, ProfileId.New(), DateTimeOffset.UtcNow));
-        new EventStream(_store, _codecs, session).Append(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
-        return session;
+        new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[]
+        {
+            new SessionCreated(session, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
+                workspace, ProfileId.New(), DateTimeOffset.UtcNow),
+            new SessionRoutingPolicySet(session, _newSessionRoutingPolicy),
+        }, DurabilityClass.Barrier);
     }
 
     private CommandAck ResumeSim(WireEnvelope command)
@@ -1696,12 +1719,12 @@ public sealed class OmniServer : IOmniClient
         catch (Exception ex)
         {
             var stack = ex.StackTrace is null ? "" : string.Join("; ", ex.StackTrace);
-            return FailedSimulationAck(command, session, sequenceBefore,
+            return FailedDurableCommandAck(command, session, sequenceBefore,
                 (ex.Message ?? "exception") + " :: " + stack);
         }
     }
 
-    private CommandAck FailedSimulationAck(WireEnvelope command, SessionId session,
+    private CommandAck FailedDurableCommandAck(WireEnvelope command, SessionId session,
         long sequenceBefore, string error, bool newSession = false)
     {
         var commandId = new CommandId(Guid.Parse(command.MessageId));

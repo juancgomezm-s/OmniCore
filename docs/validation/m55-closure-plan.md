@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 10:33 UTC / 04:33 America/Mexico_City.
+Actualizado 2026-10-06 10:46 UTC / 04:46 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -113,10 +113,13 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    recovery terminal con caller conserva su causa, background conserva la del origen.
    RED inicial3casos1PASS2FAIL; RED posterior LastSeq33 vs34; focal35PASS/0FAIL/0SKIP.
    [Contrato y evidencia](m55-command-causal-ranges.md). Full1806=1802PASS/0FAIL/
-   4SKIPsymlink210.503s, exit0. Auditoría READONLY identifica dos reproducciones
-   pendientes: IOException de auditoría tras interaction.respond ya persistido;
-   inicialización act/explore mediante appends separados puede quedar parcial.
-   Nuevos tests del siguiente bloque todavía no compilados ni acreditados por este full.
+   4SKIPsymlink210.503s, exit0. Reproducciones posteriores: auditoría tras interacción
+   persistida e inicialización parcial act/explore (RED3FAIL). Corregidas con ack
+   durable y creación atómica de once eventos en Barrier, incluyendo rollback SQLite
+   real y fallo de state file después del commit. Primer session.input con identidad
+   retenida y batch de Session/política (RED1FAIL adicional). Focal50PASS/0FAIL/0SKIP;
+   [contrato y evidencia](m55-atomic-run-admission.md). Full1814=1810PASS/0FAIL/
+   4SKIPsymlink210.307s, exit0; helper/tests nuevos de RuntimeBuild no incluidos.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
