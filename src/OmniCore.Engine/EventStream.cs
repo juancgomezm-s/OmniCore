@@ -14,8 +14,8 @@ using System.Text.Json;
 /// <list type="bullet">
 /// <item><c>CorrelationId</c> = <c>RunId</c> del Run al que pertenece el evento: el del propio
 /// payload si lo lleva, si no el Run en curso de la sesión. Nulo solo antes del primer Run.</item>
-/// <item><c>CausationId</c> = el comando en curso (<see cref="CausationScope"/>) o, fuera de un
-/// comando, el evento anterior escrito por este stream. El primer evento sin comando es raíz.</item>
+/// <item><c>CausationId</c> = la causa explícita en <see cref="CausationScope"/>.
+/// Sin scope no se inventa una relación causal por orden de escritura (ADR-0046 §4).</item>
 /// <item>Ids de entidad leídos del payload (que tiene prioridad); los ids ausentes se completan
 /// desde <see cref="ExecutionScope"/> cuando existe. Así se indexan eventos tool sin repetir sus
 /// ids de ejecución en cada payload.</item>
@@ -46,8 +46,6 @@ public sealed class EventStream
 
     private RunId? _runId;
 
-    private EventId? _lastEventId;
-
     public EventStream(IEventStore store, IEventCodecRegistry codecs, SessionId sessionId)
     {
         _store = store;
@@ -68,11 +66,9 @@ public sealed class EventStream
         CatchUp();
         _tracker.Clone().Apply(payload);
         var pendingRunId = _runId;
-        var pendingLastEventId = _lastEventId;
-        var envelope = BuildEnvelope(payload, ref pendingRunId, ref pendingLastEventId);
+        var envelope = BuildEnvelope(payload, ref pendingRunId, null, CausationScope.Current);
         _store.Append(_sessionId, envelope, durability, CancellationToken.None);
         _runId = pendingRunId;
-        _lastEventId = pendingLastEventId;
         _tracker.Apply(payload);
         _appliedLocally.Add(envelope.EventId);
         _written.Add(payload);
@@ -98,11 +94,21 @@ public sealed class EventStream
 
     /// <summary>Atomic batch with optional per-item attribution; payload identities remain authoritative.</summary>
     public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability,
-        IReadOnlyList<ExecutionScopeState?>? executionScopes)
+        IReadOnlyList<ExecutionScopeState?>? executionScopes) =>
+        AppendBatch(payloads, durability, executionScopes, null);
+
+    /// <summary>
+    /// Atomic batch with explicit per-item causes. An omitted list uses CausationScope;
+    /// a null item in a supplied list means no cause, rather than an ambient fallback.
+    /// </summary>
+    public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability,
+        IReadOnlyList<ExecutionScopeState?>? executionScopes, IReadOnlyList<CausationId?>? causations)
     {
         ArgumentNullException.ThrowIfNull(payloads);
         if (executionScopes is not null && executionScopes.Count != payloads.Count)
             throw new ArgumentException("Each batch payload requires a corresponding execution scope.", nameof(executionScopes));
+        if (causations is not null && causations.Count != payloads.Count)
+            throw new ArgumentException("Each batch payload requires a corresponding cause.", nameof(causations));
         if (payloads.Count == 0)
         {
             return;
@@ -116,16 +122,15 @@ public sealed class EventStream
         }
 
         var pendingRunId = _runId;
-        var pendingLastEventId = _lastEventId;
         var envelopes = new DomainEvent[payloads.Count];
         for (var i = 0; i < payloads.Count; i++)
         {
-            envelopes[i] = BuildEnvelope(payloads[i], ref pendingRunId, ref pendingLastEventId, executionScopes?[i]);
+            envelopes[i] = BuildEnvelope(payloads[i], ref pendingRunId, executionScopes?[i],
+                causations is null ? CausationScope.Current : causations[i]);
         }
 
         _store.AppendBatch(_sessionId, envelopes, durability, CancellationToken.None);
         _runId = pendingRunId;
-        _lastEventId = pendingLastEventId;
         for (var i = 0; i < payloads.Count; i++)
         {
             _tracker.Apply(payloads[i]);
@@ -138,10 +143,9 @@ public sealed class EventStream
     public IReadOnlyList<DomainEvent> EventsSince(long fromSequenceInclusive) =>
         _store.ReadFrom(_sessionId, fromSequenceInclusive);
 
-    // Envelope candidates may chain within an atomic batch, but only successful persistence
-    // publishes their run/causation cursor to this stream.
+    // Only successful persistence publishes the candidate run cursor. Sequence is not causation.
     private DomainEvent BuildEnvelope(DomainEventPayload payload, ref RunId? pendingRunId,
-        ref EventId? pendingLastEventId, ExecutionScopeState? executionScope = null)
+        ExecutionScopeState? executionScope, CausationId? causation)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var type = payload.Type();
@@ -168,12 +172,9 @@ public sealed class EventStream
         }
 
         var run = runId ?? pendingRunId;
-        var causation = CausationScope.Current
-            ?? (pendingLastEventId is null ? null : new EventCausation(pendingLastEventId));
         var artifactRefs = ArtifactRefExtractor.Extract(payload);
         var envelope = DomainEvent.Create(_sessionId, type, version, causation, run, run, taskId,
             laneId, turnId, ids.PlanItemId, toolCallId, artifactRefs, json, executionId);
-        pendingLastEventId = envelope.EventId;
         return envelope;
     }
 

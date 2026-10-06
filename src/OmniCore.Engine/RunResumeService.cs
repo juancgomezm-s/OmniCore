@@ -183,6 +183,7 @@ public sealed class RunResumeService
         var tools = new Dictionary<ToolCallId, ToolCallRequested>();
         var started = new Dictionary<ToolCallId, ToolCallStarted>();
         var outcomes = new Dictionary<ToolCallId, ToolCallReconciled>();
+        var outcomeEvents = new Dictionary<ToolCallId, DomainEvent>();
         var pendingRequests = new Dictionary<InteractionId, InteractionRequested>();
         foreach (var evt in events)
         {
@@ -196,6 +197,7 @@ public sealed class RunResumeService
                     break;
                 case ToolCallReconciled reconciled:
                     outcomes[reconciled.ToolCallId] = reconciled;
+                    outcomeEvents[reconciled.ToolCallId] = evt;
                     break;
                 case InteractionRequested interaction when interaction.Kind == InteractionKind.ReconciliationConflict:
                     pendingRequests[interaction.InteractionId] = interaction;
@@ -213,6 +215,7 @@ public sealed class RunResumeService
             .Where(id => id is not null).Select(id => id!).ToHashSet();
         var batch = new List<DomainEventPayload>();
         var batchScopes = new List<ExecutionScopeState?>();
+        var batchCauses = new List<CausationId?>();
         var activeRunId = new RunControlService(_store, _codecs).ActiveRun(sessionId);
         var sourceScopes = new Dictionary<ToolCallId, ExecutionScopeState>();
         foreach (var pair in outcomes)
@@ -250,6 +253,7 @@ public sealed class RunResumeService
                 null, null, null, null, 0, 1, null,
                 "{\"toolCallId\":" + JsonString(id.ToString()) + "}");
             batch.Add(interaction);
+            batchCauses.Add(new EventCausation(outcomeEvents[id].EventId));
             if (!sourceScopes.TryGetValue(id, out var sourceScope))
                 sourceScopes[id] = sourceScope = SourceEffectScope(events, id);
             batchScopes.Add(activeRunId is { } currentRun
@@ -264,8 +268,12 @@ public sealed class RunResumeService
             {
                 batch.Add(activeRun);
                 batchScopes.Add(ScopeForRun(events, activeRun.RunId) with { LaneId = activeRun.RootLaneId });
+                // The first unresolved effect is sufficient to block this Run. Do not
+                // invent a link to another request merely because it precedes this item.
+                batchCauses.Add(CausationScope.Current ?? batchCauses[0]);
             }
-            new EventStream(_store, _codecs, sessionId).AppendBatch(batch, DurabilityClass.Standard, batchScopes);
+            new EventStream(_store, _codecs, sessionId).AppendBatch(batch, DurabilityClass.Standard,
+                batchScopes, batchCauses);
         }
     }
 
@@ -372,6 +380,9 @@ public sealed class RunResumeService
 
     private int ResumeRun(SessionId sessionId, RunId runId)
     {
+        // A caller's explicit resume command is a real cause, not a chronological
+        // fallback. Background recovery instead names the persisted effect source.
+        var requestedBy = CausationScope.Current;
         var tail = _store.ReadFrom(sessionId, 1);
         var range = RunEventRange(tail, _codecs, runId);
         if (range is null)
@@ -389,6 +400,8 @@ public sealed class RunResumeService
         var from = range![0];
         var to = range![1];
         var startedNoOutcome = new Dictionary<ToolCallId, ToolCallStarted>();
+        var startedEvents = new Dictionary<ToolCallId, DomainEvent>();
+        var unknownEvents = new Dictionary<ToolCallId, DomainEvent>();
         // Solo Succeeded/Failed/Reconciled son terminales (ADR-0004 §2). EffectUnknown es un estado
         // INTERMEDIO: si el crash fue DESPUÉS de emitirlo y ANTES de Reconciled, la ToolCall sigue
         // sin outcome y el siguiente resume debe continuar la reconciliación sin duplicarlo.
@@ -400,10 +413,12 @@ public sealed class RunResumeService
             if (payload is ToolCallStarted started)
             {
                 startedNoOutcome[started.ToolCallId] = started;
+                startedEvents[started.ToolCallId] = tail[i];
             }
             else if (payload is ToolCallEffectUnknown unknown)
             {
                 alreadyUnknown.Add(unknown.ToolCallId);
+                unknownEvents[unknown.ToolCallId] = tail[i];
             }
             else if (payload is ToolCallSucceeded || payload is ToolCallFailed
                 || payload is ToolCallReconciled)
@@ -427,6 +442,12 @@ public sealed class RunResumeService
                 continue; // idempotencia: ya resuelta por su outcome (o un Reconciled previo)
             }
 
+            var startedEvent = startedEvents[id];
+            var origin = unknownEvents.TryGetValue(id, out var recordedUnknown) ? recordedUnknown : startedEvent;
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId,
+                origin.TaskId ?? startedEvent.TaskId, origin.LaneId ?? startedEvent.LaneId,
+                origin.TurnId ?? startedEvent.TurnId, id, origin.ExecutionId ?? startedEvent.ExecutionId));
+
             if (started.EffectClass == EffectClass.None && !alreadyUnknown.Contains(id))
             {
                 // ADR-0004 §3: una tool sin efectos (EffectClass.None) se reejecuta siempre: no hay
@@ -435,9 +456,10 @@ public sealed class RunResumeService
                 // Código tipado CANCELLATION (spec §71): la ejecución se interrumpió por el crash.
                 // No es UNKNOWN_EFFECT porque el efecto NO es desconocido (None, sin efecto
                 // parcial); ese código queda para la reconciliación conservadora (ADR-0004 §2).
-                stream.Append(new ToolCallFailed(id,
-                    "interrupted by crash before completion; no side effects, safe to retry", EffectOutcome.None,
-                    ToolErrorCode.Cancellation));
+                using (CausationScope.Begin(requestedBy ?? new EventCausation(startedEvent.EventId)))
+                    stream.Append(new ToolCallFailed(id,
+                        "interrupted by crash before completion; no side effects, safe to retry", EffectOutcome.None,
+                        ToolErrorCode.Cancellation));
                 reconciled += 1;
                 continue;
             }
@@ -446,7 +468,11 @@ public sealed class RunResumeService
             {
                 // Solo el primer resume emite EffectUnknown; si ya está en el journal (crash
                 // posterior a EffectUnknown), se continúa sin duplicarlo.
-                stream.Append(new ToolCallEffectUnknown(id, started.EffectClass));
+                var before = _store.CurrentSequence(sessionId);
+                using (CausationScope.Begin(requestedBy ?? new EventCausation(startedEvent.EventId)))
+                    stream.Append(new ToolCallEffectUnknown(id, started.EffectClass));
+                unknownEvents[id] = stream.EventsSince(before + 1).Single(evt =>
+                    _codecs.Decode(evt) is ToolCallEffectUnknown unknown && unknown.ToolCallId == id);
             }
 
             FilesystemReconciliation result;
@@ -462,7 +488,8 @@ public sealed class RunResumeService
                     "metadatos de reconciliación ausentes o sin reconciliador: falla cerrado, sin re-ejecutar");
             }
 
-            stream.Append(new ToolCallReconciled(id, result.Outcome, result.Detail));
+            using (CausationScope.Begin(requestedBy ?? new EventCausation(unknownEvents[id].EventId)))
+                stream.Append(new ToolCallReconciled(id, result.Outcome, result.Detail));
             reconciled += 1;
         }
 
