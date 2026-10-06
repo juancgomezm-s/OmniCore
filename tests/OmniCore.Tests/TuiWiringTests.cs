@@ -552,8 +552,10 @@ public sealed class TuiWiringTests
 
     // ------------------------------------------------------------------ sidebar: F2 + resizes reales
 
-    [Fact]
-    public void Composer_calls_turn_host_and_projects_its_durable_answer_without_blocking_keyboard() => RunTuiTest(fx =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Composer_calls_turn_host_and_projects_its_durable_answer_without_blocking_keyboard(bool noColor) => RunTuiTest(fx =>
     {
         var host = new TestTurn(fx);
         fx.StartTui(turnHost: host);
@@ -583,12 +585,18 @@ public sealed class TuiWiringTests
         finally { fx.Application.LayoutAndDrawComplete -= activityFrame; }
 
         Assert.Equal(11, fx.App.Activity!.SubViews.Count);
-        var firstFrame = fx.App.Activity.SubViews.Select(cell => cell.GetScheme().Normal).ToArray();
-        Assert.All(firstFrame, cell => Assert.Contains(cell.Foreground,
+        var firstFrame = fx.App.Activity.SubViews.Select(cell => (cell.Text, cell.GetScheme().Normal)).ToArray();
+        if (noColor)
+            Assert.All(firstFrame, cell =>
+            {
+                Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Normal.Foreground);
+                Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Normal.Background);
+            });
+        else Assert.All(firstFrame, cell => Assert.Contains(cell.Normal.Foreground,
             new[] { "#12303D", "#205061", "#30788B", "#4DBAC9", "#83C6DE", "#B47CE7" }
                 .Select(value => new Terminal.Gui.Drawing.Color(value))));
         fx.Invoke(() => { for (var tick = 0; tick < 5; tick++) fx.App.AnimateActivity(); });
-        fx.Wait(() => !firstFrame.SequenceEqual(fx.App.Activity.SubViews.Select(cell => cell.GetScheme().Normal)), "la barra debe animarse");
+        fx.Wait(() => !firstFrame.SequenceEqual(fx.App.Activity.SubViews.Select(cell => (cell.Text, cell.GetScheme().Normal))), "la barra debe animarse");
         Type(fx, "borrador");
         fx.Wait(() => fx.App.Composer!.Text == "borrador", "el teclado sigue disponible durante inferencia");
         Assert.Equal(1, host.Calls);
@@ -598,7 +606,7 @@ public sealed class TuiWiringTests
         Assert.Contains("semilla de prueba", fx.App.Conversation!.Text);
         fx.Wait(() => fx.App.Status!.Text!.ToString()!.Contains("Listo"), "estado completado visible");
         Assert.Equal("borrador", fx.App.Composer!.Text);
-    });
+    }, noColor);
 
     private sealed class TestTurn(TuiFixture fixture) : ITuiTurnHost
     {
@@ -1457,6 +1465,17 @@ public sealed class TuiWiringTests
     {
         using var fx = TuiFixture.Create();
         body(fx);
+    }
+
+    private static void RunTuiTest(Action<TuiFixture> body, bool noColor)
+    {
+        var previous = Environment.GetEnvironmentVariable("NO_COLOR");
+        try
+        {
+            Environment.SetEnvironmentVariable("NO_COLOR", noColor ? "1" : null);
+            RunTuiTest(body);
+        }
+        finally { Environment.SetEnvironmentVariable("NO_COLOR", previous); }
     }
 
     private static string OverlayText(View overlay) => string.Join(" ",
