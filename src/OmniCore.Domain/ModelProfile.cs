@@ -131,12 +131,17 @@ public sealed class ModelSelection
 
     public ReasoningRequest? Reasoning { get; }
 
-    public ModelSelection(ModelIdValue model, long contextBudget, ToolMode toolMode, ReasoningRequest? reasoning)
+    /// <summary>Ruta concreta; los journals antiguos conservan la ruta 1:1 del modelo (ADR-0046).</summary>
+    public RouteId RouteId { get; }
+
+    public ModelSelection(ModelIdValue model, long contextBudget, ToolMode toolMode, ReasoningRequest? reasoning,
+        RouteId? routeId = null)
     {
         Model = model;
         ContextBudget = contextBudget;
         ToolMode = toolMode;
         Reasoning = reasoning;
+        RouteId = routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(model.ToString());
     }
 }
 
