@@ -53,6 +53,7 @@ public sealed class RunResumeService
     /// </summary>
     public int ReconcileTerminalRuns(SessionId sessionId)
     {
+        var requestedBy = CausationScope.Current;
         var tail = _store.ReadFrom(sessionId, 1);
         var starts = new List<int>();
         for (var i = 0; i < tail.Count; i++)
@@ -124,7 +125,7 @@ public sealed class RunResumeService
                     TurnId: origin.TurnId ?? startedEvent?.TurnId,
                     ToolCallId: id,
                     ExecutionId: origin.ExecutionId ?? startedEvent?.ExecutionId));
-                using var causation = CausationScope.Begin(new EventCausation(origin.EventId));
+                using var causation = CausationScope.Begin(requestedBy ?? new EventCausation(origin.EventId));
                 stream.Append(ReconcileCall(id, json));
                 count += 1;
             }

@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 10:21 UTC / 04:21 America/Mexico_City.
+Actualizado 2026-10-06 10:33 UTC / 04:33 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -108,7 +108,15 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    Catches excepcionales RunSim/ResumeSim corregidos: rango de eventos realmente
    persistidos, reintento parcial sin duplicar Unknown y sesión nueva sin Run ajeno.
    [Pruebas y alcance de los guards](m55-writer-and-exception-boundaries.md).
-   Falta el caso de caída de ReadFrom al construir un ack; no inferir cero efectos.
+   Caída ReadFrom al construir ack cubierta: Deferred(JournalOutcomeUnavailable)
+   sin rango ni inferir cero efectos. Rango de command sigue descendientes reales;
+   recovery terminal con caller conserva su causa, background conserva la del origen.
+   RED inicial3casos1PASS2FAIL; RED posterior LastSeq33 vs34; focal35PASS/0FAIL/0SKIP.
+   [Contrato y evidencia](m55-command-causal-ranges.md). Full1806=1802PASS/0FAIL/
+   4SKIPsymlink210.503s, exit0. Auditoría READONLY identifica dos reproducciones
+   pendientes: IOException de auditoría tras interaction.respond ya persistido;
+   inicialización act/explore mediante appends separados puede quedar parcial.
+   Nuevos tests del siguiente bloque todavía no compilados ni acreditados por este full.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
