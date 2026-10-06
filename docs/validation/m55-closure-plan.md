@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 09:57 UTC / 03:57 America/Mexico_City.
+Actualizado 2026-10-06 10:10 UTC / 04:10 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -97,9 +97,15 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    inválidos/desconocidos devuelven Rejected sin eventos/rango. Focal126PASS;
    full1787=1783PASS/0FAIL/4SKIPsymlink209.548s, exit0.
    [Contrato y reproducciones](m55-explicit-causation.md).
-   Source y guards de escritor siguen pendientes; SourceKind/ComponentSource
+   Guard de escritor IL implementado y verificado con controles positivos async;
+   integración SQLite demuestra que deltas no llegan al journal. Focal45PASS;
+   full1795=1791PASS/0FAIL/4SKIPsymlink209.877s, exit0.
+   Source sigue pendiente; SourceKind/ComponentSource
    describen componentes registrados, no se reutilizan como origen de eventos.
-   Auditar también los catches excepcionales RunSim/ResumeSim sin outcome/rango.
+   Catches excepcionales RunSim/ResumeSim corregidos: rango de eventos realmente
+   persistidos, reintento parcial sin duplicar Unknown y sesión nueva sin Run ajeno.
+   [Pruebas y alcance de los guards](m55-writer-and-exception-boundaries.md).
+   Falta el caso de caída de ReadFrom al construir un ack; no inferir cero efectos.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.

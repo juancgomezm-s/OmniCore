@@ -935,6 +935,9 @@ public sealed class OmniServer : IOmniClient
 
     private CommandAck RunSim(WireEnvelope command, Dictionary<string, string> fields)
     {
+        // Keep the attempted session identity even when Execute throws before returning.
+        // Never attribute a partial new simulation to the previously selected session.
+        var attemptSession = SessionId.New();
         try
         {
             // El escenario viaja completo en el comando (ADR-0041 §1); sin él, uno incluido por nombre.
@@ -948,9 +951,11 @@ public sealed class OmniServer : IOmniClient
             // Permisos del escenario + capa del modo del Run (ADR-0037 §4): el executor de esta simulación.
             _engine.SetToolExecutor(ScriptedToolExecutor.WithCoreTools(HostTools.Default().Catalog(),
                 new ScriptedPermissionPolicy(scenario.Permissions).WithModeDefaults(scenario.Mode)));
-            var result = _engine.Execute(scenario, CancellationToken.None);
+            var result = _engine.Execute(scenario, CancellationToken.None, attemptSession);
             _lastSessionId = result.SessionId;
             _lastRunId = result.RunId;
+            _lastSnapshot = null;
+            _lastWorkingStateText = "";
             SaveLastSession();
             AuditRun(result);
             var snapshot = MaterializeSnapshot(result);
@@ -980,7 +985,7 @@ public sealed class OmniServer : IOmniClient
                 ? "Evento " + parse.EventType + ": " + (parse.Detail ?? "?")
                 : (ex.Message ?? "exception");
             var stack = ex.StackTrace is null ? "" : string.Join("; ", ex.StackTrace);
-            return CommandAck.FailWithCause(command.MessageId, detail, stack);
+            return FailedSimulationAck(command, attemptSession, 0, detail + " :: " + stack, newSession: true);
         }
     }
 
@@ -1654,9 +1659,33 @@ public sealed class OmniServer : IOmniClient
         }
         catch (Exception ex)
         {
-            return CommandAck.FailWithCause(command.MessageId, ex.Message ?? "exception",
-                ex.StackTrace is null ? "" : string.Join("; ", ex.StackTrace));
+            var stack = ex.StackTrace is null ? "" : string.Join("; ", ex.StackTrace);
+            return FailedSimulationAck(command, session, sequenceBefore,
+                (ex.Message ?? "exception") + " :: " + stack);
         }
+    }
+
+    private CommandAck FailedSimulationAck(WireEnvelope command, SessionId session,
+        long sequenceBefore, string error, bool newSession = false)
+    {
+        var commandId = new CommandId(Guid.Parse(command.MessageId));
+        var persisted = _store.ReadFrom(session, sequenceBefore + 1)
+            .Where(evt => evt.Causation is CommandCausation cause && cause.CommandId == commandId)
+            .ToArray();
+        if (persisted.Length == 0)
+            return new CommandAck(command.MessageId, "error", error, RuntimeCommandOutcome.Rejected());
+
+        if (newSession)
+        {
+            _lastRunId = null;
+            _lastSnapshot = null;
+            _lastWorkingStateText = "";
+        }
+        _lastSessionId = session;
+        var created = persisted.Select(_codecs.Decode).OfType<RunCreated>().LastOrDefault();
+        if (created is not null) _lastRunId = created.RunId;
+        return new CommandAck(command.MessageId, "error", error, RuntimeCommandOutcome.Accepted(),
+            persisted.Min(evt => evt.Sequence), persisted.Max(evt => evt.Sequence));
     }
 
     /// <summary>
