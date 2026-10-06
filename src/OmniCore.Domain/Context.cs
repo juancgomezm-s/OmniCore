@@ -28,6 +28,9 @@ public sealed class ExecutionFingerprint
     /// <summary>Hash de la política efectiva del modelo (ADR-0044 §8).</summary>
     public string ModelPolicyHash { get; }
 
+    /// <summary>Componentes explícitos. Vacío en fingerprints anteriores a ADR-0046.</summary>
+    public IReadOnlyList<FingerprintComponent> Components { get; }
+
     public ExecutionFingerprint(string modelKey, string harnessPolicyHash, string toolkitHash,
         string contextPolicyHash, string overridesHash, string build)
         : this(modelKey, harnessPolicyHash, toolkitHash, contextPolicyHash, overridesHash, build, "", "")
@@ -44,7 +47,7 @@ public sealed class ExecutionFingerprint
     [JsonConstructor]
     public ExecutionFingerprint(string modelKey, string harnessPolicyHash, string toolkitHash,
         string contextPolicyHash, string overridesHash, string build, string modelPolicyHash,
-        string tokenizerHash)
+        string tokenizerHash, IReadOnlyList<FingerprintComponent>? components = null)
     {
         ModelKey = modelKey ?? throw new ArgumentNullException(nameof(modelKey));
         HarnessPolicyHash = harnessPolicyHash ?? throw new ArgumentNullException(nameof(harnessPolicyHash));
@@ -54,6 +57,15 @@ public sealed class ExecutionFingerprint
         OverridesHash = overridesHash ?? throw new ArgumentNullException(nameof(overridesHash));
         Build = build ?? throw new ArgumentNullException(nameof(build));
         ModelPolicyHash = modelPolicyHash ?? throw new ArgumentNullException(nameof(modelPolicyHash));
+        var copy = (components ?? Array.Empty<FingerprintComponent>()).ToArray();
+        if (copy.Any(component => component is null || string.IsNullOrWhiteSpace(component.Name) ||
+            component.Version is null || component.Hash is null ||
+            string.IsNullOrWhiteSpace(component.Hash.Algorithm) || string.IsNullOrWhiteSpace(component.Hash.Value) ||
+            (component.Content is not null && component.Content.Hash != component.Hash)))
+            throw new ArgumentException("Invalid fingerprint component.", nameof(components));
+        if (copy.Select(component => component.Name).Distinct(StringComparer.Ordinal).Count() != copy.Length)
+            throw new ArgumentException("Duplicate fingerprint component name.", nameof(components));
+        Components = Array.AsReadOnly(copy.OrderBy(component => component.Name, StringComparer.Ordinal).ToArray());
     }
 
     /// <summary>SHA-256 estable de todos los componentes, codificados con longitud para evitar colisiones.</summary>
@@ -68,6 +80,18 @@ public sealed class ExecutionFingerprint
         Append(canonical, OverridesHash);
         Append(canonical, Build);
         Append(canonical, ModelPolicyHash);
+        // Retain the exact legacy hash when no explicit components were recorded.
+        if (Components.Count > 0)
+        {
+            Append(canonical, "fingerprint-components-v1");
+            foreach (var component in Components)
+            {
+                Append(canonical, component.Name);
+                Append(canonical, component.Version);
+                Append(canonical, component.Hash.Algorithm);
+                Append(canonical, component.Hash.Value);
+            }
+        }
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString())));
     }
 

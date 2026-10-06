@@ -41,8 +41,10 @@ internal static class ArtifactRefExtractor
                 break;
 
             // Lane/Turn events
-            case TurnStarted t when t.ContextSnapshotRef is not null:
-                refs.Add(t.ContextSnapshotRef!);
+            case TurnStarted t:
+                if (t.ContextSnapshotRef is not null) refs.Add(t.ContextSnapshotRef);
+                foreach (var component in t.Fingerprint?.Components ?? Array.Empty<FingerprintComponent>())
+                    if (component.Content is not null) refs.Add(component.Content);
                 break;
 
             case ModelCompleted m when m.ResponseArtifact is not null:
