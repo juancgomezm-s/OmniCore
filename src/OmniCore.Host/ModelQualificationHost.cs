@@ -221,9 +221,13 @@ public sealed class ModelQualificationHost : IDisposable
         {
             estimatedCost += probe.MaxCostUsd;
         }
+        if (estimatedCost > options.MaxTotalCostUsd)
+        {
+            throw new ModelQualificationCostCapException(options.MaxTotalCostUsd, estimatedCost);
+        }
 
-        // El runner revalida consentimiento y tope de costo (QualificationCostCapExceededException,
-        // ProbeTimeoutException tipados); nada se persiste si la suite no se completa.
+        // El runner revalida consentimiento y tope como defensa en profundidad; el guard del Host
+        // ocurre antes de construir el provider o el runner. Nada se persiste si la suite no completa.
         var selection = new ModelSelection(new ModelIdValue(model.Id),
             model.RecommendedUsableContext > 0 ? model.RecommendedUsableContext : model.ContextWindow,
             ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id,
@@ -374,9 +378,8 @@ public sealed class ModelQualificationHost : IDisposable
     };
 
     /// <summary>
-    /// Coste estimado de una suite (suma de los topes declarados por sus probes) para mostrarlo
-    /// ANTES de pedir consentimiento. Las suites quick actuales son gratuitas (modelos locales),
-    /// pero el aviso se mantiene: el contrato es explícito para cuando lleguen probes de pago.
+    /// Suma de los topes declarados por los probes de una suite para mostrar antes del consentimiento.
+    /// Es una estimación de suite: el costo efectivo depende de la ruta y del provider seleccionados.
     /// </summary>
     public static decimal EstimateSuiteCostUsd(string suite) => Suite(suite)
         .Sum(probe => probe.MaxCostUsd);

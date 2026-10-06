@@ -4,6 +4,7 @@ using System.Text;
 using OmniCore.Domain;
 using OmniCore.Host;
 using OmniCore.Models;
+using OmniCore.Qualification;
 using Task = System.Threading.Tasks.Task;
 
 namespace OmniCore.Tests;
@@ -87,13 +88,7 @@ public sealed class ModelQualificationCliTests
     {
         var dir = TempDir();
         await using var provider = new ScriptedHttpProvider();
-        // El cuerpo viaja JSON-escapado por System.Text.Json (encoder HTML-seguro): '+' se emite
-        // como \u002B, así que el matcher usa substrings sin caracteres escapables.
-        provider.RespondWith((_, body) => body.Contains("quick brown fox", StringComparison.Ordinal)
-            ? TextResponse("fox")
-            : body.Contains("arithmetic problem", StringComparison.Ordinal)
-                ? TextResponse("42")
-                : TextResponse("{\"status\":\"ok\",\"count\":1}"));
+        provider.RespondWith((_, body) => QuickFixtureResponse(body));
 
         var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
         try
@@ -123,7 +118,8 @@ public sealed class ModelQualificationCliTests
             Assert.Contains("no se cambió ninguna política", text);
 
             // La suite corrió de verdad contra el provider scripteado.
-            Assert.Equal(3, provider.RequestCount);
+            Assert.Equal(10, provider.RequestCount);
+            Assert.All(QuickProbeSuite.Probes(), probe => Assert.Contains(probe.Id.ToString(), text));
 
             // Persistido en el store de cualificación bajo la clave exacta.
             var model = new ModelDefinition("qwen-test", "local", 8192, 8192, 2048);
@@ -151,12 +147,7 @@ public sealed class ModelQualificationCliTests
             new[] { "model", "policy", "set", "qwen-test", "--category", "ObserveOnly" }, "", policyOutput, dir));
 
         await using var provider = new ScriptedHttpProvider();
-        // Matcher por substrings que sobreviven al JSON-escaping del cuerpo (ver nota arriba).
-        provider.RespondWith((_, body) => body.Contains("quick brown fox", StringComparison.Ordinal)
-            ? TextResponse("fox")
-            : body.Contains("arithmetic problem", StringComparison.Ordinal)
-                ? TextResponse("42")
-                : TextResponse("{\"status\":\"ok\",\"count\":1}"));
+        provider.RespondWith((_, body) => QuickFixtureResponse(body));
 
         var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
         try
@@ -167,6 +158,7 @@ public sealed class ModelQualificationCliTests
             // Cualificar recomienda PatchOnly…
             Assert.Equal(0, await Run(new[] { "model", "qualify", "qwen-test", "--yes" }, "", output, dir));
             Assert.Contains("PatchOnly", output.ToString());
+            Assert.Equal(10, provider.RequestCount);
 
             // …pero la política operativa guardada sigue siendo ObserveOnly rev=1.
             var policyService = OmniHost.CreateModelPolicyService(dir);
@@ -182,6 +174,15 @@ public sealed class ModelQualificationCliTests
     }
 
     // ---- Provider HTTP scripteado (mismo patrón que CliEndToEndTests) ----
+
+    private static string QuickFixtureResponse(string body)
+    {
+        // Parse the request, including escaped punctuation; reject any unexpected fixture prompt.
+        using var document = System.Text.Json.JsonDocument.Parse(body);
+        var prompt = document.RootElement.GetProperty("messages")[0].GetProperty("content").GetString();
+        var probe = Assert.Single(QuickProbeSuite.Probes(), candidate => candidate.Prompt == prompt);
+        return TextResponse(probe.Expected);
+    }
 
     private static string TextResponse(string text)
     {

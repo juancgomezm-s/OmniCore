@@ -58,20 +58,18 @@ public sealed class ModelQualificationHostTests
         }
     }
 
-    /// <summary>Provider que responde correctamente los tres probes de la suite quick.</summary>
-    private static ScriptedProvider PassingProvider() => new(new Dictionary<string, string?>
-    {
-        ["Read the sentence: \"The quick brown fox jumps over the lazy dog.\" Which animal is mentioned first? Reply with only the animal's name, no punctuation."] = "fox",
-        ["Solve the arithmetic problem 17 + 25 in your head. Reply with only the final number, no units, no punctuation, no explanation."] = "42",
-        ["Respond with a single JSON object and nothing else, exactly in this shape and with these values: {\"status\":\"ok\",\"count\":1}. Do not add any prose, markdown, or extra keys."] = "{\"status\":\"ok\",\"count\":1}",
-    });
+    /// <summary>Provider scripteado que responde la suite completa con sus fixtures exactos.</summary>
+    private static ScriptedProvider PassingProvider() => new(QuickProbeSuite.Probes()
+        .ToDictionary(probe => probe.Prompt, probe => (string?)probe.Expected));
 
-    private static ScriptedProvider FailingReadingProvider() => new(new Dictionary<string, string?>
+    private static ScriptedProvider FailingReadingProvider()
     {
-        ["Read the sentence: \"The quick brown fox jumps over the lazy dog.\" Which animal is mentioned first? Reply with only the animal's name, no punctuation."] = "dog",
-        ["Solve the arithmetic problem 17 + 25 in your head. Reply with only the final number, no units, no punctuation, no explanation."] = "42",
-        ["Respond with a single JSON object and nothing else, exactly in this shape and with these values: {\"status\":\"ok\",\"count\":1}. Do not add any prose, markdown, or extra keys."] = "{\"status\":\"ok\",\"count\":2}",
-    });
+        var outputs = QuickProbeSuite.Probes()
+            .ToDictionary(probe => probe.Prompt, probe => (string?)probe.Expected);
+        outputs[QuickProbeSuite.Probes()[0].Prompt] = "dog";
+        outputs[QuickProbeSuite.Probes()[2].Prompt] = "{\"status\":\"ok\",\"count\":2}";
+        return new ScriptedProvider(outputs);
+    }
 
     private static QualificationOptions Options(ScriptedProvider provider, decimal cap = 1.00m) => new()
     {
@@ -197,7 +195,7 @@ public sealed class ModelQualificationHostTests
         // Suite completa con fallos exactos: ProvisionallyClassified con los traits medidos.
         Assert.Equal(ModelQualificationState.ProvisionallyClassified.ToString(), result.NewState);
         var instruction = Assert.Single(result.Traits, t => t.Trait == "InstructionFollowing");
-        Assert.Equal(0.5, instruction.Value);
+        Assert.Equal(6.0 / 7.0, instruction.Value);
 
         // La capa Empirical SOLO usa perfiles Qualified/Calibrated/Stale (ADR-0007 §1, §4).
         var model = Model();
