@@ -582,7 +582,9 @@ public sealed class ModelPolicyCommands
                 ["kind"] = probe.Kind,
                 ["status"] = probe.Status,
                 ["score"] = probe.Score.ToString("0.00", CultureInfo.InvariantCulture),
-                ["cost"] = probe.CostUsd.ToString("0.0000", CultureInfo.InvariantCulture),
+                ["cost"] = probe.CostUsd is { } cost
+                    ? cost.ToString("0.0000", CultureInfo.InvariantCulture) + " USD"
+                    : _loc.Resolve("cli.model.qualify.cost.unavailable"),
             }));
         }
 

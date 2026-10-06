@@ -137,6 +137,41 @@ public sealed class ModelQualificationCliTests
         }
     }
 
+    [Theory]
+    [InlineData("es", "coste desconocido")]
+    [InlineData("en", "cost unavailable")]
+    public async Task Qualify_displays_unknown_cost_for_http_response_without_usage(string locale,
+        string expectedCostLabel)
+    {
+        var dir = TempDir();
+        await using var provider = new ScriptedHttpProvider();
+        provider.RespondWith((_, body) => QuickFixtureResponse(body));
+
+        var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
+        var priorLocale = Environment.GetEnvironmentVariable("OMNI_LOCALE");
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", provider.BaseUrl);
+            Environment.SetEnvironmentVariable("OMNI_LOCALE", locale);
+            var output = new StringWriter();
+
+            var code = await Run(new[] { "model", "qualify", "qwen-test", "--yes" }, "", output, dir);
+
+            Assert.Equal(0, code);
+            var text = output.ToString();
+            Assert.Contains("Qualified", text);
+            Assert.Contains(expectedCostLabel, text);
+            Assert.DoesNotContain("0.0000 USD", text);
+            Assert.Equal(10, provider.RequestCount);
+            Assert.All(QuickProbeSuite.Probes(), probe => Assert.Contains(probe.Id.ToString(), text));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
+            Environment.SetEnvironmentVariable("OMNI_LOCALE", priorLocale);
+        }
+    }
+
     [Fact]
     public async Task Qualify_prints_a_recommendation_but_keeps_the_operational_policy_untouched()
     {

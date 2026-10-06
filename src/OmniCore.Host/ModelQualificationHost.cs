@@ -40,7 +40,15 @@ public sealed record QualificationProbeOutcome(
     double Score,
     string? Error,
     TimeSpan Duration,
-    decimal CostUsd);
+    decimal? CostUsd)
+{
+    public QualificationProbeUsage? Usage { get; init; }
+}
+
+/// <summary>Reported counts only. Cache is included in input and reasoning in output;
+/// do not add them again. Absent fields remain null.</summary>
+public sealed record QualificationProbeUsage(long? Input, long? Output,
+    long? CacheRead, long? CacheWrite, long? Reasoning);
 
 /// <summary>Trait empírico persistido para la revisión vigente del perfil.</summary>
 public sealed record QualificationTraitValue(
@@ -151,13 +159,15 @@ public sealed class ModelQualificationHost : IDisposable
     private readonly ModelRegistry _registry;
 
     private readonly IPlatformPaths _paths;
+    private readonly LoadedUserConfiguration? _configuration;
 
     private ModelQualificationHost(SqliteModelQualificationStore store, ModelRegistry registry,
-        IPlatformPaths paths)
+        IPlatformPaths paths, LoadedUserConfiguration? configuration)
     {
         _store = store;
         _registry = registry;
         _paths = paths;
+        _configuration = configuration;
     }
 
     public void Dispose()
@@ -177,11 +187,12 @@ public sealed class ModelQualificationHost : IDisposable
         IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null)
     {
         var paths = OmniHost.CreatePlatformPaths(dataDirectoryOverride);
+        var configuration = registryOverride is null ? OmniHost.LoadUserConfiguration(paths) : null;
         var registry = registryOverride is null
-            ? OmniHost.LoadUserModelRegistry(paths)
+            ? configuration!.Registry
             : ToRegistry(registryOverride);
         var store = OmniHost.CreateModelQualificationStore(dataDirectoryOverride);
-        return new ModelQualificationHost(store, registry, paths);
+        return new ModelQualificationHost(store, registry, paths, configuration);
     }
 
     /// <summary>Perfil de cualificación vigente para la configuración exacta del modelo, o null.</summary>
@@ -233,8 +244,10 @@ public sealed class ModelQualificationHost : IDisposable
             ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id,
             maxOutputTokens: ModelRoutingHost.OutputTokenLimit(model, provider));
         var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
+        var pricing = _configuration?.Pricing(model.Id);
         var runner = new ProbeRunner(ConnectProvider(model, provider, options),
-            options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout);
+            options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout,
+            pricing is null ? null : pricing.CostUsd);
         var consent = new QualificationConsent(explicitlyGiven: true, options.MaxTotalCostUsd);
         IReadOnlyList<ProbeResult> results;
         try
@@ -292,7 +305,8 @@ public sealed class ModelQualificationHost : IDisposable
             profile.ProfileRevision,
             results.Select(result => new QualificationProbeOutcome(result.Id.ToString(),
                 probes.First(p => p.Id.Equals(result.Id)).Kind.ToString(), result.Status.ToString(),
-                result.Score, result.Error, result.Duration, result.CostUsd)).ToArray(),
+                result.Score, result.Error, result.Duration, result.CostUsd)
+                { Usage = ReportedUsage(result) }).ToArray(),
             traits,
             recommendation.Category.ToString(),
             recommendation.MutationPolicy.Mode.ToString(),
@@ -378,10 +392,18 @@ public sealed class ModelQualificationHost : IDisposable
         _ => throw new ModelQualificationUnsupportedSuiteException(suite),
     };
 
-    /// <summary>
-    /// Suma de los topes declarados por los probes de una suite para mostrar antes del consentimiento.
-    /// Es una estimación de suite: el costo efectivo depende de la ruta y del provider seleccionados.
-    /// </summary>
+    /// <summary>Maps the provider's reported field mask without inventing absent counts.</summary>
+    private static QualificationProbeUsage? ReportedUsage(ProbeResult result)
+    {
+        if (result.Usage is not { } usage) return null;
+        long? Value(TokenUsageFields field, long value) =>
+            (result.ReportedUsageFields & field) != 0 ? value : null;
+        return new QualificationProbeUsage(Value(TokenUsageFields.Input, usage.Input),
+            Value(TokenUsageFields.Output, usage.Output), Value(TokenUsageFields.CacheRead, usage.CacheRead),
+            Value(TokenUsageFields.CacheWrite, usage.CacheWrite), Value(TokenUsageFields.Reasoning, usage.Reasoning));
+    }
+
+    /// <summary>Suma de topes declarados, no coste observado ni cota derivada de tarifas.</summary>
     public static decimal EstimateSuiteCostUsd(string suite) => Suite(suite)
         .Sum(probe => probe.MaxCostUsd);
 

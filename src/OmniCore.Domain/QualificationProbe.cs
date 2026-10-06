@@ -123,10 +123,17 @@ public sealed class ProbeResult
 
     public TimeSpan Duration { get; }
 
-    public decimal CostUsd { get; }
+    /// <summary>Cost computed from reported usage and explicit prices; null when unavailable.
+    /// This is not an account debit or provider billing statement.</summary>
+    public decimal? CostUsd { get; }
+
+    public TokenUsage? Usage { get; }
+
+    public TokenUsageFields ReportedUsageFields { get; }
 
     public ProbeResult(ProbeId id, ProbeStatus status, double score, string? output,
-        string? error, TimeSpan duration, decimal costUsd)
+        string? error, TimeSpan duration, decimal? costUsd,
+        TokenUsage? usage = null, TokenUsageFields reportedUsageFields = TokenUsageFields.None)
     {
         if (id is null)
         {
@@ -151,6 +158,8 @@ public sealed class ProbeResult
         Error = error;
         Duration = duration;
         CostUsd = costUsd;
+        Usage = usage;
+        ReportedUsageFields = usage is null ? TokenUsageFields.None : reportedUsageFields;
     }
 }
 
