@@ -80,9 +80,29 @@ public record ToolCallAuthorized(ToolCallId ToolCallId) : DomainEventPayload
 public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass, string? ReconciliationJson)
     : DomainEventPayload
 {
+    /// <summary>Independent of crash reconciliation and idempotency. Legacy events are Unknown.</summary>
+    public Reversibility Reversibility { get; init; } = Reversibility.Unknown;
+
+    /// <summary>The single declared filesystem write claim, relative to the owning workspace.
+    /// Null means unknown or not representable as one filesystem target; not a URI or a CAS hash.</summary>
+    public string? TargetRef { get; init; }
+
+    /// <summary>Exact pre-image artifact for a reversible filesystem write, when captured.
+    /// A reconciliation hash alone is not a pre-image. Null never implies an empty file.</summary>
+    public ArtifactRef? BeforeStateRef { get; init; }
+
     public EventType Type() => EventType.Of("toolcall.started");
 
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
+}
+
+/// <summary>Effect reversibility attribution (ADR-0046 §6), not execution or recovery state.</summary>
+public enum Reversibility
+{
+    Unknown = 0,
+    Reversible = 1,
+    Compensatable = 2,
+    Irreversible = 3,
 }
 
 /// <summary>ToolCallSucceeded: outcome con resultado.</summary>

@@ -348,7 +348,11 @@ public sealed class ToolRuntime
         }
 
         execContext.BeforeEffect?.Invoke(intent);
-        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, ReconciliationJsonFor(intent.Claims, reconciliation)));
+        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, ReconciliationJsonFor(intent.Claims, reconciliation))
+        {
+            // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
+            TargetRef = intent.Claims.Writes.Count == 1 ? intent.Claims.Writes[0] : null,
+        });
 
         ToolResult result;
         try

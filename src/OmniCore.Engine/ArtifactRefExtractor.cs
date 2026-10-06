@@ -60,6 +60,10 @@ internal static class ArtifactRefExtractor
                 break;
 
             // Global interaction events
+            case ToolCallStarted t when t.BeforeStateRef is not null:
+                refs.Add(t.BeforeStateRef);
+                break;
+
             case UserInputReceived u when u.ContentRef is not null:
                 refs.Add(u.ContentRef!);
                 break;
