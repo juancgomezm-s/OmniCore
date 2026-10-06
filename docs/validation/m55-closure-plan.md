@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 08:43 UTC / 02:43 America/Mexico_City.
+Actualizado 2026-10-06 08:58 UTC / 02:58 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -78,7 +78,11 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    Reconciliación terminal multi-Run corregida: ids/cause de origen e idempotencia
    sobre outcomes de toda la sesión, no slice cronológico incompleto. RED reproducido,
    focal52PASS/combined110PASS; [evidencia](m55-terminal-reconciliation-attribution.md).
-   Fallback global EventStream y scopes de interacción por conflicto siguen pendientes.
+   Publicación/respuesta a conflictos separa Run que espera y Run del efecto;
+   batch atómico scoped por item, ids explícitas prioritarias, auditoría al owner original.
+   Focal74PASS; full1714=1710PASS/0FAIL/4SKIP symlink204.828s.
+   [Contrato/pruebas](m55-effect-resolution-scopes.md).
+   Fallback global EventStream, Source y guards de escritor siguen pendientes.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
@@ -94,7 +98,10 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa binding/reconciliación: 1706 casos, 1702 PASS, 0 FAIL,
+- Última suite completa respuestas/scopes: 1714 casos, 1710 PASS, 0 FAIL,
+  4 SKIP symlink (`effect-resolution-scoped-full.log`, 204.828 s).
+  Focal74PASS se solapa; los contratos steering nuevos aún no formaban parte del build.
+- Suite previa binding/reconciliación: 1706 casos, 1702 PASS, 0 FAIL,
   4 SKIP symlink (`reconciliation-binding-full-final.log`, 204.762 s).
   Combined focal110PASS, con adapter nativo Anthropic/SSE fixture y SQLite real.
 - Suite previa routing/afinidad: 1696 casos, 1692 PASS, 0 FAIL,

@@ -212,6 +212,9 @@ public sealed class RunResumeService
         var requested = pendingRequests.Values.Select(interaction => TryGetToolCallId(interaction.ToolCallJson))
             .Where(id => id is not null).Select(id => id!).ToHashSet();
         var batch = new List<DomainEventPayload>();
+        var batchScopes = new List<ExecutionScopeState?>();
+        var activeRunId = new RunControlService(_store, _codecs).ActiveRun(sessionId);
+        var sourceScopes = new Dictionary<ToolCallId, ExecutionScopeState>();
         foreach (var pair in outcomes)
         {
             var id = pair.Key;
@@ -247,14 +250,60 @@ public sealed class RunResumeService
                 null, null, null, null, 0, 1, null,
                 "{\"toolCallId\":" + JsonString(id.ToString()) + "}");
             batch.Add(interaction);
+            if (!sourceScopes.TryGetValue(id, out var sourceScope))
+                sourceScopes[id] = sourceScope = SourceEffectScope(events, id);
+            batchScopes.Add(activeRunId is { } currentRun
+                ? ScopeForRun(events, currentRun)
+                : sourceScope);
         }
 
         if (batch.Count > 0)
         {
             var activeRun = ActiveRunToAwait(sessionId, events);
-            if (activeRun is not null) batch.Add(activeRun);
-            new EventStream(_store, _codecs, sessionId).AppendBatch(batch, DurabilityClass.Standard);
+            if (activeRun is not null)
+            {
+                batch.Add(activeRun);
+                batchScopes.Add(ScopeForRun(events, activeRun.RunId) with { LaneId = activeRun.RootLaneId });
+            }
+            new EventStream(_store, _codecs, sessionId).AppendBatch(batch, DurabilityClass.Standard, batchScopes);
         }
+    }
+
+    private ExecutionScopeState ScopeForRun(IReadOnlyList<DomainEvent> events, RunId runId)
+    {
+        var created = events.FirstOrDefault(evt => _codecs.Decode(evt) is RunCreated run && run.RunId == runId);
+        var payload = created is null ? null : _codecs.Decode(created) as RunCreated;
+        return new ExecutionScopeState(runId, payload?.RootTask);
+    }
+
+    private ExecutionScopeState SourceEffectScope(IReadOnlyList<DomainEvent> events, ToolCallId id)
+    {
+        var source = events.FirstOrDefault(evt => _codecs.Decode(evt) is ToolCallEffectUnknown unknown
+            && unknown.ToolCallId == id)
+            ?? events.FirstOrDefault(evt => _codecs.Decode(evt) is ToolCallStarted started
+                && started.ToolCallId == id);
+        var start = events.FirstOrDefault(evt => _codecs.Decode(evt) is ToolCallStarted started
+            && started.ToolCallId == id);
+        var owner = source is null ? null : RunAtEvent(events, source);
+        return new ExecutionScopeState(owner,
+            source?.TaskId ?? start?.TaskId,
+            source?.LaneId ?? start?.LaneId,
+            source?.TurnId ?? start?.TurnId,
+            id,
+            source?.ExecutionId ?? start?.ExecutionId);
+    }
+
+    private RunId? RunAtEvent(IReadOnlyList<DomainEvent> events, DomainEvent target)
+    {
+        // Explicit ownership remains authoritative for events appended after a newer Run.
+        if (target.RunId is { } recordedRun) return recordedRun;
+        RunId? current = null;
+        foreach (var evt in events)
+        {
+            if (_codecs.Decode(evt) is RunCreated created) current = created.RunId;
+            if (evt.EventId == target.EventId) return current ?? target.RunId;
+        }
+        return target.RunId;
     }
 
     private RunAwaitingInput? ActiveRunToAwait(SessionId session, IReadOnlyList<DomainEvent> events)
