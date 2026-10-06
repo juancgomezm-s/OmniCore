@@ -1,9 +1,31 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 21:40 UTC / 15:40 America/Mexico_City.
+Actualizado 2026-10-06 23:29 UTC / 17:29 America/Mexico_City.
 Objetivo vigente: cerrar M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
+
+### Checkpoint de verificación 2026-10-06 23:29 UTC
+
+Suite completa sobre `abec849`, proceso terminado con exit0:
+2272 casos = 2268 PASS / 0 FAIL / 4 SKIP por permisos symlink, 319.894s.
+Log `agent-result-immutable-full-test.log` en
+`C:/Users/juanc/.codex/omni-m55-workers-20261006-2103/`.
+Incluye AgentResult/PlanMutation, skills y escalaciones legacy; no consultas autenticadas.
+
+Después de esa suite se añadió una regresión de cuota IncludedQuota a
+CrossWorkspaceDailyCapRegressionTests (todavía sin commit ni corrección productiva).
+CLI/TuiTurnHost, journal SQLite y HTTP loopback reales de fixture: primera llamada,
+medición sintética de la MISMA sesión con ventana vigente, segunda llamada.
+Con 9% restante se esperaba bloqueo previo/aprobación y hubo 2 llamadas en vez de 1;
+el control de frontera 10% pasa. Focal completo: 7 casos / 6 PASS / 1 FAIL, 4.169s.
+Build válido final 0 warnings/errores; dos intentos iniciales tuvieron errores del
+fixture (enum y extracción de SessionId), no son evidencia RED del producto.
+Logs `included-quota-red-build.log` y `included-quota-red-test.log`, mismo directorio.
+Reproduce ADR0037 §7: reportar cuotas al panel no implementa su control de admisión.
+Pendiente cablear Ask/consentimiento, denegación sin cliente, reanudación, scope y
+validez de la medición antes de cada invocación; no reutilizar allow_plus monetario
+como autorización de cuota ni convertir Unknown/Stale en cero.
 
 ## Instrucciones vigentes del objetivo
 
