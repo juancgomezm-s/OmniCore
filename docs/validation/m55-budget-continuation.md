@@ -79,9 +79,10 @@ en `C:\Users\juanc\.codex\omni-m55-three-20261006`.
   no agrega otros workspaces del usuario. No acredita aún el tope diario User-wide.
 - Reserva atómica antes de la llamada y liquidación/liberación posterior: dos sesiones
   concurrentes pueden pasar un precheck con el mismo saldo. El postcheck no es una reserva.
-  Antes hace falta aplicar límites de salida reales: MaxOutputTokens del registry no
-  se transmite hoy a Chat/Responses. Un valor declarado pero no enviado no es una cota
-  máxima de coste; retries y disponibilidad de usage también deben quedar contabilizados.
+  Los límites declarados del registry ya se transmiten a Responses API y Anthropic;
+  Chat compatible y el backend de suscripción Codex siguen sin una cota aplicada.
+  Un valor declarado pero no enviado no es una cota máxima de coste; retries y
+  disponibilidad de usage también deben quedar contabilizados. Véase el bloque siguiente.
 - NoClient/Deny ya finalizan Run Failed/BudgetExceeded con aislamiento y command
   correlacionado: [integración y pruebas](m55-budget-lifecycle.md).
   Continúa pendiente la reanudación automática desde el cliente; el efecto durable
@@ -89,3 +90,50 @@ en `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 - Reproducción focal de esos escenarios y cuota de IncludedQuota.
 
 No se desactivaron assertions, permisos ni redacción; no hay push ni modificación de main.
+
+## Límite solicitado de salida en rutas nativas
+
+`ModelSelection.MaxOutputTokens` es un `long?` aditivo: legacy conserva `null`,
+un valor explícito debe ser positivo y no altera ModelId, RouteId ni ContextBudget.
+Es una solicitud de salida total, no consumo medido ni reserva monetaria.
+Host traduce el límite positivo del registry sólo para Responses API y Anthropic,
+tanto al seleccionar en CLI como al componer probes. El fingerprint incluye el
+límite solicitado: un cambio invalida el componente `model.descriptor`.
+
+Responses API escribe `max_output_tokens` con el menor límite presente entre selección
+y opciones. Rechaza valores menores que 16 antes del HTTP; no eleva silenciosamente
+el límite. Este campo cubre salida visible y razonamiento según el
+[contrato oficial](https://developers.openai.com/api/reference/python/resources/responses/methods/create).
+El perfil Codex conserva su body anterior sin el campo; una solicitud explícita se
+rechaza porque este bloque no cualifica ese parámetro en el backend de suscripción.
+Esto no afirma que el backend lo soporte o no lo soporte: falta evidencia específica.
+
+Anthropic escribe exactamente el límite seleccionado en `max_tokens`, sin aumentarlo
+para acomodar razonamiento. El modo manual actual exige presupuesto de thinking >=1024
+y menor que `max_tokens`, conforme al
+[contrato de extended thinking](https://platform.claude.com/docs/en/build-with-claude/extended-thinking).
+Sin selección explícita mantiene default/budget+margin; la suma usa `long` para evitar
+overflow de `int`. No introduce adaptive thinking ni presume soporte por nombre de modelo.
+La fixture anterior de budget=500 se corrige a 1024 y comprueba 1034 con margin=10;
+controles negativos independientes verifican el rechazo de presupuestos inválidos.
+
+Evidencia offline, logs en `C:\Users\juanc\.codex\omni-m55-three-20261006`:
+
+- `native-output-limit-red-test.log`: 28 casos, 13 PASS/15 FAIL/0 SKIP, 0.166s;
+  reproduce límite ignorado, validaciones ausentes y overflow.
+- `native-output-limit-final-build.log`: build de tests, 0 warnings/0 errores.
+- `native-output-limit-final-focal.log`: 90 PASS/0 FAIL/0 SKIP, 3.374s.
+  Incluye transporte del límite, selección Host, fingerprint, adapters SSE, CLI
+  y cualificación. Los dos controles Host→selección→adapter inspeccionan el body
+  capturado por un HttpMessageHandler local y la respuesta completada.
+- `native-output-limit-full.log`: 1891 casos = 1887 PASS/0 FAIL/4 SKIP por
+  permisos symlink, 231.777s, exit0; incluye las pruebas nuevas de este bloque.
+  Las cifras focales se solapan y no se suman.
+
+Estas fixtures no acreditan llamadas autenticadas, aplicación del límite por un
+servidor real, cuotas ni consumo. No cierran Chat/Codex, reserva/liquidación atómica,
+tope User-wide, contabilización de retries o los siete criterios de M5.5.
+Reproducción focal: runner con las clases NativeOutputTokenLimitTests,
+ModelSelectionOutputLimitContractTests, HostOutputTokenLimitTests,
+OpenAIResponsesProviderTests, AnthropicMessagesProviderTests,
+RuntimeFingerprintFactoryTests, ModelQualificationHostTests y CliEndToEndTests.

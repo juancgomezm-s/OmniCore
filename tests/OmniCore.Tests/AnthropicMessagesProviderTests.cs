@@ -11,6 +11,24 @@ using OmniCore.Models;
 /// <summary>Adaptador nativo de la Messages API (ADR-0005 §1), probado con SSE guionado sin red.</summary>
 public sealed class AnthropicMessagesProviderTests
 {
+    [Fact]
+    public async System.Threading.Tasks.Task Host_native_limit_reaches_the_http_request_including_thinking()
+    {
+        var descriptor = new ProviderDescriptor("anthropic", ProviderFamily.AnthropicMessages,
+            "https://api.example.test", AuthConfig.None(), false, false, true);
+        var model = new ModelDefinition("claude-test", descriptor.Id, 4096, 4096, 2048);
+        var limit = OmniCore.Host.ModelRoutingHost.OutputTokenLimit(model, descriptor);
+        Assert.Equal(2048L, limit);
+        var handler = new QueueHandler(_ => Sse(MinimalStream("bounded")));
+        var events = await Collect(CreateProvider(handler).StreamAsync(
+            Request(reasoning: new ReasoningRequest("budget", 1024), maxOutputTokens: limit),
+            TestContext.Current.CancellationToken));
+        using var body = JsonDocument.Parse(Assert.Single(handler.Requests).Body);
+        Assert.Equal(2048L, body.RootElement.GetProperty("max_tokens").GetInt64());
+        Assert.Equal(1024, body.RootElement.GetProperty("thinking").GetProperty("budget_tokens").GetInt32());
+        Assert.IsType<ResponseCompleted>(events[^1]);
+    }
+
     private const string TextAndToolStream = """
 event: message_start
 data: {"type":"message_start","message":{"id":"msg_1","model":"claude-test-resolved","usage":{"input_tokens":12,"cache_read_input_tokens":5,"cache_creation_input_tokens":2,"output_tokens":1}}}
@@ -191,12 +209,12 @@ data: {"type":"message_stop"}
         var provider = CreateProvider(handler, options: options);
 
         await Collect(provider.StreamAsync(Request(), TestContext.Current.CancellationToken));
-        await Collect(provider.StreamAsync(Request(reasoning: new ReasoningRequest("budget", 500)), TestContext.Current.CancellationToken));
+        await Collect(provider.StreamAsync(Request(reasoning: new ReasoningRequest("budget", 1024)), TestContext.Current.CancellationToken));
 
         using var plain = JsonDocument.Parse(handler.Requests[0].Body);
         using var budgeted = JsonDocument.Parse(handler.Requests[1].Body);
         Assert.Equal(1234, plain.RootElement.GetProperty("max_tokens").GetInt32());
-        Assert.Equal(510, budgeted.RootElement.GetProperty("max_tokens").GetInt32());
+        Assert.Equal(1034, budgeted.RootElement.GetProperty("max_tokens").GetInt32());
     }
 
     [Fact]
@@ -298,8 +316,8 @@ data: {"type":"message_stop"}
 
     private static ModelRequest Request(string model = "model-a", IReadOnlyList<ModelMessage>? messages = null,
         string? instructions = null, IReadOnlyList<ToolDefinition>? tools = null, ReasoningRequest? reasoning = null,
-        CacheHints? cache = null, ProviderState? continuation = null) =>
-        new(new ModelSelection(new ModelIdValue(model), 4096, ToolMode.Direct, null),
+        CacheHints? cache = null, ProviderState? continuation = null, long? maxOutputTokens = null) =>
+        new(new ModelSelection(new ModelIdValue(model), 4096, ToolMode.Direct, null, maxOutputTokens: maxOutputTokens),
             messages ?? [new ModelMessage(MessageRole.User, [new TextBlock("hola")])], instructions, tools ?? [],
             ToolChoice.Auto(), null, reasoning, cache, continuation);
 

@@ -13,6 +13,15 @@ using OmniCore.Models;
 /// </summary>
 public static class ModelRoutingHost
 {
+    /// <summary>Explicit output bound for currently wired native API contracts.
+    /// Null does not claim an enforced bound for legacy Chat or the subscription backend.</summary>
+    public static long? OutputTokenLimit(ModelDefinition model, ProviderDescriptor? provider) =>
+        provider?.Family == ProviderFamily.AnthropicMessages
+        || (provider?.Family == ProviderFamily.OpenAIResponses
+            && !string.Equals(provider.Profile, "codex", StringComparison.OrdinalIgnoreCase))
+            ? model.MaxOutputTokens > 0 ? model.MaxOutputTokens : null
+            : null;
+
     /// <summary>One-time initial non-metered authorizations from User configuration.
     /// Later configuration changes never expand a Session snapshot.</summary>
     public static SessionRoutingPolicy InitialSessionPolicy(LoadedUserConfiguration loaded, string originProviderId)

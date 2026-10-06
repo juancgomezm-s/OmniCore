@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 11:48 UTC / 05:48 America/Mexico_City.
+Actualizado 2026-10-06 12:11 UTC / 06:11 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -86,8 +86,17 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
    y bloquea nuevo gasto de otra sesión del mismo workspace, sin contaminar la original.
    RED5casos1PASS4FAIL; focal45PASS; full1853=1849PASS/0FAIL/4SKIPsymlink212.612s,
    exit0. [Contrato y evidencia](m55-budget-continuation.md).
-   La reserva requiere también aplicar un límite de salida real a la request: Chat/Responses
-   no fuerzan hoy el MaxOutputTokens del registry. No acreditar reserva con ese valor solo.
+   Responses API y Anthropic ya reciben el MaxOutputTokens seleccionado del registry;
+   su body se verifica en fixtures HTTP locales y el fingerprint captura la solicitud.
+   RED28casos13PASS15FAIL; focal90PASS/0FAIL/0SKIP3.374s, build0warnings/errores.
+   Full1891=1887PASS/0FAIL/4SKIPsymlink231.777s, exit0.
+   Chat y el perfil Codex aún no tienen cota aplicada. Esta mejora no acredita reserva
+   de coste, cumplimiento por el servidor, consultas autenticadas ni consumo real.
+   [Contrato y evidencia](m55-budget-continuation.md#límite-solicitado-de-salida-en-rutas-nativas).
+   Auditoría posterior encontró dos casos para reproducir: uso reportado negativo
+   valorado como coste negativo y clamp a cero dentro del Ask antes de tools, y
+   overflow de CombineUsage entre steps. Aún no implementados ni probados; la suite
+   anterior no cubre esas entradas. Próximo paquete focal, sin declarar cierre.
 3. Disponibilidad desde breaker y selección por RouteId implementadas (58ee5bc); full verde.
    Afinidad del arnés TUI Init/Run reproducida (11 vs6), corregida en cd727e5;
    59 pruebas TUI verdes, con login20ciclos y resize en vivo.

@@ -47,18 +47,30 @@ public sealed class RuntimeFingerprintFactoryTests
         Assert.Equal(Part(first, "runtime.build"), Part(budget, "runtime.build"));
     }
 
+    [Fact]
+    public void Requested_output_limit_changes_model_component_without_inventing_an_enforced_legacy_bound()
+    {
+        var legacy = Create();
+        var limited = Create(outputLimit: 512);
+        var different = Create(outputLimit: 1024);
+        Assert.NotEqual(Part(legacy, "model.descriptor"), Part(limited, "model.descriptor"));
+        Assert.NotEqual(Part(limited, "model.descriptor"), Part(different, "model.descriptor"));
+        Assert.Equal(Part(legacy, "context.policy"), Part(limited, "context.policy"));
+        Assert.Equal(Part(limited, "provider.adapter"), Part(different, "provider.adapter"));
+    }
+
     private static FingerprintComponent Part(ExecutionFingerprint value, string name) =>
         Assert.Single(value.Components, component => component.Name == name);
 
     private static ExecutionFingerprint Create(string endpoint = "http://fixture-one.invalid/v1",
         IReadOnlyDictionary<string, double>? traits = null, long budget = 7000,
-        string tokenizer = "fixture-tokenizer/1")
+        string tokenizer = "fixture-tokenizer/1", long? outputLimit = null)
     {
         var model = new ModelDefinition("fixture-model", "fixture-provider", 8192, 7000, 1024);
         var route = new ModelRoute(model.ProviderId, endpoint, ProviderFamily.OpenAiChatCompatible,
             null, model.Id, new RouteId("fixture-route"));
         var selection = new ModelSelection(new ModelIdValue(model.Id), budget, ToolMode.Direct, null,
-            route.Id, route);
+            route.Id, route, outputLimit);
         var profile = new EffectiveModelProfile(model.Id, 8192, 7000, 1024,
             new[] { "text" }, new[] { ToolCallFormat.Native }, false,
             traits ?? new Dictionary<string, double>(), route.Id);
