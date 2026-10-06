@@ -26,7 +26,8 @@ public sealed class M5QualificationConfiguredPricingTests
         return directory;
     }
 
-    private static void WriteConfiguration(string dataDirectory, string providerPricing)
+    private static void WriteConfiguration(string dataDirectory, string providerPricing,
+        string billingMode = "Unknown")
     {
         var paths = OmniHost.CreatePlatformPaths(dataDirectory);
         Directory.CreateDirectory(paths.ConfigDirectory);
@@ -35,6 +36,7 @@ public sealed class M5QualificationConfiguredPricingTests
                 {{ProviderId}}:
                   baseUrl: https://fixture.invalid/v1
                   auth: none
+                  billingMode: {{billingMode}}
             {{providerPricing}}
             """);
         File.WriteAllText(Path.Combine(paths.ConfigDirectory, "models.yaml"), $$"""
@@ -122,7 +124,9 @@ public sealed class M5QualificationConfiguredPricingTests
         var directory = TempDir();
         try
         {
-            WriteConfiguration(directory, "      inputPricePerMillionUsd: 2");
+            // This control exercises missing measured cost on an explicitly local fixture.
+            // Potentially paid Unknown routes with partial pricing are tested fail-closed separately.
+            WriteConfiguration(directory, "      inputPricePerMillionUsd: 2", billingMode: "Local");
             var probe = Probe();
             var provider = new FixtureProvider(probe.Expected);
             QualificationRunResult result;

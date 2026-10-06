@@ -122,7 +122,7 @@ public sealed class ModelQualificationCostCapException : Exception
     }
 }
 
-/// <summary>A cost estimate is unavailable or unrepresentable, including missing metered pricing/output information.
+/// <summary>A cost estimate is unavailable or unrepresentable, including missing potentially paid pricing/output information.
 /// No provider has been constructed or called.</summary>
 public sealed class ModelQualificationCostEvidenceUnavailableException : Exception
 {
@@ -277,7 +277,9 @@ public sealed class ModelQualificationHost : IDisposable
             estimatedCost = Math.Max(estimatedCost, configured);
             estimateSource = "max-declared-and-configured-descriptor-token-estimate";
         }
-        else if (provider?.BillingMode == BillingMode.MeteredCurrency)
+        // Unknown is potentially paid, not a free route. Consent does not turn an
+        // unavailable estimate into evidence that the accepted monetary cap can be respected.
+        else if (provider?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown)
         {
             throw new ModelQualificationCostEvidenceUnavailableException();
         }
