@@ -15,6 +15,12 @@ Componentes v1, JSON escrito explícitamente y SHA-256:
 - `context.policy`: política de materialización, presupuesto y tokenizer utilizado.
 - `provider.adapter`: digest de la identidad física de la ruta (endpoint/protocolo/perfil/modelo).
 - `runtime.build`: metadatos reales del assembly.
+- `tools.plan`: las herramientas realmente visibles tras el filtro del harness/boundary,
+  en su orden efectivo; nombres → ToolId, hash del schema, descripción, Source completo,
+  versión declarada de Source y flags/riesgo/protección/efecto/tags del descriptor.
+- `prompt.template`: ID `ExplorerTurn.SystemPrompt` y hash del prompt efectivo renderizado
+  y redactado, no una etiqueta M2/M3 ni el texto del usuario.
+- `plan.revision`: PlanId y revisión inicial del Turn; ambos null cuando no hay plan.
 
 Son componentes hash-only: `Content=null`. No se copia el endpoint ni configuración
 privada a un artifact o al journal. GC distingue estos digests de las referencias CAS;
@@ -23,10 +29,30 @@ sin barrer cuando el blob falta. La retención conservadora de hashes del payloa
 
 Los fingerprints legacy sin componentes conservan su hash; las simulaciones no se
 presentan como configuración real del runtime. Este bloque **no cierra** el criterio
-completo: faltan tools visibles/prompt/plan por Turn, AgentProfile/skills cuando exista
-su configuración efectiva, y la revisión/evidencia de cualificación explicable. La
-etiqueta legacy `core-tools-1` aún no sustituye una descripción real de herramientas.
+completo: faltan AgentProfile/skills efectivos y la revisión/evidencia de cualificación
+explicable, así como otros componentes de ADR-0017 donde estén configurados. La CLI
+ya reemplaza `core-tools-1` por el digest del plan de herramientas visible. La versión
+de Source es la declarada por el descriptor, no una versión de tool inventada.
 Los digests tampoco acreditan contenido CAS explicable cuando `Content` es null.
+
+## Reanudación y estabilidad por Turn
+
+La CLI activa la composición por Turn en Explorer y Act, incluido el paso de Plan a Act.
+Se construye una sola configuración para TurnStarted y los snapshots de todos sus pasos.
+Al reanudar un Turn abierto, la revisión del plan se calcula hasta la secuencia de su
+TurnStarted: mutaciones durables del propio Turn no alteran su configuración inicial.
+El estado actual del plan sigue entrando en el WorkingState; no se revierte el plan.
+
+Antes de encolar un FollowUp, emitir ModelStep o llamar al proveedor, se compara el
+fingerprint efectivo contra el original cuando éste existe. Un cambio incompatible
+devuelve Error explícito y no escribe eventos ni terminaliza el Turn. Restaurar su
+configuración original permite continuar con la respuesta ya persistida. Un Turn legacy
+sin fingerprint conserva el comportamiento anterior; no acredita validación de configuración.
+
+La escalación consentida por overflow no necesita bypass: el Turn original fue Abandoned
+y el target comienza otro Turn, relacionado por los eventos de escalación existentes.
+Un resume que desborda contexto abandona el Turn una vez, sin duplicar TurnStarted.
+No se sobrescriben eventos y no se introduce scheduler ni revisión de config por ModelStep.
 
 ## Evidencia reproducible
 
@@ -41,6 +67,15 @@ Directorio: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
   fingerprint, cualificación, GC y checkpoint durable del proveedor.
 - `runtime-fingerprint-full.log`: 1823 casos = 1819 PASS/0 FAIL/4 SKIP por permisos
   symlink, 210.175s, exit0. No incluye el siguiente archivo nuevo de regresiones de comandos.
+- `fingerprint-resume-red-test.log`: 2 casos, 1 PASS/1 FAIL; un segundo fingerprint
+  en el mismo Turn invocaba al provider y terminaba en vez de rechazar el drift.
+- `fingerprint-turn-integration-build-fixed.log`: 0 warnings/0 errores.
+- `fingerprint-turn-integration-focal-fixed.log`: 89 PASS/0 FAIL/0 SKIP, 5.283s.
+  Incluye schema/Source.Version, tools ocultas, idempotencia, filtro de harness en
+  request real, snapshot del paso, cuestionario tras reopen SQLite/CAS con revisión
+  posterior del plan y escalación consentida en proceso/tras reopen.
+- `fingerprint-turn-full.log`: 1834 casos = 1830 PASS/0 FAIL/4 SKIP por permisos
+  symlink, 213.545s, exit0. Incluye todos los tests de este bloque.
 
 Los tests de factory son fixtures offline. El test de CLI recorre dispatcher, Host,
 adapter HTTP loopback, journal SQLite y codec real; no es una consulta autenticada,

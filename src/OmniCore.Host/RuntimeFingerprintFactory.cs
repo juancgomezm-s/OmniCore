@@ -3,8 +3,10 @@ namespace OmniCore.Host;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Models;
+using OmniCore.Tools;
 
 /// <summary>Fingerprints resolved runtime facts, not phase names or guessed configuration.</summary>
 internal static class RuntimeFingerprintFactory
@@ -81,6 +83,57 @@ internal static class RuntimeFingerprintFactory
             tokenizerIdentity, components);
     }
 
+    internal static ExecutionFingerprint WithTurnConfiguration(ExecutionFingerprint baseline,
+        FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan)
+    {
+        var tools = Component("tools.plan", writer =>
+        {
+            writer.WriteStartArray("tools");
+            foreach (var visible in visibleTools)
+            {
+                var descriptor = catalog.Find(new ToolId(visible.Name))?.Descriptor
+                    ?? throw new InvalidOperationException("Visible tool has no canonical descriptor.");
+                writer.WriteStartObject();
+                writer.WriteString("visibleName", visible.Name);
+                writer.WriteString("toolId", descriptor.Id.ToString());
+                writer.WriteString("description", visible.Description);
+                writer.WriteString("schemaHash", Digest(visible.InputSchemaJson));
+                writer.WriteString("sourceKind", descriptor.Source.Kind.ToString());
+                writer.WriteString("sourceScope", descriptor.Source.Scope.ToString());
+                writer.WriteString("sourceTrust", descriptor.Source.Trust.ToString());
+                writer.WriteString("sourceOwner", descriptor.Source.Owner);
+                writer.WriteString("sourceVersion", descriptor.Source.Version);
+                writer.WriteBoolean("readOnly", descriptor.ReadOnly);
+                writer.WriteBoolean("destructive", descriptor.Destructive);
+                writer.WriteString("risk", descriptor.Risk.ToString());
+                writer.WriteString("protection", descriptor.Protection.ToString());
+                writer.WriteString("effectClass", descriptor.EffectClass.ToString());
+                writer.WriteStartArray("tags");
+                foreach (var tag in descriptor.Tags) writer.WriteStringValue(tag);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        });
+        var prompt = Component("prompt.template", writer =>
+        {
+            writer.WriteString("templateId", "ExplorerTurn.SystemPrompt");
+            writer.WriteString("renderedHash", Digest(systemPrompt));
+        });
+        var revision = Component("plan.revision", writer =>
+        {
+            writer.WriteString("planId", plan?.Id.ToString());
+            if (plan is null) writer.WriteNull("revision");
+            else writer.WriteNumber("revision", plan.Revision);
+        });
+        var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name }, StringComparer.Ordinal);
+        var components = baseline.Components.Where(component => !names.Contains(component.Name))
+            .Concat(new[] { tools, prompt, revision }).ToArray();
+        return new ExecutionFingerprint(baseline.ModelKey, baseline.HarnessPolicyHash, tools.Hash.Value,
+            baseline.ContextPolicyHash, baseline.OverridesHash, baseline.Build, baseline.ModelPolicyHash,
+            baseline.TokenizerHash, components);
+    }
+
     private static void WriteContextPolicy(Utf8JsonWriter writer, ContextManagementPolicy policy)
     {
         writer.WriteNumber("externalizeAboveCharacters", policy.ExternalizeAboveCharacters);
@@ -102,6 +155,9 @@ internal static class RuntimeFingerprintFactory
         return HashComponent(name, Encoding.UTF8.GetString(stream.ToArray()));
     }
 
+    private static string Digest(string value) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
     private static FingerprintComponent HashComponent(string name, string value) => new(name, "1",
-        ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)))));
+        ContentHash.Sha256(Digest(value)));
 }

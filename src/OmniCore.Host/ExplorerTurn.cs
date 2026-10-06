@@ -35,6 +35,8 @@ public sealed class ExplorerTurn
 
     private readonly ExecutionFingerprint _fingerprint;
 
+    private readonly bool _recordEffectiveFingerprint;
+
     private readonly ModelSelection _selection;
 
     private readonly IEventStore _store;
@@ -204,7 +206,8 @@ public sealed class ExplorerTurn
         bool enforceDefaultSpendCaps = false, decimal sessionCapUsd = 5m, decimal dailyCapUsd = 20m,
         QuestionnaireInteractionService? questionnaires = null,
         Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null,
-        IModelProvider? metaModelProvider = null, long? modelContextCapacity = null)
+        IModelProvider? metaModelProvider = null, long? modelContextCapacity = null,
+        bool recordEffectiveFingerprint = false)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -213,6 +216,7 @@ public sealed class ExplorerTurn
         _catalog = catalog;
         _materializer = materializer;
         _fingerprint = fingerprint;
+        _recordEffectiveFingerprint = recordEffectiveFingerprint;
         _selection = selection;
         _store = store;
         _codecs = codecs;
@@ -323,6 +327,20 @@ public sealed class ExplorerTurn
         var stream = new EventStream(_store, _codecs, sessionId);
         var resumedTurnId = FindOpenTurn(stream, runId, laneId);
         var isResume = resumedTurnId is not null;
+        var originalStart = isResume ? stream.EventsSince(1).LastOrDefault(evt =>
+            evt.RunId == runId && _codecs.Decode(evt) is TurnStarted start
+                && start.TurnId == resumedTurnId && start.LaneId == laneId) : null;
+        // Freeze the initial plan revision, not later mutations legitimately emitted by this Turn.
+        var initialPlanEvents = OwnTail(stream, runId).Where(evt => originalStart is null
+            || evt.Sequence <= originalStart.Sequence).ToArray();
+        var fingerprint = _recordEffectiveFingerprint
+            ? RuntimeFingerprintFactory.WithTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
+                EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest())
+            : _fingerprint;
+        if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
+            { Fingerprint: { } originalFingerprint } && originalFingerprint.Hash() != fingerprint.Hash())
+            return new TurnResult("Cannot resume Turn: effective fingerprint differs from its original configuration.",
+                StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var queuedQuestion = _redaction.Redact(question ?? "").Length > 0
             && FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, question ?? "", origin);
         var runEvents = stream.EventsSince(1);
@@ -392,7 +410,7 @@ public sealed class ExplorerTurn
         try
         {
             var preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                workingStateText, instruction, messages, cancellationToken);
+                workingStateText, instruction, messages, fingerprint, cancellationToken);
             var materialized = preparedContext.Snapshot;
             var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
 
@@ -407,7 +425,7 @@ public sealed class ExplorerTurn
                         overflowStart.Add(new UserInputReceived(runId,
                             "\"" + System.Text.Json.JsonEncodedText.Encode(safeQuestion) + "\"", null, origin));
                 }
-                overflowStart.Add(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+                if (!isResume) overflowStart.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact));
                 stream.AppendBatch(overflowStart, DurabilityClass.Barrier);
                 started = true;
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
@@ -428,7 +446,7 @@ public sealed class ExplorerTurn
                 if (safeQuestion.Length > 0 || pendingFollowUps.Length == 0
                     && origin is not ("InteractionResponse(ModelRouteConsent)" or "AlreadyPersisted(ConversationInput)"))
                     startEvents.Add(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
-                startEvents.Add(new TurnStarted(turnId, laneId, _fingerprint, snapshotArtifact));
+                startEvents.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact));
                 stream.AppendBatch(startEvents, DurabilityClass.Barrier);
                 // Límites de mutación por Turn (ADR-0044 §5): un Turn nuevo reinicia el contador del
                 // Turn; los totales del Run se conservan. Un Turn reanudado sigue con su contador.
@@ -452,7 +470,7 @@ public sealed class ExplorerTurn
                 if (step > 0 || steering.Count > 0)
                 {
                     preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                        workingStateText, instruction, messages, cancellationToken);
+                        workingStateText, instruction, messages, fingerprint, cancellationToken);
                     materialized = preparedContext.Snapshot;
                     if (materialized.Overflowed)
                     {
@@ -1524,9 +1542,14 @@ public sealed class ExplorerTurn
             + QuestionnaireCodec.EncodeAnswers(outcome.Answers ?? Array.Empty<QuestionAnswer>()) + "}";
     }
 
+    private string EffectiveSystemPrompt(string instruction) => _redaction.Redact(
+        "Contexto del workspace (fuentes del run):\n"
+        + (instruction ?? "").Replace("{context}", "", StringComparison.Ordinal).Trim()
+        + "\nFingerprint: " + _fingerprint.ModelKey + " · " + _fingerprint.ContextPolicyHash);
+
     private PreparedTurnContext MaterializeTurnContext(EventStream stream, SessionId sessionId, RunId runId,
         LaneId laneId, TurnId turnId, string workingStateText, string instruction,
-        IReadOnlyList<ModelMessage> messages, CancellationToken cancellationToken)
+        IReadOnlyList<ModelMessage> messages, ExecutionFingerprint fingerprint, CancellationToken cancellationToken)
     {
         var contributors = new List<IContextContributor>();
         var hasWorkingState = false;
@@ -1542,9 +1565,7 @@ public sealed class ExplorerTurn
                 _redaction));
         }
 
-        var prompt = "Contexto del workspace (fuentes del run):\n"
-            + (instruction ?? "").Replace("{context}", "", StringComparison.Ordinal).Trim()
-            + "\nFingerprint: " + _fingerprint.ModelKey + " · " + _fingerprint.ContextPolicyHash;
+        var prompt = EffectiveSystemPrompt(instruction);
         contributors.Add(new RedactingContextContributor(new SystemPromptContributor(prompt), _redaction));
         var entries = new List<ConversationContextEntry>();
         var messageById = new Dictionary<string, ModelMessage>(StringComparer.Ordinal);
@@ -1633,7 +1654,7 @@ public sealed class ExplorerTurn
         var materializer = new ContextMaterializer(_materializer.Counter(), contributors, _artifacts, policy);
         var snapshot = materializer.MaterializeWithinBudget(
             new MaterializeRequest(sessionId, runId, null, laneId, turnId, _store.CurrentSequence(sessionId),
-                _fingerprint, priorDiagnostics), cancellationToken, (int)_selection.ContextBudget);
+                fingerprint, priorDiagnostics), cancellationToken, (int)_selection.ContextBudget);
         var selectedMessages = new List<ModelMessage>();
         foreach (var item in snapshot.Items)
         {
