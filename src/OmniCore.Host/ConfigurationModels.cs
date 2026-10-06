@@ -74,6 +74,19 @@ public sealed class WorkspaceSettingsYaml
     public WorkspaceGatesYaml? Gates { get; set; }
 }
 
+/// <summary>User-scope settings from <c>&lt;config&gt;/settings.yaml</c> (ADR-0039).</summary>
+public sealed class UserSettingsYaml
+{
+    public BudgetSettingsYaml? Budget { get; set; }
+}
+
+/// <summary>USD spend caps configured by the user (ADR-0037 §7).</summary>
+public sealed class BudgetSettingsYaml
+{
+    public decimal? Session { get; set; }
+    public decimal? Daily { get; set; }
+}
+
 /// <summary>Configured completion commands. Each sequence is literal argv: element zero is executable.</summary>
 public sealed class WorkspaceGatesYaml
 {
@@ -102,6 +115,8 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(RoutingYaml))]
 [YamlSerializable(typeof(EscalationYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
+[YamlSerializable(typeof(UserSettingsYaml))]
+[YamlSerializable(typeof(BudgetSettingsYaml))]
 [YamlSerializable(typeof(WorkspaceGatesYaml))]
 [YamlSerializable(typeof(TrustFileYaml))]
 [YamlSerializable(typeof(TrustEntryYaml))]

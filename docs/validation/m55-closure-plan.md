@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 06:32 UTC / 00:32 America/Mexico_City.
+Actualizado 2026-10-06 06:44 UTC / 00:44 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -20,6 +20,8 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   Run/Lane/Turn/modelo/ruta y retención transitiva GC; adapter Anthropic real con SSE
   de fixture. [Contrato y límites](m55-provider-state-checkpoint.md).
   Commit `5f40a81`; uso reportado conservado incluso si falla el checkpoint.
+- Configuración de topes User y ampliación durable via InteractionResolved(User):
+  [contrato/pruebas/límites pendientes](m55-budget-continuation.md).
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -39,6 +41,8 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    ReasoningCapability y aplicación de ReasoningReplayPolicy. Checkpoint/resume básico probado.
 2. BillingMode, SessionRoutingPolicy durable y consentimiento; auto/ask no pueden
    ampliar gasto ni rutas autorizadas. Topes configurables, diario entre sesiones y continuar.
+   Configuración User y efecto de allow_plus probados; completar ledger User-wide,
+   reserva/liquidación atómica, UI/CLI resume y NoClient/Deny → RunFailed.
 3. Circuit breaker/disponibilidad real y adaptación del router de Alias a RouteId.
 4. Steering explícito en fronteras de ModelStep y outcome de descarte.
 5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
@@ -57,8 +61,8 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa sobre `5f40a81`: 1588 casos, 1584 PASS, 0 FAIL, 4 SKIP
-  symlink (`provider-state-accounting-full-suite.log`, 134.443 s).
+- Última suite completa con configuración/ampliación de presupuesto: 1611 casos,
+  1607 PASS, 0 FAIL, 4 SKIP symlink (`budget-continuation-full-suite.log`, 135.282 s).
 - Focal final CAS/rutas: 121 PASS.
 - Focal cualificación/routing/CLI con SQLite legacy, idempotencia y aislamiento: 87 PASS,
   build 0 warnings / 0 errores (`route-qualification-tests.log`).
@@ -66,6 +70,8 @@ Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
   118 PASS, 0 FAIL (`route-qualification-final-tests.log`).
 - Checkpoint/replay: 31 PASS, 0 FAIL (`provider-state-accounting-tests.log`), incluida
   reanudación del adapter Anthropic con SSE de fixture, sin consultas autenticadas.
+- Presupuesto/RunControl/configuración e integración real SQLite/OmniServer: 71 PASS,
+  0 FAIL (`budget-continuation-integration-tests.log`), usage de fixture.
 - Las cifras se solapan y no se suman; fixtures no acreditan consumo autenticado.
 
 Reproducción de este bloque:
@@ -77,8 +83,7 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
 
-Próxima reproducción del integrador: revisión Luna señala que escalación `ask` solo
-registra/sugiere sin InteractionRequest y `BudgetExceeded.allow_plus` resuelve la
-interacción sin ampliar el límite durable. Revisar ModelRoutingHost/OmniCliRuntime
-TryEscalateAsync, RunControlService.Respond y tests EscalationPriceGuardBoundary/SpendPricing
-antes de implementar. No asumir cierre por contratos o por tener credenciales.
+Próxima reproducción del integrador: routing automático sin consentimiento,
+escalación `ask` sin InteractionRequest, NoClient/Deny no terminal, ledger diario
+entre workspaces y reservas concurrentes. allow_plus ya tiene efecto durable probado,
+pero el ciclo de vida completo sigue pendiente. No asumir cierre por contratos o credenciales.
