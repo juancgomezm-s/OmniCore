@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 09:45 UTC / 03:45 America/Mexico_City.
+Actualizado 2026-10-06 09:57 UTC / 03:57 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -92,7 +92,14 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    batch atómico scoped por item, ids explícitas prioritarias, auditoría al owner original.
    Focal74PASS; full1714=1710PASS/0FAIL/4SKIP symlink204.828s.
    [Contrato/pruebas](m55-effect-resolution-scopes.md).
-   Fallback global EventStream, Source y guards de escritor siguen pendientes.
+   Fallback global eliminado; batch con causas explícitas por item, conflictos
+   independientes y recovery activo con scope de origen verificados. Commands
+   inválidos/desconocidos devuelven Rejected sin eventos/rango. Focal126PASS;
+   full1787=1783PASS/0FAIL/4SKIPsymlink209.548s, exit0.
+   [Contrato y reproducciones](m55-explicit-causation.md).
+   Source y guards de escritor siguen pendientes; SourceKind/ComponentSource
+   describen componentes registrados, no se reutilizan como origen de eventos.
+   Auditar también los catches excepcionales RunSim/ResumeSim sin outcome/rango.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.

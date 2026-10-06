@@ -92,6 +92,45 @@ public sealed class ScopedEventBatchTests
         Assert.Empty(stream.WrittenPayloads);
     }
 
+    [Fact]
+    public void Explicit_item_causes_and_null_override_ambient_without_leaking_after_batch()
+    {
+        var store = new RecordingStore();
+        var session = SessionId.New();
+        var stream = new EventStream(store, EventCodecs.Create(), session);
+        var first = new CommandCausation(CommandId.New());
+        using (CausationScope.Begin(first)) stream.Append(Neutral());
+        var source = Assert.Single(store.ReadFrom(session, 1));
+        var second = new EventCausation(source.EventId);
+        var ambient = new CommandCausation(CommandId.New());
+        using (CausationScope.Begin(ambient))
+        {
+            stream.AppendBatch(new[] { Neutral(), Neutral(), Neutral() }, DurabilityClass.Barrier,
+                null, new CausationId?[] { first, second, null });
+            Assert.Same(ambient, CausationScope.Current);
+            stream.Append(Neutral());
+        }
+        var events = store.ReadFrom(session, 2);
+        Assert.Equal(4, events.Count);
+        Assert.Equal(first, events[0].Causation);
+        Assert.Equal(second, events[1].Causation);
+        Assert.Null(events[2].Causation);
+        Assert.Equal(ambient, events[3].Causation);
+        Assert.Equal(3, store.Writes); // source, one atomic batch, following append
+        Assert.Null(CausationScope.Current);
+    }
+
+    [Fact]
+    public void Cause_count_mismatch_is_rejected_before_any_store_access()
+    {
+        var store = new RecordingStore();
+        var stream = new EventStream(store, EventCodecs.Create(), SessionId.New());
+        Assert.Throws<ArgumentException>(() => stream.AppendBatch(new[] { Neutral() },
+            DurabilityClass.Standard, null, Array.Empty<CausationId?>()));
+        Assert.Equal(0, store.Reads);
+        Assert.Equal(0, store.Writes);
+    }
+
     private static DomainEventPayload Neutral() => new InteractionExpired(InteractionId.New());
     private static ExecutionScopeState Scope() => new(RunId.New(), TaskId.New(), LaneId.New(),
         TurnId.New(), ToolCallId.New(), ExecutionId.New());

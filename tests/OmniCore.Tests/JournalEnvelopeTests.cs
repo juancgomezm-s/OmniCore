@@ -78,7 +78,7 @@ public sealed class JournalEnvelopeTests
     }
 
     [Fact]
-    public void Causation_is_the_command_in_scope_or_else_the_previous_event()
+    public void Causation_is_the_explicit_command_in_scope_or_null_without_scope()
     {
         var store = new InMemoryEventStore();
         var session = SessionId.New();
@@ -98,7 +98,7 @@ public sealed class JournalEnvelopeTests
         Assert.Null(events[0].Causation); // raíz: sin comando ni evento previo
         Assert.Equal(new CommandCausation(command), events[1].Causation);
         Assert.Equal(new CommandCausation(command), events[2].Causation);
-        Assert.Equal(new EventCausation(events[2].EventId), events[3].Causation);
+        Assert.Null(events[3].Causation);
         Assert.Null(CausationScope.Current); // el scope se restaura al salir
     }
 

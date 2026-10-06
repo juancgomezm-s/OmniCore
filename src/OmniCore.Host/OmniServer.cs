@@ -362,21 +362,23 @@ public sealed class OmniServer : IOmniClient
     {
         if (command.MessageType != MessageTypes.Command)
         {
-            return CommandAck.Fail(command.MessageId, "esperaba un command, recibí " + command.MessageType);
+            return new CommandAck(command.MessageId, "error",
+                "esperaba un command, recibí " + command.MessageType, RuntimeCommandOutcome.Rejected());
         }
 
         var fields = JsonObj.Parse(command.PayloadJson);
         var queryName = fields.TryGetValue("query", out var q) ? q : null;
         if (queryName is not null)
         {
-            return CommandAck.Ok(command.MessageId);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.NoOp());
         }
 
         // ADR-0013 §3: todo evento escrito mientras se atiende el comando lleva su CommandId como
         // causa. Un messageId que no es un UUID no puede ser CommandId: el comando se rechaza.
         if (!Guid.TryParse(command.MessageId, out var commandGuid))
         {
-            return CommandAck.Fail(command.MessageId, "messageId no es un identificador válido");
+            return new CommandAck(command.MessageId, "error", "messageId no es un identificador válido",
+                RuntimeCommandOutcome.Rejected());
         }
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
@@ -431,7 +433,8 @@ public sealed class OmniServer : IOmniClient
             return StartActRun(command, fields);
         }
 
-        return CommandAck.Fail(command.MessageId, "comando desconocido en M1");
+        return new CommandAck(command.MessageId, "error", "comando desconocido o payload inválido",
+            RuntimeCommandOutcome.Rejected());
     }
 
     /// <summary>

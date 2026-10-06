@@ -17,6 +17,7 @@ public sealed class EventStreamFailedWriteCausationTests
         var stream = new EventStream(store, EventCodecs.Create(), session);
         var run = TestRun.Open(stream, session);
         var previous = store.ReadFrom(session, 1).Last();
+        using var cause = CausationScope.Begin(new EventCausation(previous.EventId));
         var count = stream.WrittenPayloads.Count;
         var payload = new ModelEscalationRequested(run.RunId, "a", "b", EscalationCause.ManualRequest);
         store.FailNextWrite = true;
@@ -45,6 +46,7 @@ public sealed class EventStreamFailedWriteCausationTests
         var stream = new EventStream(store, EventCodecs.Create(), session);
         var run = TestRun.Open(stream, session);
         var previous = store.ReadFrom(session, 1).Last();
+        using var cause = CausationScope.Begin(new EventCausation(previous.EventId));
         var count = stream.WrittenPayloads.Count;
         var payload = new ModelEscalationRequested(run.RunId, "a", "b", EscalationCause.ManualRequest);
         Assert.Throws<InvalidOperationException>(() => stream.AppendBatch(
@@ -73,24 +75,25 @@ public sealed class EventStreamFailedWriteCausationTests
     }
 
     [Fact]
-    public void Successful_atomic_batch_preserves_its_internal_chain_and_publishes_only_the_committed_tail()
+    public void Successful_atomic_batch_preserves_explicit_cause_and_does_not_publish_an_implicit_tail()
     {
         var store = new InMemoryEventStore();
         var session = SessionId.New();
         var stream = new EventStream(store, EventCodecs.Create(), session);
         var run = TestRun.Open(stream, session);
         var previous = store.ReadFrom(session, 1).Last();
-        stream.AppendBatch(new DomainEventPayload[]
-        {
-            new ModelEscalationRequested(run.RunId, "a", "b", EscalationCause.ManualRequest),
-            new ModelEscalationApproved(run.RunId, "b", "test"),
-        }, DurabilityClass.Standard);
+        using (CausationScope.Begin(new EventCausation(previous.EventId)))
+            stream.AppendBatch(new DomainEventPayload[]
+            {
+                new ModelEscalationRequested(run.RunId, "a", "b", EscalationCause.ManualRequest),
+                new ModelEscalationApproved(run.RunId, "b", "test"),
+            }, DurabilityClass.Standard);
         stream.Append(new ModelEscalationCompleted(run.RunId, "b"));
         var written = store.ReadFrom(session, previous.Sequence + 1);
         Assert.Equal(3, written.Count);
         Assert.Equal(previous.EventId, Assert.IsType<EventCausation>(written[0].Causation).EventId);
-        Assert.Equal(written[0].EventId, Assert.IsType<EventCausation>(written[1].Causation).EventId);
-        Assert.Equal(written[1].EventId, Assert.IsType<EventCausation>(written[2].Causation).EventId);
+        Assert.Equal(previous.EventId, Assert.IsType<EventCausation>(written[1].Causation).EventId);
+        Assert.Null(written[2].Causation);
     }
 
     private sealed record InvalidVersionPayload : DomainEventPayload
