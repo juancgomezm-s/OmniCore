@@ -419,9 +419,11 @@ public sealed class InvalidStepUsageBudgetRegressionTests
     {
         UsageCounter.Input => new TokenUsage(value, 0, 0, 0, 0),
         UsageCounter.Output => new TokenUsage(0, value, 0, 0, 0),
-        UsageCounter.CacheRead => new TokenUsage(0, 0, value, 0, 0),
-        UsageCounter.CacheWrite => new TokenUsage(0, 0, 0, value, 0),
-        UsageCounter.Reasoning => new TokenUsage(0, 0, 0, 0, value),
+        // Auxiliaries are included in their aggregate; these fixtures must reach arithmetic,
+        // not fail the consistency guard before the second invocation.
+        UsageCounter.CacheRead => new TokenUsage(value, 0, value, 0, 0),
+        UsageCounter.CacheWrite => new TokenUsage(value, 0, 0, value, 0),
+        UsageCounter.Reasoning => new TokenUsage(0, value, 0, 0, value),
         _ => throw new ArgumentOutOfRangeException(nameof(counter)),
     };
 

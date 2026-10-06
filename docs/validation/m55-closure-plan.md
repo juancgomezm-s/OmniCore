@@ -1,11 +1,22 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 20:44 UTC / 14:44 America/Mexico_City.
+Actualizado 2026-10-06 20:58 UTC / 14:58 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
 ## Instrucciones vigentes del objetivo
+
+Reanudación reiterada por el usuario: cerrar M5 con Luna gpt-6-luna HIGH y avanzar
+M5.5 con paquetes independientes GLM5.3/NVIDIA, Nemotron/OpenRouter y DeepSeek/NVIDIA.
+`get_goal` volvió a confirmar ACTIVE a las 20:56:53 UTC. No se reemplaza el objetivo
+inconcluso: la API disponible no admite editar su texto. Esta sección conserva las
+instrucciones nuevas; no se reactiva la automatización histórica con plazo vencido.
+Luna retomó la auditoría de consumidores de traits no medidos y confidence Quick;
+ownership de solo lectura/propuesta externa, sin builds ni edits del repo. Root
+conserva implementación, integración y verificación. Externos2017 ya terminaron:
+GLM/Deep sin entrega y Nem propuesta rechazada. Se requieren paquetes nuevos
+disjuntos y validación de catálogo/ownership, no repetir los fallidos a ciegas.
 
 El usuario pidió actualizar el objetivo y reanudarlo el 2026-10-06. `get_goal`
 confirmó `active` a las 20:37 UTC: la pausa de producto ya fue revocada. El texto
@@ -47,6 +58,14 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- Uso reportado coherente M5/M5.5: validator compartido Domain, cualificación,
+  ejecución/lecturas de gasto, reporter de sesión y productor meta. Contradicciones
+  reportadas no autorizan herramientas/coste/resumen de compactación; uso/máscara
+  crudos preservados, Unknown/null sin datos inventados. RED reales12 runtime/Host,
+  6 reporter y3 meta; focal final403PASS2.275s, full2174=2170PASS0FAIL4SKIPsymlink
+  105.726s/exit0, arquitectura56PASS0.642s/build0/0. Luna propone controles/root
+  audita, implementa y verifica; no auth/factura real ni cierre por conteo.
+  [Contrato y evidencia](m5-reported-usage-consistency-20261006.md).
 - M5 identidad de endpoint: control normal Host/HTTP loopback/SQLite/CAS exige diez
   requests a B override, cero a A configurado, key/perfil/evidencia B y Get A vacío.
   Luna HIGH fixture/root auditoría, corrección CS0136 y timeout privado; focal final
@@ -61,8 +80,8 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   arquitectura56PASS0.652s/build0/0; full conjunta con endpoint2126=2122PASS0FAIL
   4SKIPsymlink104.637s/exit0. Recompilación fresca tras CS0136 corregido en fixture.
   [Contrato y reproducción](m5-unknown-attempt-bound-20261006.md).
-  Auditoría también halló subset tokens reportados incoherentes
-  aceptados: próxima regresión M5, no regla de suma de caché inventada.
+  Auditoría también halló subset tokens reportados incoherentes; corregido en el
+  bloque de uso coherente arriba, sin regla de suma de caché inventada.
 - Auditoría adicional root: cualificación normal llama ConnectProvider sin pasar
   subscription; factory exige subscription para perfil codex. No prueba que falte
   login del usuario; queda pendiente verificar wiring de la sesión ya conectada,

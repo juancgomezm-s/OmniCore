@@ -460,9 +460,13 @@ public sealed record ModelPricing(decimal? InputPricePerMillionUsd, decimal? Out
     public bool IsComplete => InputPricePerMillionUsd is not null && OutputPricePerMillionUsd is not null;
 
     public decimal? CostUsd(TokenUsage usage)
+        => CostUsd(usage, TokenUsageFields.Input | TokenUsageFields.Output);
+
+    /// <summary>Quotes aggregate prices only for consistent reported quantities; never an account debit.</summary>
+    public decimal? CostUsd(TokenUsage usage, TokenUsageFields reportedFields)
     {
-        if (!IsComplete || usage.Input < 0 || usage.Output < 0 || usage.CacheRead < 0
-            || usage.CacheWrite < 0 || usage.Reasoning < 0) return null;
+        if (!IsComplete || !reportedFields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
+            || TokenUsageValidation.IsInvalid(usage, reportedFields)) return null;
         try
         {
             return usage.Input / 1_000_000m * InputPricePerMillionUsd!.Value
