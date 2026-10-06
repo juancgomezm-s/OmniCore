@@ -6,14 +6,19 @@ assembly Host; la cualificación conserva exactamente su formato previo. El comp
 `runtime.build` incluye además el nombre y la versión informativa reportados por el assembly.
 No interpreta una versión informativa como un commit confirmado.
 
-Componentes v1, JSON escrito explícitamente y SHA-256:
+Componentes versionados, JSON escrito explícitamente y SHA-256 (v1 salvo donde se indica):
 
 - `model.descriptor`: descriptor real y selección, incluidos modelo lógico, RouteId,
   presupuesto, modo de herramientas y solicitud de razonamiento.
 - `model.profile`: perfil efectivo, formatos/modalidades y traits ordenados por nombre.
 - `model.harness`: valores efectivos de la política resuelta.
 - `context.policy`: política de materialización, presupuesto y tokenizer utilizado.
-- `provider.adapter`: digest de la identidad física de la ruta (endpoint/protocolo/perfil/modelo).
+- `provider.adapter` v2: digest de la ruta física canónica y del tipo concreto/versión-MVID
+  del assembly de la instancia IModelProvider ya conectada. La CLI pasa esa instancia;
+  no deduce el adapter a partir de la familia ni crea una segunda conexión.
+  Sin instancia, providerType/providerBuild son null explícitos, no una identidad inventada.
+  Un wrapper futuro identificaría su tipo exterior; no se inspeccionan campos privados
+  ni se afirma identificar un adapter interior. No se serializa el objeto del provider.
 - `runtime.build`: metadatos reales del assembly.
 - `tools.plan`: las herramientas realmente visibles tras el filtro del harness/boundary,
   en su orden efectivo; nombres → ToolId, hash del schema, descripción, Source completo,
@@ -55,6 +60,29 @@ Un resume que desborda contexto abandona el Turn una vez, sin duplicar TurnStart
 No se sobrescriben eventos y no se introduce scheduler ni revisión de config por ModelStep.
 
 ## Evidencia reproducible
+
+### Identidad del adapter real
+
+- `provider-identity-red-build.log`: build sin warnings/errores con la representación
+  anterior de provider.adapter y las cuatro pruebas nuevas.
+- `provider-identity-red-test.log`: 9 casos = 5 PASS/4 FAIL, 0.182s; la ruta sola no
+  distinguía tipos de adapter ni instancia ausente de conocida.
+- `provider-identity-focal.log`: 103 casos = 102 PASS/1 FAIL; el control CLI existente
+  esperaba el digest v1. Se actualizó a comprobar exactamente metadata v2 del adapter
+  OpenAiChatCompatibleProvider real, incluyendo su assembly Models, sin omitir el hash.
+- `provider-identity-final-build.log`: 0 warnings/0 errores.
+- `provider-identity-final-focal.log`: 103 PASS/0 FAIL/0 SKIP, 7.614s.
+  Incluye la CLI real con HTTP loopback, journal/codec, GC y los tres controles de replay
+  legacy posteriores a la última suite completa. No acredita una consulta autenticada.
+- `provider-identity-full.log`: 1933 casos = 1929 PASS/0 FAIL/4 SKIP por permisos
+  symlink, 268.052s, exit0. Incluye los tres tests de replay legacy de599a22d y cuatro
+  nuevos tests del adapter. No incluye el paquete posterior de snapshot de cualificación.
+
+La nueva representación cambia el fingerprint; un Turn abierto con metadata anterior
+  y fingerprint no-null se rechaza por el guard de drift existente. No se reescribe su
+  TurnStarted ni se simula compatibilidad. Legacy sin fingerprint conserva su tratamiento.
+La cualificación y sus claves no cambian en este bloque. CAS explicable y revisión
+  de cualificación siguen pendientes; este avance no completa ADR-0017 ni cierra M5.5.
 
 ### Protección de GC ante JSON ajeno
 

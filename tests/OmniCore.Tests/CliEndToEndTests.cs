@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
 using OmniCore.Client;
@@ -11,6 +12,7 @@ using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
+using OmniCore.Models;
 using OmniCore.Security;
 using Task = System.Threading.Tasks.Task;
 
@@ -57,8 +59,20 @@ public sealed class CliEndToEndTests
                 turn.Fingerprint.Components.Select(component => component.Name));
             Assert.NotEqual("core-tools-1", turn.Fingerprint.ToolkitHash);
             var adapter = Assert.Single(turn.Fingerprint.Components, component => component.Name == "provider.adapter");
+            Assert.Equal("2", adapter.Version);
+            using var adapterMetadata = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(adapterMetadata))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("route");
+                using (var routeJson = JsonDocument.Parse(expected.CanonicalJson()))
+                    routeJson.RootElement.WriteTo(writer);
+                writer.WriteString("providerType", typeof(OpenAiChatCompatibleProvider).FullName);
+                writer.WriteString("providerBuild", RuntimeBuildIdentity.ForAssembly(typeof(OpenAiChatCompatibleProvider).Assembly));
+                writer.WriteEndObject();
+            }
             Assert.Equal(ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(
-                Encoding.UTF8.GetBytes(expected.CanonicalJson())))), adapter.Hash);
+                adapterMetadata.ToArray()))), adapter.Hash);
             Assert.All(turn.Fingerprint.Components, component => Assert.Null(component.Content));
         });
     }
