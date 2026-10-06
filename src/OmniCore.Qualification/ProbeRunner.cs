@@ -12,6 +12,7 @@ using OmniCore.Domain;
 public sealed class ProbeRunner
 {
     private readonly IModelProvider _provider;
+    private readonly Func<TokenUsage, decimal?>? _quoteCost;
 
     public TimeSpan PerProbeTimeout { get; }
 
@@ -20,8 +21,15 @@ public sealed class ProbeRunner
     public ProbeRunner(IModelProvider provider) : this(provider, DefaultPerProbeTimeout) { }
 
     public ProbeRunner(IModelProvider provider, TimeSpan perProbeTimeout)
+        : this(provider, perProbeTimeout, null) { }
+
+    /// <summary>Uses explicit prices only when input and output are reported;
+    /// null means unavailable. This does not establish a pre-call spending bound.</summary>
+    public ProbeRunner(IModelProvider provider, TimeSpan perProbeTimeout,
+        Func<TokenUsage, decimal?>? quoteCost)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+        _quoteCost = quoteCost;
         if (perProbeTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(perProbeTimeout), "PerProbeTimeout debe ser positivo");
@@ -67,7 +75,7 @@ public sealed class ProbeRunner
             if (cancellationToken.IsCancellationRequested)
             {
                 results.Add(new ProbeResult(r.Probe.Id, ProbeStatus.NotRun, 0.0, null,
-                    "cancelado antes de ejecutar el probe", TimeSpan.Zero, 0m));
+                    "cancelado antes de ejecutar el probe", TimeSpan.Zero, null));
                 continue;
             }
             results.Add(await RunProbeAsync(r, cancellationToken));
@@ -111,21 +119,38 @@ public sealed class ProbeRunner
         catch (Exception ex)
         {
             sw.Stop();
-            return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null, ex.Message, sw.Elapsed, 0m);
+            return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null, ex.Message, sw.Elapsed,
+                Cost(response), response?.Usage, response?.ReportedUsageFields ?? TokenUsageFields.None);
         }
         sw.Stop();
 
         if (response is null)
         {
             return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
-                failureMessage ?? "el provider no devolvió una respuesta completa", sw.Elapsed, 0m);
+                failureMessage ?? "el provider no devolvió una respuesta completa", sw.Elapsed, null);
         }
 
         var text = ProbeScorer.ExtractText(response);
         var score = ProbeScorer.Score(request.Probe.Kind, text, request.Probe.Expected);
         var passed = score >= 1.0;
         return new ProbeResult(request.Probe.Id, passed ? ProbeStatus.Passed : ProbeStatus.Failed,
-            score, text, null, sw.Elapsed, 0m);
+            score, text, null, sw.Elapsed, Cost(response), response.Usage, response.ReportedUsageFields);
+    }
+
+    private decimal? Cost(ModelResponse? response)
+    {
+        var required = TokenUsageFields.Input | TokenUsageFields.Output;
+        if (response is null || _quoteCost is null
+            || (response.ReportedUsageFields & required) != required
+            || response.Usage.Input < 0 || response.Usage.Output < 0
+            || response.Usage.CacheRead < 0 || response.Usage.CacheWrite < 0
+            || response.Usage.Reasoning < 0) return null;
+        try
+        {
+            var cost = _quoteCost(response.Usage);
+            return cost is >= 0m ? cost : null;
+        }
+        catch (OverflowException) { return null; }
     }
 
     private static ModelRequest ToModelRequest(ProbeRequest request)

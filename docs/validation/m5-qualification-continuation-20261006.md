@@ -53,8 +53,8 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 El MaxCostUsd=0 de los probes es una declaración de fixture, no prueba que una ruta
 sea gratuita. El Host todavía no deriva una cota pagada de pricing y límites de
-tokens efectivamente enviados. ProbeRunner informa coste cero sin cotizar el usage
-de la respuesta: corregir esa representación y su persistencia sigue pendiente.
+tokens efectivamente enviados. El bloque de evidencia de coste de abajo corrige la
+representación cero ficticio; la persistencia completa de resultados sigue pendiente.
 BillingMode Local/IncludedQuota/Unknown no se deduce del nombre del modelo ni del login.
 
 El helper TaskSetHash no acredita que BenchmarkIdentity y las respuestas completas
@@ -116,3 +116,62 @@ Repetición completa `atomic-full-repeat.log`: 1998 casos = 1994 PASS/0 FAIL/
 4 SKIP por permisos symlink, 112.034s, exit0. No incluye los nuevos tests de coste
 desconocido. El fallo TLS inicial queda documentado: la repetición verde no demuestra
 que se haya corregido su causa intermitente. No se declara M5 cerrado.
+
+## Evidencia de uso y coste de probes
+
+`ProbeResult.CostUsd` y `QualificationProbeOutcome.CostUsd` ahora son `decimal?`:
+null significa desconocido, no cero. Es un cambio de tipo público que requiere
+recompilar consumidores; no se afirma compatibilidad binaria del getter anterior.
+Se conservan estado, puntuación, salida y duración. Los topes declarados y el
+consentimiento previo no se sustituyen por el coste observado después de la llamada.
+
+El runner conserva `TokenUsage` junto con `ReportedUsageFields` de ModelResponse.
+Sin respuesta completa, sin tarifas o sin Input y Output reportados, el coste queda
+null. Una respuesta puntuable incorrecta conserva uso y coste igual que una correcta.
+Uso negativo, cotización negativa o desbordamiento no se convierten en cero.
+NotRun tampoco acredita una medición de coste. No se infiere tarifa de la cuenta,
+nombre de modelo, login ni BillingMode IncludedQuota/Local.
+
+En el Host normal se reutiliza LoadedUserConfiguration.Pricing(modelId): precios
+de modelo por encima de los del provider. Un registryOverride de fixture no aporta
+tarifas. El resultado es uso reportado multiplicado por tarifas configuradas en USD,
+no un débito autenticado, factura ni saldo de cuenta. Input ya incluye caché y Output
+razonamiento: no se suman otra vez. Cero sólo es calculable con datos reportados y
+tarifas explícitas que produzcan cero. Tarifas incompletas mantienen null.
+
+La fachada añade `QualificationProbeUsage` con contadores primitivos nullable;
+solo los campos reportados tienen valor, los ausentes quedan null. La CLI muestra
+«coste desconocido» o «cost unavailable» cuando no hay cotización, sin añadir USD
+a ese marcador. Importes disponibles conservan el formato monetario con USD.
+
+Luna entregó las pruebas RED offline y la integración CLI bilingüe sobre HTTP
+loopback del adapter real; root corrigió fixtures de compilación, reprodujo RED y
+añadió controles de máscaras parciales, precio cero explícito, tarifa parcial,
+desbordamiento, cotización inválida y puntuación fallida. Logs previos de compilación
+preservados (Task ambiguo y analizador xUnit2002); no acreditan defectos productivos.
+RED real `usage-evidence-red-test.log`: 4 FAIL/0 PASS, 0.143s por coste0 informado.
+Primera verificación `usage-fixed-focal.log`: 138 PASS/0 FAIL/0 SKIP, 1.574s,
+build sin warnings/errores. Aún no incluye la integración de tarifas configuradas
+posterior ni reemplaza la suite completa de esta revisión.
+
+Verificación final focal `usage-final-focal.log`: 156 PASS/0 FAIL/0 SKIP, 2.055s,
+con configuración privada de tarifas completas/parciales, Host normal y SQLite real.
+Incluye SpendPricingTests y no se suma a las focales anteriores. Arquitectura:
+`usage-architecture-test.log`, 56 PASS/0 FAIL/0 SKIP, 0.585s; ambos builds sin
+warnings/errores. La suite completa `usage-final-full.log` se verifica por separado.
+
+Suite completa final `usage-final-full.log`: 2018 casos = 2014 PASS/0 FAIL/
+4 SKIP por permisos Windows de symlink, 106.623s, proceso exit0. Incluye este bloque
+de uso/coste y todas sus pruebas. El fallo TLS intermitente de la ronda atómica
+anterior permanece documentado: esta ejecución verde no prueba su causa resuelta.
+
+Auditoría siguiente de Luna: store actual no conserva una referencia por revisión
+a resultados completos; ArtifactGc marca journal/refs, no raíces de user.db.
+Guardar una ref sin integrar retención/GC no cumpliría evidencia durable. ModelRequest
+no transmite seed ni temperatura y BenchmarkIdentity exige ambos; representarlos
+como cero sería una identidad falsa. Próximo bloque debe preservar esos valores
+como no proporcionados y verificar CAS/reapertura/retención y atomicidad de la ref.
+
+Los fixtures no acreditan consumo real o consultas autenticadas. Siguen pendientes
+las cotas monetarias pre-call derivadas de límites realmente enviados, el tratamiento
+de reintentos/errores sin usage, evidencia CAS completa y BenchmarkIdentity.
