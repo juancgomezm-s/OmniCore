@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 11:39 UTC / 05:39 America/Mexico_City.
+Actualizado 2026-10-06 11:48 UTC / 05:48 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -79,10 +79,13 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
    Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
-   Auditoría concreta: un nuevo ModelStepCompleted con CostUsd null puede continuar
-   dentro del mismo Ask porque el precheck sólo valida el historial inicial. Siguiente
-   regresión/fix: frenar antes de tools/nueva llamada cuando falta uso Input/Output,
-   conservando completion y flags reportados, sin asumir coste cero ni ofrecer allow_plus.
+   Corregido el bypass intraAsk: un nuevo ModelStepCompleted con CostUsd null por
+   falta de uso Input/Output detiene antes de tools/nueva llamada bajo tope monetario,
+   conserva completion/flags, no asume coste cero ni ofrece allow_plus. Cero medido
+   y uncapped conservan comportamiento; SQLite/CAS reopen mantiene coste desconocido
+   y bloquea nuevo gasto de otra sesión del mismo workspace, sin contaminar la original.
+   RED5casos1PASS4FAIL; focal45PASS; full1853=1849PASS/0FAIL/4SKIPsymlink212.612s,
+   exit0. [Contrato y evidencia](m55-budget-continuation.md).
    La reserva requiere también aplicar un límite de salida real a la request: Chat/Responses
    no fuerzan hoy el MaxOutputTokens del registry. No acreditar reserva con ese valor solo.
 3. Disponibilidad desde breaker y selección por RouteId implementadas (58ee5bc); full verde.

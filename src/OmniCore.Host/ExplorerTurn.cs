@@ -555,13 +555,18 @@ public sealed class ExplorerTurn
                     guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
                     if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
                     if (checkpointFailure is not null) throw checkpointFailure;
+                    // This invocation is already durable, but unreported usage cannot
+                    // authorize tools or another invocation within the same Ask. Checking
+                    // only the history loaded at entry would defer this guard until resume.
+                    if (budgeted && stepCost is null)
+                        throw new BudgetExceededException("uso del paso incompleto: no se puede hacer cumplir el tope");
                     if (budget.MaxCostUsd is not null
                         && persistedSpend.RunUsd + guard.CostUsd() > budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
                             new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
                     if (_enforceDefaultSpendCaps)
                     {
-                        var turnCost = _pricing!.CostUsd(usage) ?? 0m;
+                        var turnCost = guard.CostUsd();
                         ValidateSessionDaily(persistedSpend.SessionUsd + turnCost,
                             persistedSpend.DailyUsd + turnCost, sessionCap, dailyCap, today);
                     }
