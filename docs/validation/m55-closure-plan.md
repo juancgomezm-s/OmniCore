@@ -76,7 +76,11 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   o CAS inválido y lease síncrona contra GC prematuro. Nuevos ancestros/links
   permanecen Unknown; no restore M7. Focal147PASS/arquitectura56PASS, builds0/0.
   [Contrato y reproducción](m55-filesystem-preimage-20261006.md).
-  Atribución/expiración de cuestionarios tiene RED3 pendiente; M5.5 no cerrado.
+  M5.5 no cerrado.
+- Expiración/resolución de cuestionarios y terminales cancel/interrupt conservan
+  scope durable original, incluido ExecutionId, con causación del comando real.
+  RED3 cuestionarios/RED4 terminales; final96PASS/arquitectura56PASS, builds0/0.
+  [Corrección y reproducción](m55-interaction-terminal-attribution-20261006.md).
 
 - M5.5 ToolCallStarted v3: contrato init aditivo, reversibilidad Unknown por defecto,
   destino único de claims filesystem, ArtifactRef de preestado indexado en envelope,

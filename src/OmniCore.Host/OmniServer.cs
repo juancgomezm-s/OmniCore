@@ -1233,7 +1233,7 @@ public sealed class OmniServer : IOmniClient
                         var cancelled = fields.TryGetValue("cancelled", out var c) && c == "true";
                         var stream = new EventStream(_store, _codecs, session);
                         DomainEventPayload? transition = null;
-                        if (_lastRunId is { } activeRun
+                        if (questionnaire.SourceScope(stream, interaction)?.RunId is { } activeRun
                             && RunProjection.Replay(session, activeRun, _codecs, _store.ReadFrom(session, 1)).State
                                 == RunState.AwaitingInput)
                             transition = new UserInputReceived(activeRun, "[\"QuestionnaireResponse\"]", null,
