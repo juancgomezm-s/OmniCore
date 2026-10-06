@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 11:25 UTC / 05:25 America/Mexico_City.
+Actualizado 2026-10-06 11:39 UTC / 05:39 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -58,6 +58,10 @@ La CLI también compone herramientas visibles/prompt/revisión inicial del plan 
 guard de drift en el mismo Turn abierto y snapshots consistentes, focal89PASS.
 Faltan AgentProfile/skills efectivos y trazabilidad explicable completa; no se declara
 cerrado el fingerprint de M5.5. Full1834=1830PASS/0FAIL/4SKIPsymlink213.545s, exit0.
+GC ya distingue la forma completa conocida del fingerprint de JSON arbitrario
+`modelKey/components/hash`; conserva refs transitivas y aborta antes del sweep si faltan.
+RED2FAIL, focal44PASS; full1843=1839PASS/0FAIL/4SKIPsymlink213.513s, exit0.
+No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerprint.md).
 
 ## Cola de cierre (orden operativo)
 
@@ -75,6 +79,12 @@ cerrado el fingerprint de M5.5. Full1834=1830PASS/0FAIL/4SKIPsymlink213.545s, ex
    Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
+   Auditoría concreta: un nuevo ModelStepCompleted con CostUsd null puede continuar
+   dentro del mismo Ask porque el precheck sólo valida el historial inicial. Siguiente
+   regresión/fix: frenar antes de tools/nueva llamada cuando falta uso Input/Output,
+   conservando completion y flags reportados, sin asumir coste cero ni ofrecer allow_plus.
+   La reserva requiere también aplicar un límite de salida real a la request: Chat/Responses
+   no fuerzan hoy el MaxOutputTokens del registry. No acreditar reserva con ese valor solo.
 3. Disponibilidad desde breaker y selección por RouteId implementadas (58ee5bc); full verde.
    Afinidad del arnés TUI Init/Run reproducida (11 vs6), corregida en cd727e5;
    59 pruebas TUI verdes, con login20ciclos y resize en vivo.
