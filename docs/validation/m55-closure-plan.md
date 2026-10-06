@@ -74,6 +74,9 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    59 pruebas TUI verdes, con login20ciclos y resize en vivo.
    No equiparar fixes de fixtures con cierre de defectos del framework o producción.
 4. Steering explícito en fronteras de ModelStep y outcome de descarte.
+   Contratos v1 Received/Applied/Dropped y codecs añadidos; focal48PASS de
+   serialización/envelopes. [Alcance del contrato](m55-steering.md).
+   Cola, command de entrada y consumidor/replay aún pendientes; no cierre runtime.
 5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
    Reconciliación terminal multi-Run corregida: ids/cause de origen e idempotencia
    sobre outcomes de toda la sesión, no slice cronológico incompleto. RED reproducido,
