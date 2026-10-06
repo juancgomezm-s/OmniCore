@@ -56,6 +56,28 @@ No se sobrescriben eventos y no se introduce scheduler ni revisión de config po
 
 ## Evidencia reproducible
 
+### Protección de GC ante JSON ajeno
+
+La excepción para `FingerprintComponent.Hash` requiere la forma completa conocida
+de `ExecutionFingerprint`, campos escalares con sus tipos y componentes con nombre
+único, versión y SHA-256 válidos. `modelKey` por sí solo no identifica un fingerprint:
+JSON de tools/modelos también puede usar `components/hash` como referencias CAS.
+Formas incompletas, mal tipadas o duplicadas mantienen traversal conservador. `Content`
+se sigue recorriendo; si falta un blob referenciado, el mark aborta antes del sweep.
+La detección es estructural sobre el contrato conocido, no autenticación del JSON.
+
+- `gc-shape-red-test.log`: 2 casos/2 FAIL; borrado de una referencia transitiva y
+  ausencia de aborto ante un blob obligatorio que faltaba.
+- `gc-shape-final-build.log`: 0 warnings/0 errores.
+- `gc-shape-final-focal.log`: 44 PASS/0 FAIL/0 SKIP, 3.752s. Incluye referencias
+  desde journal y desde artifacts anidados, formas malformadas/duplicadas y controles
+  previos de fingerprint hash-only/Content. SQLite/CAS reales, payloads de fixture.
+- `gc-shape-full.log`: 1843 casos = 1839 PASS/0 FAIL/4 SKIP por permisos symlink,
+  213.513s, exit0. No incluye el paquete posterior de regresiones de presupuesto.
+
+Reproducción focal: el mismo runner de abajo con `-class '*MaintenanceTests'`
+`-class '*RuntimeFingerprintFactoryTests' -class '*CliEndToEndTests'`.
+
 Directorio: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
 - `runtime-fingerprint-focal.log`: 58 casos, 57 PASS/1 FAIL; CLI+GC descubre la

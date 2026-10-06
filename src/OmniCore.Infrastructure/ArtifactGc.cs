@@ -219,8 +219,7 @@ public sealed class ArtifactGc
                     value = property.Value.GetString();
             }
             if (algorithm == "sha256" && value is not null && IsSha256Hex(value)) hashes.Enqueue(value);
-            var isFingerprint = element.EnumerateObject().Any(property =>
-                property.Name.Equals("modelKey", StringComparison.OrdinalIgnoreCase));
+            var isFingerprint = IsExecutionFingerprint(element);
             foreach (var property in element.EnumerateObject())
             {
                 // A component Hash is a configuration digest, not a CAS reference. Its
@@ -238,6 +237,53 @@ public sealed class ArtifactGc
         }
         else if (element.ValueKind == System.Text.Json.JsonValueKind.Array)
             foreach (var item in element.EnumerateArray()) CollectContentHashes(item, hashes);
+    }
+
+    private static bool IsExecutionFingerprint(System.Text.Json.JsonElement element)
+    {
+        // Arbitrary tool/model JSON may also contain modelKey and components/hash.
+        // Only exempt digests when the complete known fingerprint contract is present;
+        // an ambiguous or malformed object keeps normal, fail-closed CAS traversal.
+        foreach (var name in new[] { "modelKey", "harnessPolicyHash", "toolkitHash", "tokenizerHash",
+                     "contextPolicyHash", "overridesHash", "build", "modelPolicyHash" })
+            if (!TryUniqueProperty(element, name, out var value)
+                || value.ValueKind != System.Text.Json.JsonValueKind.String) return false;
+        if (!TryUniqueProperty(element, "components", out var components)
+            || components.ValueKind != System.Text.Json.JsonValueKind.Array) return false;
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var component in components.EnumerateArray())
+        {
+            if (component.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !TryUniqueProperty(component, "name", out var name)
+                || name.ValueKind != System.Text.Json.JsonValueKind.String
+                || string.IsNullOrWhiteSpace(name.GetString()) || !names.Add(name.GetString()!)
+                || !TryUniqueProperty(component, "version", out var version)
+                || version.ValueKind != System.Text.Json.JsonValueKind.String
+                || !TryUniqueProperty(component, "hash", out var hash)
+                || hash.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !TryUniqueProperty(hash, "algorithm", out var algorithm)
+                || algorithm.ValueKind != System.Text.Json.JsonValueKind.String
+                || algorithm.GetString() != "sha256"
+                || !TryUniqueProperty(hash, "value", out var value)
+                || value.ValueKind != System.Text.Json.JsonValueKind.String
+                || value.GetString() is not { } digest || !IsSha256Hex(digest)) return false;
+        }
+        return true;
+    }
+
+    private static bool TryUniqueProperty(System.Text.Json.JsonElement element, string name,
+        out System.Text.Json.JsonElement value)
+    {
+        value = default;
+        var found = false;
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!property.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+            if (found) return false;
+            value = property.Value;
+            found = true;
+        }
+        return found;
     }
 
     private static bool IsSha256Hex(string value) => value.Length == 64

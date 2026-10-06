@@ -365,6 +365,87 @@ public sealed class MaintenanceTests
         }
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Gc_does_not_treat_arbitrary_model_components_as_fingerprint_digests(bool missing, bool nested)
+    {
+        using var fx = new Fixture();
+        var leaf = fx.StoreArtifact("nested component artifact retained through its parent");
+        var child = fx.StoreArtifact("{\"reference\":{\"algorithm\":\"sha256\",\"value\":\""
+            + leaf.Hash.Value + "\"}}");
+        if (missing) File.Delete(fx.BlobPath(child.Hash.Value));
+        var payload = "{\"modelKey\":\"not-an-execution-fingerprint\",\"components\":[{\"hash\":{"
+            + "\"algorithm\":\"sha256\",\"value\":\"" + child.Hash.Value + "\"}}]}";
+        var root = nested ? fx.StoreArtifact(payload) : null;
+        fx.AppendEvent(SessionId.New(), EventType.Of("fixture.references"), 1,
+            nested ? "{}" : payload, root is null ? null : new[] { root });
+        var orphan = fx.WriteOrphanBlob("unrelated orphan remains if marking fails", 48);
+        var gc = new ArtifactGc(fx.DataDir);
+
+        if (missing)
+        {
+            Assert.Throws<InvalidDataException>(() => gc.Sweep(fx.JournalPath, TimeSpan.Zero,
+                false, DateTimeOffset.UtcNow, CancellationToken.None));
+            Assert.True(File.Exists(orphan), "failed mark must never start the sweep");
+        }
+        else
+        {
+            var result = gc.Sweep(fx.JournalPath, TimeSpan.Zero, false,
+                DateTimeOffset.UtcNow, CancellationToken.None);
+            Assert.Equal(1, result.Deleted);
+            Assert.True(File.Exists(fx.BlobPath(child.Hash.Value)));
+            Assert.True(File.Exists(fx.BlobPath(leaf.Hash.Value)), "transitive reference must survive");
+            Assert.False(File.Exists(orphan));
+        }
+    }
+
+    [Theory]
+    [InlineData("missing-field")]
+    [InlineData("wrong-field-type")]
+    [InlineData("wrong-component-type")]
+    [InlineData("duplicate-component-name")]
+    [InlineData("duplicate-field")]
+    public void Gc_malformed_fingerprint_shapes_keep_normal_transitive_reference_traversal(string mutation)
+    {
+        using var fx = new Fixture();
+        var leaf = fx.StoreArtifact("reference below a malformed fingerprint-shaped object");
+        var child = fx.StoreArtifact("{\"algorithm\":\"sha256\",\"value\":\"" + leaf.Hash.Value + "\"}");
+        var fingerprint = new ExecutionFingerprint("model", "harness", "tools", "context", "none",
+            "build", "policy", "tokenizer", new[] { new FingerprintComponent("fixture.ref", "1", child.Hash) });
+        var payload = new TurnStarted(TurnId.New(), LaneId.New(), fingerprint);
+        var envelope = System.Text.Json.Nodes.JsonNode.Parse(fx.Codecs.CodecFor(payload.Type()).Encode(payload))!.AsObject();
+        var node = envelope.Single(pair => pair.Key.Equals("fingerprint", StringComparison.OrdinalIgnoreCase)).Value!.AsObject();
+        var modelKey = node.Single(pair => pair.Key.Equals("modelKey", StringComparison.OrdinalIgnoreCase)).Key;
+        var components = node.Single(pair => pair.Key.Equals("components", StringComparison.OrdinalIgnoreCase)).Value!.AsArray();
+        var component = components[0]!.AsObject();
+        switch (mutation)
+        {
+            case "missing-field":
+                node.Remove(node.Single(pair => pair.Key.Equals("build", StringComparison.OrdinalIgnoreCase)).Key);
+                break;
+            case "wrong-field-type": node[modelKey] = 123; break;
+            case "wrong-component-type":
+                component[component.Single(pair => pair.Key.Equals("version", StringComparison.OrdinalIgnoreCase)).Key] = 123;
+                break;
+            case "duplicate-component-name": components.Add(component.DeepClone()); break;
+        }
+        var json = node.ToJsonString();
+        if (mutation == "duplicate-field") json = json.Insert(1, "\"modelKey\":\"duplicate\",");
+        fx.AppendEvent(SessionId.New(), EventType.Of("fixture.references"), 1, json);
+        var orphan = fx.WriteOrphanBlob("malformed shape unrelated orphan", 48);
+
+        var result = new ArtifactGc(fx.DataDir).Sweep(fx.JournalPath, TimeSpan.Zero, false,
+            DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(1, result.Deleted);
+        Assert.True(File.Exists(fx.BlobPath(child.Hash.Value)));
+        Assert.True(File.Exists(fx.BlobPath(leaf.Hash.Value)));
+        Assert.False(File.Exists(orphan));
+    }
+
     // ------------------------------------------------------------------ fixture
 
     private sealed class Fixture : IDisposable
