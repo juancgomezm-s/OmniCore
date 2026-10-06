@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 12:58 UTC / 06:58 America/Mexico_City.
+Actualizado 2026-10-06 13:18 UTC / 07:18 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -61,6 +61,13 @@ ausencia de instancia se representa con null. RED9=5PASS4FAIL; focal103PASS/0FAI
 7.614s, con CLI HTTP loopback/journal real y controles de replay legacy. Build0warnings/errores.
 Full1933=1929PASS/0FAIL/4SKIPsymlink268.052s, exit0; snapshot posterior no incluido.
 La nueva representación no se migra sobre Turns abiertos: su guard de drift se conserva.
+model.profile v2 ahora incluye key hash/revisión/estado del mismo snapshot que aporta
+traits a la CLI; una solaGet, Traits(revisiónexacta), lookup endpoint efectivo. Sin
+evidencia utilizable, metadata null explícita. No altera keys ni cualifica proveedores.
+RED4FAIL; focal final89PASS/0FAIL/0SKIP6.141s, build0warnings/errores, SQLreopen real
+y CLI HTTPloopback con fixture de keyajena. Fullfinal1949=1945PASS/0FAIL/4SKIPsymlink
+266.837s, exit0; no incluye seis regresiones monetarias posteriores. Fallo de cleanup
+Windows de fixture previo documentado, no assertion debilitada ni ClearAllPools.
 Faltan AgentProfile/skills efectivos y trazabilidad explicable completa; no se declara
 cerrado el fingerprint de M5.5. Full1834=1830PASS/0FAIL/4SKIPsymlink213.545s, exit0.
 GC ya distingue la forma completa conocida del fingerprint de JSON arbitrario

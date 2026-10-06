@@ -10,7 +10,12 @@ Componentes versionados, JSON escrito explícitamente y SHA-256 (v1 salvo donde 
 
 - `model.descriptor`: descriptor real y selección, incluidos modelo lógico, RouteId,
   presupuesto, modo de herramientas y solicitud de razonamiento.
-- `model.profile`: perfil efectivo, formatos/modalidades y traits ordenados por nombre.
+- `model.profile` v2: perfil efectivo, formatos/modalidades y traits ordenados por nombre,
+  más qualificationKeyHash, qualificationRevision y qualificationState del MISMO
+  snapshot que aportó los traits. Sin evidencia utilizable, los tres campos son null;
+  no se interpreta como una medición de cero ni como prueba de que no existe otro perfil.
+  La revisión del estado es ProfileRevision (el contador que incrementa también MarkStale),
+  no un segundo contador inventado. La clave completa/CAS explicable sigue pendiente.
 - `model.harness`: valores efectivos de la política resuelta.
 - `context.policy`: política de materialización, presupuesto y tokenizer utilizado.
 - `provider.adapter` v2: digest de la ruta física canónica y del tipo concreto/versión-MVID
@@ -34,8 +39,8 @@ sin barrer cuando el blob falta. La retención conservadora de hashes del payloa
 
 Los fingerprints legacy sin componentes conservan su hash; las simulaciones no se
 presentan como configuración real del runtime. Este bloque **no cierra** el criterio
-completo: faltan AgentProfile/skills efectivos y la revisión/evidencia de cualificación
-explicable, así como otros componentes de ADR-0017 donde estén configurados. La CLI
+completo: faltan AgentProfile/skills efectivos y la evidencia de cualificación
+explicable en CAS, así como otros componentes de ADR-0017 donde estén configurados. La CLI
 ya reemplaza `core-tools-1` por el digest del plan de herramientas visible. La versión
 de Source es la declarada por el descriptor, no una versión de tool inventada.
 Los digests tampoco acreditan contenido CAS explicable cuando `Content` es null.
@@ -60,6 +65,47 @@ Un resume que desborda contexto abandona el Turn una vez, sin duplicar TurnStart
 No se sobrescriben eventos y no se introduce scheduler ni revisión de config por ModelStep.
 
 ## Evidencia reproducible
+
+### Snapshot de cualificación y ruta efectiva
+
+UsableSnapshot obtiene el perfil una vez y lee traits por esa revisión exacta. Sólo
+Qualified/Calibrated/Stale con traits aportan evidencia empírica, como antes; UsableTraits
+público conserva su copia mutable. El snapshot lleva una copia read-only; la CLI aplica
+sus traits y pasa la misma identidad al factory, sin un segundo Get. Si el store falla,
+se conserva el fallback heurístico y metadata null; cancelación no se convierte en fallback.
+No se modifica la semántica de QualificationKey ni se ejecuta una suite de cualificación.
+
+El lookup recibe el endpoint efectivo elegido por el turno. RouteFor ya considera
+OMNI_BASE_URL cuando falta override explícito; no se atribuye aquí un fallo previo de
+ese caso. Pasar route.Endpoint evita depender del entorno al usar una ruta restaurada.
+Los controles CLI siembran un perfil de fixture en User SQLite, cierran/reabren el store
+y comprueban el componente persistido en TurnStarted a través del HTTP loopback real:
+ruta normal, override con clave coincidente y override con clave ajena no aplicada.
+
+- `qualification-snapshot-build.log`: fallo de compilación del test por import Models
+  ausente; corregido sin cambiar la API pública ni las assertions.
+- `qualification-snapshot-focal.log`: 58 casos/57 PASS/1 FAIL; fixture de clave ajena
+  había usado el override del entorno al construir la clave. Se corrigió el endpoint
+  explícito de la clave sembrada, no la assertion de identidad del componente.
+- `qualification-fingerprint-red-test.log`: 4 casos/4 FAIL, 0.156s, con representación
+  anterior de model.profile recompilada. Metadatos ausentes no distinguen key/rev/state.
+- `qualification-final-focal.log`: 88 PASS/0 FAIL/0 SKIP, 6.057s.
+  Los tests de factory usan metadata sintética declarada; no prueban consumo ni auth.
+- `qualification-final-all-focal.log`: 89 casos/88 PASS/1 FAIL, 6.174s. El control
+  adicional SQLite pasó las assertions pero falló al borrar user.db retenido por pooling.
+  Cleanup corregido liberando sólo el pool de su base privada, nunca ClearAllPools.
+  El binario de este resultado no incluye aún esa corrección de cleanup.
+- `qualification-full.log`: 1949 casos, 1 FAIL/4 SKIP, 266.984s, exit1; corresponde
+  al binario anterior al fix de cleanup, no acredita el cambio final.
+- `qualification-cleanup-fixed-build.log`: 0 warnings/0 errores.
+- `qualification-cleanup-fixed-focal.log`: 89 PASS/0 FAIL/0 SKIP, 6.141s; incluye
+  la lectura SQLite de rev2, conservación de traits de rev1 y rechazo de otro endpoint.
+- `qualification-cleanup-fixed-full.log`: 1949 casos = 1945 PASS/0 FAIL/4 SKIP
+  por permisos symlink, 266.837s, exit0. Incluye este bloque completo; no incluye las
+  seis regresiones monetarias entregadas después de la compilación de este binario.
+
+La representación v2 cambia el fingerprint; el guard existente de drift se mantiene.
+Legacy sin fingerprint no se presenta como configuración validada. No se cierra M5.5.
 
 ### Identidad del adapter real
 

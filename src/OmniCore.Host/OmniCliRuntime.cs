@@ -527,12 +527,14 @@ public sealed class OmniCliRuntime
                 : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "",
                     string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
                         ? OmniHost.CreateChatGptAuth(paths) : null, _providerCircuits);
+            var qualification = EmpiricalQualification(modelDefinition, providerDescription,
+                act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken,
+                route.Endpoint);
             var effectiveProfile = new ModelProfileResolver().Resolve(
                 runtimeModel,
                 providerDescription,
                 overrides: null,
-                empiricalTraits: EmpiricalTraits(modelDefinition, providerDescription,
-                    act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken), route: route);
+                empiricalTraits: qualification?.Traits, route: route);
             var harness = new HarnessPolicyResolver().Resolve(effectiveProfile);
             var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
                 harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
@@ -581,7 +583,7 @@ public sealed class OmniCliRuntime
                 ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription));
             var fingerprint = RuntimeFingerprintFactory.Create(runtimeModel, effectiveProfile, harness,
                 selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value,
-                provider);
+                provider, qualification);
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
             {
@@ -1301,7 +1303,12 @@ public sealed class OmniCliRuntime
     /// queda en HeuristicDefaults (M2).
     /// </summary>
     private static IReadOnlyDictionary<string, double>? EmpiricalTraits(ModelDefinition? model,
-        ProviderDescriptor? provider, string? dataDirectoryOverride, CancellationToken cancellationToken)
+        ProviderDescriptor? provider, string? dataDirectoryOverride, CancellationToken cancellationToken) =>
+        EmpiricalQualification(model, provider, dataDirectoryOverride, cancellationToken)?.Traits;
+
+    private static ModelQualificationSnapshot? EmpiricalQualification(ModelDefinition? model,
+        ProviderDescriptor? provider, string? dataDirectoryOverride, CancellationToken cancellationToken,
+        string? endpointOverride = null)
     {
         if (model is null)
         {
@@ -1311,7 +1318,7 @@ public sealed class OmniCliRuntime
         try
         {
             using var store = OmniHost.CreateModelQualificationStore(dataDirectoryOverride);
-            return ModelQualificationHost.UsableTraits(store, model, provider, cancellationToken);
+            return ModelQualificationHost.UsableSnapshot(store, model, provider, cancellationToken, endpointOverride);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
