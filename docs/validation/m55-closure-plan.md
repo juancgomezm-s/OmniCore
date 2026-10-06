@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 19:32 UTC / 13:32 America/Mexico_City.
+Actualizado 2026-10-06 19:45 UTC / 13:45 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -37,6 +37,19 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- Reanudación confirmada: objetivo de producto ACTIVE a las19:44UTC. Se mantienen
+  M5 + M5.5 y preparación M6, Luna HIGH y paquetes externos autorizados; la
+  automatización nocturna histórica permanece pausada.
+- Raíces GC User: lector de todas las revisiones de evidencia, validación CAS antes
+  de sweep, conexiones read-only no pooled y scope User explícito en CLI. Luna aportó
+  nueve regresiones de raíces, seis de CLI, dos de sampling ausente y auditoría;
+  root integró, reprodujo RED8FAIL, corrigió producción y validó.
+  Full2067=2063PASS0FAIL4SKIPsymlink104.999s; focal291=290PASS0FAIL1SKIP9.128s;
+  arquitectura56PASS0.651s; builds0/0. Fixtures privados, no consumo autenticado.
+  BenchmarkIdentity acepta sampling nullable, con cambio público de getters documentado.
+  Pendiente writer/schema productivo y marcador durable: tabla ausente debe admitirse
+  solo como legado, no tras declarar instalada la capacidad de evidencia. El writer
+  debe retener lease entre Verify y commit de perfil/traits/ref. No cerrar M5 todavía.
 - M5 Stale: corregida pérdida de traits vigentes al avanzar revisión; read/guard/update/
   copia/cancellation en una transacción, checked-overflow e historial conservado.
   Upgrade one-shot de perfiles afectados sin medidas actuales y con medidas previas;
@@ -45,9 +58,7 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   y auditoría; root implementa, agrega upgrade/idempotencia, corrige fixtures y reproduce.
   RED inicial4FAIL + upgrade1FAIL; focal final222PASS2.275s, arquitectura56PASS0.653s;
   full2050=2046PASS0FAIL4SKIPsymlink106.160s, builds0warnings/errores.
-  CAS completo/ref histórica/GCUser siguen pendientes, no cerrar M5.
-  Luna prepara paquete test-only fuera del repo para raíces GC User por revisión;
-  no se cuenta como prueba ejecutada ni altera la suite actual.
+  CAS completo/ref histórica siguen pendientes, no cerrar M5; GC User verificado arriba.
 - M5 preflight: estimación configurada y consentimiento coherentes, rechazo de
   tarifas incompletas MeteredCurrency y sumas no representables antes del provider;
   Chat compatible serializa el límite exacto sin retirarlo ante error400.

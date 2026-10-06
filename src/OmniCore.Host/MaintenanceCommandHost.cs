@@ -103,12 +103,19 @@ public sealed class MaintenanceCommandHost
         var journalPath = Path.Combine(OmniHost.WorkspaceDataDirectory(paths, "."), "journal.db");
         var artifactsDir = (string?) null;
         var graceHours = (int?) null;
+        var scope = "workspace";
+        var explicitJournal = false;
         var dryRun = args.Any(a => a == "--dry-run");
         for (var i = 1; i < args.Length; i++)
         {
             if (args[i] == "--journal" && i + 1 < args.Length)
             {
+                explicitJournal = true;
                 journalPath = args[++i];
+            }
+            else if (args[i] == "--scope" && i + 1 < args.Length)
+            {
+                scope = args[++i].ToLowerInvariant();
             }
             else if (args[i] == "--artifacts" && i + 1 < args.Length)
             {
@@ -126,22 +133,38 @@ public sealed class MaintenanceCommandHost
             else
             {
                 console.WriteLine("omni gc: opción desconocida '" + args[i] + "'");
-                console.WriteLine("Uso: omni gc [--journal <ruta>] [--artifacts <dir>] [--grace-hours N] [--dry-run]");
+                console.WriteLine("Uso: omni gc [--scope workspace|user] [--journal <ruta> (workspace)] [--artifacts <dir>] [--grace-hours N] [--dry-run]");
                 return Task.FromResult(2);
             }
         }
 
-        if (!File.Exists(journalPath))
+        if (scope is not ("workspace" or "user") || (scope == "user" && explicitJournal))
+        {
+            console.WriteLine("omni gc: scope debe ser workspace o user; User no acepta --journal de workspace.");
+            return Task.FromResult(2);
+        }
+        if (scope == "workspace" && !File.Exists(journalPath))
         {
             console.WriteLine("omni gc: journal no encontrado: " + journalPath);
             return Task.FromResult(1);
         }
 
-        var artifactsRoot = artifactsDir ?? Path.GetDirectoryName(Path.GetFullPath(journalPath))!;
+        var artifactsRoot = artifactsDir ?? (scope == "user"
+            ? paths.DataDirectory : Path.GetDirectoryName(Path.GetFullPath(journalPath))!);
         var gc = new ArtifactGc(artifactsRoot);
-        var result = gc.Sweep(journalPath, graceHours is null
-            ? ArtifactGc.DefaultGrace
-            : TimeSpan.FromHours(graceHours.Value), dryRun, DateTimeOffset.Now, CancellationToken.None);
+        ArtifactGc.SweepResult result;
+        try
+        {
+            result = gc.Sweep(scope == "user" ? null : journalPath, graceHours is null
+                ? ArtifactGc.DefaultGrace
+                : TimeSpan.FromHours(graceHours.Value), dryRun, DateTimeOffset.UtcNow, CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            console.WriteLine("omni gc: error: " + exception.Message);
+            return Task.FromResult(1);
+        }
+        if (scope == "user") console.WriteLine("Scope: User");
         console.WriteLine(result.SummaryLine());
         if (dryRun && result.Deleted > 0)
         {

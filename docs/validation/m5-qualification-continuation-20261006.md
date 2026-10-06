@@ -303,3 +303,54 @@ artifact User con outputs/score/usage/máscaras/coste nullable y BenchmarkIdenti
 ref por revisión en la misma tx perfil/traits, Verify bajo exclusión de GC hasta commit,
 raíces GC user.db para todo el historial, y parámetros seed/temperatura no enviados
 expresados como ausentes (no cero). Una ref sin estas raíces no cerraría M5.
+
+## Raíces CAS User y sampling ausente — 2026-10-06
+
+Prerrequisito de evidencia durable: ArtifactGc lee todas las filas/revisiones de
+`model_qualification_evidence` en el `user.db` del mismo directorio del CAS, además
+del journal opcional. Campos mínimos del lector: artifact_algorithm exacto sha256,
+artifact_hash hexadecimal minúsculo de64 y artifact_size entero no negativo.
+Cada blob debe verificar hash y tamaño; se recorre también su grafo de referencias CAS.
+Referencia ausente, corrupta, malformada, algoritmo/size incorrectos o DB ilegible
+abortan el mark antes de todo sweep. DB antigua sin tabla se admite, sin inventar raíces.
+Las consultas son read-only y sin pooling: no retienen handles de DB del usuario
+ni limpian pools ajenos. La exclusión ArtifactStoreLease cubre mark y sweep.
+
+`omni gc --scope user [--artifacts <directorio-CAS>] [--grace-hours N] [--dry-run]`
+usa el CAS de User por defecto (paths.DataDirectory) y no depende de journal de workspace.
+Un --journal explícito con User se rechaza con exit2 para no mezclar namespaces.
+Workspace sigue siendo el scope predeterminado y conserva --journal/--artifacts.
+Error de validación/IO devuelve exit1; solo un mark completo permite borrar huérfanos.
+Un error durante el sweep no promete rollback de borrados anteriores.
+No se ejecutó GC contra los datos reales del usuario: todos los borrados fueron fixtures GUID.
+
+Luna escribió nueve casos de raíces fuera del repo; root auditó e integró el paquete,
+reprodujo `user-cas-gc-red-test.log`: 9 = 1 PASS/8 FAIL, 0.368s, build0/0.
+Primer focal tras implementación tuvo9 fallos de cleanup por pools read-only retenidos,
+no se rebajaron assertions: las conexiones productivas son ahora no pooled.
+Luna añadió seis casos del comando Host real: dry/live e historia, missing/corrupt root,
+combinación de scopes inválida y control workspace. Root corrigió alias Task en el fixture;
+el build fallido de cinco errores ambiguos está conservado y no es defecto productivo.
+Focal `user-cas-gc-cli-focal.log`: 291 casos, 290 PASS/0 FAIL/1 SKIP,
+9.128s; la omisión es de permisos symlink. Build0warnings/errores.
+Full `user-cas-gc-final-full.log`: 2067 casos, 2063 PASS/0 FAIL/4 SKIP symlink,
+104.999s, exit0. Arquitectura56PASS0.651s, build0/0. Cifras solapadas, no sumables.
+
+BenchmarkIdentity conserva constructor int/double para valores explícitos y agrega
+overload nullable: Seed int?, Temperature double?. Ausencia no se representa como0;
+la presencia tampoco acredita que el proveedor lo recibiera. Luna aportó dos controles
+de cero/ausencia/temperatura conocida. Los getters cambian tipo CLR: consumidores
+deben revisar/recompilar; no se afirma compatibilidad binaria. No se cambió ModelRequest
+ni se envió sampling nuevo. El próximo artifact registrará seed/temperature null y
+samplingParametersSent=false porque el request actual no los envía.
+
+La tabla usada en estas pruebas es un fixture de columnas mínimas, no la implementación
+del store de evidencia. Falta crear su schema productivo y writer atómico perfil/traits/ref,
+Verify bajo lease hasta commit, ref histórica de Stale y JSON completo/identidad real.
+GC roots y nullable sampling por sí solos no cierran M5 ni acreditan gasto/autenticación.
+
+Auditoría Luna readonly: el orden lease/mark/verify/sweep y los rechazos de scope
+son correctos. La ausencia de tabla se tolera como legado; el schema productivo
+debe añadir un marcador durable para rechazar una tabla borrada tras instalar evidencia.
+Un override User de CAS compartido con workspace no incluye raíces de sus journals:
+no usar este comando para un namespace compartido; no se acredita soporte de ese caso.

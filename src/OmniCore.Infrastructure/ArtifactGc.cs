@@ -10,6 +10,8 @@ using OmniCore.Domain;
 /// la columna artifacts del envelope (formato Parts <c>id|alg|hash;...</c>) más cualquier hash
 /// hexadecimal que aparezca en el payload JSON (superaproximación deliberada: si el payload no
 /// decodifica por corrupción, sus refs siguen vivas — nunca se borra algo recuperable).
+/// También marca todas las revisiones de model_qualification_evidence en el user.db del
+/// mismo directorio del CAS. Una referencia User inválida aborta todo el sweep.
 /// </para>
 /// <para>
 /// <b>Sweep:</b> se borran los blobs fuera del conjunto vivo con una antigüedad mayor al periodo
@@ -61,10 +63,10 @@ public sealed class ArtifactGc
     }
 
     /// <summary>
-    /// Marca el conjunto vivo leyendo el journal (read-only) y barre el store. El reloj se
+    /// Marca el conjunto vivo leyendo raíces User y un journal opcional (read-only), y barre el store. El reloj se
     /// recibe explícito (<paramref name="now"/>) para tests deterministas.
     /// </summary>
-    public SweepResult Sweep(string journalPath, TimeSpan grace, bool dryRun, DateTimeOffset now,
+    public SweepResult Sweep(string? journalPath, TimeSpan grace, bool dryRun, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         // Exclusive OS lease prevents a concurrent CAS write from being swept between its
@@ -76,54 +78,59 @@ public sealed class ArtifactGc
     }
 
     /// <summary>Conjunto vivo: hashes del envelope + hashes que aparecen en el payload JSON.</summary>
-    private HashSet<string> MarkLive(string journalPath, CancellationToken cancellationToken)
+    private HashSet<string> MarkLive(string? journalPath, CancellationToken cancellationToken)
     {
         var live = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var referencedBlobs = new Queue<string>();
-        if (!File.Exists(journalPath))
+        MarkUserQualificationEvidence(live, referencedBlobs, cancellationToken);
+        if (File.Exists(journalPath))
         {
-            return live;
-        }
-
-        using var conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!
-            .CreateDataSource("DataSource=" + journalPath + ";Mode=ReadOnly")!.OpenConnection()!;
-        var cmd = conn.CreateCommand()!;
-        cmd.CommandText = "SELECT artifacts, payload FROM events";
-        var reader = cmd.ExecuteReader()!;
-        foreach (System.Data.Common.DbDataRecord row in reader)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var envelope = AsText(row.GetValue(0));
-            if (envelope is not null && envelope.Length > 0)
+            var journalConnectionString = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
             {
-                foreach (var part in SplitUnescaped(envelope, ';'))
+                DataSource = journalPath!,
+                Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ToString();
+            using var conn = new Microsoft.Data.Sqlite.SqliteConnection(journalConnectionString);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT artifacts, payload FROM events";
+            using var reader = cmd.ExecuteReader();
+            foreach (System.Data.Common.DbDataRecord row in reader)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var envelope = AsText(row.GetValue(0));
+                if (envelope is not null && envelope.Length > 0)
                 {
-                    if (part.Length == 0) continue;
-                    var fields = SplitUnescaped(part, '|');
-                    // Formatos respaldados por el writer: anterior (3 campos) y actual (8 campos).
-                    if ((fields.Count == 3 || fields.Count == 8) && fields[1] == "sha256" && IsSha256Hex(fields[2]))
+                    foreach (var part in SplitUnescaped(envelope, ';'))
                     {
-                        live.Add(fields[2]);
-                        referencedBlobs.Enqueue(fields[2]);
+                        if (part.Length == 0) continue;
+                        var fields = SplitUnescaped(part, '|');
+                        // Formatos respaldados por el writer: anterior (3 campos) y actual (8 campos).
+                        if ((fields.Count == 3 || fields.Count == 8) && fields[1] == "sha256" && IsSha256Hex(fields[2]))
+                        {
+                            live.Add(fields[2]);
+                            referencedBlobs.Enqueue(fields[2]);
+                        }
                     }
                 }
-            }
 
-            var payload = AsText(row.GetValue(1));
-            if (payload is not null)
-            {
-                // Superaproximación: cualquier hash hexadecimal del payload cuenta como vivo.
-                foreach (Match match in HexHash.Matches(payload))
-                    live.Add(match.Value);
-                try
+                var payload = AsText(row.GetValue(1));
+                if (payload is not null)
                 {
-                    using var json = System.Text.Json.JsonDocument.Parse(payload);
-                    CollectContentHashes(json.RootElement, referencedBlobs);
-                }
-                catch (System.Text.Json.JsonException)
-                {
-                    // Unparseable payload: retain every hex hash found above; never derive
-                    // additional references from ambiguous text.
+                    // Superaproximación: cualquier hash hexadecimal del payload cuenta como vivo.
+                    foreach (Match match in HexHash.Matches(payload))
+                        live.Add(match.Value);
+                    try
+                    {
+                        using var json = System.Text.Json.JsonDocument.Parse(payload);
+                        CollectContentHashes(json.RootElement, referencedBlobs);
+                    }
+                    catch (System.Text.Json.JsonException)
+                    {
+                        // Unparseable payload: retain every hex hash found above; never derive
+                        // additional references from ambiguous text.
+                    }
                 }
             }
         }
@@ -153,6 +160,53 @@ public sealed class ArtifactGc
         }
 
         return live;
+    }
+
+    private void MarkUserQualificationEvidence(HashSet<string> live, Queue<string> references,
+        CancellationToken cancellationToken)
+    {
+        var database = Path.Combine(_dataDirectory, "user.db");
+        if (!File.Exists(database)) return;
+        if ((File.GetAttributes(database) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("GC no puede leer raíces User a través de un enlace.");
+        try
+        {
+            var connectionString = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            {
+                DataSource = database,
+                Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ToString();
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection(connectionString);
+            connection.Open();
+            using (var schema = connection.CreateCommand())
+            {
+                schema.CommandText = "SELECT type FROM sqlite_master WHERE name = 'model_qualification_evidence' COLLATE NOCASE";
+                var type = schema.ExecuteScalar();
+                if (type is null) return; // Older databases have no qualification evidence roots.
+                if (!Equals(type, "table"))
+                    throw new InvalidDataException("GC: el registro de evidencia User no es una tabla.");
+            }
+            using var command = connection.CreateCommand();
+            // Historical revisions are roots too, not just the currently selected profile.
+            command.CommandText = "SELECT artifact_algorithm, artifact_hash, artifact_size FROM model_qualification_evidence";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (reader.GetValue(0) is not string algorithm || algorithm != "sha256"
+                    || reader.GetValue(1) is not string hash || !IsSha256Hex(hash)
+                    || reader.GetValue(2) is not long size || size < 0
+                    || !_artifactStore.Verify(ContentHash.Sha256(hash), size))
+                    throw new InvalidDataException("GC no puede completar el mark: referencia de cualificación User inválida. No se barre ningún blob.");
+                live.Add(hash);
+                references.Enqueue(hash);
+            }
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException exception)
+        {
+            throw new InvalidDataException("GC no puede completar el mark de evidencia User. No se barre ningún blob.", exception);
+        }
     }
 
     private SweepResult SweepBlobs(HashSet<string> live, TimeSpan grace, bool dryRun, DateTimeOffset now,
