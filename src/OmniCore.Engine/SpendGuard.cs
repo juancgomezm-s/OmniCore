@@ -80,8 +80,11 @@ public sealed class BudgetExceededException : InvalidOperationException
 {
     public string Detail { get; }
 
-    public BudgetExceededException(string detail)
+    public BudgetContinuationOffer? Continuation { get; }
+
+    public BudgetExceededException(string detail, BudgetContinuationOffer? continuation = null)
     {
         Detail = detail;
+        Continuation = continuation;
     }
 }

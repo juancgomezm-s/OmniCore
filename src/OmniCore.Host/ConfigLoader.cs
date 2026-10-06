@@ -18,9 +18,10 @@ public sealed class ConfigLoader
     public ModelRegistry BuildRegistry(string? providersYaml, string? modelsYaml) =>
         Load(providersYaml, modelsYaml).Registry;
 
-    public LoadedUserConfiguration Load(string? providersYaml, string? modelsYaml)
+    public LoadedUserConfiguration Load(string? providersYaml, string? modelsYaml, string? settingsYaml = null)
     {
         var diagnostics = new List<ConfigDiagnostic>();
+        ParseSettings(settingsYaml, diagnostics);
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
             new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth",
                 "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
@@ -30,6 +31,7 @@ public sealed class ConfigLoader
         ValidateRequiredAndRanges(providerNodes, modelNodes, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
 
+        var settings = Deserialize<UserSettingsYaml>(settingsYaml, "settings.yaml", diagnostics);
         var providerFile = CreateProvidersFile(providerNodes);
         var modelFile = Deserialize<ModelsFileYaml>(modelsYaml, "models.yaml", diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
@@ -79,7 +81,53 @@ public sealed class ConfigLoader
         var notices = providerFile?.Providers?.Values.Any(provider => provider.Auth is not null) == true
             ? new[] { LocalizedText.Of("config.legacyAuthDeprecated") }
             : Array.Empty<LocalizedText>();
-        return new LoadedUserConfiguration(registry, providerFile, modelFile, notices);
+        return new LoadedUserConfiguration(registry, providerFile, modelFile, notices, settings);
+    }
+
+    private static YamlMappingNode? ParseSettings(string? yaml, List<ConfigDiagnostic> diagnostics)
+    {
+        if (string.IsNullOrWhiteSpace(yaml)) return null;
+        try
+        {
+            var stream = new YamlStream();
+            stream.Load(new Parser(new StringReader(yaml)));
+            if (stream.Documents.Count != 1 || stream.Documents[0].RootNode is not YamlMappingNode root)
+            {
+                Add(diagnostics, "settings.yaml", "$", "config.expectedMapping");
+                return null;
+            }
+
+            CheckKeys(root, "settings.yaml", "$", ["budget"], diagnostics);
+            if (!root.Children.TryGetValue(new YamlScalarNode("budget"), out var budgetNode)) return root;
+            if (budgetNode is not YamlMappingNode budget)
+            {
+                AddAtNode(diagnostics, "settings.yaml", "budget", "config.wrongType", budgetNode);
+                return root;
+            }
+
+            CheckKeys(budget, "settings.yaml", "budget", ["session", "daily"], diagnostics);
+            foreach (var key in new[] { "session", "daily" })
+            {
+                if (!budget.Children.TryGetValue(new YamlScalarNode(key), out var node)) continue;
+                var scalar = node as YamlScalarNode;
+                if (scalar is null || scalar.Style != ScalarStyle.Plain || scalar.Value is null
+                    || !decimal.TryParse(scalar.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+                {
+                    AddAtNode(diagnostics, "settings.yaml", "budget." + key, "config.wrongType", node);
+                }
+                else if (value < 0m)
+                {
+                    AddAtNode(diagnostics, "settings.yaml", "budget." + key, "config.outOfRange", node);
+                }
+            }
+            return root;
+        }
+        catch (YamlException ex)
+        {
+            Add(diagnostics, "settings.yaml", "$", "config.yamlSyntax", checked((int)ex.Start.Line + 1),
+                checked((int)ex.Start.Column + 1));
+            return null;
+        }
     }
 
     private static YamlMappingNode? ParseRoot(string? yaml, string file, string rootKey,
@@ -394,8 +442,12 @@ public sealed record ModelPricing(decimal? InputPricePerMillionUsd, decimal? Out
 }
 
 public sealed record LoadedUserConfiguration(ModelRegistry Registry, ProvidersFileYaml? Providers,
-    ModelsFileYaml? Models, IReadOnlyList<LocalizedText>? DeprecationNotices = null)
+    ModelsFileYaml? Models, IReadOnlyList<LocalizedText>? DeprecationNotices = null,
+    UserSettingsYaml? Settings = null)
 {
+    public decimal SessionCapUsd => Settings?.Budget?.Session ?? 5m;
+    public decimal DailyCapUsd => Settings?.Budget?.Daily ?? 20m;
+
     public string? ProviderKind(string providerId) => Providers?.Providers?.TryGetValue(providerId, out var provider) == true
         ? provider.Kind : null;
 

@@ -352,8 +352,10 @@ public sealed class OmniHost
     {
         var providersPath = Path.Combine(configDirectory, "providers.yaml");
         var modelsPath = Path.Combine(configDirectory, "models.yaml");
+        var settingsPath = Path.Combine(configDirectory, "settings.yaml");
         return new ConfigLoader().Load(File.Exists(providersPath) ? File.ReadAllText(providersPath) : null,
-            File.Exists(modelsPath) ? File.ReadAllText(modelsPath) : null);
+            File.Exists(modelsPath) ? File.ReadAllText(modelsPath) : null,
+            File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null);
     }
 
     /// <summary>

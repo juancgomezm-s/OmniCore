@@ -521,6 +521,7 @@ public sealed class OmniCliRuntime
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
                 server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
                 loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey,
+                sessionCapUsd: loaded.SessionCapUsd, dailyCapUsd: loaded.DailyCapUsd,
                 questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                 metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
             var instruction = TurnInstruction(executingAct);
@@ -606,6 +607,7 @@ public sealed class OmniCliRuntime
                         server.AcquireStore(), server.AcquireCodecs(), artifacts, audit,
                         new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
                         providerDescription?.Auth.Kind == AuthKind.ApiKey,
+                        sessionCapUsd: loaded.SessionCapUsd, dailyCapUsd: loaded.DailyCapUsd,
                         questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                         metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
                     var approvedState = ReadWorkingState(server, cancellationToken);

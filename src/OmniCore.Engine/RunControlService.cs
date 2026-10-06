@@ -203,6 +203,30 @@ public sealed class RunControlService
             throw new InvalidInteractionOptionException(interaction, optionId);
         }
 
+        if (request.Kind == InteractionKind.BudgetExceeded && optionId == "allow_plus")
+        {
+            var offer = BudgetContinuation.Offer(request)
+                ?? throw new InvalidInteractionOptionException(interaction, optionId);
+            var run = ActiveRun(session);
+            if (offer.Scope == "run" && run?.ToString() != offer.RunId)
+                throw new InvalidInteractionOptionException(interaction, optionId);
+            var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            if (offer.Scope == "daily" && offer.Day != today)
+                throw new InvalidInteractionOptionException(interaction, optionId);
+            IEnumerable<DomainEvent> consentEvents = events;
+            if (offer.Scope == "daily")
+            {
+                if (_store is not IWorkspaceJournalReader workspaceJournal)
+                    throw new InvalidInteractionOptionException(interaction, optionId);
+                consentEvents = workspaceJournal.ReadEvents(EventType.Of("interaction.requested"))
+                    .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.resolved")))
+                    .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.expired")));
+            }
+            if (BudgetContinuation.Limit(consentEvents, _codecs, session, run ?? RunId.New(),
+                    today, offer.Scope, offer.BaselineUsd) != offer.CurrentUsd)
+                throw new InvalidInteractionOptionException(interaction, optionId);
+        }
+
         var batch = new List<DomainEventPayload> { new InteractionResolved(interaction, optionId, InteractionCause.User) };
         if (request.Kind == InteractionKind.ReconciliationConflict)
         {

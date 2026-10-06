@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OmniCore User settings.yaml",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session": { "type": "number", "minimum": 0, "default": 5 },
+        "daily": { "type": "number", "minimum": 0, "default": 20 }
+      }
+    }
+  }
+}

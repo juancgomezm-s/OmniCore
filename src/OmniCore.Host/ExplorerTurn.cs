@@ -365,7 +365,27 @@ public sealed class ExplorerTurn
         var turnUsage = ReadTurnModelStepUsage(stream, turnId);
 
         var budget = ReadRunBudget(stream, runId);
-        var guard = new SpendGuard(budget);
+        var configuredRunCap = budget.MaxCostUsd;
+        var sessionCap = BudgetContinuation.Limit(stream.EventsSince(1), _codecs, sessionId, runId,
+            today, "session", _sessionCapUsd);
+        var dailyCap = _dailyCapUsd;
+        if (_enforceDefaultSpendCaps && _store is IWorkspaceJournalReader workspaceJournal)
+        {
+            try
+            {
+            dailyCap = BudgetContinuation.Limit(workspaceJournal.ReadEvents(EventType.Of("interaction.requested"))
+                .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.resolved")))
+                .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.expired"))), _codecs,
+                sessionId, runId, today, "daily", _dailyCapUsd);
+            }
+            catch (Exception) { dailyCap = _dailyCapUsd; } // No evidence means no increase.
+        }
+        if (configuredRunCap is not null)
+            budget = budget with { MaxCostUsd = BudgetContinuation.Limit(stream.EventsSince(1), _codecs,
+                sessionId, runId, today, "run", configuredRunCap.Value) };
+        // Host enforces monetary limits against replayed + current usage; the guard owns
+        // token/turn/tool limits, not a second monetary counter that omits persisted spend.
+        var guard = new SpendGuard(budget with { MaxCostUsd = null });
         var steps = 1;
         var started = false;
 
@@ -450,11 +470,14 @@ public sealed class ExplorerTurn
                     var accumulatedDailyCost = persistedSpend.DailyUsd + guard.CostUsd();
                     if (budget.MaxCostUsd is not null && accumulatedRunCost >= budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run alcanzado ($"
-                            + budget.MaxCostUsd.Value + ")");
-                    if (_enforceDefaultSpendCaps && accumulatedSessionCost >= _sessionCapUsd)
-                        throw new BudgetExceededException("límite de sesión alcanzado ($" + _sessionCapUsd + ")");
-                    if (_enforceDefaultSpendCaps && accumulatedDailyCost >= _dailyCapUsd)
-                        throw new BudgetExceededException("límite diario alcanzado ($" + _dailyCapUsd + ")");
+                            + budget.MaxCostUsd.Value + ")", new("run", configuredRunCap!.Value,
+                                budget.MaxCostUsd.Value, runId.ToString(), null));
+                    if (_enforceDefaultSpendCaps && accumulatedSessionCost >= sessionCap)
+                        throw new BudgetExceededException("límite de sesión alcanzado ($" + sessionCap + ")",
+                            new("session", _sessionCapUsd, sessionCap, null, null));
+                    if (_enforceDefaultSpendCaps && accumulatedDailyCost >= dailyCap)
+                        throw new BudgetExceededException("límite diario alcanzado ($" + dailyCap + ")",
+                            new("daily", _dailyCapUsd, dailyCap, null, today));
 
                     var stepIndex = nextModelStepIndex++;
                     stream.Append(new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
@@ -497,17 +520,18 @@ public sealed class ExplorerTurn
                     if (checkpointFailure is not null) throw checkpointFailure;
                     if (budget.MaxCostUsd is not null
                         && persistedSpend.RunUsd + guard.CostUsd() > budget.MaxCostUsd.Value)
-                        throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")");
+                        throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
+                            new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
                     if (_enforceDefaultSpendCaps)
                     {
                         var turnCost = _pricing!.CostUsd(usage) ?? 0m;
                         ValidateSessionDaily(persistedSpend.SessionUsd + turnCost,
-                            persistedSpend.DailyUsd + turnCost);
+                            persistedSpend.DailyUsd + turnCost, sessionCap, dailyCap, today);
                     }
                 }
                 catch (BudgetExceededException budgetEx)
                 {
-                    EmitBudgetExceeded(stream, turnId, budgetEx.Detail);
+                    EmitBudgetExceeded(stream, turnId, budgetEx.Detail, budgetEx.Continuation);
                     stop = StopReason.Cancelled;
                     finalText = "Presupuesto agotado: " + budgetEx.Detail;
                     break;
@@ -1171,12 +1195,14 @@ public sealed class ExplorerTurn
     /// con las opciones canónicas: deny = Detener, allow_plus = Continuar hasta +N.
     /// Se emite UNA sola vez por exceso (el listener del turno corta; no se re-emite).
     /// </summary>
-    private void EmitBudgetExceeded(EventStream stream, TurnId turnId, string detail)
+    private void EmitBudgetExceeded(EventStream stream, TurnId turnId, string detail,
+        BudgetContinuationOffer? offer = null)
     {
         var interactionId = InteractionId.New();
         stream.Append(new InteractionRequested(interactionId, InteractionKind.BudgetExceeded,
-            "{\"detail\":\"" + detail + "\"}",
-            "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_plus\",\"intent\":\"allow_plus\",\"value\":10}]",
+            BudgetContinuation.Context(detail, offer),
+            offer is null ? "[{\"id\":\"deny\",\"intent\":\"deny\"}]"
+                : "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_plus\",\"intent\":\"allow_plus\",\"value\":10}]",
             "deny", null, null, null, null, 0, 1));
     }
 
@@ -1184,12 +1210,15 @@ public sealed class ExplorerTurn
     /// Acumula costo de sesión/día (ADR-0037 §7: 5/20 USD). SOLO lanza al superar el tope:
     /// la emisión de la interacción la hace el catch del turno (evita la doble emisión).
     /// </summary>
-    private void ValidateSessionDaily(decimal totalSessionCost, decimal totalDailyCost)
+    private void ValidateSessionDaily(decimal totalSessionCost, decimal totalDailyCost,
+        decimal sessionCap, decimal dailyCap, string today)
     {
-        if (totalSessionCost > _sessionCapUsd)
-            throw new OmniCore.Engine.BudgetExceededException("límite de sesión ($" + _sessionCapUsd + ")");
-        if (totalDailyCost > _dailyCapUsd)
-            throw new OmniCore.Engine.BudgetExceededException("límite diario ($" + _dailyCapUsd + ")");
+        if (totalSessionCost > sessionCap)
+            throw new BudgetExceededException("límite de sesión ($" + sessionCap + ")",
+                new("session", _sessionCapUsd, sessionCap, null, null));
+        if (totalDailyCost > dailyCap)
+            throw new BudgetExceededException("límite diario ($" + dailyCap + ")",
+                new("daily", _dailyCapUsd, dailyCap, null, today));
     }
 
     /// <summary>Renderiza el snapshot materializado como texto para el system prompt.</summary>
