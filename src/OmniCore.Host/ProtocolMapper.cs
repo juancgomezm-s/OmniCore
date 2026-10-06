@@ -47,6 +47,11 @@ public sealed class ProtocolMapper
                 parts.Add(JsonObj.Field("runId", evt.CorrelationId.ToString()));
             }
 
+            if (evt.Source is not null)
+            {
+                parts.Add(JsonObj.Field("source", _redaction.Redact(evt.Source)));
+            }
+
             parts.AddRange(fields.Select(kv => JsonObj.Field(kv.Key, kv.Value)));
             result.Add(WireEnvelope.Event(evt.EventId.ToString(), "{" + string.Join(",", parts) + "}"));
         }

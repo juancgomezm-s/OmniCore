@@ -42,6 +42,10 @@ public sealed class DomainEvent
     /// <summary>Execution instance ambient at append time, when attributed (ADR-0046 §4).</summary>
     public ExecutionId? ExecutionId { get; }
 
+    /// <summary>Known journal writer identity; null for unattributed legacy envelopes.
+    /// Not an upstream actor, provider, account, or trust assertion (ADR-0046 §4).</summary>
+    public string? Source { get; }
+
     /// <summary>Referencias explícitas para indexar sin parsear el payload (ADR-0001 §3).</summary>
     public IReadOnlyList<ArtifactRef> ArtifactRefs { get; }
 
@@ -65,7 +69,8 @@ public sealed class DomainEvent
         ToolCallId? toolCallId,
         ExecutionId? executionId,
         IReadOnlyList<ArtifactRef> artifactRefs,
-        string payloadJson)
+        string payloadJson,
+        string? source)
     {
         EventId = eventId;
         SessionId = sessionId;
@@ -84,6 +89,7 @@ public sealed class DomainEvent
         ExecutionId = executionId;
         ArtifactRefs = artifactRefs;
         PayloadJson = payloadJson;
+        Source = source;
     }
 
     /// <summary>Crea un evento ya persistible. La secuencia la asigna el escritor (ADR-0002 §1).</summary>
@@ -101,7 +107,8 @@ public sealed class DomainEvent
         ToolCallId? toolCallId,
         IReadOnlyList<ArtifactRef> artifactRefs,
         string payloadJson,
-        ExecutionId? executionId = null) =>
+        ExecutionId? executionId = null,
+        string? source = null) =>
         new(
             EventId.New(),
             sessionId,
@@ -119,7 +126,8 @@ public sealed class DomainEvent
             toolCallId,
             executionId,
             artifactRefs,
-            payloadJson);
+            payloadJson,
+            source);
 
     /// <summary>Reconstruye un evento persistido con su secuencia asignada.</summary>
     public static DomainEvent Stored(
@@ -139,7 +147,8 @@ public sealed class DomainEvent
         ToolCallId? toolCallId,
         IReadOnlyList<ArtifactRef> artifactRefs,
         string payloadJson,
-        ExecutionId? executionId = null) =>
+        ExecutionId? executionId = null,
+        string? source = null) =>
         new(
             eventId,
             sessionId,
@@ -157,5 +166,6 @@ public sealed class DomainEvent
             toolCallId,
             executionId,
             artifactRefs,
-            payloadJson);
+            payloadJson,
+            source);
 }
