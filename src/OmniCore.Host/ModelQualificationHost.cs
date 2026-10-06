@@ -327,6 +327,11 @@ public sealed partial class ModelQualificationHost : IDisposable
         }
         // Envoltorio de los errores tipados del módulo: el CLI solo ve excepciones de Host.
 
+        // The runner can return NotRun after caller cancellation between probes, or
+        // finish its last response after cancellation. Preserve cancellation before
+        // interpreting statuses or publishing evidence that cannot be committed.
+        cancellationToken.ThrowIfCancellationRequested();
+
         var failures = new List<string>();
         foreach (var result in results)
         {
@@ -353,6 +358,7 @@ public sealed partial class ModelQualificationHost : IDisposable
 
         var expectedRevision = existing?.ProfileRevision ?? 0;
         var nextRevision = checked(expectedRevision + 1);
+        cancellationToken.ThrowIfCancellationRequested();
         var evidence = new FileArtifactStore(_paths.DataDirectory).PutText(
             QualificationEvidenceJson(key, nextRevision, options, suiteComplete, probes, results, traits,
                 estimatedCost, estimateSource, generationAttempts), "application/vnd.omnicore.model-qualification+json",
