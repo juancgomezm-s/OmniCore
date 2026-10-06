@@ -601,9 +601,21 @@ public sealed class OmniServer : IOmniClient
         }
 
         var workspace = fields.TryGetValue("workspace", out var w) ? w : null;
-        var workspacePath = workspace is null || workspace!.Length == 0
-            ? Path.GetFullPath(".")
-            : Path.GetFullPath(workspace!);
+        string workspacePath;
+        try
+        {
+            workspacePath = workspace is null || workspace!.Length == 0
+                ? Path.GetFullPath(".")
+                : Path.GetFullPath(workspace!);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException
+            or IOException or UnauthorizedAccessException)
+        {
+            // Path admission precedes all journal writes. Do not leak the supplied path
+            // or mistake an invalid request for an indeterminate committed command.
+            return new CommandAck(command.MessageId, "error", "Workspace inválido para act.",
+                RuntimeCommandOutcome.Rejected());
+        }
         return StartRunAct(command, objective!, workspacePath);
     }
 
@@ -1748,7 +1760,15 @@ public sealed class OmniServer : IOmniClient
         }
         _lastSessionId = session;
         var created = persisted.Select(_codecs.Decode).OfType<RunCreated>().LastOrDefault();
-        if (created is not null) _lastRunId = created.RunId;
+        if (created is not null)
+        {
+            if (!Equals(_lastRunId, created.RunId))
+            {
+                _lastSnapshot = null;
+                _lastWorkingStateText = "";
+            }
+            _lastRunId = created.RunId;
+        }
         return new CommandAck(command.MessageId, "error", error, RuntimeCommandOutcome.Accepted(),
             persisted.Min(evt => evt.Sequence), persisted.Max(evt => evt.Sequence));
     }

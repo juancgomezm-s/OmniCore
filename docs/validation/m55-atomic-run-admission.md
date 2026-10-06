@@ -39,6 +39,36 @@ Si el propio journal no puede consultarse para confirmar, se conserva la regla
 del [bloque anterior](m55-command-causal-ranges.md): Deferred con razón explícita,
 sin rango inventado ni afirmar cero efectos. No hay retry automático.
 
+## Patologías de admisión y selección en la misma sesión
+
+La canonicalización del path de `act` está dentro de su frontera de admisión.
+Un workspace sintácticamente inválido (incluido NUL en JSON) devuelve Rejected/error,
+sin rango ni escrituras, preservando la Session/Run anterior. No incluye el path
+ni el mensaje de excepción en el error público. No captura como Rejected fallos
+ocurridos después del commit: la inicialización durable conserva su propia frontera.
+
+Si `session.input` en una sesión con Run terminal confirma otro Run y después falla
+el append separado de UserInputReceived, queda Accepted/error con el rango real del
+Run admitido. Al seleccionar un Run diferente se invalidan snapshot y working state
+anteriores incluso dentro de la misma Session. No se inventa un snapshot nuevo ni un
+UserInputReceived que no se persistió. RunCreated conserva el objetivo enviado; este
+caso **no** promete atomicidad de creación del Run y append del mensaje, ni autoriza
+retry automático ante Accepted/error.
+
+Evidencia adicional (fixtures offline, no proveedor autenticado):
+
+- `command-admission-boundary-red-test.log`: primer intento 3 FAIL; dos excepciones
+  de path reproducidas y fixture de inyección inicialmente con nombre de evento incorrecto.
+- `command-admission-boundary-red-corrected-test.log`: 3 FAIL verdaderos; type derivado
+  del payload real y comprobación de que la inyección fue consumida. El tercero revela
+  `runState=M2:35` del Run anterior donde debería no haber snapshot seleccionado.
+- `command-admission-boundary-fixed-build.log`: 0 warnings/0 errores.
+- `command-admission-boundary-fixed-focal.log`: 57 PASS/0 FAIL/0 SKIP, 3.640s.
+- `command-admission-boundary-full.log`: 1826 casos = 1822 PASS/0 FAIL/4 SKIP por
+  permisos symlink, 209.921s, exit0; incluye las tres regresiones nuevas.
+
+Repro focal: `dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*CommandAdmissionBoundaryRegressionTests'`.
+
 ## Evidencia reproducible
 
 Logs en `C:\Users\juanc\.codex\omni-m55-three-20261006`:
