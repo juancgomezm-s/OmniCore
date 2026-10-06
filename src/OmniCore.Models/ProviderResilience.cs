@@ -15,7 +15,8 @@ internal sealed class ProviderResilience
     private readonly object _breakerLock = new();
     private int _consecutiveFailures;
     private DateTimeOffset? _openUntil;
-    private bool _halfOpenProbe;
+    private long? _activeProbe;
+    private long _nextProbe;
 
     public ProviderResilience(OpenAiProviderOptions options, string providerKey)
     {
@@ -25,17 +26,39 @@ internal sealed class ProviderResilience
         _providerKey = providerKey;
     }
 
-    public void EnterCircuit()
+    public long? EnterCircuit()
     {
         lock (_breakerLock)
         {
-            if (_openUntil is null) return;
+            if (_openUntil is null) return null;
             if (_options.UtcNow() < _openUntil.Value)
                 throw new ModelProviderException("ProviderUnavailable", "Circuit breaker abierto para " + _providerKey + ".");
-            if (_halfOpenProbe)
+            if (_activeProbe is not null)
                 throw new ModelProviderException("ProviderUnavailable", "Circuit breaker en prueba para " + _providerKey + ".");
-            _halfOpenProbe = true;
+            var probe = ++_nextProbe;
+            _activeProbe = probe;
+            return probe;
         }
+    }
+
+    public ProviderCircuitSnapshot Snapshot()
+    {
+        lock (_breakerLock)
+        {
+            var measuredAt = _options.UtcNow();
+            var probeInFlight = _activeProbe is not null;
+            var canAttempt = _openUntil is null
+                || measuredAt >= _openUntil.Value && !probeInFlight;
+            return new ProviderCircuitSnapshot(measuredAt, _openUntil, probeInFlight, canAttempt);
+        }
+    }
+
+    /// <summary>Releases a reserved half-open probe that was canceled before a result was observed.</summary>
+    public void AbandonProbe(long? probe)
+    {
+        if (probe is null) return;
+        lock (_breakerLock)
+            if (_activeProbe == probe) _activeProbe = null;
     }
 
     public void MarkSuccess()
@@ -44,7 +67,7 @@ internal sealed class ProviderResilience
         {
             _consecutiveFailures = 0;
             _openUntil = null;
-            _halfOpenProbe = false;
+            _activeProbe = null;
         }
     }
 
@@ -52,7 +75,7 @@ internal sealed class ProviderResilience
     {
         lock (_breakerLock)
         {
-            _halfOpenProbe = false;
+            _activeProbe = null;
             _consecutiveFailures++;
             if (_consecutiveFailures >= _options.CircuitFailureThreshold)
                 _openUntil = _options.UtcNow() + _options.CircuitCooldown;

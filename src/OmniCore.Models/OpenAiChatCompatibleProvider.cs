@@ -21,6 +21,7 @@ public sealed class OpenAiProviderOptions
     public Func<TimeSpan, CancellationToken, ValueTask> DelayAsync { get; init; } = TaskDelay;
     public Func<DateTimeOffset> UtcNow { get; init; } = static () => DateTimeOffset.UtcNow;
     public Func<double> Jitter { get; init; } = static () => Random.Shared.NextDouble();
+    public ProviderResilienceCatalog? CircuitCatalog { get; init; }
 
     private static ValueTask TaskDelay(TimeSpan delay, CancellationToken cancellationToken) =>
         new(System.Threading.Tasks.Task.Delay(delay, cancellationToken));
@@ -58,7 +59,8 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         _httpFactory = httpFactory;
         _options = options ?? new OpenAiProviderOptions();
         ProviderKey = providerKey ?? descriptor.Id;
-        _resilience = new ProviderResilience(_options, ProviderKey);
+        _resilience = _options.CircuitCatalog?.Acquire(ProviderKey, _options)
+            ?? new ProviderResilience(_options, ProviderKey);
     }
 
     public string ProviderKey { get; }
@@ -81,8 +83,18 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        _resilience.EnterCircuit();
-        var (response, http) = await SendWithRetryAsync(BuildBody(request), cancellationToken).ConfigureAwait(false);
+        var halfOpenProbe = _resilience.EnterCircuit();
+        HttpResponseMessage response;
+        HttpClient http;
+        try
+        {
+            (response, http) = await SendWithRetryAsync(BuildBody(request), cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            _resilience.AbandonProbe(halfOpenProbe);
+            throw;
+        }
         var completed = false;
         try
         {
@@ -98,7 +110,11 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
         {
             response.Dispose();
             http.Dispose();
-            if (!completed && !cancellationToken.IsCancellationRequested) _resilience.MarkFailure();
+            if (!completed)
+            {
+                if (cancellationToken.IsCancellationRequested) _resilience.AbandonProbe(halfOpenProbe);
+                else _resilience.MarkFailure();
+            }
         }
     }
 
