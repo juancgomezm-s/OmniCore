@@ -346,7 +346,7 @@ public sealed class ModelQualificationHost : IDisposable
             : ToolCallFormat.PromptedJson;
         var route = ModelRoutingHost.RouteFor(model, provider, endpointOverride);
         var assembly = typeof(ModelQualificationHost).Assembly;
-        var build = runtimeBuildOverride ?? assembly.GetName().Version + "/" + assembly.ManifestModule.ModuleVersionId.ToString("D");
+        var build = runtimeBuildOverride ?? RuntimeBuildIdentity.ForAssembly(assembly);
         return new ModelQualificationKey(model.ProviderId, model.Id, null, null, Array.Empty<string>(),
             null, null, null, provider?.Profile ?? "default", format, ToolMode.Direct, "v1",
             route.Endpoint, route.Protocol.ToString(), build);

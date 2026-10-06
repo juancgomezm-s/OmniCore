@@ -319,6 +319,52 @@ public sealed class MaintenanceTests
         Assert.Equal(2026, at.Year);
     }
 
+    [Fact]
+    public void Gc_does_not_require_a_blob_for_hash_only_fingerprint_components()
+    {
+        using var fx = new Fixture();
+        var fingerprint = new ExecutionFingerprint("model", "harness", "tools", "context", "none",
+            "build", "policy", "tokenizer", new[]
+            {
+                new FingerprintComponent("runtime.build", "1", ContentHash.Sha256(new string('a', 64)))
+            });
+        var payload = new TurnStarted(TurnId.New(), LaneId.New(), fingerprint);
+        fx.AppendEvent(SessionId.New(), payload.Type(), payload.SchemaVersion(),
+            fx.Codecs.CodecFor(payload.Type()).Encode(payload));
+        var result = new ArtifactGc(fx.DataDir).Sweep(fx.JournalPath, TimeSpan.Zero,
+            dryRun: true, DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.Equal(0, result.Deleted);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Gc_still_traverses_component_content_references(bool missing)
+    {
+        using var fx = new Fixture();
+        var content = fx.StoreArtifact("fingerprint configuration fixture");
+        if (missing) File.Delete(fx.BlobPath(content.Hash.Value));
+        var fingerprint = new ExecutionFingerprint("model", "harness", "tools", "context", "none",
+            "build", "policy", "tokenizer", new[]
+            {
+                new FingerprintComponent("model.profile", "1", content.Hash, content)
+            });
+        var payload = new TurnStarted(TurnId.New(), LaneId.New(), fingerprint);
+        // Exercise the payload traversal too, without relying on the envelope index.
+        fx.AppendEvent(SessionId.New(), payload.Type(), payload.SchemaVersion(),
+            fx.Codecs.CodecFor(payload.Type()).Encode(payload));
+        if (missing)
+            Assert.Throws<InvalidDataException>(() => new ArtifactGc(fx.DataDir).Sweep(fx.JournalPath,
+                TimeSpan.Zero, true, DateTimeOffset.UtcNow, CancellationToken.None));
+        else
+        {
+            var result = new ArtifactGc(fx.DataDir).Sweep(fx.JournalPath, TimeSpan.Zero,
+                false, DateTimeOffset.UtcNow, CancellationToken.None);
+            Assert.Equal(0, result.Deleted);
+            Assert.True(File.Exists(fx.BlobPath(content.Hash.Value)));
+        }
+    }
+
     // ------------------------------------------------------------------ fixture
 
     private sealed class Fixture : IDisposable

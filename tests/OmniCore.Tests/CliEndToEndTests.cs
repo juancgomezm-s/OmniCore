@@ -49,6 +49,15 @@ public sealed class CliEndToEndTests
             Assert.Equal("scripted-model", started.ModelId);
             Assert.Equal(expected.Id, started.RouteId);
             Assert.NotEqual(started.ModelId, started.RouteId!.Value);
+            var turn = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<TurnStarted>());
+            Assert.NotNull(turn.Fingerprint);
+            Assert.Equal(RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), turn.Fingerprint.Build);
+            Assert.Equal(new[] { "context.policy", "model.descriptor", "model.harness", "model.profile",
+                "provider.adapter", "runtime.build" }, turn.Fingerprint.Components.Select(component => component.Name));
+            var adapter = Assert.Single(turn.Fingerprint.Components, component => component.Name == "provider.adapter");
+            Assert.Equal(ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(
+                Encoding.UTF8.GetBytes(expected.CanonicalJson())))), adapter.Hash);
+            Assert.All(turn.Fingerprint.Components, component => Assert.Null(component.Content));
         });
     }
 
