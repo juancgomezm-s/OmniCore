@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 20:05 UTC / 14:05 America/Mexico_City.
+Actualizado 2026-10-06 20:14 UTC / 14:14 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -36,6 +36,21 @@ Main, cambios ajenos, credenciales y procesos no propios se preservan; no push.
 M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
+
+- M5 descriptor ausente: el API de cualificación sin descriptor ni provider inyectado
+  rechaza con CostEvidenceUnavailable antes de conectar al fallback OMNI_BASE_URL;
+  ausencia no significa Local ni gratuito. Cinco casos nuevos: RED 3PASS/2FAIL,
+  controles offline y configuración Local explícita conservados. Los fixtures CLI
+  ahora usan configuración normal con descriptor Local, no un override sin billing.
+  Focal244PASS5.393s, full2102=2098PASS0FAIL4SKIPsymlink106.833s/exit0,
+  arquitectura56PASS0.884s, builds0/0. No acreditan consumo autenticado.
+  Inyectar IModelProvider sigue siendo responsabilidad del consumidor: puede ser
+  remoto y no demuestra identidad/billing correspondiente al descriptor.
+- Auditoría Luna HIGH: Quick mide InstructionFollowing (7 probes, confianza de
+  conteo .7) y StructuredOutputReliability (3, .3), no los nueve traits mínimos.
+  Qualified significa pasar Quick completa; no calibración ni confianza estadística.
+  Full/calibración quedan en M10+. Siguiente auditoría M5: coste potencial de retries
+  y campos omitidos; la cobertura Quick no acredita garantía monetaria.
 
 - M5 cobertura Quick/namespace: Qualified requiere hash del conjunto canónico completo
   + todos Passed; subsets/modificaciones quedan Provisional, SuiteComplete explícito.
