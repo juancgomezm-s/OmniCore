@@ -42,8 +42,22 @@ C:/Users/juanc/.codex/omni-m55-workers-20261006-2103/.
 Este control no sustituye los contratos de Delegation/Wake/mailbox aún pendientes.
 Fingerprint AgentProfile de LaneCreated implementado en ruta Explorer/CLI,
 final83PASS/arquitectura56PASS. Solo identidad durable disponible, sin inventar
-registro de perfiles ni skills; el resto de fronteras sigue abierto.
+registro de perfiles; el resto de fronteras sigue abierto.
 [Perfil de lane y reproducción](m55-agent-profile-fingerprint-20261006.md).
+Skills fingerprint: contrato ActiveSkillFingerprint(Id, Version, ContentHash) para
+identidades ya resueltas, sin descubrimiento/selector/loader M8. Explorer recibe
+activeSkills opcional y copia la lista; null no informado, [] vacío confirmado.
+skills.active v1 guarda source=unavailable/skills=null o source=provided/skills=[...],
+ordenado por Id ordinal; IDs incompletos/duplicados rechazados. No hereda skills
+de baseline. CLI normal y plan aprobado declaran [] porque no cargan skills.
+Un contributor KindSkill contradice [] y falla antes del proveedor, incluso antes
+de poda; callers genéricos sin declaración mantienen explícitamente unavailable.
+La lista no descubre ni autentica contenido aportado por callers: esos callers
+deben proporcionar la identidad real de sus skills. No inventa versiones desde
+ContextItem. RED1FAIL0.323s; final120PASS14.341s/arquitectura56PASS/builds0/0.
+CLI real con provider fixture, conjunto desconocido/vacío y contradicción,
+orden/version/hash/duplicados, SQLiteCAS reopen y refs cubiertos. Logs skills-fingerprint-*
+en workers2103; no autenticación/consumo real ni cierre de M5.5 por este bloque.
 Luna HIGH terminó la matriz normativa M5 y ahora audita exclusivamente el contrato
 ToolCallStarted v3; root conserva implementación, tests, integración y commits.
 

@@ -35,13 +35,14 @@ public sealed class TurnFingerprintContentIntegrationTests
                     new ExecutionFingerprint("fixture-model", "harness", "tools", "context", "none", "build"),
                     new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null),
                     store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-                    recordEffectiveFingerprint: true);
+                    recordEffectiveFingerprint: true,
+                    activeSkills: [new ActiveSkillFingerprint("fixture-skill", "1", ContentHash.Sha256(new string('a', 64)))]);
                 var result = turn.Ask("hello", "exact system instruction", session, run.RunId, run.RootLane, "",
                     CancellationToken.None);
                 Assert.Equal(StopReason.EndTurn, result.StopReason);
                 recorded = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>()).Fingerprint!;
                 Assert.NotNull(recorded);
-                Assert.Equal(4, recorded.Components.Count);
+                Assert.Equal(5, recorded.Components.Count);
                 foreach (var component in recorded.Components)
                 {
                     Assert.NotNull(component.Content);
@@ -66,6 +67,13 @@ public sealed class TurnFingerprintContentIntegrationTests
                 using var prompt = JsonDocument.Parse(artifacts.GetText(Assert.Single(fingerprint.Components,
                     c => c.Name == "prompt.template").Hash)!);
                 Assert.Contains("exact system instruction", prompt.RootElement.GetProperty("renderedText").GetString()!);
+                using var skills = JsonDocument.Parse(artifacts.GetText(Assert.Single(fingerprint.Components,
+                    c => c.Name == "skills.active").Hash)!);
+                Assert.Equal("provided", skills.RootElement.GetProperty("source").GetString());
+                var skill = Assert.Single(skills.RootElement.GetProperty("skills").EnumerateArray());
+                Assert.Equal("fixture-skill", skill.GetProperty("id").GetString());
+                Assert.Equal("1", skill.GetProperty("version").GetString());
+                Assert.Equal("sha256:" + new string('a', 64), skill.GetProperty("contentHash").GetString());
             }
         }
         finally

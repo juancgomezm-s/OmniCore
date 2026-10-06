@@ -21,6 +21,46 @@ public sealed class RuntimeTurnFingerprintFactoryTests
             visibleTools ?? catalog.Definitions(), prompt, plan);
 
     [Fact]
+    public void Resolved_skills_are_canonical_and_empty_differs_from_unavailable()
+    {
+        var catalog = new FakeCatalog();
+        var a = new ActiveSkillFingerprint("a", "1", ContentHash.Sha256(new string('a', 64)));
+        var b = new ActiveSkillFingerprint("b", "2", ContentHash.Sha256(new string('b', 64)));
+        ExecutionFingerprint With(IReadOnlyList<ActiveSkillFingerprint>? skills) =>
+            RuntimeFingerprintFactory.WithTurnConfiguration(Baseline, catalog, catalog.Definitions(),
+                "system", null, activeSkills: skills);
+        Assert.NotEqual(Component(With(null), "skills.active").Hash, Component(With([]), "skills.active").Hash);
+        Assert.Equal(With([a, b]).Hash(), With([b, a]).Hash());
+        Assert.NotEqual(With([a]).Hash(), With([a with { Version = "2" }]).Hash());
+        Assert.NotEqual(With([a]).Hash(), With([a with { ContentHash = b.ContentHash }]).Hash());
+        Assert.Throws<ArgumentException>(() => With([a, a]));
+        Assert.Throws<ArgumentException>(() => With([a with { Id = "" }]));
+        var replaced = RuntimeFingerprintFactory.WithTurnConfiguration(With([a]), catalog,
+            catalog.Definitions(), "system", null);
+        Assert.Equal(With(null).Hash(), replaced.Hash()); // No stale skills inherited from baseline.
+    }
+
+    [Fact]
+    public void Unprovided_skills_are_explicitly_unavailable_not_inferred_empty()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-skills-fingerprint-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var artifacts = new FileArtifactStore(root);
+            var catalog = new FakeCatalog();
+            var fingerprint = RuntimeFingerprintFactory.WithTurnConfiguration(Baseline, catalog,
+                catalog.Definitions(), "system", null, artifacts);
+            var skills = Component(fingerprint, "skills.active");
+            Assert.NotNull(skills.Content);
+            using var json = JsonDocument.Parse(artifacts.GetText(skills.Content.Hash)!);
+            Assert.Equal("unavailable", json.RootElement.GetProperty("source").GetString());
+            Assert.Equal(JsonValueKind.Null, json.RootElement.GetProperty("skills").ValueKind);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void Missing_profile_is_explicitly_unavailable_and_never_inferred_from_baseline()
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-missing-profile-" + Guid.NewGuid().ToString("N"));
@@ -121,8 +161,8 @@ public sealed class RuntimeTurnFingerprintFactoryTests
         var twice = RuntimeFingerprintFactory.WithTurnConfiguration(once, catalog,
             catalog.Definitions(), "system prompt", null);
 
-        Assert.Equal(4, once.Components.Count);
-        Assert.Equal(4, twice.Components.Count);
+        Assert.Equal(5, once.Components.Count);
+        Assert.Equal(5, twice.Components.Count);
         Assert.Equal(once.Hash(), twice.Hash());
         Assert.Empty(Baseline.Components);
         Assert.Equal(originalComponents, Baseline.Components);
