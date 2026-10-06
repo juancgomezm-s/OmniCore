@@ -334,12 +334,34 @@ public sealed class ToolRuntime
         // canónica de los metadatos (ruta + hashes) para que un crash posterior pueda reconciliar el
         // efecto desde el journal sin re-ejecutar (ADR-0004 §4). Si la tool calcula esos metadatos
         // (IReconcilableTool), se piden aquí: ya autorizada y antes del efecto, nunca en Prepare.
+        IDisposable? publication;
+        try
+        {
+            publication = tool is FilesystemWriteTool or FilesystemPatchTool && execContext.Artifacts is not null
+                ? (execContext.Artifacts as IArtifactPublicationLease
+                    ?? throw new FilesystemPreimageException()).AcquirePublicationLease(cancellationToken)
+                : null;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception)
+        {
+            const string cause = "Filesystem pre-image publication could not be protected.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
+        using var heldPublication = publication;
         var reconciliation = intent.Reconciliation;
         if (reconciliation is null && tool is IReconcilableTool reconcilable)
         {
             try
             {
                 reconciliation = reconcilable.DescribeReconciliation(authorized, execContext);
+            }
+            catch (FilesystemPreimageException)
+            {
+                const string cause = "Filesystem pre-image could not be captured faithfully and safely.";
+                _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+                return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
             }
             catch (Exception)
             {
@@ -352,6 +374,8 @@ public sealed class ToolRuntime
         {
             // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
             TargetRef = intent.Claims.Writes.Count == 1 ? intent.Claims.Writes[0] : null,
+            Reversibility = reconciliation?.Reversibility ?? Reversibility.Unknown,
+            BeforeStateRef = reconciliation?.BeforeStateRef,
         });
 
         ToolResult result;

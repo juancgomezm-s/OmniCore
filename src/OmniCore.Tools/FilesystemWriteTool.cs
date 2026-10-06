@@ -148,8 +148,9 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 }
 
                 var postBytes = FileVersion.Encode(content, FileVersion.Decode(bytes).Encoding);
-                return new ReconciliationSpec(expectedVersion,
-                    FilesystemPatchTool.VersionToken(postBytes), null);
+                return FilesystemPreimage.Capture(new ReconciliationSpec(expectedVersion,
+                    FilesystemPatchTool.VersionToken(postBytes), null),
+                    FilesystemPreimage.IsLeafOnly(full, context.WorkspaceRoot) ? context.Artifacts : null, bytes);
             }
 
             if (Directory.Exists(full))
@@ -161,10 +162,11 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             // (UTF-8 sin BOM); el reconciliador ve el centinela y clasifica la ausencia del
             // archivo como NotApplied (reintentable sin duplicar).
             var createBytes = FileVersion.Encode(content, FileVersion.FileEncoding.Utf8NoBom);
-            return new ReconciliationSpec(FilesystemReconciliationMetadata.AbsentPreHash,
-                FilesystemPatchTool.VersionToken(createBytes), null);
+            return FilesystemPreimage.Capture(new ReconciliationSpec(FilesystemReconciliationMetadata.AbsentPreHash,
+                FilesystemPatchTool.VersionToken(createBytes), null),
+                FilesystemPreimage.IsLeafOnly(full, context.WorkspaceRoot) ? context.Artifacts : null, null);
         }
-        catch (System.Exception)
+        catch (System.Exception ex) when (ex is not FilesystemPreimageException)
         {
             return null;
         }

@@ -78,7 +78,7 @@ public sealed class BlobProbe
 /// no tampering del store.
 /// </para>
 /// </summary>
-public sealed class FileArtifactStore : IArtifactStore
+public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLease
 {
     private const string HashAlgorithm = "sha256";
     private const int HashHexLength = 64;
@@ -86,6 +86,30 @@ public sealed class FileArtifactStore : IArtifactStore
     private readonly string _dataDirectory;
     private readonly string _blobsRoot;
     private readonly ISecretRedactor? _redactor;
+
+    private readonly ThreadLocal<FileStream?> _publicationLease = new();
+
+    public IDisposable AcquirePublicationLease(CancellationToken cancellationToken)
+    {
+        if (_publicationLease.Value is not null) throw new InvalidOperationException("Publication lease is already held.");
+        var lease = ArtifactStoreLease.Acquire(_dataDirectory, cancellationToken);
+        _publicationLease.Value = lease;
+        return new PublicationScope(this, lease, Environment.CurrentManagedThreadId);
+    }
+
+    private sealed class PublicationScope(FileArtifactStore owner, FileStream lease, int thread) : IDisposable
+    {
+        private bool _disposed;
+        public void Dispose()
+        {
+            if (_disposed) return;
+            if (Environment.CurrentManagedThreadId != thread)
+                throw new InvalidOperationException("Publication lease must be disposed by its owning thread.");
+            owner._publicationLease.Value = null;
+            lease.Dispose();
+            _disposed = true;
+        }
+    }
 
     public FileArtifactStore(string dataDirectory, ISecretRedactor? redactor = null)
     {
@@ -104,7 +128,7 @@ public sealed class FileArtifactStore : IArtifactStore
         var bytes = Encoding.UTF8.GetBytes(safe);
         var hash = Sha256.Hex(bytes);
         var blobPath = BlobPath(hash);
-        using (ArtifactStoreLease.Acquire(_dataDirectory, CancellationToken.None))
+        using (_publicationLease.Value is null ? ArtifactStoreLease.Acquire(_dataDirectory, CancellationToken.None) : null)
         {
             if (!File.Exists(blobPath)) WriteAtomically(blobPath, bytes);
             // Touch even a deduplicated blob: it is now in-flight content until the caller

@@ -233,12 +233,16 @@ public sealed class ToolExecutionContext
     /// <summary>Host durability hook after authorization, before any tool effect; never authorizes.</summary>
     public Action<ToolIntent>? BeforeEffect { get; }
 
+    /// <summary>Host-owned CAS for faithful filesystem pre-images; not exposed in tool arguments.</summary>
+    public IArtifactStore? Artifacts { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
         Action<DomainEventPayload>? emitEvent = null, Func<InteractionRequested, string?>? resolveInteraction = null,
         IAuditSink? audit = null, bool isInteractive = false,
-        WeakSandboxConsentState? weakSandboxConsent = null, Action<ToolIntent>? beforeEffect = null)
+        WeakSandboxConsentState? weakSandboxConsent = null, Action<ToolIntent>? beforeEffect = null,
+        IArtifactStore? artifacts = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -248,6 +252,7 @@ public sealed class ToolExecutionContext
         IsInteractive = isInteractive;
         WeakSandboxConsent = weakSandboxConsent;
         BeforeEffect = beforeEffect;
+        Artifacts = artifacts;
     }
 }
 
@@ -286,6 +291,10 @@ public sealed class ToolIntent
 /// <summary>Especificación de reconciliación de un efecto (ADR-0004 §4).</summary>
 public sealed class ReconciliationSpec
 {
+    public ArtifactRef? BeforeStateRef { get; init; }
+
+    public Reversibility Reversibility { get; init; } = Reversibility.Unknown;
+
     public string? ExpectedPreHash { get; }
 
     public string? ExpectedPostHash { get; }

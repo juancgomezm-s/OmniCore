@@ -606,7 +606,7 @@ public sealed class OmniCliRuntime
             var interactionResponder = CreateInteractionResponder(writeLine, locale);
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    audit, interactionResponder, interactive)
+                    audit, interactionResponder, interactive, artifacts)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId);
             var contributors = executingAct
                 ? Array.Empty<IContextContributor>()
@@ -716,7 +716,7 @@ public sealed class OmniCliRuntime
                 {
                     var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
-                        boundary, restrictions, runId, audit, interactionResponder, interactive);
+                        boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts);
                     var actTurn = new ExplorerTurn((request, token) => server.Observability.Complete(sessionId, provider, request,
                         modelDefinition?.ContextWindow, token),
                         actExecutor, actTools.Catalog(), materializer, fingerprint, selection,
