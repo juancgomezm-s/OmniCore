@@ -73,7 +73,7 @@ public sealed class ModelPolicyCommands
             catch (Exception) { writer.WriteLine("No se pudo consultar el catálogo ChatGPT. Selección conservada."); return 1; }
         }
         // Mismo data dir y registro: la cualificación comparte el user.db del usuario (M5).
-        var qualification = ModelQualificationHost.Create(dataDirectoryOverride, registryOverride);
+        using var qualification = ModelQualificationHost.Create(dataDirectoryOverride, registryOverride);
         var loc = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
             ? Localization.English()
             : Localization.Spanish();

@@ -9,10 +9,13 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 El usuario confirmó «M5 está cerrado» el 2026-10-06. M5 se conserva cerrado como
 hito; los checkpoints anteriores describen su historia, no su estado vigente.
-Las cuatro regresiones de cualificación aún sin commit son mantenimiento pendiente,
-no requisitos nuevos que reabran M5. Su último RED contiene once fallos funcionales
-y un fallo de cleanup CLI por conexión user.db no liberada; no atribuir ese último
-a redacción hasta reproducirlo sin el error de cleanup. No acreditan consultas reales.
+Las cuatro regresiones de cualificación se corrigieron como mantenimiento,
+sin requisitos nuevos que reabran M5. Final167PASS/arquitectura56PASS, builds0/0;
+RED de redacción confirmado en Host/CLI después de corregir cleanup.
+[Terminales, redacción y reproducción](qualification-terminal-maintenance-20261006.md).
+Full previa2240=2223PASS/13FAIL/4SKIP; M4 timeout aislado todavía pendiente de causa.
+Tope diario entre workspaces tiene RED válido2=1PASS/1FAIL, aún sin fix global.
+No acreditan consultas reales ni full verde posterior.
 El objetivo activo continúa siendo M5.5 y preparación de M6, sin scheduler/joins.
 Luna HIGH terminó la matriz normativa M5 y ahora audita exclusivamente el contrato
 ToolCallStarted v3; root conserva implementación, tests, integración y commits.

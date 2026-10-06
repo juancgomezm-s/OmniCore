@@ -144,9 +144,14 @@ public sealed class ModelQualificationSuiteIncompleteException : Exception
     public IReadOnlyList<string> Failures { get; }
 
     public ModelQualificationSuiteIncompleteException(IReadOnlyList<string> failures)
+        : this(failures.Select(OmniCliRuntime.RedactSensitive).ToArray(), sanitized: true)
+    {
+    }
+
+    private ModelQualificationSuiteIncompleteException(string[] failures, bool sanitized)
         : base("la suite de cualificación no se completó: " + string.Join("; ", failures))
     {
-        Failures = failures;
+        Failures = Array.AsReadOnly(failures); // Snapshot once: caller mutation cannot alter the reported evidence.
     }
 }
 
