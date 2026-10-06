@@ -17,10 +17,15 @@ Child solo guardaba stdout/stderr tras salir normalmente.
 - ExplorerTurn reconstruía y verificaba recibos monetarios históricos incluso
   sin topes de Session/día ni MaxCostUsd del Run. Una prueba contada independiente
   reprodujo esa lectura innecesaria (2 casos: 1 PASS / 1 FAIL, 1.123 s).
-- Ahora omite SOLO ese cálculo de admisión monetaria cuando no existe un límite
-  monetario activo. No omite historial conversacional, contexto, contadores de
+- La primera optimización (36a5260) omitía el replay sin límite monetario. La suite
+  completa posterior detectó cuatro regresiones de overflow: incluso sin topes,
+  una suma conocida debe seguir siendo representable. Esa condición era incorrecta.
+- La corrección omite SOLO ese cálculo cuando no hay límite monetario, precio
+  actual ni costes históricos conocidos. Los summaries legacy sin ModelStep
+  requieren validación porque su coste vive en CAS; evidencia ilegible también.
+  No omite historial conversacional, contexto, contadores de
   tokens/pasos/tools, validación del uso actual ni publicación de recibos/costes.
-- Si se activan topes predeterminados o MaxCostUsd del Run, se conserva la
+- Si se activan topes predeterminados, MaxCostUsd del Run o existe precio/coste conocido, se conserva la
   validación histórica completa. No hay caché de gasto que pueda quedar obsoleta.
 
 Los 200 turnos, el plazo original de dos minutos por hijo y todas las aserciones
@@ -57,4 +62,15 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 ```
 
 No recompilar sobre el mismo output mientras se ejecutan los tests en Windows.
-Suite completa posterior pendiente; estos resultados no cierran M5.5 solos.
+Suite posterior a 36a5260: 2258 casos / 2250 PASS / 4 FAIL / 4 SKIP,
+314.973 s. Los cuatro FAIL son los controles existentes de overflow monetario
+sin defaultcaps (legacy y ModelStep, gasto previo y gasto actual).
+Corrección focal: 54 PASS / 0 FAIL / 0 SKIP, 8.248 s; build 0 errores/advertencias.
+Incluye los controles de overflow sin modificar sus assertions y cinco variantes
+de replay, incluida historia con precio seguida de modelo actual sin precio.
+No transforma costes desconocidos en cero en los eventos ni en el reporting.
+M4 sobre la corrección: 1 PASS / 0 FAIL, 94.418 s, mismos 200 turnos y plazo.
+Arquitectura sobre la corrección: 56 PASS, 1.381 s.
+Logs: monetary-replay-correction-build/test/m4-test/architecture-test.log en el
+directorio de evidencia anterior. Suite completa sobre la corrección pendiente;
+estos resultados no cierran M5.5 solos.

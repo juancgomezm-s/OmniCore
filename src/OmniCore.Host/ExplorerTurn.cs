@@ -478,9 +478,11 @@ public sealed class ExplorerTurn
         var budget = ReadRunBudget(stream, runId);
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
         // at each boundary, avoiding a gap/overlap between a historical scan and a sequence delta.
-        // Without a monetary limit these receipts cannot affect admission. Current step usage
-        // and durable reporting still run; do not repeatedly verify the whole session's CAS.
-        var persistedSpend = _enforceDefaultSpendCaps || budget.MaxCostUsd is not null
+        // Known monetary totals must remain representable even without a cap. Only an
+        // unpriced session with no historical monetary evidence can omit monetary replay.
+        var replayMonetarySpend = _enforceDefaultSpendCaps || budget.MaxCostUsd is not null
+            || _pricing is not null || HasHistoricalMonetaryEvidence(runEvents);
+        var persistedSpend = replayMonetarySpend
             ? ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)
             : new PersistedSpend(0m, 0m, 0m, false);
 
@@ -531,7 +533,7 @@ public sealed class ExplorerTurn
         var steps = 1;
         var started = false;
 
-        PersistedSpend CurrentSpend() => !_enforceDefaultSpendCaps && budget.MaxCostUsd is null
+        PersistedSpend CurrentSpend() => !replayMonetarySpend
             ? new PersistedSpend(0m, 0m, 0m, false)
             : CombineSpend(CombineSpend(persistedSpend,
             ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)),
@@ -1107,6 +1109,34 @@ public sealed class ExplorerTurn
     /// versionado que conserva la respuesta y la usage/cost metadata; el replay no depende de
     /// contadores en memoria ni de tarifas que hayan cambiado desde entonces.
     /// </summary>
+    private bool HasHistoricalMonetaryEvidence(IEnumerable<DomainEvent> events)
+    {
+        var summaries = new HashSet<TurnId>();
+        var steps = new HashSet<TurnId>();
+        foreach (var evt in events)
+        {
+            if (evt.Type.ToString() is not ("model.completed" or "model_step.completed"
+                or "meta_model.invocation_completed" or "meta_model.invocation_failed")) continue;
+            try
+            {
+                switch (_codecs.Decode(evt))
+                {
+                    case ModelCompleted summary: summaries.Add(summary.TurnId); break;
+                    case ModelStepCompleted step:
+                        if (step.CostUsd is not null) return true;
+                        steps.Add(step.TurnId);
+                        break;
+                    case MetaModelInvocationCompleted meta when meta.CostUsd is null: break;
+                    case MetaModelInvocationFailed meta when meta.CostUsd is null: break;
+                    default: return true;
+                }
+            }
+            catch (Exception) { return true; } // Unreadable evidence must take the validation path.
+        }
+        // Legacy summaries keep cost inside CAS, not in the event. Never assume it absent.
+        return summaries.Any(turn => !steps.Contains(turn));
+    }
+
     private PersistedSpend ReadJournalSpend(EventStream stream, SessionId sessionId, RunId runId, string today,
         bool includeWorkspaceDaily, IReadOnlyList<DomainEvent>? evidenceEvents = null,
         IArtifactStore? evidenceArtifacts = null)
