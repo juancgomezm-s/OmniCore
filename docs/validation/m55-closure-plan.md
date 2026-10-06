@@ -11,8 +11,29 @@ Actualización del bloque IncludedQuota 23:45 UTC: corrección de admisión y co
 del Host, consentimiento por invocación, reanudación TUI y NoClient implementados.
 Focal final78PASS13.579s/build0/0 y TUI1PASS2.587s; fixtures identificados.
 [Contrato, reproducción y límites](m55-included-quota-admission-20261006.md).
-La suite completa anterior descrita abajo no incluye estos cambios; full nuevo pendiente.
+La suite completa nueva sobre `291842f` terminó con exit0: 2284 casos,
+2280 PASS / 0 FAIL / 4 SKIP por permisos symlink, 341.611s.
+Log `included-quota-full.log` en el directorio workers indicado abajo.
+Esta evidencia incluye IncludedQuota, pero no demuestra reserva atómica de gasto.
 Las notas RED de abajo describen el hallazgo previo, no un fallo dejado sin corregir.
+
+### Regresión concurrente confirmada — 2026-10-06 23:56 UTC
+
+Se añadió `ConcurrentSpendAdmissionTests.Two_workspace_admissions_must_not_exceed_shared_daily_cap`.
+Dos journals SQLite y CAS independientes bajo un mismo User data directory, lector
+real `UserWorkspaceSpendReader` y dos `ExplorerTurn`, sincronizados al persistir
+el contexto tras comprobar el presupuesto y antes de `ModelStepStarted`.
+Ambas respuestas son fixtures offline de 300000 tokens de entrada a 1 USD/millón.
+Resultado RED: 0.60 USD / dos invocaciones ante un límite diario de 0.50 USD;
+1 caso, 1 FAIL, 1.348s, sin consultas autenticadas ni coste real.
+Log `concurrent-spend-red.log` en el mismo directorio workers. Build previo válido
+0 warnings / 0 errores; errores iniciales de nombre de parámetro y analyzer del
+fixture se corrigieron antes de ejecutar, no son RED del producto.
+La prueba queda sin commit y conserva la assertion del límite. La suite verde
+de `291842f` precede esta nueva prueba: no afirmar que el estado actual está verde.
+Próximo bloque: reserva máxima previa y liquidación idempotente con coordinación
+entre procesos, respetando límites Run/Session/User diario, reintentos y gasto
+incierto. No copiar expiración automática ni un lock exclusivamente en memoria.
 
 Suite completa sobre `abec849`, proceso terminado con exit0:
 2272 casos = 2268 PASS / 0 FAIL / 4 SKIP por permisos symlink, 319.894s.
