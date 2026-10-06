@@ -580,7 +580,8 @@ public sealed class OmniCliRuntime
             var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null, route.Id, route,
                 ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription));
             var fingerprint = RuntimeFingerprintFactory.Create(runtimeModel, effectiveProfile, harness,
-                selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value);
+                selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value,
+                provider);
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
             {

@@ -13,7 +13,7 @@ internal static class RuntimeFingerprintFactory
 {
     internal static ExecutionFingerprint Create(ModelDefinition model, EffectiveModelProfile profile,
         HarnessPolicy harness, ModelSelection selection, string harnessHash, string contextPolicyHash,
-        string modelPolicyHash, string tokenizerIdentity)
+        string modelPolicyHash, string tokenizerIdentity, IModelProvider? provider = null)
     {
         var components = new List<FingerprintComponent>
         {
@@ -79,7 +79,7 @@ internal static class RuntimeFingerprintFactory
         };
         // The endpoint may contain private configuration. Only its digest enters the journal.
         if (selection.Route is { } route)
-            components.Add(HashComponent("provider.adapter", route.CanonicalJson()));
+            components.Add(ProviderAdapterComponent(route, provider));
         return new ExecutionFingerprint(model.Id, harnessHash, "core-tools-1", contextPolicyHash,
             "none", RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), modelPolicyHash,
             tokenizerIdentity, components);
@@ -160,6 +160,33 @@ internal static class RuntimeFingerprintFactory
     private static string Digest(string value) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
-    private static FingerprintComponent HashComponent(string name, string value) => new(name, "1",
+    private static FingerprintComponent ProviderAdapterComponent(ModelRoute route, IModelProvider? provider)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WritePropertyName("route");
+            using (var routeDocument = JsonDocument.Parse(route.CanonicalJson()))
+                routeDocument.RootElement.WriteTo(writer);
+            if (provider is null)
+            {
+                writer.WriteNull("providerType");
+                writer.WriteNull("providerBuild");
+            }
+            else
+            {
+                writer.WriteString("providerType", provider.GetType().FullName);
+                writer.WriteString("providerBuild", RuntimeBuildIdentity.ForAssembly(provider.GetType().Assembly));
+            }
+            writer.WriteEndObject();
+        }
+
+        return HashComponent("provider.adapter", "2", Encoding.UTF8.GetString(stream.ToArray()));
+    }
+
+    private static FingerprintComponent HashComponent(string name, string value) => HashComponent(name, "1", value);
+
+    private static FingerprintComponent HashComponent(string name, string version, string value) => new(name, version,
         ContentHash.Sha256(Digest(value)));
 }
