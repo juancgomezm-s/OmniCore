@@ -540,9 +540,13 @@ public sealed partial class ModelQualificationHost : IDisposable
                 Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), CancellationToken.None) ?? "";
         }
 
+        var subscription = provider is { Family: ProviderFamily.OpenAIResponses, Profile: "codex" }
+            ? OmniHost.CreateChatGptAuth(_paths)
+            : null;
+
         return provider is null
             ? OmniHost.ConnectLocalChatCompletions(baseUrl, model.Id, secretRef, key)
-            : OmniHost.ConnectProvider(provider, baseUrl, secretRef, key);
+            : OmniHost.ConnectProvider(provider, baseUrl, secretRef, key, subscription: subscription);
     }
 
     /// <summary>

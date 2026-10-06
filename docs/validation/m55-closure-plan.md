@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 20:58 UTC / 14:58 America/Mexico_City.
+Actualizado 2026-10-06 21:14 UTC / 15:14 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -12,11 +12,13 @@ M5.5 con paquetes independientes GLM5.3/NVIDIA, Nemotron/OpenRouter y DeepSeek/N
 `get_goal` volvió a confirmar ACTIVE a las 20:56:53 UTC. No se reemplaza el objetivo
 inconcluso: la API disponible no admite editar su texto. Esta sección conserva las
 instrucciones nuevas; no se reactiva la automatización histórica con plazo vencido.
-Luna retomó la auditoría de consumidores de traits no medidos y confidence Quick;
-ownership de solo lectura/propuesta externa, sin builds ni edits del repo. Root
-conserva implementación, integración y verificación. Externos2017 ya terminaron:
-GLM/Deep sin entrega y Nem propuesta rechazada. Se requieren paquetes nuevos
-disjuntos y validación de catálogo/ownership, no repetir los fallidos a ciegas.
+Luna terminó la auditoría de traits/confidence y construyó el fixture integrado
+Codex; root conserva producción, integración y verificación. Ahora Luna audita
+cancelación/persistencia y aislamiento OAuth, solo lectura y sin consultas reales.
+Externos2017 y2103 terminaron: GLM/Deep timeout sin entrega y Nem propuestas
+rechazadas por APIs inexistentes/ausencia de SQLite y controles requeridos.
+Logs/manifiestos preservados; no integrar propuestas sin verificación ni repetir
+paquetes fallidos a ciegas. Nem2103 reportó coste0; NVIDIA sigue desconocido.
 
 El usuario pidió actualizar el objetivo y reanudarlo el 2026-10-06. `get_goal`
 confirmó `active` a las 20:37 UTC: la pausa de producto ya fue revocada. El texto
@@ -82,10 +84,12 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   [Contrato y reproducción](m5-unknown-attempt-bound-20261006.md).
   Auditoría también halló subset tokens reportados incoherentes; corregido en el
   bloque de uso coherente arriba, sin regla de suma de caché inventada.
-- Auditoría adicional root: cualificación normal llama ConnectProvider sin pasar
-  subscription; factory exige subscription para perfil codex. No prueba que falte
-  login del usuario; queda pendiente verificar wiring de la sesión ya conectada,
-  reproducir ruta auténtica con control offline de credenciales y corregir wiring.
+- M5 sesión Codex: wiring defectuoso reproducido con ruta normal Host/Responses/
+  sesión sintética privada/HTTP loopback/SQLite/CAS. RED3=1PASS2FAIL; enlace de
+  subscription corregido solo para perfilcodex, green3PASS, focal268PASS/arch56PASS
+  builds0/0; full fresca pendiente. No login ausente inferido ni cambio API key,
+  cuota/coste desconocidos no cero; no consulta autenticada real acreditada.
+  [Contrato y evidencia](m5-codex-subscription-wiring-20261006.md).
 - M5.5 root: tres controles reales SQLite/CAS para éxito/deny/fallo entre dos Runs
   de la misma Session, primero cancelado por servicio normal antes del siguiente.
   Envelopes/UTC/prefijo histórico/refModelStep/uso sobreviven reopen sin fuga scope.
