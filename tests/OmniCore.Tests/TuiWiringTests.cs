@@ -75,7 +75,7 @@ public sealed class TuiWiringTests
             account: new TestAccount { Pending = true, Current = new(scene is "models" or "picker", null, null, false),
                 Catalog = new[] { new AvailableChatGptModel("subscription-a", "Subscription A"),
                     new AvailableChatGptModel("subscription-b", "Subscription B") } });
-        fx.Application.Invoke(() => fx.Application.Driver!.SetScreenSize(columns, rows));
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(columns, rows));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == columns && fx.App.MainWindow.Frame.Height == rows,
             "el renderer debe completar el resize");
         Type(fx, "Escribe tu siguiente instrucción…");
@@ -83,7 +83,7 @@ public sealed class TuiWiringTests
         {
             KeyWithEffect(fx, KeyCode.Enter, () => visualTurn!.Started.IsSet, "turno activo para fotograma");
             fx.Wait(() => fx.App.Activity!.Visible, "animación visible");
-            fx.Application.Invoke(() => { for (var tick = 0; tick < 7; tick++) fx.App.AnimateActivity(); });
+            fx.Invoke(() => { for (var tick = 0; tick < 7; tick++) fx.App.AnimateActivity(); });
         }
         else if (scene == "sidebar")
         {
@@ -92,14 +92,14 @@ public sealed class TuiWiringTests
         }
         else if (scene == "notice")
         {
-            fx.Application.Invoke(() => fx.App.Composer!.Text = "");
+            fx.Invoke(() => fx.App.Composer!.Text = "");
             Type(fx, "/context");
             fx.InjectKey(new Key(KeyCode.Enter));
             fx.Wait(() => fx.App.Overlay is not null, "menú visible en fotograma");
         }
         else if (scene == "commands")
         {
-            fx.Application.Invoke(() => fx.App.Composer!.Text = "/");
+            fx.Invoke(() => fx.App.Composer!.Text = "/");
             fx.Wait(() => fx.App.MainWindow!.SubViews.Any(view => view.Id == "omni-command-helper"), "helper disponible");
         }
         else if (scene is "models" or "picker")
@@ -240,7 +240,7 @@ public sealed class TuiWiringTests
             finally { captured.Set(); }
         };
         fx.Application.LayoutAndDrawComplete += capture;
-        fx.Application.Invoke(() =>
+        fx.Invoke(() =>
         {
             fx.App.MainWindow!.SetNeedsLayout();
             fx.App.MainWindow.SetNeedsDraw();
@@ -284,19 +284,19 @@ public sealed class TuiWiringTests
             Assert.Contains(cells, cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#67D4D0"));
         }
         Thread.Sleep(300); // Let the first styled frame render before navigating history.
-        fx.Application.Invoke(() => fx.App.Conversation.MoveEnd());
+        fx.Invoke(() => fx.App.Conversation.MoveEnd());
         fx.Wait(() => fx.App.Conversation.CurrentRow > 30, "historial navegable");
         var row = fx.App.Conversation.CurrentRow;
         Thread.Sleep(1100); // More than two production polls, not a handler-only test.
         Assert.Equal(row, fx.App.Conversation.CurrentRow);
-        fx.Application.Invoke(() => fx.App.Conversation.SelectAll());
+        fx.Invoke(() => fx.App.Conversation.SelectAll());
         fx.Wait(() => fx.App.Conversation.SelectedText.Contains("public void Run()"), "el código coloreado sigue siendo seleccionable");
         var selection = fx.App.Conversation.SelectedText;
         Assert.DoesNotContain("┃", selection);
         Assert.False(selection.Contains('\u001b'), "la selección no debe incluir secuencias ANSI");
         // Exercise the actual Copy command without touching the user's clipboard.
         var clipboard = new FakeClipboard(false, false);
-        fx.Application.Invoke(() =>
+        fx.Invoke(() =>
         {
             fx.Application.Driver!.Clipboard = clipboard;
             fx.App.Conversation.InvokeCommand(Command.Copy);
@@ -330,9 +330,8 @@ public sealed class TuiWiringTests
                 "{\"cmd\":\"session.input\",\"text\":\"USER_QA **literal**\"}"), CancellationToken.None).Status);
             var artifact = fx.Artifacts.PutText(answer, "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
             stream.Append(new AssistantMessageRecorded(run, lane, TurnId.New(), artifact));
-            fx.StartTui();
             const int rows = 46;
-            fx.Application.Invoke(() => fx.Application.Driver!.SetScreenSize(columns, rows));
+            fx.StartTui(initialColumns: columns, initialRows: rows);
             fx.Wait(() => fx.App.MainWindow!.Frame.Width == columns && fx.App.MainWindow.Frame.Height == rows, "tamaño de QA aplicado");
             var frame = CaptureConversationFrame(fx, columns, rows, "QA_FIN");
             var text = string.Join("\n", Enumerable.Range(0, rows).Select(y => string.Concat(Enumerable.Range(0, columns).Select(x => frame[y, x].Grapheme))));
@@ -364,7 +363,7 @@ public sealed class TuiWiringTests
             var conversationRows = fx.App.Conversation!.GetAllLines();
             Assert.All(conversationRows, line => Assert.True(Terminal.Gui.Text.StringExtensions.GetColumns(string.Concat(line.Select(cell => cell.Grapheme)), false) <= fx.App.Conversation.Viewport.Width));
             var clipboard = new FakeClipboard(false, false);
-            fx.Application.Invoke(() =>
+            fx.Invoke(() =>
             {
                 fx.Application.Driver!.Clipboard = clipboard;
                 fx.App.Conversation.SelectAll();
@@ -406,7 +405,7 @@ public sealed class TuiWiringTests
             for (var offset = 0; offset < token.Length; offset++)
                 Assert.Equal(new Terminal.Gui.Drawing.Color(color), frame[row, tokenStart + offset].Attribute?.Foreground);
             var clipboard = new FakeClipboard(false, false);
-            fx.Application.Invoke(() =>
+            fx.Invoke(() =>
             {
                 fx.Application.Driver!.Clipboard = clipboard;
                 fx.App.Conversation!.SelectAll();
@@ -435,7 +434,7 @@ public sealed class TuiWiringTests
         fx.Application.LayoutAndDrawComplete += handler;
         try
         {
-            fx.Application.Invoke(() => { fx.App.MainWindow!.SetNeedsLayout(); fx.App.MainWindow.SetNeedsDraw(); });
+            fx.Invoke(() => { fx.App.MainWindow!.SetNeedsLayout(); fx.App.MainWindow.SetNeedsDraw(); });
             Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "fotograma completo de conversación dibujado");
             Assert.Null(fx.LoopError);
             return Assert.IsType<Terminal.Gui.Drawing.Cell[,]>(result);
@@ -489,7 +488,7 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.Conversation!.CurrentRow == fx.App.Conversation.GetAllLines().Count - 1,
             "respuesta conserva seguimiento al final: cursor=" + fx.App.Conversation!.CurrentRow + " filas=" + fx.App.Conversation.GetAllLines().Count
             + " scroll=" + fx.App.Conversation.VerticalScrollBar.Value + " visible=" + fx.App.Conversation.VerticalScrollBar.VisibleContentSize + " total=" + fx.App.Conversation.VerticalScrollBar.ScrollableContentSize);
-        fx.Application.Invoke(() => fx.App.Conversation!.SetFocus());
+        fx.Invoke(() => fx.App.Conversation!.SetFocus());
         fx.InjectKey(new Key(KeyCode.Home | KeyCode.CtrlMask));
         fx.Wait(() => fx.App.Conversation!.CurrentRow == 0, "usuario relee inicio");
         var newArtifact = fx.Artifacts.PutText("mensaje mientras relees", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
@@ -517,7 +516,7 @@ public sealed class TuiWiringTests
             new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
                 .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), artifact));
             fx.StartTui();
-            fx.Application.Invoke(() => fx.App.Conversation!.SelectAll());
+            fx.Invoke(() => fx.App.Conversation!.SelectAll());
             fx.Wait(() => fx.App.Conversation!.SelectedText.Contains("int x = 42;"), "copiar cuerpo completo");
             var selected = fx.App.Conversation!.SelectedText;
             Assert.Equal(1, selected.Count(character => character == '┃'));
@@ -561,12 +560,34 @@ public sealed class TuiWiringTests
         Type(fx, "hola conectado");
         KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "Enter debe iniciar el runtime");
         fx.Wait(() => fx.App.Activity?.Visible == true, "barra visible durante inferencia");
+        using var activityFrameDrawn = new ManualResetEventSlim();
+        EventHandler<EventArgs> activityFrame = (_, _) =>
+        {
+            var cells = fx.Application.Driver!.Contents!;
+            var text = string.Join("\n", Enumerable.Range(0, cells.GetLength(0)).Select(y =>
+                string.Concat(Enumerable.Range(0, cells.GetLength(1)).Select(x => cells[y, x].Grapheme))));
+            if (fx.App.Activity?.Visible == true && text.Contains("Procesando", StringComparison.Ordinal))
+                activityFrameDrawn.Set();
+        };
+        fx.Application.LayoutAndDrawComplete += activityFrame;
+        try
+        {
+            fx.Invoke(() =>
+            {
+                fx.App.MainWindow!.SetNeedsLayout();
+                fx.App.MainWindow.SetNeedsDraw();
+            });
+            Assert.True(activityFrameDrawn.Wait(TimeSpan.FromSeconds(10)),
+                "fotograma completo con la barra Procesando antes de verificar colores");
+        }
+        finally { fx.Application.LayoutAndDrawComplete -= activityFrame; }
+
         Assert.Equal(11, fx.App.Activity!.SubViews.Count);
         var firstFrame = fx.App.Activity.SubViews.Select(cell => cell.GetScheme().Normal).ToArray();
         Assert.All(firstFrame, cell => Assert.Contains(cell.Foreground,
             new[] { "#12303D", "#205061", "#30788B", "#4DBAC9", "#83C6DE", "#B47CE7" }
                 .Select(value => new Terminal.Gui.Drawing.Color(value))));
-        fx.Application.Invoke(() => { for (var tick = 0; tick < 5; tick++) fx.App.AnimateActivity(); });
+        fx.Invoke(() => { for (var tick = 0; tick < 5; tick++) fx.App.AnimateActivity(); });
         fx.Wait(() => !firstFrame.SequenceEqual(fx.App.Activity.SubViews.Select(cell => cell.GetScheme().Normal)), "la barra debe animarse");
         Type(fx, "borrador");
         fx.Wait(() => fx.App.Composer!.Text == "borrador", "el teclado sigue disponible durante inferencia");
@@ -625,7 +646,7 @@ public sealed class TuiWiringTests
         Assert.Equal(25, fx.App.Sidebar.Frame.Height);
 
         // Terminal ancha (120): el resize real del driver reencuadra la ventana; sidebar apilado a la derecha.
-        fx.Application.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 120, 40));
+        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 120, 40));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 120, "la ventana debe ocupar la pantalla tras el resize del driver");
         fx.Wait(() => fx.App.Sidebar!.Frame.Width == 40, "a 120 cols el sidebar apilado mide 40");
         Assert.Equal(80, fx.App.Sidebar!.Frame.X);
@@ -645,7 +666,7 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.Composer!.SuperView!.Frame.Width == 118, "cerrar panel recupera el ancho del mensaje");
 
         // Vuelta a estrecho sin errores de layout.
-        fx.Application.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 80, 25));
+        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 80, 25));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 80, "condicion no alcanzada en el tope de espera");
         Assert.False(fx.App.Sidebar!.Visible);
     });
@@ -667,7 +688,7 @@ public sealed class TuiWiringTests
             "el helper debe quedar encima del mensaje, sin taparlo");
         Assert.Contains("Consultar el plan actual", helper.SubViews.OfType<ListView>().Single().Source!.ToList().Cast<object>().Single().ToString());
 
-        fx.Application.Invoke(() => fx.App.Composer!.Text = "");
+        fx.Invoke(() => fx.App.Composer!.Text = "");
         Type(fx, "@src/");
         fx.Wait(() => fx.App.Completion!.Text?.ToString().Contains("src/Alpha.cs") == true, "el workspace real completa src/Alpha.cs");
         Assert.Contains("src/Beta.cs", fx.App.Completion!.Text?.ToString() ?? "");
@@ -691,11 +712,11 @@ public sealed class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == expected + " ", "Tab completa sin ejecutar");
         Assert.Null(fx.App.Overlay);
         Assert.DoesNotContain(fx.App.MainWindow.SubViews, view => view.Id == "omni-command-helper");
-        fx.Application.Invoke(() => fx.App.Composer.Text = "/mod");
+        fx.Invoke(() => fx.App.Composer.Text = "/mod");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/models ", "Enter completa prefijo sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
-        fx.Application.Invoke(() => fx.App.Composer.Text = "/pl");
+        fx.Invoke(() => fx.App.Composer.Text = "/pl");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "helper reabierto");
         KeyWithEffect(fx, KeyCode.Esc, () => !fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "Esc cierra solo sugerencias");
         Assert.Equal("/pl", fx.App.Composer.Text);
@@ -748,7 +769,7 @@ public sealed class TuiWiringTests
         fx.Wait(() => buttons[1].HasFocus, "la opción predeterminada (deny) recibe el foco inicial: Enter no permite por accidente");
 
         // Camino real de teclado: el usuario enfoca "Permitir una vez" y pulsa Enter.
-        fx.Application.Invoke(() => buttons[0].SetFocus());
+        fx.Invoke(() => buttons[0].SetFocus());
         Thread.Sleep(100);
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null, "el Enter sobre el botón no responde la interacción");
         var resolved = fx.Decoded<InteractionResolved>().Single(r => r.InteractionId.Equals(interaction));
@@ -782,7 +803,7 @@ public sealed class TuiWiringTests
             Assert.Single(fx.Decoded<InteractionRequested>(), item => item.InteractionId == interaction).Kind);
         var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
         Assert.Equal(2, buttons.Length);
-        fx.Application.Invoke(() => buttons[1].SetFocus());
+        fx.Invoke(() => buttons[1].SetFocus());
         KeyWithEffect(fx, KeyCode.Enter, () => host.ResumeCount == 1,
             "allow_route debe iniciar una única reanudación");
         fx.Wait(() => fx.App.Status!.Text!.ToString()!.Contains("Listo"),
@@ -811,7 +832,7 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.Overlay is not null, "el consentimiento de ruta debe abrir el overlay real");
         var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
         Assert.Equal(2, buttons.Length);
-        fx.Application.Invoke(() => buttons[0].SetFocus());
+        fx.Invoke(() => buttons[0].SetFocus());
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null,
             "deny debe responder y cerrar el overlay");
 
@@ -836,7 +857,7 @@ public sealed class TuiWiringTests
             host.EscalationInteractionId = interaction.ToString();
             fx.Wait(() => fx.App.Overlay is not null, "el polling publica el permiso antes del return 3");
             var allow = fx.App.Overlay!.SubViews.OfType<Button>().Last();
-            fx.Application.Invoke(() => allow.InvokeCommand(Command.Accept));
+            fx.Invoke(() => allow.InvokeCommand(Command.Accept));
             fx.Wait(() => fx.Decoded<InteractionResolved>().Any(item => item.InteractionId == interaction), "respuesta persistida");
             Assert.Equal(0, host.ResumeCount);
             gate.SetResult(3);
@@ -861,7 +882,7 @@ public sealed class TuiWiringTests
 
         // Consume the pending request outside the visible overlay. A subsequent UI response is
         // rejected by OmniServer and must not be mistaken for successful consent.
-        fx.Application.Invoke(() =>
+        fx.Invoke(() =>
         {
             Assert.Equal("ok", fx.Server.RespondToInteraction(interaction, "deny").Status);
             buttons[1].InvokeCommand(Command.Accept);
@@ -944,20 +965,20 @@ public sealed class TuiWiringTests
         Assert.Equal(2, buttons.Length);     // Enviar / Cancelar
 
         // Envío vacío: validación del lado cliente, el overlay NO se cierra ni se inventa respuesta.
-        fx.Application.Invoke(() => buttons[0].InvokeCommand(Command.Accept));
+        fx.Invoke(() => buttons[0].InvokeCommand(Command.Accept));
         fx.Wait(() => !string.IsNullOrEmpty(errorLabel.Text?.ToString()), "el envío inválido muestra el error de validación");
         Assert.NotNull(fx.App.Overlay);
         Assert.DoesNotContain(fx.Decoded<InteractionResolved>(), r => r.InteractionId.Equals(interaction));
 
         // Selección única con radio REAL: se marca "a" y luego, con espacio sobre "b", "a" se desmarca sola.
-        fx.Application.Invoke(() => checkboxes[0].Value = CheckState.Checked);
-        fx.Application.Invoke(() => checkboxes[1].SetFocus());
+        fx.Invoke(() => checkboxes[0].Value = CheckState.Checked);
+        fx.Invoke(() => checkboxes[1].SetFocus());
         fx.InjectKey(new Key(' '));
         fx.Wait(() => checkboxes[1].Value == CheckState.Checked, "espacio marca la opción enfocada");
         fx.Wait(() => checkboxes[0].Value == CheckState.UnChecked, "la selección única desmarca la opción anterior (radio)");
 
         // Múltiple + Otro + texto libre.
-        fx.Application.Invoke(() =>
+        fx.Invoke(() =>
         {
             checkboxes[2].Value = CheckState.Checked;
             checkboxes[4].Value = CheckState.Checked;
@@ -974,7 +995,7 @@ public sealed class TuiWiringTests
         });
         Assert.True(plain.IsValid);
 
-        fx.Application.Invoke(() => buttons[0].InvokeCommand(Command.Accept));
+        fx.Invoke(() => buttons[0].InvokeCommand(Command.Accept));
         fx.Wait(() => fx.App.Overlay is null, "el envío válido cierra el cuestionario");
 
         var resolved = fx.Decoded<InteractionResolved>().Single(r => r.InteractionId.Equals(interaction));
@@ -1003,7 +1024,7 @@ public sealed class TuiWiringTests
 
         fx.Wait(() => fx.App.Overlay is not null, "el cuestionario pendiente debe abrir un overlay");
         var cancel = fx.App.Overlay!.SubViews.OfType<Button>().Last();
-        fx.Application.Invoke(() => cancel.InvokeCommand(Command.Accept));
+        fx.Invoke(() => cancel.InvokeCommand(Command.Accept));
         fx.Wait(() => fx.App.Overlay is null, "cancelar cierra el cuestionario");
 
         var resolved = fx.Decoded<InteractionResolved>().Single(r => r.InteractionId.Equals(interaction));
@@ -1027,14 +1048,14 @@ public sealed class TuiWiringTests
         Assert.Contains("requiere configuración", select.Text?.ToString() ?? "");
 
         // Sin política: la selección abre el onboarding y NADA se persiste sin elección del usuario.
-        fx.Application.Invoke(() => select.InvokeCommand(Command.Accept));
+        fx.Invoke(() => select.InvokeCommand(Command.Accept));
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Configurar modelo") == true, "sin política el onboarding de modelos debe abrirse");
         Assert.Null(fx.App.Policies.Get(key, CancellationToken.None));
 
         // Elección del usuario (categoría recomendada): persiste la política y vuelve al listado.
         var recommended = fx.App.Overlay!.SubViews.OfType<Button>()
             .Single(button => (button.Text?.ToString() ?? "").Contains("[recommended]"));
-        fx.Application.Invoke(() => recommended.InvokeCommand(Command.Accept));
+        fx.Invoke(() => recommended.InvokeCommand(Command.Accept));
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Modelos") == true, "tras configurar, el overlay vuelve al listado de modelos");
         var policy = fx.App.Policies.Get(key, CancellationToken.None);
         Assert.NotNull(policy);
@@ -1047,14 +1068,14 @@ public sealed class TuiWiringTests
         fx.Wait(() => delete.Frame.Width > 0, "fila de modelos dibujada");
         Assert.Equal(modelRow.Frame.Y, delete.Frame.Y);
         Assert.True(modelRow.Frame.Right <= delete.Frame.X, "el icono no se superpone al modelo");
-        fx.Application.Invoke(() => delete.InvokeCommand(Command.Accept));
+        fx.Invoke(() => delete.InvokeCommand(Command.Accept));
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Eliminar política") == true, "borrado pide confirmación");
         Assert.NotNull(fx.App.Policies.Get(key, CancellationToken.None));
         Click(fx, "Cancelar");
         fx.Wait(() => fx.App.Overlay?.SubViews.OfType<Button>().Any(b => b.Id == "delete-policy-model") == true, "cancelar vuelve al listado");
         Assert.NotNull(fx.App.Policies.Get(key, CancellationToken.None));
         var deleteAgain = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Id == "delete-policy-model");
-        fx.Application.Invoke(() => deleteAgain.InvokeCommand(Command.Accept));
+        fx.Invoke(() => deleteAgain.InvokeCommand(Command.Accept));
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Eliminar política") == true, "confirmación visible");
         Click(fx, "Eliminar");
         fx.Wait(() => fx.App.Policies.Get(key, CancellationToken.None) is null, "confirmar elimina la política");
@@ -1063,7 +1084,7 @@ public sealed class TuiWiringTests
             .Any(button => (button.Text?.ToString() ?? "").Contains("requiere configuración")), "el listado vuelve a mostrar el modelo sin configurar");
         var selectAgain = fx.App.Overlay!.SubViews.OfType<Button>()
             .Single(button => (button.Text?.ToString() ?? "").Contains("local/model"));
-        fx.Application.Invoke(() => selectAgain.InvokeCommand(Command.Accept));
+        fx.Invoke(() => selectAgain.InvokeCommand(Command.Accept));
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Configurar modelo") == true, "el onboarding reaparece tras borrar la política");
     });
 
@@ -1120,9 +1141,66 @@ public sealed class TuiWiringTests
         fx.Wait(() => account.LoginCalls == 1, "login iniciado explícitamente");
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => account.Cancelled && fx.App.Overlay is null, "Esc cancela petición propia");
-        fx.Application.Invoke(() => fx.App.PollOnce());
+        fx.Invoke(() => fx.App.PollOnce());
         Assert.Null(fx.App.Overlay);
         Assert.True(fx.App.Composer!.HasFocus);
+    });
+
+    [Fact]
+    public void Driver_main_thread_identity_matches_the_thread_running_the_ui_loop() => RunTuiTest(fx =>
+    {
+        fx.StartTui();
+        Assert.Equal(fx.Loop.ManagedThreadId, fx.Application.MainThreadId);
+    });
+
+    [Fact]
+    public void Repeated_login_open_cancel_reinitializes_exact_progress_textview_on_ui_loop() => RunTuiTest(fx =>
+    {
+        const int cycles = 20;
+        const string initialProgress = "Preparando autorización…";
+        var account = new TestAccount { Pending = true };
+        fx.StartTui(account: account);
+
+        for (var cycle = 1; cycle <= cycles; cycle++)
+        {
+            Type(fx, "/login");
+            fx.InjectKey(new Key(KeyCode.Enter));
+            fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Cuenta") == true,
+                $"cuenta visible en ciclo {cycle}");
+
+            string? progressText = null;
+            bool? readOnly = null;
+            bool? wordWrap = null;
+            fx.Invoke(() =>
+            {
+                var browser = fx.App.Overlay!.SubViews.OfType<Button>()
+                    .Single(button => button.Text.ToString().Contains("enlace de navegador"));
+                browser.InvokeCommand(Command.Accept);
+#pragma warning disable CS0618 // Reproducer intentionally inspects the exact production login control.
+                var progress = fx.App.Overlay!.SubViews.OfType<TextView>().Single();
+#pragma warning restore CS0618
+                progressText = progress.Text?.ToString();
+                readOnly = progress.ReadOnly;
+                wordWrap = progress.WordWrap;
+            });
+            Assert.Equal(initialProgress, progressText);
+            Assert.True(readOnly);
+            Assert.True(wordWrap);
+
+            fx.Wait(() => Volatile.Read(ref account.LoginCalls) == cycle,
+                $"login iniciado en ciclo {cycle}");
+            fx.InjectKey(new Key(KeyCode.Esc));
+            fx.Wait(() => Volatile.Read(ref account.CancelledCalls) == cycle && fx.App.Overlay is null,
+                $"cancelación y cierre observables en ciclo {cycle}");
+
+            // Drena en el loop la respuesta tardía de este intento antes de abrir el siguiente.
+            fx.Invoke(() => fx.App.PollOnce());
+            Assert.Null(fx.App.Overlay);
+            Assert.True(fx.App.Composer!.HasFocus);
+        }
+
+        Assert.Equal(cycles, Volatile.Read(ref account.LoginCalls));
+        Assert.Equal(cycles, Volatile.Read(ref account.CancelledCalls));
     });
 
     [Fact]
@@ -1206,7 +1284,7 @@ public sealed class TuiWiringTests
     private static void Click(TuiFixture fx, string text)
     {
         var button = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Text.ToString().Contains(text));
-        fx.Application.Invoke(() => button.InvokeCommand(Command.Accept));
+        fx.Invoke(() => button.InvokeCommand(Command.Accept));
     }
 
     private static string[] PickerItems(TuiFixture fx) => fx.App.Overlay?.SubViews.OfType<ListView>().SingleOrDefault()
@@ -1223,15 +1301,15 @@ public sealed class TuiWiringTests
         var search = fx.App.Overlay!.SubViews.OfType<TextField>().Single();
         Assert.True(fx.App.Conversation!.Dimmed);
         KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "Ctrl+F enfoca búsqueda");
-        fx.Application.Invoke(() => search.Text = "BETA");
+        fx.Invoke(() => search.Text = "BETA");
         fx.Wait(() => PickerItems(fx).Length == 1, "filtro ignora mayúsculas");
         Assert.Contains("beta", PickerItems(fx).Single());
-        fx.Application.Invoke(() => search.Text = "no-such-model");
+        fx.Invoke(() => search.Text = "no-such-model");
         fx.Wait(() => PickerItems(fx).Length == 0, "búsqueda vacía segura");
         fx.InjectKey(new Key(KeyCode.Enter));
         Assert.NotNull(fx.App.Overlay);
         Assert.Null(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default));
-        fx.Application.Invoke(() => search.Text = "");
+        fx.Invoke(() => search.Text = "");
         fx.Wait(() => PickerItems(fx).Length == 2, "limpiar recupera lista completa");
         KeyWithEffect(fx, KeyCode.M | KeyCode.CtrlMask, () => fx.App.Overlay?.Id == "omni-panel", "Ctrl+M abre mantenimiento");
         Assert.Contains("Modelos", fx.App.Overlay!.Title);
@@ -1242,7 +1320,7 @@ public sealed class TuiWiringTests
     {
         var index = Array.FindIndex(PickerItems(fx), item => item.Contains(text));
         Assert.True(index >= 0);
-        fx.Application.Invoke(() =>
+        fx.Invoke(() =>
         {
             var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
             list.SelectedItem = index;
@@ -1295,7 +1373,7 @@ public sealed class TuiWiringTests
         fx.StartTui(policies);
         OpenModelMaintenance(fx);
         var toggle = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Id == "model-visibility-visible-model");
-        fx.Application.Invoke(() => toggle.InvokeCommand(Command.Accept));
+        fx.Invoke(() => toggle.InvokeCommand(Command.Accept));
         fx.Wait(() => !policies.IsVisibleInPicker("local", "visible-model"), "ocultar preferencia persistida");
         Assert.Equal("PatchOnly", policies.Get(key, CancellationToken.None)!.Category);
         Assert.Equal("visible-model", policies.CurrentSelection(workspace, CancellationToken.None)!.ModelId);
@@ -1308,7 +1386,7 @@ public sealed class TuiWiringTests
         fx.InjectKey(new Key(KeyCode.Esc)); fx.Wait(() => fx.App.Overlay is null, "selector cerrado");
         OpenModelMaintenance(fx);
         var show = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Id == "model-visibility-visible-model");
-        fx.Application.Invoke(() => show.InvokeCommand(Command.Accept));
+        fx.Invoke(() => show.InvokeCommand(Command.Accept));
         fx.Wait(() => policies.IsVisibleInPicker("local", "visible-model"), "mostrar nuevamente");
         fx.InjectKey(new Key(KeyCode.Esc)); fx.Wait(() => fx.App.Overlay is null, "mantenimiento cerrado");
         KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "selector visible");
@@ -1320,7 +1398,7 @@ public sealed class TuiWiringTests
         public ChatGptSessionStatus Current = new(false, null, null, false);
         public bool Fail, Pending, DeviceCode;
         public volatile bool Cancelled;
-        public int LoginCalls, LogoutCalls, CatalogCalls;
+        public int LoginCalls, CancelledCalls, LogoutCalls, CatalogCalls;
         public bool FailCatalog;
         public IReadOnlyList<AvailableChatGptModel> Catalog = Array.Empty<AvailableChatGptModel>();
         public Task<IReadOnlyList<AvailableChatGptModel>> ListModelsAsync(CancellationToken cancellationToken)
@@ -1339,7 +1417,13 @@ public sealed class TuiWiringTests
             if (Pending)
             {
                 try { await System.Threading.Tasks.Task.Delay(System.Threading.Timeout.Infinite, cancellationToken); }
-                catch (OperationCanceledException) { Cancelled = true; progress("late progress"); throw; }
+                catch (OperationCanceledException)
+                {
+                    Cancelled = true;
+                    progress("late progress");
+                    Interlocked.Increment(ref CancelledCalls);
+                    throw;
+                }
             }
             if (Fail) throw new InvalidOperationException("SECRET raw provider failure");
             Current = new(true, "***1234", null, false); return Current;
@@ -1388,7 +1472,7 @@ public sealed class TuiWiringTests
             if (actual == text) return;
             // El foco puede no haber vuelto al composer tras cerrar un overlay: sin foco las teclas
             // no llegan a ninguna parte. Se asegura antes de inyectar y se reintenta lo que falte.
-            fx.Application.Invoke(() =>
+            fx.Invoke(() =>
             {
                 if (!fx.App.Composer!.HasFocus) fx.App.Composer.SetFocus();
             });
@@ -1398,7 +1482,7 @@ public sealed class TuiWiringTests
             }
             else
             {
-                fx.Application.Invoke(() => fx.App.Composer!.Text = "");
+                fx.Invoke(() => fx.App.Composer!.Text = "");
                 foreach (var ch in text) fx.InjectKey(new Key(ch));
             }
             if (WaitUntil(() => (fx.App.Composer!.Text?.ToString() ?? "") == text, 3000)) return;
@@ -1442,7 +1526,7 @@ public sealed class TuiWiringTests
 
         // The injector can process keyboard events synchronously. Dispatch it on the UI
         // thread, like real keyboard input, so overlays cannot mutate during drawing.
-        public void InjectKey(Key key) => Application.Invoke(() => Injector.InjectKey(key));
+        public void InjectKey(Key key) => Invoke(() => Injector.InjectKey(key));
         public Thread Loop = null!;
 
         public static TuiFixture Create()
@@ -1485,8 +1569,38 @@ public sealed class TuiWiringTests
                 Assert.Fail(message + " (loop de la TUI caido: " + LoopError + ")");
         }
 
-        public void StartTui(ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null)
+        /// <summary>Ejecuta una mutación en el hilo UI, espera su finalización y propaga su excepción.</summary>
+        public void Invoke(Action action)
         {
+            ArgumentNullException.ThrowIfNull(action);
+            if (Application.MainThreadId == Environment.CurrentManagedThreadId)
+            {
+                action();
+                return;
+            }
+
+            var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Application.Invoke(() =>
+            {
+                try
+                {
+                    action();
+                    completed.TrySetResult(true);
+                }
+                catch (Exception exception)
+                {
+                    completed.TrySetException(exception);
+                }
+            });
+            completed.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)
+                .GetAwaiter().GetResult();
+        }
+
+        public void StartTui(ModelPolicyHost? policies = null, ITuiAccountHost? account = null,
+            ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null)
+        {
+            if (initialColumns.HasValue != initialRows.HasValue)
+                throw new ArgumentException("Initial screen columns and rows must be provided together.");
             // Wiring tests must never discover models with the developer's real account.
             _fixturePolicies = policies ?? ModelPolicyHost.Create(Path.Combine(Root, "fixture-policies"),
                 new[] { new ModelRegistryModelDescriptor("local-worker", "local", 8192, 8192, 2048) });
@@ -1499,35 +1613,49 @@ public sealed class TuiWiringTests
             for (var attempt = 1; ; attempt++)
             {
                 _loopError = null;
-            App = new TuiApp(Server, "es", _fixturePolicies, account, turnHost);
+                App = new TuiApp(Server, "es", _fixturePolicies, account, turnHost);
                 Application = Terminal.Gui.App.Application.Create();
-                try
-                {
-                    Application.Init("DOTNET");
-                }
-                catch (Exception exception)
-                {
-                    CleanupApplication();
-                    if (attempt >= 3)
-                        Assert.Fail("El driver DOTNET de Terminal.Gui no arranca sin TTY en este entorno: "
-                            + exception.Message);
-                    continue;
-                }
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);
+                using var initialized = new ManualResetEventSlim();
+                Exception? initializationError = null;
                 Loop = new Thread(() =>
                 {
+                    try
+                    {
+                        Application.Init("DOTNET");
+                        if (initialColumns is { } columns && initialRows is { } rows)
+                            Application.Driver!.SetScreenSize(columns, rows);
+                    }
+                    catch (Exception exception)
+                    {
+                        initializationError = exception;
+                        _loopError = exception;
+                        initialized.Set();
+                        return;
+                    }
+
+                    initialized.Set();
                     try { App.RunWith(Application); }
-                    catch (Exception ex) { _loopError = ex; }
+                    catch (Exception exception) { _loopError = exception; }
                 }) { IsBackground = true, Name = "tui-wiring-loop" };
                 // En producción el loop de la TUI es el hilo PRIMARIO de su proceso; en la suite
                 // compite con las hebras de otros tests en paralelo y muere de hambre bajo carga.
                 // AboveNormal reproduce la prioridad relativa real sin tocar la semántica del wiring.
                 Loop.Priority = ThreadPriority.AboveNormal;
                 Loop.Start();
+                initialized.Wait(TestContext.Current.CancellationToken);
+                if (initializationError is not null)
+                {
+                    CleanupApplication();
+                    if (attempt >= 3)
+                        Assert.Fail("El driver DOTNET de Terminal.Gui no arranca sin TTY en este entorno: "
+                            + initializationError.Message);
+                    Thread.Sleep(200);
+                    continue;
+                }
                 // A positive Frame is assigned during Begin/EndInit, before the view tree
-                // is safe to mutate. Invoke can execute immediately before Run is active.
-                // Wait for the first completed frame, not a partially initialized window.
+                // is safe to mutate. Wait for the first completed frame, not a partially initialized window.
                 var ready = WaitUntil(() => Volatile.Read(ref firstFrameDrawn) != 0 || _loopError is not null);
                 if (ready && _loopError is null)
                 {
@@ -1598,16 +1726,14 @@ public sealed class TuiWiringTests
         {
             if (Loop is { IsAlive: true })
             {
-                IEnumerable<T> result = Array.Empty<T>();
-                var done = new ManualResetEventSlim(false);
-                Application.Invoke(() =>
+                T[] result = Array.Empty<T>();
+                Invoke(() =>
                 {
-                    result = ReadJournal<T>();
-                    done.Set();
+                    result = ReadJournal<T>().ToArray();
                 });
-                return done.Wait(5000) ? result : ReadJournal<T>();
+                return result;
             }
-            return ReadJournal<T>();
+            return ReadJournal<T>().ToArray();
         }
 
         private IEnumerable<T> ReadJournal<T>() where T : DomainEventPayload =>
