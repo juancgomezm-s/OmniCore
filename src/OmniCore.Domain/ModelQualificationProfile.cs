@@ -125,8 +125,10 @@ public sealed class ModelTraitRecord
 
 /// <summary>
 /// Identidad del benchmark que produjo una cualificación (ADR-0007 §6). suite_id, suite_version,
-/// hash del conjunto de tareas, semilla, temperatura y versión de OmniCore. Permite decidir si un
-/// perfil quedó Stale ante una versión mayor nueva de la suite.
+/// hash del conjunto de tareas, parámetros de muestreo cuando son conocidos y versión de OmniCore.
+/// Seed y Temperature son null cuando esos valores no fueron enviados o registrados; un valor
+/// presente documenta el dato, pero por sí solo no demuestra que el provider lo recibiera.
+/// Permite decidir si un perfil quedó Stale ante una versión mayor nueva de la suite.
 /// </summary>
 public sealed class BenchmarkIdentity
 {
@@ -136,14 +138,28 @@ public sealed class BenchmarkIdentity
 
     public string TaskSetHash { get; }
 
-    public int Seed { get; }
+    /// <summary>
+    /// Semilla conocida, o null si no fue enviada o registrada. La presencia del valor no acredita
+    /// que el provider lo haya recibido.
+    /// </summary>
+    public int? Seed { get; }
 
-    public double Temperature { get; }
+    /// <summary>
+    /// Temperatura conocida, o null si no fue enviada o registrada. La presencia del valor no
+    /// acredita que el provider lo haya recibido.
+    /// </summary>
+    public double? Temperature { get; }
 
     public string OmniCoreVersion { get; }
 
     public BenchmarkIdentity(string suiteId, string suiteVersion, string taskSetHash, int seed,
         double temperature, string omniCoreVersion)
+        : this(suiteId, suiteVersion, taskSetHash, (int?)seed, (double?)temperature, omniCoreVersion)
+    {
+    }
+
+    public BenchmarkIdentity(string suiteId, string suiteVersion, string taskSetHash, int? seed,
+        double? temperature, string omniCoreVersion)
     {
         SuiteId = suiteId;
         SuiteVersion = suiteVersion;
