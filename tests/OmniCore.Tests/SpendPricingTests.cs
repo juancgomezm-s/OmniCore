@@ -13,6 +13,31 @@ using Xunit;
 
 public sealed class SpendPricingTests
 {
+    [Theory]
+    [InlineData(-1L, 0L, 0L, 0L, 0L)]
+    [InlineData(0L, -1L, 0L, 0L, 0L)]
+    [InlineData(0L, 0L, -1L, 0L, 0L)]
+    [InlineData(0L, 0L, 0L, -1L, 0L)]
+    [InlineData(0L, 0L, 0L, 0L, -1L)]
+    [InlineData(long.MinValue, 0L, 0L, 0L, 0L)]
+    public void Invalid_signed_counters_are_unavailable_not_zero_or_negative_cost(
+        long input, long output, long cacheRead, long cacheWrite, long reasoning)
+    {
+        var usage = new TokenUsage(input, output, cacheRead, cacheWrite, reasoning);
+        Assert.Null(new ModelPricing(1m, 1m).CostUsd(usage));
+        Assert.Null(new ModelPricing(0m, 0m).CostUsd(usage));
+    }
+
+    [Fact]
+    public void Unrepresentable_cost_estimate_is_unavailable_and_zero_measured_cost_remains_zero()
+    {
+        var usage = new TokenUsage(long.MaxValue, long.MaxValue, 0, 0, 0);
+        Assert.Null(new ModelPricing(decimal.MaxValue, decimal.MaxValue).CostUsd(usage));
+        Assert.Equal(0m, new ModelPricing(0m, 0m).CostUsd(usage));
+        Assert.Equal(0m, new ModelPricing(1m, 1m).CostUsd(new TokenUsage(0, 0, 0, 0, 0)));
+        Assert.Null(new ModelPricing(null, 1m).CostUsd(new TokenUsage(0, 0, 0, 0, 0)));
+    }
+
     [Fact]
     public void Typed_model_prices_change_calculated_cost_and_invalid_negative_rates_are_rejected()
     {

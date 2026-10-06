@@ -51,8 +51,9 @@ public sealed class ExplorerTurn
 
     private readonly HarnessPolicy? _harness;
 
-    private TokenUsage ReadTurnModelStepUsage(EventStream stream, TurnId turnId)
+    private TokenUsage ReadTurnModelStepUsage(EventStream stream, TurnId turnId, out bool invalid)
     {
+        invalid = false;
         var total = new TokenUsage(0, 0, 0, 0, 0);
         foreach (var evt in stream.EventsSince(1))
         {
@@ -61,7 +62,11 @@ public sealed class ExplorerTurn
             {
                 if (_codecs.Decode(evt) is ModelStepCompleted completed && completed.TurnId == turnId
                     && completed.Usage is not null)
-                    total = CombineUsage(total, completed.Usage);
+                {
+                    if (InvalidUsage(completed.Usage)) { invalid = true; continue; }
+                    try { total = CombineUsage(total, completed.Usage); }
+                    catch (OverflowException) { invalid = true; }
+                }
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
                 or FormatException or ArgumentException)
@@ -380,7 +385,8 @@ public sealed class ExplorerTurn
 
         var allToolCalls = new List<ToolUseTrace>();
         var usage = new TokenUsage(0, 0, 0, 0, 0);
-        var turnUsage = ReadTurnModelStepUsage(stream, turnId);
+        var turnUsage = ReadTurnModelStepUsage(stream, turnId, out var invalidPersistedUsage);
+        var invalidUsageObserved = false;
 
         var budget = ReadRunBudget(stream, runId);
         var configuredRunCap = budget.MaxCostUsd;
@@ -454,6 +460,9 @@ public sealed class ExplorerTurn
             }
             started = true;
 
+            if (invalidPersistedUsage)
+                throw new InvalidDataException("Persisted token usage cannot be represented safely.");
+
             string? finalText = null;
             var stop = StopReason.EndTurn;
             // Replay is scoped to the same durable invocation destination, never to a session's last model.
@@ -524,8 +533,6 @@ public sealed class ExplorerTurn
                     stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
                     resolved = _complete(request, cancellationToken);
                     continuation = resolved.State;
-                    usage = CombineUsage(usage, resolved.Usage);
-                    turnUsage = CombineUsage(turnUsage, resolved.Usage);
                     var stepResponse = string.Join("\n", resolved.Content.OfType<TextBlock>()
                         .Select(block => _redaction.Redact(block.Text)));
                     var stepCost = resolved.ReportedUsageFields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
@@ -552,7 +559,18 @@ public sealed class ExplorerTurn
                         Sensitivity.Sensitive);
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
                         resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields), DurabilityClass.Barrier);
-                    guard.AdvanceTurn(resolved.Usage.Input + resolved.Usage.Output);
+                    if (InvalidUsage(resolved.Usage))
+                    {
+                        invalidUsageObserved = true;
+                        if (budgeted)
+                            throw new BudgetExceededException("uso del paso inválido: no se puede hacer cumplir el tope");
+                        throw new InvalidDataException("Provider token usage is invalid.");
+                    }
+                    // Preserve the individual invocation before attempting aggregate arithmetic.
+                    // An unrepresentable total cannot become a wrapped summary or authorize tools.
+                    usage = CombineUsage(usage, resolved.Usage);
+                    turnUsage = CombineUsage(turnUsage, resolved.Usage);
+                    guard.AdvanceTurn(checked(resolved.Usage.Input + resolved.Usage.Output));
                     if (stepCost is not null) guard.AddCostUsd(stepCost.Value);
                     if (checkpointFailure is not null) throw checkpointFailure;
                     // This invocation is already durable, but unreported usage cannot
@@ -808,23 +826,25 @@ public sealed class ExplorerTurn
             if (finalText is not null && finalText!.Length > 0)
             {
                 var safeResponse = _redaction.Redact(finalText!);
-                var cost = ReadTurnModelStepCost(stream, turnId);
-                var journalRecord = EncodeUsageResponse(safeResponse, turnUsage, cost, runId, today);
-                var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
-                    ArtifactKind.ModelResponse, Sensitivity.Sensitive);
-                artifactId = artifact.Hash.ToString();
+                var responseEvents = new List<DomainEventPayload>();
+                if (!invalidUsageObserved)
+                {
+                    var cost = ReadTurnModelStepCost(stream, turnId);
+                    var journalRecord = EncodeUsageResponse(safeResponse, turnUsage, cost, runId, today);
+                    var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
+                        ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+                    artifactId = artifact.Hash.ToString();
+                    responseEvents.Add(new ModelCompleted(turnId, artifact));
+                }
                 var conversation = _artifacts.PutText(safeResponse, "text/markdown",
                     ArtifactKind.ModelResponse, Sensitivity.Sensitive);
-                stream.AppendBatch(new DomainEventPayload[]
-                {
-                    new ModelCompleted(turnId, artifact),
-                    new AssistantMessageRecorded(runId, laneId, turnId, conversation),
-                }, DurabilityClass.Standard);
+                responseEvents.Add(new AssistantMessageRecorded(runId, laneId, turnId, conversation));
+                stream.AppendBatch(responseEvents, DurabilityClass.Standard);
             }
 
             AppendTerminalTurn(stream, sessionId, runId, laneId, turnId, new TurnCompleted(turnId));
             AuditSpend(sessionId, runId, laneId, turnId, stop, turnUsage,
-                ReadTurnModelStepCost(stream, turnId));
+                ReadTurnModelStepCost(stream, turnId), usageAvailable: !invalidUsageObserved);
             AuditPolicy(sessionId, runId, turnId, stop);
             return new TurnResult(finalText is null ? null : _redaction.Redact(finalText), stop, steps,
                 turnUsage, allToolCalls.ToArray(), artifactId);
@@ -873,15 +893,19 @@ public sealed class ExplorerTurn
     /// presupuesto por sesión/día (P1: el audit sink del turno se usa).
     /// </summary>
     private void AuditSpend(SessionId sessionId, RunId runId, LaneId laneId, TurnId turnId,
-        StopReason stop, TokenUsage usage, decimal? confirmedCostUsd)
+        StopReason stop, TokenUsage usage, decimal? confirmedCostUsd, bool usageAvailable = true)
     {
         try
         {
             var details = new Dictionary<string, string>();
             details["stop"] = stop.ToString();
-            details["inputTokens"] = usage.Input.ToString();
-            details["outputTokens"] = usage.Output.ToString();
-            if (confirmedCostUsd is not null)
+            if (usageAvailable)
+            {
+                details["inputTokens"] = usage.Input.ToString();
+                details["outputTokens"] = usage.Output.ToString();
+            }
+            else details["usageStatus"] = "invalid";
+            if (usageAvailable && confirmedCostUsd is not null)
                 details["costUsd"] = confirmedCostUsd.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
             _audit.Record(new AuditRecord("turn.spend", null, sessionId, runId, DateTimeOffset.Now,
                 turnId.ToString(), details), CancellationToken.None);
@@ -2174,8 +2198,11 @@ public sealed class ExplorerTurn
     }
 
     private static TokenUsage CombineUsage(TokenUsage a, TokenUsage b) =>
-        new TokenUsage(a.Input + b.Input, a.Output + b.Output, a.CacheRead + b.CacheRead,
-            a.CacheWrite + b.CacheWrite, a.Reasoning + b.Reasoning);
+        new TokenUsage(checked(a.Input + b.Input), checked(a.Output + b.Output), checked(a.CacheRead + b.CacheRead),
+            checked(a.CacheWrite + b.CacheWrite), checked(a.Reasoning + b.Reasoning));
+
+    private static bool InvalidUsage(TokenUsage usage) => usage.Input < 0 || usage.Output < 0
+        || usage.CacheRead < 0 || usage.CacheWrite < 0 || usage.Reasoning < 0;
 
     private static bool HasWorkingStateContributor(List<OmniCore.Context.IContextContributor> contributors)
     {

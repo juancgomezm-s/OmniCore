@@ -461,9 +461,18 @@ public sealed record ModelPricing(decimal? InputPricePerMillionUsd, decimal? Out
 
     public decimal? CostUsd(TokenUsage usage)
     {
-        if (!IsComplete) return null;
-        return usage.Input / 1_000_000m * InputPricePerMillionUsd!.Value
-            + usage.Output / 1_000_000m * OutputPricePerMillionUsd!.Value;
+        if (!IsComplete || usage.Input < 0 || usage.Output < 0 || usage.CacheRead < 0
+            || usage.CacheWrite < 0 || usage.Reasoning < 0) return null;
+        try
+        {
+            return usage.Input / 1_000_000m * InputPricePerMillionUsd!.Value
+                + usage.Output / 1_000_000m * OutputPricePerMillionUsd!.Value;
+        }
+        catch (OverflowException)
+        {
+            // An unrepresentable estimate is unavailable, never free spending.
+            return null;
+        }
     }
 }
 
