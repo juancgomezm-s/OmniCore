@@ -172,6 +172,61 @@ no transmite seed ni temperatura y BenchmarkIdentity exige ambos; representarlos
 como cero sería una identidad falsa. Próximo bloque debe preservar esos valores
 como no proporcionados y verificar CAS/reapertura/retención y atomicidad de la ref.
 
+## Preflight configurado y límite Chat
+
+Defectos reproducidos sin red ni secretos:
+
+- `configured-cap-red-test.log`: 2 casos = 1 PASS/1 FAIL, 0.372s. Ruta explícita
+  MeteredCurrency, precios 2/8 USD por millón, probe.MaxCostUsd0 y cap0 ejecutaban
+  la respuesta del fixture en vez de rechazar antes de la invocación.
+- `chat-limit-red-test.log`: 5 casos = 1 PASS/4 FAIL, 0.202s. Body capturado del
+  adapter omitía max_tokens para límites16/4096/longMax, también en el caso400.
+- `configured-cap-overflow-red-test.log`: 5 casos = 4 PASS/1 FAIL, 0.461s.
+  Dos topes declarados decimalMax daban OverflowException genérica.
+- `runner-cap-overflow-red-test.log`: 1 FAIL, 0.133s; el runner directo tenía la
+  misma suma desbordada. Ambos rechazan ahora con excepciones tipadas antes del stream.
+
+Host conserva el guard de topes declarados y agrega el mayor de esa suma y la
+estimación de configuración: precio de Input por ContextWindow declarado y precio
+de Output por límite realmente serializado, multiplicados por cantidad de probes.
+Ejemplo fixture de una invocación: 8192*2/1e6 +2048*8/1e6 =0.032768 USD.
+El tope0 y un tope positivo0.01 se rechazan antes de conectar/llamar o guardar perfil.
+El control cap1 produce quote0.000066 USD con usage17/4 y conserva estimate0.032768.
+`QualificationRunResult.EstimatedCostSource` distingue esa procedencia del gasto medido.
+
+MeteredCurrency sin tarifas completas o límite aplicable no puede fabricar una
+estimación: lanza ModelQualificationCostEvidenceUnavailableException antes de conectar.
+La suma declarada no representable también falla con ese error tipado; el runner usa
+QualificationCostEstimateUnavailableException y Host lo traduce para mantener IL del CLI.
+No se amplió el máximo de tarifas del loader: decimalMax no es tarifa YAML válida.
+Ese caso no se presenta como un repro de overflow de tarifas configuradas.
+
+`PreviewSuiteCost` usa la misma selección/pricing para el consentimiento, sin crear
+provider ni consultar cuenta. Sin precios, Unknown/IncludedQuota/CreditBalance/Metered
+exponen importe null; Local explícito puede mostrar el máximo DECLARADO de probes,
+no un débito medido. CLI muestra estimación de configuración y tope aceptado, o
+coste desconocido y tope, nunca la declaración quick0 como precio conocido remoto.
+
+El adapter Chat compatible ahora serializa el long exacto en `max_tokens`; null
+omite el campo. Host transmite selección en las rutas Chat, Responses API y Anthropic;
+Codex de suscripción sigue sin límite aplicado. Un400 no se reintenta sin límite.
+Es el contrato legacy: [OpenAI documenta su deprecación y que no es compatible con
+o-series](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+La prueba de body no cualifica modelos/servicios ni confirma que un endpoint remoto
+honre el límite. No se cambian perfiles ni se migra a otro proveedor o modelo.
+
+Focal final `configured-cap-final-focal.log`: 207 PASS/0 FAIL/0 SKIP, 2.160s;
+build0warnings/errores. Full `configured-cap-final-full.log`: 2035 casos =
+2031 PASS/0 FAIL/4 SKIP por permisos symlink, 107.362s, exit0.
+Arquitectura `configured-cap-architecture-test.log`: 56 PASS/0 FAIL/0 SKIP,
+0.662s; build0warnings/errores. Cifras solapadas, no se suman.
+Fixtures in-memory y configuración/SQLite privados, no consumo autenticado.
+
+Gates todavía abiertos: ContextWindow es DECLARADO, no tokenización/medición remota;
+la estimación cubre una invocación por probe, no una reserva contra gasto concurrente
+ni todos los reintentos, tarifas de caché específicas, cargos sin usage o gasto de
+rutas Unknown sin precios. No se afirma garantía monetaria end-to-end ni cierre M5.
+
 Los fixtures no acreditan consumo real o consultas autenticadas. Siguen pendientes
 las cotas monetarias pre-call derivadas de límites realmente enviados, el tratamiento
 de reintentos/errores sin usage, evidencia CAS completa y BenchmarkIdentity.

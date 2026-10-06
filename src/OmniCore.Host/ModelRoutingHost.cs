@@ -14,9 +14,11 @@ using OmniCore.Models;
 public static class ModelRoutingHost
 {
     /// <summary>Explicit output bound for currently wired native API contracts.
-    /// Null does not claim an enforced bound for legacy Chat or the subscription backend.</summary>
+    /// Chat uses the legacy max_tokens contract; unsupported endpoints fail rather than retry
+    /// without the limit. The subscription backend has no applied bound.</summary>
     public static long? OutputTokenLimit(ModelDefinition model, ProviderDescriptor? provider) =>
         provider?.Family == ProviderFamily.AnthropicMessages
+        || provider?.Family == ProviderFamily.OpenAiChatCompatible
         || (provider?.Family == ProviderFamily.OpenAIResponses
             && !string.Equals(provider.Profile, "codex", StringComparison.OrdinalIgnoreCase))
             ? model.MaxOutputTokens > 0 ? model.MaxOutputTokens : null

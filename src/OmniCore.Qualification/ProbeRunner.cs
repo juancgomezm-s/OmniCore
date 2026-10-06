@@ -60,10 +60,11 @@ public sealed class ProbeRunner
         }
 
         decimal estimated = 0m;
-        foreach (var r in requests)
+        try
         {
-            estimated += r.Probe.MaxCostUsd;
+            foreach (var r in requests) estimated = checked(estimated + r.Probe.MaxCostUsd);
         }
+        catch (OverflowException) { throw new QualificationCostEstimateUnavailableException(); }
         if (estimated > consent.MaxTotalCostUsd)
         {
             throw new QualificationCostCapExceededException(consent.MaxTotalCostUsd, estimated);

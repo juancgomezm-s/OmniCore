@@ -13,7 +13,7 @@ public sealed class HostOutputTokenLimitTests
     [InlineData(ProviderFamily.OpenAIResponses, "codex", null)]
     [InlineData(ProviderFamily.OpenAIResponses, "CODEX", null)]
     [InlineData(ProviderFamily.AnthropicMessages, null, 2048L)]
-    [InlineData(ProviderFamily.OpenAiChatCompatible, null, null)]
+    [InlineData(ProviderFamily.OpenAiChatCompatible, null, 2048L)]
     public void Host_only_declares_a_bound_on_wired_native_api_routes(
         ProviderFamily family, string? profile, long? expected)
     {

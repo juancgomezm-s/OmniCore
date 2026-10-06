@@ -64,8 +64,15 @@ public sealed class QualificationCostCapExceededException : Exception
 }
 
 /// <summary>
-/// El probe superó su tope de tiempo (timeout) antes de producir una respuesta completa.
+/// La suma declarada no es representable: no se puede autorizar gasto con ese estimate.
 /// </summary>
+public sealed class QualificationCostEstimateUnavailableException : Exception
+{
+    public QualificationCostEstimateUnavailableException()
+        : base("la estimación de coste de la suite no es representable") { }
+}
+
+/// <summary>El probe superó su tope de tiempo antes de producir una respuesta completa.</summary>
 public sealed class ProbeTimeoutException : Exception
 {
     public ProbeTimeoutException(string probeId)

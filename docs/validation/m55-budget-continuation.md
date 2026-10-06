@@ -147,7 +147,9 @@ en `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 - Reserva atómica antes de la llamada y liquidación/liberación posterior: dos sesiones
   concurrentes pueden pasar un precheck con el mismo saldo. El postcheck no es una reserva.
   Los límites declarados del registry ya se transmiten a Responses API y Anthropic;
-  Chat compatible y el backend de suscripción Codex siguen sin una cota aplicada.
+  Chat compatible también serializa ahora el límite exacto en el contrato legacy
+  max_tokens (bloque M5 del 2026-10-06); Codex de suscripción sigue sin cota aplicada.
+  Serializar no acredita que el endpoint remoto lo honre ni garantiza coste máximo.
   Un valor declarado pero no enviado no es una cota máxima de coste; retries y
   disponibilidad de usage también deben quedar contabilizados. Véase el bloque siguiente.
 - NoClient/Deny ya finalizan Run Failed/BudgetExceeded con aislamiento y command
@@ -198,7 +200,8 @@ Evidencia offline, logs en `C:\Users\juanc\.codex\omni-m55-three-20261006`:
   Las cifras focales se solapan y no se suman.
 
 Estas fixtures no acreditan llamadas autenticadas, aplicación del límite por un
-servidor real, cuotas ni consumo. No cierran Chat/Codex, reserva/liquidación atómica,
+servidor real, cuotas ni consumo. El bloque posterior M5 prueba el body Chat compatible;
+no cierra la validación remota Chat/Codex, reserva/liquidación atómica,
 tope User-wide, contabilización de retries o los siete criterios de M5.5.
 Reproducción focal: runner con las clases NativeOutputTokenLimitTests,
 ModelSelectionOutputLimitContractTests, HostOutputTokenLimitTests,

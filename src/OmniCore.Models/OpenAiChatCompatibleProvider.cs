@@ -310,6 +310,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
             Messages = messages,
             Tools = tools.Count == 0 ? null : tools,
             Stream = true,
+            MaxTokens = request.Model.MaxOutputTokens,
             ToolChoice = request.ToolChoice.Mode switch
             {
                 "none" => JsonSerializer.SerializeToElement("none", OpenAiJsonContext.Default.String),
@@ -466,6 +467,9 @@ internal sealed class ChatRequestDto
     public List<ChatRequestTool>? Tools { get; set; }
     [JsonPropertyName("tool_choice")] public JsonElement? ToolChoice { get; set; }
     public bool Stream { get; set; }
+    [JsonPropertyName("max_tokens")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? MaxTokens { get; set; }
 }
 internal sealed class ChatRequestMessage
 {

@@ -26,6 +26,24 @@ public sealed class M5QualificationUsageEvidenceTests
     private static ProbeRunner Runner(params ModelStreamEvent[] events) =>
         new(new FixtureProvider(events));
 
+    [Fact]
+    public async Task Runner_rejects_unrepresentable_declared_total_before_streaming()
+    {
+        var provider = new FixtureProvider([]);
+        var selection = Request().Selection;
+        var requests = new[]
+        {
+            new ProbeRequest(new Probe(ProbeId.WellKnown("sum-first"), ProbeKind.Reading,
+                "prompt", "expected", decimal.MaxValue), selection),
+            new ProbeRequest(new Probe(ProbeId.WellKnown("sum-second"), ProbeKind.Reading,
+                "prompt", "expected", decimal.MaxValue), selection),
+        };
+        await Assert.ThrowsAsync<QualificationCostEstimateUnavailableException>(() =>
+            new ProbeRunner(provider).RunSuiteAsync(requests, new QualificationConsent(true, decimal.MaxValue),
+                CancellationToken.None));
+        Assert.Equal(0, provider.Calls);
+    }
+
     private static void AssertScoredResponse(ProbeResult result)
     {
         Assert.Equal(ProbeStatus.Passed, result.Status);
@@ -179,6 +197,7 @@ public sealed class M5QualificationUsageEvidenceTests
     private sealed class FixtureProvider : IModelProvider
     {
         private readonly IReadOnlyList<ModelStreamEvent> _events;
+        public int Calls { get; private set; }
 
         public FixtureProvider(IReadOnlyList<ModelStreamEvent> events) => _events = events;
 
@@ -189,6 +208,7 @@ public sealed class M5QualificationUsageEvidenceTests
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
             await Task.Yield();
             foreach (var item in _events)
             {
