@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 13:18 UTC / 07:18 America/Mexico_City.
+Actualizado 2026-10-06 13:37 UTC / 07:37 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -66,8 +66,20 @@ traits a la CLI; una solaGet, Traits(revisiónexacta), lookup endpoint efectivo.
 evidencia utilizable, metadata null explícita. No altera keys ni cualifica proveedores.
 RED4FAIL; focal final89PASS/0FAIL/0SKIP6.141s, build0warnings/errores, SQLreopen real
 y CLI HTTPloopback con fixture de keyajena. Fullfinal1949=1945PASS/0FAIL/4SKIPsymlink
-266.837s, exit0; no incluye seis regresiones monetarias posteriores. Fallo de cleanup
+266.837s, exit0; no incluye las regresiones monetarias posteriores. Fallo de cleanup
 Windows de fixture previo documentado, no assertion debilitada ni ClearAllPools.
+Sumas monetarias históricas no representables ahora producen bloqueo controlado bajo
+tope o Error/TurnAbandoned sin tope; no se fabrican totales cero ni ampliaciones.
+Después de ModelStepCompleted se comprueba también histórico+actual ANTES de tools,
+conservando usage/coste/artifact del paso. Diario entre sesiones y reopen SQLite/CAS
+probados. RED histórico6=2PASS4FAIL; RED aislado posterior al paso6=2PASS4FAIL;
+focal final75PASS/0FAIL/0SKIP4.203s, build0warnings/errores. Full1964 casos:
+1960PASS/0FAIL/4SKIPsymlink266.765s, exit0 (money-overflow-full.log).
+Fixtures offline, no consumo autenticado. [Evidencia](m55-budget-continuation.md).
+Auditoría read-only: AgentProfile no tiene resolver activo; ProfileId de Lane no es
+un perfil efectivo. toolPreferences está diferido a M8 por ADR0027. No se inventan
+componentes: falta verificar en integración política efectiva/boundary/tools visibles
+y completar los contratos exigidos por ADR0017 sin afirmar implementaciones futuras.
 Faltan AgentProfile/skills efectivos y trazabilidad explicable completa; no se declara
 cerrado el fingerprint de M5.5. Full1834=1830PASS/0FAIL/4SKIPsymlink213.545s, exit0.
 GC ya distingue la forma completa conocida del fingerprint de JSON arbitrario
