@@ -14,7 +14,7 @@ internal static class ProviderStateCheckpoint
     private const string MediaType = "application/vnd.omnicore.provider-state+json";
 
     public static string? Persist(IArtifactStore artifacts, ProviderState? state, string modelId,
-        RouteId routeId, TurnId turnId, int stepIndex)
+        RouteId routeId, TurnId turnId, int stepIndex, string? routeIdentityHash)
     {
         ArgumentNullException.ThrowIfNull(artifacts);
         ArgumentNullException.ThrowIfNull(routeId);
@@ -36,9 +36,10 @@ internal static class ProviderStateCheckpoint
 
             var descriptor = new ProviderStateCheckpointDescriptor
             {
-                Version = 1,
+                Version = 2,
                 ModelId = modelId,
                 RouteId = routeId.Value,
+                RouteIdentityHash = routeIdentityHash,
                 TurnId = turnId.ToString(),
                 StepIndex = stepIndex,
                 StateRef = stateRef,
@@ -56,7 +57,7 @@ internal static class ProviderStateCheckpoint
     }
 
     public static ProviderState? Restore(IArtifactStore artifacts, string descriptorJson, string modelId,
-        RouteId routeId, TurnId turnId, int stepIndex)
+        RouteId routeId, TurnId turnId, int stepIndex, string? routeIdentityHash)
     {
         ArgumentNullException.ThrowIfNull(artifacts);
         ArgumentNullException.ThrowIfNull(routeId);
@@ -73,7 +74,7 @@ internal static class ProviderStateCheckpoint
             throw Invalid();
         }
 
-        if (descriptor.Version != 1) throw Invalid();
+        if (descriptor.Version is not (1 or 2)) throw Invalid();
         if (string.IsNullOrWhiteSpace(descriptor.ModelId) || string.IsNullOrWhiteSpace(descriptor.RouteId)
             || string.IsNullOrWhiteSpace(descriptor.TurnId) || !Guid.TryParse(descriptor.TurnId, out _)
             || descriptor.StateRef is null)
@@ -82,6 +83,14 @@ internal static class ProviderStateCheckpoint
             || !string.Equals(descriptor.RouteId, routeId.Value, StringComparison.Ordinal)
             || !string.Equals(descriptor.TurnId, turnId.ToString(), StringComparison.Ordinal)
             || descriptor.StepIndex != stepIndex)
+            return null;
+
+        // Version 1 and unqualified version 2 checkpoints have no proof that the current
+        // endpoint/protocol/profile/provider model is the same physical route. Never replay them.
+        if (descriptor.Version != 2 || routeIdentityHash is null || descriptor.RouteIdentityHash is null
+            || !ValidRouteIdentityHash(routeIdentityHash)
+            || !ValidRouteIdentityHash(descriptor.RouteIdentityHash)
+            || !string.Equals(descriptor.RouteIdentityHash, routeIdentityHash, StringComparison.Ordinal))
             return null;
 
         var stateRef = descriptor.StateRef;
@@ -112,6 +121,9 @@ internal static class ProviderStateCheckpoint
         && hash.Value is { Length: 64 } value
         && value.All(static c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
 
+    private static bool ValidRouteIdentityHash(string? value) => value is { Length: 64 }
+        && value.All(static c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     private static InvalidDataException Invalid() => new(SafeFailure);
 }
 
@@ -120,6 +132,7 @@ internal sealed record ProviderStateCheckpointDescriptor
     public required int Version { get; init; }
     public required string ModelId { get; init; }
     public required string RouteId { get; init; }
+    public string? RouteIdentityHash { get; init; }
     public required string TurnId { get; init; }
     public required int StepIndex { get; init; }
     public required ArtifactRef StateRef { get; init; }
