@@ -28,6 +28,9 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 Resultado final focal: 31 PASS, 0 FAIL, 0 SKIP; build 0 warnings/errores.
 Log: `C:\Users\juanc\.codex\omni-m55-three-20261006\provider-state-accounting-tests.log`.
+Suite completa final sobre `5f40a81`: 1588 casos, 1584 PASS, 0 FAIL, 4 SKIP
+por permisos symlink; 134.443 s. Log `provider-state-accounting-full-suite.log`
+en el mismo directorio. Los focales se solapan con la suite y no se suman.
 La integración reabre SQLite/CAS y resuelve el cuestionario por OmniServer. Comprueba
 same destination, cambios de ruta/modelo, estado nulo, corrupción y GC sin gracia.
 El adapter Anthropic real recibe SSE de fixture y reenvía la firma intacta antes de
