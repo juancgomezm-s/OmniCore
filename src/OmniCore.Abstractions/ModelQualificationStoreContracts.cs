@@ -29,6 +29,15 @@ public interface IModelQualificationStore
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Guarda la siguiente revisión del perfil y todos sus traits en una sola transacción.
+    /// Los traits deben identificar esta clave y expectedRevision+1. Un fallo o cancelación
+    /// conserva íntegramente el perfil y traits anteriores, sin cualificación parcial.
+    /// </summary>
+    ModelQualificationProfile UpsertWithTraits(ModelQualificationKey key, long expectedRevision,
+        ModelQualificationState state, string suiteId, string suiteVersion,
+        IReadOnlyList<ModelTraitRecord> traits, CancellationToken cancellationToken);
+
+    /// <summary>
     /// Marca un perfil como Stale sin destruir la evidencia (ADR-0007 §4): se aplica solo cuando
     /// la suite que produjo la cualificación (suite_id + suite_version) tiene una versión mayor
     /// nueva, y solo sobre perfiles Qualified/Calibrated. `suite_version` del perfil nunca se
