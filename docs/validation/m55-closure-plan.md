@@ -1,17 +1,17 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 16:17 UTC / 10:17 America/Mexico_City.
+Actualizado 2026-10-06 18:44 UTC / 12:44 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
 ## Instrucciones vigentes del objetivo
 
-El usuario pidió actualizar el objetivo y reanudarlo el 2026-10-06. Se revoca la
-pausa de trabajo manual. El objetivo de producto todavía devuelve `paused`: las
-herramientas disponibles no permiten editar su texto ni reanudar ese estado. No
-se marca completo ni se crea otro objetivo para eludirlo; la automatización antigua
-permanece pausada. El trabajo manual autorizado puede continuar.
+El usuario pidió actualizar el objetivo y reanudarlo el 2026-10-06. `get_goal`
+confirmó `active` a las 18:29 UTC: la pausa de producto ya fue revocada. El texto
+del objetivo conserva M5.5/M6; estas instrucciones vigentes incluyen también el
+cierre de M5 y el reparto de agentes solicitado. La automatización histórica sigue
+pausada; no se crea otro objetivo ni se declara terminado el actual por un subconjunto.
 
 - Luna `gpt-6-luna`, esfuerzo **alto**, concentrada exclusivamente en el cierre M5.
   Prioridad: persistencia atómica de perfil/traits; coste real y desconocido sin
@@ -37,6 +37,12 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- Persistencia M5 de perfil y traits en una transacción, con validación de identidad,
+  revisión y cancelación; siete regresiones aportadas por Luna y auditadas por root.
+  Focal 125 PASS, arquitectura 56 PASS. Full repetida 1998 = 1994 PASS/0 FAIL/4 SKIP
+  symlink, 112.034s. La primera ejecución tuvo un fallo TLS existente cuya causa
+  intermitente sigue abierta; los logs de ambas se conservan. Siguiente bloque:
+  coste desconocido distinto de cero, con pruebas RED offline, no gasto real.
 - `de76958`: checkpoint de TUI/runtime y observabilidad de sesión.
 - `ad65f0f`: ModelRoute/RouteId y emisión durable en ModelStepStarted v3;
   journals v1/v2 legibles y ruta conservada tras suspensión/reanudación.
@@ -257,6 +263,14 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
    exactamente qué evidencia real de providers pertenece a M5, sin convertir fixtures en éxito real.
 
 ## Ownership / pruebas
+
+Ronda 2026-10-06 18:37 UTC: persistencia M5 ya usa `UpsertWithTraits`, perfil y
+traits en una sola transacción, con validación de identidad/revisión y rollback
+ante error/cancelación. RED real de trigger SQLite: 3 casos = 1 PASS/2 FAIL.
+Luna aportó fixtures de Host y cuatro controles de store; root implementó contrato,
+store/Host y auditó/fortaleció pruebas. Focal final 125 PASS/0 FAIL/0 SKIP, 1.479s,
+build 0 warnings/errores. Sin provider autenticado. [Evidencia](m5-qualification-continuation-20261006.md).
+Coste real/desconocido por probe y evidencia CAS de cualificación siguen pendientes.
 
 Ronda manual 2026-10-06 16:14 UTC: Luna gpt-6-luna HIGH concentrada en M5,
 quick10/preflight de coste/hash canónico; evidencia y pendientes en

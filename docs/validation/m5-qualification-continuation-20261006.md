@@ -63,11 +63,56 @@ La cualificación autenticada de las rutas Sol/Luna ya conectadas sigue requirie
 una ejecución reproducible del circuito del proyecto; las fixtures y las llamadas
 a workers externos no la sustituyen. No se declara M5 completo.
 
-Auditoría Luna de persistencia: Host llama Upsert y SaveTraits por separado, cada
-uno confirma su propia transacción. Un fallo al insertar traits deja una revisión
-Qualified sin traits; al recalificar, la revisión anterior conserva sus traits,
-pero la vigente queda incompleta. Repro pendiente: trigger SQLite privado BEFORE
-INSERT ON model_traits que aborte StructuredOutputReliability, con provider offline.
-El siguiente bloque debe guardar perfil y traits en una transacción conjunta y
-probar rollback/reopen tanto de una creación como de una recalificación. Es un
-hallazgo de código, aún no un RED ejecutado ni un fix implementado.
+## Persistencia atómica de cualificación
+
+El circuito anterior llamaba Upsert y SaveTraits por separado, con dos commits:
+un fallo al insertar traits dejaba una revisión Qualified sin traits. Ahora Host
+usa `IModelQualificationStore.UpsertWithTraits`: perfil y traits se confirman en
+una transacción de escritura SQLite. La lectura y comprobación de revisión ocurren
+dentro de esa transacción. Todos los traits deben identificar la clave exacta y
+expectedRevision+1; validación antes de writes, suma de revisión checked, control
+de cancelación antes de confirmar. Error, conflicto o cancelación revierten
+perfil/traits nuevos y conservan íntegros el perfil y el historial anteriores.
+
+Upsert y SaveTraits independientes se conservan para los consumidores existentes;
+no se ofrece un fallback no atómico para la operación conjunta.
+
+Luna aportó `M5QualificationAtomicPersistenceTests`, con trigger SQLite privado
+BEFORE INSERT ON model_traits / RAISE(ABORT) en StructuredOutputReliability.
+Provider offline exacto, diez requests, store y SQLite reabiertos realmente.
+`atomic-red-revalidated-test.log`: tres casos = 1 PASS/2 FAIL, 0.331s. Creación
+dejaba perfil y recalificación cambiaba Calibrated→Qualified pese al error de traits.
+No se cambiaron esas aserciones al corregir producción. Primer handle de build
+16047 desapareció sin resultado: antes de relanzar se confirmó ausencia de procesos
+dotnet y de log de test, no se trató un timeout de observación como fallo del producto.
+
+`atomic-fixed-build.log`: 0 warnings/errores. `atomic-fixed-focal.log`:
+121 PASS/0 FAIL/0 SKIP, 1.537s. Esta verificación aún no incluye las pruebas nuevas
+de contrato del store ni sustituye la suite completa posterior.
+
+`M5QualificationAtomicStoreContractTests`: dos conexiones independientes con
+expectedRevision=0, revisión obsoleta tras rev2, identidad de trait inválida con
+control de reintento válido, cancelación inyectada durante UpsertCore antes de
+insertar traits. Se reabre SQLite y se comparan metadata y campos completos de
+traits anteriores. No es una prueba de estrés ni un scheduler concurrente M6.
+La auditoría corrigió el fixture del reloj: inicialización del store también usa
+el reloj para su marcador de migración, así que la cancelación se arma explícitamente
+después de la primera escritura, no por un número global de llamadas supuesto.
+
+`atomic-contract-build.log`: 0 warnings/errores.
+`atomic-contract-focal.log`: 125 PASS/0 FAIL/0 SKIP, 1.479s.
+
+`atomic-architecture-test.log`: 56 PASS/0 FAIL/0 SKIP, 0.574s;
+build 0 warnings/errores.
+Primera suite completa `atomic-full.log`: 1998 casos, 1993 PASS/1 FAIL/4 SKIP
+symlink, 109.656s. La prueba existente Pinned_tls_handler_works_end_to_end_against_a_real_tls_server
+falló por TaskCanceledException al leer cabeceras del servidor de fixture con plazo
+30s; su código y la política TLS no se modificaron. Ejecución aislada del mismo
+test: `atomic-tls-isolated.log`, 1 PASS, 2.354s. Esto demuestra diferencia entre
+ejecuciones, no identifica ni resuelve su causa. Se preserva el fallo y se ejecuta
+una repetición completa sin cambios de fuente, sin aumentar timeout ni retirar assertions.
+
+Repetición completa `atomic-full-repeat.log`: 1998 casos = 1994 PASS/0 FAIL/
+4 SKIP por permisos symlink, 112.034s, exit0. No incluye los nuevos tests de coste
+desconocido. El fallo TLS inicial queda documentado: la repetición verde no demuestra
+que se haya corregido su causa intermitente. No se declara M5 cerrado.

@@ -185,6 +185,11 @@ public sealed class ModelQualificationSnapshotTests
         public ModelQualificationProfile MarkStale(ModelQualificationKey key, long expectedRevision,
             string newSuiteVersion, CancellationToken cancellationToken) => throw new NotSupportedException();
 
+        public ModelQualificationProfile UpsertWithTraits(ModelQualificationKey key, long expectedRevision,
+            ModelQualificationState state, string suiteId, string suiteVersion,
+            IReadOnlyList<ModelTraitRecord> traits, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public void SaveTraits(ModelQualificationKey key, long profileRevision,
             IReadOnlyList<ModelTraitRecord> traits, CancellationToken cancellationToken) =>
             throw new NotSupportedException();

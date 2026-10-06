@@ -275,10 +275,11 @@ public sealed class ModelQualificationHost : IDisposable
             ? null
             : _store.Traits(key, existing.ProfileRevision, cancellationToken));
 
-        var profile = _store.Upsert(key, existing?.ProfileRevision ?? 0, newState,
-            QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion, cancellationToken);
-        _store.SaveTraits(key, profile.ProfileRevision,
-            traits.Select(trait => new ModelTraitRecord(key.QualificationKeyHash(), profile.ProfileRevision,
+        var expectedRevision = existing?.ProfileRevision ?? 0;
+        var nextRevision = checked(expectedRevision + 1);
+        var profile = _store.UpsertWithTraits(key, expectedRevision, newState,
+            QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion,
+            traits.Select(trait => new ModelTraitRecord(key.QualificationKeyHash(), nextRevision,
                 trait.Trait, trait.Value, trait.Confidence, trait.Samples, trait.Source)).ToArray(),
             cancellationToken);
 

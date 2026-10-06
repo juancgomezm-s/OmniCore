@@ -10,7 +10,8 @@ using OmniCore.Domain;
 /// Resolución por clave exacta con columnas tipadas: ninguna consulta vectorial participa en una
 /// decisión de cualificación. Concasión optimista por `profile_revision` (equivalente de
 /// ADR-0044 §9 para M5): Upsert/MarkStale exigen la revisión vigente y jamás pisan cambios
-/// concurrentes. `MarkStale` no destruye la evidencia: solo cambia el estado a Stale y registra
+/// concurrentes. `UpsertWithTraits` confirma perfil y traits como unidad indivisible.
+/// `MarkStale` no destruye la evidencia: solo cambia el estado a Stale y registra
 /// la versión que lo volvió Stale en `stale_by_suite_version`, conservando suite_version (la suite
 /// que produjo el perfil), key_json y el historial de traits (ADR-0007 §4).
 /// </summary>
@@ -47,8 +48,14 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
     }
 
     public ModelQualificationProfile? Get(ModelQualificationKey key, CancellationToken cancellationToken)
+        => GetCore(key, cancellationToken, null);
+
+    private ModelQualificationProfile? GetCore(ModelQualificationKey key,
+        CancellationToken cancellationToken, DbTransaction? transaction)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var cmd = _conn.CreateCommand();
+        cmd.Transaction = transaction;
         cmd.CommandText = "SELECT * FROM model_profiles WHERE key_hash = :h";
         Add(cmd, "h", key.QualificationKeyHash());
         using var reader = cmd.ExecuteReader();
@@ -73,11 +80,39 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         ModelQualificationState state, string suiteId, string suiteVersion,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        using var tx = _conn.BeginTransaction();
+        var profile = UpsertCore(key, expectedRevision, state, suiteId, suiteVersion, cancellationToken, tx);
+        cancellationToken.ThrowIfCancellationRequested();
+        tx.Commit();
+        return profile;
+    }
+
+    public ModelQualificationProfile UpsertWithTraits(ModelQualificationKey key, long expectedRevision,
+        ModelQualificationState state, string suiteId, string suiteVersion,
+        IReadOnlyList<ModelTraitRecord> traits, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var revision = checked(expectedRevision + 1);
         var keyHash = key.QualificationKeyHash();
-        var existing = Get(key, cancellationToken);
+        ValidateTraits(keyHash, revision, traits);
+        using var tx = _conn.BeginTransaction();
+        var profile = UpsertCore(key, expectedRevision, state, suiteId, suiteVersion, cancellationToken, tx);
+        SaveTraitsCore(keyHash, profile.ProfileRevision, traits, cancellationToken, tx);
+        cancellationToken.ThrowIfCancellationRequested();
+        tx.Commit();
+        return profile;
+    }
+
+    private ModelQualificationProfile UpsertCore(ModelQualificationKey key, long expectedRevision,
+        ModelQualificationState state, string suiteId, string suiteVersion,
+        CancellationToken cancellationToken, DbTransaction tx)
+    {
+        var keyHash = key.QualificationKeyHash();
+        // Read and revision check occur under the same write transaction as the update.
+        var existing = GetCore(key, cancellationToken, tx);
         var now = _clock();
 
-        using var tx = _conn.BeginTransaction();
         if (existing is null)
         {
             if (expectedRevision != 0)
@@ -98,7 +133,6 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 insert.ExecuteNonQuery();
             }
 
-            tx.Commit();
             return new ModelQualificationProfile(key, state, 1, suiteId, suiteVersion, now, now);
         }
 
@@ -107,7 +141,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             throw new ModelQualificationRevisionConflictException(expectedRevision, existing!.ProfileRevision);
         }
 
-        var updated = new ModelQualificationProfile(key, state, existing!.ProfileRevision + 1, suiteId,
+        var updated = new ModelQualificationProfile(key, state, checked(existing!.ProfileRevision + 1), suiteId,
             suiteVersion, existing!.CreatedAt, now);
         using (var update = _conn.CreateCommand())
         {
@@ -128,13 +162,12 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             var rows = update.ExecuteNonQuery();
             if (rows == 0)
             {
-                var current = Get(key, cancellationToken);
+                var current = GetCore(key, cancellationToken, tx);
                 throw new ModelQualificationRevisionConflictException(existing!.ProfileRevision,
                     current?.ProfileRevision ?? 0);
             }
         }
 
-        tx.Commit();
         return updated;
     }
 
@@ -234,8 +267,19 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
     public void SaveTraits(ModelQualificationKey key, long profileRevision,
         IReadOnlyList<ModelTraitRecord> traits, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var keyHash = key.QualificationKeyHash();
+        ValidateTraits(keyHash, profileRevision, traits);
+        using var tx = _conn.BeginTransaction();
+        SaveTraitsCore(keyHash, profileRevision, traits, cancellationToken, tx);
+        cancellationToken.ThrowIfCancellationRequested();
+        tx.Commit();
+    }
 
+    private static void ValidateTraits(string keyHash, long profileRevision,
+        IReadOnlyList<ModelTraitRecord> traits)
+    {
+        ArgumentNullException.ThrowIfNull(traits);
         // Validación cerrada ANTES de tocar la base de datos:
         // cada trait debe tener KeyHash y ProfileRevision correctos.
         foreach (var t in traits)
@@ -253,11 +297,14 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                     nameof(traits));
             }
         }
+    }
 
+    private void SaveTraitsCore(string keyHash, long profileRevision,
+        IReadOnlyList<ModelTraitRecord> traits, CancellationToken cancellationToken, DbTransaction tx)
+    {
         // Verificación y reemplazo son atómicos dentro de la transacción: la revisión vigente
         // se revalida al reemplazar, para que un perfil subido por otro cliente entre la lectura
         // inicial y el DELETE/INSERT no pise traits de una revisión obsoleta.
-        using var tx = _conn.BeginTransaction();
         using (var check = _conn.CreateCommand())
         {
             check.Transaction = tx;
@@ -266,14 +313,12 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             using var reader = check.ExecuteReader();
             if (!reader.Read())
             {
-                tx.Rollback();
                 throw new ModelQualificationRevisionConflictException(profileRevision, 0);
             }
 
             var currentRevision = reader.GetInt64(0);
             if (currentRevision != profileRevision)
             {
-                tx.Rollback();
                 throw new ModelQualificationRevisionConflictException(profileRevision, currentRevision);
             }
         }
@@ -289,6 +334,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
 
         foreach (var t in traits)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using var insert = _conn.CreateCommand();
             insert.Transaction = tx;
             insert.CommandText = """
@@ -304,8 +350,6 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             Add(insert, "src", t.Source);
             insert.ExecuteNonQuery();
         }
-
-        tx.Commit();
     }
 
     private void InitializeSchema()
