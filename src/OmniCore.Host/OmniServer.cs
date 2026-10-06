@@ -60,6 +60,15 @@ public sealed class OmniServer : IOmniClient
     public SessionObservationHub Observability { get; }
 
     private string? _workspaceRoot;
+    private SessionRoutingPolicy _newSessionRoutingPolicy = SessionRoutingPolicy.Empty();
+
+    internal void ConfigureNewSessionRoutingPolicy(SessionRoutingPolicy policy)
+    {
+        var frozen = policy.Freeze();
+        if (frozen.Revision != 1 || frozen.BillingPolicy.Any(mode => mode is BillingMode.Unknown or BillingMode.MeteredCurrency))
+            throw new ArgumentException("Initial routing policy cannot grant unconsented metered or unknown routes");
+        _newSessionRoutingPolicy = frozen;
+    }
 
     public void ConfigureWorkspaceRoot(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
 
@@ -610,6 +619,7 @@ public sealed class OmniServer : IOmniClient
         var physicalWorkspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspacePath);
         stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalWorkspaceRoot)).ToString(),
             workspacePath, ProfileId.New(), now));
+        stream.Append(new SessionRoutingPolicySet(sessionId, _newSessionRoutingPolicy));
         // Origen explícito y seguro de la raíz del run real (ADR-0004 §5): se fija aquí, en la
         // creación de la sesión, y es lo único que la recuperación acepta al arrancar. Nunca se
         // usa el cwd de un proceso posterior ni WorkspaceDisplayPath como autoridad. Se registra
@@ -1345,6 +1355,86 @@ public sealed class OmniServer : IOmniClient
         return (result, ack);
     }
 
+    internal CommandAck EnsureSessionRoutingPolicy(SessionId session)
+    {
+        var commandId = CommandId.New();
+        if (_lastSessionId != session)
+            return new CommandAck(commandId.ToString(), "error", "Session is not selected", RuntimeCommandOutcome.Rejected());
+        var before = _store.CurrentSequence(session);
+        if (SessionRoutingAuthorization.Read(_store.ReadFrom(session, 1), _codecs, session) is not null)
+            return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.NoOp(), session, before, commandId);
+        using var command = CausationScope.Begin(new CommandCausation(commandId));
+        new EventStream(_store, _codecs, session).Append(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
+        return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.Accepted(), session, before, commandId);
+    }
+
+    internal (bool Authorized, InteractionId? Interaction, CommandAck Ack) AuthorizeModelRoute(
+        SessionId session, RunId run, ModelRoute route, BillingMode mode, bool requireConsent = false)
+    {
+        var commandId = CommandId.New();
+        var messageId = commandId.ToString();
+        var control = new RunControlService(_store, _codecs);
+        if (_lastSessionId != session || _lastRunId != run || control.ActiveRun(session) != run)
+            return (false, null, new CommandAck(messageId, "error", "Routing authorization requires the selected active Run",
+                RuntimeCommandOutcome.Rejected()));
+        var before = _store.CurrentSequence(session);
+        var events = _store.ReadFrom(session, 1);
+        var policy = SessionRoutingAuthorization.Read(events, _codecs, session);
+        if (policy is null)
+            return (false, null, new CommandAck(messageId, "error", "Session routing policy is absent", RuntimeCommandOutcome.Rejected()));
+        if (!requireConsent && policy.Allows(route, mode))
+            return (true, null, CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.NoOp(), session, before, commandId));
+        var offer = new SessionRoutingAuthorization.Offer(policy.Revision, AuthorizedModelRoute.From(route, mode));
+        var pending = new Dictionary<InteractionId, InteractionRequested>();
+        foreach (var evt in events)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case InteractionRequested request when evt.RunId == run:
+                    pending[request.InteractionId] = request; break;
+                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+            }
+        }
+        var existing = pending.Values.FirstOrDefault(request => SessionRoutingAuthorization.Parse(request) == offer);
+        if (existing is not null)
+            return (false, existing.InteractionId, CommandOutcomeAck(messageId, "ok", null,
+                RuntimeCommandOutcome.Deferred("ModelRouteConsent"), session, before, commandId));
+        var interaction = InteractionId.New();
+        using var command = CausationScope.Begin(new CommandCausation(commandId));
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: run));
+        new EventStream(_store, _codecs, session).Append(new InteractionRequested(interaction,
+            InteractionKind.ModelRouteConsent, SessionRoutingAuthorization.Context(offer),
+            "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_route\",\"intent\":\"allow\"}]",
+            "deny", null, null, null, null, 0, 1), DurabilityClass.Barrier);
+        return (false, interaction, CommandOutcomeAck(messageId, "ok", null,
+            RuntimeCommandOutcome.Deferred("ModelRouteConsent"), session, before, commandId));
+    }
+
+    internal CommandAck ResolveModelRouteWithoutClient(SessionId session, RunId run, InteractionId interaction)
+    {
+        var commandId = CommandId.New();
+        var control = new RunControlService(_store, _codecs);
+        var events = _store.ReadFrom(session, 1);
+        if (_lastSessionId != session || _lastRunId != run || control.ActiveRun(session) != run
+            || events.LastOrDefault(evt => _codecs.Decode(evt) is InteractionRequested request
+                && request.InteractionId == interaction)?.RunId != run)
+            return new CommandAck(commandId.ToString(), "error", "Routing interaction does not belong to the selected active Run",
+                RuntimeCommandOutcome.Rejected());
+        var before = _store.CurrentSequence(session);
+        using var command = CausationScope.Begin(new CommandCausation(commandId));
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: run));
+        try
+        {
+            control.ResolveModelRouteWithoutClient(session, interaction);
+            return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.Accepted(), session, before, commandId);
+        }
+        catch (Exception ex) when (ex is InvalidInteractionOptionException or InteractionNotPendingException)
+        {
+            return CommandOutcomeAck(commandId.ToString(), "error", ex.Message, RuntimeCommandOutcome.Rejected(), session, before, commandId);
+        }
+    }
+
     internal CommandAck ResolveBudgetWithoutClient(SessionId sessionId, RunId runId, InteractionId interactionId)
     {
         var commandId = CommandId.New();
@@ -1493,6 +1583,7 @@ public sealed class OmniServer : IOmniClient
         var workspace = Path.GetFullPath(".");
         new EventStream(_store, _codecs, session).Append(new SessionCreated(session,
             WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(), workspace, ProfileId.New(), DateTimeOffset.UtcNow));
+        new EventStream(_store, _codecs, session).Append(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
         return session;
     }
 

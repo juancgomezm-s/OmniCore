@@ -357,6 +357,8 @@ public sealed class OmniCliRuntime
             }
 
             var server = Server(workspaceData);
+            server.ConfigureNewSessionRoutingPolicy(ModelRoutingHost.InitialSessionPolicy(loaded,
+                modelDefinition?.ProviderId ?? "local"));
             string workingState = "";
             if (conversationOnly)
             {
@@ -411,17 +413,23 @@ public sealed class OmniCliRuntime
 
             if (followUp.Queued)
                 prompt = ""; // queued once before any CLI early-return; Ask must not enqueue it again.
-            IModelProvider provider = providerDescription is null
-                ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")
-                : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "",
-                    string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
-                        ? OmniHost.CreateChatGptAuth(paths) : null);
             var usableContext = modelDefinition is not null && modelDefinition.RecommendedUsableContext > 0
                 ? modelDefinition.RecommendedUsableContext
                 : modelDefinition is not null && modelDefinition.ContextWindow > 0
                     ? modelDefinition.ContextWindow : 8192;
             var runtimeModel = modelDefinition ?? new ModelDefinition(model, "local", usableContext, usableContext, 2048);
             var route = ModelRoutingHost.RouteFor(runtimeModel, providerDescription, baseUrl);
+            if (AuthorizeRouteForInvocation(server, sessionId, runId, route,
+                    providerDescription?.BillingMode ?? BillingMode.Unknown, writeLine, locale) is { } routeCode)
+                return routeCode;
+            var routingPolicy = SessionRoutingAuthorization.Read(server.AcquireStore().ReadFrom(sessionId, 1),
+                server.AcquireCodecs(), sessionId)!;
+            var sessionCap = Math.Min(loaded.SessionCapUsd, routingPolicy.SessionSpendLimit ?? loaded.SessionCapUsd);
+            IModelProvider provider = providerDescription is null
+                ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "")
+                : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "",
+                    string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
+                        ? OmniHost.CreateChatGptAuth(paths) : null);
             var effectiveProfile = new ModelProfileResolver().Resolve(
                 runtimeModel,
                 providerDescription,
@@ -524,8 +532,8 @@ public sealed class OmniCliRuntime
                 modelDefinition?.ContextWindow, token), executor,
                 hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
                 server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
-                loaded.Pricing(model), providerDescription?.Auth.Kind == AuthKind.ApiKey,
-                sessionCapUsd: loaded.SessionCapUsd, dailyCapUsd: loaded.DailyCapUsd,
+                loaded.Pricing(model), providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
+                sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
                 questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                 metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
             var instruction = TurnInstruction(executingAct);
@@ -612,8 +620,8 @@ public sealed class OmniCliRuntime
                         actExecutor, actTools.Catalog(), materializer, fingerprint, selection,
                         server.AcquireStore(), server.AcquireCodecs(), artifacts, audit,
                         new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
-                        providerDescription?.Auth.Kind == AuthKind.ApiKey,
-                        sessionCapUsd: loaded.SessionCapUsd, dailyCapUsd: loaded.DailyCapUsd,
+                        providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
+                        sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
                         questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                         metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow);
                     var approvedState = ReadWorkingState(server, cancellationToken);
@@ -848,6 +856,32 @@ public sealed class OmniCliRuntime
         };
     }
 
+    internal int? AuthorizeRouteForInvocation(OmniServer server, SessionId session, RunId run,
+        ModelRoute route, BillingMode mode, Action<string> writeLine, string locale, bool requireConsent = false)
+    {
+        var initialized = server.EnsureSessionRoutingPolicy(session);
+        if (initialized.Status != "ok") { writeLine(initialized.Error ?? "Routing policy initialization rejected"); return 1; }
+        var authorization = server.AuthorizeModelRoute(session, run, route, mode, requireConsent);
+        if (authorization.Authorized) return null;
+        if (authorization.Interaction is not { } interaction)
+        { writeLine(authorization.Ack.Error ?? "Model route authorization rejected"); return 1; }
+        if (HasInteractionClient)
+        { writeLine(InputRequiredJson(interaction, "ModelRouteConsent")); return 3; }
+        if (UseConsoleInput && !Console.IsInputRedirected)
+        {
+            var request = server.AcquireStore().ReadFrom(session, 1).Select(server.AcquireCodecs().Decode)
+                .OfType<InteractionRequested>().Last(request => request.InteractionId == interaction);
+            var selected = CreateInteractionResponder(writeLine, locale)(request) ?? "deny";
+            var ack = server.RespondToInteraction(interaction, selected);
+            if (ack.Status != "ok") { writeLine(ack.Error ?? "Model route response rejected"); return 1; }
+            if (selected == "allow_route" && server.AuthorizeModelRoute(session, run, route, mode).Authorized) return null;
+            return 1;
+        }
+        var denial = server.ResolveModelRouteWithoutClient(session, run, interaction);
+        if (denial.Status != "ok") writeLine(denial.Error ?? "NoClient route denial rejected");
+        return 1;
+    }
+
     internal int? HandlePendingBudget(OmniServer server, SessionId session, RunId run,
         bool interactiveConsole, Action<string> writeLine)
     {
@@ -895,6 +929,7 @@ public sealed class OmniCliRuntime
         {
             InteractionKind.WeakSandboxConsent => "interaction.weak_sandbox.title",
             InteractionKind.BudgetExceeded => "interaction.budget_exceeded.title",
+            InteractionKind.ModelRouteConsent => "interaction.model_route_consent.title",
             _ => "interaction.permission.title",
         };
         writeLine(Text(LocalizedText.Of(titleKey)));
@@ -916,6 +951,8 @@ public sealed class OmniCliRuntime
                     "allow_run" => "interaction.permission.allow_run",
                     "allow_workspace" => "interaction.permission.allow_workspace",
                     "allow_plus" when request.Kind == InteractionKind.BudgetExceeded => "interaction.budget_exceeded.continue",
+                    "allow_route" when request.Kind == InteractionKind.ModelRouteConsent => "interaction.model_route_consent.allow_route",
+                    "deny" when request.Kind == InteractionKind.ModelRouteConsent => "interaction.model_route_consent.deny",
                     _ => request.Kind == InteractionKind.WeakSandboxConsent
                         ? "interaction.weak_sandbox.deny" : "interaction.permission.deny",
                 };
@@ -1085,17 +1122,20 @@ public sealed class OmniCliRuntime
         if (next is null || server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return null;
         EnsureEscalationRecorded(server.RecordModelEscalationRequested(session,
             new ModelEscalationRequested(run, currentModel, next.Alias, EscalationCause.ContextLimit)));
-        if (ModelRoutingHost.EscalationMode(loaded) != "auto")
-        {
-            writeLine(Text(Localized("cli.escalation.suggest", ("model", next.Alias))));
-            return null;
-        }
         // phaseA7 (M55): en modo auto no se aprueba la escalación si el proveedor del modelo
         // destino requiere API key y esta no está resuelta; misma semántica que RunTurnAsync,
         // sin aprobar ni completar el intento (el Requested ya registra la causa).
         var escalatedDefinition = loaded.Registry.Model(next.Alias);
         var escalatedProvider = escalatedDefinition is null ? null
             : loaded.Registry.Provider(escalatedDefinition.ProviderId);
+        if (escalatedDefinition is null) return 1;
+        var escalatedRoute = ModelRoutingHost.RouteFor(escalatedDefinition, escalatedProvider);
+        var escalationMode = ModelRoutingHost.EscalationMode(loaded);
+        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        if (AuthorizeRouteForInvocation(server, session, run, escalatedRoute,
+                escalatedProvider?.BillingMode ?? BillingMode.Unknown, writeLine, locale,
+                requireConsent: escalationMode == "ask") is { } authorizationCode)
+            return authorizationCode;
         if (escalatedProvider?.Auth.Kind == AuthKind.ApiKey)
         {
             string? escalatedKey;
@@ -1119,7 +1159,7 @@ public sealed class OmniCliRuntime
             }
         }
         EnsureEscalationRecorded(server.RecordModelEscalationApproved(session,
-            new ModelEscalationApproved(run, next.Alias, "policy:auto")));
+            new ModelEscalationApproved(run, next.Alias, escalationMode == "auto" ? "policy:auto-authorized" : "interaction:user")));
         writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.Alias))));
         _escalatedModel = next.Alias;
         try

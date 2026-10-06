@@ -193,6 +193,15 @@ public sealed class RunControlService
     public void ResolveBudgetWithoutClient(SessionId session, InteractionId interaction)
         => ResolveInteraction(session, interaction, "deny", InteractionCause.NoClient, noClient: true);
 
+    public void ResolveModelRouteWithoutClient(SessionId session, InteractionId interaction)
+    {
+        var request = PendingInteractions(_store.ReadFrom(session, 1))
+            .FirstOrDefault(request => request.InteractionId == interaction);
+        if (request?.Kind != InteractionKind.ModelRouteConsent)
+            throw new InvalidInteractionOptionException(interaction, "deny");
+        ResolveInteraction(session, interaction, "deny", InteractionCause.NoClient, noClient: false);
+    }
+
     private void ResolveInteraction(SessionId session, InteractionId interaction, string optionId,
         InteractionCause cause, bool noClient)
     {
@@ -242,6 +251,13 @@ public sealed class RunControlService
         }
 
         var batch = new List<DomainEventPayload> { new InteractionResolved(interaction, optionId, cause) };
+        if (request.Kind == InteractionKind.ModelRouteConsent && optionId == "allow_route")
+        {
+            if (cause != InteractionCause.User)
+                throw new InvalidInteractionOptionException(interaction, optionId);
+            var revised = SessionRoutingAuthorization.Resolve(events, _codecs, session, request);
+            batch.Add(new SessionRoutingPolicyRevised(session, revised, interaction));
+        }
         RunId? budgetDeniedRun = null;
         if (request.Kind == InteractionKind.BudgetExceeded && optionId == "deny")
         {

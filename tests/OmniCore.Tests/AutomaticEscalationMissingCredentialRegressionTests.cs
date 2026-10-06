@@ -10,7 +10,18 @@ public sealed class AutomaticEscalationMissingCredentialRegressionTests
     [Theory]
     [InlineData(null)]
     [InlineData("x")]
-    public async Task Auto_escalation_does_not_approve_missing_or_too_short_credential(string? syntheticKey)
+    public Task Auto_escalation_does_not_approve_missing_or_too_short_credential(string? syntheticKey) =>
+        RunIsolated(syntheticKey, "auto", BillingMode.Local, consentExpected: false);
+
+    [Theory]
+    [InlineData("auto", BillingMode.MeteredCurrency)]
+    [InlineData("auto", BillingMode.Unknown)]
+    [InlineData("ask", BillingMode.MeteredCurrency)]
+    [InlineData("ask", BillingMode.Unknown)]
+    public Task Valid_credential_and_prices_do_not_authorize_paid_or_unknown_escalation(string mode, BillingMode billing) =>
+        RunIsolated("synthetic-key-not-a-real-secret", mode, billing, consentExpected: true);
+
+    private static async Task RunIsolated(string? syntheticKey, string escalationMode, BillingMode billing, bool consentExpected)
     {
         var repo = new DirectoryInfo(AppContext.BaseDirectory);
         while (!File.Exists(Path.Combine(repo.FullName, "src", "OmniCore.Cli", "OmniCore.Cli.csproj")))
@@ -27,18 +38,18 @@ public sealed class AutomaticEscalationMissingCredentialRegressionTests
         var started = false;
         try
         {
-            File.WriteAllText(Path.Combine(config, "providers.yaml"), """
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
                 providers:
-                  local: { family: OpenAiChatCompatible, baseUrl: 'http://127.0.0.1:1/v1', auth: none }
-                  paid: { family: OpenAiChatCompatible, baseUrl: 'http://127.0.0.1:1/v1', authRef: synthetic-missing }
+                  local: { family: OpenAiChatCompatible, baseUrl: 'http://127.0.0.1:1/v1', auth: none, billingMode: Local }
+                  paid: { family: OpenAiChatCompatible, baseUrl: 'http://127.0.0.1:1/v1', authRef: synthetic-missing, billingMode: {{billing}} }
                 """);
-            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+            File.WriteAllText(Path.Combine(config, "models.yaml"), $$"""
                 models:
                   worker-model: { provider: local, context: 4, recommendedUsableContext: 4, maxOutput: 1, aliases: [worker] }
                   paid-model: { provider: paid, context: 200000, aliases: [paid], inputPricePerMillionUsd: 1, outputPricePerMillionUsd: 1 }
                 routing:
                   exploration: [worker]
-                  escalation: { mode: auto, chain: [worker, paid] }
+                  escalation: { mode: {{escalationMode}}, chain: [worker, paid] }
                 """);
             var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
             {
@@ -85,9 +96,24 @@ public sealed class AutomaticEscalationMissingCredentialRegressionTests
             Assert.Equal("worker-model", requested.FromModel);
             Assert.Equal("paid-model", requested.ToModel);
             Assert.Equal(EscalationCause.ContextLimit, requested.Cause);
-            // Desired guard: currently expected RED, never make this a prerequisite.
+            // Explicit synthetic Local billing isolates the credential guard from routing consent.
             Assert.DoesNotContain(events, e => e is ModelEscalationApproved);
             Assert.DoesNotContain(events, e => e is ModelEscalationCompleted);
+            Assert.DoesNotContain(events.OfType<ModelStepStarted>(), step => step.ModelId == "paid-model");
+            if (consentExpected)
+            {
+                var consent = Assert.Single(events.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.ModelRouteConsent);
+                var offer = OmniCore.Engine.SessionRoutingAuthorization.Parse(consent);
+                Assert.NotNull(offer);
+                Assert.Equal(billing, offer.Route.BillingMode);
+                Assert.Equal("paid", offer.Route.ProviderId);
+                var resolution = Assert.Single(events.OfType<InteractionResolved>(), item => item.InteractionId == consent.InteractionId);
+                Assert.Equal(InteractionCause.NoClient, resolution.Cause);
+                Assert.Equal("deny", resolution.OptionId);
+                Assert.DoesNotContain(events, item => item is SessionRoutingPolicyRevised);
+                var initial = Assert.Single(events.OfType<SessionRoutingPolicySet>());
+                Assert.All(initial.Policy.AllowedRoutes, route => Assert.Equal("local", route.ProviderId));
+            }
         }
         finally
         {

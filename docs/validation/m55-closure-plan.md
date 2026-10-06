@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 07:03 UTC / 01:03 America/Mexico_City.
+Actualizado 2026-10-06 07:26 UTC / 01:26 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -26,6 +26,11 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   YAML/schema y metadata preservada en adapters; [contrato](m55-provider-billing.md).
 - NoClient/Deny cierran sólo el Run originario con BudgetExceeded, conservan efectos
   desconocidos y retiran el overlay; [integración](m55-budget-lifecycle.md).
+- SessionRoutingPolicy durable, bindings exactos y consentimiento previo a invocación/
+  escalación; claves y precios no autorizan rutas MeteredCurrency/Unknown.
+  Replay valida la revisión y SQLite conserva permisos exactos tras reinicio.
+  [Contrato y límites](m55-session-routing-consent.md). Auto/ask sin cliente deniegan;
+  ask con cliente publica InteractionRequest real. Reanudación automática TUI pendiente.
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -43,8 +48,9 @@ El build global explicable del fingerprint y los demás componentes reales aún 
 
 1. Completar replay opaco: storage seguro para estados que el redactor actual alteraría,
    ReasoningCapability y aplicación de ReasoningReplayPolicy. Checkpoint/resume básico probado.
-2. SessionRoutingPolicy durable y consentimiento; auto/ask no pueden
-   ampliar gasto ni rutas autorizadas. Topes configurables, diario entre sesiones y continuar.
+2. Consentimiento de rutas implementado; completar resume de escalación ask en TUI
+   desde solicitud/consentimiento durables, sin volver a ejecutar el modelo original.
+   Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
 3. Circuit breaker/disponibilidad real y adaptación del router de Alias a RouteId.
@@ -65,8 +71,8 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa con lifecycle/facturación: 1638 casos,
-  1634 PASS, 0 FAIL, 4 SKIP symlink (`budget-lifecycle-full-suite.log`, 134.095 s).
+- Última suite completa con consentimiento de rutas: 1661 casos,
+  1657 PASS, 0 FAIL, 4 SKIP symlink (`session-routing-full-suite.log`, 138.083 s).
 - Lifecycle BudgetExceeded/cliente/commands/proyecciones: 80 PASS,
   0 FAIL, 0 SKIP (`budget-lifecycle-tests-fixed.log`). Billing/YAML/factory: 32 PASS.
 - Focal final CAS/rutas: 121 PASS.
@@ -89,11 +95,13 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
 
-Próxima implementación del integrador: routing automático sin consentimiento y
-escalación `ask` sin InteractionRequest. Auditoría Luna (solo lectura, no ejecutada):
-Route elige MeteredCurrency/Unknown con preferencias YAML sin política por Session;
-auto permite API key + precio completo y registra policy:auto; ask sólo imprime
-sugerencia. Ninguno consulta BillingMode. Reproducir con providers sintéticos, sin
-llamadas externas, e integrar AllowedRoutes/BillingPolicy antes de ConnectProvider.
+Próxima implementación del integrador: reanudación durable del destino autorizado de
+escalación ask. Auditoría Luna: TuiApp.RespondChoice sólo responde/pollea; no reentra al
+runtime. El siguiente submit vuelve al modelo local original y ask vuelve a pedir permiso.
+Resolver exclusivamente solicitud de escalación + oferta/resolución User + revisión de
+política de la misma Session/Run y misma identidad física actual. No usar el siguiente
+mensaje como sustituto de la intención original ni recuperar permisos de otro Run.
+Focal routing/consent/SQLite/protocol/CLI: 33 PASS, 0 FAIL, 0 SKIP;
+session-routing-integration-tests.log. Fixtures y claves sintéticas, sin gasto real.
 Ledger diario entre workspaces, reservas concurrentes y reanudación automática
 allow_plus también pendientes. No asumir cierre por contratos o credenciales.
