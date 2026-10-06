@@ -90,10 +90,19 @@ public sealed class EventStream
     /// <summary>
     /// Persiste varios eventos en un solo commit atómico (ADR-0002 §1): o se escriben todos o
     /// ninguno, así un crash nunca deja una cadena a medias (p. ej. el outcome de una ToolCall).
+    /// Los scopes opcionales atribuyen cada payload por separado, sin cambiar su causación
+    /// ambiental ni dividir el commit. Un scope nulo conserva el comportamiento ambiental.
     /// </summary>
-    public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability)
+    public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability) =>
+        AppendBatch(payloads, durability, null);
+
+    /// <summary>Atomic batch with optional per-item attribution; payload identities remain authoritative.</summary>
+    public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability,
+        IReadOnlyList<ExecutionScopeState?>? executionScopes)
     {
         ArgumentNullException.ThrowIfNull(payloads);
+        if (executionScopes is not null && executionScopes.Count != payloads.Count)
+            throw new ArgumentException("Each batch payload requires a corresponding execution scope.", nameof(executionScopes));
         if (payloads.Count == 0)
         {
             return;
@@ -111,7 +120,7 @@ public sealed class EventStream
         var envelopes = new DomainEvent[payloads.Count];
         for (var i = 0; i < payloads.Count; i++)
         {
-            envelopes[i] = BuildEnvelope(payloads[i], ref pendingRunId, ref pendingLastEventId);
+            envelopes[i] = BuildEnvelope(payloads[i], ref pendingRunId, ref pendingLastEventId, executionScopes?[i]);
         }
 
         _store.AppendBatch(_sessionId, envelopes, durability, CancellationToken.None);
@@ -132,7 +141,7 @@ public sealed class EventStream
     // Envelope candidates may chain within an atomic batch, but only successful persistence
     // publishes their run/causation cursor to this stream.
     private DomainEvent BuildEnvelope(DomainEventPayload payload, ref RunId? pendingRunId,
-        ref EventId? pendingLastEventId)
+        ref EventId? pendingLastEventId, ExecutionScopeState? executionScope = null)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var type = payload.Type();
@@ -146,7 +155,7 @@ public sealed class EventStream
 
         var json = RedactPayload(_codecs.CodecFor(type).Encode(payload));
         var ids = EnvelopeIds.From(json);
-        var scope = ExecutionScope.Current;
+        var scope = executionScope ?? ExecutionScope.Current;
         var runId = ids.RunId ?? scope?.RunId;
         var taskId = ids.TaskId ?? scope?.TaskId;
         var laneId = ids.LaneId ?? scope?.LaneId;

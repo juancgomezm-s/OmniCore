@@ -315,10 +315,57 @@ public sealed class RunControlService
             using (ExecutionScope.Begin(new ExecutionScopeState(originRun)))
                 stream.AppendBatch(batch, DurabilityClass.Standard);
         }
+        else if (request.Kind == InteractionKind.ReconciliationConflict)
+        {
+            var toolCallId = ToolCallIdFrom(request.ToolCallJson)
+                ?? throw new InvalidInteractionOptionException(interaction, optionId);
+            var requestRun = RunAtEvent(events, pendingRequest!.Envelope)
+                ?? throw new InvalidInteractionOptionException(interaction, optionId);
+            var requestScope = new ExecutionScopeState(requestRun, pendingRequest.Envelope.TaskId,
+                pendingRequest.Envelope.LaneId, pendingRequest.Envelope.TurnId,
+                ExecutionId: pendingRequest.Envelope.ExecutionId);
+            var sourceScope = SourceEffectScope(events, toolCallId)
+                ?? throw new InvalidInteractionOptionException(interaction, optionId);
+            var scopes = batch.Select(payload => payload is ToolCallReconciled reconciled
+                    && reconciled.ToolCallId == toolCallId && reconciled.Cause == InteractionCause.User
+                ? sourceScope
+                : requestScope)
+                .Cast<ExecutionScopeState?>().ToArray();
+            stream.AppendBatch(batch, DurabilityClass.Standard, scopes);
+        }
         else
         {
             stream.AppendBatch(batch, DurabilityClass.Standard);
         }
+    }
+
+    private ExecutionScopeState? SourceEffectScope(IReadOnlyList<DomainEvent> events, ToolCallId id)
+    {
+        var source = events.FirstOrDefault(evt => _codecs.Decode(evt) is ToolCallEffectUnknown unknown
+            && unknown.ToolCallId == id)
+            ?? events.FirstOrDefault(evt => _codecs.Decode(evt) is ToolCallStarted started
+                && started.ToolCallId == id);
+        if (source is null) return null;
+        var startedEvent = events.FirstOrDefault(evt => _codecs.Decode(evt) is ToolCallStarted started
+            && started.ToolCallId == id);
+        var runId = RunAtEvent(events, source);
+        if (runId is null) return null;
+        return new ExecutionScopeState(runId, source.TaskId ?? startedEvent?.TaskId,
+            source.LaneId ?? startedEvent?.LaneId, source.TurnId ?? startedEvent?.TurnId,
+            id, source.ExecutionId ?? startedEvent?.ExecutionId);
+    }
+
+    private RunId? RunAtEvent(IReadOnlyList<DomainEvent> events, DomainEvent target)
+    {
+        // Explicit ownership remains authoritative for events appended after a newer Run.
+        if (target.RunId is { } recordedRun) return recordedRun;
+        RunId? current = null;
+        foreach (var evt in events)
+        {
+            if (_codecs.Decode(evt) is RunCreated created) current = created.RunId;
+            if (evt.EventId == target.EventId) return current ?? target.RunId;
+        }
+        return target.RunId;
     }
 
     private RunId AddBudgetDenialLifecycle(IReadOnlyList<DomainEvent> events, DomainEvent requestEnvelope,
