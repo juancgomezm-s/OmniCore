@@ -138,14 +138,29 @@ public sealed class ModelSelection
     /// <summary>Ruta concreta; los journals antiguos conservan la ruta 1:1 del modelo (ADR-0046).</summary>
     public RouteId RouteId { get; }
 
+    /// <summary>Identidad física de la ruta, cuando el caller conoce sus datos completos.</summary>
+    public string? RouteIdentityHash { get; }
+
+    /// <summary>Descripción física de la ruta seleccionada, si está disponible.</summary>
+    public ModelRoute? Route { get; }
+
     public ModelSelection(ModelIdValue model, long contextBudget, ToolMode toolMode, ReasoningRequest? reasoning,
-        RouteId? routeId = null)
+        RouteId? routeId = null, ModelRoute? route = null)
     {
+        ArgumentNullException.ThrowIfNull(model);
+        if (route is not null && routeId is not null && !route.Id.Equals(routeId))
+            throw new ArgumentException("Route identity must match the selected route id.", nameof(routeId));
+        if (route is not null && route.Id.Equals(OmniCore.Domain.RouteId.ForDefaultModel(model.ToString()))
+            && !StringComparer.Ordinal.Equals(route.ProviderModelName, model.ToString()))
+            throw new ArgumentException("Default route model name must match the selected model.", nameof(route));
         Model = model;
         ContextBudget = contextBudget;
         ToolMode = toolMode;
         Reasoning = reasoning;
-        RouteId = routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(model.ToString());
+        Route = route;
+        RouteId = route?.Id ?? routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(model.ToString());
+        RouteIdentityHash = route is null ? null
+            : AuthorizedModelRoute.From(route, BillingMode.Unknown).IdentityHash;
     }
 }
 

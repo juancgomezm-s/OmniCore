@@ -4,8 +4,10 @@
 
 Implementación de Host sobre los contratos existentes de ADR-0005/0046; no añade
 scheduler, joins ni una segunda fuente de uso. `ModelStepCompleted.ResponseArtifact`
-conserva el envelope de uso v1 y añade `providerState`, descriptor v1 o `null`.
-El descriptor incluye modelo, RouteId, TurnId, StepIndex y StateRef completa.
+conserva el envelope de uso v1 y añade `providerState`, descriptor v2 o `null`.
+El descriptor incluye modelo, RouteId, binding físico, TurnId, StepIndex y StateRef completa.
+El descriptor v1 histórico sigue legible, pero no autoriza replay sin binding físico.
+[Ampliación y verificación del binding](m55-provider-state-physical-binding.md).
 Los bytes serializados de `ProviderState.Kind/PayloadJson` quedan exclusivamente en
 un artifact `ProviderOpaqueState`, `Sensitive`, media type
 `application/vnd.omnicore.provider-state+json`. No están en el journal, la respuesta
@@ -13,7 +15,7 @@ normal, el contexto ni la telemetría.
 
 Se publica el checkpoint antes del barrier de ModelStepCompleted. Al reanudar se
 elige el último paso completado del mismo Run/Lane/Turn y se comprueba su inicio.
-Solo se recupera para el mismo modelo y RouteId. Los eventos legacy sin RouteId no
+Solo se recupera para el mismo modelo, RouteId e identidad física. Los eventos legacy sin RouteId no
 autorizan replay. Una respuesta con estado nulo elimina la continuación; no se busca
 un estado anterior como fallback. Un Turn nuevo no recibe el estado de otro Turn.
 Descriptor/ref/blobs corruptos fallan con mensaje constante, sin contenido opaco.

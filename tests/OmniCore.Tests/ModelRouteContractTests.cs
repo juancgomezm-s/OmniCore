@@ -98,6 +98,25 @@ public sealed class ModelRouteContractTests
         Assert.Equal(selection.RouteId, decoded.RouteId);
     }
 
+    [Fact]
+    public void Selection_binds_physical_identity_independently_of_legacy_route_id()
+    {
+        var first = ModelRoute.DefaultForModel("model-x", "provider-a", "https://first.example.test/v1",
+            ProviderFamily.OpenAIResponses, "codex");
+        var second = ModelRoute.DefaultForModel("model-x", "provider-a", "https://second.example.test/v1",
+            ProviderFamily.OpenAIResponses, "codex");
+        var model = new ModelIdValue("model-x");
+        var selected = new ModelSelection(model, 1000, ToolMode.Direct, null, first.Id, first);
+        var changed = new ModelSelection(model, 1000, ToolMode.Direct, null, second.Id, second);
+        Assert.Equal(selected.RouteId, changed.RouteId);
+        Assert.NotEqual(selected.RouteIdentityHash, changed.RouteIdentityHash);
+        Assert.Equal(AuthorizedModelRoute.From(first, BillingMode.Local).IdentityHash, selected.RouteIdentityHash);
+        Assert.Same(first, selected.Route);
+        Assert.Null(new ModelSelection(model, 1000, ToolMode.Direct, null).RouteIdentityHash);
+        Assert.Throws<ArgumentException>(() => new ModelSelection(model, 1000, ToolMode.Direct, null,
+            new RouteId("wrong"), first));
+    }
+
     private static ModelRoute Route(string provider = "provider-a", string endpoint = "https://api.example.test/v1",
         string model = "model-x") =>
         new(provider, endpoint, ProviderFamily.OpenAIResponses, "codex", model);

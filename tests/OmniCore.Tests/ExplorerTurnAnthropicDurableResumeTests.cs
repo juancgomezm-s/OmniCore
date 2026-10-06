@@ -40,10 +40,13 @@ public sealed partial class ExplorerTurnAnthropicContinuationTests
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
             var service = new QuestionnaireInteractionService(store, codecs, artifacts);
+            var physicalRoute = ModelRoute.DefaultForModel("claude-fixture", "anthropic",
+                "https://api.example.test", ProviderFamily.AnthropicMessages);
             ExplorerTurn MakeTurn() => new((request, ct) => CompleteLocally(provider, request, ct).GetAwaiter().GetResult(),
                 executor, catalog, new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
                 new ExecutionFingerprint("scripted", "h", "t", "c", "o", "M3"),
-                new ModelSelection(new ModelIdValue("claude-fixture"), 8192, ToolMode.Direct, null),
+                new ModelSelection(new ModelIdValue("claude-fixture"), 8192, ToolMode.Direct, null,
+                    physicalRoute.Id, physicalRoute),
                 store!, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(), questionnaires: service);
             var suspended = MakeTurn().Ask("ask", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
             Assert.Equal(StopReason.InputRequired, suspended.StopReason);

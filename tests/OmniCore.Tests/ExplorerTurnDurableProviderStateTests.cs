@@ -22,6 +22,11 @@ public sealed class ExplorerTurnDurableProviderStateTests
     [InlineData("same")]
     [InlineData("route")]
     [InlineData("model")]
+    [InlineData("endpoint")]
+    [InlineData("provider")]
+    [InlineData("protocol")]
+    [InlineData("profile")]
+    [InlineData("missing-binding")]
     [InlineData("null")]
     [InlineData("corrupt")]
     [InlineData("redacted")]
@@ -44,8 +49,10 @@ public sealed class ExplorerTurnDurableProviderStateTests
             var catalog = new FakeCatalog().Add(new UserAskTool());
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var physicalRoute = ModelRoute.DefaultForModel("scripted", "fixture-provider",
+                "http://127.0.0.1:9901", ProviderFamily.OpenAiChatCompatible);
             var selection = new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct,
-                null, new RouteId("durable/route"));
+                null, physicalRoute.Id, physicalRoute);
             var state = new ProviderState("fixture.kind", "{\"marker\":\"exact-provider-marker\",\"value\":\"café\\nsecond\"}");
             ExplorerTurn MakeTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete) => new(
                 complete, executor, catalog,
@@ -102,6 +109,18 @@ public sealed class ExplorerTurnDurableProviderStateTests
                 new[] { new QuestionAnswer("approach", new[] { "safe" }, null, null) }, false).Status);
             if (scenario == "route") selection = new(selection.Model, 8192, ToolMode.Direct, null, new RouteId("other/route"));
             if (scenario == "model") selection = new(new ModelIdValue("other"), 8192, ToolMode.Direct, null, selection.RouteId);
+            if (scenario == "missing-binding") selection = new(selection.Model, 8192, ToolMode.Direct, null, selection.RouteId);
+            if (scenario is "endpoint" or "provider" or "protocol" or "profile")
+            {
+                var changedRoute = ModelRoute.DefaultForModel("scripted",
+                    scenario == "provider" ? "other-provider" : physicalRoute.ProviderId,
+                    scenario == "endpoint" ? "http://127.0.0.1:9902" : physicalRoute.Endpoint,
+                    scenario == "protocol" ? ProviderFamily.AnthropicMessages : physicalRoute.Protocol,
+                    scenario == "profile" ? "other-profile" : physicalRoute.Profile);
+                Assert.Equal(physicalRoute.Id, changedRoute.Id);
+                Assert.NotEqual(physicalRoute.CanonicalJson(), changedRoute.CanonicalJson());
+                selection = new(selection.Model, 8192, ToolMode.Direct, null, changedRoute.Id, changedRoute);
+            }
             var calls = 0;
             var result = MakeTurn((request, _) =>
             {

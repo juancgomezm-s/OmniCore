@@ -12,6 +12,9 @@ public sealed class ProviderStateCheckpointTests
 {
     private static readonly string Model = "model-α";
     private static readonly RouteId Route = new("provider/route");
+    private static readonly ModelRoute PhysicalRoute = new("provider", "https://one.example/v1",
+        ProviderFamily.OpenAiChatCompatible, "profile-a", Model, Route);
+    private static readonly string RouteIdentityHash = AuthorizedModelRoute.From(PhysicalRoute, BillingMode.Unknown).IdentityHash;
     private static readonly TurnId Turn = TurnId.New();
     private const int Step = 3;
 
@@ -21,12 +24,13 @@ public sealed class ProviderStateCheckpointTests
         using var fixture = new Fixture();
         var state = new ProviderState("opaque.kind", "{\"unicode\":\"café 🚀\",\"lines\":\"first\\nsecond\",\"marker\":\"opaque-checkpoint-marker\"}");
 
-        var descriptor = ProviderStateCheckpoint.Persist(fixture.Store, state, Model, Route, Turn, Step)!;
+        var descriptor = ProviderStateCheckpoint.Persist(fixture.Store, state, Model, Route, Turn, Step, RouteIdentityHash)!;
         var json = JsonDocument.Parse(descriptor).RootElement;
         var reference = json.GetProperty("StateRef");
-        Assert.Equal(1, json.GetProperty("Version").GetInt32());
+        Assert.Equal(2, json.GetProperty("Version").GetInt32());
         Assert.Equal(Model, json.GetProperty("ModelId").GetString());
         Assert.Equal(Route.Value, json.GetProperty("RouteId").GetString());
+        Assert.Equal(RouteIdentityHash, json.GetProperty("RouteIdentityHash").GetString());
         Assert.Equal(Turn.ToString(), json.GetProperty("TurnId").GetString());
         Assert.Equal(Step, json.GetProperty("StepIndex").GetInt32());
         Assert.DoesNotContain("opaque-checkpoint-marker", descriptor, StringComparison.Ordinal);
@@ -37,14 +41,14 @@ public sealed class ProviderStateCheckpointTests
         Assert.Equal(Sensitivity.Sensitive, artifactRef.Sensitivity);
         Assert.False(artifactRef.Redacted);
         Assert.True(fixture.Store.Verify(artifactRef.Hash, artifactRef.Size));
-        Assert.Equal(state, ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step));
+        Assert.Equal(state, ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step, RouteIdentityHash));
     }
 
     [Fact]
     public void Null_state_is_a_tombstone()
     {
         using var fixture = new Fixture();
-        Assert.Null(ProviderStateCheckpoint.Persist(fixture.Store, null, Model, Route, Turn, Step));
+        Assert.Null(ProviderStateCheckpoint.Persist(fixture.Store, null, Model, Route, Turn, Step, RouteIdentityHash));
     }
 
     [Fact]
@@ -56,7 +60,7 @@ public sealed class ProviderStateCheckpointTests
         using var fixture = new Fixture(redactor);
 
         var error = Assert.Throws<InvalidDataException>(() =>
-            ProviderStateCheckpoint.Persist(fixture.Store, new ProviderState("kind", secret), Model, Route, Turn, Step));
+            ProviderStateCheckpoint.Persist(fixture.Store, new ProviderState("kind", secret), Model, Route, Turn, Step, RouteIdentityHash));
 
         Assert.Equal("Provider state checkpoint is invalid.", error.Message);
         Assert.DoesNotContain(secret, error.ToString(), StringComparison.Ordinal);
@@ -69,7 +73,7 @@ public sealed class ProviderStateCheckpointTests
         fixture.Store.ReturnWrongMediaType = true;
 
         var error = Assert.Throws<InvalidDataException>(() =>
-            ProviderStateCheckpoint.Persist(fixture.Store, new ProviderState("kind", "payload"), Model, Route, Turn, Step));
+            ProviderStateCheckpoint.Persist(fixture.Store, new ProviderState("kind", "payload"), Model, Route, Turn, Step, RouteIdentityHash));
 
         Assert.Equal("Provider state checkpoint is invalid.", error.Message);
     }
@@ -83,15 +87,15 @@ public sealed class ProviderStateCheckpointTests
     {
         using var fixture = new Fixture();
         var descriptor = ProviderStateCheckpoint.Persist(fixture.Store,
-            new ProviderState("kind", "payload"), Model, Route, Turn, Step)!;
+            new ProviderState("kind", "payload"), Model, Route, Turn, Step, RouteIdentityHash)!;
         fixture.Store.ResetReads();
 
         var result = mismatch switch
         {
-            "model" => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, "other-model", Route, Turn, Step),
-            "route" => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, new RouteId("other-route"), Turn, Step),
-            "turn" => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, TurnId.New(), Step),
-            _ => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step + 1),
+            "model" => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, "other-model", Route, Turn, Step, RouteIdentityHash),
+            "route" => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, new RouteId("other-route"), Turn, Step, RouteIdentityHash),
+            "turn" => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, TurnId.New(), Step, RouteIdentityHash),
+            _ => ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step + 1, RouteIdentityHash),
         };
 
         Assert.Null(result);
@@ -112,12 +116,12 @@ public sealed class ProviderStateCheckpointTests
     {
         using var fixture = new Fixture();
         var descriptor = ProviderStateCheckpoint.Persist(fixture.Store,
-            new ProviderState("kind", "safe-marker"), Model, Route, Turn, Step)!;
+            new ProviderState("kind", "safe-marker"), Model, Route, Turn, Step, RouteIdentityHash)!;
         if (corruption == "malformed") descriptor = "{not-json";
         else
         {
             var node = JsonNode.Parse(descriptor)!.AsObject();
-            if (corruption == "unknown-version") node["Version"] = 2;
+            if (corruption == "unknown-version") node["Version"] = 3;
             else
             {
                 var reference = node["StateRef"]!.AsObject();
@@ -132,7 +136,7 @@ public sealed class ProviderStateCheckpointTests
         }
 
         var error = Assert.Throws<InvalidDataException>(() =>
-            ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step));
+            ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step, RouteIdentityHash));
         Assert.Equal("Provider state checkpoint is invalid.", error.Message);
         Assert.DoesNotContain("safe-marker", error.ToString(), StringComparison.Ordinal);
     }
@@ -144,14 +148,14 @@ public sealed class ProviderStateCheckpointTests
     {
         using var fixture = new Fixture();
         var descriptor = ProviderStateCheckpoint.Persist(fixture.Store,
-            new ProviderState("kind", "payload"), Model, Route, Turn, Step)!;
+            new ProviderState("kind", "payload"), Model, Route, Turn, Step, RouteIdentityHash)!;
         var root = JsonDocument.Parse(descriptor).RootElement;
         var hash = root.GetProperty("StateRef").GetProperty("Hash").GetProperty("Value").GetString()!;
         var blob = Path.Combine(fixture.Data, "blobs", "sha256", hash[..2], hash.Substring(2, 2), hash);
         if (corrupt) File.WriteAllText(blob, "changed content"); else File.Delete(blob);
 
         var error = Assert.Throws<InvalidDataException>(() =>
-            ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step));
+            ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step, RouteIdentityHash));
         Assert.Equal("Provider state checkpoint is invalid.", error.Message);
     }
 
@@ -160,7 +164,7 @@ public sealed class ProviderStateCheckpointTests
     {
         using var fixture = new Fixture();
         var descriptor = ProviderStateCheckpoint.Persist(fixture.Store,
-            new ProviderState("kind", "payload"), Model, Route, Turn, Step)!;
+            new ProviderState("kind", "payload"), Model, Route, Turn, Step, RouteIdentityHash)!;
         var refElement = JsonDocument.Parse(descriptor).RootElement.GetProperty("StateRef");
         var restored = JsonSerializer.Deserialize<ArtifactRef>(refElement.GetRawText());
 
@@ -168,6 +172,53 @@ public sealed class ProviderStateCheckpointTests
         Assert.NotEqual(Guid.Empty, restored.Id.Value);
         Assert.Equal(ArtifactKind.ProviderOpaqueState, restored.Kind);
         Assert.Equal(Sensitivity.Sensitive, restored.Sensitivity);
+    }
+
+    [Fact]
+    public void Same_legacy_route_id_does_not_authorize_state_after_physical_endpoint_change()
+    {
+        using var fixture = new Fixture();
+        var descriptor = ProviderStateCheckpoint.Persist(fixture.Store,
+            new ProviderState("kind", "endpoint-bound"), Model, Route, Turn, Step, RouteIdentityHash)!;
+        var changedEndpoint = new ModelRoute("provider", "https://two.example/v1",
+            ProviderFamily.OpenAiChatCompatible, "profile-a", Model, Route);
+        var changedHash = AuthorizedModelRoute.From(changedEndpoint, BillingMode.Unknown).IdentityHash;
+
+        Assert.Equal(Route, changedEndpoint.Id);
+        Assert.NotEqual(RouteIdentityHash, changedHash);
+        fixture.Store.ResetReads();
+        Assert.Null(ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step, changedHash));
+        Assert.Equal(0, fixture.Store.VerifyCalls);
+        Assert.Equal(0, fixture.Store.GetCalls);
+    }
+
+    [Fact]
+    public void Missing_physical_binding_persists_but_never_restores()
+    {
+        using var fixture = new Fixture();
+        var descriptor = ProviderStateCheckpoint.Persist(fixture.Store,
+            new ProviderState("kind", "unqualified"), Model, Route, Turn, Step, null)!;
+        fixture.Store.ResetReads();
+
+        Assert.Null(ProviderStateCheckpoint.Restore(fixture.Store, descriptor, Model, Route, Turn, Step, RouteIdentityHash));
+        Assert.Equal(0, fixture.Store.VerifyCalls);
+        Assert.Equal(0, fixture.Store.GetCalls);
+    }
+
+    [Fact]
+    public void Legacy_v1_checkpoint_is_readable_but_not_authorized_for_replay()
+    {
+        using var fixture = new Fixture();
+        var descriptor = ProviderStateCheckpoint.Persist(fixture.Store,
+            new ProviderState("kind", "legacy"), Model, Route, Turn, Step, RouteIdentityHash)!;
+        var node = JsonNode.Parse(descriptor)!.AsObject();
+        node["Version"] = 1;
+        node.Remove("RouteIdentityHash");
+        fixture.Store.ResetReads();
+
+        Assert.Null(ProviderStateCheckpoint.Restore(fixture.Store, node.ToJsonString(), Model, Route, Turn, Step, RouteIdentityHash));
+        Assert.Equal(0, fixture.Store.VerifyCalls);
+        Assert.Equal(0, fixture.Store.GetCalls);
     }
 
     private sealed class Fixture : IDisposable

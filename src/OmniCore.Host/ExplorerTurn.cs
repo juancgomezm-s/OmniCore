@@ -144,7 +144,7 @@ public sealed class ExplorerTurn
             if (!document.RootElement.TryGetProperty("providerState", out var descriptor)
                 || descriptor.ValueKind == System.Text.Json.JsonValueKind.Null) return null;
             return ProviderStateCheckpoint.Restore(_artifacts, descriptor.GetRawText(),
-                _selection.Model.ToString(), _selection.RouteId, turnId, last.Key);
+                _selection.Model.ToString(), _selection.RouteId, turnId, last.Key, _selection.RouteIdentityHash);
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
             or IOException or ArgumentException)
@@ -510,7 +510,7 @@ public sealed class ExplorerTurn
                     try
                     {
                         stateDescriptor = ProviderStateCheckpoint.Persist(_artifacts, resolved.State,
-                            _selection.Model.ToString(), _selection.RouteId, turnId, stepIndex);
+                            _selection.Model.ToString(), _selection.RouteId, turnId, stepIndex, _selection.RouteIdentityHash);
                     }
                     catch (InvalidDataException)
                     {
