@@ -408,7 +408,8 @@ public sealed class OmniHost
             throw new ChatGptAuthException("notLoggedIn", "El perfil codex necesita la sesión de ChatGPT: ejecuta omni login chatgpt.");
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
-            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile };
+            descriptor.SupportsNativeToolCalls)
+        { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile, BillingMode = descriptor.BillingMode };
         HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
         {
             Timeout = System.TimeSpan.FromSeconds(600),
@@ -424,7 +425,8 @@ public sealed class OmniHost
     {
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
-            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath };
+            descriptor.SupportsNativeToolCalls)
+        { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile, BillingMode = descriptor.BillingMode };
         // Misma política TLS que el resto: validación estándar para hosts públicos como api.anthropic.com.
         HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
         {
@@ -439,7 +441,8 @@ public sealed class OmniHost
     {
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
-            descriptor.SupportsNativeToolCalls) { TrustedCertificatePath = descriptor.TrustedCertificatePath };
+            descriptor.SupportsNativeToolCalls)
+        { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile, BillingMode = descriptor.BillingMode };
         HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
         {
             Timeout = System.TimeSpan.FromSeconds(300),
