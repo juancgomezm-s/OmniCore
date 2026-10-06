@@ -13,11 +13,14 @@ public sealed class RunControlService
     private readonly IEventStore _store;
 
     private readonly IEventCodecRegistry _codecs;
+    private readonly Func<string, decimal, decimal>? _otherDailyLimit;
 
-    public RunControlService(IEventStore store, IEventCodecRegistry codecs)
+    public RunControlService(IEventStore store, IEventCodecRegistry codecs,
+        Func<string, decimal, decimal>? otherDailyLimit = null)
     {
         _store = store;
         _codecs = codecs;
+        _otherDailyLimit = otherDailyLimit;
     }
 
     /// <summary>Run no terminal de la sesión (hay como mucho uno, ADR-0035 §1), o null.</summary>
@@ -283,8 +286,11 @@ public sealed class RunControlService
                     .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.resolved")))
                     .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.expired")));
             }
-            if (BudgetContinuation.Limit(consentEvents, _codecs, session, run ?? RunId.New(),
-                    today, offer.Scope, offer.BaselineUsd) != offer.CurrentUsd)
+            var effectiveLimit = BudgetContinuation.Limit(consentEvents, _codecs, session, run ?? RunId.New(),
+                today, offer.Scope, offer.BaselineUsd);
+            if (offer.Scope == "daily" && _otherDailyLimit is not null)
+                effectiveLimit = Math.Max(effectiveLimit, _otherDailyLimit(today, offer.BaselineUsd));
+            if (effectiveLimit != offer.CurrentUsd)
                 throw new InvalidInteractionOptionException(interaction, optionId);
         }
 

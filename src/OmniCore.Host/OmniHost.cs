@@ -63,7 +63,8 @@ public sealed class OmniHost
         var workspaceData = Path.GetDirectoryName(Path.GetFullPath(journalFile))!;
         var audit = new FileAuditSink(auditDataDirectory ?? workspaceData);
         return new OmniServer(store, codecs, audit, Path.Combine(workspaceData, "lastsession.txt"),
-            CreateArtifactStore(workspaceData));
+            CreateArtifactStore(workspaceData), auditDataDirectory is null ? null
+                : new UserWorkspaceSpendReader(auditDataDirectory, workspaceData));
     }
 
     /// <summary>

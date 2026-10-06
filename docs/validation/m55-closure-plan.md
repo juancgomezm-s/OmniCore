@@ -16,7 +16,9 @@ RED de redacción confirmado en Host/CLI después de corregir cleanup.
 Full previa2240=2223PASS/13FAIL/4SKIP; M4 timeout aislado todavía pendiente de causa.
 Tope diario entre workspaces: RED2=1PASS/1FAIL corregido en la ruta normal;
 final133PASS/arquitectura56PASS. Lectura solo lectura por journal/CAS de origen,
-sin reservas concurrentes ni cierre del consentimiento diario entre workspaces.
+sin reservas concurrentes. Consentimiento diario entre workspaces corregido:
+121PASS focales; Session/Run no se amplían, stale offers rechazadas sin escritura.
+[Continuación diaria](m55-user-daily-continuation-20261006.md).
 [Implementación y reproducción](m55-user-daily-spend-20261006.md).
 No acreditan consultas reales ni full verde posterior.
 El objetivo activo continúa siendo M5.5 y preparación de M6, sin scheduler/joins.
