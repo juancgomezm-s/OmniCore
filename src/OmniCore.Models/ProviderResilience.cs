@@ -10,6 +10,7 @@ using System.Text.Json;
 /// </summary>
 internal sealed class ProviderResilience
 {
+    internal long MaximumGenerationRequestAttempts => (long)_options.MaxRetries + 1;
     private readonly OpenAiProviderOptions _options;
     private readonly string _providerKey;
     private readonly object _breakerLock = new();

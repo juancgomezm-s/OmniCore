@@ -32,7 +32,7 @@ public sealed class OpenAiProviderOptions
 /// incremental y usa DTOs generados por System.Text.Json; los campos no modelados se conservan
 /// en ProviderState para replay exclusivo en el mismo modelo/familia.
 /// </summary>
-public sealed class OpenAiChatCompatibleProvider : IModelProvider
+public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequestAttemptBound
 {
     private readonly ProviderDescriptor _descriptor;
     private readonly ISecretProvider _secrets;
@@ -64,6 +64,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider
     }
 
     public string ProviderKey { get; }
+    public long MaximumGenerationRequestAttempts => _resilience.MaximumGenerationRequestAttempts;
     public ProviderCapabilities Capabilities => ProviderCapabilities.Local();
 
     /// <summary>Agrega el stream para los consumidores síncronos heredados.</summary>
