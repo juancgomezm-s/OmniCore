@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 21:20 UTC / 15:20 America/Mexico_City.
+Actualizado 2026-10-06 21:29 UTC / 15:29 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -61,10 +61,18 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5.5 criterio exacto3pasos+suspensión: nuevo control root del runtime existente,
+  SQLite/CAS reales, fake.read→user.ask→reopen→respuesta server→tercer paso final.
+  Un Turn/3completions índices0..2; uso60entrada/9salida/cache12+6/razonamiento5,
+  coste estimado0.000078USD, snapshots idempotentes antes/después de dos reopen,
+  refs CAS verificadas y prefijo journal intacto. Aislado1PASS1.354s/build0/0;
+  focal84PASS5.776s; no provider autenticado ni runtime modificado.
+  [Criterio y reproducción](m55-three-step-suspension-20261006.md).
 - M5 cancelación Host: preserva OCE del caller entre probes y antes de publicar
   evidencia del último stream cancelado; runner NotRun compatible. Luna3fixtures,
   rootcontrol final/CAS y fix. RED4=2PASS2FAIL0.569s; focal272PASS6.618s/build0/0,
-  arquitectura56PASS0.977s/build0/0; full nueva pendiente. No atomicidad CAS+SQLite
+  arquitectura56PASS0.977s/build0/0; full2181=2177PASS0FAIL4SKIPsymlink313.507s/exit0.
+  No atomicidad CAS+SQLite
   frente a cancelación concurrente prometida ni authreal. [Contrato](m5-qualification-cancellation-20261006.md).
 - Uso reportado coherente M5/M5.5: validator compartido Domain, cualificación,
   ejecución/lecturas de gasto, reporter de sesión y productor meta. Contradicciones

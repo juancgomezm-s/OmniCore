@@ -36,8 +36,9 @@ Todos exigen store de perfiles vacío, referencia de evidencia ausente y CAS pri
 sin archivos. RED3: 2 PASS/1 FAIL (0.453s). RED4 más fuerte: 2 PASS/2 FAIL (0.569s),
 build0 errores/advertencias. Tras corrección: focal cualificación/Responses/auth
 272 PASS/0 FAIL/0 SKIP (6.618s), build0/0; arquitectura56 PASS (0.977s), build0/0.
-Suite completa nueva en curso; resultado anterior2177 corresponde al wiring Codex,
-no a esta corrección. Logs únicos en `C:/Users/juanc/.codex/omni-m55-workers-20261006-2103/`
+Suite completa fresca:2181 casos,2177 PASS/0 FAIL/4 SKIP por permisos symlink,
+313.507s/exit0 confirmado. La anterior2177 corresponde al wiring Codex, no a esta
+corrección. Logs únicos en `C:/Users/juanc/.codex/omni-m55-workers-20261006-2103/`
 (`qualification-cancellation-red*`, `green-*`, `full.log`, `architecture*`).
 
 ```powershell
