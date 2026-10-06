@@ -16,7 +16,8 @@ public sealed class PlanMutation
 
     public MutationTarget Target { get; }
 
-    private PlanMutation(PlanMutationKind kind, PlanItemId? itemId, MutationCause cause, string? reason, MutationTarget target)
+    [System.Text.Json.Serialization.JsonConstructor]
+    public PlanMutation(PlanMutationKind kind, PlanItemId? itemId, MutationCause cause, string? reason, MutationTarget target)
     {
         Kind = kind;
         ItemId = itemId;
@@ -86,8 +87,17 @@ public record MutationTarget(
     IReadOnlyList<PlanItemId> AddDependsOn,
     IReadOnlyList<PlanItemId> ReorderList)
 {
+    private IReadOnlyList<PlanItemId> _addDependsOn = Freeze(AddDependsOn);
+    private IReadOnlyList<PlanItemId> _reorderList = Freeze(ReorderList);
+    private IReadOnlyList<string> _splitParts = Array.AsReadOnly(Array.Empty<string>());
+    public IReadOnlyList<PlanItemId> AddDependsOn { get => _addDependsOn; init => _addDependsOn = Freeze(value); }
+    public IReadOnlyList<PlanItemId> ReorderList { get => _reorderList; init => _reorderList = Freeze(value); }
+
     /// <summary>Textos de los pasos hijos de un Split.</summary>
-    public IReadOnlyList<string> SplitParts { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<string> SplitParts { get => _splitParts; init => _splitParts = Freeze(value); }
+
+    private static IReadOnlyList<T> Freeze<T>(IReadOnlyList<T> values) =>
+        values is null ? null! : Array.AsReadOnly(values.ToArray());
 
     /// <summary>Task de un Link/Unlink.</summary>
     public TaskId? LinkTask { get; init; }

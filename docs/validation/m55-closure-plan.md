@@ -58,6 +58,22 @@ ContextItem. RED1FAIL0.323s; final120PASS14.341s/arquitectura56PASS/builds0/0.
 CLI real con provider fixture, conjunto desconocido/vacío y contradicción,
 orden/version/hash/duplicados, SQLiteCAS reopen y refs cubiertos. Logs skills-fingerprint-*
 en workers2103; no autenticación/consumo real ni cierre de M5.5 por este bloque.
+Full sobre dffa273:2267=2263PASS/0FAIL/4SKIPsymlink317.303s,
+skills-fingerprint-full-test.log. No incluye el bloque AgentResult siguiente.
+
+AgentResult inmutable (ADR0046§2): las listas de Findings/ArtifactRefs/FilesChanged/
+RemainingIssues/ProposedPlanMutations se copian y exponen solo lectura, también en
+asignaciones with. MutationTarget congela DependsOn/ReorderList/SplitParts para que
+una propuesta anidada no permita reescribir el resultado. Null legacy permanece
+null, no se convierte en una lista vacía medida. Ctor/deconstruct/propiedades y
+schema de LaneCompleted/TaskCompleted permanecen compatibles.
+El test de roundtrip descubrió además que PlanMutation con propuestas no vacías
+no se deserializaba por tener constructor privado. Constructor JSON público sobre
+los mismos campos corrige la lectura, sin aceptar/aplicar propuestas ni saltar
+PlanService. SQLite reopen prueba contenido, inmutabilidad y Task/Run Running.
+RED1FAIL0.246s por alias mutable; codecRED4=3PASS/1FAIL0.799s por PlanMutation.
+Final58PASS2.490s/arquitectura56PASS1.185s/builds0/0. Logs agent-result-immutable-*
+en workers2103; fixtures offline privados, no auth/consumo ni lógica M6.
 Luna HIGH terminó la matriz normativa M5 y ahora audita exclusivamente el contrato
 ToolCallStarted v3; root conserva implementación, tests, integración y commits.
 

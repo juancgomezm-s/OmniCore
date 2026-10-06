@@ -26,7 +26,24 @@ public record AgentResult(
     IReadOnlyList<string> FilesChanged,
     IReadOnlyList<string> RemainingIssues,
     ConfidenceLevel Confidence,
-    IReadOnlyList<PlanMutation> ProposedPlanMutations) { }
+    IReadOnlyList<PlanMutation> ProposedPlanMutations)
+{
+    private IReadOnlyList<string> _findings = Freeze(Findings);
+    private IReadOnlyList<ArtifactRef> _artifactRefs = Freeze(ArtifactRefs);
+    private IReadOnlyList<string> _filesChanged = Freeze(FilesChanged);
+    private IReadOnlyList<string> _remainingIssues = Freeze(RemainingIssues);
+    private IReadOnlyList<PlanMutation> _proposedPlanMutations = Freeze(ProposedPlanMutations);
+
+    public IReadOnlyList<string> Findings { get => _findings; init => _findings = Freeze(value); }
+    public IReadOnlyList<ArtifactRef> ArtifactRefs { get => _artifactRefs; init => _artifactRefs = Freeze(value); }
+    public IReadOnlyList<string> FilesChanged { get => _filesChanged; init => _filesChanged = Freeze(value); }
+    public IReadOnlyList<string> RemainingIssues { get => _remainingIssues; init => _remainingIssues = Freeze(value); }
+    public IReadOnlyList<PlanMutation> ProposedPlanMutations { get => _proposedPlanMutations; init => _proposedPlanMutations = Freeze(value); }
+
+    // Preserve legacy null, rather than silently turning unknown data into an empty list.
+    private static IReadOnlyList<T> Freeze<T>(IReadOnlyList<T> values) =>
+        values is null ? null! : Array.AsReadOnly(values.ToArray());
+}
 
 /// <summary>Evidencia puntual de un hallazgo (spec §16).</summary>
 public record Finding(string Title, string? Detail, ArtifactRef? Evidence) { }
