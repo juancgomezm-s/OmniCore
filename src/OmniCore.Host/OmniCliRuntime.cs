@@ -1203,8 +1203,8 @@ public sealed class OmniCliRuntime
             route: ModelRoutingHost.RouteFor(candidate, provider)));
         try
         {
-            var effective = OmniHost.CreateModelPolicyService(null)
-                .Effective(ModelPolicyKey.For(candidate.ProviderId, candidate.Id), harness, cancellationToken);
+            using var policyService = OmniHost.CreateModelPolicyService(null);
+            var effective = policyService.Effective(ModelPolicyKey.For(candidate.ProviderId, candidate.Id), harness, cancellationToken);
             return !effective.IsFallback && effective.MutationPolicy.Mode != FileMutationMode.None;
         }
         catch (Exception) { return false; }
@@ -1348,7 +1348,8 @@ public sealed class OmniCliRuntime
         EffectiveModelPolicy effective;
         try
         {
-            effective = OmniHost.CreateModelPolicyService(null).Effective(key, harness, cancellationToken);
+            using var policyService = OmniHost.CreateModelPolicyService(null);
+            effective = policyService.Effective(key, harness, cancellationToken);
         }
         catch (Exception)
         {

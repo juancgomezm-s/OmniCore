@@ -104,6 +104,7 @@ public sealed class ProbeRunner
                 else if (evt is ResponseFailed failed)
                 {
                     failureMessage = $"{failed.ErrorType}: {failed.Message}";
+                    break;
                 }
             }
         }
@@ -125,16 +126,22 @@ public sealed class ProbeRunner
         }
         sw.Stop();
 
-        if (response is null)
+        if (failureMessage is not null || response is null)
         {
             return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
-                failureMessage ?? "el provider no devolvió una respuesta completa", sw.Elapsed, null);
+                failureMessage ?? "el provider no devolvió una respuesta completa", sw.Elapsed,
+                Cost(response), response?.Usage, response?.ReportedUsageFields ?? TokenUsageFields.None);
         }
 
         if (TokenUsageValidation.IsInvalid(response.Usage, response.ReportedUsageFields))
             return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
                 "provider reported inconsistent token usage", sw.Elapsed, null,
                 response.Usage, response.ReportedUsageFields);
+
+        if (response.StopReason is not (StopReason.EndTurn or StopReason.StopSequence or StopReason.MaxOutputTokens))
+            return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
+                "probe did not complete with a scorable terminal response: " + response.StopReason,
+                sw.Elapsed, Cost(response), response.Usage, response.ReportedUsageFields);
 
         var text = ProbeScorer.ExtractText(response);
         var score = ProbeScorer.Score(request.Probe.Kind, text, request.Probe.Expected);
