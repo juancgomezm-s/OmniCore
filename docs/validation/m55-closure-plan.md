@@ -1,11 +1,21 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 21:29 UTC / 15:29 America/Mexico_City.
-Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
+Actualizado 2026-10-06 21:40 UTC / 15:40 America/Mexico_City.
+Objetivo vigente: cerrar M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
 ## Instrucciones vigentes del objetivo
+
+El usuario confirmó «M5 está cerrado» el 2026-10-06. M5 se conserva cerrado como
+hito; los checkpoints anteriores describen su historia, no su estado vigente.
+Las cuatro regresiones de cualificación aún sin commit son mantenimiento pendiente,
+no requisitos nuevos que reabran M5. Su último RED contiene once fallos funcionales
+y un fallo de cleanup CLI por conexión user.db no liberada; no atribuir ese último
+a redacción hasta reproducirlo sin el error de cleanup. No acreditan consultas reales.
+El objetivo activo continúa siendo M5.5 y preparación de M6, sin scheduler/joins.
+Luna HIGH terminó la matriz normativa M5 y ahora audita exclusivamente el contrato
+ToolCallStarted v3; root conserva implementación, tests, integración y commits.
 
 Reanudación reiterada por el usuario: cerrar M5 con Luna gpt-6-luna HIGH y avanzar
 M5.5 con paquetes independientes GLM5.3/NVIDIA, Nemotron/OpenRouter y DeepSeek/NVIDIA.
@@ -61,6 +71,12 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5.5 ToolCallStarted v3: contrato init aditivo, reversibilidad Unknown por defecto,
+  destino único de claims filesystem, ArtifactRef de preestado indexado en envelope,
+  upcasters v1→v2→v3 y SQLite/CAS reopen/GC. RED3FAIL; focal160PASS4.485s,
+  arquitectura56PASS1.167s/builds0/0. Captura automática fiel y política sensible
+  siguen pendientes; hashes de reconciliación no equivalen a preimagen.
+  [Contrato, límites y reproducción](m55-toolcall-v3-20261006.md).
 - M5.5 criterio exacto3pasos+suspensión: nuevo control root del runtime existente,
   SQLite/CAS reales, fake.read→user.ask→reopen→respuesta server→tercer paso final.
   Un Turn/3completions índices0..2; uso60entrada/9salida/cache12+6/razonamiento5,
@@ -405,7 +421,9 @@ No incluye el siguiente paquete de presupuesto. [Evidencia](m55-runtime-fingerpr
    en mismaSession tras fallo de input exponía cache anterior. RED3FAIL reales tras
    corregir type del fixture; fixes con rechazo pre-write e invalidación por Run.
    Focal57PASS/0FAIL/0SKIP; full1826=1822PASS/0FAIL/4SKIPsymlink209.921s, exit0.
-6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
+6. ToolCallStarted v3: contrato/codecs/upcasters/index envelope verificados; falta
+   captura fiel previa al efecto y política de contenido sensible, sin eludir redacción.
+   TargetRef solo representa claim filesystem único; no esquema universal inventado.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
    Auditoría documental 2026-10-06: ADR0046 §2/§8 fija nombres e identidad, pero no los

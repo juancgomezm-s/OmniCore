@@ -1092,6 +1092,10 @@ public sealed class FilesystemWriteToolTests
                     var meta = FilesystemReconciliationMetadata.Parse(started.ReconciliationJson);
                     Assert.False(meta is null, "metadatos canónicos de la creación");
                     Assert.Equal("nuevo.txt", meta!.Path);
+                    Assert.Equal("nuevo.txt", started.TargetRef);
+                    Assert.Equal(Reversibility.Unknown, started.Reversibility);
+                    Assert.Null(started.BeforeStateRef); // Reconciliation hashes are not a captured pre-image.
+                    Assert.Equal(3, evt.SchemaVersion);
                     Assert.Equal(FilesystemReconciliationMetadata.AbsentPreHash, meta.ExpectedPreHash);
                     Assert.Equal(VersionOf(content), meta.ExpectedPostHash);
                 }
@@ -1101,6 +1105,9 @@ public sealed class FilesystemWriteToolTests
                     var meta = FilesystemReconciliationMetadata.Parse(started2.ReconciliationJson);
                     Assert.False(meta is null);
                     Assert.Equal(VersionOf("original\n"), meta!.ExpectedPreHash);
+                    Assert.Equal("doc.txt", started2.TargetRef);
+                    Assert.Equal(Reversibility.Unknown, started2.Reversibility);
+                    Assert.Null(started2.BeforeStateRef);
                     Assert.Equal(VersionOf("reemplazado\n"), meta.ExpectedPostHash);
                 }
             }
