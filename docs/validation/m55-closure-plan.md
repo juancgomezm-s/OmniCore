@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 13:37 UTC / 07:37 America/Mexico_City.
+Actualizado 2026-10-06 13:51 UTC / 07:51 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -78,8 +78,17 @@ focal final75PASS/0FAIL/0SKIP4.203s, build0warnings/errores. Full1964 casos:
 Fixtures offline, no consumo autenticado. [Evidencia](m55-budget-continuation.md).
 Auditoría read-only: AgentProfile no tiene resolver activo; ProfileId de Lane no es
 un perfil efectivo. toolPreferences está diferido a M8 por ADR0027. No se inventan
-componentes: falta verificar en integración política efectiva/boundary/tools visibles
-y completar los contratos exigidos por ADR0017 sin afirmar implementaciones futuras.
+componentes: completar los contratos exigidos por ADR0017 sin afirmar implementaciones
+futuras; política efectiva/boundary/tools visibles ya verificados en integración siguiente.
+Integración política→request.Tools→TurnStarted verificada con ObserveOnly/PatchOnly
+y repetición estable entre IDs distintos (10focalPASS antes de CAS). Ahora los cinco
+componentes resueltos y tres por Turn tienen Content CAS exacto cuando no redactado;
+tools.plan/prompt.template v2 incluyen schema/texto completos. Orden blob→evento,
+refs en envelope, SQLite/CAS reopen y CLI HTTP loopback probados. RED1FAIL;
+focal final84PASS/0FAIL/0SKIP7.565s, build0warnings/errores; full1970 casos:
+1966PASS/0FAIL/4SKIPsymlink267.460s, exit0. No incluye test posterior de fallo append.
+provider.adapter privado/redactados mantienen Content=null; no bypass de ADR0018 ni
+claim CAS exacto para datos ausentes. [Contrato y límites](m55-runtime-fingerprint.md).
 Faltan AgentProfile/skills efectivos y trazabilidad explicable completa; no se declara
 cerrado el fingerprint de M5.5. Full1834=1830PASS/0FAIL/4SKIPsymlink213.545s, exit0.
 GC ya distingue la forma completa conocida del fingerprint de JSON arbitrario
