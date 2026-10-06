@@ -30,6 +30,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.UserInputReceived())
             .Plus(Typed.FollowUpQueued())
             .Plus(Typed.FollowUpPromoted())
+            .Plus(Typed.TurnSteeringReceived())
+            .Plus(Typed.TurnSteeringApplied())
+            .Plus(Typed.TurnSteeringDropped())
             .Plus(Typed.AssistantMessageRecorded())
             .Plus(Typed.RunValidationStarted())
             .Plus(Typed.RunValidationRejected())
@@ -314,6 +317,9 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(UserInputReceived))]
 [JsonSerializable(typeof(FollowUpQueued))]
 [JsonSerializable(typeof(FollowUpPromoted))]
+[JsonSerializable(typeof(TurnSteeringReceived))]
+[JsonSerializable(typeof(TurnSteeringApplied))]
+[JsonSerializable(typeof(TurnSteeringDropped))]
 [JsonSerializable(typeof(AssistantMessageRecorded))]
 [JsonSerializable(typeof(RunValidationStarted))]
 [JsonSerializable(typeof(RunValidationRejected))]
@@ -441,6 +447,15 @@ public sealed class Typed
 
     public static CodecPair FollowUpPromoted() =>
         Of(EventType.Of("followup.promoted"), EventJsonContext.Default.FollowUpPromoted);
+
+    public static CodecPair TurnSteeringReceived() =>
+        Of(EventType.Of("turn.steering_received"), EventJsonContext.Default.TurnSteeringReceived);
+
+    public static CodecPair TurnSteeringApplied() =>
+        Of(EventType.Of("turn.steering_applied"), EventJsonContext.Default.TurnSteeringApplied);
+
+    public static CodecPair TurnSteeringDropped() =>
+        Of(EventType.Of("turn.steering_dropped"), EventJsonContext.Default.TurnSteeringDropped);
 
     public static CodecPair AssistantMessageRecorded() =>
         Of(EventType.Of("assistant_message.recorded"), EventJsonContext.Default.AssistantMessageRecorded);
