@@ -6,6 +6,7 @@ using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
 using OmniCore.Client;
 using OmniCore.Domain;
+using OmniCore.Engine;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using Task = System.Threading.Tasks.Task;
@@ -17,6 +18,56 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
 {
     private const string ModelId = "cross-workspace-budget-model";
     private const string ProviderId = "cross-workspace-budget-provider";
+
+    [Theory]
+    [InlineData("daily")]
+    [InlineData("session")]
+    public async Task User_daily_continuation_crosses_workspaces_but_session_grant_does_not(string scope)
+    {
+        var root = FixtureRoot();
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        var workspaceA = Path.Combine(root, "workspace-a");
+        var workspaceB = Path.Combine(root, "workspace-b");
+        foreach (var directory in new[] { data, config, workspaceA, workspaceB }) Directory.CreateDirectory(directory);
+        var environment = ProcessEnvironment.Capture();
+        var provider = new ScriptedHttpProvider(inputTokens: 100);
+        var runtimeA = OmniCliRuntime.Create(workspaceA);
+        var runtimeB = OmniCliRuntime.Create(workspaceB);
+        try
+        {
+            SetEnvironment(data, config);
+            WriteConfiguration(config, provider.BaseUrl, scope == "daily" ? 0m : 100m,
+                scope == "session" ? 0m : 5m);
+            var firstOutput = new List<string>();
+            await new TuiTurnHost(runtimeA).ExecuteAsync("ask for explicit continuation", firstOutput.Add,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(0, provider.RequestCount);
+            var request = Assert.Single(ReadCurrentEvents(workspaceA).OfType<InteractionRequested>(),
+                item => item.Kind == InteractionKind.BudgetExceeded);
+            Assert.Equal(scope, BudgetContinuation.Offer(request)!.Scope);
+            var server = Assert.IsType<OmniServer>(runtimeA.Connect(CancellationToken.None));
+            Assert.Equal("ok", server.RespondToInteraction(request.InteractionId, "allow_plus").Status);
+            CloseRuntime(runtimeA);
+            var secondOutput = new List<string>();
+            await new TuiTurnHost(runtimeB).ExecuteAsync("respect the durable grant", secondOutput.Add,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(scope == "daily" ? 1 : 0, provider.RequestCount);
+            var events = ReadCurrentEvents(workspaceB);
+            if (scope == "daily") Assert.Single(events.OfType<ModelStepCompleted>());
+            else Assert.Contains(events, evt => evt is InteractionRequested interaction
+                && interaction.Kind == InteractionKind.BudgetExceeded);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            CloseRuntime(runtimeA);
+            CloseRuntime(runtimeB);
+            ProcessEnvironment.Restore(environment);
+            ClearFixturePools(data, workspaceA, workspaceB);
+            Directory.Delete(root, true);
+        }
+    }
 
     [Fact]
     public async Task Spend_over_daily_cap_in_workspace_a_blocks_workspace_b_before_provider()
@@ -151,7 +202,7 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
         Environment.SetEnvironmentVariable("OMNI_BASE_URL", null);
     }
 
-    private static void WriteConfiguration(string config, string baseUrl, decimal dailyCapUsd)
+    private static void WriteConfiguration(string config, string baseUrl, decimal dailyCapUsd, decimal sessionCapUsd = 5m)
     {
         File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
             providers:
@@ -172,7 +223,7 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
             """);
         File.WriteAllText(Path.Combine(config, "settings.yaml"), $$"""
             budget:
-              session: 5
+              session: {{sessionCapUsd.ToString(System.Globalization.CultureInfo.InvariantCulture)}}
               daily: {{dailyCapUsd.ToString(System.Globalization.CultureInfo.InvariantCulture)}}
             """);
     }

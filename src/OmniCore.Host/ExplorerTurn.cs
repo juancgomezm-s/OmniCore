@@ -508,10 +508,12 @@ public sealed class ExplorerTurn
         {
             try
             {
-            dailyCap = BudgetContinuation.Limit(workspaceJournal.ReadEvents(EventType.Of("interaction.requested"))
-                .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.resolved")))
-                .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.expired"))), _codecs,
-                sessionId, runId, today, "daily", _dailyCapUsd);
+                dailyCap = BudgetContinuation.Limit(workspaceJournal.ReadEvents(EventType.Of("interaction.requested"))
+                    .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.resolved")))
+                    .Concat(workspaceJournal.ReadEvents(EventType.Of("interaction.expired"))), _codecs,
+                    sessionId, runId, today, "daily", _dailyCapUsd);
+                dailyCap = Math.Max(dailyCap, UserDailyBudgetContinuation.Limit(_userSpendReader, _codecs,
+                    today, _dailyCapUsd));
             }
             catch (Exception) { dailyCap = _dailyCapUsd; } // No evidence means no increase.
         }

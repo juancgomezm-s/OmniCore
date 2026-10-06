@@ -57,6 +57,7 @@ public sealed class OmniServer : IOmniClient
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
+    private readonly UserWorkspaceSpendReader? _userSpendReader;
     public SessionObservationHub Observability { get; }
 
     private string? _workspaceRoot;
@@ -73,13 +74,14 @@ public sealed class OmniServer : IOmniClient
     public void ConfigureWorkspaceRoot(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        _userSpendReader = userSpendReader;
         Observability = new SessionObservationHub(store, codecs, artifacts);
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = null;
@@ -89,13 +91,14 @@ public sealed class OmniServer : IOmniClient
     }
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        _userSpendReader = userSpendReader;
         Observability = new SessionObservationHub(store, codecs, artifacts);
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = stateFile;
@@ -1163,7 +1166,8 @@ public sealed class OmniServer : IOmniClient
     /// </summary>
     private CommandAck RunControl(WireEnvelope command, string commandName, Dictionary<string, string> fields)
     {
-        var control = new RunControlService(_store, _codecs);
+        var control = new RunControlService(_store, _codecs, (day, baseline) =>
+            UserDailyBudgetContinuation.Limit(_userSpendReader, _codecs, day, baseline));
         SessionId? outcomeSession = null;
         long outcomeSequenceBefore = 0;
         var explicitOutcome = commandName is "session.input" or "run.interrupt" or "run.cancel"

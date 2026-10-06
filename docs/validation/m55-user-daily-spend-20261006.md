@@ -25,8 +25,9 @@ en B pese a que A ya había registrado 0.60 USD con un tope diario de 0.50 USD.
 
 Esto es un snapshot de evidencia de uso, no una factura ni una reserva atómica
 de presupuesto entre procesos concurrentes. No implementa scheduler/joins M6.
-La coherencia del consentimiento de continuar diario entre workspaces todavía
-requiere auditoría: este bloque no declara resuelto ese requisito distinto.
+La coherencia del consentimiento de continuar diario entre workspaces se corrigió
+en el bloque posterior [continuación diaria](m55-user-daily-continuation-20261006.md),
+con evidencia propia: no se acredita por los tests de este bloque.
 
 ## Evidencia reproducible
 
