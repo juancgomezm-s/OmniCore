@@ -58,6 +58,7 @@ public sealed class TuiApp
     private CancellationTokenSource? _turnCancellation;
     private Task? _turnTask;
     private bool _turnBusy;
+    private string? _pendingEscalationResume;
     private View? _activity;
     private Label? _activityLabel;
     private int _activityPhase;
@@ -480,7 +481,7 @@ public sealed class TuiApp
         PollEvents();
     }
 
-    private bool StartModelTurn(string input, bool act = false)
+    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null)
     {
         if (_turnHost is null) return false;
         if (_turnBusy) { ShowMessage(Ui("Ya hay un turno procesando. Espera o usa /cancel.", "A turn is already processing. Wait or use /cancel.")); return false; }
@@ -499,7 +500,8 @@ public sealed class TuiApp
                     if (messages.Count == 4) messages.RemoveAt(0);
                     messages.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await (act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
+                code = await (resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
+                    : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
                     : _turnHost.ExecuteAsync(input, diagnostic, cancellation.Token)).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { code = 2; }
@@ -512,6 +514,11 @@ public sealed class TuiApp
                 RefreshSelectedModel(); PollEvents();
                 if (code != 0 && code != 3 && !cancellation.IsCancellationRequested)
                     ShowMessage(string.Join("\n", messages));
+                if (_pendingEscalationResume is { } resume)
+                {
+                    _pendingEscalationResume = null;
+                    if (!cancellation.IsCancellationRequested) StartModelTurn("", resumeEscalation: resume);
+                }
             });
         });
         return true;
@@ -838,8 +845,17 @@ public sealed class TuiApp
     {
         var payload = "{\"cmd\":\"interaction.respond\"," + JsonObj.Field("interactionId", interaction.Id)
             + "," + JsonObj.Field("optionId", optionId) + "}";
-        _client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+        var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+        if (ack.Status != "ok") { ShowMessage(ack.Error ?? Ui("Respuesta rechazada", "Response rejected")); return; }
         CloseOverlay(); PollEvents();
+        if (interaction.Kind == "ModelRouteConsent" && optionId == "allow_route"
+            && _turnHost?.HasEscalationForInteraction(interaction.Id) == true)
+        {
+            // The overlay can be drawn by polling just before the originating task returns 3.
+            // Defer the callback until that owned invocation reaches its checkpoint.
+            if (_turnBusy) _pendingEscalationResume = interaction.Id;
+            else StartModelTurn("", resumeEscalation: interaction.Id);
+        }
     }
 
     private void RespondQuestionnaire(InteractionOverlayModel interaction, OmniCore.Client.QuestionnaireResponseDto response)

@@ -199,8 +199,73 @@ public sealed class OmniCliRuntime
     internal Task<int> ConversationAsync(string prompt, Action<string> writeLine, CancellationToken cancellationToken) =>
         RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true);
 
+    private sealed record RoutingResume(SessionId Session, RunId Run, InteractionId? Interaction, string Model);
+
+    internal bool HasEscalationForInteraction(InteractionId interaction)
+    {
+        var server = Server();
+        if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return false;
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        var request = events.LastOrDefault(evt => evt.RunId == run
+            && server.AcquireCodecs().Decode(evt) is InteractionRequested item
+            && item.Kind == InteractionKind.ModelRouteConsent && item.InteractionId == interaction);
+        if (request is null) return false;
+        var escalation = events.LastOrDefault(evt => evt.RunId == run && evt.Sequence < request.Sequence
+            && server.AcquireCodecs().Decode(evt) is ModelEscalationRequested item && item.RunId == run
+            && item.Cause == EscalationCause.ContextLimit);
+        if (escalation is null) return false;
+        return !events.Any(evt => evt.RunId == run && evt.Sequence > escalation.Sequence && evt.Sequence < request.Sequence
+            && server.AcquireCodecs().Decode(evt) is InteractionRequested { Kind: InteractionKind.ModelRouteConsent }
+                or ModelEscalationApproved or ModelEscalationCompleted);
+    }
+
+    /// <summary>Resume only the exact durable, user-consented escalation. Never submits a new intent.</summary>
+    internal async Task<int> ResumeEscalationAsync(InteractionId interaction, Action<string> writeLine,
+        CancellationToken cancellationToken)
+    {
+        var server = Server();
+        if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run)
+            return 1;
+        var loaded = OmniHost.LoadUserConfiguration(OmniHost.CreatePlatformPaths());
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        foreach (var model in loaded.Registry.Models())
+        {
+            var provider = loaded.Registry.Provider(model.ProviderId);
+            var pending = ModelEscalationConsentReplay.FindGrantedPending(events, server.AcquireCodecs(),
+                session, run, model.Id, ModelRoutingHost.RouteFor(model, provider), provider?.BillingMode ?? BillingMode.Unknown);
+            if (pending?.InteractionId != interaction) continue;
+            // Legacy/unattributed attempts cannot borrow some earlier intention from the Run.
+            var originStart = events.LastOrDefault(evt => evt.RunId == run && evt.Sequence < pending.RequestSequence
+                && server.AcquireCodecs().Decode(evt) is TurnStarted start
+                && start.TurnId == pending.Request.TurnId && start.LaneId == pending.Request.LaneId);
+            var previousStart = originStart is null ? 0 : events.Where(evt => evt.RunId == run && evt.Sequence < originStart.Sequence
+                && server.AcquireCodecs().Decode(evt) is TurnStarted start && start.LaneId == pending.Request.LaneId)
+                .Select(evt => evt.Sequence).DefaultIfEmpty(0).Max();
+            if (originStart is null || pending.Request.LaneId != server.LastLaneId()
+                || !events.Any(evt => evt.RunId == run && evt.Sequence > previousStart && evt.Sequence <= originStart.Sequence
+                    && server.AcquireCodecs().Decode(evt) is UserInputReceived input
+                    && input.Origin?.StartsWith("InteractionResponse(", StringComparison.Ordinal) != true))
+            { writeLine("Escalation has no durable original input; resume rejected"); return 1; }
+            var before = server.AcquireStore().CurrentSequence(session);
+            var code = await RunTurnAsync("", server.CurrentRunMode() == RunMode.Act, writeLine,
+                cancellationToken, conversationOnly: server.CurrentRunMode() == RunMode.Plan,
+                routingResume: new(session, run, interaction, model.Id)).ConfigureAwait(false);
+            // Completed means the target was actually invoked, not merely approved or deferred.
+            if (server.LastSessionId() == session && server.LastRunId() == run
+                && server.AcquireStore().ReadFrom(session, before + 1).Any(evt => evt.RunId == run
+                    && server.AcquireCodecs().Decode(evt) is ModelStepCompleted))
+                EnsureEscalationRecorded(server.RecordModelEscalationCompleted(session,
+                    new ModelEscalationCompleted(run, model.Id, pending.Request.TurnId, pending.Request.LaneId)));
+            return code;
+        }
+        // A stale, denied or already consumed escalation is not executable.
+        writeLine("No pending user-consented escalation for this interaction");
+        return 1;
+    }
+
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
-        CancellationToken cancellationToken, bool conversationOnly = false)
+        CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null)
     {
         var paths = OmniHost.CreatePlatformPaths();
         var workspaceData = OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
@@ -256,7 +321,7 @@ public sealed class OmniCliRuntime
 
         // Elección explícita (escalación en curso, OMNI_MODEL o defaultModel del workspace) siempre gana;
         // si no la hay y el usuario configuró routing:, elige el router por tipo de tarea (M5).
-        var explicitModel = _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
+        var explicitModel = routingResume?.Model ?? _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
             ?? workspaceConfig.Settings?.DefaultModel ?? storedSelection?.ModelId;
         if (explicitModel is not null)
         {
@@ -360,12 +425,22 @@ public sealed class OmniCliRuntime
             server.ConfigureNewSessionRoutingPolicy(ModelRoutingHost.InitialSessionPolicy(loaded,
                 modelDefinition?.ProviderId ?? "local"));
             string workingState = "";
-            if (conversationOnly)
+            if (routingResume is not null)
+            {
+                if (server.LastSessionId() != routingResume.Session || server.LastRunId() != routingResume.Run
+                    || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(routingResume.Session) != routingResume.Run)
+                { writeLine("Selected Session/Run changed; routing resume rejected"); return 1; }
+                workingState = ReadWorkingState(server, cancellationToken);
+            }
+            else if (conversationOnly)
             {
                 var input = server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
                     + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt)
                     + "," + JsonObj.Field("mode", "plan") + "}"), cancellationToken);
                 if (input.Status != "ok") throw new InvalidOperationException(input.Error ?? "Conversation input rejected");
+                // session.input already persisted/queued the intent. Explorer reads that history;
+                // submitting the same text again would duplicate input and provider context.
+                prompt = "";
                 workingState = ReadWorkingState(server, cancellationToken);
             }
             else if (!act)
@@ -403,7 +478,8 @@ public sealed class OmniCliRuntime
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = server.LastLaneId() ?? LaneId.New();
-            var promptOrigin = server.ConsumePromptOrigin();
+            var promptOrigin = routingResume is not null ? "InteractionResponse(ModelRouteConsent)"
+                : conversationOnly ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
             var followUp = server.QueueFollowUpPromptCommand(sessionId, runId, laneId, prompt, promptOrigin);
             if (followUp.Ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Rejected)
             {
@@ -419,6 +495,16 @@ public sealed class OmniCliRuntime
                     ? modelDefinition.ContextWindow : 8192;
             var runtimeModel = modelDefinition ?? new ModelDefinition(model, "local", usableContext, usableContext, 2048);
             var route = ModelRoutingHost.RouteFor(runtimeModel, providerDescription, baseUrl);
+            if (routingResume?.Interaction is not null)
+            {
+                var pending = ModelEscalationConsentReplay.FindGrantedPending(server.AcquireStore().ReadFrom(sessionId, 1),
+                    server.AcquireCodecs(), sessionId, runId, model, route, providerDescription?.BillingMode ?? BillingMode.Unknown);
+                if (pending?.InteractionId != routingResume.Interaction)
+                { writeLine("Routing consent is stale or already consumed; resume rejected"); return 1; }
+                EnsureEscalationRecorded(server.RecordModelEscalationApproved(sessionId,
+                    new ModelEscalationApproved(runId, model, "interaction:" + pending.InteractionId,
+                        pending.Request.TurnId, pending.Request.LaneId)));
+            }
             if (AuthorizeRouteForInvocation(server, sessionId, runId, route,
                     providerDescription?.BillingMode ?? BillingMode.Unknown, writeLine, locale) is { } routeCode)
                 return routeCode;
@@ -1120,8 +1206,11 @@ public sealed class OmniCliRuntime
             candidate => HasWritePolicy(candidate, loaded, cancellationToken));
         var server = Server();
         if (next is null || server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return null;
+        var originatingTurn = server.AcquireStore().ReadFrom(session, 1)
+            .Where(evt => evt.RunId == run).Select(server.AcquireCodecs().Decode).OfType<TurnStarted>().LastOrDefault();
         EnsureEscalationRecorded(server.RecordModelEscalationRequested(session,
-            new ModelEscalationRequested(run, currentModel, next.Alias, EscalationCause.ContextLimit)));
+            new ModelEscalationRequested(run, currentModel, next.Alias, EscalationCause.ContextLimit,
+                originatingTurn?.TurnId, originatingTurn?.LaneId)));
         // phaseA7 (M55): en modo auto no se aprueba la escalación si el proveedor del modelo
         // destino requiere API key y esta no está resuelta; misma semántica que RunTurnAsync,
         // sin aprobar ni completar el intento (el Requested ya registra la causa).
@@ -1159,14 +1248,21 @@ public sealed class OmniCliRuntime
             }
         }
         EnsureEscalationRecorded(server.RecordModelEscalationApproved(session,
-            new ModelEscalationApproved(run, next.Alias, escalationMode == "auto" ? "policy:auto-authorized" : "interaction:user")));
+            new ModelEscalationApproved(run, next.Alias, escalationMode == "auto" ? "policy:auto-authorized" : "interaction:user",
+                originatingTurn?.TurnId, originatingTurn?.LaneId)));
         writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.Alias))));
+        var beforeTarget = server.AcquireStore().CurrentSequence(session);
         _escalatedModel = next.Alias;
         try
         {
-            var code = await RunTurnAsync(prompt, act, writeLine, cancellationToken).ConfigureAwait(false);
-            EnsureEscalationRecorded(server.RecordModelEscalationCompleted(session,
-                new ModelEscalationCompleted(run, next.Alias)));
+            var code = await RunTurnAsync("", act, writeLine, cancellationToken,
+                conversationOnly: !act && server.CurrentRunMode() == RunMode.Plan,
+                routingResume: new(session, run, null, next.Alias)).ConfigureAwait(false);
+            if (server.LastSessionId() == session && server.LastRunId() == run
+                && server.AcquireStore().ReadFrom(session, beforeTarget + 1).Any(evt => evt.RunId == run
+                    && server.AcquireCodecs().Decode(evt) is ModelStepCompleted))
+                EnsureEscalationRecorded(server.RecordModelEscalationCompleted(session,
+                    new ModelEscalationCompleted(run, next.Alias, originatingTurn?.TurnId, originatingTurn?.LaneId)));
             return code;
         }
         finally { _escalatedModel = null; }

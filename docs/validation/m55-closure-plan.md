@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 07:26 UTC / 01:26 America/Mexico_City.
+Actualizado 2026-10-06 07:49 UTC / 01:49 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -30,7 +30,9 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   escalación; claves y precios no autorizan rutas MeteredCurrency/Unknown.
   Replay valida la revisión y SQLite conserva permisos exactos tras reinicio.
   [Contrato y límites](m55-session-routing-consent.md). Auto/ask sin cliente deniegan;
-  ask con cliente publica InteractionRequest real. Reanudación automática TUI pendiente.
+  ask con cliente publica InteractionRequest real. Reanudación durable del destino
+  tras aprobación, sin nuevo input/Run ni consumo prematuro de FollowUps:
+  [contrato y pruebas](m55-routing-resume.md).
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -48,8 +50,8 @@ El build global explicable del fingerprint y los demás componentes reales aún 
 
 1. Completar replay opaco: storage seguro para estados que el redactor actual alteraría,
    ReasoningCapability y aplicación de ReasoningReplayPolicy. Checkpoint/resume básico probado.
-2. Consentimiento de rutas implementado; completar resume de escalación ask en TUI
-   desde solicitud/consentimiento durables, sin volver a ejecutar el modelo original.
+2. Consentimiento de rutas y resume de escalación ask en TUI implementados.
+   Completar resume de selección inicial y presupuesto.
    Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
@@ -71,8 +73,8 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa con consentimiento de rutas: 1661 casos,
-  1657 PASS, 0 FAIL, 4 SKIP symlink (`session-routing-full-suite.log`, 138.083 s).
+- Última suite completa con resume de rutas/input único: 1682 casos,
+  1678 PASS, 0 FAIL, 4 SKIP symlink (`routing-resume-single-input-full-suite.log`, 140.553 s).
 - Lifecycle BudgetExceeded/cliente/commands/proyecciones: 80 PASS,
   0 FAIL, 0 SKIP (`budget-lifecycle-tests-fixed.log`). Billing/YAML/factory: 32 PASS.
 - Focal final CAS/rutas: 121 PASS.
@@ -95,13 +97,11 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
 
-Próxima implementación del integrador: reanudación durable del destino autorizado de
-escalación ask. Auditoría Luna: TuiApp.RespondChoice sólo responde/pollea; no reentra al
-runtime. El siguiente submit vuelve al modelo local original y ask vuelve a pedir permiso.
-Resolver exclusivamente solicitud de escalación + oferta/resolución User + revisión de
-política de la misma Session/Run y misma identidad física actual. No usar el siguiente
-mensaje como sustituto de la intención original ni recuperar permisos de otro Run.
-Focal routing/consent/SQLite/protocol/CLI: 33 PASS, 0 FAIL, 0 SKIP;
-session-routing-integration-tests.log. Fixtures y claves sintéticas, sin gasto real.
+Próxima implementación: circuito breaker/disponibilidad real y RouteCandidate.RouteId.
+Reanudación ask verificada mediante solicitud+consent User+revisión exacta Session/Run,
+Turn/Lane de origen e identidad física vigente; no usa un mensaje nuevo como sustituto.
+Focal routing/resume/SQLite/protocol/CLI/FollowUp: 61 PASS, 0 FAIL, 0 SKIP;
+routing-resume-single-input-tests.log. TUI callback/ack/carrera con driver real: 4 PASS;
+routing-resume-tui-race-tests.log. Fixtures/SSE controlado, sin gasto real.
 Ledger diario entre workspaces, reservas concurrentes y reanudación automática
 allow_plus también pendientes. No asumir cierre por contratos o credenciales.
