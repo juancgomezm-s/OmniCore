@@ -266,6 +266,90 @@ public sealed class ExplorerTurn
 
     private sealed record PersistedSpend(decimal? SessionUsd, decimal? DailyUsd, decimal? RunUsd, bool Incomplete);
 
+    private static PersistedSpend CombineSpend(PersistedSpend left, PersistedSpend right) => new(
+        right.SessionUsd is { } session ? AddHistoricalSpend(left.SessionUsd, session) : null,
+        right.DailyUsd is { } daily ? AddHistoricalSpend(left.DailyUsd, daily) : null,
+        right.RunUsd is { } run ? AddHistoricalSpend(left.RunUsd, run) : null,
+        left.Incomplete || right.Incomplete);
+
+    // Meta-model calls are independent billable invocations, not part of ModelCompleted's
+    // primary-model summary. Completed followed by Failed for the same invocation is one charge.
+    private PersistedSpend ReadMetaSpend(IEnumerable<DomainEvent> events, SessionId sessionId,
+        RunId runId, string today)
+    {
+        decimal? session = 0m, daily = 0m, run = 0m;
+        var incomplete = false;
+        var starts = new Dictionary<(SessionId, string), (DomainEvent Event, MetaModelInvocationStarted Payload)>();
+        var outcomes = new Dictionary<(SessionId, string), (TokenUsage Usage, TokenUsageFields Fields,
+            decimal Cost, string Day)>();
+        foreach (var evt in events.OrderBy(e => e.SessionId.ToString(), StringComparer.Ordinal).ThenBy(e => e.Sequence))
+        {
+            try
+            {
+                var payload = _codecs.Decode(evt);
+                if (payload is MetaModelInvocationStarted start)
+                {
+                    if (string.IsNullOrWhiteSpace(start.InvocationId) || string.IsNullOrWhiteSpace(start.Operation)
+                        || string.IsNullOrWhiteSpace(start.ModelFingerprint) || evt.RunId != start.RunId
+                        || start.InputArtifact is not { } input || input.Kind != ArtifactKind.Other
+                        || !_artifacts.Verify(input.Hash, input.Size)
+                        || !starts.TryAdd((evt.SessionId, start.InvocationId), (evt, start))) incomplete = true;
+                    continue;
+                }
+                var identity = payload switch
+                {
+                    MetaModelInvocationCompleted c => (c.InvocationId, c.RunId, c.Operation, c.ModelFingerprint,
+                        c.Usage, c.CostUsd, c.ReportedUsageFields),
+                    MetaModelInvocationFailed f => (f.InvocationId, f.RunId, f.Operation, f.ModelFingerprint,
+                        f.Usage, f.CostUsd, f.ReportedUsageFields),
+                    _ => default,
+                };
+                if (payload is not (MetaModelInvocationCompleted or MetaModelInvocationFailed)) continue;
+                if (string.IsNullOrWhiteSpace(identity.InvocationId)) { incomplete = true; continue; }
+                var key = (evt.SessionId, identity.InvocationId);
+                if (!starts.TryGetValue(key, out var origin) || origin.Event.Sequence >= evt.Sequence
+                    || evt.RunId != identity.RunId || origin.Payload.RunId != identity.RunId
+                    || origin.Payload.Operation != identity.Operation || origin.Payload.ModelFingerprint != identity.ModelFingerprint
+                    || identity.Usage is null || InvalidUsage(identity.Usage)
+                    || identity.CostUsd is null || identity.CostUsd < 0m
+                    || identity.ReportedUsageFields is not { } fields
+                    || (fields & (TokenUsageFields.Input | TokenUsageFields.Output))
+                        != (TokenUsageFields.Input | TokenUsageFields.Output)
+                    || payload is MetaModelInvocationCompleted completed
+                        && (completed.OutputArtifact is not { } output || output.Kind != ArtifactKind.ModelResponse
+                            || !_artifacts.Verify(output.Hash, output.Size)))
+                {
+                    incomplete = true;
+                    continue;
+                }
+                var charge = (Usage: identity.Usage, Fields: fields, Cost: identity.CostUsd.Value,
+                    Day: evt.Timestamp.UtcDateTime.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+                if (outcomes.TryGetValue(key, out var prior))
+                {
+                    // A second terminal record cannot rewrite measured usage or move the charge's day.
+                    if (prior.Usage != charge.Usage || prior.Fields != charge.Fields || prior.Cost != charge.Cost)
+                        incomplete = true;
+                }
+                else outcomes.Add(key, charge);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException or IOException)
+            {
+                incomplete = true;
+            }
+        }
+        if (starts.Keys.Any(key => !outcomes.ContainsKey(key))) incomplete = true;
+        foreach (var pair in outcomes)
+        {
+            var cost = pair.Value.Cost;
+            if (pair.Value.Day == today) daily = AddHistoricalSpend(daily, cost);
+            if (pair.Key.Item1 == sessionId) session = AddHistoricalSpend(session, cost);
+            if (pair.Key.Item1 == sessionId && starts[pair.Key].Payload.RunId == runId)
+                run = AddHistoricalSpend(run, cost);
+        }
+        return new(session, daily, run, incomplete || session is null || daily is null || run is null);
+    }
+
     // Null is an unrepresentable total, not a measured zero or a saturated amount.
     private static decimal? AddHistoricalSpend(decimal? total, decimal cost)
     {
@@ -383,6 +467,8 @@ public sealed class ExplorerTurn
                 pendingInteraction.InteractionId);
         }
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
+        // at each boundary, avoiding a gap/overlap between a historical scan and a sequence delta.
         var persistedSpend = ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps);
 
         var messages = LoadConversation(stream, runId);
@@ -431,10 +517,54 @@ public sealed class ExplorerTurn
         var steps = 1;
         var started = false;
 
+        PersistedSpend CurrentSpend() => CombineSpend(persistedSpend,
+            ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps));
+
+        void ValidateBeforeInvocation()
+        {
+            var spend = CurrentSpend();
+            var capped = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
+            if (capped && (_pricing is null || !_pricing.IsComplete))
+                throw new BudgetExceededException("precio desconocido: no se puede hacer cumplir el tope");
+            if (capped && spend.Incomplete)
+                throw new BudgetExceededException("uso histórico incompleto: no se puede hacer cumplir el tope");
+            var runCost = AccumulatedSpend(spend.RunUsd, guard.CostUsd(), capped);
+            var sessionCost = AccumulatedSpend(spend.SessionUsd, guard.CostUsd(), capped);
+            var dailyCost = AccumulatedSpend(spend.DailyUsd, guard.CostUsd(), capped);
+            if (budget.MaxCostUsd is not null && runCost >= budget.MaxCostUsd.Value)
+                throw new BudgetExceededException("límite de costo de Run alcanzado ($" + budget.MaxCostUsd.Value + ")",
+                    new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
+            if (_enforceDefaultSpendCaps && sessionCost >= sessionCap)
+                throw new BudgetExceededException("límite de sesión alcanzado ($" + sessionCap + ")",
+                    new("session", _sessionCapUsd, sessionCap, null, null));
+            if (_enforceDefaultSpendCaps && dailyCost >= dailyCap)
+                throw new BudgetExceededException("límite diario alcanzado ($" + dailyCap + ")",
+                    new("daily", _dailyCapUsd, dailyCap, null, today));
+        }
+
+        bool CanInvokeMeta()
+        {
+            try { ValidateBeforeInvocation(); return true; }
+            catch (BudgetExceededException) { return false; }
+        }
+
         try
         {
+            try
+            {
+                // Preserve uncapped Turn lifecycle diagnostics; monetary caps must block
+                // before context materialization can itself issue a billable request.
+                if (_metaModelProvider is not null
+                    && (budget.MaxCostUsd is not null || _enforceDefaultSpendCaps)) ValidateBeforeInvocation();
+            }
+            catch (BudgetExceededException ex)
+            {
+                EmitBudgetExceeded(stream, turnId, ex.Detail, ex.Continuation);
+                return new TurnResult("Presupuesto agotado: " + ex.Detail, StopReason.Cancelled, 0,
+                    usage, allToolCalls.ToArray(), null);
+            }
             var preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                workingStateText, instruction, messages, fingerprint, cancellationToken);
+                workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta);
             var materialized = preparedContext.Snapshot;
             var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
 
@@ -497,7 +627,7 @@ public sealed class ExplorerTurn
                 if (step > 0 || steering.Count > 0)
                 {
                     preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                        workingStateText, instruction, messages, fingerprint, cancellationToken);
+                        workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta);
                     materialized = preparedContext.Snapshot;
                     if (materialized.Overflowed)
                     {
@@ -520,25 +650,7 @@ public sealed class ExplorerTurn
                 try
                 {
                     var budgeted = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
-                    if (budgeted && (_pricing is null || !_pricing.IsComplete))
-                        throw new BudgetExceededException("precio desconocido: no se puede hacer cumplir el tope");
-                    if (budgeted && persistedSpend.Incomplete)
-                        throw new BudgetExceededException("uso histórico incompleto: no se puede hacer cumplir el tope");
-                    // `usage` is the current Ask's same spend already accumulated by guard;
-                    // adding both charged a segment twice on a multi-step Turn.
-                    var accumulatedRunCost = AccumulatedSpend(persistedSpend.RunUsd, guard.CostUsd(), budgeted);
-                    var accumulatedSessionCost = AccumulatedSpend(persistedSpend.SessionUsd, guard.CostUsd(), budgeted);
-                    var accumulatedDailyCost = AccumulatedSpend(persistedSpend.DailyUsd, guard.CostUsd(), budgeted);
-                    if (budget.MaxCostUsd is not null && accumulatedRunCost >= budget.MaxCostUsd.Value)
-                        throw new BudgetExceededException("límite de costo de Run alcanzado ($"
-                            + budget.MaxCostUsd.Value + ")", new("run", configuredRunCap!.Value,
-                                budget.MaxCostUsd.Value, runId.ToString(), null));
-                    if (_enforceDefaultSpendCaps && accumulatedSessionCost >= sessionCap)
-                        throw new BudgetExceededException("límite de sesión alcanzado ($" + sessionCap + ")",
-                            new("session", _sessionCapUsd, sessionCap, null, null));
-                    if (_enforceDefaultSpendCaps && accumulatedDailyCost >= dailyCap)
-                        throw new BudgetExceededException("límite diario alcanzado ($" + dailyCap + ")",
-                            new("daily", _dailyCapUsd, dailyCap, null, today));
+                    ValidateBeforeInvocation();
 
                     var stepIndex = nextModelStepIndex++;
                     var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
@@ -600,9 +712,10 @@ public sealed class ExplorerTurn
                     // only the history loaded at entry would defer this guard until resume.
                     if (budgeted && stepCost is null)
                         throw new BudgetExceededException("uso del paso incompleto: no se puede hacer cumplir el tope");
-                    var runCost = AccumulatedSpend(persistedSpend.RunUsd, guard.CostUsd(), budgeted);
-                    var sessionCost = AccumulatedSpend(persistedSpend.SessionUsd, guard.CostUsd(), budgeted);
-                    var dailyCost = AccumulatedSpend(persistedSpend.DailyUsd, guard.CostUsd(), budgeted);
+                    var spend = CurrentSpend();
+                    var runCost = AccumulatedSpend(spend.RunUsd, guard.CostUsd(), budgeted);
+                    var sessionCost = AccumulatedSpend(spend.SessionUsd, guard.CostUsd(), budgeted);
+                    var dailyCost = AccumulatedSpend(spend.DailyUsd, guard.CostUsd(), budgeted);
                     if (budget.MaxCostUsd is not null
                         && runCost > budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
@@ -1170,6 +1283,24 @@ public sealed class ExplorerTurn
             incomplete || session is null || daily is null || run is null);
     }
 
+    private PersistedSpend ReadMetaJournalSpend(EventStream stream, SessionId sessionId, RunId runId,
+        string today, bool includeWorkspaceDaily)
+    {
+        IEnumerable<DomainEvent> metaEvents;
+        try
+        {
+            metaEvents = includeWorkspaceDaily && _store is IWorkspaceJournalReader reader
+                ? new[] { "meta_model.invocation_started", "meta_model.invocation_completed", "meta_model.invocation_failed" }
+                    .SelectMany(type => reader.ReadEvents(EventType.Of(type))).ToArray()
+                : stream.EventsSince(1).Where(e => e.Type.ToString().StartsWith("meta_model.invocation_", StringComparison.Ordinal));
+        }
+        catch (Exception)
+        {
+            return new PersistedSpend(null, null, null, true);
+        }
+        return ReadMetaSpend(metaEvents, sessionId, runId, today);
+    }
+
     private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,
         RunId runId, string day, string? providerStateDescriptor = null)
     {
@@ -1602,7 +1733,8 @@ public sealed class ExplorerTurn
 
     private PreparedTurnContext MaterializeTurnContext(EventStream stream, SessionId sessionId, RunId runId,
         LaneId laneId, TurnId turnId, string workingStateText, string instruction,
-        IReadOnlyList<ModelMessage> messages, ExecutionFingerprint fingerprint, CancellationToken cancellationToken)
+        IReadOnlyList<ModelMessage> messages, ExecutionFingerprint fingerprint, CancellationToken cancellationToken,
+        Func<bool>? canInvokeMeta = null)
     {
         var contributors = new List<IContextContributor>();
         var hasWorkingState = false;
@@ -1661,7 +1793,7 @@ public sealed class ExplorerTurn
             string summary;
             var metaFingerprint = "deterministic-v1";
             MetaModelService? metaModel = null;
-            if (_metaModelProvider is not null)
+            if (_metaModelProvider is not null && (canInvokeMeta?.Invoke() ?? true))
             {
                 metaModel = new MetaModelService(_metaModelProvider, _artifacts,
                     new ContextStreamEventSink(stream), _selection, _redaction.Redact, usage => _pricing?.CostUsd(usage));
