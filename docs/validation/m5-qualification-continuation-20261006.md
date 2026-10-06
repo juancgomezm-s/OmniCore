@@ -460,8 +460,35 @@ Focal final239PASS0FAIL5.085s, build0/0; arquitectura56PASS0.855s.
 Full coverage-namespace-final-full.log:2097=2093PASS0FAIL4SKIPsymlink113.597s,
 exit0. Cifras solapadas/no sumables; fixtures no acreditan gasto ni autenticación.
 
-Siguiente brecha auditada Luna: configuración normal valida providers, pero el API
-registryOverride crea solo modelos; provider==null y Provider inyectado==null deja
-pasar el guard de billing y ConnectProvider usa OMNI_BASE_URL/loopback. Un provider
-ausente no acredita gratuidad. Se probará un rechazo tipado antes de conexión,
-conservando la inyección de providers de fixtures y Local explícito como controles.
+## Descriptor de billing ausente — 2026-10-06 20:14 UTC
+
+La configuración normal valida providers, pero el API registryOverride creaba solo
+modelos y permitía conectar el fallback OMNI_BASE_URL sin descriptor de billing.
+Ahora provider==null y Provider inyectado==null lanza
+ModelQualificationCostEvidenceUnavailableException después del consentimiento y
+antes de construir requests/conectar. No se infiere gratuidad de nombres ni URLs.
+La preview sigue mostrando coste null/source unavailable. El rechazo no guarda
+perfil, traits ni evidencia. La inyección explícita conserva compatibilidad: acepta
+cualquier IModelProvider y no certifica gratuidad, identidad ni billing; nuestros
+controles concretos son scripteados offline, no cualificación autenticada.
+
+M5QualificationMissingProviderDescriptorTests aporta cinco casos (Luna HIGH):
+caps0/1 con destino loopback cerrado, no efectos; inyección offline parcial;
+descriptor Local explícito; ConfigLoader rechaza proveedor ausente. Root auditó y
+reprodujo RED:5=3PASS2FAIL14.165s, missing-descriptor-red-test.log. La ejecución
+corregida detectó cuatro fixtures CLI sin descriptor; se trasladaron a providers.yaml
+y models.yaml privados con billingMode Local explícito y clave derivada de esa
+configuración normal, conservando todas las assertions de llamadas/coste/política.
+
+Evidencia workers-1558: missing-descriptor-cli-focal.log244PASS5.393s;
+missing-descriptor-final-full.log2102=2098PASS0FAIL4SKIPsymlink106.833s/exit0;
+missing-descriptor-architecture-test.log56PASS0.884s; builds0/0. Cifras solapadas.
+Reproducción: los comandos locales de build/suite de este documento, con filtro
+`-class '*Qualification*' -class '*Gc*'` para el focal. Fixtures no prueban gasto real.
+
+Auditoría de cobertura ADR0007: Quick mide dos traits (7 InstructionFollowing y
+3 StructuredOutputReliability); los demás permanecen heurísticos/no medidos.
+Qualified expresa suite Quick completa, no nueve traits demostrados. Confianza
+persistida .7/.3 deriva del conteo de probes, no estadística ni calibración real.
+Full/calibración son M10+; sampling no enviado permanece declarado null/false.
+Pendientes M5: retries/cota monetaria y evidencia conectada; no cierre por suite verde.

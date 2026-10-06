@@ -26,15 +26,40 @@ public sealed class ModelQualificationCliTests
         return dir;
     }
 
-    private static IReadOnlyList<OmniCore.Host.ModelRegistryModelDescriptor> Registry() => new[]
-    {
-        new OmniCore.Host.ModelRegistryModelDescriptor("qwen-test", "local", 8192, 8192, 2048),
-    };
-
     private static async Task<int> Run(string[] args, string input, TextWriter output, string dataDir,
-        bool interactive = false) =>
-        await OmniCore.Cli.ModelPolicyCommands.Run(args, new StringReader(input), output, interactive,
-            dataDir, Registry());
+        bool interactive = false)
+    {
+        // Real CLI configuration path, with an explicit Local descriptor for the private HTTP fixture.
+        // A registry override with no billing descriptor must not imply a free provider.
+        var paths = OmniHost.CreatePlatformPaths(dataDir);
+        Directory.CreateDirectory(paths.ConfigDirectory);
+        var baseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? "http://127.0.0.1:1/v1";
+        File.WriteAllText(Path.Combine(paths.ConfigDirectory, "providers.yaml"), $$"""
+            providers:
+              local:
+                family: OpenAiChatCompatible
+                baseUrl: {{baseUrl}}
+                auth: none
+                billingMode: Local
+            """);
+        File.WriteAllText(Path.Combine(paths.ConfigDirectory, "models.yaml"), """
+            models:
+              qwen-test:
+                provider: local
+                context: 8192
+                recommendedUsableContext: 8192
+                maxOutput: 2048
+            """);
+        return await OmniCore.Cli.ModelPolicyCommands.Run(args, new StringReader(input), output, interactive,
+            dataDir);
+    }
+
+    private static ModelQualificationKey QualificationKey(string dataDir)
+    {
+        var configuration = OmniHost.LoadUserConfiguration(OmniHost.CreatePlatformPaths(dataDir));
+        var model = configuration.Registry.Model("qwen-test")!;
+        return ModelQualificationHost.QualificationKeyFor(model, configuration.Registry.Provider(model.ProviderId));
+    }
 
     [Fact]
     public async Task Qualify_refuses_without_yes_and_without_tty()
@@ -122,8 +147,7 @@ public sealed class ModelQualificationCliTests
             Assert.All(QuickProbeSuite.Probes(), probe => Assert.Contains(probe.Id.ToString(), text));
 
             // Persistido en el store de cualificación bajo la clave exacta.
-            var model = new ModelDefinition("qwen-test", "local", 8192, 8192, 2048);
-            var key = ModelQualificationHost.QualificationKeyFor(model, provider: null);
+            var key = QualificationKey(dir);
             using var store = OmniHost.CreateModelQualificationStore(dir);
             var stored = store.Get(key, CancellationToken.None);
             Assert.NotNull(stored);

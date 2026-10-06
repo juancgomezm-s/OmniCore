@@ -259,6 +259,11 @@ public sealed partial class ModelQualificationHost : IDisposable
                 "la suite de cualificación requiere consentimiento explícito (--yes o confirmación interactiva)");
         }
 
+        // An absent descriptor is not proof of Local billing. Registry overrides without
+        // an explicitly injected provider must not reach the environment-driven fallback.
+        if (provider is null && options.Provider is null)
+            throw new ModelQualificationCostEvidenceUnavailableException();
+
         var suiteProbes = Suite(options.Suite);
         IReadOnlyList<Probe> probes = (options.Probes ?? suiteProbes).ToArray();
         if (probes.Count == 0 || probes.Select(probe => probe.Id.ToString()).Distinct(StringComparer.Ordinal).Count() != probes.Count)
