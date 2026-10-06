@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 09:30 UTC / 03:30 America/Mexico_City.
+Actualizado 2026-10-06 09:45 UTC / 03:45 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -79,9 +79,11 @@ El build global explicable del fingerprint y los demás componentes reales aún 
    Focal102PASS, incluyendo SQLite/CAS reopen y dos suspensiones sin duplicados.
    Caso de tres steps/una suspensión conserva usage21/5 y coste de fixture0.000031USD.
    [Contrato y evidencia](m55-steering.md). Full1745=1741PASS/0FAIL/4SKIPsymlink211.540s.
-   Añadir registro/guard previo al append en CanonicalStateTracker: actualmente
-   la cola valida al consultar, pero EventStream directo ignora estas transiciones.
-   No declarar ese control cerrado ni M5.5 completo.
+   Guard previo al append implementado en CanonicalStateTracker, con estados,
+   relaciones de identidad, clones, rollback y replay SQLite. RED15FAIL antes del
+   fix; focal final115PASS/0FAIL/0SKIP1.914s. Suite completa1771 casos/1767PASS/
+   0FAIL/4SKIPsymlink211.331s (`steering-canonical-final-full.log`), exit0.
+   No declarar M5.5 completo: los demás controles de esta cola siguen pendientes.
 5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
    Reconciliación terminal multi-Run corregida: ids/cause de origen e idempotencia
    sobre outcomes de toda la sesión, no slice cronológico incompleto. RED reproducido,

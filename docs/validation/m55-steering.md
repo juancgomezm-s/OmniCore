@@ -118,8 +118,27 @@ estas pruebas, no una aplicación externa autenticada.
 No implementa concurrencia de lanes, scheduler o joins de M6; conserva el modelo
 de un escritor por Session. Source/fallback causal global y guards generales del
 journal siguen en el bloque de cierre separado de ADR-0046 §4/5.
-La proyección valida las transiciones de steering y el flujo runtime usa sus
-factories, pero `CanonicalStateTracker` todavía no registra esta familia:
-se debe añadir el guard previo al append para rechazar también llamadas
-directas inválidas a EventStream (ADR-0001 §3), no sólo detectar un journal
-malformado cuando se consulta Pending/Applied. Este control no se declara cerrado.
+`CanonicalStateTracker` registra Pending/Applied/Dropped y las relaciones
+Run/Task/Lane/Turn. EventStream rechaza identidades duplicadas, destinos cerrados
+o ajenos y transiciones inválidas antes de persistir, también en batches.
+Clone y Snapshot conservan el estado; un fallo del store no consume una entrada.
+Dropped sigue permitido después de terminar el Run para completar el descarte.
+
+## Guard canónico previo a persistencia
+
+Se reprodujeron 15 fallos antes de implementar el guard
+(`steering-preappend-red-test.log`): writes directos inválidos no se rechazaban.
+Las pruebas exigen que Sequence y LiveState no cambien tras el rechazo.
+Los journals malformados de los tests de proyección se siembran exclusivamente
+por un store de fixture; no se permite fabricarlos mediante EventStream.
+
+Build final: 0 warnings/0 errores (`steering-canonical-final-build.log`).
+Focal final: 115 PASS/0 FAIL/0 SKIP, 1.914 s
+(`steering-canonical-final-focal.log`), con replay, clones independientes,
+rollback/reintento de Received y Applied mediante Append y AppendBatch,
+reapertura SQLite, scopes existentes pero ajenos y cierre terminal.
+Estos casos son deterministas; no acreditan consultas ni consumo autenticados.
+Suite completa del mismo build: 1771 casos/1767 PASS/0 FAIL/4 SKIP por permisos
+symlink, 211.331 s (`steering-canonical-final-full.log`), exit 0.
+No incluye los tests del siguiente paquete de causalidad independiente,
+entregados después de compilar. Las cifras focales se solapan con la suite.
