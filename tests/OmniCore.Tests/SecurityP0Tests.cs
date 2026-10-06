@@ -487,6 +487,13 @@ public sealed class SecurityP0Tests
                         await ssl.WriteAsync(System.Text.Encoding.ASCII.GetBytes(
                             "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"), cts.Token);
                     }
+                    catch (OperationCanceledException) when (cts.IsCancellationRequested)
+                    {
+                        // The fixture's finally cancels a pending TLS read/write on shutdown.
+                        // Only that explicit token cancellation is normal server termination;
+                        // client/validation failures still propagate through the three assertions.
+                        return;
+                    }
                     catch (Exception ex) when (ex is IOException or System.Security.Authentication.AuthenticationException)
                     {
                         // El cliente rechazó el certificado: es lo esperado en los casos negativos.
