@@ -77,6 +77,75 @@ public sealed class CliEndToEndTests
         });
     }
 
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public async Task Turn_fingerprints_only_qualification_for_its_effective_endpoint(
+        bool endpointOverride, bool qualifyEffectiveEndpoint)
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            if (endpointOverride)
+            {
+                File.WriteAllText(Path.Combine(config, "providers.yaml"), """
+                    providers:
+                      scripted: { family: OpenAiChatCompatible, baseUrl: http://127.0.0.1:1/v1, auth: none, billingMode: Local }
+                    """);
+                Environment.SetEnvironmentVariable("OMNI_BASE_URL", provider.BaseUrl);
+            }
+            var registry = OmniHost.LoadUserConfiguration(config).Registry;
+            var model = registry.Model("scripted-model")!;
+            var descriptor = registry.Provider("scripted")!;
+            var key = ModelQualificationHost.QualificationKeyFor(model, descriptor,
+                qualifyEffectiveEndpoint ? provider.BaseUrl : descriptor.BaseUrl);
+            var traits = new Dictionary<string, double> { ["InstructionFollowing"] = .123 };
+            ModelQualificationProfile persisted;
+            using (var store = OmniHost.CreateModelQualificationStore(data))
+            {
+                persisted = store.Upsert(key, 0, ModelQualificationState.Qualified,
+                    "fixture-quick", "1.0.0", TestContext.Current.CancellationToken);
+                store.SaveTraits(key, persisted.ProfileRevision, new[]
+                {
+                    new ModelTraitRecord(key.QualificationKeyHash(), persisted.ProfileRevision,
+                        "InstructionFollowing", .123, .9, 5, "fixture")
+                }, TestContext.Current.CancellationToken);
+            }
+            // Close/reopen the real User SQLite store before the runtime resolves its profile.
+            var expectedQualification = qualifyEffectiveEndpoint
+                ? new ModelQualificationSnapshot(key, key.QualificationKeyHash(), persisted.ProfileRevision,
+                    persisted.State, traits) : null;
+            var route = ModelRoutingHost.RouteFor(model, descriptor, provider.BaseUrl);
+            var effective = new ModelProfileResolver().Resolve(model, descriptor,
+                empiricalTraits: expectedQualification?.Traits, route: route);
+            var harness = new HarnessPolicyResolver().Resolve(effective);
+            var expected = RuntimeFingerprintFactory.Create(model, effective, harness,
+                new ModelSelection(new ModelIdValue(model.Id), model.ContextWindow, ToolMode.Direct, null,
+                    route.Id, route), "unused", "unused", "unused", "unused",
+                qualification: expectedQualification);
+            provider.RespondWith((_, _) => TextResponse("cualificación aplicada"));
+            var output = new List<string>();
+            Assert.True(0 == await new TuiTurnHost(OmniCliRuntime.Create(workspace)).ExecuteAsync(
+                "hola con perfil", output.Add, TestContext.Current.CancellationToken), string.Join("\n", output));
+            Assert.Equal(1, provider.RequestCount);
+            var turn = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<TurnStarted>());
+            Assert.NotNull(turn.Fingerprint);
+            var actualProfile = Assert.Single(turn.Fingerprint.Components, part => part.Name == "model.profile");
+            Assert.Equal("2", actualProfile.Version);
+            Assert.Equal(Assert.Single(expected.Components, part => part.Name == "model.profile"), actualProfile);
+            if (!qualifyEffectiveEndpoint)
+            {
+                var wrongProfile = new ModelProfileResolver().Resolve(model, descriptor, empiricalTraits: traits, route: route);
+                var wrong = RuntimeFingerprintFactory.Create(model, wrongProfile, harness,
+                    new ModelSelection(new ModelIdValue(model.Id), model.ContextWindow, ToolMode.Direct, null,
+                        route.Id, route), "unused", "unused", "unused", "unused",
+                    qualification: new ModelQualificationSnapshot(key, key.QualificationKeyHash(),
+                        persisted.ProfileRevision, persisted.State, traits));
+                Assert.NotEqual(Assert.Single(wrong.Components, part => part.Name == "model.profile"), actualProfile);
+            }
+        });
+    }
+
     [Fact]
     public async Task Authorized_auto_escalation_reuses_run_and_marks_completed_only_after_target_response()
     {

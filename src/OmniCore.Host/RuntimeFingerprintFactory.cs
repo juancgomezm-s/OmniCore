@@ -13,7 +13,8 @@ internal static class RuntimeFingerprintFactory
 {
     internal static ExecutionFingerprint Create(ModelDefinition model, EffectiveModelProfile profile,
         HarnessPolicy harness, ModelSelection selection, string harnessHash, string contextPolicyHash,
-        string modelPolicyHash, string tokenizerIdentity, IModelProvider? provider = null)
+        string modelPolicyHash, string tokenizerIdentity, IModelProvider? provider = null,
+        ModelQualificationSnapshot? qualification = null)
     {
         var components = new List<FingerprintComponent>
         {
@@ -58,7 +59,19 @@ internal static class RuntimeFingerprintFactory
                 foreach (var pair in profile.Traits.OrderBy(pair => pair.Key, StringComparer.Ordinal))
                     writer.WriteNumber(pair.Key, pair.Value);
                 writer.WriteEndObject();
-            }),
+                if (qualification is null)
+                {
+                    writer.WriteNull("qualificationKeyHash");
+                    writer.WriteNull("qualificationRevision");
+                    writer.WriteNull("qualificationState");
+                }
+                else
+                {
+                    writer.WriteString("qualificationKeyHash", qualification.KeyHash);
+                    writer.WriteNumber("qualificationRevision", qualification.ProfileRevision);
+                    writer.WriteString("qualificationState", qualification.State.ToString());
+                }
+            }, "2"),
             Component("model.harness", writer =>
             {
                 writer.WriteString("toolCallFormat", harness.ToolCallFormat.ToString());
@@ -145,7 +158,7 @@ internal static class RuntimeFingerprintFactory
         writer.WriteNumber("maxCheckpointCharacters", policy.MaxCheckpointCharacters);
     }
 
-    private static FingerprintComponent Component(string name, Action<Utf8JsonWriter> write)
+    private static FingerprintComponent Component(string name, Action<Utf8JsonWriter> write, string version = "1")
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -154,7 +167,7 @@ internal static class RuntimeFingerprintFactory
             write(writer);
             writer.WriteEndObject();
         }
-        return HashComponent(name, Encoding.UTF8.GetString(stream.ToArray()));
+        return HashComponent(name, version, Encoding.UTF8.GetString(stream.ToArray()));
     }
 
     private static string Digest(string value) =>

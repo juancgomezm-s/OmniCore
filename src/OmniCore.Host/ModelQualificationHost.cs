@@ -1,5 +1,6 @@
 namespace OmniCore.Host;
 
+using System.Collections.ObjectModel;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Infrastructure;
@@ -309,8 +310,20 @@ public sealed class ModelQualificationHost : IDisposable
     public static IReadOnlyDictionary<string, double>? UsableTraits(IModelQualificationStore store,
         ModelDefinition model, ProviderDescriptor? provider, CancellationToken cancellationToken)
     {
+        var snapshot = UsableSnapshot(store, model, provider, cancellationToken);
+        return snapshot is null ? null : new Dictionary<string, double>(snapshot.Traits, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// Captures eligible qualification identity and its traits from one profile read. Trait lookup
+    /// is pinned to that exact revision, so callers can fingerprint the same evidence they apply.
+    /// </summary>
+    internal static ModelQualificationSnapshot? UsableSnapshot(IModelQualificationStore store,
+        ModelDefinition model, ProviderDescriptor? provider, CancellationToken cancellationToken,
+        string? endpointOverride = null)
+    {
         ArgumentNullException.ThrowIfNull(store);
-        var key = QualificationKeyFor(model, provider);
+        var key = QualificationKeyFor(model, provider, endpointOverride);
         var profile = store.Get(key, cancellationToken);
         if (profile is null || profile.State is not (ModelQualificationState.Qualified
             or ModelQualificationState.Calibrated or ModelQualificationState.Stale))
@@ -330,7 +343,8 @@ public sealed class ModelQualificationHost : IDisposable
             map[trait.Trait] = trait.Value;
         }
 
-        return map;
+        return new ModelQualificationSnapshot(profile.Key, profile.KeyHash, profile.ProfileRevision,
+            profile.State, new ReadOnlyDictionary<string, double>(map));
     }
 
     /// <summary>
@@ -484,3 +498,7 @@ public sealed class ModelQualificationHost : IDisposable
         return registry;
     }
 }
+
+/// <summary>Immutable identity and values from one usable qualification profile revision.</summary>
+internal sealed record ModelQualificationSnapshot(ModelQualificationKey Key, string KeyHash,
+    long ProfileRevision, ModelQualificationState State, IReadOnlyDictionary<string, double> Traits);
