@@ -122,7 +122,8 @@ public sealed class SimulationEngine
         }
     }
 
-    public RunResult Execute(SimulationScenario scenario, CancellationToken cancellationToken)
+    public RunResult Execute(SimulationScenario scenario, CancellationToken cancellationToken,
+        SessionId? sessionIdentity = null)
     {
         // The Host keeps one engine instance for repeated `omni sim` commands. Fault-injection
         // and symbolic plan state belong to one scenario and must not bleed into later executions.
@@ -130,7 +131,7 @@ public sealed class SimulationEngine
         _symbolicItems.Clear();
         _planApproval = scenario.PlanApproval;
         _stallThreshold = scenario.StallThresholdTurns ?? ProgressReconciler.DefaultStallThresholdTurns;
-        var sessionId = SessionId.New();
+        var sessionId = sessionIdentity ?? SessionId.New();
         var runId = RunId.New();
         var rootTaskId = TaskId.New();
         var rootLaneId = LaneId.New();
