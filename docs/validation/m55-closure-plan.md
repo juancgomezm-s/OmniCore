@@ -133,6 +133,15 @@ cerrado el fingerprint de M5.5. Full1834=1830PASS/0FAIL/4SKIPsymlink213.545s, ex
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
 7. Registros durables congelados de delegación/wake, JoinPolicy, SupervisionBinding y
    ResultDisposition; sin scheduler ni joins ejecutables.
+   Auditoría documental 2026-10-06: ADR0046 §2/§8 fija nombres e identidad, pero no los
+   campos ni lifecycle por familia de Delegation/WakeRequest, mailbox/claim/ack/dedup,
+   binding/handshake ni el enum/IDs de ResultDisposition. Arquitectura línea747 sí fija
+   ExecutionJoin All/Any/Quorum/Explicit, FanIn Direct/Aggregate y default de fallo Wait;
+   no especifica cómo representarlos. Spec§16 menciona EvidenceRef/PathRef sin definir
+   sus shapes. OmniCoder docs/PLAN_OMNICODER_SOBRE_OMNICORE.md líneas138-148 son política
+   aspiracional del supervisor, no valores del contrato Core. Se necesita autorizar
+   completar el ADR con esquemas concretos (o recuperar el anexo completo); no crear
+   campos, upcasters o reglas de replay que atribuyan decisiones no aceptadas.
 8. Completar los componentes reales del fingerprint (build/configuración resuelta y
    tools/prompt/plan por Turn conectados; AgentProfile/skills/CAS completos pendientes); cerrar CommandOutcome
    correlacionado en todos los commands de frontera y guards de arquitectura.
