@@ -44,7 +44,8 @@ public interface IModelQualificationStore
     /// sobrescribe: identifica la suite que produjo el perfil; la versión que lo volvió Stale se
     /// registra aparte en `StaleBySuiteVersion`. Exige la revisión vigente para no pisar cambios
     /// ajenos. Rechaza (ModelQualificationStaleException) estados no cualificados, otra suite, y
-    /// versiones minor o iguales.
+    /// versiones minor o iguales. Conserva los traits históricos y los expone también en la
+    /// nueva revisión dentro de la misma transacción; fallo o cancelación no deja un Stale parcial.
     /// </summary>
     ModelQualificationProfile MarkStale(ModelQualificationKey key, long expectedRevision,
         string newSuiteVersion, CancellationToken cancellationToken);

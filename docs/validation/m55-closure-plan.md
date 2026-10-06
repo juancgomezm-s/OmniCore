@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 19:21 UTC / 13:21 America/Mexico_City.
+Actualizado 2026-10-06 19:32 UTC / 13:32 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -37,6 +37,17 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5 Stale: corregida pérdida de traits vigentes al avanzar revisión; read/guard/update/
+  copia/cancellation en una transacción, checked-overflow e historial conservado.
+  Upgrade one-shot de perfiles afectados sin medidas actuales y con medidas previas;
+  no mezcla sets actuales, no inventa medidas ni restaura vaciados posteriores.
+  Repair y migración de ruta comparten tx/rollback/markers. Luna aporta nueve regresiones
+  y auditoría; root implementa, agrega upgrade/idempotencia, corrige fixtures y reproduce.
+  RED inicial4FAIL + upgrade1FAIL; focal final222PASS2.275s, arquitectura56PASS0.653s;
+  full2050=2046PASS0FAIL4SKIPsymlink106.160s, builds0warnings/errores.
+  CAS completo/ref histórica/GCUser siguen pendientes, no cerrar M5.
+  Luna prepara paquete test-only fuera del repo para raíces GC User por revisión;
+  no se cuenta como prueba ejecutada ni altera la suite actual.
 - M5 preflight: estimación configurada y consentimiento coherentes, rechazo de
   tarifas incompletas MeteredCurrency y sumas no representables antes del provider;
   Chat compatible serializa el límite exacto sin retirarlo ante error400.

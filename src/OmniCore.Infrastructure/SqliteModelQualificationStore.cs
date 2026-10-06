@@ -174,8 +174,11 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
     public ModelQualificationProfile MarkStale(ModelQualificationKey key, long expectedRevision,
         string newSuiteVersion, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var keyHash = key.QualificationKeyHash();
-        var existing = Get(key, cancellationToken);
+        // Read, revision check, state transition and carried evidence share one transaction.
+        using var tx = _conn.BeginTransaction();
+        var existing = GetCore(key, cancellationToken, tx);
         if (existing is null)
         {
             throw new ModelQualificationRevisionConflictException(expectedRevision, 0);
@@ -201,8 +204,8 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 + existing.SuiteVersion + ", nueva " + newSuiteVersion);
         }
 
+        var nextRevision = checked(existing.ProfileRevision + 1);
         var now = _clock();
-        using var tx = _conn.BeginTransaction();
         using (var update = _conn.CreateCommand())
         {
             update.Transaction = tx;
@@ -212,7 +215,7 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
                 WHERE key_hash = :h AND profile_revision = :expected
             """;
             Add(update, "st", ModelQualificationState.Stale.ToString());
-            Add(update, "rev", existing!.ProfileRevision + 1);
+            Add(update, "rev", nextRevision);
             Add(update, "stalever", newSuiteVersion);
             Add(update, "now", Iso(now));
             Add(update, "h", keyHash);
@@ -220,15 +223,32 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             var rows = update.ExecuteNonQuery();
             if (rows == 0)
             {
-                var current = Get(key, cancellationToken);
+                var current = GetCore(key, cancellationToken, tx);
                 throw new ModelQualificationRevisionConflictException(existing!.ProfileRevision,
                     current?.ProfileRevision ?? 0);
             }
         }
 
+        // The original measurements remain historical; expose the same evidence at the
+        // new profile revision because runtime snapshots resolve traits by current revision.
+        using (var traits = _conn.CreateCommand())
+        {
+            traits.Transaction = tx;
+            traits.CommandText = """
+                INSERT INTO model_traits (key_hash, profile_revision, trait, value, confidence, samples, source)
+                SELECT key_hash, :next, trait, value, confidence, samples, source FROM model_traits
+                WHERE key_hash = :h AND profile_revision = :previous
+                """;
+            Add(traits, "next", nextRevision);
+            Add(traits, "h", keyHash);
+            Add(traits, "previous", existing.ProfileRevision);
+            traits.ExecuteNonQuery();
+        }
+        cancellationToken.ThrowIfCancellationRequested();
         tx.Commit();
-        return new ModelQualificationProfile(key, ModelQualificationState.Stale, existing!.ProfileRevision + 1,
-            existing!.SuiteId, existing!.SuiteVersion, newSuiteVersion, existing!.CreatedAt, now);
+        return new ModelQualificationProfile(key, ModelQualificationState.Stale, nextRevision,
+            existing.SuiteId, existing.SuiteVersion, newSuiteVersion, existing.CreatedAt, now,
+            existing.StaleReason);
     }
 
     private static int[] ParseVersionParts(string version)
@@ -387,14 +407,61 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             )
         """);
         Exec("CREATE INDEX IF NOT EXISTS ix_model_traits_key ON model_traits (key_hash, profile_revision)");
-        MigrateLegacyRouteProfiles();
+        Exec("CREATE TABLE IF NOT EXISTS model_profile_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
+        using var migrationTransaction = _conn.BeginTransaction();
+        RepairSuiteStaleTraitCopies(migrationTransaction);
+        MigrateLegacyRouteProfiles(migrationTransaction);
+        migrationTransaction.Commit();
     }
 
-    private void MigrateLegacyRouteProfiles()
+    private void RepairSuiteStaleTraitCopies(DbTransaction transaction)
+    {
+        // Older MarkStale retained the measurements only at revision-1. Materialize
+        // them at the current revision without inventing values or changing profile identity.
+        // Never merge into an existing current set or search arbitrary older revisions.
+        // Run before route migration so its next revision carries the repaired measurements.
+        const string migration = "m5-suite-stale-trait-copy-v1";
+        using (var check = _conn.CreateCommand())
+        {
+            check.Transaction = transaction;
+            check.CommandText = "SELECT COUNT(*) FROM model_profile_migrations WHERE name = :name";
+            Add(check, "name", migration);
+            if (Convert.ToInt64(check.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) > 0)
+            {
+                return;
+            }
+        }
+        using (var repair = _conn.CreateCommand())
+        {
+            repair.Transaction = transaction;
+            repair.CommandText = """
+            INSERT INTO model_traits (key_hash, profile_revision, trait, value, confidence, samples, source)
+            SELECT previous.key_hash, profile.profile_revision, previous.trait, previous.value,
+                previous.confidence, previous.samples, previous.source
+            FROM model_profiles AS profile
+            JOIN model_traits AS previous ON previous.key_hash = profile.key_hash
+                AND previous.profile_revision = profile.profile_revision - 1
+            WHERE profile.state = 'Stale' AND profile.stale_by_suite_version IS NOT NULL
+                AND profile.stale_reason IS NULL AND profile.profile_revision > 1
+                AND NOT EXISTS (SELECT 1 FROM model_traits AS current
+                    WHERE current.key_hash = profile.key_hash
+                        AND current.profile_revision = profile.profile_revision)
+            """;
+            repair.ExecuteNonQuery();
+        }
+        using (var marker = _conn.CreateCommand())
+        {
+            marker.Transaction = transaction;
+            marker.CommandText = "INSERT INTO model_profile_migrations (name, applied_at) VALUES (:name, :now)";
+            Add(marker, "name", migration);
+            Add(marker, "now", Iso(_clock()));
+            marker.ExecuteNonQuery();
+        }
+    }
+
+    private void MigrateLegacyRouteProfiles(DbTransaction tx)
     {
         const string migration = "adr0046-route-qualification-v1";
-        Exec("CREATE TABLE IF NOT EXISTS model_profile_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)");
-        using var tx = _conn.BeginTransaction();
         using (var check = _conn.CreateCommand())
         {
             check.Transaction = tx;
@@ -402,7 +469,6 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
             Add(check, "name", migration);
             if (Convert.ToInt64(check.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) > 0)
             {
-                tx.Commit();
                 return;
             }
         }
@@ -455,7 +521,6 @@ public sealed class SqliteModelQualificationStore : IModelQualificationStore, ID
         marker.CommandText = "INSERT INTO model_profile_migrations (name, applied_at) VALUES (:name, :now)";
         Add(marker, "name", migration); Add(marker, "now", now);
         marker.ExecuteNonQuery();
-        tx.Commit();
     }
 
     private void AddProfileParams(DbCommand cmd, ModelQualificationKey key, string keyHash,

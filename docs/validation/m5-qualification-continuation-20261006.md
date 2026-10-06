@@ -258,3 +258,48 @@ Fixtures privados no acreditan
 consultas autenticadas ni garantía de gasto. registryOverride sin descriptor conserva
 su camino legacy; no se declara gratuito por URL/auth/nombre y requiere revisión aparte.
 Reservas, reintentos y evidencia CAS siguen siendo gates abiertos de M5.
+
+## Stale: conservar medidas utilizables — 2026-10-06
+
+Luna detectó y escribió regresiones de una pérdida real: MarkStale avanzaba la revisión
+sin copiar traits; UsableSnapshot consultaba solo la revisión vigente y devolvía null.
+Root reprodujo `stale-evidence-red-test.log`: 5 = 1 PASS/4 FAIL, 5.274s,
+build0warnings/errores. Fallaban uso tras reopen, rollback por trigger, cancelación
+y overflow de revisión. Root implementa lectura y validación de revisión/estado,
+checked-next, cambio y copia de traits dentro de una transacción; cancellation antes
+del commit. Se retienen todas las medidas históricas y sus campos originales.
+
+La corrección también contempla datos existentes: migración one-shot
+`m5-suite-stale-trait-copy-v1`, solo Stale por versión de suite, sin causa de migración
+de ruta, revisión>1, sin traits actuales y con medidas en la revisión inmediatamente
+anterior. Copia esas filas exactas: no fabrica medidas, no busca revisiones arbitrarias,
+no mezcla ni pisa un conjunto actual, no cambia revisión/fechas/suite del perfil.
+Un vaciado explícito posterior no se vuelve a restaurar al abrir el store.
+El antiguo API SaveTraits permite un vaciado deliberado anterior al upgrade y no hay
+provenance para distinguirlo del fallo antiguo; no existen callers productivos actuales
+de ese método, pero esta limitación del contrato público queda documentada.
+
+Root agregó el repro de upgrade: `stale-repair-red-test.log` 6 = 5 PASS/1 FAIL,
+0.592s. Una primera implementación expuso otro fallo: el marker se confirmaba antes
+de detectar identidad corrupta en la migración de ruta. Se conservó la assertion
+original de cero markers; ambas migraciones comparten ahora una transacción.
+El mismo intento tuvo un fallo del fixture por sumar DELETE+UPDATE en ExecuteNonQuery;
+se separaron operaciones con assertions exactas, sin debilitar condiciones productivas.
+Focal corregido `stale-repair-atomic-focal.log`: 218 PASS, 2.120s; controles ampliados
+de exclusión/rollback: `stale-evidence-final-focal.log` 222 PASS, 2.275s.
+Diez regresiones nuevas: cinco iniciales de Luna, upgrade/idempotencia de root y
+cuatro controles de migración de Luna. Root corrigió los namespaces de enums en
+el fixture y una lectura preparatoria que abría el store y ejecutaba el upgrade antes
+del trigger: ahora el snapshot pre-trigger es raw SQLite, sin causar la reparación.
+El build fallido de fixture (seis errores de namespace) queda conservado y no cuenta
+como defecto de producción. Full `stale-evidence-final-full.log`: 2050 casos =
+2046 PASS/0 FAIL/4 SKIP por permisos symlink, 106.160s, exit0.
+Arquitectura `stale-evidence-architecture-test.log`: 56 PASS/0 FAIL/0 SKIP,
+0.653s. Builds finales0warnings/errores. Cifras solapadas, no sumables.
+
+Esta reparación conserva evidencia empírica; no define un factor nuevo de reducción
+de confianza Stale ni acredita CAS de resultados completos. Quedan por implementar:
+artifact User con outputs/score/usage/máscaras/coste nullable y BenchmarkIdentity real,
+ref por revisión en la misma tx perfil/traits, Verify bajo exclusión de GC hasta commit,
+raíces GC user.db para todo el historial, y parámetros seed/temperatura no enviados
+expresados como ausentes (no cero). Una ref sin estas raíces no cerraría M5.
