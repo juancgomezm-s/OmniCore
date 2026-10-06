@@ -30,10 +30,10 @@ public sealed class EscalationPriceFallbackTests
         Assert.True(pricing.IsComplete);
         Assert.Equal(input, pricing.InputPricePerMillionUsd);
         Assert.Equal(output, pricing.OutputPricePerMillionUsd);
-        var unknown = Assert.Single(ModelRoutingHost.Candidates(loaded, _ => true), c => c.Alias == "unknown-model");
+        var unknown = Assert.Single(ModelRoutingHost.Candidates(loaded, _ => true), c => c.ModelId == "unknown-model");
         Assert.True(unknown.Available);
         var next = ModelRoutingHost.NextEscalation(loaded, "worker-model", false, 40_000, _ => true);
         Assert.NotNull(next);
-        Assert.Equal("known-model", next.Alias);
+        Assert.Equal("known-model", next.ModelId);
     }
 }

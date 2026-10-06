@@ -26,18 +26,22 @@ public sealed record RoutingRequest(
     IReadOnlyList<string> RequiredCapabilities,
     bool LocalOnly);
 
-/// <summary>Candidato a enrutar: alias + perfil efectivo + hechos de disponibilidad y política.</summary>
+/// <summary>Concrete route with a separate logical model identity and declared routing facts.</summary>
 public sealed record RouteCandidate(
-    string Alias,
+    ModelRoute Route,
+    string ModelId,
     EffectiveModelProfile Profile,
     bool IsLocal,
     bool Available,
     bool HasWritePolicy,
-    decimal? PricePerMillionTokensUsd);
+    decimal? PricePerMillionTokensUsd)
+{
+    public RouteId RouteId => Route.Id;
+}
 
 /// <summary>Política de enrutamiento: listas de preferencia por tipo de tarea y preferencia local (ADR-0007).</summary>
 public sealed record RoutingPolicy(
-    IReadOnlyDictionary<RoutingTaskKind, IReadOnlyList<string>> Preferences,
+    IReadOnlyDictionary<RoutingTaskKind, IReadOnlyList<RouteId>> Preferences,
     bool PreferLocal);
 
 /// <summary>Razón de rechazo de un candidato.</summary>
@@ -52,7 +56,7 @@ public enum RouteRejection
 }
 
 /// <summary>Candidato rechazado con su primera razón de fallo.</summary>
-public sealed record RejectedRoute(string Alias, RouteRejection Reason);
+public sealed record RejectedRoute(RouteId RouteId, string ModelId, RouteRejection Reason);
 
 /// <summary>Decisión de enrutamiento: elegido + rechazados con razones.</summary>
 public sealed record RoutingDecision(
@@ -76,7 +80,7 @@ public sealed class NoRouteAvailableException : InvalidOperationException
     private static string FormatRejections(IReadOnlyList<RejectedRoute> rejected)
     {
         var groups = rejected.GroupBy(r => r.Reason)
-            .Select(g => g.Key + ": " + string.Join(", ", g.Select(r => r.Alias)))
+            .Select(g => g.Key + ": " + string.Join(", ", g.Select(r => r.ModelId + " [" + r.RouteId.Value + "]")))
             .ToArray();
         return string.Join("; ", groups);
     }
@@ -85,7 +89,7 @@ public sealed class NoRouteAvailableException : InvalidOperationException
 /// <summary>
 /// Router puro de modelos: consume SOLO EffectiveModelProfile + hechos declarados.
 /// Nunca ramifica por nombre de modelo o proveedor (INV-007).
-/// Trabaja con aliases (los nombres de candidatos vienen de configuración).
+/// Selects physical RouteIds; logical model ids are retained for lookup and display only.
 /// </summary>
 public static class ModelRouter
 {
@@ -114,7 +118,7 @@ public static class ModelRouter
             var rejection = EvaluateCandidate(candidate, request, preferenceList);
             if (rejection is not null)
             {
-                rejected.Add(new RejectedRoute(candidate.Alias, rejection.Value));
+                rejected.Add(new RejectedRoute(candidate.RouteId, candidate.ModelId, rejection.Value));
             }
             else
             {
@@ -134,9 +138,9 @@ public static class ModelRouter
             var orderedSurvivors = new List<RouteCandidate>();
             var survivorSet = survivors.ToHashSet();
 
-            foreach (var alias in preferenceList)
+            foreach (var routeId in preferenceList)
             {
-                var match = survivors.FirstOrDefault(c => c.Alias == alias);
+                var match = survivors.FirstOrDefault(c => c.RouteId.Equals(routeId));
                 if (match is not null)
                 {
                     orderedSurvivors.Add(match);
@@ -175,12 +179,12 @@ public static class ModelRouter
         var finalRejected = new List<RejectedRoute>(rejected);
 
         // Añadir supervivientes no elegidos como NotInPreferences (o mantener su razón original si la tenían)
-        var rejectedAliases = rejected.Select(r => r.Alias).ToHashSet();
+        var rejectedRoutes = rejected.Select(r => r.RouteId).ToHashSet();
         foreach (var s in survivors.Skip(1))
         {
-            if (!rejectedAliases.Contains(s.Alias))
+            if (!rejectedRoutes.Contains(s.RouteId))
             {
-                finalRejected.Add(new RejectedRoute(s.Alias, RouteRejection.NotInPreferences));
+                finalRejected.Add(new RejectedRoute(s.RouteId, s.ModelId, RouteRejection.NotInPreferences));
             }
         }
 
@@ -190,7 +194,7 @@ public static class ModelRouter
     private static RouteRejection? EvaluateCandidate(
         RouteCandidate candidate,
         RoutingRequest request,
-        IReadOnlyList<string>? preferenceList)
+        IReadOnlyList<RouteId>? preferenceList)
     {
         // Unavailable
         if (!candidate.Available)
@@ -225,8 +229,8 @@ public static class ModelRouter
             return RouteRejection.NoWritePolicy;
         }
 
-        // NotInPreferences: solo si hay lista de preferencias Y el alias no está en ella
-        if (preferenceList is not null && preferenceList.Count > 0 && !preferenceList.Contains(candidate.Alias))
+        // NotInPreferences: physical route membership, never a logical model or display alias.
+        if (preferenceList is not null && preferenceList.Count > 0 && !preferenceList.Contains(candidate.RouteId))
         {
             return RouteRejection.NotInPreferences;
         }

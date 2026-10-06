@@ -29,7 +29,7 @@ providers:
         else
         {
             Assert.NotNull(next);
-            Assert.Equal("target-model", next.Alias);
+            Assert.Equal("target-model", next.ModelId);
         }
     }
 }

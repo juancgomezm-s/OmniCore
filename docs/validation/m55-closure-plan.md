@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 08:05 UTC / 02:05 America/Mexico_City.
+Actualizado 2026-10-06 08:29 UTC / 02:29 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -36,6 +36,10 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 - Breaker existente compartido por provider en el runtime; router inicial y escalación
   consultan snapshots sin health requests. Pruebas HTTP loopback de las tres familias;
   [contrato, evidencia y límites](m55-provider-circuit-routing.md).
+- Router con preferencias/rechazos RouteId y ModelId separado, ruta retenida al invocar,
+  alias YAML traducido y cadena vacía después de excluir origen sin fallback implícito.
+  Core focal 102 PASS; full 1696 casos/1692 PASS/0 FAIL/4 SKIP symlink,
+  201.818 s. [Contrato y verificación](m55-routeid-router.md).
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -53,13 +57,17 @@ El build global explicable del fingerprint y los demás componentes reales aún 
 
 1. Completar replay opaco: storage seguro para estados que el redactor actual alteraría,
    ReasoningCapability y aplicación de ReasoningReplayPolicy. Checkpoint/resume básico probado.
+   IArtifactStore sólo tiene PutText/GetText/Verify; PutText redacta antes del hash.
+   ADR0005/0046 exige opaque exacto, ADR0018 texto redactado. Mantener fail-closed;
+   resolver explícitamente ese contrato antes de añadir storage, no bypass del redactor.
 2. Consentimiento de rutas y resume de escalación ask en TUI implementados.
    Completar resume de selección inicial y presupuesto.
    Auto/ask no pueden ampliar gasto ni rutas autorizadas. Diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
    reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
-3. Disponibilidad desde breaker compartido implementada; completar adaptación del router
-   de Alias a RouteId, manteniendo ModelId lógico separado y mismo endpoint efectivo.
+3. Disponibilidad desde breaker y selección por RouteId implementadas; cerrar prueba full.
+   Afinidad del arnés TUI Init/Run en hilos distintos reproducida (11 vs6), corrección en curso.
+   No equiparar fixes de fixtures con cierre de defectos del framework o producción.
 4. Steering explícito en fronteras de ModelStep y outcome de descarte.
 5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
 6. ToolCallStarted v3: Reversibility/TargetRef/BeforeStateRef, codecs/upcasters y evidencia.
@@ -105,7 +113,8 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
 
-Próxima implementación: RouteCandidate.RouteId y separación ModelId/identidad física.
+Próxima implementación tras verificación RouteId: steering y Source/causation en fronteras,
+además de resolver el contrato de almacenamiento/replay opaco señalado arriba.
 Reanudación ask verificada mediante solicitud+consent User+revisión exacta Session/Run,
 Turn/Lane de origen e identidad física vigente; no usa un mensaje nuevo como sustituto.
 Focal routing/resume/SQLite/protocol/CLI/FollowUp: 61 PASS, 0 FAIL, 0 SKIP;

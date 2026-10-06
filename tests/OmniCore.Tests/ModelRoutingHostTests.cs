@@ -9,8 +9,55 @@ using OmniCore.Abstractions;
 using System.Net;
 
 /// <summary>Router por alias desde models.yaml y escalación explícita (M5, spec §21/§73).</summary>
+[Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class ModelRoutingHostTests
 {
+    [Fact]
+    public void Yaml_aliases_resolve_physical_override_routes_without_using_hash_as_model_or_price_key()
+    {
+        var previous = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", "http://127.0.0.1:9901/v1");
+            var loaded = Load("routing:\n  exploration: [worker]\n  escalation: { mode: auto, chain: [worker, frontier] }\n");
+            var decision = ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true)!;
+            Assert.Equal("qwen-27b", decision.Chosen.ModelId);
+            Assert.NotEqual(decision.Chosen.ModelId, decision.Chosen.RouteId.Value);
+            Assert.Null(loaded.Registry.Model(decision.Chosen.RouteId.Value));
+            Assert.Equal("qwen-27b", loaded.Registry.Model(decision.Chosen.ModelId)!.Id);
+            Assert.Equal("http://127.0.0.1:9901/v1", decision.Chosen.Route.Endpoint);
+            Assert.Equal(decision.Chosen.RouteId, ModelRoutingHost.Policy(loaded)!.Preferences[RoutingTaskKind.Exploration].Single());
+            Assert.Equal(decision.Chosen.RouteId, decision.Chosen.Profile.RouteId);
+            var next = ModelRoutingHost.NextEscalation(loaded, new RouteId(decision.Chosen.RouteId.Value), false, 40_000, _ => true)!;
+            Assert.Equal("claude-x", next.ModelId);
+            Assert.Equal(3m, next.PricePerMillionTokensUsd);
+            Assert.Equal("cloud", next.Route.ProviderId);
+            Assert.Null(ModelRoutingHost.NextEscalation(Load("routing:\n  escalation: { mode: ask, chain: [worker] }\n"),
+                decision.Chosen.RouteId, false, 0, _ => true));
+        }
+        finally { Environment.SetEnvironmentVariable("OMNI_BASE_URL", previous); }
+    }
+
+    [Fact]
+    public void Route_selection_captures_endpoint_once_even_when_write_policy_callback_changes_environment()
+    {
+        var previous = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", "http://127.0.0.1:9902/v1");
+            var loaded = Load("routing:\n  exploration: [worker, frontier]\n");
+            var decision = ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ =>
+            {
+                Environment.SetEnvironmentVariable("OMNI_BASE_URL", "http://127.0.0.1:9903/v1");
+                return true;
+            })!;
+            Assert.Equal("http://127.0.0.1:9902/v1", decision.Chosen.Route.Endpoint);
+            Assert.All(ModelRoutingHost.Candidates(loaded, _ => true), candidate =>
+                Assert.Equal("http://127.0.0.1:9903/v1", candidate.Route.Endpoint));
+        }
+        finally { Environment.SetEnvironmentVariable("OMNI_BASE_URL", previous); }
+    }
+
     [Fact]
     public async System.Threading.Tasks.Task Actual_open_provider_circuit_changes_candidates_routing_and_escalation_without_health_requests()
     {
@@ -24,7 +71,7 @@ public sealed class ModelRoutingHostTests
                 CircuitCatalog = circuits, CircuitFailureThreshold = 1, MaxRetries = 0,
                 CircuitCooldown = TimeSpan.FromSeconds(30), UtcNow = () => now,
             });
-        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!.Chosen.Alias);
+        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!.Chosen.ModelId);
         Assert.Null(circuits.Snapshot("cloud")); // Unknown is not an invented failed health check.
         var request = new ModelRequest(new ModelSelection(new ModelIdValue("qwen-27b"), 4096, ToolMode.Direct, null),
             [new ModelMessage(MessageRole.User, [new TextBlock("hello")])], null, [], ToolChoice.Auto(), null, null, null, null);
@@ -34,14 +81,14 @@ public sealed class ModelRoutingHostTests
         });
         Assert.Equal(1, handler.Calls);
         var decision = ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!;
-        Assert.Equal("claude-x", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, rejected => rejected.Alias == "qwen-27b" && rejected.Reason == RouteRejection.Unavailable);
-        Assert.False(ModelRoutingHost.Candidates(loaded, _ => true, circuits).Single(candidate => candidate.Alias == "qwen-27b").Available);
+        Assert.Equal("claude-x", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, rejected => rejected.ModelId == "qwen-27b" && rejected.Reason == RouteRejection.Unavailable);
+        Assert.False(ModelRoutingHost.Candidates(loaded, _ => true, circuits).Single(candidate => candidate.ModelId == "qwen-27b").Available);
         Assert.Null(ModelRoutingHost.NextEscalation(loaded, "claude-x", false, 0, _ => true, circuits));
         Assert.Equal(1, handler.Calls); // Routing and snapshots are reads, not authenticated probes.
         now += TimeSpan.FromSeconds(30);
         Assert.True(circuits.Snapshot("local")!.CanAttempt);
-        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!.Chosen.Alias);
+        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true, circuits)!.Chosen.ModelId);
         Assert.Equal(1, handler.Calls);
     }
 
@@ -84,8 +131,8 @@ routing:
   exploration: [worker]
   implementation: [frontier, worker]
 """);
-        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true)!.Chosen.Alias);
-        Assert.Equal("claude-x", ModelRoutingHost.Route(loaded, RoutingTaskKind.Implementation, true, 0, _ => true)!.Chosen.Alias);
+        Assert.Equal("qwen-27b", ModelRoutingHost.Route(loaded, RoutingTaskKind.Exploration, false, 0, _ => true)!.Chosen.ModelId);
+        Assert.Equal("claude-x", ModelRoutingHost.Route(loaded, RoutingTaskKind.Implementation, true, 0, _ => true)!.Chosen.ModelId);
     }
 
     [Fact]
@@ -95,8 +142,8 @@ routing:
         var local = Load("routing:\n  implementation: [worker]\n");
         var frontier = Load("routing:\n  implementation: [frontier]\n");
 
-        Assert.Equal("qwen-27b", ModelRoutingHost.Route(local, request.Kind, request.Write, 0, _ => true)!.Chosen.Alias);
-        Assert.Equal("claude-x", ModelRoutingHost.Route(frontier, request.Kind, request.Write, 0, _ => true)!.Chosen.Alias);
+        Assert.Equal("qwen-27b", ModelRoutingHost.Route(local, request.Kind, request.Write, 0, _ => true)!.Chosen.ModelId);
+        Assert.Equal("claude-x", ModelRoutingHost.Route(frontier, request.Kind, request.Write, 0, _ => true)!.Chosen.ModelId);
     }
 
     [Fact]
@@ -105,10 +152,10 @@ routing:
         var loaded = Load("routing:\n  preferLocal: true\n  implementation: [frontier, worker]\n");
         var decision = ModelRoutingHost.Route(loaded, RoutingTaskKind.Implementation, true, 0, m => m.Id != "qwen-27b")!;
 
-        Assert.Equal("claude-x", decision.Chosen.Alias);
-        Assert.Contains(decision.Rejected, r => r.Alias == "qwen-27b" && r.Reason == RouteRejection.NoWritePolicy);
-        Assert.True(ModelRoutingHost.Candidates(loaded, _ => true).Single(c => c.Alias == "qwen-27b").IsLocal);
-        Assert.False(ModelRoutingHost.Candidates(loaded, _ => true).Single(c => c.Alias == "claude-x").IsLocal);
+        Assert.Equal("claude-x", decision.Chosen.ModelId);
+        Assert.Contains(decision.Rejected, r => r.ModelId == "qwen-27b" && r.Reason == RouteRejection.NoWritePolicy);
+        Assert.True(ModelRoutingHost.Candidates(loaded, _ => true).Single(c => c.ModelId == "qwen-27b").IsLocal);
+        Assert.False(ModelRoutingHost.Candidates(loaded, _ => true).Single(c => c.ModelId == "claude-x").IsLocal);
     }
 
     [Fact]
@@ -131,7 +178,7 @@ routing:
     {
         var auto = Load("routing:\n  escalation: { mode: auto, chain: [worker, frontier] }\n");
         var next = ModelRoutingHost.NextEscalation(auto, "qwen-27b", false, 40_000, _ => true);
-        Assert.Equal("claude-x", next!.Alias);
+        Assert.Equal("claude-x", next!.ModelId);
         Assert.Equal("auto", ModelRoutingHost.EscalationMode(auto));
 
         Assert.Null(ModelRoutingHost.NextEscalation(auto, "qwen-27b", false, 500_000, _ => true)); // nadie tiene tanto contexto
