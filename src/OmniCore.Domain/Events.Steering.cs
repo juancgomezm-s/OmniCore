@@ -8,7 +8,7 @@ public record SteeringId(Guid Value)
     public override string ToString() => Value.ToString("D");
 }
 
-/// <summary>Input explícito de steering recibido mientras un ModelStep sigue abierto.</summary>
+/// <summary>Input explícito de steering destinado al Turn abierto; se consume entre ModelSteps.</summary>
 public record TurnSteeringReceived(SteeringId SteeringId, RunId RunId, LaneId LaneId, TurnId TurnId,
     string InputPartsJson, string? Origin = null) : DomainEventPayload
 {

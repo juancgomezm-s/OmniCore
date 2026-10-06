@@ -136,13 +136,14 @@ public sealed class RunControlService
 
         var stream = new EventStream(_store, _codecs, session);
         var cut = CutInFlightWork(events, "interrupción del usuario");
+        cut.AddRange(PendingSteeringDrops(session, run, events, "turn interrupted by user"));
         var rootLane = RootLane(events, projection);
         if (rootLane is not null && projection.State == RunState.Running)
         {
             cut.Add(new RunAwaitingInput(run, rootLane));
         }
 
-        stream.AppendBatch(cut, DurabilityClass.Standard);
+        stream.AppendBatch(cut, DurabilityClass.Standard, SteeringDropScopes(cut, events));
     }
 
     /// <summary>
@@ -156,6 +157,7 @@ public sealed class RunControlService
         RequireActive(projection, events);
 
         var batch = CutInFlightWork(events, "run cancelado");
+        batch.AddRange(PendingSteeringDrops(session, run, events, "run cancelled by user"));
         foreach (var lane in LaneProjection.Replay(_codecs, events).Lanes())
         {
             if (!StateMachines.IsLaneTerminal(lane.State) && TaskBelongsToRun(events, lane.TaskId, run))
@@ -178,7 +180,26 @@ public sealed class RunControlService
         }
 
         batch.Add(new RunCancelled(run));
-        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard);
+        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard,
+            SteeringDropScopes(batch, events));
+    }
+
+    private IReadOnlyList<ExecutionScopeState?> SteeringDropScopes(IReadOnlyList<DomainEventPayload> batch,
+        IReadOnlyList<DomainEvent> events) => batch.Select(payload => payload is TurnSteeringDropped drop
+            ? new ExecutionScopeState(drop.RunId, events.Select(_codecs.Decode).OfType<LaneCreated>()
+                .First(lane => lane.LaneId == drop.LaneId).TaskId, drop.LaneId, drop.TurnId)
+            : null).ToArray();
+
+    private IEnumerable<DomainEventPayload> PendingSteeringDrops(SessionId session, RunId run,
+        IReadOnlyList<DomainEvent> events, string reason)
+    {
+        foreach (var scope in events.Select(_codecs.Decode).OfType<TurnSteeringReceived>()
+            .Where(item => item.RunId == run).Select(item => (item.LaneId, item.TurnId)).Distinct())
+        {
+            var pending = SteeringQueue.Pending(_store, _codecs, session, run, scope.LaneId, scope.TurnId);
+            foreach (var payload in SteeringQueue.DropEvents(pending, run, scope.LaneId, scope.TurnId, reason))
+                yield return payload;
+        }
     }
 
     /// <summary>
@@ -309,11 +330,12 @@ public sealed class RunControlService
         var stream = new EventStream(_store, _codecs, session);
         if (budgetDeniedRun is { } originRun)
         {
+            batch.AddRange(PendingSteeringDrops(session, originRun, events, "budget continuation denied"));
             // Payloads without an explicit RunId (InteractionResolved/Expired and lane/task/turn
             // cancellation) must retain attribution to the request's originating Run, not the
             // latest ambient Run in the session.
             using (ExecutionScope.Begin(new ExecutionScopeState(originRun)))
-                stream.AppendBatch(batch, DurabilityClass.Standard);
+                stream.AppendBatch(batch, DurabilityClass.Standard, SteeringDropScopes(batch, events));
         }
         else if (request.Kind == InteractionKind.ReconciliationConflict)
         {

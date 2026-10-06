@@ -33,6 +33,93 @@ Build sin warnings/errores; focal 48 PASS/0 FAIL/0 SKIP, incluyendo los tres
 roundtrips, ModelStep, FollowUp y envelope/scopes. Son pruebas deterministas
 de contratos, no consultas autenticadas ni consumo real de proveedores.
 
-Este bloque todavía **no** acredita admisión desde IOmniClient, cola durable,
-aplicación entre ModelSteps, replay tras suspensión ni descarte terminal.
-Tampoco implementa concurrencia de lanes, scheduler o joins de M6.
+## Admisión y consumo implementados
+
+`IOmniClient.Send` acepta un command `session.input` con `kind: "steering"`.
+Exige `sessionId`, `runId`, `laneId`, `turnId` y `text`. `steeringId` es opcional:
+si falta se utiliza el UUID del command. `origin` también es opcional.
+El destino debe pertenecer a la sesión abierta en ese servidor, con Run no
+terminal, Lane perteneciente a una Task del Run y el Turn exacto abierto.
+Un destino inválido se rechaza; nunca se cambia a la sesión/Turn actual ni a FollowUp.
+Un `kind` desconocido también se rechaza. Sin `kind`, el comportamiento anterior
+permanece intacto; `interaction.respond` sigue siendo el command de respuestas.
+
+El mismo SteeringId con igual destino/texto redactado/origen es idempotente
+mientras el destino sigue abierto. Devuelve `NoOp` sin nuevos eventos/rango.
+Un ID con distinto contenido/destino se rechaza. `Accepted` sólo acredita
+recepción durable, no aplicación; FirstSeq/LastSeq identifican el recibo causado
+por ese command. Ni un incremento ajeno de Sequence ni una consulta cuentan
+como recepción nueva. La cola no cambia lifecycle ni inicia otra invocación.
+
+`SteeringQueue.Pending` y `Applied` son proyecciones de sólo lectura ordenadas
+por Sequence de recepción. Conservan ReceivedEventId, payload y destino.
+Se validan IDs duplicados, transiciones dobles o sin recepción, scope incorrecto,
+índice negativo, razón vacía y recepción fuera de un destino abierto.
+El scope de recepción se deriva de Lane→Task→Run, no de un caller ambiental ajeno.
+
+ExplorerTurn toma una instantánea del FIFO en cada frontera de ModelStep.
+Incorpora esos mensajes al contexto después de los resultados de herramientas,
+sin alterar un request en vuelo ni descartar la continuación del proveedor.
+Después de los guards de contexto/presupuesto, los Applied y ModelStepStarted
+comparten un único batch Barrier. Al terminar/abandonar/interrumpir el Turn,
+los Dropped pendientes comparten batch con el evento terminal. Los commands
+de cancelación/interrupción y la denegación de presupuesto descartan también
+las entradas afectadas, con scope por item y causation del command real.
+
+Una suspensión por interacción no descarta ni aplica steering: permanece
+pendiente hasta el siguiente ModelStep. El replay reconstruye los mensajes
+Applied en su lugar del historial; los Pending se incorporan sólo en la
+siguiente frontera. No se escriben UserInputReceived ni FollowUp por steering.
+
+## Verificación de integración
+
+`steering-durable-identity-build.log`: 0 warnings/0 errores.
+`steering-durable-identity-focal.log`: 102 PASS/0 FAIL/0 SKIP, 2.800 s.
+Incluye commands públicos, scope ambiental ajeno, rechazos/idempotencia,
+continuación/herramientas, descartes terminales/control/budget y batches scoped.
+
+`ExplorerTurnSteeringDurableResumeTests` utiliza SQLite y CAS reales, nueva
+instancia OmniServer/ExplorerTurn tras reopen y respuesta pública al cuestionario.
+El proveedor y los precios son fixtures, no consultas autenticadas:
+
+- Un Turn, tres ModelSteps, una suspensión: replay exacto de ProviderState y
+  steering aplicado una vez en step 1. Uso persistido 21 input/5 output;
+  costes de fixture 0.000014/0.000007/0.000010 USD, total 0.000031 USD,
+  conservado también en el resumen durable del Turn.
+- Segunda suspensión tras aplicar una entrada: reopen conserva esa entrada
+  una sola vez y consume otra pendiente en step 2, sin convertirla a FollowUp.
+
+Suite previa del primer build runtime: 1742 casos/1738 PASS/0 FAIL/4 SKIP,
+211.105 s (`steering-runtime-full.log`). No incluye los últimos cambios de
+atomicidad terminal, budget denial ni las dos pruebas durable-resume.
+Suite final `steering-durable-full-final.log`: 1745 casos/1741 PASS/0 FAIL/
+4 SKIP por permisos symlink, 211.540 s. Incluye las últimas correcciones y
+las dos pruebas de reapertura; proceso terminado con exit 0.
+Las cifras se solapan y no se suman.
+
+Se preservaron fallos intermedios: build durante entrega todavía incompleta,
+dos analyzers xUnit, TurnCompleted de fixture sin scope tras otro Run y
+comparación por referencia de EventType en un predicate de fixture.
+Se corrigieron sin suppress ni debilitar las assertions de destino/continuidad.
+No se ejecutaron tests sobre una DLL anterior después de build fallido.
+
+Reproducción:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*Steering*' -class '*ExplorerTurnDurableProviderStateTests' -class '*ExplorerTurnSuspendedUsageRegressionTests' -class '*InputInteractionCommandOutcomeTests' -class '*RunControl*' -class '*FollowUp*' -class '*ScopedEventBatchTests'
+```
+
+## Límites
+
+La implementación no añade un atajo/menu visual en OmniCoder ni constituye
+evidencia de su renderer. La frontera IOmniClient y el runtime se integran en
+estas pruebas, no una aplicación externa autenticada.
+No implementa concurrencia de lanes, scheduler o joins de M6; conserva el modelo
+de un escritor por Session. Source/fallback causal global y guards generales del
+journal siguen en el bloque de cierre separado de ADR-0046 §4/5.
+La proyección valida las transiciones de steering y el flujo runtime usa sus
+factories, pero `CanonicalStateTracker` todavía no registra esta familia:
+se debe añadir el guard previo al append para rechazar también llamadas
+directas inválidas a EventStream (ADR-0001 §3), no sólo detectar un journal
+malformado cuando se consulta Pending/Applied. Este control no se declara cerrado.

@@ -412,7 +412,8 @@ public sealed class ExplorerTurn
                 started = true;
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
                 // TurnCompleted tras Abandoned (P1: transición inválida).
-                stream.Append(new TurnAbandoned(turnId, "ContextOverflow: el contexto no entra en el presupuesto"));
+                AppendTerminalTurn(stream, sessionId, runId, laneId, turnId,
+                    new TurnAbandoned(turnId, "ContextOverflow: el contexto no entra en el presupuesto"));
                 return new TurnResult("ContextOverflow: el contexto no cabe en el presupuesto del modelo",
                     StopReason.ContextOverflow, 0, usage, allToolCalls.ToArray(), null);
             }
@@ -443,15 +444,20 @@ public sealed class ExplorerTurn
             for (var step = 0; step < MaxSteps; step++)
             {
                 steps = step + 1;
-                if (step > 0)
+                // Snapshot the FIFO at the boundary, never modify an in-flight provider request.
+                // Commit application together with ModelStepStarted only after context/budget guards.
+                var steering = SteeringQueue.Pending(_store, _codecs, sessionId, runId, laneId, turnId);
+                foreach (var item in steering)
+                    messages.Add(SteeringMessage(item.InputPartsJson));
+                if (step > 0 || steering.Count > 0)
                 {
                     preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
                         workingStateText, instruction, messages, cancellationToken);
                     materialized = preparedContext.Snapshot;
                     if (materialized.Overflowed)
                     {
-                        stream.Append(new TurnAbandoned(turnId,
-                            "ContextOverflow: los resultados de tools exceden el presupuesto"));
+                        AppendTerminalTurn(stream, sessionId, runId, laneId, turnId,
+                            new TurnAbandoned(turnId, "ContextOverflow: los resultados de tools exceden el presupuesto"));
                         return new TurnResult("ContextOverflow: el contexto no cabe en el presupuesto del modelo",
                             StopReason.ContextOverflow, steps, usage, allToolCalls.ToArray(), null);
                     }
@@ -490,11 +496,14 @@ public sealed class ExplorerTurn
                             new("daily", _dailyCapUsd, dailyCap, null, today));
 
                     var stepIndex = nextModelStepIndex++;
-                    stream.Append(new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
+                    var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
                         _selection.ContextBudget, _selection.ToolMode.ToString(),
                         _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
                         PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
-                        _selection.RouteId), DurabilityClass.Barrier);
+                        _selection.RouteId);
+                    var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
+                    stepEvents.Add(stepStart);
+                    stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
                     resolved = _complete(request, cancellationToken);
                     continuation = resolved.State;
                     usage = CombineUsage(usage, resolved.Usage);
@@ -766,7 +775,8 @@ public sealed class ExplorerTurn
 
             if (finalText is null && stop == StopReason.EndTurn)
             {
-                stream.Append(new TurnAbandoned(turnId, "Se agotó el límite de pasos del Explorer"));
+                AppendTerminalTurn(stream, sessionId, runId, laneId, turnId,
+                    new TurnAbandoned(turnId, "Se agotó el límite de pasos del Explorer"));
                 return new TurnResult(null, StopReason.Error, steps, usage, allToolCalls.ToArray(), null);
             }
 
@@ -789,7 +799,7 @@ public sealed class ExplorerTurn
                 }, DurabilityClass.Standard);
             }
 
-            stream.Append(new TurnCompleted(turnId));
+            AppendTerminalTurn(stream, sessionId, runId, laneId, turnId, new TurnCompleted(turnId));
             AuditSpend(sessionId, runId, laneId, turnId, stop, turnUsage,
                 ReadTurnModelStepCost(stream, turnId));
             AuditPolicy(sessionId, runId, turnId, stop);
@@ -802,7 +812,7 @@ public sealed class ExplorerTurn
             {
                 // Started → … → Abandoned (terminal); NUNCA Completed tras Abandoned (state machine).
                 if (started)
-                    stream.Append(ex is OperationCanceledException
+                    AppendTerminalTurn(stream, sessionId, runId, laneId, turnId, ex is OperationCanceledException
                         ? new TurnInterrupted(turnId)
                         : new TurnAbandoned(turnId, "turn falló: " + _redaction.Redact(ex.Message ?? "")));
             }
@@ -812,6 +822,26 @@ public sealed class ExplorerTurn
 
             return new TurnResult(null, ex is OperationCanceledException ? StopReason.Cancelled : StopReason.Error, steps, usage, allToolCalls.ToArray(), null);
         }
+    }
+
+    private void AppendTerminalTurn(EventStream stream, SessionId session, RunId run, LaneId lane,
+        TurnId turn, DomainEventPayload terminal)
+    {
+        // Suspension deliberately does not call this. Terminal state and explicit drops share
+        // one durable batch so a crash cannot leave a committed terminal Turn without its drops.
+        var pending = SteeringQueue.Pending(_store, _codecs, session, run, lane, turn);
+        var batch = SteeringQueue.DropEvents(pending, run, lane, turn,
+            "turn ended without another model step").ToList();
+        batch.Add(terminal);
+        stream.AppendBatch(batch, DurabilityClass.Barrier);
+    }
+
+    private ModelMessage SteeringMessage(string partsJson)
+    {
+        using var parsed = System.Text.Json.JsonDocument.Parse(partsJson);
+        var parts = parsed.RootElement.EnumerateArray().Select(part => part.GetString() ?? "");
+        return new ModelMessage(MessageRole.User,
+            new ContentBlock[] { new TextBlock(_redaction.Redact(string.Join("\n", parts))) });
     }
 
     /// <summary>
@@ -1255,6 +1285,7 @@ public sealed class ExplorerTurn
     internal List<ModelMessage> LoadConversation(EventStream stream, RunId runId)
     {
         var history = new List<ModelMessage>();
+        var steeringInputs = new Dictionary<SteeringId, TurnSteeringReceived>();
         var questionnaireCalls = new HashSet<string>(StringComparer.Ordinal);
         var questionnaireResults = new Dictionary<string, string>(StringComparer.Ordinal);
         var interactionCalls = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1306,6 +1337,18 @@ public sealed class ExplorerTurn
                 // The chat belongs to the session. Only plain user/assistant history crosses Runs;
                 // tool calls, results, plans and interactions retain their original Run boundary.
                 if (evt.RunId is null || type is not ("user_input.received" or "model.completed")) continue;
+            }
+            if (_codecs.Decode(evt) is TurnSteeringReceived steeringReceived)
+            {
+                steeringInputs.Add(steeringReceived.SteeringId, steeringReceived);
+            }
+            else if (_codecs.Decode(evt) is TurnSteeringApplied steeringApplied)
+            {
+                if (!steeringInputs.TryGetValue(steeringApplied.SteeringId, out var received)
+                    || received.RunId != steeringApplied.RunId || received.LaneId != steeringApplied.LaneId
+                    || received.TurnId != steeringApplied.TurnId)
+                    throw new InvalidDataException("Steering application has no matching input.");
+                history.Add(SteeringMessage(received.InputPartsJson));
             }
             if (type == "user_input.received")
             {

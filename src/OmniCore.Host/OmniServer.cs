@@ -1144,6 +1144,12 @@ public sealed class OmniServer : IOmniClient
             {
                 case "session.input":
                 {
+                    // Explicit intent only: invalid kinds never become a FollowUp or a new Run.
+                    if (fields.TryGetValue("kind", out var kind) && kind != "followup")
+                    {
+                        if (kind != "steering") throw new FormatException("kind de session.input inválido");
+                        return ReceiveSteeringCommand(command, fields, commandId);
+                    }
                     var text = fields.TryGetValue("text", out var t) ? t : "";
                     if (text.Length == 0)
                     {
@@ -1271,6 +1277,43 @@ public sealed class OmniServer : IOmniClient
             ? new CommandAck(commandMessageId, status, error, outcome)
             : new CommandAck(commandMessageId, status, error, outcome,
                 causedSequences.Min(), causedSequences.Max());
+    }
+
+    /// <summary>Authoritative admission only; consumption belongs to a ModelStep boundary.</summary>
+    private CommandAck ReceiveSteeringCommand(WireEnvelope command, Dictionary<string, string> fields,
+        CommandId commandId)
+    {
+        Guid RequiredId(string name) => fields.TryGetValue(name, out var value) && Guid.TryParse(value, out var id)
+            ? id : throw new FormatException(name + " inválido o ausente");
+        var session = new SessionId(RequiredId("sessionId"));
+        var run = new RunId(RequiredId("runId"));
+        var lane = new LaneId(RequiredId("laneId"));
+        var turn = new TurnId(RequiredId("turnId"));
+        if (_lastSessionId != session) throw new FormatException("steering pertenece a otra sesión");
+        var text = fields.TryGetValue("text", out var input) ? input : "";
+        if (string.IsNullOrWhiteSpace(text)) throw new FormatException("falta 'text'");
+        var steeringId = fields.ContainsKey("steeringId")
+            ? new SteeringId(RequiredId("steeringId")) : new SteeringId(commandId.Value);
+        var events = _store.ReadFrom(session, 1);
+        var created = events.Select(_codecs.Decode).OfType<RunCreated>()
+            .FirstOrDefault(item => item.RunId == run && item.SessionId == session);
+        var requestedLane = LaneProjection.Replay(_codecs, events).Get(lane);
+        if (created is null || requestedLane is null
+            || !events.Select(_codecs.Decode).OfType<TaskCreated>()
+                .Any(task => task.TaskId == requestedLane.TaskId && task.RunId == run))
+            throw new FormatException("steering Run/Lane fuera de scope");
+        var before = _store.CurrentSequence(session);
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(run, requestedLane.TaskId, lane, turn));
+        var accepted = SteeringQueue.TryReceive(_store, _codecs, session, steeringId, run, lane, turn,
+            text, fields.TryGetValue("origin", out var origin) ? origin : null);
+        var appended = accepted && _store.ReadFrom(session, before + 1).Any(evt =>
+            evt.Causation is CommandCausation cause && cause.CommandId == commandId
+            && _codecs.Decode(evt) is TurnSteeringReceived received && received.SteeringId == steeringId);
+        return CommandOutcomeAck(command.MessageId, accepted ? "ok" : "error",
+            accepted ? null : "steering rechazado: identidad en conflicto o Turn no abierto",
+            !accepted ? RuntimeCommandOutcome.Rejected()
+                : appended ? RuntimeCommandOutcome.Accepted() : RuntimeCommandOutcome.NoOp(),
+            session, before, commandId);
     }
 
     /// <summary>Queues one CLI FollowUp intent as an internal Host command.</summary>
