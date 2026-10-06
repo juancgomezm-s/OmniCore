@@ -1,8 +1,35 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 14:11 UTC / 08:11 America/Mexico_City.
-Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
+Actualizado 2026-10-06 16:17 UTC / 10:17 America/Mexico_City.
+Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
+conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
+
+## Instrucciones vigentes del objetivo
+
+El usuario pidió actualizar el objetivo y reanudarlo el 2026-10-06. Se revoca la
+pausa de trabajo manual. El objetivo de producto todavía devuelve `paused`: las
+herramientas disponibles no permiten editar su texto ni reanudar ese estado. No
+se marca completo ni se crea otro objetivo para eludirlo; la automatización antigua
+permanece pausada. El trabajo manual autorizado puede continuar.
+
+- Luna `gpt-6-luna`, esfuerzo **alto**, concentrada exclusivamente en el cierre M5.
+  Prioridad: persistencia atómica de perfil/traits; coste real y desconocido sin
+  cero ficticio; evidencia CAS de resultados/BenchmarkIdentity; validación reproducible
+  de rutas conectadas, distinguiendo fixtures de consultas autenticadas.
+- GLM5.3/NVIDIA, Nemotron/OpenRouter y DeepSeek/NVIDIA: paquetes acotados en paralelo
+  para M5.5, ownership disjunto y auditoría root antes de integrar. Nemotron requiere
+  catálogo gratuito, max_price cero y fallback pagado prohibido. NVIDIA no se declara
+  gratuito sin datos. Sin reintentos ciegos de paquetes fallidos ni sustitutos pagados.
+- Root integra, reproduce RED/controles, corrige defectos comprobados sin debilitar
+  assertions, verifica riesgo proporcional y guarda un commit por bloque.
+- Cola M5.5: presupuesto/ledger y reservas pendientes; almacenamiento/replay opaco;
+  ToolCallStarted v3; contratos M6 aceptados; fingerprint y outcomes de commands.
+  No inventar semántica no acordada ni confundir nombres de contratos con implementación.
+- Conservar main, cambios ajenos, procesos sin ownership probado, credenciales y
+  sección Git de OmniCoder; no push/merge ni cambios a servidores/TLS/cuentas.
+- Entregar commits, pruebas, ownership y pendientes reales. M5/M5.5 solo cierran
+  con evidencia de sus criterios, no por conteo de tests ni disponibilidad de login.
 
 Rama: `codex/omnicore-consolidation-20261004`, worktree `m55-artifactrefs-roundtrip`.
 Main, cambios ajenos, credenciales y procesos no propios se preservan; no push.
