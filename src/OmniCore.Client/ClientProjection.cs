@@ -344,7 +344,9 @@ public sealed class ClientProjection
         var questionnaire = kind == "Question"
             ? QuestionnairePresentationFactory.FromJson(Get(f, "questionnaire"), _text.Locale)
             : null;
-        return new InteractionOverlayModel(Get(f, "interactionId"), kind, Label(prefix + "title", kind),
+        var title = kind == "BudgetExceeded" && ids.Contains("allow_quota", StringComparer.Ordinal)
+            ? Label("interaction.included_quota.title", kind) : Label(prefix + "title", kind);
+        return new InteractionOverlayModel(Get(f, "interactionId"), kind, title,
             subject, labels, ids, questionnaire, Get(f, "defaultOption"));
     }
 

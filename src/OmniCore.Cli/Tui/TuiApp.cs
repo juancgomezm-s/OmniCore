@@ -59,6 +59,7 @@ public sealed class TuiApp
     private Task? _turnTask;
     private bool _turnBusy;
     private string? _pendingEscalationResume;
+    private string? _pendingQuotaResume;
     private View? _activity;
     private Label? _activityLabel;
     private int _activityPhase;
@@ -481,7 +482,7 @@ public sealed class TuiApp
         PollEvents();
     }
 
-    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null)
+    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null)
     {
         if (_turnHost is null) return false;
         if (_turnBusy) { ShowMessage(Ui("Ya hay un turno procesando. Espera o usa /cancel.", "A turn is already processing. Wait or use /cancel.")); return false; }
@@ -500,7 +501,8 @@ public sealed class TuiApp
                     if (messages.Count == 4) messages.RemoveAt(0);
                     messages.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await (resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
+                code = await (resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
+                    : resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
                     : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
                     : _turnHost.ExecuteAsync(input, diagnostic, cancellation.Token)).ConfigureAwait(false);
             }
@@ -518,6 +520,11 @@ public sealed class TuiApp
                 {
                     _pendingEscalationResume = null;
                     if (!cancellation.IsCancellationRequested) StartModelTurn("", resumeEscalation: resume);
+                }
+                if (_pendingQuotaResume is { } quota)
+                {
+                    _pendingQuotaResume = null;
+                    if (!cancellation.IsCancellationRequested) StartModelTurn("", resumeQuota: quota);
                 }
             });
         });
@@ -848,6 +855,11 @@ public sealed class TuiApp
         var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         if (ack.Status != "ok") { ShowMessage(ack.Error ?? Ui("Respuesta rechazada", "Response rejected")); return; }
         CloseOverlay(); PollEvents();
+        if (interaction.Kind == "BudgetExceeded" && optionId == "allow_quota")
+        {
+            if (_turnBusy) _pendingQuotaResume = interaction.Id;
+            else StartModelTurn("", resumeQuota: interaction.Id);
+        }
         if (interaction.Kind == "ModelRouteConsent" && optionId == "allow_route"
             && _turnHost?.HasEscalationForInteraction(interaction.Id) == true)
         {

@@ -197,6 +197,8 @@ public sealed class ExplorerTurn
     private readonly ModelPricing? _pricing;
 
     private readonly bool _enforceDefaultSpendCaps;
+    private readonly Func<SessionId, RunId, LaneId, TurnId, int, InteractionId?>? _quotaAdmission;
+    private readonly Func<bool>? _quotaAllowsMeta;
 
     // ADR-0037 §7. Solo se aplican a providers que requieren API key; se pueden cambiar por
     // constructor/configuración de Host. Las tarifas nunca se inventan localmente.
@@ -218,7 +220,9 @@ public sealed class ExplorerTurn
         Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? questionnaireResponder = null,
         IModelProvider? metaModelProvider = null, long? modelContextCapacity = null,
         bool recordEffectiveFingerprint = false, UserWorkspaceSpendReader? userSpendReader = null,
-        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null)
+        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null,
+        Func<SessionId, RunId, LaneId, TurnId, int, InteractionId?>? quotaAdmission = null,
+        Func<bool>? quotaAllowsMeta = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -240,6 +244,8 @@ public sealed class ExplorerTurn
         _boundary = boundary;
         _pricing = pricing;
         _enforceDefaultSpendCaps = enforceDefaultSpendCaps;
+        _quotaAdmission = quotaAdmission;
+        _quotaAllowsMeta = quotaAllowsMeta;
         _sessionCapUsd = sessionCapUsd;
         _dailyCapUsd = dailyCapUsd;
         _questionnaires = questionnaires;
@@ -566,6 +572,8 @@ public sealed class ExplorerTurn
 
         bool CanInvokeMeta()
         {
+            // A primary invocation's consent does not authorize additional compaction calls.
+            if (_quotaAllowsMeta?.Invoke() == false) return false;
             try { ValidateBeforeInvocation(); return true; }
             catch (BudgetExceededException) { return false; }
         }
@@ -640,6 +648,9 @@ public sealed class ExplorerTurn
                 ? ReadProviderContinuation(stream, runId, laneId, turnId) : null;
             for (var step = 0; step < MaxSteps; step++)
             {
+                if (_quotaAdmission?.Invoke(sessionId, runId, laneId, turnId, nextModelStepIndex) is { } quotaInteraction)
+                    return new TurnResult(null, StopReason.InputRequired, steps, usage, allToolCalls.ToArray(), null,
+                        quotaInteraction);
                 steps = step + 1;
                 // Snapshot the FIFO at the boundary, never modify an in-flight provider request.
                 // Commit application together with ModelStepStarted only after context/budget guards.

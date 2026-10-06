@@ -20,6 +20,31 @@ public sealed class MetaModelSpendRegressionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Subscription_admission_controls_actual_compaction_calls_without_disabling_fallback(bool admitted)
+    {
+        using var fixture = new Fixture(100m);
+        fixture.AppendOldConversation();
+        var meta = new ScriptedMetaProvider("older facts preserved", BelowCapUsage);
+        var primary = 0;
+        var decisions = 0;
+        var turn = fixture.MakeTurn(meta, (_, _) =>
+        {
+            primary++;
+            return EndTurn(new TokenUsage(0, 0, 0, 0, 0));
+        }, quotaAllowsMeta: () => { decisions++; return admitted; });
+        var result = turn.Ask("continue", "system", fixture.Session, fixture.Run.RunId,
+            fixture.Run.RootLane, "", CancellationToken.None);
+        Assert.Equal(StopReason.EndTurn, result.StopReason);
+        Assert.Equal(1, decisions);
+        Assert.Equal(admitted ? 1 : 0, meta.Calls);
+        Assert.Equal(1, primary);
+        Assert.Single(fixture.Payloads().OfType<ContextCheckpointRecorded>());
+        Assert.Equal(admitted ? 1 : 0, fixture.Payloads().OfType<MetaModelInvocationStarted>().Count());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Historical_meta_usage_over_run_cap_stops_before_another_meta_or_model_call(bool failed)
     {
         using var fixture = new Fixture(RunCap);
@@ -423,7 +448,7 @@ public sealed class MetaModelSpendRegressionTests
 
         public ExplorerTurn MakeTurn(IModelProvider metaProvider,
             Func<ModelRequest, CancellationToken, ModelResponse> primary, bool compact = true,
-            FakeCatalog? catalog = null, IToolExecutor? executor = null)
+            FakeCatalog? catalog = null, IToolExecutor? executor = null, Func<bool>? quotaAllowsMeta = null)
         {
             catalog ??= new FakeCatalog();
             var selection = new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null);
@@ -435,7 +460,8 @@ public sealed class MetaModelSpendRegressionTests
                 new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
                 new ExecutionFingerprint("fixture-model", "h", "t", "c", "o", "fixture-build"),
                 selection, Store, Codecs, Artifacts, new InMemoryAuditSink(), new RedactionPolicy(), policy,
-                pricing: Pricing, metaModelProvider: metaProvider, recordEffectiveFingerprint: true);
+                pricing: Pricing, metaModelProvider: metaProvider, recordEffectiveFingerprint: true,
+                quotaAllowsMeta: quotaAllowsMeta);
         }
 
         public DomainEventPayload[] Payloads() => Store.ReadFrom(Session, 1).Select(Codecs.Decode).ToArray();

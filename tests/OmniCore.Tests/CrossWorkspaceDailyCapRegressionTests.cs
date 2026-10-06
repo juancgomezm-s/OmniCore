@@ -20,6 +20,115 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
     private const string ProviderId = "cross-workspace-budget-provider";
 
     [Theory]
+    [InlineData(9.0, 1)]
+    [InlineData(10.0, 2)]
+    [InlineData(9.0, 2, "unknown")]
+    [InlineData(9.0, 2, "expired")]
+    [InlineData(9.0, 2, "other-provider")]
+    [InlineData(9.0, 2, "other-session")]
+    [InlineData(9.0, 1, "stale")]
+    [InlineData(9.0, 1, "refresh")]
+    [InlineData(9.0, 1, "fresh-query")]
+    public async Task Included_quota_below_ten_percent_requires_approval_before_next_call(double remaining, int expectedCalls,
+        string quotaState = "reported")
+    {
+        var root = FixtureRoot();
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        var workspace = Path.Combine(root, "workspace");
+        foreach (var directory in new[] { data, config, workspace }) Directory.CreateDirectory(directory);
+        var environment = ProcessEnvironment.Capture();
+        var provider = new ScriptedHttpProvider(inputTokens: 100);
+        OmniCore.Protocol.ProviderQuotaSnapshot? reportedQuota = null;
+        var quotaQueries = 0;
+        var runtime = OmniCliRuntime.Create(workspace, (id, token) =>
+        {
+            token.ThrowIfCancellationRequested();
+            quotaQueries++;
+            if (quotaState == "fresh-query" && reportedQuota is not null)
+                reportedQuota = reportedQuota with { AsOf = DateTimeOffset.UtcNow };
+            return Task.FromResult(reportedQuota ?? new OmniCore.Protocol.ProviderQuotaSnapshot(id, null,
+                "fixture", DateTimeOffset.UtcNow, OmniCore.Protocol.MetricAvailability.Unknown, [], [], "fixture not reported"));
+        });
+        try
+        {
+            SetEnvironment(data, config);
+            WriteConfiguration(config, provider.BaseUrl, 100m, billingMode: "IncludedQuota");
+            var output = new List<string>();
+            await new TuiTurnHost(runtime).ExecuteAsync("first fixture turn", output.Add,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(1, provider.RequestCount);
+            var server = Assert.IsType<OmniServer>(runtime.Connect(CancellationToken.None));
+            var session = server.LastSessionId()!;
+            var measuredAt = DateTimeOffset.UtcNow;
+            var quota = new OmniCore.Protocol.ProviderQuotaSnapshot(
+                quotaState == "other-provider" ? "other-fixture-provider" : ProviderId,
+                "fixture-account", "fixture-reported-quota", measuredAt,
+                quotaState == "stale" ? OmniCore.Protocol.MetricAvailability.Stale
+                    : quotaState == "unknown" ? OmniCore.Protocol.MetricAvailability.Unknown
+                    : OmniCore.Protocol.MetricAvailability.Reported,
+                [new OmniCore.Protocol.ProviderUsageWindow("fixture-window", null, 300,
+                    new(OmniCore.Protocol.MetricAvailability.Reported, 100 - remaining, "fixture", measuredAt),
+                    new(OmniCore.Protocol.MetricAvailability.Reported, remaining, "fixture", measuredAt),
+                    quotaState == "expired" ? measuredAt.AddSeconds(-1) : measuredAt.AddHours(5), null)], [], null);
+            if (quotaState == "other-session") server.Observability.SetQuota(SessionId.New(), quota);
+            else reportedQuota = quota;
+            await new TuiTurnHost(runtime).ExecuteAsync("second fixture turn", output.Add,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(session, server.LastSessionId());
+            Assert.Equal(expectedCalls, provider.RequestCount);
+            Assert.True(quotaQueries >= 4, "Normal Host flow must query quota before invocation, not rely on SetQuota fixtures");
+            Assert.Equal(expectedCalls == 2, IncludedQuotaAdmission.AllowsMeta(server, session, ProviderId));
+            if (expectedCalls == 1)
+            {
+                var request = Assert.Single(ReadCurrentEvents(workspace).OfType<InteractionRequested>());
+                await new TuiTurnHost(runtime).ExecuteAsync("still awaiting approval", output.Add,
+                    TestContext.Current.CancellationToken);
+                Assert.Single(ReadCurrentEvents(workspace).OfType<InteractionRequested>());
+                Assert.Equal(1, provider.RequestCount);
+                Assert.Equal(InteractionKind.BudgetExceeded, request.Kind);
+                Assert.Null(BudgetContinuation.Offer(request));
+                Assert.Equal("error", server.RespondToInteraction(request.InteractionId, "allow_plus").Status);
+                Assert.Equal("ok", server.RespondToInteraction(request.InteractionId, "allow_quota").Status);
+                var approvalCount = 1;
+                if (quotaState == "refresh")
+                {
+                    reportedQuota = quota with { AsOf = DateTimeOffset.UtcNow,
+                        Windows = [quota.Windows[0] with { RemainingPercent = quota.Windows[0].RemainingPercent with { Value = 8 } }] };
+                    Assert.Equal(3, await new TuiTurnHost(runtime).ResumeQuotaAsync(request.InteractionId.ToString(), output.Add,
+                        TestContext.Current.CancellationToken));
+                    Assert.Equal(1, provider.RequestCount);
+                    request = ReadCurrentEvents(workspace).OfType<InteractionRequested>().Last();
+                    Assert.Equal("ok", server.RespondToInteraction(request.InteractionId, "allow_quota").Status);
+                    approvalCount++;
+                }
+                var resumed = await new TuiTurnHost(runtime).ResumeQuotaAsync(request.InteractionId.ToString(), output.Add,
+                    TestContext.Current.CancellationToken);
+                Assert.True(provider.RequestCount == 2, $"Resume code {resumed}: {string.Join("\n", output)}\nRequests: "
+                    + string.Join("\n", ReadCurrentEvents(workspace).OfType<InteractionRequested>().Select(item => item.SubjectJson)));
+                // Consent belongs to one invocation, not the whole session or every future measurement.
+                await new TuiTurnHost(runtime).ExecuteAsync("another fixture turn", output.Add,
+                    TestContext.Current.CancellationToken);
+                Assert.Equal(2, provider.RequestCount);
+                Assert.Equal(approvalCount + 1, ReadCurrentEvents(workspace).OfType<InteractionRequested>().Count());
+                runtime.HasInteractionClient = false;
+                await runtime.ConversationAsync("attempt without client", output.Add, TestContext.Current.CancellationToken);
+                Assert.Equal(2, provider.RequestCount);
+                Assert.Contains(ReadCurrentEvents(workspace), evt => evt is RunFailed failed
+                    && failed.Cause == "BudgetExceeded");
+            }
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            CloseRuntime(runtime);
+            ProcessEnvironment.Restore(environment);
+            ClearFixturePools(data, workspace);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
     [InlineData("daily")]
     [InlineData("session")]
     public async Task User_daily_continuation_crosses_workspaces_but_session_grant_does_not(string scope)
@@ -202,7 +311,8 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
         Environment.SetEnvironmentVariable("OMNI_BASE_URL", null);
     }
 
-    private static void WriteConfiguration(string config, string baseUrl, decimal dailyCapUsd, decimal sessionCapUsd = 5m)
+    private static void WriteConfiguration(string config, string baseUrl, decimal dailyCapUsd, decimal sessionCapUsd = 5m,
+        string billingMode = "CreditBalance")
     {
         File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
             providers:
@@ -210,7 +320,7 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
                 family: OpenAiChatCompatible
                 baseUrl: {{baseUrl}}
                 auth: none
-                billingMode: CreditBalance
+                billingMode: {{billingMode}}
                 inputPricePerMillionUsd: 1
                 outputPricePerMillionUsd: 1
             """);
