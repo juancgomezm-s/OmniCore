@@ -493,10 +493,10 @@ public sealed class ModelPolicyCommands
             return 2;
         }
 
-        decimal estimatedCost;
+        QualificationCostEstimate estimate;
         try
         {
-            estimatedCost = ModelQualificationHost.EstimateSuiteCostUsd(suite);
+            estimate = _qualification.PreviewSuiteCost(modelId, suite);
         }
         catch (ModelQualificationUnsupportedSuiteException ex)
         {
@@ -514,8 +514,14 @@ public sealed class ModelPolicyCommands
                 return 1;
             }
 
-            _output.Write(_loc.Resolve("cli.model.qualify.consent.prompt",
-                "cost", estimatedCost.ToString("0.00", CultureInfo.InvariantCulture)));
+            _output.Write(_loc.Resolve(estimate.Usd is null
+                    ? "cli.model.qualify.consent.prompt.unknown"
+                    : "cli.model.qualify.consent.prompt",
+                new Dictionary<string, string>
+                {
+                    ["cost"] = estimate.Usd?.ToString("0.0000", CultureInfo.InvariantCulture) ?? "",
+                    ["cap"] = maxCost.ToString("0.0000", CultureInfo.InvariantCulture),
+                }));
             _output.Flush();
             _cancellationToken.ThrowIfCancellationRequested();
             var answer = _input.ReadLine()?.Trim().ToLowerInvariant();
@@ -545,6 +551,11 @@ public sealed class ModelPolicyCommands
                     ["estimated"] = ex.EstimatedUsd.ToString("0.00", CultureInfo.InvariantCulture),
                     ["cap"] = ex.CapUsd.ToString("0.00", CultureInfo.InvariantCulture),
                 }));
+            return 2;
+        }
+        catch (ModelQualificationCostEvidenceUnavailableException)
+        {
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.cost.evidence.unavailable"));
             return 2;
         }
         catch (ModelQualificationSuiteIncompleteException ex)

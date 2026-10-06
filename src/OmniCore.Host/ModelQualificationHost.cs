@@ -50,6 +50,9 @@ public sealed record QualificationProbeOutcome(
 public sealed record QualificationProbeUsage(long? Input, long? Output,
     long? CacheRead, long? CacheWrite, long? Reasoning);
 
+/// <summary>Pre-call configuration estimate, not a measured charge. Null means unavailable.</summary>
+public sealed record QualificationCostEstimate(decimal? Usd, string Source);
+
 /// <summary>Trait empírico persistido para la revisión vigente del perfil.</summary>
 public sealed record QualificationTraitValue(
     string Trait,
@@ -82,7 +85,11 @@ public sealed record QualificationRunResult(
     double RecommendedMaxRewriteRatio,
     IReadOnlyList<string> RecommendationNotes,
     decimal EstimatedCostUsd,
-    decimal CostCapUsd);
+    decimal CostCapUsd)
+{
+    /// <summary>Provenance of the pre-call estimate, not a provider billing measurement.</summary>
+    public string EstimatedCostSource { get; init; } = "declared-probe-maxima";
+}
 
 /// <summary>
 /// Error tipado de nivel Host (spec §71): la suite requiere consentimiento explícito. Envuelve
@@ -113,6 +120,14 @@ public sealed class ModelQualificationCostCapException : Exception
         CapUsd = capUsd;
         EstimatedUsd = estimatedUsd;
     }
+}
+
+/// <summary>A cost estimate is unavailable or unrepresentable, including missing metered pricing/output information.
+/// No provider has been constructed or called.</summary>
+public sealed class ModelQualificationCostEvidenceUnavailableException : Exception
+{
+    public ModelQualificationCostEvidenceUnavailableException()
+        : base("la estimación de coste de cualificación no está disponible o no es representable") { }
 }
 
 /// <summary>
@@ -200,6 +215,23 @@ public sealed class ModelQualificationHost : IDisposable
         CancellationToken cancellationToken) =>
         _store.Get(QualificationKeyFor(model, provider), cancellationToken);
 
+    /// <summary>Preview for consent; constructs no provider and performs no authenticated query.</summary>
+    public QualificationCostEstimate PreviewSuiteCost(string modelId, string suite)
+    {
+        var model = _registry.Model(modelId)
+            ?? throw new ArgumentException("modelo desconocido en el registro", nameof(modelId));
+        var provider = _registry.Provider(model.ProviderId);
+        var probes = Suite(suite);
+        var configured = ConfiguredEstimate(model, Selection(model, provider),
+            _configuration?.Pricing(model.Id), probes.Count);
+        if (configured is { } value)
+            return new QualificationCostEstimate(Math.Max(value, DeclaredEstimate(probes)),
+                "max-declared-and-configured-descriptor-token-estimate");
+        return provider?.BillingMode == BillingMode.Local
+            ? new QualificationCostEstimate(DeclaredEstimate(probes), "declared-local-probe-maxima")
+            : new QualificationCostEstimate(null, "unavailable");
+    }
+
     /// <summary>Ejecuta la suite de cualificación y persiste el resultado (transición de estados de ADR-0007 §4).</summary>
     public async Task<QualificationRunResult> QualifyAsync(string modelId, QualificationOptions options,
         CancellationToken cancellationToken)
@@ -227,11 +259,7 @@ public sealed class ModelQualificationHost : IDisposable
         var existing = _store.Get(key, cancellationToken);
         var previousState = existing?.State ?? ModelQualificationState.Declared;
 
-        var estimatedCost = 0m;
-        foreach (var probe in probes)
-        {
-            estimatedCost += probe.MaxCostUsd;
-        }
+        var estimatedCost = DeclaredEstimate(probes);
         if (estimatedCost > options.MaxTotalCostUsd)
         {
             throw new ModelQualificationCostCapException(options.MaxTotalCostUsd, estimatedCost);
@@ -239,12 +267,23 @@ public sealed class ModelQualificationHost : IDisposable
 
         // El runner revalida consentimiento y tope como defensa en profundidad; el guard del Host
         // ocurre antes de construir el provider o el runner. Nada se persiste si la suite no completa.
-        var selection = new ModelSelection(new ModelIdValue(model.Id),
-            model.RecommendedUsableContext > 0 ? model.RecommendedUsableContext : model.ContextWindow,
-            ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id,
-            maxOutputTokens: ModelRoutingHost.OutputTokenLimit(model, provider));
+        var selection = Selection(model, provider);
         var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
         var pricing = _configuration?.Pricing(model.Id);
+        var estimateSource = "declared-probe-maxima";
+        var configuredEstimate = ConfiguredEstimate(model, selection, pricing, probes.Count);
+        if (configuredEstimate is { } configured)
+        {
+            estimatedCost = Math.Max(estimatedCost, configured);
+            estimateSource = "max-declared-and-configured-descriptor-token-estimate";
+        }
+        else if (provider?.BillingMode == BillingMode.MeteredCurrency)
+        {
+            throw new ModelQualificationCostEvidenceUnavailableException();
+        }
+        if (estimatedCost > options.MaxTotalCostUsd)
+            throw new ModelQualificationCostCapException(options.MaxTotalCostUsd, estimatedCost);
+
         var runner = new ProbeRunner(ConnectProvider(model, provider, options),
             options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout,
             pricing is null ? null : pricing.CostUsd);
@@ -257,6 +296,10 @@ public sealed class ModelQualificationHost : IDisposable
         catch (QualificationCostCapExceededException exception)
         {
             throw new ModelQualificationCostCapException(exception.MaxTotalCostUsd, exception.EstimatedCostUsd);
+        }
+        catch (QualificationCostEstimateUnavailableException)
+        {
+            throw new ModelQualificationCostEvidenceUnavailableException();
         }
         catch (ProbeTimeoutException exception)
         {
@@ -317,7 +360,26 @@ public sealed class ModelQualificationHost : IDisposable
             recommendation.MutationPolicy.MaxRewriteRatio,
             recommendation.Notes,
             estimatedCost,
-            options.MaxTotalCostUsd);
+            options.MaxTotalCostUsd) { EstimatedCostSource = estimateSource };
+    }
+
+    private static ModelSelection Selection(ModelDefinition model, ProviderDescriptor? provider) =>
+        new(new ModelIdValue(model.Id),
+            model.RecommendedUsableContext > 0 ? model.RecommendedUsableContext : model.ContextWindow,
+            ToolMode.Direct, null, ModelRoutingHost.RouteFor(model, provider).Id,
+            maxOutputTokens: ModelRoutingHost.OutputTokenLimit(model, provider));
+
+    // Conservative descriptor-based estimate for one invocation per probe. The model context
+    // is configured, not an authenticated token measurement. Retries/reservation are separate gates.
+    private static decimal? ConfiguredEstimate(ModelDefinition model, ModelSelection selection,
+        ModelPricing? pricing, int probeCount)
+    {
+        if (pricing?.IsComplete != true || model.ContextWindow <= 0
+            || selection.MaxOutputTokens is not { } output) return null;
+        var perProbe = pricing.CostUsd(new TokenUsage(model.ContextWindow, output, 0, 0, 0));
+        if (perProbe is null || perProbe < 0) return null;
+        try { return checked(perProbe.Value * probeCount); }
+        catch (OverflowException) { return null; }
     }
 
     /// <summary>
@@ -404,8 +466,18 @@ public sealed class ModelQualificationHost : IDisposable
     }
 
     /// <summary>Suma de topes declarados, no coste observado ni cota derivada de tarifas.</summary>
-    public static decimal EstimateSuiteCostUsd(string suite) => Suite(suite)
-        .Sum(probe => probe.MaxCostUsd);
+    public static decimal EstimateSuiteCostUsd(string suite) => DeclaredEstimate(Suite(suite));
+
+    private static decimal DeclaredEstimate(IEnumerable<Probe> probes)
+    {
+        try
+        {
+            var total = 0m;
+            foreach (var probe in probes) total = checked(total + probe.MaxCostUsd);
+            return total;
+        }
+        catch (OverflowException) { throw new ModelQualificationCostEvidenceUnavailableException(); }
+    }
 
     private IModelProvider ConnectProvider(ModelDefinition model, ProviderDescriptor? provider,
         QualificationOptions options)

@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 18:55 UTC / 12:55 America/Mexico_City.
+Actualizado 2026-10-06 19:15 UTC / 13:15 America/Mexico_City.
 Objetivo autorizado: cerrar M5 y M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
@@ -37,6 +37,16 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
 
 ## Avance verificado
 
+- M5 preflight: estimación configurada y consentimiento coherentes, rechazo de
+  tarifas incompletas MeteredCurrency y sumas no representables antes del provider;
+  Chat compatible serializa el límite exacto sin retirarlo ante error400.
+  Luna aportó regresiones de cap y wire; root implementó, auditó y agregó preview
+  y overflow directo. RED reproducido antes de correcciones, sin assertions debilitadas.
+  Focal207PASS; full2035=2031PASS0FAIL4SKIPsymlink107.362s; arquitectura56PASS0.662s.
+  Fixtures privados, no consultas autenticadas ni garantía monetaria remota.
+  Próximo: resolver guard de Unknown sin precios conforme a su tratamiento
+  potencialmente pagado en ADR0046; después CAS/evidencia y raíces de GC user.db.
+  Reintentos y reserva/liquidación siguen pendientes; M5/M5.5 no están cerrados.
 - M5 uso/coste: null cuando falta uso reportado o tarifas completas, precios explícitos
   reutilizados de configuración modelo/provider, máscara conservada y contadores nullable
   en Host; CLI bilingüe sin cero ficticio. Luna aportó RED, CLI HTTP y tarifas/SQLite;
