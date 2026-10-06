@@ -1,6 +1,6 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 06:44 UTC / 00:44 America/Mexico_City.
+Actualizado 2026-10-06 07:03 UTC / 01:03 America/Mexico_City.
 Objetivo autorizado: cerrar M5.5 conforme a ADR-0046 y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
@@ -22,6 +22,10 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   Commit `5f40a81`; uso reportado conservado incluso si falla el checkpoint.
 - Configuración de topes User y ampliación durable via InteractionResolved(User):
   [contrato/pruebas/límites pendientes](m55-budget-continuation.md).
+- `a0c46c6`: BillingMode declarado sin inferencias de credenciales/endpoint, validación
+  YAML/schema y metadata preservada en adapters; [contrato](m55-provider-billing.md).
+- NoClient/Deny cierran sólo el Run originario con BudgetExceeded, conservan efectos
+  desconocidos y retiran el overlay; [integración](m55-budget-lifecycle.md).
 - Cualificación por endpoint/protocolo/runtime build y perfil del adapter;
   asociación opcional del EffectiveModelProfile con RouteId.
 - Migración SQLite una sola vez: perfiles legacy pasan a Stale sin reescribir su clave,
@@ -39,10 +43,10 @@ El build global explicable del fingerprint y los demás componentes reales aún 
 
 1. Completar replay opaco: storage seguro para estados que el redactor actual alteraría,
    ReasoningCapability y aplicación de ReasoningReplayPolicy. Checkpoint/resume básico probado.
-2. BillingMode, SessionRoutingPolicy durable y consentimiento; auto/ask no pueden
+2. SessionRoutingPolicy durable y consentimiento; auto/ask no pueden
    ampliar gasto ni rutas autorizadas. Topes configurables, diario entre sesiones y continuar.
    Configuración User y efecto de allow_plus probados; completar ledger User-wide,
-   reserva/liquidación atómica, UI/CLI resume y NoClient/Deny → RunFailed.
+   reserva/liquidación atómica y UI/CLI resume. BillingMode y NoClient/Deny → RunFailed probados.
 3. Circuit breaker/disponibilidad real y adaptación del router de Alias a RouteId.
 4. Steering explícito en fronteras de ModelStep y outcome de descarte.
 5. Source y causation real, eliminación del fallback al último evento y guards de escritor.
@@ -61,8 +65,10 @@ migra y reproduce tests. Nemotron/OpenRouter y GLM5.3/NVIDIA no entregaron códi
 la ronda cerrada; fallos conservados, sin reintentos ni reemplazos pagados.
 Evidencia: `C:\Users\juanc\.codex\omni-m55-three-20261006`.
 
-- Última suite completa con configuración/ampliación de presupuesto: 1611 casos,
-  1607 PASS, 0 FAIL, 4 SKIP symlink (`budget-continuation-full-suite.log`, 135.282 s).
+- Última suite completa con lifecycle/facturación: 1638 casos,
+  1634 PASS, 0 FAIL, 4 SKIP symlink (`budget-lifecycle-full-suite.log`, 134.095 s).
+- Lifecycle BudgetExceeded/cliente/commands/proyecciones: 80 PASS,
+  0 FAIL, 0 SKIP (`budget-lifecycle-tests-fixed.log`). Billing/YAML/factory: 32 PASS.
 - Focal final CAS/rutas: 121 PASS.
 - Focal cualificación/routing/CLI con SQLite legacy, idempotencia y aislamiento: 87 PASS,
   build 0 warnings / 0 errores (`route-qualification-tests.log`).
@@ -83,7 +89,11 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parall
 
 M5.5 **no está cerrado**. M6 permanece pendiente de estos controles.
 
-Próxima reproducción del integrador: routing automático sin consentimiento,
-escalación `ask` sin InteractionRequest, NoClient/Deny no terminal, ledger diario
-entre workspaces y reservas concurrentes. allow_plus ya tiene efecto durable probado,
-pero el ciclo de vida completo sigue pendiente. No asumir cierre por contratos o credenciales.
+Próxima implementación del integrador: routing automático sin consentimiento y
+escalación `ask` sin InteractionRequest. Auditoría Luna (solo lectura, no ejecutada):
+Route elige MeteredCurrency/Unknown con preferencias YAML sin política por Session;
+auto permite API key + precio completo y registra policy:auto; ask sólo imprime
+sugerencia. Ninguno consulta BillingMode. Reproducir con providers sintéticos, sin
+llamadas externas, e integrar AllowedRoutes/BillingPolicy antes de ConnectProvider.
+Ledger diario entre workspaces, reservas concurrentes y reanudación automática
+allow_plus también pendientes. No asumir cierre por contratos o credenciales.

@@ -187,11 +187,23 @@ public sealed class RunControlService
     /// su efecto (ADR-0035 §4).
     /// </summary>
     public void Respond(SessionId session, InteractionId interaction, string optionId)
+        => ResolveInteraction(session, interaction, optionId, InteractionCause.User, noClient: false);
+
+    /// <summary>Aplica el default deny de ADR-0003 a una interacción presupuestaria sin cliente.</summary>
+    public void ResolveBudgetWithoutClient(SessionId session, InteractionId interaction)
+        => ResolveInteraction(session, interaction, "deny", InteractionCause.NoClient, noClient: true);
+
+    private void ResolveInteraction(SessionId session, InteractionId interaction, string optionId,
+        InteractionCause cause, bool noClient)
     {
         ArgumentException.ThrowIfNullOrEmpty(optionId);
         var events = _store.ReadFrom(session, 1);
-        var request = PendingInteractions(events).FirstOrDefault(r => r.InteractionId.Equals(interaction))
+        var pendingRequest = PendingInteractionEnvelopes(events)
+            .FirstOrDefault(r => r.Request.InteractionId.Equals(interaction));
+        var request = pendingRequest?.Request
             ?? throw new InteractionNotPendingException(interaction);
+        if (noClient && (request.Kind != InteractionKind.BudgetExceeded || optionId != "deny"))
+            throw new InvalidInteractionOptionException(interaction, optionId);
         if (!OptionIds(request.OptionsJson).Contains(optionId, StringComparer.Ordinal))
         {
             throw new InvalidInteractionOptionException(interaction, optionId);
@@ -205,6 +217,8 @@ public sealed class RunControlService
 
         if (request.Kind == InteractionKind.BudgetExceeded && optionId == "allow_plus")
         {
+            if (cause != InteractionCause.User)
+                throw new InvalidInteractionOptionException(interaction, optionId);
             var offer = BudgetContinuation.Offer(request)
                 ?? throw new InvalidInteractionOptionException(interaction, optionId);
             var run = ActiveRun(session);
@@ -227,7 +241,12 @@ public sealed class RunControlService
                 throw new InvalidInteractionOptionException(interaction, optionId);
         }
 
-        var batch = new List<DomainEventPayload> { new InteractionResolved(interaction, optionId, InteractionCause.User) };
+        var batch = new List<DomainEventPayload> { new InteractionResolved(interaction, optionId, cause) };
+        RunId? budgetDeniedRun = null;
+        if (request.Kind == InteractionKind.BudgetExceeded && optionId == "deny")
+        {
+            budgetDeniedRun = AddBudgetDenialLifecycle(events, pendingRequest!.Envelope, request, batch);
+        }
         if (request.Kind == InteractionKind.ReconciliationConflict)
         {
             var toolCallId = ToolCallIdFrom(request.ToolCallJson)
@@ -271,7 +290,113 @@ public sealed class RunControlService
                     "InteractionResponse(AcceptanceConfirmation)"));
         }
 
-        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard);
+        var stream = new EventStream(_store, _codecs, session);
+        if (budgetDeniedRun is { } originRun)
+        {
+            // Payloads without an explicit RunId (InteractionResolved/Expired and lane/task/turn
+            // cancellation) must retain attribution to the request's originating Run, not the
+            // latest ambient Run in the session.
+            using (ExecutionScope.Begin(new ExecutionScopeState(originRun)))
+                stream.AppendBatch(batch, DurabilityClass.Standard);
+        }
+        else
+        {
+            stream.AppendBatch(batch, DurabilityClass.Standard);
+        }
+    }
+
+    private RunId AddBudgetDenialLifecycle(IReadOnlyList<DomainEvent> events, DomainEvent requestEnvelope,
+        InteractionRequested request, List<DomainEventPayload> batch)
+    {
+        var originRun = requestEnvelope.RunId
+            ?? throw new InvalidInteractionOptionException(request.InteractionId, "deny");
+        var exists = events.Any(evt => _codecs.Decode(evt) is RunCreated created && created.RunId == originRun);
+        if (!exists) throw new InvalidInteractionOptionException(request.InteractionId, "deny");
+
+        var projection = RunProjection.Replay(requestEnvelope.SessionId, originRun, _codecs, events);
+        if (projection.IsTerminal()
+            || projection.State is not (RunState.Running or RunState.Validating or RunState.AwaitingInput))
+            throw new RunNotActiveException(originRun);
+
+        var tracker = CanonicalStateTracker.Replay(_codecs, events);
+        var taskIds = events.Select(evt => _codecs.Decode(evt))
+            .OfType<TaskCreated>().Where(created => created.RunId == originRun)
+            .Select(created => created.TaskId).ToHashSet();
+
+        foreach (var lane in LaneProjection.Replay(_codecs, events).Lanes())
+        {
+            if (taskIds.Contains(lane.TaskId) && !StateMachines.IsLaneTerminal(lane.State))
+                batch.Add(new LaneCancelled(lane.Id));
+        }
+
+        foreach (var task in TaskGraphProjection.Replay(_codecs, events).Tasks())
+        {
+            if (taskIds.Contains(task.Id) && !StateMachines.IsTaskTerminal(task.State))
+                batch.Add(new TaskCancelled(task.Id));
+        }
+
+        var planIds = new HashSet<PlanId>();
+        var planItemIds = new HashSet<PlanItemId>();
+        foreach (var evt in events)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case PlanCreated created when created.RunId == originRun:
+                    planIds.Add(created.PlanId);
+                    planItemIds.Add(created.RootItemId);
+                    break;
+                case PlanItemAdded added when planIds.Contains(added.PlanId):
+                    planItemIds.Add(added.PlanItemId);
+                    break;
+            }
+        }
+        foreach (var planItemId in planItemIds)
+        {
+            if (tracker.PlanItem(planItemId) is { } state && !StateMachines.IsPlanItemTerminal(state))
+                batch.Add(new PlanItemCancelled(planItemId, "BudgetExceeded"));
+        }
+
+        var turns = events.Where(evt => evt.RunId == originRun)
+            .Select(evt => _codecs.Decode(evt)).OfType<TurnStarted>().Select(started => started.TurnId).ToHashSet();
+        foreach (var turn in turns)
+        {
+            if (tracker.Turn(turn) is TurnState.Started or TurnState.ModelCompleted)
+                batch.Add(new TurnInterrupted(turn));
+        }
+
+        // Requests/prepared/authorized work has not crossed the physical start barrier and is
+        // safe to cancel. Started calls become EffectUnknown for recovery; already unknown calls
+        // and completed outcomes remain untouched.
+        var calls = events.Where(evt => evt.RunId == originRun)
+            .Select(evt => _codecs.Decode(evt)).OfType<ToolCallRequested>()
+            .Select(requested => requested.ToolCallId).ToHashSet();
+        var startedEffectClasses = events.Where(evt => evt.RunId == originRun)
+            .Select(evt => _codecs.Decode(evt)).OfType<ToolCallStarted>()
+            .GroupBy(started => started.ToolCallId)
+            .ToDictionary(group => group.Key, group => group.Last().EffectClass);
+        foreach (var call in calls)
+        {
+            switch (tracker.ToolCall(call))
+            {
+                case ToolCallState.Requested or ToolCallState.Prepared
+                    or ToolCallState.AwaitingPermission or ToolCallState.Authorized:
+                    batch.Add(new ToolCallCancelled(call, "BudgetExceeded"));
+                    break;
+                case ToolCallState.Started when startedEffectClasses.TryGetValue(call, out var effectClass):
+                    batch.Add(new ToolCallEffectUnknown(call, effectClass));
+                    break;
+                // EffectUnknown, succeeded, failed, and other terminal states remain unchanged.
+            }
+        }
+
+        foreach (var pending in PendingInteractionEnvelopes(events))
+        {
+            if (pending.Request.InteractionId != request.InteractionId && pending.Envelope.RunId == originRun)
+                batch.Add(new InteractionExpired(pending.Request.InteractionId));
+        }
+
+        batch.Add(new RunFailed(originRun, "BudgetExceeded"));
+        return originRun;
     }
 
     /// <summary>Efecto de la respuesta a un PlanApproval (ADR-0035 §4).</summary>
@@ -429,14 +554,18 @@ public sealed class RunControlService
         return false;
     }
 
-    private List<InteractionRequested> PendingInteractions(IReadOnlyList<DomainEvent> events)
+    private sealed record PendingInteractionEnvelope(DomainEvent Envelope, InteractionRequested Request);
+
+    private List<PendingInteractionEnvelope> PendingInteractionEnvelopes(IReadOnlyList<DomainEvent> events)
     {
-        var pending = new Dictionary<InteractionId, InteractionRequested>();
+        var pending = new Dictionary<InteractionId, PendingInteractionEnvelope>();
         foreach (var evt in events)
         {
             switch (_codecs.Decode(evt))
             {
-                case InteractionRequested requested: pending[requested.InteractionId] = requested; break;
+                case InteractionRequested requested:
+                    pending[requested.InteractionId] = new PendingInteractionEnvelope(evt, requested);
+                    break;
                 case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
                 case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
             }
@@ -444,6 +573,9 @@ public sealed class RunControlService
 
         return pending.Values.ToList();
     }
+
+    private List<InteractionRequested> PendingInteractions(IReadOnlyList<DomainEvent> events) =>
+        PendingInteractionEnvelopes(events).Select(pending => pending.Request).ToList();
 
     private static string InputParts(string text) => "["
         + System.Text.Json.JsonSerializer.Serialize(text, JsonStrings.Default.String) + "]";

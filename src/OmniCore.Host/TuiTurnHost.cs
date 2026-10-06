@@ -14,6 +14,7 @@ public sealed class TuiTurnHost : ITuiTurnHost
     {
         _runtime = runtime;
         _runtime.UseConsoleInput = false;
+        _runtime.HasInteractionClient = true;
         _runtime.QuestionnaireInput = null;
     }
     public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) =>
