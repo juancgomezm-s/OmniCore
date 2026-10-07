@@ -15,11 +15,11 @@ public sealed class InternalModelEscalationCommandTests
         using var setup = new Setup();
         var requested = setup.Server.RecordModelEscalationRequested(setup.Session,
             new ModelEscalationRequested(setup.Run, "m1", "m2", EscalationCause.ContextLimit));
-        var requestEvent = AssertSingleAckEvent(setup, requested, "model.escalation_requested");
+        var requestEvent = AssertSingleAckEvent(setup, requested.Ack, "model.escalation_requested");
 
         var approved = setup.Server.RecordModelEscalationApproved(setup.Session,
             new ModelEscalationApproved(setup.Run, "m2", "policy:auto"));
-        var approvedEvent = AssertSingleAckEvent(setup, approved, "model.escalation_approved");
+        var approvedEvent = AssertSingleAckEvent(setup, approved.Ack, "model.escalation_approved");
         Assert.NotEqual(requestEvent.EventId.Value, approvedEvent.EventId.Value);
 
         var cancel = setup.Server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "run.cancel")
@@ -30,7 +30,7 @@ public sealed class InternalModelEscalationCommandTests
 
         var completed = setup.Server.RecordModelEscalationCompleted(setup.Session,
             new ModelEscalationCompleted(setup.Run, "m2"));
-        var completedEvent = AssertSingleAckEvent(setup, completed, "model.escalation_completed");
+        var completedEvent = AssertSingleAckEvent(setup, completed.Ack, "model.escalation_completed");
         Assert.NotEqual(approvedEvent.EventId.Value, completedEvent.EventId.Value);
         Assert.Equal(setup.Run, completedEvent.RunId);
         Assert.Null(completedEvent.TaskId);
@@ -97,8 +97,14 @@ public sealed class InternalModelEscalationCommandTests
         using (CausationScope.Begin(parent))
         using (ExecutionScope.Begin(foreign))
         {
-            Assert.Throws<IOException>(() => setup.Server.RecordModelEscalationApproved(setup.Session,
-                new ModelEscalationApproved(setup.Run, "m2", "policy:auto")));
+            var failed = setup.Server.RecordModelEscalationApproved(setup.Session,
+                new ModelEscalationApproved(setup.Run, "m2", "policy:auto"));
+            var exception = Assert.IsType<IOException>(failed.Failure);
+            Assert.Equal("error", failed.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Rejected, failed.Outcome?.Kind);
+            Assert.Null(failed.FirstSeq);
+            Assert.Null(failed.LastSeq);
+            Assert.Same(exception, Assert.Throws<IOException>(() => failed.ThrowIfFailure()));
             Assert.Equal(before, setup.Store.CurrentSequence(setup.Session));
             Assert.Equal(parent, CausationScope.Current);
             Assert.Equal(foreign, ExecutionScope.Current);

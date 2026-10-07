@@ -547,7 +547,10 @@ public sealed class OmniCliRuntime
             var promptOrigin = routingResume is not null ? routingResume.Origin
                 : conversationOnly ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
             var followUp = server.QueueFollowUpPromptCommand(sessionId, runId, laneId, prompt, promptOrigin);
-            if (followUp.Ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Rejected)
+            if (followUp.Failure is { } followUpFailure)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(followUpFailure);
+            if (followUp.Ack.Status != "ok"
+                || followUp.Ack.Outcome?.Kind is not (RuntimeCommandOutcomeKind.Accepted or RuntimeCommandOutcomeKind.NoOp))
             {
                 writeLine(followUp.Ack.Error ?? "follow-up queue rejected");
                 return 1;
@@ -1062,6 +1065,7 @@ public sealed class OmniCliRuntime
         ModelRoute route, BillingMode mode, Action<string> writeLine, string locale, bool requireConsent = false)
     {
         var initialized = server.EnsureSessionRoutingPolicy(session);
+        initialized.ThrowIfFailure();
         if (initialized.Status != "ok") { writeLine(initialized.Error ?? "Routing policy initialization rejected"); return 1; }
         var authorization = server.AuthorizeModelRoute(session, run, route, mode, requireConsent);
         if (authorization.Failure is { } authorizationFailure)
@@ -1401,11 +1405,12 @@ public sealed class OmniCliRuntime
         finally { _escalatedModel = null; }
     }
 
-    private static void EnsureEscalationRecorded(CommandAck ack)
+    private static void EnsureEscalationRecorded(InternalCommandResult result)
     {
-        if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
+        result.ThrowIfFailure();
+        if (result.Status != "ok" || result.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
         {
-            throw new InvalidOperationException(ack.Error ?? "the model escalation event was rejected");
+            throw new InvalidOperationException(result.Error ?? "the model escalation event was rejected");
         }
     }
 

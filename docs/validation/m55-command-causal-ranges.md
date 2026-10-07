@@ -1,5 +1,37 @@
 # Rango causal y confirmación durable del command
 
+## Bloque completo de admisión/checkpoint — 2026-10-07 06:33 UTC
+
+EnsureSessionRoutingPolicy, ExecuteExplorerTurn, FollowUp y las tres escalaciones
+conservan ahora Failure original y Ack también si falla admisión o checkpoint.
+Sin checkpoint confirmado el outcome queda Deferred sin rango inventado; con
+checkpoint se distingue rechazo sin writes, prefijo durable confirmado e imposible
+confirmación. CLI propaga el error antes de autorizar, esperar o invocar. Accepted
+con error describe efectos parciales, nunca éxito de la operación.
+
+Luna HIGH implementó el bloque y PolicyAdmissionFailureTests. Root auditó los diffs,
+adaptaciones de tests existentes y fixture completo, y corrigió dos assertions de
+restauración situadas fuera de su scope, dos errores de analyzer y el momento de
+inyección de read-first: LastLaneId realiza una lectura propia y sus argumentos
+deben resolverse antes de armar el fallo. Assertions de producción conservadas;
+los fallos iniciales no se presentan como RED del producto.
+
+Logs privados: C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0623/.
+commands-build.log: dos errores de analyzer; commands-focal.log: 57 casos,
+56 PASS/1 FAIL por el fixture LastLaneId. commands-final-build.log: 0 warnings/
+errores. commands-final-focal.log: 57 PASS/0 FAIL/0 SKIP en 1.602s.
+commands-architecture.log: 56 PASS/0 FAIL/0 SKIP en .663s, build 0/0.
+Full de este bloque pendiente: estos focales no sustituyen una suite integral.
+SQLite/reapertura y faults son fixtures privados, no consultas autenticadas.
+
+Qwen baseline respondió sin tool call (finish_reason length), por lo que NO ejecutó
+pruebas; evidencia preservada. Un nuevo encargo de herramienta específica sobre el
+binario actualizado está en curso, sin atribuirle todavía ejecución. La verificación
+focal anterior la ejecutó root. M5.5 sigue abierto: AgentProfile efectivo, contratos
+congelados completos y autoridad de modos/UltraCode de ADR0047. Su documento
+aceptado se incorpora fielmente desde el checkout principal sólo leído; no se han
+implementado sus gates ni se modifica main.
+
 ## Routing y denegaciones: frontera excepcional — 2026-10-07 05:29 UTC
 
 Full posterior sobre af1918a terminal exit0: 2620 casos/2616 PASS/0 FAIL/4 SKIP
