@@ -142,8 +142,15 @@ public sealed class InternalFollowUpCommandTests
         using (CausationScope.Begin(parentCause))
         using (ExecutionScope.Begin(parentExecution))
         {
-            Assert.Throws<IOException>(() => setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run,
-                setup.Lane, "retry me", null));
+            var failed = setup.Server.QueueFollowUpPromptCommand(setup.Session, setup.Run,
+                setup.Lane, "retry me", null);
+            var failure = Assert.IsType<IOException>(failed.Failure);
+            Assert.False(failed.Queued);
+            Assert.Equal("error", failed.Ack.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Rejected, failed.Ack.Outcome?.Kind);
+            Assert.Null(failed.Ack.FirstSeq);
+            Assert.Null(failed.Ack.LastSeq);
+            Assert.Equal("controlled append failure before persistence", failure.Message);
             Assert.Equal(before, setup.Store.CurrentSequence(setup.Session));
             Assert.Equal(parentCause, CausationScope.Current);
             Assert.Equal(parentExecution, ExecutionScope.Current);
@@ -166,9 +173,10 @@ public sealed class InternalFollowUpCommandTests
         Assert.Null(ExecutionScope.Current);
     }
 
-    private static void AssertRejected((bool Queued, CommandAck Ack) result)
+    private static void AssertRejected((bool Queued, CommandAck Ack, Exception? Failure) result)
     {
         Assert.False(result.Queued);
+        Assert.Null(result.Failure);
         Assert.Equal(RuntimeCommandOutcomeKind.Rejected, result.Ack.Outcome?.Kind);
         Assert.Null(result.Ack.FirstSeq);
         Assert.Null(result.Ack.LastSeq);

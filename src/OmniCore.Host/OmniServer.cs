@@ -1437,55 +1437,68 @@ public sealed class OmniServer : IOmniClient
     }
 
     /// <summary>Queues one CLI FollowUp intent as an internal Host command.</summary>
-    internal (bool Queued, CommandAck Ack) QueueFollowUpPromptCommand(SessionId sessionId, RunId runId,
+    internal (bool Queued, CommandAck Ack, Exception? Failure) QueueFollowUpPromptCommand(SessionId sessionId, RunId runId,
         LaneId laneId, string prompt, string? origin)
     {
+        ArgumentNullException.ThrowIfNull(prompt);
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var commandMessageId = commandId.Value.ToString();
-        var events = _store.ReadFrom(sessionId, 1);
-        var decoded = events.Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
-        var created = decoded.Select(pair => pair.Payload).OfType<RunCreated>()
-            .FirstOrDefault(item => item.RunId == runId && item.SessionId == sessionId);
-        if (created is null)
+        long? sequenceBefore = null;
+        try
         {
-            return (false, new CommandAck(commandMessageId, "error",
-                "the requested Run does not belong to the requested Session",
-                RuntimeCommandOutcome.Rejected()));
-        }
+            var events = _store.ReadFrom(sessionId, 1);
+            var decoded = events.Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+            var created = decoded.Select(pair => pair.Payload).OfType<RunCreated>()
+                .FirstOrDefault(item => item.RunId == runId && item.SessionId == sessionId);
+            if (created is null)
+            {
+                return (false, new CommandAck(commandMessageId, "error",
+                    "the requested Run does not belong to the requested Session",
+                    RuntimeCommandOutcome.Rejected()), null);
+            }
 
-        // Filter by envelope Run correlation rather than the current-run interval: one Session
-        // may contain lifecycle events for an earlier Run after another Run was created.
-        var own = events.Where(evt => evt.CorrelationId == runId || evt.RunId == runId).ToArray();
-        var runProjection = RunProjection.Replay(sessionId, runId, _codecs, own);
-        if (runProjection.IsTerminal())
+            // Filter by envelope Run correlation rather than the current-run interval: one Session
+            // may contain lifecycle events for an earlier Run after another Run was created.
+            var own = events.Where(evt => evt.CorrelationId == runId || evt.RunId == runId).ToArray();
+            var runProjection = RunProjection.Replay(sessionId, runId, _codecs, own);
+            if (runProjection.IsTerminal())
+            {
+                return (false, new CommandAck(commandMessageId, "error", "the requested Run is terminal",
+                    RuntimeCommandOutcome.Rejected()), null);
+            }
+
+            var lane = decoded.FirstOrDefault(pair => pair.Event.RunId == runId
+                && pair.Payload is LaneCreated laneCreated && laneCreated.LaneId == laneId);
+            if (lane.Payload is not LaneCreated requestedLane
+                || !decoded.Any(pair => pair.Event.RunId == runId
+                    && pair.Payload is TaskCreated taskCreated && taskCreated.TaskId == requestedLane.TaskId
+                    && taskCreated.RunId == runId))
+            {
+                return (false, new CommandAck(commandMessageId, "error",
+                    "the requested Lane does not belong to the requested Run",
+                    RuntimeCommandOutcome.Rejected()), null);
+            }
+
+            sequenceBefore = _store.CurrentSequence(sessionId);
+            using var internalCommand = ambientCommand is null
+                ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+            // Queue writes belong to the explicit Run/Lane only; never inherit a caller's unrelated
+            // Task/Lane/Turn ambient attribution.
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, requestedLane.TaskId, laneId));
+            var queued = FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, prompt, origin);
+            var outcome = queued ? RuntimeCommandOutcome.Accepted() : RuntimeCommandOutcome.NoOp();
+            return (queued, CommandOutcomeAck(commandMessageId, "ok", null, outcome,
+                sessionId, sequenceBefore.Value, commandId), null);
+        }
+        catch (Exception failure)
         {
-            return (false, new CommandAck(commandMessageId, "error", "the requested Run is terminal",
-                RuntimeCommandOutcome.Rejected()));
+            var ack = sequenceBefore is null
+                ? UnavailableCommandOutcome(commandMessageId)
+                : FailedDurableCommandAck(commandMessageId, sessionId, sequenceBefore.Value,
+                    failure.Message, restoreRunIdentity: false);
+            return (false, ack, failure);
         }
-
-        var lane = decoded.FirstOrDefault(pair => pair.Event.RunId == runId
-            && pair.Payload is LaneCreated laneCreated && laneCreated.LaneId == laneId);
-        if (lane.Payload is not LaneCreated requestedLane
-            || !decoded.Any(pair => pair.Event.RunId == runId
-                && pair.Payload is TaskCreated taskCreated && taskCreated.TaskId == requestedLane.TaskId
-                && taskCreated.RunId == runId))
-        {
-            return (false, new CommandAck(commandMessageId, "error",
-                "the requested Lane does not belong to the requested Run",
-                RuntimeCommandOutcome.Rejected()));
-        }
-
-        var sequenceBefore = _store.CurrentSequence(sessionId);
-        using var internalCommand = ambientCommand is null
-            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-        // Queue writes belong to the explicit Run/Lane only; never inherit a caller's unrelated
-        // Task/Lane/Turn ambient attribution.
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, requestedLane.TaskId, laneId));
-        var queued = FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, prompt, origin);
-        var outcome = queued ? RuntimeCommandOutcome.Accepted() : RuntimeCommandOutcome.NoOp();
-        return (queued, CommandOutcomeAck(commandMessageId, "ok", null, outcome,
-            sessionId, sequenceBefore, commandId));
     }
 
     /// <summary>
@@ -1502,44 +1515,59 @@ public sealed class OmniServer : IOmniClient
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var messageId = commandId.Value.ToString();
-
-        if (_lastSessionId != sessionId || _lastRunId != runId
-            || new RunControlService(_store, _codecs).ActiveRun(sessionId) != runId)
-        {
-            return (null, new CommandAck(messageId, "error",
-                "the requested session/run is not the current active Run",
-                RuntimeCommandOutcome.Rejected()), null);
-        }
-
-        var sequenceBefore = _store.CurrentSequence(sessionId);
-        using var internalCommand = ambientCommand is null
-            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-        ExplorerTurn.TurnResult result;
+        long? sequenceBefore = null;
         try
         {
-            result = execute(cancellationToken);
+            if (_lastSessionId != sessionId || _lastRunId != runId
+                || new RunControlService(_store, _codecs).ActiveRun(sessionId) != runId)
+            {
+                return (null, new CommandAck(messageId, "error",
+                    "the requested session/run is not the current active Run",
+                    RuntimeCommandOutcome.Rejected()), null);
+            }
+
+            sequenceBefore = _store.CurrentSequence(sessionId);
+            using var internalCommand = ambientCommand is null
+                ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+            var result = execute(cancellationToken);
+            var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                sessionId, sequenceBefore.Value, commandId);
+            return (result, ack, null);
         }
         catch (Exception failure)
         {
-            return (null, FailedDurableCommandAck(messageId, sessionId, sequenceBefore,
-                failure.Message, restoreRunIdentity: false), failure);
+            var ack = sequenceBefore is null
+                ? UnavailableCommandOutcome(messageId)
+                : FailedDurableCommandAck(messageId, sessionId, sequenceBefore.Value,
+                    failure.Message, restoreRunIdentity: false);
+            return (null, ack, failure);
         }
-        var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
-            sessionId, sequenceBefore, commandId);
-        return (result, ack, null);
     }
 
-    internal CommandAck EnsureSessionRoutingPolicy(SessionId session)
+    internal InternalCommandResult EnsureSessionRoutingPolicy(SessionId session)
     {
         var commandId = CommandId.New();
-        if (_lastSessionId != session)
-            return new CommandAck(commandId.ToString(), "error", "Session is not selected", RuntimeCommandOutcome.Rejected());
-        var before = _store.CurrentSequence(session);
-        if (SessionRoutingAuthorization.Read(_store.ReadFrom(session, 1), _codecs, session) is not null)
-            return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.NoOp(), session, before, commandId);
-        using var command = CausationScope.Begin(new CommandCausation(commandId));
-        new EventStream(_store, _codecs, session).Append(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
-        return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.Accepted(), session, before, commandId);
+        var messageId = commandId.ToString();
+        long? before = null;
+        try
+        {
+            if (_lastSessionId != session)
+                return new InternalCommandResult(new CommandAck(messageId, "error", "Session is not selected",
+                    RuntimeCommandOutcome.Rejected()));
+            before = _store.CurrentSequence(session);
+            if (SessionRoutingAuthorization.Read(_store.ReadFrom(session, 1), _codecs, session) is not null)
+                return CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.NoOp(), session, before.Value, commandId);
+            using var command = CausationScope.Begin(new CommandCausation(commandId));
+            new EventStream(_store, _codecs, session).Append(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
+            return CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(), session, before.Value, commandId);
+        }
+        catch (Exception failure)
+        {
+            var ack = before is null
+                ? UnavailableCommandOutcome(messageId)
+                : FailedDurableCommandAck(messageId, session, before.Value, failure.Message, restoreRunIdentity: false);
+            return new InternalCommandResult(ack, failure);
+        }
     }
 
     internal (bool Authorized, InteractionId? Interaction, CommandAck Ack, Exception? Failure) AuthorizeModelRoute(
@@ -1690,40 +1718,52 @@ public sealed class OmniServer : IOmniClient
         }
     }
 
-    internal CommandAck RecordModelEscalationRequested(SessionId sessionId, ModelEscalationRequested payload) =>
+    internal InternalCommandResult RecordModelEscalationRequested(SessionId sessionId, ModelEscalationRequested payload) =>
         RecordModelEscalation(sessionId, payload.RunId, payload);
 
-    internal CommandAck RecordModelEscalationApproved(SessionId sessionId, ModelEscalationApproved payload) =>
+    internal InternalCommandResult RecordModelEscalationApproved(SessionId sessionId, ModelEscalationApproved payload) =>
         RecordModelEscalation(sessionId, payload.RunId, payload);
 
-    internal CommandAck RecordModelEscalationCompleted(SessionId sessionId, ModelEscalationCompleted payload) =>
+    internal InternalCommandResult RecordModelEscalationCompleted(SessionId sessionId, ModelEscalationCompleted payload) =>
         RecordModelEscalation(sessionId, payload.RunId, payload);
 
-    private CommandAck RecordModelEscalation(SessionId sessionId, RunId runId, DomainEventPayload payload)
+    private InternalCommandResult RecordModelEscalation(SessionId sessionId, RunId runId, DomainEventPayload payload)
     {
         ArgumentNullException.ThrowIfNull(payload);
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var commandMessageId = commandId.Value.ToString();
-        var belongsToSession = _store.ReadFrom(sessionId, 1)
-            .Select(_codecs.Decode)
-            .OfType<RunCreated>()
-            .Any(created => created.RunId.Equals(runId));
-        if (!belongsToSession)
+        long? sequenceBefore = null;
+        try
         {
-            return new CommandAck(commandMessageId, "error", "the Run does not belong to the requested Session",
-                RuntimeCommandOutcome.Rejected());
-        }
+            var belongsToSession = _store.ReadFrom(sessionId, 1)
+                .Select(_codecs.Decode)
+                .OfType<RunCreated>()
+                .Any(created => created.RunId.Equals(runId));
+            if (!belongsToSession)
+            {
+                return new InternalCommandResult(new CommandAck(commandMessageId, "error",
+                    "the Run does not belong to the requested Session", RuntimeCommandOutcome.Rejected()));
+            }
 
-        var sequenceBefore = _store.CurrentSequence(sessionId);
-        using var internalCommand = ambientCommand is null
-            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-        // Do not inherit unrelated ambient task/lane/turn attribution: this record names only its
-        // persisted Run. Payload v2 TurnId/LaneId remain null unless the caller explicitly supplied them.
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: runId));
-        new EventStream(_store, _codecs, sessionId).Append(payload, DurabilityClass.Standard);
-        return CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
-            sessionId, sequenceBefore, commandId);
+            sequenceBefore = _store.CurrentSequence(sessionId);
+            using var internalCommand = ambientCommand is null
+                ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+            // Do not inherit unrelated ambient task/lane/turn attribution: this record names only its
+            // persisted Run. Payload v2 TurnId/LaneId remain null unless the caller explicitly supplied them.
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: runId));
+            new EventStream(_store, _codecs, sessionId).Append(payload, DurabilityClass.Standard);
+            return CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                sessionId, sequenceBefore.Value, commandId);
+        }
+        catch (Exception failure)
+        {
+            var ack = sequenceBefore is null
+                ? UnavailableCommandOutcome(commandMessageId)
+                : FailedDurableCommandAck(commandMessageId, sessionId, sequenceBefore.Value,
+                    failure.Message, restoreRunIdentity: false);
+            return new InternalCommandResult(ack, failure);
+        }
     }
 
     internal (bool? Completed, CommandAck Ack, Exception? Failure) CheckRunCompletionAndGate(SessionId sessionId, RunId runId,
