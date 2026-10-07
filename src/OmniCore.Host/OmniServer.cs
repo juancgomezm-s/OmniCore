@@ -1453,8 +1453,10 @@ public sealed class OmniServer : IOmniClient
     /// <summary>
     /// Runs one CLI Explorer Ask invocation as an internal Host command, including each Act-loop
     /// iteration. A normal callback return means the invocation was accepted, not that the Run completed.
+    /// Failure preserves the original exception (including cancellation) alongside the durable outcome.
+    /// Accepted with error describes partial effects, never successful completion or safe blind retry.
     /// </summary>
-    internal (ExplorerTurn.TurnResult? Result, CommandAck Ack) ExecuteExplorerTurn(SessionId sessionId,
+    internal (ExplorerTurn.TurnResult? Result, CommandAck Ack, Exception? Failure) ExecuteExplorerTurn(SessionId sessionId,
         RunId runId, Func<CancellationToken, ExplorerTurn.TurnResult> execute,
         CancellationToken cancellationToken)
     {
@@ -1468,16 +1470,25 @@ public sealed class OmniServer : IOmniClient
         {
             return (null, new CommandAck(messageId, "error",
                 "the requested session/run is not the current active Run",
-                RuntimeCommandOutcome.Rejected()));
+                RuntimeCommandOutcome.Rejected()), null);
         }
 
         var sequenceBefore = _store.CurrentSequence(sessionId);
         using var internalCommand = ambientCommand is null
             ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-        var result = execute(cancellationToken);
+        ExplorerTurn.TurnResult result;
+        try
+        {
+            result = execute(cancellationToken);
+        }
+        catch (Exception failure)
+        {
+            return (null, FailedDurableCommandAck(messageId, sessionId, sequenceBefore,
+                failure.Message), failure);
+        }
         var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
             sessionId, sequenceBefore, commandId);
-        return (result, ack);
+        return (result, ack, null);
     }
 
     internal CommandAck EnsureSessionRoutingPolicy(SessionId session)
@@ -1752,8 +1763,12 @@ public sealed class OmniServer : IOmniClient
 
     private CommandAck FailedDurableCommandAck(WireEnvelope command, SessionId session,
         long sequenceBefore, string error, bool newSession = false)
+        => FailedDurableCommandAck(command.MessageId, session, sequenceBefore, error, newSession);
+
+    private CommandAck FailedDurableCommandAck(string commandMessageId, SessionId session,
+        long sequenceBefore, string error, bool newSession = false)
     {
-        var commandId = new CommandId(Guid.Parse(command.MessageId));
+        var commandId = new CommandId(Guid.Parse(commandMessageId));
         DomainEvent[] persisted;
         try
         {
@@ -1761,10 +1776,10 @@ public sealed class OmniServer : IOmniClient
         }
         catch (Exception)
         {
-            return UnavailableCommandOutcome(command.MessageId);
+            return UnavailableCommandOutcome(commandMessageId);
         }
         if (persisted.Length == 0)
-            return new CommandAck(command.MessageId, "error", error, RuntimeCommandOutcome.Rejected());
+            return new CommandAck(commandMessageId, "error", error, RuntimeCommandOutcome.Rejected());
 
         if (newSession)
         {
@@ -1783,7 +1798,7 @@ public sealed class OmniServer : IOmniClient
             }
             _lastRunId = created.RunId;
         }
-        return new CommandAck(command.MessageId, "error", error, RuntimeCommandOutcome.Accepted(),
+        return new CommandAck(commandMessageId, "error", error, RuntimeCommandOutcome.Accepted(),
             persisted.Min(evt => evt.Sequence), persisted.Max(evt => evt.Sequence));
     }
 

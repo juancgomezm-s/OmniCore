@@ -1,5 +1,24 @@
 # Rango causal y confirmación durable del command
 
+## Explorer: errores correlacionables — 2026-10-07 04:56 UTC
+
+`ExecuteExplorerTurn` devuelve también `Failure`, la excepción original del
+callback, junto a `Result=null` y el ACK confirmado. Con eventos persistidos:
+Accepted + Status=error y rango causal exacto; sin eventos confirmados: Rejected
+sin rango; lectura imposible: Deferred/JournalOutcomeUnavailable sin rango.
+Accepted no equivale a éxito. No se repite el callback, ni se completa/cancela
+el Run como tratamiento del error. El CLI conserva la propagación original de
+la excepción/cancelación mediante ExceptionDispatchInfo después de recibir el ACK.
+
+RED válido: 7 casos, 3 FAIL por excepciones desnudas, 0 errores de compilación.
+Final ampliado: 59 PASS/0 FAIL/0 SKIP en 7.601s; arquitectura 56 PASS en 0.689s.
+Logs `explorer-command-failure-red.log`, `explorer-command-failure-cli-final.log`
+y `explorer-command-failure-architecture.log`. Cuatro variantes usan SQLite real,
+reapertura y callback/lectura inyectados: no son consultas a proveedores.
+La suite completa de este bloque está pendiente. Completion y plan approval
+todavía requieren el mismo tratamiento excepcional; no se declara cerrado el
+criterio de todos los commands con este subconjunto.
+
 ## Contrato
 
 `FirstSeq` y `LastSeq` delimitan los eventos resultantes observados de esta

@@ -740,7 +740,10 @@ public sealed class OmniCliRuntime
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
                     promptOrigin), cancellationToken);
+            if (askExecution.Failure is { } askFailure)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
+                || askExecution.Ack.Status != "ok"
                 || askExecution.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
             {
                 throw new InvalidOperationException(askExecution.Ack.Error
@@ -863,7 +866,10 @@ public sealed class OmniCliRuntime
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
                     token, origin), cancellationToken);
+            if (askExecution.Failure is { } askFailure)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
+                || askExecution.Ack.Status != "ok"
                 || askExecution.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
             {
                 writeLine(Text(Localized("cli.runtime.error", ("command", "act"),
