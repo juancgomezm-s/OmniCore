@@ -97,6 +97,53 @@ public sealed class ModelQualificationCliTests
         Assert.Contains("--max-cost", output.ToString());
     }
 
+    [Theory]
+    [InlineData("0")]
+    [InlineData("3601")]
+    [InlineData("abc")]
+    public async Task Qualify_rejects_invalid_probe_timeout_argument(string value)
+    {
+        var output = new StringWriter();
+
+        var code = await Run(
+            new[] { "model", "qualify", "qwen-test", "--yes", "--probe-timeout", value }, "", output, TempDir());
+
+        Assert.Equal(1, code);
+        Assert.Contains("--probe-timeout", output.ToString());
+    }
+
+    [Theory]
+    [InlineData("1", 2)]
+    [InlineData("3", 0)]
+    public async Task Qualify_probe_timeout_changes_whether_a_slow_provider_completes(string seconds, int expectedCode)
+    {
+        var dir = TempDir();
+        await using var provider = new ScriptedHttpProvider();
+        provider.RespondWith((_, body) =>
+        {
+            Thread.Sleep(TimeSpan.FromMilliseconds(1200));
+            return QuickFixtureResponse(body);
+        });
+
+        var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", provider.BaseUrl);
+            var output = new StringWriter();
+
+            var code = await Run(
+                new[] { "model", "qualify", "qwen-test", "--yes", "--probe-timeout", seconds }, "", output, dir);
+
+            Assert.Equal(expectedCode, code);
+            if (expectedCode == 0) Assert.Contains("Qualified", output.ToString());
+            else Assert.Contains("timeout", output.ToString());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
+        }
+    }
+
     [Fact]
     public async Task Qualify_unknown_model_fails_with_localized_error()
     {
