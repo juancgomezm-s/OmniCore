@@ -14,13 +14,15 @@ public sealed class RunControlService
 
     private readonly IEventCodecRegistry _codecs;
     private readonly Func<string, decimal, decimal>? _otherDailyLimit;
+    private readonly Func<DateTimeOffset> _utcNow;
 
     public RunControlService(IEventStore store, IEventCodecRegistry codecs,
-        Func<string, decimal, decimal>? otherDailyLimit = null)
+        Func<string, decimal, decimal>? otherDailyLimit = null, Func<DateTimeOffset>? utcNow = null)
     {
         _store = store;
         _codecs = codecs;
         _otherDailyLimit = otherDailyLimit;
+        _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
     }
 
     /// <summary>Run no terminal de la sesión (hay como mucho uno, ADR-0035 §1), o null.</summary>
@@ -277,7 +279,7 @@ public sealed class RunControlService
             var run = ActiveRun(session);
             if (offer.Scope == "run" && run?.ToString() != offer.RunId)
                 throw new InvalidInteractionOptionException(interaction, optionId);
-            var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            var today = _utcNow().ToUniversalTime().ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
             if (offer.Scope == "daily" && offer.Day != today)
                 throw new InvalidInteractionOptionException(interaction, optionId);
             IEnumerable<DomainEvent> consentEvents = events;
