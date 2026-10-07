@@ -36,6 +36,14 @@ public sealed class FingerprintContentAppendFailureTests
             var catalog = new FakeCatalog().Add(FakeTool.Read("fixture.inspect"));
             var executor = new NoTools();
             var providerCalls = 0;
+            var durableStarts = new List<TurnStarted>();
+            void OnStarted(TurnStarted started)
+            {
+                Assert.Equal(0, providerCalls);
+                Assert.Contains(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>(),
+                    persisted => persisted.TurnId == started.TurnId);
+                durableStarts.Add(started);
+            }
             var selection = new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null);
             var model = new ModelDefinition("fixture-model", "fixture-provider", 8192, 7000, 1024);
             var profile = new ModelProfileResolver().Resolve(model, null);
@@ -49,6 +57,7 @@ public sealed class FingerprintContentAppendFailureTests
             var turn = new ExplorerTurn((_, _) =>
                 {
                     providerCalls++;
+                    Assert.Single(durableStarts);
                     return new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
                         new TokenUsage(1, 1, 0, 0, 0), null,
                         new ProviderMetadata("scripted-fixture", "fixture-model", null));
@@ -59,10 +68,11 @@ public sealed class FingerprintContentAppendFailureTests
             var beforeAttempt = store.CurrentSequence(session);
             var beforeBlobs = BlobPaths(artifactDirectory).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var failed = turn.Ask("hello", "fingerprint fixture instruction", session, run.RunId,
-                run.RootLane, "", CancellationToken.None);
+                run.RootLane, "", CancellationToken.None, turnStarted: OnStarted);
 
             Assert.Equal(StopReason.Error, failed.StopReason);
             Assert.Equal(0, providerCalls);
+            Assert.Empty(durableStarts);
             Assert.True(failingStore.FailedOnce);
             Assert.Equal(beforeAttempt, store.CurrentSequence(session));
             var eventsAfterFailure = store.ReadFrom(session, 1);
@@ -89,10 +99,11 @@ public sealed class FingerprintContentAppendFailureTests
             Assert.Equal(0L, sweptAgain.ReclaimedBytes);
 
             var retried = turn.Ask("hello", "fingerprint fixture instruction", session, run.RunId,
-                run.RootLane, "", CancellationToken.None);
+                run.RootLane, "", CancellationToken.None, turnStarted: OnStarted);
             Assert.Equal(StopReason.EndTurn, retried.StopReason);
             Assert.Equal(1, providerCalls);
             var started = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>());
+            Assert.Equal(started.TurnId, Assert.Single(durableStarts).TurnId);
             Assert.NotNull(started.Fingerprint);
             Assert.NotEmpty(started.Fingerprint.Components);
             foreach (var component in started.Fingerprint.Components)

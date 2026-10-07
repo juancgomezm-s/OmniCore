@@ -376,10 +376,14 @@ public sealed class ExplorerTurn
         return Ask(question, instruction, sessionId, runId, LaneId.New(), workingStateText, cancellationToken);
     }
 
-    /// <summary>Ejecuta la pregunta del usuario con contexto real y persiste el Turn en el journal.</summary>
+    /// <summary>
+    /// Ejecuta la pregunta y persiste el Turn. turnStarted notifica un nuevo inicio ya durable,
+    /// antes del provider; no se invoca al reanudar ni cuando falla la publicación.
+    /// El observador interno debe ser no bloqueante y no lanzar excepciones.
+    /// </summary>
     public TurnResult Ask(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null,
-        TurnInstructionSnapshot? instructionSnapshot = null)
+        TurnInstructionSnapshot? instructionSnapshot = null, Action<TurnStarted>? turnStarted = null)
     {
         try { _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning); }
         catch (InvalidOperationException)
@@ -545,6 +549,7 @@ public sealed class ExplorerTurn
 
         void ValidateBeforeInvocation()
         {
+            ValidateTokenBudget(includeNextInvocation: true);
             var spend = CurrentSpend();
             var capped = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
             if (capped && (_pricing is null || !_pricing.IsComplete))
@@ -563,6 +568,23 @@ public sealed class ExplorerTurn
             if (_enforceDefaultSpendCaps && dailyCost >= dailyCap)
                 throw new BudgetExceededException("límite diario alcanzado ($" + dailyCap + ")",
                     new("daily", _dailyCapUsd, dailyCap, null, today));
+        }
+
+        void ValidateTokenBudget(bool includeNextInvocation)
+        {
+            if (budget.MaxTokens is null) return;
+            var tokens = RunTokenBudgetReader.Read(stream.EventsSince(1), _codecs, runId, budget.MaxTokens);
+            if (tokens.Remaining is not { } remaining)
+                throw new BudgetExceededException("uso de tokens histórico desconocido: " + tokens.Limitation);
+            if (remaining < 0)
+                throw new BudgetExceededException("límite de tokens del Run excedido: " + tokens.Limit);
+            if (!includeNextInvocation) return;
+            var maximum = ModelInvocationCostBound.TokenCeiling(_selection, _modelContextCapacity,
+                _maximumGenerationRequestAttempts);
+            if (maximum is null)
+                throw new BudgetExceededException("cota de tokens de invocación desconocida");
+            if (maximum.Value > remaining)
+                throw new BudgetExceededException("límite de tokens del Run insuficiente para la siguiente invocación");
         }
 
         bool CanInvokeMeta()
@@ -658,7 +680,7 @@ public sealed class ExplorerTurn
             {
                 // Preserve uncapped Turn lifecycle diagnostics; monetary caps must block
                 // before context materialization can itself issue a billable request.
-                if (_metaModelProvider is not null
+                if (budget.MaxTokens is not null || _metaModelProvider is not null
                     && (budget.MaxCostUsd is not null || _enforceDefaultSpendCaps)) ValidateBeforeInvocation();
             }
             catch (BudgetExceededException ex)
@@ -695,6 +717,8 @@ public sealed class ExplorerTurn
                 }
                 stream.AppendBatch(overflowStart, DurabilityClass.Barrier);
                 started = true;
+                if (!isResume)
+                    turnStarted?.Invoke(overflowStart.OfType<TurnStarted>().Single());
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
                 // TurnCompleted tras Abandoned (P1: transición inválida).
                 AppendTerminalTurn(stream, sessionId, runId, laneId, turnId,
@@ -726,6 +750,8 @@ public sealed class ExplorerTurn
                 startEvents.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact,
                     instructionSnapshot, reasoningResolution));
                 stream.AppendBatch(startEvents, DurabilityClass.Barrier);
+                started = true;
+                turnStarted?.Invoke(startEvents.OfType<TurnStarted>().Single());
                 // Límites de mutación por Turn (ADR-0044 §5): un Turn nuevo reinicia el contador del
                 // Turn; los totales del Run se conservan. Un Turn reanudado sigue con su contador.
                 _boundary?.BeginTurn();
@@ -871,6 +897,7 @@ public sealed class ExplorerTurn
                     // An unrepresentable total cannot become a wrapped summary or authorize tools.
                     usage = CombineUsage(usage, resolved.Usage);
                     turnUsage = CombineUsage(turnUsage, resolved.Usage);
+                    ValidateTokenBudget(includeNextInvocation: false);
                     guard.AdvanceTurn(checked(resolved.Usage.Input + resolved.Usage.Output));
                     if (stepCost is not null)
                     {

@@ -316,10 +316,14 @@ public sealed class OmniCliRuntime
             modeAuthorityRevision: authority.Revision, reductions: [ReasoningReduction.Capability]);
     }
 
-    private static bool HasStartedTurnWithBoost(OmniServer server, SessionId session, RunId run, Guid boostId) =>
-        server.AcquireStore().ReadFrom(session, 1).Any(evt => evt.RunId == run
-            && server.AcquireCodecs().Decode(evt) is TurnStarted started
-            && started.ReasoningResolution?.TurnBoostId == boostId);
+    private static Action<TurnStarted>? BoostStartObserver(Guid? boostId, Action<Guid>? consumed)
+    {
+        if (boostId is not { } id || consumed is null) return null;
+        return started =>
+        {
+            if (started.ReasoningResolution?.TurnBoostId == id) consumed(id);
+        };
+    }
 
     internal bool HasEscalationForInteraction(InteractionId interaction)
     {
@@ -943,10 +947,8 @@ public sealed class OmniCliRuntime
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
-                    promptOrigin, instructionSnapshot), cancellationToken);
-            if (turnBoostId is { } consumedBoostId && turnBoostConsumed is not null
-                && HasStartedTurnWithBoost(server, sessionId, runId, consumedBoostId))
-                turnBoostConsumed(consumedBoostId);
+                    promptOrigin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
+                cancellationToken);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
@@ -1074,10 +1076,8 @@ public sealed class OmniCliRuntime
             }
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => activeTurn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
-                    token, origin, instructionSnapshot), cancellationToken);
-            if (turnBoostId is { } boostId && turnBoostConsumed is not null
-                && HasStartedTurnWithBoost(server, sessionId, runId, boostId))
-                turnBoostConsumed(boostId);
+                    token, origin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
+                cancellationToken);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
