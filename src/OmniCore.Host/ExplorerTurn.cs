@@ -1970,10 +1970,17 @@ public sealed class ExplorerTurn
             var checkpointId = Guid.NewGuid().ToString("N");
             compactedThroughIndex = compactedIds.Select(ConversationIndex).DefaultIfEmpty(-1).Max();
             var throughSequence = _store.CurrentSequence(sessionId);
-            var checkpointArtifact = PersistCheckpointArtifact(checkpointId, runId, throughSequence,
-                compactedThroughIndex, summary, metaFingerprint);
-            stream.Append(new ContextCheckpointRecorded(checkpointId, runId, throughSequence,
-                checkpointArtifact, metaFingerprint));
+            ArtifactRef checkpointArtifact;
+            // The summary (including optional remote work) is already complete. Protect
+            // only the local CAS publication and its canonical root, not contributors.
+            using (var checkpointPublication = (_artifacts as IArtifactPublicationLease)
+                ?.AcquirePublicationLease(CancellationToken.None))
+            {
+                checkpointArtifact = PersistCheckpointArtifact(checkpointId, runId, throughSequence,
+                    compactedThroughIndex, summary, metaFingerprint);
+                stream.Append(new ContextCheckpointRecorded(checkpointId, runId, throughSequence,
+                    checkpointArtifact, metaFingerprint));
+            }
             using var checkpointDocument = System.Text.Json.JsonDocument.Parse(
                 _artifacts.GetText(checkpointArtifact.Hash)!);
             var checkpointContext = RenderCheckpointContext(checkpointDocument.RootElement);

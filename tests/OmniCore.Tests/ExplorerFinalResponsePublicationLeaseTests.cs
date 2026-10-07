@@ -198,6 +198,101 @@ public sealed class ExplorerFinalResponsePublicationLeaseTests
         }
     }
 
+    [Fact]
+    public void Invalid_usage_budget_guard_records_diagnostic_final_text_as_assistant_message_not_model_completed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-final-publication-budget-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var journal = Path.Combine(root, "journal.db");
+        SqliteEventStore? store = null;
+        try
+        {
+            store = new SqliteEventStore(journal);
+            var codecs = EventCodecs.Create();
+            var innerArtifacts = new FileArtifactStore(root);
+            var artifacts = new LeaseObservingArtifacts(innerArtifacts, root);
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var catalog = new FakeCatalog();
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var route = ModelRoute.DefaultForModel("scripted", "fixture-provider", "http://127.0.0.1:9901",
+                ProviderFamily.OpenAiChatCompatible);
+            var selection = new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct,
+                null, route.Id, route);
+            var eventObserver = new LeaseObservingEvents(store, root);
+            var providerCalls = 0;
+            var turn = new ExplorerTurn((_, _) =>
+            {
+                providerCalls++;
+                Assert.True(artifacts.TryOpenLeaseProbe());
+                return new ModelResponse(new ContentBlock[] { new TextBlock("answer") }, StopReason.EndTurn,
+                    new TokenUsage(7, -1, 0, 0, 0), null,
+                    new ProviderMetadata("fixture-provider", "scripted", null));
+            }, executor, catalog,
+                new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+                new ExecutionFingerprint("scripted", "h", "t", "c", "o", "fixture-build"), selection,
+                eventObserver, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: true);
+
+            var result = turn.Ask("ask", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
+
+            Assert.Equal(StopReason.Cancelled, result.StopReason);
+            Assert.Equal(1, providerCalls);
+            Assert.Null(result.ResponseArtifactId);
+            Assert.StartsWith("Presupuesto agotado:", result.FinalText);
+            Assert.Equal(1, providerCalls);
+            Assert.True(artifacts.TryOpenLeaseProbe());
+            Assert.True(eventObserver.FinalBatchLeaseHeldBeforeCommit);
+            Assert.True(eventObserver.FinalBatchLeaseHeldAfterCommit);
+            Assert.Equal(new[] { "assistant_message.recorded" }, eventObserver.FinalBatchTypes);
+
+            var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            var step = Assert.Single(events.OfType<ModelStepCompleted>());
+            Assert.Equal(7, step.Usage.Input);
+            Assert.Equal(-1, step.Usage.Output);
+            Assert.NotNull(step.ResponseArtifact);
+            Assert.Empty(events.OfType<ModelCompleted>());
+            var assistant = Assert.Single(events.OfType<AssistantMessageRecorded>());
+            Assert.NotNull(assistant.ContentRef);
+
+            var stepReference = step.ResponseArtifact!;
+            var textReference = assistant.ContentRef!;
+            Assert.Equal(result.FinalText, innerArtifacts.GetText(textReference.Hash));
+            Assert.True(innerArtifacts.Verify(stepReference.Hash, stepReference.Size));
+            Assert.True(innerArtifacts.Verify(textReference.Hash, textReference.Size));
+
+            var finalPublications = artifacts.Observed.Where(item =>
+                item.Reference.Hash == textReference.Hash).ToArray();
+            Assert.Collection(finalPublications,
+                item => Assert.True(item.LeaseHeldAfterPut));
+
+            store.Close();
+            store = new SqliteEventStore(journal);
+            var reopened = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            var reopenedAssistant = Assert.Single(reopened.OfType<AssistantMessageRecorded>());
+            Assert.Equal(result.FinalText, innerArtifacts.GetText(reopenedAssistant.ContentRef!.Hash));
+            Assert.Empty(reopened.OfType<ModelCompleted>());
+            var sequenceBeforeRead = store.CurrentSequence(session);
+            var usageBeforeGc = SessionUsageReporter.ReadConversation(store, codecs, innerArtifacts, session);
+            new ArtifactGc(root).Sweep(journal, TimeSpan.Zero, false,
+                DateTimeOffset.UtcNow.AddDays(2), CancellationToken.None);
+            Assert.True(innerArtifacts.Verify(textReference.Hash, textReference.Size));
+            Assert.True(innerArtifacts.Verify(stepReference.Hash, stepReference.Size));
+            Assert.Equal(result.FinalText, innerArtifacts.GetText(textReference.Hash));
+            Assert.Contains("\"output\":-1", innerArtifacts.GetText(stepReference.Hash));
+            Assert.Equal(usageBeforeGc, SessionUsageReporter.ReadConversation(store, codecs, innerArtifacts, session));
+            Assert.Equal(sequenceBeforeRead, store.CurrentSequence(session));
+        }
+        finally
+        {
+            store?.Close();
+            using var connection = new SqliteConnection("DataSource=" + journal);
+            SqliteConnection.ClearPool(connection);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private sealed class LeaseObservingArtifacts(IArtifactStore inner, string root)
         : IArtifactStore, IArtifactPublicationLease
     {
@@ -236,7 +331,7 @@ public sealed class ExplorerFinalResponsePublicationLeaseTests
     private sealed record PublicationObservation(ArtifactRef Reference, bool LeaseHeldAfterPut);
 
     private sealed class LeaseObservingEvents(IEventStore inner, string root, bool failFinalBatch = false)
-        : IEventStore
+        : IEventStore, IWorkspaceJournalReader
     {
         public bool FinalBatchLeaseHeldBeforeCommit { get; private set; }
         public bool FinalBatchLeaseHeldAfterCommit { get; private set; }
@@ -268,6 +363,8 @@ public sealed class ExplorerFinalResponsePublicationLeaseTests
         }
 
         public long CurrentSequence(SessionId sessionId) => inner.CurrentSequence(sessionId);
+        public IReadOnlyList<DomainEvent> ReadEvents(EventType type) =>
+            ((IWorkspaceJournalReader)inner).ReadEvents(type);
         public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive) =>
             inner.ReadFrom(sessionId, fromSequenceInclusive);
 

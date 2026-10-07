@@ -1,5 +1,51 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Checkpoint de contexto y control propuesto por Qwen — 2026-10-07 04:07 UTC
+
+PersistCheckpointArtifact y ContextCheckpointRecorded comparten ahora una lease
+corta. El resumen del metamodelo ya terminó antes de adquirirla; se libera antes
+de leer/renderizar el checkpoint o llamar a contributors/materializer/proveedor.
+Se conserva la durabilidad Standard del evento existente. Este bloque no cierra
+la frontera más amplia de snapshots ni de ToolOutput externalizado.
+
+Luna propuso ExplorerContextCheckpointPublicationLeaseTests; root leyó los dos
+archivos completos, integró el fixture y reprodujo RED: 2 casos / 2 FAIL, 0.785s
+por lease ausente. Éxito verifica bloqueo después de PutText y antes/después del
+append, proveedores primario/meta sin bloqueo, reopen y GC sin gracia. Fallo
+antes del append no registra checkpoint ni llama al primario; libera la lease,
+elimina sólo el checkpoint huérfano y conserva referencias previas.
+
+Qwen local (qwen38-27b-abl-v9-best-q4kxl) entregó una auditoría y después un Fact
+para texto diagnóstico de presupuesto cuando el uso reportado es inválido.
+Root rechazó sus conclusiones incorrectas sobre cancelación/no-text y eliminación
+de texto ya referenciado, revisó el flujo completo y amplió el Fact con GC,
+ResponseArtifactId nulo, reopen, consumo idempotente y secuencia sin escrituras.
+El wrapper del fixture ahora conserva IWorkspaceJournalReader: sin esa interfaz
+el guard bloqueaba antes del proveedor, así que ese primer FAIL no era un defecto
+del producto. No se debilitó ninguna assertion. Qwen NO ejecutó estas pruebas;
+root compiló y ejecutó la integración: 56 PASS / 0 FAIL, 2.205s.
+
+Batería final combinada: 69 PASS / 0 FAIL, 29.413s, build 0 errores/advertencias;
+arquitectura: 56 PASS / 0 FAIL, 0.785s. Incluye ContextManagementTests de 200 turnos.
+Logs context-checkpoint-publication-red.log, context-checkpoint-and-qwen-final.log,
+context-checkpoint-architecture.log y qwen-invalid-final-integration-final.log.
+Fixtures scripted offline: no consultas autenticadas de cuentas, facturación
+real ni integración OmniCoder real. La inferencia local de Qwen sí se realizó
+por HTTPS autenticado; no equivale a cualificación del proveedor por OmniCore.
+Sus respuestas completas/usage están preservados en los logs privados: audit
+3185 input / 706 output / total 3891; propuesta 4126 input / 1009 output /
+total 5135 (25 cached reportados). No se deriva dinero de esos tokens.
+
+Reproducción focal adicional:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*ExplorerContextCheckpointPublicationLeaseTests' -class '*ExplorerFinalResponsePublicationLeaseTests'
+```
+
+Full anterior e467066 terminó: 2566 casos, 2562 PASS, 0 FAIL, 4 SKIP symlink,
+271.406s. Full posterior a este bloque pendiente; cifras focales solapadas.
+
 ## Publicación de la respuesta final — 2026-10-07 03:55 UTC
 
 La misma interfaz de lease protege ahora los dos objetos CAS finales (resumen
