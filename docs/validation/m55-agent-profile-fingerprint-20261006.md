@@ -1,5 +1,55 @@
 # M5.5 — perfil de lane en el fingerprint
 
+## Configuración reutilizable implementada — 2026-10-07 06:55 UTC
+
+Root implementó `AgentProfile`/`AgentProfileRegistry` en Abstractions, donde vive
+el `ToolId` canónico, sin invertir las dependencias del Domain. El perfil tiene
+identidad de configuración explícita, nombre, revisión positiva, PermissionScope
+techo y preferencias de tools ordenadas. Copia defensivamente todas las listas,
+incluidos los patrones argv de cada regla; no contiene identidad de ejecución.
+El registro no sustituye silenciosamente revisiones duplicadas ni fabrica un
+perfil para una identidad desconocida.
+
+`AgentProfileConfiguration.Load` carga un documento YAML explícito de scope User:
+`agentProfiles` contiene entradas por nombre con `id`, `revision`, `permissions`
+y `preferredTools`. Todos los campos de permissions (`reads`, `writes`, `process`,
+`network`, `secrets`, `allowShell`) son obligatorios. Vacío explícito es distinto
+de ausente; campos desconocidos, tipos incorrectos y valores incompletos fallan
+cerrado. Este helper no prueba por sí solo el origen de un archivo: el Host debe
+invocarlo únicamente con la configuración User confiable, nunca con contenido
+del modelo o del workspace presentado como User.
+
+El fingerprint acepta opcionalmente el perfil resuelto. `agent.profile` v2 guarda
+la configuración efectiva completa en JSON canónico (incluyendo orden de reglas
+y preferencias), usa la misma preparación/redacción/publicación CAS y rechaza
+un ProfileId de Lane discrepante. Sin definición resuelta conserva exactamente
+el componente v1 existente; no hereda una definición de un fingerprint previo
+ni reescribe fingerprints históricos. Es un techo, no un grant, y la lista de
+preferencias no es un allowlist.
+
+Evidencia root, fixtures offline sin llamadas a proveedores:
+
+- Abstractions/Domain: build 0 errores/0 advertencias, 3.64 s.
+- Checkpoint coordinado con Luna: build de tests 0 errores/0 advertencias, 34.85 s.
+- ReusableAgentProfileTests + RuntimeTurnFingerprintFactoryTests +
+  RuntimeFingerprintContentTests: **21 PASS / 0 FAIL / 0 SKIP**, 0.381 s.
+- Logs: `C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0649/profile-*`.
+
+Reproducción:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*ReusableAgentProfileTests' -class '*RuntimeTurnFingerprintFactoryTests' -class '*RuntimeFingerprintContentTests'
+```
+
+**Criterio integral todavía abierto:** falta resolución/selección normal al crear
+Lane y AgentExecution, aplicar el PermissionScope techo en el Permission Engine,
+aplicar preferencias al ToolPlan y conservar configuración efectiva durante
+resume con pruebas Host/CLI/journal. El helper y las focales no acreditan ese
+wiring, la aceptación de ADR0047, la suite completa posterior ni consultas
+autenticadas/consumo real de cualificación. La última full (b2ac3fe) precede este
+bloque: 2637 casos = 2633 PASS / 0 FAIL / 4 SKIP por permisos symlink.
+
 ## Auditoría actual — 2026-10-07 03:44 UTC
 
 El bloque descrito abajo registra fielmente ProfileId de LaneCreated, pero eso
