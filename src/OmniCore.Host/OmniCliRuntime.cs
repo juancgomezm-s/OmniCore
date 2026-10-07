@@ -254,11 +254,22 @@ public sealed class OmniCliRuntime
             return null;
 
         var events = server.AcquireStore().ReadFrom(session, 1);
+        var open = FindOpenTurnStart(events, server.AcquireCodecs(), run, lane);
+        if (open is null) return null;
+        var lastStep = FindLastModelStepForTurn(events, server.AcquireCodecs(), run, open.TurnId);
+        var legacy = open.ReasoningResolution is null
+            ? LegacyReasoningForTurn(events, server.AcquireCodecs(), run, open.TurnId) : null;
+        return new OpenTurnContinuation(session, run, lane, open, lastStep, legacy);
+    }
+
+    internal static TurnStarted? FindOpenTurnStart(IEnumerable<DomainEvent> events,
+        IEventCodecRegistry codecs, RunId run, LaneId lane)
+    {
         TurnStarted? open = null;
         foreach (var evt in events)
         {
             if (evt.RunId is null || !evt.RunId.Equals(run)) continue;
-            var payload = server.AcquireCodecs().Decode(evt);
+            var payload = codecs.Decode(evt);
             switch (payload)
             {
                 // Match ExplorerTurn.FindOpenTurn exactly: the historical payload carries LaneId;
@@ -273,20 +284,19 @@ public sealed class OmniCliRuntime
                     break;
             }
         }
-
-        if (open is null) return null;
-        var lastStep = events.Where(evt => evt.RunId == run && evt.TurnId == open.TurnId)
-            .Select(server.AcquireCodecs().Decode).OfType<ModelStepStarted>().LastOrDefault();
-        var legacy = open.ReasoningResolution is null
-            ? LegacyReasoningForTurn(events, server.AcquireCodecs(), run, open.TurnId) : null;
-        return new OpenTurnContinuation(session, run, lane, open, lastStep, legacy);
+        return open;
     }
 
-    private static ReasoningRequest? LegacyReasoningForTurn(IEnumerable<DomainEvent> events,
+    internal static ModelStepStarted? FindLastModelStepForTurn(IEnumerable<DomainEvent> events,
+        IEventCodecRegistry codecs, RunId run, TurnId turn) => events
+        .Where(evt => evt.RunId is not null && evt.RunId.Equals(run))
+        .Select(codecs.Decode).OfType<ModelStepStarted>()
+        .LastOrDefault(step => step.TurnId == turn);
+
+    internal static ReasoningRequest? LegacyReasoningForTurn(IEnumerable<DomainEvent> events,
         IEventCodecRegistry codecs, RunId run, TurnId turn)
     {
-        var step = events.Where(evt => evt.RunId == run && evt.TurnId == turn)
-            .Select(codecs.Decode).OfType<ModelStepStarted>().LastOrDefault();
+        var step = FindLastModelStepForTurn(events, codecs, run, turn);
         if (step is null || step.ReasoningKind is null) return null;
         var request = new ReasoningRequest(step.ReasoningKind, step.ReasoningBudgetTokens);
         if (string.IsNullOrWhiteSpace(request.Kind)
@@ -1123,6 +1133,7 @@ public sealed class OmniCliRuntime
                 writeLine(Text(LocalizedText.Of("cli.runtime.act.noResponse")));
             }
 
+            if (result.StopReason is StopReason.Error or StopReason.Cancelled) return 1;
             return act && (result.StopReason != StopReason.EndTurn || result.FinalText is null) ? 1 : 0;
         }
         catch (Exception ex)
