@@ -430,7 +430,8 @@ public sealed class CliApp
     internal static string StatusLineText(UsageSnapshot usage) =>
         string.Join(" · ", new[]
         {
-            UsagePresentation.Tokens(usage.SessionTokens),
+            usage.SessionTokenMeasurement is { } measurement
+                ? UsagePresentation.Tokens(measurement) : UsagePresentation.Tokens(usage.SessionTokens),
             UsagePresentation.Cost(usage.SessionCost),
             UsagePresentation.Remaining(usage.Remaining),
         }.Where(part => part is not null));

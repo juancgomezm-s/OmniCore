@@ -18,13 +18,31 @@ public static partial class SessionUsageReporter
         var stepTurns = new HashSet<TurnId>();
         var legacy = new Dictionary<TurnId, ModelCompleted>();
         var uncertainAttempts = new HashSet<string>(StringComparer.Ordinal);
+        var started = new HashSet<string>(StringComparer.Ordinal);
+        var terminal = new HashSet<string>(StringComparer.Ordinal);
+        var notDispatched = new HashSet<string>(StringComparer.Ordinal);
         var conflict = false;
-        void Start(string key) { steps.TryAdd(key, (null, null, TokenUsageFields.None, null)); }
+        void Start(string key)
+        {
+            started.Add(key);
+            steps.TryAdd(key, (null, null, TokenUsageFields.None, null));
+        }
+        void NotDispatched(string key)
+        {
+            notDispatched.Add(key);
+            if (!started.Contains(key))
+            {
+                conflict = true;
+                uncertainAttempts.Add(key);
+                steps.TryAdd(key, (null, null, TokenUsageFields.None, null));
+            }
+        }
         void Complete(string key, TokenUsage? usage, decimal? cost, TokenUsageFields fields = TokenUsageFields.Input | TokenUsageFields.Output,
             GenerationRequestAttemptEvidence? attempts = null)
         {
             if (attempts is { HasCompleteUsageCoverage: false }) uncertainAttempts.Add(key);
-            if (steps.TryGetValue(key, out var prior) && prior.Usage is not null && prior != (usage, cost, fields, attempts)) conflict = true;
+            var repeatedTerminal = !terminal.Add(key);
+            if (repeatedTerminal && steps.TryGetValue(key, out var prior) && prior != (usage, cost, fields, attempts)) conflict = true;
             else steps[key] = (usage, cost, fields, attempts);
         }
         foreach (var e in events)
@@ -36,7 +54,10 @@ public static partial class SessionUsageReporter
                 case ModelStepCompleted s:
                     stepTurns.Add(s.TurnId); Complete("step:" + s.TurnId + ":" + s.StepIndex, s.Usage, s.CostUsd,
                         s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output), s.GenerationAttempts); break;
+                case ModelStepNotDispatched s:
+                    stepTurns.Add(s.TurnId); NotDispatched("step:" + s.TurnId + ":" + s.StepIndex); break;
                 case MetaModelInvocationStarted s: Start("meta:" + s.InvocationId); break;
+                case MetaModelInvocationNotDispatched s: NotDispatched("meta:" + s.InvocationId); break;
                 case MetaModelInvocationCompleted s: Complete("meta:" + s.InvocationId, s.Usage, s.CostUsd, s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output), s.GenerationAttempts); break;
                 case MetaModelInvocationFailed s: Complete("meta:" + s.InvocationId, s.Usage, s.CostUsd, s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output), s.GenerationAttempts); break;
                 case ModelCompleted s: legacy.TryAdd(s.TurnId, s); break;
@@ -65,27 +86,48 @@ public static partial class SessionUsageReporter
             }
             Complete("legacy:" + turn, usage, cost);
         }
+        foreach (var key in notDispatched)
+        {
+            // This is proof of no invocation, not fabricated provider-reported zero usage.
+            // A missing start or conflicting receipt cannot be erased by such a marker.
+            if (started.Contains(key) && !terminal.Contains(key) && !uncertainAttempts.Contains(key)) steps.Remove(key);
+            else conflict = true;
+        }
         var measured = steps.Values.Where(s => s.Usage is not null
             && !TokenUsageValidation.IsInvalid(s.Usage, s.Fields)).ToArray();
-        var tokens = new TokenTotals(measured.Sum(s => s.Usage!.Input), measured.Sum(s => s.Usage!.Output),
-            measured.Sum(s => s.Usage!.CacheRead), measured.Sum(s => s.Usage!.CacheWrite));
+        TokenTotals? tokens = null;
+        long? total = null;
+        try
+        {
+            var sums = new TokenTotals(measured.Sum(s => s.Usage!.Input), measured.Sum(s => s.Usage!.Output),
+                measured.Sum(s => s.Usage!.CacheRead), measured.Sum(s => s.Usage!.CacheWrite));
+            total = checked(sums.Input + sums.Output);
+            tokens = sums;
+        }
+        catch (OverflowException) { /* Unrepresentable usage is unknown, never wrapped or clamped. */ }
         var incomplete = steps.Count(pair => uncertainAttempts.Contains(pair.Key) || pair.Value.Usage is null
             || TokenUsageValidation.IsInvalid(pair.Value.Usage, pair.Value.Fields)
             || !pair.Value.Fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output));
-        var allTokens = incomplete == 0 && !conflict;
+        var allTokens = incomplete == 0 && !conflict && tokens is not null;
         var allCost = allTokens && measured.All(s => s.Cost is >= 0);
+        decimal? costTotal = null;
+        if (allCost)
+        {
+            try { costTotal = measured.Sum(s => s.Cost!.Value); }
+            catch (OverflowException) { allCost = false; }
+        }
         var date = events.LastOrDefault()?.Timestamp ?? DateTimeOffset.UtcNow;
-        Metric<long?> Counter(TokenUsageFields field, long sum) => new(!conflict && incomplete == 0 && measured.All(s => s.Fields.HasFlag(field))
+        Metric<long?> Counter(TokenUsageFields field, long? sum) => new(allTokens && measured.All(s => s.Fields.HasFlag(field))
             ? MetricAvailability.Reported : MetricAvailability.Unknown,
-            !conflict && incomplete == 0 && measured.All(s => s.Fields.HasFlag(field)) ? sum : null, "journal:provider-reported-fields", date);
+            allTokens && measured.All(s => s.Fields.HasFlag(field)) ? sum : null, "journal:provider-reported-fields", date);
         return new(session.ToString(), new(allTokens ? MetricAvailability.Reported : MetricAvailability.Unknown,
                 allTokens ? tokens : null, "journal:model_step+meta_model;legacy-fallback", date),
             new(allTokens ? MetricAvailability.Reported : MetricAvailability.Unknown,
-                allTokens ? tokens.Input + tokens.Output : null, "journal:unique-invocations", date),
+                allTokens ? total : null, "journal:unique-invocations", date),
             new(allCost ? MetricAvailability.Estimated : MetricAvailability.Unknown,
-                allCost ? new Money(measured.Sum(s => s.Cost!.Value), "USD") : null, "declared-price-per-invocation", date),
+                allCost ? new Money(costTotal!.Value, "USD") : null, "declared-price-per-invocation", date),
             events.LastOrDefault()?.Sequence ?? 0, steps.Count, incomplete, date,
-            new(Counter(TokenUsageFields.Input, tokens.Input), Counter(TokenUsageFields.Output, tokens.Output),
-                Counter(TokenUsageFields.CacheRead, tokens.CacheRead), Counter(TokenUsageFields.CacheWrite, tokens.CacheWrite)));
+            new(Counter(TokenUsageFields.Input, tokens?.Input), Counter(TokenUsageFields.Output, tokens?.Output),
+                Counter(TokenUsageFields.CacheRead, tokens?.CacheRead), Counter(TokenUsageFields.CacheWrite, tokens?.CacheWrite)));
     }
 }

@@ -63,6 +63,7 @@ public sealed class EventStream
     /// </summary>
     public void Append(DomainEventPayload payload, DurabilityClass durability)
     {
+        ValidateModeAuthorityBatch(new[] { payload }, null);
         CatchUp();
         _tracker.Clone().Apply(payload);
         var pendingRunId = _runId;
@@ -114,6 +115,7 @@ public sealed class EventStream
             return;
         }
 
+        ValidateModeAuthorityBatch(payloads, causations);
         CatchUp();
         var validation = _tracker.Clone();
         foreach (var payload in payloads)
@@ -129,6 +131,8 @@ public sealed class EventStream
                 causations is null ? CausationScope.Current : causations[i]);
         }
 
+        ValidateUltraCodePolicyEnvelopes(payloads, envelopes);
+
         _store.AppendBatch(_sessionId, envelopes, durability, CancellationToken.None);
         _runId = pendingRunId;
         for (var i = 0; i < payloads.Count; i++)
@@ -137,6 +141,97 @@ public sealed class EventStream
             _appliedLocally.Add(envelopes[i].EventId);
             _written.Add(payloads[i]);
         }
+    }
+
+    private void ValidateModeAuthorityBatch(IReadOnlyList<DomainEventPayload> payloads,
+        IReadOnlyList<CausationId?>? causations)
+    {
+        var changedIndexes = payloads.Select((payload, index) => (payload, index))
+            .Where(item => item.payload is RunModeChanged).Select(item => item.index).ToArray();
+        var hasUltraCodePolicyPayload = payloads.Any(payload =>
+            payload is RunModeTransitionAuthorized { Origin: "UltraCodePolicy" }
+            or RunModeAuthoritySelected { Origin: "UltraCodePolicy" });
+        // Keep historical User/PlanApproval appends compatible. Only the new internal origin
+        // receives this strict atomic-batch contract.
+        if (!hasUltraCodePolicyPayload) return;
+
+        if (changedIndexes.Length != 1 || changedIndexes[0] + 2 >= payloads.Count)
+            throw new InvalidStateTransitionException("run mode authority", "mode changes require one atomic transition batch",
+                nameof(RunModeChanged));
+        var index = changedIndexes[0];
+        if (payloads[index] is not RunModeChanged changed
+            || payloads[index + 1] is not RunModeTransitionAuthorized transition
+            || payloads[index + 2] is not RunModeAuthoritySelected selected
+            || transition.RunId != changed.RunId || selected.Authority.RunId != changed.RunId
+            || changed.From != transition.From || changed.To != transition.To
+            || changed.Cause != transition.Reason || selected.Authority.Mode != transition.To
+            || selected.CommandId != transition.CommandId
+            || transition.Origin != "UltraCodePolicy"
+            || selected.Origin != "UltraCodePolicy")
+            throw new InvalidStateTransitionException("run mode authority", "mode change payloads do not form a matching batch",
+                nameof(RunModeTransitionAuthorized));
+
+        if (payloads.Select((payload, itemIndex) => (payload, itemIndex))
+            .Any(item => item.itemIndex != index + 1
+                && item.itemIndex != index + 2
+                && (item.payload is RunModeTransitionAuthorized or RunModeAuthoritySelected)))
+            throw new InvalidStateTransitionException("run mode authority", "mode change batch contains detached authority events",
+                nameof(RunModeAuthoritySelected));
+
+        var commandId = CommandId.Parse(transition.CommandId);
+        for (var itemIndex = index; itemIndex <= index + 2; itemIndex++)
+        {
+            var cause = causations is null ? CausationScope.Current : causations[itemIndex];
+            if (hasUltraCodePolicyPayload
+                && (cause is not CommandCausation commandCause || commandCause.CommandId != commandId))
+                throw new InvalidStateTransitionException("run mode authority", "mode change batch causation mismatch",
+                    nameof(RunModeTransitionAuthorized));
+        }
+
+        if (index != 0 || payloads.Count != 3 || selected.Origin != "UltraCodePolicy"
+            || transition.From == transition.To)
+            throw new InvalidStateTransitionException("run mode authority", "UltraCode policy must publish only its matching triplet",
+                nameof(RunModeTransitionAuthorized));
+
+    }
+
+    private void ValidateUltraCodePolicyEnvelopes(IReadOnlyList<DomainEventPayload> payloads,
+        IReadOnlyList<DomainEvent> envelopes)
+    {
+        var transitionIndex = payloads.Select((payload, index) => (payload, index))
+            .Where(item => item.payload is RunModeTransitionAuthorized { Origin: "UltraCodePolicy" })
+            .Select(item => item.index).ToArray();
+        if (transitionIndex.Length == 0) return;
+        if (transitionIndex.Length != 1 || payloads[transitionIndex[0]] is not RunModeTransitionAuthorized transition)
+            throw new InvalidStateTransitionException("run mode authority", "policy batch has ambiguous transition scope",
+                nameof(RunModeTransitionAuthorized));
+
+        var commandId = CommandId.Parse(transition.CommandId);
+        for (var index = transitionIndex[0] - 1; index <= transitionIndex[0] + 1; index++)
+        {
+            var evt = envelopes[index];
+            if (evt.SessionId != _sessionId || evt.RunId != transition.RunId
+                || evt.CorrelationId != transition.RunId
+                || evt.Causation is not CommandCausation cause || cause.CommandId != commandId
+                || evt.TaskId is not null || evt.LaneId is not null || evt.TurnId is not null
+                || evt.PlanItemId is not null || evt.ToolCallId is not null || evt.ExecutionId is not null)
+                throw new InvalidStateTransitionException("run mode authority", "policy batch envelope scope mismatch",
+                    nameof(RunModeTransitionAuthorized));
+        }
+
+        var currentEvents = _store.ReadFrom(_sessionId, 1).Where(evt => evt.RunId == transition.RunId).ToArray();
+        var candidate = new List<DomainEvent>(currentEvents);
+        var nextSequence = checked(_store.CurrentSequence(_sessionId) + 1);
+        for (var index = transitionIndex[0] - 1; index <= transitionIndex[0] + 1; index++)
+        {
+            var envelope = envelopes[index];
+            candidate.Add(DomainEvent.Stored(envelope.EventId, envelope.SessionId, checked(nextSequence++),
+                envelope.Type, envelope.SchemaVersion, envelope.Timestamp, envelope.Causation,
+                envelope.CorrelationId, envelope.RunId, envelope.TaskId, envelope.LaneId,
+                envelope.TurnId, envelope.PlanItemId, envelope.ToolCallId, envelope.ArtifactRefs,
+                envelope.PayloadJson, envelope.ExecutionId, envelope.Source));
+        }
+        _ = RunProjection.Replay(_sessionId, transition.RunId, _codecs, candidate);
     }
 
     /// <summary>Replay de todos los eventos de la sesión desde la secuencia dada (1-based inclusive).</summary>

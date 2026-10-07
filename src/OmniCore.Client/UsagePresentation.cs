@@ -41,11 +41,22 @@ public static class UsagePresentation
 
     public static string Tokens(TokenTotals totals)
     {
-        var total = totals.Input + totals.Output;
+        if (totals.Input < 0 || totals.Output < 0 || totals.CacheRead < 0 || totals.CacheWrite < 0)
+            return "session " + Missing + " tok";
+        long total;
+        try { total = checked(totals.Input + totals.Output); }
+        catch (OverflowException) { return "session " + Missing + " tok"; }
         if (total < 1000) return "session " + total.ToString(CultureInfo.InvariantCulture) + " tok";
         var thousands = Math.Round(total / 1000d, 1);
         return "session " + thousands.ToString("0.#", CultureInfo.InvariantCulture) + "k tok";
     }
+
+    public static string Tokens(Metric<TokenTotals> measurement) => measurement.Availability switch
+    {
+        MetricAvailability.Reported or MetricAvailability.Stale when measurement.Value is not null => Tokens(measurement.Value),
+        MetricAvailability.Estimated when measurement.Value is not null => "≈" + Tokens(measurement.Value),
+        _ => "session " + Missing + " tok",
+    };
 
     private static string Dollars(decimal amount) =>
         "$" + amount.ToString(amount >= 0.01m ? "0.00" : "0.0000", CultureInfo.InvariantCulture);

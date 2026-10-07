@@ -57,7 +57,8 @@ internal static class Program
         var turn = new ExplorerTurn((request, ct) => server.Observability.Complete(session, provider, request, 16000, ct),
             executor, tools.Catalog(), new ContextMaterializer(OmniHost.CreateTokenCounter(null, null, null), []),
             new ExecutionFingerprint("fixture/sol", "test", "test", "test", "test", "probe"), selection,
-            store, codecs, artifacts, new FileAuditSink(root), new RedactionPolicy(), pricing: new ModelPricing(1m, 2m), modelContextCapacity: 16000);
+            store, codecs, artifacts, new FileAuditSink(root), new RedactionPolicy(), pricing: new ModelPricing(1m, 2m),
+            modelContextCapacity: 16000, maximumGenerationRequestAttempts: provider.MaximumGenerationRequestAttempts);
         var result = turn.Ask("show inline answer", "Read only", session, server.LastRunId()!, lane, "", CancellationToken.None);
         if (result.StopReason != StopReason.EndTurn)
             Console.WriteLine("Fixture lifecycle failure: " + string.Join("; ", store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnAbandoned>().Select(e => e.Reason)));
@@ -82,8 +83,11 @@ internal static class Program
     }
     private static void Require(bool condition, string name)
     { if (!condition) throw new InvalidOperationException("FAIL: " + name); Console.WriteLine("PASS: " + name); }
-    private sealed class StreamFixture(Action reasoning, Action text) : IModelProvider
+    private sealed class StreamFixture(Action reasoning, Action text) : IModelProvider, IModelRequestAttemptBound
     {
+        // This scripted provider performs exactly one invocation and has no retry path.
+        // Declaring that bound does not turn this integration fixture into real billing evidence.
+        public long? MaximumGenerationRequestAttempts => 1;
         public ProviderCapabilities Capabilities => new(true, false, false);
         public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, [EnumeratorCancellation] CancellationToken ct)
         {

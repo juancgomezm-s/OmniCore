@@ -29,4 +29,7 @@ public sealed record QuotaInfo(QuotaKind Kind, decimal? Remaining, decimal? Limi
 public sealed record TokenTotals(long Input, long Output, long CacheRead, long CacheWrite);
 
 /// <summary>Uso de la sesión que viaja al cliente (ADR-0031 §3).</summary>
-public sealed record UsageSnapshot(TokenTotals SessionTokens, Metric<Money> SessionCost, Metric<QuotaInfo> Remaining, DateTimeOffset AsOf);
+/// <remarks>SessionTokenMeasurement carries availability. New clients prefer it over the legacy
+/// numeric slots, which cannot represent unknown consumption. Null retains legacy behavior.</remarks>
+public sealed record UsageSnapshot(TokenTotals SessionTokens, Metric<Money> SessionCost, Metric<QuotaInfo> Remaining,
+    DateTimeOffset AsOf, Metric<TokenTotals>? SessionTokenMeasurement = null);

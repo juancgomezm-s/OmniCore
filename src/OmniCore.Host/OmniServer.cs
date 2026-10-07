@@ -11,6 +11,7 @@ using OmniCore.Security;
 using OmniCore.Tools;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 /// <summary>
 /// OmniServer: sesión de protocolo in-process que expone el runtime detrás de IOmniClient
@@ -19,7 +20,11 @@ using System.Globalization;
 /// </summary>
 public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
 {
+    private static readonly ConditionalWeakTable<IEventStore, object> ModeAuthorityGates = new();
+
     private readonly IEventStore _store;
+
+    private readonly object _modeAuthorityMutationGate;
 
     private readonly IEventCodecRegistry _codecs;
 
@@ -103,6 +108,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     {
         _ = SecretRedactor.Shared;
         _store = store;
+        _modeAuthorityMutationGate = ModeAuthorityGates.GetValue(store, static _ => new object());
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
@@ -121,6 +127,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     {
         _ = SecretRedactor.Shared;
         _store = store;
+        _modeAuthorityMutationGate = ModeAuthorityGates.GetValue(store, static _ => new object());
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
@@ -744,7 +751,156 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
         }
     }
 
+    /// <summary>
+    /// Applies one deterministic UltraCode policy decision. This is an internal Host boundary,
+    /// not a wire command: the caller cannot choose an origin, grant, objective, limits, or scope
+    /// from model/tool output. The Run revision is reloaded while holding the shared store gate.
+    /// </summary>
+    internal InternalCommandResult ApplyUltraCodePolicyTransition(SessionId sessionId, RunId runId,
+        RunMode targetMode, string reason, long expectedAuthorityRevision,
+        CancellationToken cancellationToken = default)
+    {
+        var commandId = CommandId.New();
+        var messageId = commandId.ToString();
+        long? sequenceBefore = null;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_modeAuthorityMutationGate)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                sequenceBefore = _store.CurrentSequence(sessionId);
+                var all = _store.ReadFrom(sessionId, 1);
+                var created = all.Where(evt => evt.SessionId == sessionId && evt.RunId == runId
+                        && _codecs.Decode(evt) is RunCreated runCreated && runCreated.RunId == runId)
+                    .ToArray();
+                if (created.Length != 1)
+                    return PolicyTransitionResult(messageId, "The target Run is absent or ambiguous in this Session",
+                        RuntimeCommandOutcome.Rejected());
+
+                var own = EventsForRun(all, runId);
+                if (own.Count == 0 || own.Any(evt => IsRunModeEvent(_codecs.Decode(evt))
+                    && (evt.SessionId != sessionId || evt.RunId != runId || evt.CorrelationId != runId)))
+                    return PolicyTransitionResult(messageId, "The target Run has inconsistent journal scope",
+                        RuntimeCommandOutcome.Deferred("RunScopeUnavailable"));
+                if (SessionRoutingAuthorization.Read(all, _codecs, sessionId) is null)
+                    return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.Deferred("RoutingPolicyUnavailable"));
+
+                var projection = RunProjection.Replay(sessionId, runId, _codecs, own);
+                if (projection.IsTerminal())
+                    return PolicyTransitionResult(messageId, "The target Run is terminal",
+                        RuntimeCommandOutcome.Rejected());
+                if (HasOpenModelStep(own))
+                    return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.Deferred("ModelStepActive"));
+                if (HasOpenToolCall(own))
+                    return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.Deferred("ToolCallActive"));
+                if (HasPendingModelRouteConsent(own))
+                    return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.Deferred("ModelRouteConsent"));
+                if (!IsBoundedPolicyReason(reason))
+                    return PolicyTransitionResult(messageId, "Policy transition reason is invalid",
+                        RuntimeCommandOutcome.Rejected());
+                var durableReason = SecretRedactor.Shared.Redact(reason);
+
+                var current = projection.ModeAuthority;
+                if (current is null || current.Revision != expectedAuthorityRevision
+                    || current.ProductEffort != ProductEffort.UltraCode || current.ModePinned
+                    || !current.AutoModeSwitch || current.Authorization is not { } authorization
+                    || !authorization.AllowedModes.Contains(targetMode)
+                    || !current.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
+                    return PolicyTransitionResult(messageId, "A current UltraCode authorization is required",
+                        RuntimeCommandOutcome.Rejected());
+                if (!Enum.IsDefined(targetMode))
+                    return PolicyTransitionResult(messageId, "The target RunMode is unknown",
+                        RuntimeCommandOutcome.Rejected());
+                if (targetMode == current.Mode)
+                    return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.NoOp());
+
+                // A mode decision cannot grant a route or consume a pending consent. Any following
+                // provider selection still passes the ordinary SessionRoutingAuthorization gate.
+                var nextRevision = checked(current.Revision + 1);
+                var nextAuthorization = authorization with { AuthorityRevision = nextRevision };
+                var next = current with
+                {
+                    Revision = nextRevision,
+                    Mode = targetMode,
+                    Authorization = nextAuthorization,
+                };
+                next.Validate();
+
+                cancellationToken.ThrowIfCancellationRequested();
+                using var command = CausationScope.Begin(new CommandCausation(commandId));
+                using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: runId));
+                var batch = new DomainEventPayload[]
+                {
+                    new RunModeChanged(runId, current.Mode, targetMode, durableReason),
+                    new RunModeTransitionAuthorized(runId, current.Mode, targetMode, durableReason,
+                        "UltraCodePolicy", messageId, nextRevision, current.ObjectiveRevision,
+                        current.ObjectiveDigest, current.PolicyRevision, authorization.AuthorizationId),
+                    new RunModeAuthoritySelected(next, messageId, "UltraCodePolicy"),
+                };
+                new EventStream(_store, _codecs, sessionId).AppendBatch(batch, DurabilityClass.Barrier);
+                var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                    sessionId, sequenceBefore.Value, commandId);
+                return new InternalCommandResult(ack);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception failure)
+        {
+            var ack = sequenceBefore is null
+                ? UnavailableCommandOutcome(messageId)
+                : FailedDurableCommandAck(messageId, sessionId, sequenceBefore.Value,
+                    "Could not persist the UltraCode policy transition", restoreRunIdentity: false);
+            return new InternalCommandResult(ack, failure);
+        }
+    }
+
+    private static InternalCommandResult PolicyTransitionResult(string commandMessageId, string? error,
+        RuntimeCommandOutcome outcome) => new(new CommandAck(commandMessageId,
+            outcome.Kind == RuntimeCommandOutcomeKind.Rejected ? "error" : "ok", error, outcome));
+
+    private static bool IsBoundedPolicyReason(string reason)
+    {
+        // Reasons are observable diagnostic text, not an enum or classifier vocabulary.
+        // Bound the serialized value without rejecting otherwise meaningful Unicode text.
+        return !string.IsNullOrWhiteSpace(reason) && reason.Length <= 512;
+    }
+
+    private static bool IsRunModeEvent(DomainEventPayload payload) => payload is
+        RunModeChanged or RunModeTransitionAuthorized or RunModeAuthoritySelected or RunModeAuthorityRevoked;
+
+    private bool HasPendingModelRouteConsent(IReadOnlyList<DomainEvent> events)
+    {
+        var pending = new Dictionary<InteractionId, InteractionKind>();
+        foreach (var evt in events)
+        {
+            var payload = _codecs.Decode(evt);
+            switch (payload)
+            {
+                case InteractionRequested requested when evt.RunId is not null
+                    && requested.Kind == InteractionKind.ModelRouteConsent:
+                    pending[requested.InteractionId] = requested.Kind;
+                    break;
+                case InteractionResolved resolved:
+                    pending.Remove(resolved.InteractionId);
+                    break;
+                case InteractionExpired expired:
+                    pending.Remove(expired.InteractionId);
+                    break;
+            }
+        }
+        return pending.Values.Contains(InteractionKind.ModelRouteConsent);
+    }
+
     private CommandAck SelectRunMode(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        lock (_modeAuthorityMutationGate) return SelectRunModeCore(command, fields);
+    }
+
+    private CommandAck SelectRunModeCore(WireEnvelope command, Dictionary<string, string> fields)
     {
         var messageId = command.MessageId;
         if (_lastSessionId is not { } session || _lastRunId is not { } run
@@ -841,6 +997,11 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private CommandAck RevokeRunModeAuthority(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        lock (_modeAuthorityMutationGate) return RevokeRunModeAuthorityCore(command, fields);
+    }
+
+    private CommandAck RevokeRunModeAuthorityCore(WireEnvelope command, Dictionary<string, string> fields)
     {
         var messageId = command.MessageId;
         if (_lastSessionId is not { } session || _lastRunId is not { } run)
@@ -1916,8 +2077,9 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                         var sequenceBeforeResponse = _store.CurrentSequence(session);
                         outcomeSession = session;
                         outcomeSequenceBefore = sequenceBeforeResponse;
-                        control.Respond(session, interaction,
-                            fields.TryGetValue("optionId", out var o) ? o : "", command.MessageId);
+                        lock (_modeAuthorityMutationGate)
+                            control.Respond(session, interaction,
+                                fields.TryGetValue("optionId", out var o) ? o : "", command.MessageId);
                         AuditEffectResolutions(session, sequenceBeforeResponse, interaction);
                         if (control.UnreconciledEffects(session).Count == 0) _recoveryProblem = null;
                     }

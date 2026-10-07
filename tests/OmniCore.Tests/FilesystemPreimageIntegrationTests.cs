@@ -10,6 +10,9 @@ using OmniCore.Tools;
 using OmniCore.Security;
 using OmniCore.Execution;
 
+// The host resolves its artifact directory from the process-wide data directory.
+// Keep environment changes and cleanup isolated from other host/GC fixtures.
+[Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class FilesystemPreimageIntegrationTests
 {
     [Theory]

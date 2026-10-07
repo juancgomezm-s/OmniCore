@@ -1,5 +1,19 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Checkpoint conjunto — 2026-10-07 11:11 UTC
+
+FULL `authority-report-full-1110.log`: **2819 casos, 2815 PASS, 0 FAIL,
+4 SKIP**, 120.235 s. Arquitectura 56 PASS, 0 FAIL. Integración con componentes
+reales WPF de OmniCoder verificada con proveedor scripted y outputs aislados;
+no equivale a consulta autenticada ni consumo real. Evidencia reproducible en
+`m55-generation-attempt-evidence.md`.
+
+Se mantienen completos los criterios de ADR0007/0046/0047. El reparto de
+archivos no constituye objetivos parciales ni permite cerrar un hito por una
+suite focal. Continúan pendientes la aceptación integral, la activación real
+de la política determinista UltraCode, los contratos pre-M6 aceptados restantes
+y la cualificación real de M5; no se inventan reglas ni se implementa M6.
+
 ## Checkpoint de evidencia de intentos — 2026-10-07 10:09 UTC
 
 Build 0 errores/advertencias. Suite completa `retry-evidence-full-1007.log`:
