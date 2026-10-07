@@ -17,6 +17,7 @@ public sealed class OmniCliRuntime
 {
     private readonly string _workspaceRoot;
     private readonly ProviderResilienceCatalog _providerCircuits = new();
+    private int _turnExecutionActive;
     private readonly Func<string, CancellationToken, Task<ProviderQuotaSnapshot>> _queryQuota;
     private OmniServer? _server;
     private string? _escalatedModel;
@@ -238,6 +239,49 @@ public sealed class OmniCliRuntime
         TurnInstructionSnapshot? InstructionSnapshot = null, ReasoningResolution? ReasoningResolution = null,
         ReasoningRequest? LegacyReasoningRequest = null, bool ContinueExistingTurn = false);
 
+    private sealed record OpenTurnContinuation(SessionId Session, RunId Run, LaneId Lane,
+        TurnStarted Started, ModelStepStarted? LastStep, ReasoningRequest? LegacyReasoningRequest);
+
+    /// <summary>
+    /// Reads the exact Turn that ExplorerTurn will continue on the current Run/Lane. Its durable
+    /// configuration is reused only for that open Turn; it never grants authority to a new Turn.
+    /// </summary>
+    private static OpenTurnContinuation? FindOpenTurnContinuation(OmniServer server)
+    {
+        if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run
+            || server.LastLaneId() is not { } lane
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run)
+            return null;
+
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        TurnStarted? open = null;
+        foreach (var evt in events)
+        {
+            if (evt.RunId is null || !evt.RunId.Equals(run)) continue;
+            var payload = server.AcquireCodecs().Decode(evt);
+            switch (payload)
+            {
+                // Match ExplorerTurn.FindOpenTurn exactly: the historical payload carries LaneId;
+                // older envelopes may omit LaneId/TurnId and remain valid for this replay path.
+                case TurnStarted started when started.LaneId == lane:
+                    open = started;
+                    break;
+                case TurnCompleted completed when open?.TurnId == completed.TurnId:
+                case TurnAbandoned abandoned when open?.TurnId == abandoned.TurnId:
+                case TurnInterrupted interrupted when open?.TurnId == interrupted.TurnId:
+                    open = null;
+                    break;
+            }
+        }
+
+        if (open is null) return null;
+        var lastStep = events.Where(evt => evt.RunId == run && evt.TurnId == open.TurnId)
+            .Select(server.AcquireCodecs().Decode).OfType<ModelStepStarted>().LastOrDefault();
+        var legacy = open.ReasoningResolution is null
+            ? LegacyReasoningForTurn(events, server.AcquireCodecs(), run, open.TurnId) : null;
+        return new OpenTurnContinuation(session, run, lane, open, lastStep, legacy);
+    }
+
     private static ReasoningRequest? LegacyReasoningForTurn(IEnumerable<DomainEvent> events,
         IEventCodecRegistry codecs, RunId run, TurnId turn)
     {
@@ -457,6 +501,27 @@ public sealed class OmniCliRuntime
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
     {
+        if (Interlocked.CompareExchange(ref _turnExecutionActive, 1, 0) != 0)
+        {
+            writeLine("A Turn is already active in this runtime; concurrent execution was rejected.");
+            return 1;
+        }
+
+        try
+        {
+            return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
+                routingResume, turnBoost, turnBoostId, turnBoostConsumed).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _turnExecutionActive, 0);
+        }
+    }
+
+    private async Task<int> RunTurnCoreAsync(string prompt, bool act, Action<string> writeLine,
+        CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
+        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
+    {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
         if (turnBoost is not null && turnBoostId is null) turnBoostId = Guid.NewGuid();
@@ -498,6 +563,10 @@ public sealed class OmniCliRuntime
             _workspaceWarningShown = workspaceConfig.Ignored;
         }
         WriteDiagnostics(workspaceConfig.Diagnostics, writeLine);
+        var server = Server(workspaceData);
+        // Explicit resume handlers (quota/route consent) own their semantics. Otherwise, only
+        // restore the snapshot when the engine itself will continue an exact open Turn.
+        var openTurn = routingResume is null ? FindOpenTurnContinuation(server) : null;
         ModelDefinition? modelDefinition = null;
         ModelRoute? selectedRoute = routingResume?.Route;
         NoModelConfiguredException? noModel = null;
@@ -515,7 +584,7 @@ public sealed class OmniCliRuntime
 
         // Elección explícita (escalación en curso, OMNI_MODEL o defaultModel del workspace) siempre gana;
         // si no la hay y el usuario configuró routing:, elige el router por tipo de tarea (M5).
-        var explicitModel = routingResume?.Model ?? _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
+        var explicitModel = routingResume?.Model ?? openTurn?.LastStep?.ModelId ?? _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
             ?? workspaceConfig.Settings?.DefaultModel ?? storedSelection?.ModelId;
         if (explicitModel is not null)
         {
@@ -581,6 +650,22 @@ public sealed class OmniCliRuntime
                 ("message", Text(unsupported.UserMessage)))));
             return 1;
         }
+        if (openTurn?.LastStep is { } priorStep)
+        {
+            if (modelDefinition is null || modelDefinition.Id != priorStep.ModelId)
+            {
+                writeLine("The configured model no longer matches the open Turn; resume rejected before provider access.");
+                return 1;
+            }
+
+            var priorRoute = selectedRoute ?? ModelRoutingHost.RouteFor(modelDefinition, providerDescription, baseUrl);
+            if (priorStep.RouteId is { } priorRouteId && !priorRoute.Id.Equals(priorRouteId))
+            {
+                writeLine("The configured route no longer matches the open Turn; resume rejected before provider access.");
+                return 1;
+            }
+            selectedRoute = priorRoute;
+        }
         string? key = null;
         if (providerDescription?.Auth.Kind == AuthKind.ApiKey)
         {
@@ -616,15 +701,16 @@ public sealed class OmniCliRuntime
                 return 1;
             }
 
-            var server = Server(workspaceData);
             server.ConfigureNewSessionRoutingPolicy(ModelRoutingHost.InitialSessionPolicy(loaded,
                 modelDefinition?.ProviderId ?? "local"));
             string workingState = "";
-            if (routingResume is not null)
+            if (routingResume is not null || openTurn is not null)
             {
-                if (server.LastSessionId() != routingResume.Session || server.LastRunId() != routingResume.Run
-                    || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(routingResume.Session) != routingResume.Run)
-                { writeLine("Selected Session/Run changed; routing resume rejected"); return 1; }
+                var resumeSession = routingResume?.Session ?? openTurn!.Session;
+                var resumeRun = routingResume?.Run ?? openTurn!.Run;
+                if (server.LastSessionId() != resumeSession || server.LastRunId() != resumeRun
+                    || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(resumeSession) != resumeRun)
+                { writeLine("Selected Session/Run changed; Turn resume rejected"); return 1; }
                 workingState = ReadWorkingState(server, cancellationToken);
             }
             else if (conversationOnly)
@@ -702,13 +788,14 @@ public sealed class OmniCliRuntime
             var selectedMaxOutputTokens = ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription);
             ReasoningResolution? reasoningResolution;
             ReasoningRequest? productReasoning;
-            if (routingResume is { ContinueExistingTurn: true })
+            if (routingResume is { ContinueExistingTurn: true } || openTurn is not null)
             {
-                // Same-Turn continuation is bound to the original durable selection. A legacy
-                // Turn has no resolution snapshot, so preserve only the request from its step.
-                reasoningResolution = routingResume.ReasoningResolution;
+                // Same-Turn continuation is bound to that Turn's durable selection even if
+                // authority has since been revoked. This does not authorize any later Turn.
+                reasoningResolution = routingResume?.ReasoningResolution ?? openTurn?.Started.ReasoningResolution;
+                var legacyRequest = routingResume?.LegacyReasoningRequest ?? openTurn?.LegacyReasoningRequest;
                 productReasoning = reasoningResolution?.AppliedRequest
-                    ?? (reasoningResolution is null ? routingResume.LegacyReasoningRequest : null);
+                    ?? (reasoningResolution is null ? legacyRequest : null);
             }
             else
             {
@@ -903,7 +990,7 @@ public sealed class OmniCliRuntime
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
-            var instructionSnapshot = routingResume?.InstructionSnapshot;
+            var instructionSnapshot = routingResume?.InstructionSnapshot ?? openTurn?.Started.InstructionSnapshot;
             instructionSnapshot?.Validate();
             conversationOnly = instructionSnapshot?.ConversationOnly ?? conversationOnly;
             var instruction = instructionSnapshot?.ResolvedInstruction ?? TurnInstruction(effectiveMode, conversationOnly);
@@ -1610,7 +1697,7 @@ public sealed class OmniCliRuntime
         _escalatedModel = next.ModelId;
         try
         {
-            var code = await RunTurnAsync("", act, writeLine, cancellationToken,
+            var code = await RunTurnCoreAsync("", act, writeLine, cancellationToken,
                 conversationOnly: originatingTurn?.InstructionSnapshot?.ConversationOnly
                     ?? (!act && server.CurrentRunMode() == RunMode.Plan),
                 routingResume: new(session, run, null, next.ModelId, next.Route,
