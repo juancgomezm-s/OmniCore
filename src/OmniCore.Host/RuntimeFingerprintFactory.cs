@@ -28,11 +28,11 @@ internal static class RuntimeFingerprintFactory
     internal static PreparedRuntimeFingerprint PrepareTurnConfiguration(ExecutionFingerprint baseline,
         FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
         IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
-        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null)
+        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null, AgentProfile? resolvedAgentProfile = null)
     {
         var pending = new List<IPreparedArtifact>();
         var fingerprint = WithTurnConfiguration(baseline, catalog, visibleTools, systemPrompt, plan,
-            artifacts, agentProfile, activeSkills, pending);
+            artifacts, agentProfile, activeSkills, pending, resolvedAgentProfile);
         return new PreparedRuntimeFingerprint(fingerprint, pending.AsReadOnly());
     }
 
@@ -148,7 +148,7 @@ internal static class RuntimeFingerprintFactory
         FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
         IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
         IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null,
-        ICollection<IPreparedArtifact>? pending = null)
+        ICollection<IPreparedArtifact>? pending = null, AgentProfile? resolvedAgentProfile = null)
     {
         var tools = Component("tools.plan", writer =>
         {
@@ -194,9 +194,16 @@ internal static class RuntimeFingerprintFactory
         }, artifacts: artifacts, pending: pending);
         var profile = Component("agent.profile", writer =>
         {
+            if (resolvedAgentProfile is not null)
+            {
+                if (agentProfile is not null && agentProfile != resolvedAgentProfile.Id)
+                    throw new ArgumentException("Resolved agent profile does not match the Lane profile identity.", nameof(resolvedAgentProfile));
+                AgentProfileFingerprint.Write(writer, resolvedAgentProfile);
+                return;
+            }
             writer.WriteString("profileId", agentProfile?.ToString());
             writer.WriteString("source", agentProfile is null ? "unavailable" : "lane.created");
-        }, artifacts: artifacts, pending: pending);
+        }, version: resolvedAgentProfile is null ? "1" : "2", artifacts: artifacts, pending: pending);
         var skills = Component("skills.active", writer =>
         {
             writer.WriteString("source", activeSkills is null ? "unavailable" : "provided");
