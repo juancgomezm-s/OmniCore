@@ -1,5 +1,49 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Contenido visible durable — 2026-10-07 02:42 UTC
+
+Se corrigió la pérdida de razonamiento y texto intermedio al reabrir SQLite/CAS
+y reanudar el mismo Turn. `ModelStepCompleted.ResponseArtifact` conserva el
+envelope de consumo existente y añade opcionalmente `visibleContent`:
+`version: 1`, `routeIdentityHash` y `blocks` ordenados. Cada bloque contiene
+`kind: reasoning` con `text` nullable y `visibility`, `kind: text` con `text`,
+o `kind: tool-call` con `callId`. El último es sólo un marcador de orden:
+nombre y argumentos proceden exclusivamente del ToolCallRequested canónico
+del mismo paso, Run, Lane y Turn. No crea autorización ni llamadas nuevas.
+
+Texto y razonamiento visible se redactan antes de persistir. Esta proyección
+no contiene firmas, ProviderState ni OpaquePayload. El estado nativo firmado
+continúa por su checkpoint existente; su almacenamiento opaco general seguro
+sigue pendiente. La restauración exige mismo modelo, RouteId e identidad
+física; sólo incluye razonamiento del Turn que se reanuda, no del siguiente.
+Artefactos legacy sin proyección siguen siendo legibles. Proyecciones corruptas,
+marcadores duplicados o pertenecientes a otro paso fallan antes de invocar;
+marcadores sin llamada canónica ejecutada no fabrican herramientas.
+
+Evidencia offline: adapter Anthropic real con SSE inyectado, reapertura real
+SQLite/CAS y respuesta por OmniServer. Se verifican por separado firma nativa,
+razonamiento visible, orden Reasoning/Text/ToolCall y ausencia de duplicados.
+No acredita consultas autenticadas ni consumo real. RED reproducibles:
+`anthropic-visible-reopen-red.log` (1 FAIL), `visible-response-order-red.log`
+(1 FAIL), `visible-content-interleaved-red.log` (1 FAIL) y
+`visible-step-marker-red.log` (1 FAIL). Focal final:
+`visible-content-contract-final.log`, 79 PASS / 0 FAIL / 0 SKIP, 51.403s;
+build 0 warnings / 0 errores. Resultados anteriores solapados, no sumar.
+La suite completa anterior sobre 0fbb322 no incluye este bloque.
+
+Reproducción mínima desde la raíz del repositorio (fixtures identificados):
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*ExplorerTurnAnthropicContinuationTests' -class '*ReasoningReplayResumeTests' -class '*VisibleStepMarkerBoundaryTests'
+```
+
+El comando mínimo cubre la regresión, no reproduce por sí solo los 79 casos
+del barrido ampliado. Logs en `C:\Users\juanc\.codex\omni-m55-workers-20261006-2103`.
+Las notas siguientes de 02:22 y anteriores son históricas: la carencia de
+contenido visible que describen queda corregida por este bloque.
+
 ## Replay explícito None — 2026-10-07 02:13 UTC
 
 Actualización 02:22 UTC: full sobre0fbb322, 2458 casos / 2454 PASS / 0 FAIL /
