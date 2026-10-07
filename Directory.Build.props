@@ -18,6 +18,7 @@
   <PropertyGroup>
     <Authors>OmniData</Authors>
     <Product>OmniCore</Product>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <VersionPrefix>0.1.0</VersionPrefix>
   </PropertyGroup>
 

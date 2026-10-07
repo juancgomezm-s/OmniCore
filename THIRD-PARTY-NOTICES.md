@@ -1,5 +1,10 @@
 # Avisos de terceros
 
+La licencia principal de OmniCore es [MIT](LICENSE), con copyright de Juan Gómez.
+Esa elección no sustituye las licencias ni los avisos de los componentes de
+terceros. Los titulares indicados abajo corresponden a esos componentes,
+no a una atribución de coautoría del proyecto OmniCore.
+
 OmniCore porta a C# lógica de los siguientes proyectos, todos bajo licencia MIT. Cada archivo portado indica su origen en un comentario de cabecera.
 
 | Proyecto | Licencia | Titular | Fuente |

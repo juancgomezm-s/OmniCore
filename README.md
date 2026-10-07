@@ -219,3 +219,14 @@ Son reglas del producto, no una afirmación de aceptación total. Entre los dife
 - [Recuperación de los 42 archivos](docs/validation/recovered-worktrees-20261007.md).
 
 Las imágenes son ilustraciones editables, no capturas de validación. [Fuentes y regeneración](docs/images/README.md).
+
+## Licencia
+
+OmniCore se distribuye bajo la [licencia MIT](LICENSE).
+Copyright © 2026 Juan Gómez.
+
+Los componentes de terceros conservan sus licencias y avisos originales;
+consulta [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Su inventario y los
+textos upstream pendientes deben completarse antes de distribuir un paquete
+que los incluya. La licencia MIT de OmniCore no sustituye esos términos ni
+las condiciones de los proveedores o modelos conectados.
