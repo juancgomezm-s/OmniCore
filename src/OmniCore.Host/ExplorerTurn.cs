@@ -39,6 +39,7 @@ public sealed class ExplorerTurn
 
     private readonly bool _recordEffectiveFingerprint;
     private readonly IReadOnlyList<ActiveSkillFingerprint>? _activeSkills;
+    private readonly AgentProfile? _resolvedAgentProfile;
 
     private readonly ModelSelection _selection;
 
@@ -235,6 +236,7 @@ public sealed class ExplorerTurn
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
         _complete = complete;
         _tools = tools;
+        _resolvedAgentProfile = (tools as ScriptedToolExecutor)?.AgentProfile;
         _catalog = catalog;
         _materializer = materializer;
         _fingerprint = fingerprint;
@@ -393,10 +395,14 @@ public sealed class ExplorerTurn
         // Freeze the initial plan revision, not later mutations legitimately emitted by this Turn.
         var initialPlanEvents = OwnTail(stream, runId).Where(evt => originalStart is null
             || evt.Sequence <= originalStart.Sequence).ToArray();
+        var laneProfileId = FindAgentProfileForLane(stream.EventsSince(1), runId, laneId);
+        if (_resolvedAgentProfile is not null && laneProfileId != _resolvedAgentProfile.Id)
+            return new TurnResult("Cannot execute Turn: applied AgentProfile ceiling differs from the Lane configuration.",
+                StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var preparedTurnFingerprint = _recordEffectiveFingerprint
             ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
-                FindAgentProfileForLane(stream.EventsSince(1), runId, laneId), _activeSkills)
+                laneProfileId, _activeSkills, _resolvedAgentProfile)
             : null;
         var fingerprint = preparedTurnFingerprint?.Fingerprint ?? _fingerprint;
         if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
@@ -2540,7 +2546,14 @@ public sealed class ExplorerTurn
 
     private IReadOnlyList<ToolDefinition> VisibleTools()
     {
-        var all = _catalog.Definitions();
+        IEnumerable<ToolDefinition> all = _catalog.Definitions();
+        if (_resolvedAgentProfile is not null)
+        {
+            var ranks = _resolvedAgentProfile.PreferredTools.Select((tool, index) => (tool, index))
+                .ToDictionary(pair => pair.tool.ToString(), pair => pair.index, StringComparer.Ordinal);
+            // A preference changes disclosure order only. It never creates an allowlist or a grant.
+            all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
+        }
         var visible = new List<ToolDefinition>();
         foreach (var tool in all)
         {
