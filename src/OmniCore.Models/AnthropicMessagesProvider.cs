@@ -125,6 +125,13 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     internal static string BuildBody(ModelRequest request, AnthropicProviderOptions options)
     {
         var reasoning = request.Reasoning ?? request.Model.Reasoning;
+        request.Model.Route?.ReasoningCapability.ValidateRequest(reasoning);
+        // This adapter currently represents explicit manual budgets, not effort labels.
+        // Do not silently omit a request or infer an effort-to-budget conversion.
+        if (reasoning is not null && (reasoning.Kind != "budget" || reasoning.BudgetTokens is null))
+            throw new NotSupportedException("Selected reasoning has no representation in this adapter.");
+        if (reasoning?.BudgetTokens is <= 0)
+            throw new ArgumentOutOfRangeException(nameof(request), "Manual thinking budget must be at least 1024 tokens.");
         var budget = reasoning?.BudgetTokens is > 0 ? reasoning.BudgetTokens.Value : 0;
         if (budget is > 0 and < 1024)
             throw new ArgumentOutOfRangeException(nameof(request), "Manual thinking budget must be at least 1024 tokens.");

@@ -1,5 +1,16 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 03:34 UTC / 2026-10-06 21:34 local:
+FULL94484 TERMINALexit0 sobre0e83092:2545=2541PASS/0FAIL/4SKIPsymlink,
+268.165s, responses-reasoning-native-full.log. Freeze levantado tras terminal.
+Después se corrigió omisión de razonamiento explícito en Anthropic/ChatCompatible:
+RED7/4FAIL, final162PASS/0FAIL4.983s y arquitectura56PASS, build0/0.
+Detalles/contrato/reproducción en m55-provider-state-checkpoint.md.
+Fixtures offline no acreditan autenticación ni gasto. Full posterior pendiente.
+M55 sigue activo: auditoría integral de criterios, opaco seguro, contratos M6
+congelados y decisiones de replay no especificadas. Luna auditó, root implementó
+y reprodujo. No scheduler/joins ni cierre sin evidencia.
+
 Estado vigente 2026-10-07 03:26 UTC / 2026-10-06 21:26 local:
 FULL50020 TERMINALexit0 sobre2781b71:2513=2509PASS/0FAIL/4SKIPsymlink,
 265.703s, included-quota-receipt-full.log. Uso parcial IncludedQuota y lease GC
