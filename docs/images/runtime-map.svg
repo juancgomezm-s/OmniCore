@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="760" viewBox="0 0 1440 760" role="img" aria-labelledby="title desc">
+  <title id="title">Un núcleo compartido con autoridad explícita</title>
+  <desc id="desc">Los clientes envían commands y reciben eventos. El Host y Engine gobiernan contexto, permisos y gates; adapters conectan proveedores, tools ejecutan intents autorizados, journal y artifacts conservan estado. Telemetría separada del journal. Scheduling y transporte externo son etapas futuras.</desc>
+  <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0l8 4-8 4" fill="#67D4D0"/></marker><style>text{font-family:Segoe UI,Arial,sans-serif;fill:#F4F7FB}.muted{fill:#AABED0}.cyan{fill:#67D4D0}.head{font-size:23px;font-weight:600}.body{font-size:19px}.small{font-size:16px}.flow{fill:none;stroke:#67D4D0;stroke-width:2;marker-end:url(#arrow)}</style></defs>
+  <rect width="1440" height="760" rx="20" fill="#081C28"/>
+  <text x="48" y="50" class="small cyan">ARQUITECTURA / RESPONSABILIDADES</text>
+  <text x="48" y="97" font-size="34" font-weight="600">La interfaz muestra. El runtime gobierna.</text>
+  <rect x="48" y="143" width="310" height="218" rx="12" fill="#202C3B"/>
+  <text x="73" y="183" class="head">Clientes</text>
+  <text x="73" y="222" class="body">CLI · TUI · Plain · JSON</text>
+  <text x="73" y="258" class="body">OmniCoder / consumidor net8</text>
+  <text x="73" y="302" class="small muted">Proyecciones y presentación</text>
+  <text x="73" y="328" class="small muted">Sin credenciales en el renderer</text>
+  <path d="M358 236h105" class="flow"/><text x="373" y="216" class="small muted">commands</text>
+  <path d="M463 281H358" class="flow"/><text x="379" y="313" class="small muted">eventos</text>
+  <rect x="477" y="143" width="440" height="218" rx="12" fill="#142D3D"/>
+  <text x="505" y="183" class="head cyan">Host + Engine</text>
+  <text x="505" y="222" class="body">Session → Run → Turn → ModelStep</text>
+  <text x="505" y="258" class="body">Contexto · política · budgets · gates</text>
+  <text x="505" y="302" class="small muted">Commands tipados y outcomes explícitos</text>
+  <text x="505" y="328" class="small muted">El modelo no se concede autoridad</text>
+  <path d="M917 244h100" class="flow"/>
+  <rect x="1032" y="143" width="360" height="218" rx="12" fill="#202C3B"/>
+  <text x="1060" y="183" class="head">Model runtime</text>
+  <text x="1060" y="222" class="body">Adapters con semántica nativa</text>
+  <text x="1060" y="258" class="body">Local · Responses · Anthropic</text>
+  <text x="1060" y="302" class="small muted">Ruta y perfil efectivo por capacidades</text>
+  <text x="1060" y="328" class="small muted">Credencial ≠ permiso para gastar</text>
+  <path d="M564 361v55H203v35" class="flow"/>
+  <path d="M697 361v90" class="flow"/>
+  <path d="M830 361v55h382v35" class="flow"/>
+  <rect x="48" y="466" width="310" height="198" rx="12" fill="#202C3B"/>
+  <text x="73" y="507" class="head">Tools + Security</text>
+  <text x="73" y="544" class="body">Schema → Prepare → Permiso</text>
+  <text x="73" y="579" class="body">Intent autorizado → Efecto</text>
+  <text x="73" y="627" class="small muted">Frontera del workspace y sandbox</text>
+  <rect x="477" y="466" width="440" height="198" rx="12" fill="#142D3D"/>
+  <text x="505" y="507" class="head cyan">Estado durable</text>
+  <text x="505" y="544" class="body">Canonical Journal · SQLite</text>
+  <text x="505" y="579" class="body">Artifacts inmutables · hash · procedencia</text>
+  <text x="505" y="627" class="small muted">Replay, recuperación y reconciliación</text>
+  <rect x="1032" y="466" width="360" height="198" rx="12" fill="#262A40"/>
+  <text x="1060" y="507" class="head">Actividad y telemetría</text>
+  <text x="1060" y="544" class="body">Deltas e indicadores del chat</text>
+  <text x="1060" y="579" class="body">Métricas con fuente y fecha</text>
+  <text x="1060" y="627" class="small muted">Separados del estado canónico</text>
+  <text x="48" y="714" class="small muted">Límites: contratos pre-M6 ≠ scheduler terminado · Host externo y lease entre procesos: M9</text>
+</svg>
