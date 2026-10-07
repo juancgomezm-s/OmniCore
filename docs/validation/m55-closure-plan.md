@@ -7,6 +7,24 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 01:56 UTC: corregida atribución de gates process.exec.
+CheckRunCompletionAndGate selecciona el último Turn persistido de la Lane raíz
+única, exige que esté completado y conserva ExecutionId de origen. No crea un
+Turn ni hereda scope ambiental/otra Lane; último Turn abierto no toma uno viejo.
+ConfiguredCompletionGates no ejecuta procesos sin Run/Task/Lane/Turn compatibles.
+Fixture M3 ahora entra por el command autoritativo del servidor, no directamente
+por RunCoupon, y exige Task/Lane/Turn para todos los envelopes de la ToolCall.
+RED autoritativo: 1 FAIL, 1.846s (`completion-gate-turn-scope-authoritative-red.log`)
+con TurnId null. Final ampliado: 74 PASS / 0 FAIL / 0 SKIP, 8.136s
+(`completion-gate-turn-scope-expanded.log`), build 0/0; incluye ambient ajeno,
+Turn posterior de otra Lane y rechazo sin Turn/latest root abierto. Barrido35
+anterior con fixture directo dio2FAIL; se corrigió el harness para entrar por
+servidor, no se debilitaron assertions. Luna halló el defecto por auditoría;
+root reprodujo/implementó/verificó. Procesos dotnet --version/git y SQLite/CAS
+privados reales, modelos fixtures sin autenticación ni consumo proveedor.
+TargetRef de process cwd absoluto frente a documentación relativa aún requiere
+corrección/auditoría; no se declara cerrado todo ToolCall v3 o M5.5.
+
 Actualización 01:51 UTC: `models.yaml` acepta una declaración `reasoning`
 con `supported` boolean opcional, `effortLevels` lista opcional y `replayPolicy`
 enum exacto opcional. DTO/cargador generado AOT y schema embebido conectados.

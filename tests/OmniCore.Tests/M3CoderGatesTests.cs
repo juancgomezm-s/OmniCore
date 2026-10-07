@@ -132,13 +132,9 @@ public sealed class M3CoderGatesTests
         Func<EventStream, IReadOnlyList<ExternalCompletionGateResult>>? external = null,
         MutationLedger? mutationLedger = null)
     {
-        var events = context.Store.ReadFrom(context.Session, 1);
-        var codecs = context.Server.AcquireCodecs();
-        var run = RunProjection.Replay(context.Session, context.Run, codecs, events);
-        var stream = new EventStream(context.Store, codecs, context.Session);
-        return new RunCoupon(run, TaskGraphProjection.Replay(codecs, events), PlanProjection.Replay(codecs, events))
-            .CheckCompletionAndGate(new PlanService(), new ProgressReconciler(), context.Store, codecs,
-                context.Session, stream, external is null ? null : () => external(stream), mutationLedger);
+        var result = context.Server.CheckRunCompletionAndGate(context.Session, context.Run, external, mutationLedger);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, result.Ack.Outcome!.Kind);
+        return Assert.IsType<bool>(result.Completed);
     }
 
     private ConfiguredCompletionGates GateRunner(RunContext context, WorkspaceGatesYaml gates,
@@ -192,8 +188,21 @@ public sealed class M3CoderGatesTests
 
             var gates = new WorkspaceGatesYaml { Build = ["dotnet", "--version"] };
             var runner = GateRunner(context, gates);
-            var completed = Complete(context, stream => runner.Run(stream, CancellationToken.None),
-                boundary.ReadRegistry().Ledger);
+            var sourceTurn = Assert.Single(context.Store.ReadFrom(context.Session, 1)
+                .Select(context.Server.AcquireCodecs().Decode).OfType<TurnStarted>()).TurnId;
+            var sibling = LaneId.New();
+            var siblingTurn = TurnId.New();
+            var profile = Assert.Single(context.Store.ReadFrom(context.Session, 1)
+                .Select(context.Server.AcquireCodecs().Decode).OfType<LaneCreated>()).AgentProfile;
+            using (ExecutionScope.Begin(new ExecutionScopeState(context.Run, context.Task, sibling)))
+                new EventStream(context.Store, context.Server.AcquireCodecs(), context.Session).AppendBatch(
+                    [new LaneCreated(sibling, context.Task, profile), new LaneStarted(sibling),
+                        new TurnStarted(siblingTurn, sibling), new TurnCompleted(siblingTurn), new LaneCompleted(sibling, null)],
+                    DurabilityClass.Standard);
+            bool completed;
+            using (ExecutionScope.Begin(new ExecutionScopeState(RunId.New(), TaskId.New(), LaneId.New(), TurnId.New())))
+                completed = Complete(context, stream => runner.Run(stream, CancellationToken.None),
+                    boundary.ReadRegistry().Ledger);
             Assert.True(completed, string.Join("; ", context.Store.ReadFrom(context.Session, 1)
                 .Select(context.Server.AcquireCodecs().Decode).OfType<RunValidationRejected>()
                 .SelectMany(rejection => rejection.Missing)));
@@ -204,6 +213,57 @@ public sealed class M3CoderGatesTests
             Assert.Contains(decoded.OfType<PermissionEvaluated>(), permission => permission.Decision == PermissionDecision.Allow);
             Assert.Contains(decoded.OfType<RunCompleted>(), completed => completed.RunId.Equals(context.Run));
             Assert.DoesNotContain(decoded.OfType<ToolCallRequested>(), call => call.ToolName == "shell.exec");
+            var gateCall = Assert.Single(decoded.OfType<ToolCallRequested>(), call => call.ToolName == "process.exec");
+            var gateEvents = context.Store.ReadFrom(context.Session, 1)
+                .Where(evt => evt.ToolCallId == gateCall.ToolCallId).ToArray();
+            Assert.NotEmpty(gateEvents);
+            Assert.All(gateEvents, evt =>
+            {
+                Assert.Equal(context.Run, evt.RunId);
+                Assert.Equal(context.Task, evt.TaskId);
+                Assert.Equal(context.Lane, evt.LaneId);
+                Assert.Equal(sourceTurn, evt.TurnId);
+            });
+        }
+        finally { context.Store.Close(); Remove(root); }
+    }
+
+    [Fact]
+    public void Latest_open_root_turn_cannot_borrow_a_previous_turn_for_process_gates()
+    {
+        var root = TempDir();
+        var context = StartRun(root);
+        try
+        {
+            var turn = CreateTurn(context, (_, _) => End(), out var boundary, requirePostEditValidation: false);
+            Assert.Equal(StopReason.EndTurn, turn.Ask("explica", "instructions", context.Session, context.Run,
+                context.Lane, "", CancellationToken.None).StopReason);
+            using (ExecutionScope.Begin(new ExecutionScopeState(context.Run, context.Task, context.Lane)))
+                new EventStream(context.Store, context.Server.AcquireCodecs(), context.Session)
+                    .Append(new TurnStarted(TurnId.New(), context.Lane));
+            var runner = GateRunner(context, new WorkspaceGatesYaml { Build = ["dotnet", "--version"] });
+            Assert.False(Complete(context, stream => runner.Run(stream, CancellationToken.None),
+                boundary.ReadRegistry().Ledger));
+            Assert.DoesNotContain(context.Store.ReadFrom(context.Session, 1)
+                .Select(context.Server.AcquireCodecs().Decode).OfType<ToolCallRequested>(), call => call.ToolName == "process.exec");
+        }
+        finally { context.Store.Close(); Remove(root); }
+    }
+
+    [Fact]
+    public void Configured_process_gate_without_a_durable_turn_does_not_execute_or_invent_one()
+    {
+        var root = TempDir();
+        var context = StartRun(root);
+        try
+        {
+            var runner = GateRunner(context, new WorkspaceGatesYaml { Build = ["dotnet", "--version"] });
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(context.Run, context.Task, context.Lane));
+            var result = Assert.Single(runner.Run(new EventStream(context.Store,
+                context.Server.AcquireCodecs(), context.Session), CancellationToken.None));
+            Assert.False(result.Passed);
+            var payloads = context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode).ToArray();
+            Assert.DoesNotContain(payloads, payload => payload is ToolCallRequested or ToolCallStarted or TurnStarted);
         }
         finally { context.Store.Close(); Remove(root); }
     }
