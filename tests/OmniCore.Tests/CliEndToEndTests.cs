@@ -73,9 +73,10 @@ public sealed class CliEndToEndTests
             }
             Assert.Equal(ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(
                 adapterMetadata.ToArray()))), adapter.Hash);
-            Assert.Null(adapter.Content); // The private physical route remains digest-only.
+            Assert.NotNull(adapter.Content); // Exact sensitive fixture content, subject to store redaction.
             var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(
                 OmniHost.CreatePlatformPaths(), workspace));
+            Assert.Equal(Encoding.UTF8.GetString(adapterMetadata.ToArray()), artifacts.GetText(adapter.Hash));
             var lane = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<LaneCreated>(),
                 created => created.LaneId == turn.LaneId);
             var agent = Assert.Single(turn.Fingerprint.Components, component => component.Name == "agent.profile");
@@ -86,7 +87,7 @@ public sealed class CliEndToEndTests
             using var skillMetadata = JsonDocument.Parse(artifacts.GetText(skills.Hash)!);
             Assert.Equal("provided", skillMetadata.RootElement.GetProperty("source").GetString());
             Assert.Empty(skillMetadata.RootElement.GetProperty("skills").EnumerateArray());
-            Assert.All(turn.Fingerprint.Components.Where(component => component.Name != "provider.adapter"), component =>
+            Assert.All(turn.Fingerprint.Components, component =>
             {
                 Assert.NotNull(component.Content);
                 Assert.Equal(component.Hash, component.Content.Hash);
@@ -94,7 +95,9 @@ public sealed class CliEndToEndTests
                 Assert.True(artifacts.Verify(component.Hash, component.Content.Size));
                 using var content = JsonDocument.Parse(artifacts.GetText(component.Hash)!);
                 Assert.Equal(JsonValueKind.Object, content.RootElement.ValueKind);
-                Assert.DoesNotContain(provider.BaseUrl, content.RootElement.GetRawText());
+                if (component.Name == "provider.adapter")
+                    Assert.Equal(provider.BaseUrl, content.RootElement.GetProperty("route").GetProperty("endpoint").GetString());
+                else Assert.DoesNotContain(provider.BaseUrl, content.RootElement.GetRawText());
             });
         });
     }

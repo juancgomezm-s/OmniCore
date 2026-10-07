@@ -2,6 +2,11 @@
 
 ## Routing y denegaciones: frontera excepcional — 2026-10-07 05:29 UTC
 
+Full posterior sobre af1918a terminal exit0: 2620 casos/2616 PASS/0 FAIL/4 SKIP
+symlink en 231.835s; routing-command-failure-full.log. El pending de abajo es
+histórico. Auditoría adicional: ExecuteExplorerTurn conserva fallos del callback,
+pero admisión/checkpoint previos siguen fuera de esa frontera excepcional.
+
 AuthorizeModelRoute devuelve Ack + Failure original y sólo autoriza cuando el
 NoOp permitido puede confirmarse. Un fallo de lectura de outcome devuelve
 Deferred/JournalOutcomeUnavailable, Authorized=false y ninguna ID no confirmada.

@@ -1,5 +1,14 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 05:37 UTC: provider.adapter contiene JSON v2 exacto/redactado sólo
+cuando el store lo permite; Prepare no publica temprano, misma versión/hash,
+resume conserva null histórico y rechaza endpoint distinto antes del proveedor.
+RED fortalecido3/3; final94PASS/0FAIL7.551s/arch56PASS .545s, fixtures offline con
+SQLite/CAS/CLI loopback reales. Full nueva pendiente; anterior af1918a terminó
+2620=2616PASS/0FAIL/4SKIP231.835s. Pendientes AgentProfile reusable/efectivo,
+contratos M6 congelados aceptados y commands Ensurepolicy/followup/escalación
+(incluida admisión excepcional Explorer). No scheduler/joins ni cierre M5.5.
+
 2026-10-07 05:29 UTC: routing y denegaciones conservan Ack/Failure; autorización
 no confirmada bloquea el gate CLI. RED7/7; final52PASS/0FAIL5.588s y arquitectura
 56PASS .599s. SQLite privado real; fallos/proveedores fixtures, sin consumo real.
