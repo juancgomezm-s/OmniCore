@@ -1,5 +1,12 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 04:56 UTC: ExecuteExplorerTurn conserva Failure original + ACK
+correlacionable ante callback fallido/cancelado; CLI mantiene propagación sin
+confundir Accepted parcial con éxito. RED3/7; final59PASS + arquitectura56PASS.
+SQLite real/reopen, fallos de lectura fixtures identificados. Full pendiente.
+Auditoría Luna leída: completion/gates y plan approval aún pierden outcomes
+en errores; este avance no cierra todo §5. AgentProfile/payloadsM6 siguen pendientes.
+
 2026-10-07 04:52 UTC: FULL95618 sobre185228d terminal exit0 verificada;
 2584=2580PASS/0FAIL/4SKIP symlink, 263.263s. Freeze levantado tras terminal.
 Contador llama.cpp y publicación cubiertos; restantes de M5.5 siguen abiertos.

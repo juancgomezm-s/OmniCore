@@ -228,16 +228,22 @@ public sealed class InternalExplorerAskCommandTests
         var parentCause = new CommandCausation(new CommandId(Guid.NewGuid()));
         using (CausationScope.Begin(parentCause))
         {
-            var exception = Assert.Throws<OperationCanceledException>(() =>
-                fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, token =>
+            var execution = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, token =>
             {
                 Assert.Equal(cancellation.Token, token);
                 new EventStream(fx.Store, fx.Codecs, fx.Session).Append(
                     new UserInputReceived(fx.Run, "[\"before failure\"]", null));
                 throw new OperationCanceledException(token);
-                }, cancellation.Token));
+                }, cancellation.Token);
 
+            var exception = Assert.IsType<OperationCanceledException>(execution.Failure);
             Assert.Equal(cancellation.Token, exception.CancellationToken);
+            Assert.Null(execution.Result);
+            Assert.Equal("error", execution.Ack.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, execution.Ack.Outcome?.Kind);
+            Assert.Equal(parentCause.CommandId.Value.ToString(), execution.Ack.CommandId);
+            Assert.Equal(before + 1, execution.Ack.FirstSeq);
+            Assert.Equal(before + 1, execution.Ack.LastSeq);
             Assert.Equal(before + 1, fx.Store.CurrentSequence(fx.Session));
             var appended = Assert.Single(fx.Store.ReadFrom(fx.Session, before + 1));
             Assert.Equal(parentCause, appended.Causation);
@@ -255,19 +261,46 @@ public sealed class InternalExplorerAskCommandTests
         var parent = new EventCausation(new EventId(Guid.NewGuid()));
         using (CausationScope.Begin(parent))
         {
-            Assert.Throws<InvalidOperationException>(() => fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, _ =>
+            var execution = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, _ =>
             {
                 new EventStream(fx.Store, fx.Codecs, fx.Session).Append(
                     new UserInputReceived(fx.Run, "[\"before throw\"]", null));
                 throw new InvalidOperationException("scripted failure");
-            }, TestContext.Current.CancellationToken));
+            }, TestContext.Current.CancellationToken);
 
             var appended = Assert.Single(fx.Store.ReadFrom(fx.Session, before + 1));
             var generatedCause = Assert.IsType<CommandCausation>(appended.Causation);
+            Assert.Equal("scripted failure", Assert.IsType<InvalidOperationException>(execution.Failure).Message);
+            Assert.Null(execution.Result);
+            Assert.Equal("error", execution.Ack.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, execution.Ack.Outcome?.Kind);
+            Assert.Equal(generatedCause.CommandId.Value.ToString(), execution.Ack.CommandId);
+            Assert.Equal(appended.Sequence, execution.Ack.FirstSeq);
+            Assert.Equal(appended.Sequence, execution.Ack.LastSeq);
             Assert.False(parent.Equals(generatedCause));
             Assert.Equal(parent, CausationScope.Current);
         }
 
+        Assert.Null(CausationScope.Current);
+    }
+
+    [Fact]
+    public void Callback_failure_before_writing_returns_rejected_correlatable_outcome()
+    {
+        using var fx = new Fixture();
+        var before = fx.Store.CurrentSequence(fx.Session);
+        var failure = new InvalidOperationException("no effects");
+        var execution = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, _ => throw failure,
+            TestContext.Current.CancellationToken);
+        Assert.Same(failure, execution.Failure);
+        Assert.Null(execution.Result);
+        Assert.Equal("error", execution.Ack.Status);
+        Assert.Equal("no effects", execution.Ack.Error);
+        Assert.True(Guid.TryParse(execution.Ack.CommandId, out _));
+        Assert.Equal(RuntimeCommandOutcomeKind.Rejected, execution.Ack.Outcome?.Kind);
+        Assert.Null(execution.Ack.FirstSeq);
+        Assert.Null(execution.Ack.LastSeq);
+        Assert.Equal(before, fx.Store.CurrentSequence(fx.Session));
         Assert.Null(CausationScope.Current);
     }
 
