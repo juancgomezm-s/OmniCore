@@ -22,16 +22,18 @@ public sealed class BudgetContinuationTests
         var session = SessionId.New();
         var run = TestRun.OpenRun(store, session);
         var stream = new EventStream(store, codecs, session);
+        var controls = new RunControlService(store, codecs,
+            utcNow: () => new DateTimeOffset(2026, 10, 6, 12, 0, 0, TimeSpan.Zero));
         var request = Request(new(scope, 5m, 5m, scope == "run" ? run.ToString() : null,
             scope == "daily" ? "2026-10-06" : null));
         stream.Append(request);
         decimal Limit() => BudgetContinuation.Limit(store.ReadFrom(session, 1), codecs, session, run,
             "2026-10-06", scope, 5m);
         Assert.Equal(5m, Limit());
-        new RunControlService(store, codecs).Respond(session, request.InteractionId, "allow_plus");
+        controls.Respond(session, request.InteractionId, "allow_plus");
         Assert.Equal(15m, Limit());
         Assert.Equal(15m, Limit());
-        Assert.Throws<InteractionNotPendingException>(() => new RunControlService(store, codecs)
+        Assert.Throws<InteractionNotPendingException>(() => controls
             .Respond(session, request.InteractionId, "allow_plus"));
         Assert.Equal(2m, BudgetContinuation.Limit(store.ReadFrom(session, 1), codecs, session, run,
             "2026-10-06", scope, 2m)); // A changed restrictive config invalidates the old grant.
@@ -39,6 +41,32 @@ public sealed class BudgetContinuationTests
             session, RunId.New(), "2026-10-06", scope, 5m));
         if (scope == "daily") Assert.Equal(5m, BudgetContinuation.Limit(store.ReadFrom(session, 1), codecs,
             session, run, "2026-10-07", scope, 5m));
+    }
+
+    [Fact]
+    public void Daily_consent_expires_at_utc_midnight_even_when_local_day_has_not_changed()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = TestRun.OpenRun(store, session);
+        var now = new DateTimeOffset(2026, 10, 6, 17, 59, 59, TimeSpan.FromHours(-6));
+        var controls = new RunControlService(store, codecs, utcNow: () => now);
+        var stream = new EventStream(store, codecs, session);
+        var first = Request(new("daily", 5m, 5m, null, "2026-10-06"));
+        stream.Append(first);
+        controls.Respond(session, first.InteractionId, "allow_plus");
+        Assert.Equal(15m, BudgetContinuation.Limit(store.ReadFrom(session, 1), codecs, session, run,
+            "2026-10-06", "daily", 5m));
+        var expired = Request(new("daily", 5m, 15m, null, "2026-10-06"));
+        stream.Append(expired);
+        var sequence = store.CurrentSequence(session);
+        now = now.AddSeconds(1);
+        Assert.Equal(6, now.Day); // Still Oct 6 locally, but Oct 7 UTC.
+        Assert.Throws<InvalidInteractionOptionException>(() => controls.Respond(session, expired.InteractionId, "allow_plus"));
+        Assert.Equal(sequence, store.CurrentSequence(session));
+        Assert.Equal(5m, BudgetContinuation.Limit(store.ReadFrom(session, 1), codecs, session, run,
+            "2026-10-07", "daily", 5m));
     }
 
     [Theory]

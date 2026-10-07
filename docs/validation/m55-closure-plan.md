@@ -7,6 +7,20 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 00:44 UTC: commit `0ec4955` guardado. Full sobre ese commit terminó:
+2336 casos = 2331 PASS / 1 FAIL / 4 SKIP (symlink), 375.762s,
+`spend-reservation-wired-full.log`. El único fallo fue la fecha fija Oct6 en
+BudgetContinuationTests frente al día actual Oct7 UTC. Clock inyectable conservando
+default UTC y prueba de rollover UTC con offset local -6: 14 PASS / 1.515s,
+`budget-continuation-utc-final.log`, build 0 warnings/errores. No nueva full verde.
+
+La propuesta offline de Luna para cualificación fue leída íntegra, integrada y
+compilada por root. RED reproducible: 2 casos / 1 PASS / 1 FAIL, 0.734s,
+`qualification-daily-red.log`: diario .05 USD completamente reservado, pero hubo
+1 StreamAsync en vez de 0. El control disponible crea un perfil parcial válido,
+1 probe/.000066 USD sintéticos y evidencia CAS verificada. No autenticación/red
+ni cargos reales. El test RED permanece pendiente de corrección y sin commit.
+
 Cableado de reserva conservadora a Explorer/compactación, CLI ASK/ACT y escalación
 que regresa al mismo runtime implementado. Lectura fresca atómica, recibos Barrier,
 retry parcial conserva uncertain; cancelpre-send tiene eventos canónicos v1 sin
@@ -15,7 +29,7 @@ ante cap .50 (no éxito vacío bloqueando ambas). Focal67PASS y crossworkspace10
 cifras solapadas. [Contratos y reproducción](m55-spend-reservation-foundation-20261007.md).
 La focal ampliada dio inicialmente124=123PASS/1FAIL por descriptor desconocido de
 un fixture meta de ayer; límites explícitos añadidos sin debilitar assertions.
-Nueva ejecución terminal: 116 PASS / 0 FAIL / 0 SKIP, 26.869s,
+Focal previa a la full: 116 PASS / 0 FAIL / 0 SKIP, 26.869s,
 spend-reservation-wired-final2.log, build 0 warnings/errores. Incluye codec,
 ledger/migración, intents de retry, meta/CAS diario, reopen, suspensión y guard
 de escritores. Excluye los ocho ContextManagementTests ya pasados en la ejecución
