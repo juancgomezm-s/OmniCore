@@ -68,6 +68,7 @@ public sealed class EventStream
         _tracker.Clone().Apply(payload);
         var pendingRunId = _runId;
         var envelope = BuildEnvelope(payload, ref pendingRunId, null, CausationScope.Current);
+        ValidatePreM6Records(new[] { envelope }, new[] { payload });
         _store.Append(_sessionId, envelope, durability, CancellationToken.None);
         _runId = pendingRunId;
         _tracker.Apply(payload);
@@ -132,6 +133,7 @@ public sealed class EventStream
         }
 
         ValidateUltraCodePolicyEnvelopes(payloads, envelopes);
+        ValidatePreM6Records(envelopes, payloads);
 
         _store.AppendBatch(_sessionId, envelopes, durability, CancellationToken.None);
         _runId = pendingRunId;
@@ -141,6 +143,14 @@ public sealed class EventStream
             _appliedLocally.Add(envelopes[i].EventId);
             _written.Add(payloads[i]);
         }
+    }
+
+    private void ValidatePreM6Records(IReadOnlyList<DomainEvent> envelopes, IReadOnlyList<DomainEventPayload> payloads)
+    {
+        if (!payloads.Any(payload => payload is IPreM6ContractEvent or AgentExecutionStarted)) return;
+        // Validate the candidate batch before persisting. No mutable projection survives a failed write.
+        PreM6RecordProjection.Replay(_sessionId, _codecs, _store.ReadFrom(_sessionId, 1).Concat(envelopes),
+            session => _store.ReadFrom(session, 1));
     }
 
     private void ValidateModeAuthorityBatch(IReadOnlyList<DomainEventPayload> payloads,

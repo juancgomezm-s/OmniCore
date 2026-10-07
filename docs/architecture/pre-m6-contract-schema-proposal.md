@@ -1,6 +1,27 @@
-# Esquemas pre-M6 pendientes: propuesta conjunta
+# Contratos agrupados pre-M6: implementación y validación
 
-Estado: **propuesta para revisión, no contrato aceptado ni congelado**.
+Estado: **implementado en WIP, validación integral pendiente; no cierre de M5.5**.
+El [contrato efectivo](pre-m6-record-contracts.md) describe los campos y garantías
+implementados; la propuesta inferior se conserva sólo como antecedente y no es
+el schema vigente. En particular, el receipt real es ToolCallSucceeded, no el
+ToolCallCompleted mencionado en la propuesta original.
+Nota de implementación 2026-10-07 13:19 UTC: ADR0046 §8.4 ya autoriza concretar
+las representaciones técnicas compatibles; no requiere otra aprobación por campo.
+Root está implementando el conjunto en PreM6Contracts/Events.PreM6/PreM6Ids y
+EventCodecs. Aún es WIP, no cierre verificado. La tabla inferior conserva la propuesta
+original para trazabilidad: el código reemplaza SourceEventId por EvidenceEventRef
+(SessionId + EventId), ScopeRef por ValidationScope tipado y añade ResultSchemaId.
+Se documentará el schema final y sus pruebas antes de llamarlo congelado.
+Actualización 13:38 UTC: codecs y proyección factual pasan 11 controles focales,
+incluyendo SQLite reopen, las 23 familias, aislamiento de envelope, referencias,
+idempotencia y rechazo atómico. La primera ejecución detectó 1 fallo real en
+la comparación por referencia de EventType; se corrigió sin cambiar assertions.
+La suite completa terminó: 2882 casos, 2878 PASS, 0 FAIL y 4 SKIP por permisos
+de symlink; arquitectura 56 PASS tras build actualizado sin advertencias ni errores.
+Estos controles usan fixtures, no ejecución de
+workers ni consultas autenticadas. La proyección no verifica bytes CAS por sí
+misma: comprueba forma de ArtifactRef y referencias a receipts canónicos; el
+fixture SQLite/CAS verifica por separado integridad y contenido de los blobs.
 Fecha: 2026-10-07. Fuente normativa: ADR0046 §2/§8, ADR0047 y arquitectura §24.
 No modifica esos ADR ni autoriza lógica de scheduler, joins o delegación M6.
 
@@ -26,7 +47,9 @@ Las identidades nuevas se proponen como wrappers UUIDv7, igual que ExecutionId.
 SessionId/RunId siguen en el envelope; las referencias a otra sesión deben
 llevar SessionId explícito. Ninguna identidad de destino se toma de la selección UI.
 `PacketRef` y `ResultRef` son ArtifactRef existentes, no transcripts embebidos.
-Las siguientes shapes **requieren aceptación antes de registrarse como schema**.
+Las siguientes shapes son propuestas de representación: se contrastan con los ADR
+y se verifican antes de declararlas schemas congelados. No requieren un nuevo
+approval gate para campos técnicos que no cambian semántica ni política aceptada.
 
 | Registro | Campos propuestos | Eventos propuestos |
 |---|---|---|
@@ -87,7 +110,7 @@ No sustituye `PostEditValidationPending/Consumed`, ya existentes para otro nivel
 - Arrays y colecciones son copias inmutables; rechazar IDs vacíos, duplicados,
   valores de enum desconocidos y referencias con scope incompatible.
 
-## Pruebas requeridas tras aceptar el diseño
+## Pruebas requeridas para congelar el contrato
 
 Un mismo bloque deberá cubrir codecs de cada evento, igualdad semántica tras
 JSON y SQLite reopen, ArtifactRefs/transitividad CAS, payload/envelope scope,
@@ -108,6 +131,7 @@ principio de conflicto explícito, no su orquestador como scheduler adicional.
 Su EvidenceRef local `(Id, Kind, Source)` es asesoría; no acredita por sí sola
 la evidencia tool-backed canónica solicitada por ADR0046.
 
-Decisión pendiente: aceptar o corregir este conjunto de shapes/estados, o aportar
-el anexo original con los campos normativos. Hasta entonces no se declara cumplido
+Pendiente: completar implementación, documentación del schema efectivo y pruebas
+de serialización/replay/enlaces del conjunto. Las decisiones de política/ejecución
+no definidas siguen fuera del bloque. Hasta verificarlo no se declara cumplido
 el criterio de eventos pre-M6 congelados.

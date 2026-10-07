@@ -1,5 +1,29 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Registros pre-M6 implementados y probados — 2026-10-07 13:45 UTC
+
+Root implementó los tipos/23 eventos schema1, codecs, extracción ArtifactRefs y
+proyección factual con guard single/batch; Luna HIGH entregó cobertura SQLite/CAS
+y auditó el conjunto. [Contrato efectivo y reproducción](../architecture/pre-m6-record-contracts.md).
+No se implementó scheduler, ejecución de joins/wake/mailbox ni aceptación automática.
+Los receipts respaldan procedencia, no demuestran por sí mismos checks/wiring.
+
+Se reprodujeron fallos sin debilitar assertions: idempotencia por EventType y,
+tras auditoría Luna, rebinding ExecutionId más cuatro hashes inválidos (5 FAIL).
+Build final 0 errores/advertencias; focal 16 PASS. FULL final terminal exit0:
+2887 casos, 2883 PASS/0 FAIL/4 SKIP por permisos symlink, 126.976 s.
+Arquitectura tras build actualizado: 56 PASS. Conteos solapados. Fixtures no
+acreditan workers reales, consultas autenticadas ni consumo real.
+
+Esto no cierra íntegramente M5/M5.5: cualificación Quick real y cableado de
+política UltraCode siguen pendientes; la auditoría final debe cubrir todos los
+criterios, no sólo estos registros. Se retiró el gate artificial de aprobación
+por campo técnico; las políticas nuevas no definidas siguen fuera de alcance.
+La segunda revisión de Luna señaló enlaces de AgentExecutionStarted aún sin
+validar (padre, envelope) y la necesidad de validar el journal externo de un
+receipt cross-session. Son pendientes comprobables, no cubiertos por la FULL
+actual; no se declara completo el freeze hasta reproducirlos y resolverlos.
+
 ## Cuota de suscripción en status line — 2026-10-07 13:07 UTC
 
 Root conectó UsageSnapshot.AccountQuota, caché por sesión/proveedor y
