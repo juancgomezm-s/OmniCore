@@ -32,6 +32,67 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
     private static WireEnvelope Command(string payload) => WireEnvelope.Command(Ids.NewV7(), payload);
 
     [Fact]
+    public void Open_turn_resume_uses_payload_lane_and_turn_ids_with_legacy_null_envelope_fields()
+    {
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var otherRun = RunId.New();
+        var lane = LaneId.New();
+        var otherLane = LaneId.New();
+        var turn = TurnId.New();
+        var otherTurn = TurnId.New();
+        var events = new[]
+        {
+            Event(new TurnStarted(turn, lane), session, run, lane: null, turn: null, codecs: codecs),
+            Event(new TurnStarted(TurnId.New(), lane), session, otherRun, lane: null, turn: null, codecs: codecs),
+            Event(new TurnStarted(TurnId.New(), otherLane), session, run, lane: null, turn: null, codecs: codecs),
+            Event(new TurnStarted(TurnId.New(), lane), session, null, lane: null, turn: null, codecs: codecs),
+            Event(new TurnCompleted(otherTurn), session, run, lane: otherLane, turn: null, codecs: codecs)
+        };
+
+        var open = OmniCliRuntime.FindOpenTurnStart(events, codecs, run, lane);
+        Assert.Equal(turn, Assert.IsType<TurnStarted>(open).TurnId);
+
+        var closedByForeignRun = events.Append(
+            Event(new TurnCompleted(turn), session, otherRun, lane: null, turn: null, codecs: codecs));
+        Assert.Equal(turn, Assert.IsType<TurnStarted>(
+            OmniCliRuntime.FindOpenTurnStart(closedByForeignRun, codecs, run, lane)).TurnId);
+
+        var closedInOwningRun = closedByForeignRun.Append(
+            Event(new TurnInterrupted(turn), session, run, lane: null, turn: null, codecs: codecs));
+        Assert.Null(OmniCliRuntime.FindOpenTurnStart(closedInOwningRun, codecs, run, lane));
+    }
+
+    [Fact]
+    public void Legacy_reasoning_resume_matches_payload_turn_within_run_not_envelope_turn_or_foreign_run()
+    {
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var otherRun = RunId.New();
+        var turn = TurnId.New();
+        var otherTurn = TurnId.New();
+        var events = new[]
+        {
+            Event(new ModelStepStarted(turn, 0, ModelId, 4096, "Direct", "low", null, null),
+                session, run, lane: null, turn: null, codecs: codecs),
+            Event(new ModelStepStarted(turn, 1, ModelId, 4096, "Direct", "high", null, null),
+                session, otherRun, lane: null, turn: null, codecs: codecs),
+            Event(new ModelStepStarted(otherTurn, 0, ModelId, 4096, "Direct", "medium", null, null),
+                session, run, lane: null, turn: turn, codecs: codecs),
+            Event(new ModelStepStarted(turn, 2, ModelId, 4096, "Direct", "high", null, null),
+                session, run, lane: null, turn: otherTurn, codecs: codecs)
+        };
+
+        var step = OmniCliRuntime.FindLastModelStepForTurn(events, codecs, run, turn);
+        Assert.Equal(2, Assert.IsType<ModelStepStarted>(step).StepIndex);
+        Assert.Equal(new ReasoningRequest("high", null),
+            OmniCliRuntime.LegacyReasoningForTurn(events, codecs, run, turn));
+        Assert.Null(OmniCliRuntime.FindLastModelStepForTurn(events, codecs, otherRun, otherTurn));
+    }
+
+    [Fact]
     public void User_revocation_survives_questionnaire_suspend_reopen_and_same_turn_resume()
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-mode-authority-suspension-" + Guid.NewGuid().ToString("N"));
@@ -303,6 +364,16 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                 new[] { new QuestionAnswer("approach", new[] { "safe" }, null, null) }, false).Status);
 
             var reopenedTui = new TuiTurnHost(reopenedRuntime);
+            WriteConfiguration(data, endpoint.BaseUrl, maxOutput: 1024);
+            var driftDiagnostics = new ConcurrentQueue<string>();
+            var driftExit = await reopenedTui.ExecuteAsync("", driftDiagnostics.Enqueue, stop.Token);
+            Assert.NotEqual(0, driftExit);
+            Assert.Equal(1, endpoint.RequestCount);
+            Assert.Single(reopened.AcquireStore().ReadFrom(session, 1)
+                .Select(reopened.AcquireCodecs().Decode).OfType<ModelStepStarted>(),
+                step => step.TurnId == turnStarted.TurnId);
+            WriteConfiguration(data, endpoint.BaseUrl);
+
             endpoint.HoldRequest(2);
             var resumeDiagnostics = new ConcurrentQueue<string>();
             resumedTurn = Task.Run(async () => await reopenedTui.ExecuteAsync("", resumeDiagnostics.Enqueue, stop.Token));
@@ -369,7 +440,7 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
         }
     }
 
-    private static void WriteConfiguration(string dataDirectory, string endpoint)
+    private static void WriteConfiguration(string dataDirectory, string endpoint, int maxOutput = 2048)
     {
         var paths = OmniHost.CreatePlatformPaths(dataDirectory);
         Directory.CreateDirectory(paths.ConfigDirectory);
@@ -387,13 +458,18 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                 provider: {{ProviderId}}
                 context: 8192
                 recommendedUsableContext: 4096
-                maxOutput: 2048
+                maxOutput: {{maxOutput}}
                 reasoning:
                   supported: true
                   effortLevels: [high]
                   replayPolicy: PreserveAcrossSteps
             """);
     }
+
+    private static DomainEvent Event(DomainEventPayload payload, SessionId session, RunId? run,
+        LaneId? lane, TurnId? turn, IEventCodecRegistry codecs) => DomainEvent.Create(session,
+        payload.Type(), payload.SchemaVersion(), null, run, run, null, lane, turn, null, null,
+        Array.Empty<ArtifactRef>(), codecs.CodecFor(payload.Type()).Encode(payload));
 
     private static void CloseJournal(SqliteEventStore? store)
     {

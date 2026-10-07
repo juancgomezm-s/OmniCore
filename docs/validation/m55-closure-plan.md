@@ -1,5 +1,38 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Alcance M5 y recuperación legacy — 2026-10-07 12:37 UTC
+
+ADR0007 §Clasificación y spec §90/95 asignan a M5 el runner `quick`;
+la suite `full` de código en sandbox y la calibración corresponden a M10+.
+No se añaden como condiciones artificiales de cierre de M5 ni se atribuyen a
+Quick capacidades que sus diez probes no miden. La aceptación autenticada
+de Quick y la evidencia de uso/cuota reales siguen pendientes.
+La configuración User inspeccionada contiene ChatGPT `OpenAIResponses` con
+perfil `codex` y local Qwen Chat-compatible; no se alteraron YAML ni credenciales.
+Se solicitó consentimiento específico para diez probes por Sol/Luna con cuota
+incluida, sin API de pago ni fallback. No se ejecutó generación autenticada.
+El YAML User de ChatGPT omite `billingMode`: `ConfigLoader` conserva por contrato
+`Unknown`, por lo que el preflight rechaza la cualificación sin estimación monetaria.
+Un login existente no convierte ese dato en `IncludedQuota`. Para la aceptación
+habrá que declarar el modo real con autorización, sin cambiar credenciales ni
+suprimir el gate de coste. Esta observación es lectura de configuración y código,
+no un intento autenticado fallido ni evidencia de credenciales ausentes.
+
+Luna implementó recuperación usando Lane/Turn del payload bajo Run atribuido,
+incluidos envelopes legacy nulos y exclusión de eventos de otros Runs/Lanes.
+Root reprodujo una regresión con el control de drift del límite del modelo:
+focal inicial **34 casos, 33 PASS, 1 FAIL**, 8.814 s, porque Ask devolvía
+exit0 aunque Explorer rechazaba el fingerprint. Root corrigió los resultados
+Error/Cancelled de Ask para devolver exit1, conservando la aserción original.
+Build final exit0, cero errores/advertencias, 15.78 s; focal **34 PASS**, 9.138 s.
+Los logs `resume-matrix-*` están en el directorio de evidencia existente.
+Son pruebas offline con HTTP loopback y SQLite/CAS; no consumo autenticado.
+La FULL `resume-matrix-full-1238.log` terminó exit0: **2859 casos,
+2855 PASS, 0 FAIL, 4 SKIP** por permisos de symlink, 121.520 s.
+Los conteos de focal y FULL se solapan y no se suman.
+Route drift separado y liberación tras cancelación/error siguen pendientes;
+la propuesta externa de Luna no se cuenta como pruebas ejecutadas.
+
 ## Redacción de fragmentos y reanudación concurrente — 2026-10-07 12:22 UTC
 
 Root añadió un sexto control de respuesta completa: un secreto ficticio dividido
