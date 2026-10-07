@@ -4,6 +4,7 @@ using System.Data.Common;
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using OmniCore.Domain;
+using OmniCore.Abstractions;
 
 public sealed partial class SqliteModelQualificationStore
 {
@@ -80,15 +81,39 @@ public sealed partial class SqliteModelQualificationStore
         }
     }
 
+    /// <summary>Synchronous publication and FULL User receipt commit under one GC
+    /// lease. The callback publishes with the supplied store on this thread; it must
+    /// not recursively acquire a lease or mutate this receipt store. CAS/header
+    /// validation remains mandatory before commit.</summary>
+    public QualificationProbeReceipt PublishProbeReceipt(QualificationProbeReceipt receipt,
+        Func<IArtifactStore, ArtifactRef> publishEvidence, CancellationToken cancellationToken)
+    {
+        RequireUserReceipts();
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(publishEvidence);
+        var artifacts = new FileArtifactStore(_dataDirectory);
+        using var lease = artifacts.AcquirePublicationLease(cancellationToken);
+        receipt = receipt with { Evidence = publishEvidence(artifacts) };
+        RecordProbeReceiptCore(receipt, cancellationToken);
+        return NormalizeReceipt(receipt);
+    }
+
     /// <summary>FULL commit of a CAS-backed receipt before reservation settlement. Exact
     /// duplicates are idempotent; conflicting identities never overwrite history.</summary>
     public void RecordProbeReceipt(QualificationProbeReceipt receipt, CancellationToken cancellationToken)
     {
         RequireUserReceipts();
         cancellationToken.ThrowIfCancellationRequested();
+        using var lease = ArtifactStoreLease.Acquire(_dataDirectory, cancellationToken);
+        RecordProbeReceiptCore(receipt, cancellationToken);
+    }
+
+    private void RecordProbeReceiptCore(QualificationProbeReceipt receipt, CancellationToken cancellationToken)
+    {
+        RequireUserReceipts();
+        cancellationToken.ThrowIfCancellationRequested();
         receipt = NormalizeReceipt(receipt);
         ValidateReceipt(receipt);
-        using var lease = ArtifactStoreLease.Acquire(_dataDirectory, cancellationToken);
         VerifyReceiptBlob(receipt);
         using var transaction = ((SqliteConnection)_conn).BeginTransaction(deferred: false);
         using var lookup = _conn.CreateCommand();

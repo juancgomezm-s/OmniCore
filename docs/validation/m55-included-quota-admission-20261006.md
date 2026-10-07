@@ -1,5 +1,48 @@
 # M5.5: admisión de cuota incluida
 
+## Recibos parciales y publicación protegida — 2026-10-07 03:17 UTC
+
+El límite de persistencia descrito en la actualización anterior ya está corregido:
+cada probe admitido IncludedQuota conserva su QualificationProbeReceipt canónico
+en User/user.db, antes del siguiente gate de cuota y sin depender de publicar un
+perfil. ExecutionId es sólo identidad de cualificación; no se inventa Session,
+Run, Turn ni AgentExecution. ReservationId asocia la invocación, no representa
+una reserva monetaria. MaximumUsd=0 significa ninguna autoridad USD; CostUsd
+permanece null y no acredita gratuidad ni débito cero. Se conservan la cota
+de intentos, envíos observados, máscara de campos reportados y UTC.
+
+QualificationReceiptWriter reutiliza la misma construcción CAS/header tanto para
+contabilidad monetaria como para IncludedQuota. Las cifras inválidas quedan sólo
+como evidencia CAS redactada; el recibo no las transforma en agregado válido.
+Los contadores no reportados son null en JSON/SQL, no ceros medidos. Cancelación
+no descarta uso ya reportado. Una cota de envíos contradicha se registra antes de
+rechazar otra llamada; un fallo de escritura propaga sin publicar éxito.
+
+Luna detectó una carrera CAS-publicación/root con GC de gracia cero. Root añadió
+PublishProbeReceipt al store: callback síncrono usando el artifact store suministrado,
+misma AcquirePublicationLease existente desde la publicación hasta el commit FULL,
+validación de CAS/header intacta, sin adquisición anidada. RecordProbeReceipt para
+artifacts ya publicados conserva compatibilidad. La excepción libera la exclusión,
+deja sólo un orphan y nunca un recibo falso. No se añade scheduler ni joins.
+
+RED uso parcial: 15 casos / 14 PASS / 1 FAIL (colección vacía al reabrir).
+RED exclusión: 1 caso / 1 FAIL (lease ya libre después de PutText).
+Final cualificación: 369 PASS / 0 FAIL / 0 SKIP, 16.789s; build 0/0,
+included-quota-receipt-verified.log. Incluye reapertura, idempotencia read/write,
+rechazo del segundo probe, cancelación, counters inválidos, exceso de envíos,
+máscara input-only, GC cero-gracia y trigger SQLite de fallo de commit.
+ArchitectureTests final: 56 PASS / 0 FAIL / 0 SKIP; log
+receipt-publication-architecture-final.log. Los focales anteriores se solapan.
+Todos son fixtures offline y archivos/bases privados; no prueba autenticación,
+unidades reales de cuota ni gasto. Suite completa del nuevo bloque aún pendiente.
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*Qualification*'
+dotnet build tests/OmniCore.ArchitectureTests/OmniCore.ArchitectureTests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.ArchitectureTests/bin/Debug/net10.0/OmniCore.ArchitectureTests.dll -noLogo -parallelMode none
+```
+
 ## Cualificación: actualización 2026-10-07 03:10 UTC
 
 ModelQualificationHost utiliza QualificationIncludedQuotaAdmission antes de

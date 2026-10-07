@@ -1,6 +1,3 @@
-// Proposal for the pending ModelQualificationHost quota-consent API.
-// It is intentionally outside the repository and will compile only after the planned
-// QualificationOptions.QueryQuota and ConfirmLowQuota callbacks are integrated.
 using System.Runtime.CompilerServices;
 using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
@@ -215,6 +212,21 @@ public sealed class QualificationIncludedQuotaTests
             Assert.Equal(snapshots[1], confirmations[1]);
             Assert.Equal(1, provider.StreamCalls);
             AssertNoProfileOrEvidence(directory, ModelQualificationHost.QualificationKeyFor(model, descriptor));
+            // Reopen the canonical User store after interruption: profile publication
+            // is independent from consumption already observed at the first probe.
+            using var reopened = OmniHost.CreateModelQualificationStore(directory);
+            var receipt = Assert.Single(reopened.ProbeReceipts(CancellationToken.None));
+            Assert.Equal(probes[0].Id.ToString(), receipt.ProbeId);
+            Assert.Equal(BillingMode.IncludedQuota, receipt.BillingMode);
+            Assert.Equal(ProbeExecutionTermination.Completed, receipt.Termination);
+            Assert.Equal(17, receipt.Usage!.Input);
+            Assert.Equal(4, receipt.Usage.Output);
+            Assert.Equal(TokenUsageFields.Input | TokenUsageFields.Output, receipt.ReportedUsageFields);
+            Assert.Equal(1, receipt.ObservedGenerationSends);
+            Assert.Null(receipt.CostUsd);
+            Assert.Equal(receipt, Assert.Single(reopened.ProbeReceipts(CancellationToken.None)));
+            reopened.RecordProbeReceipt(receipt, CancellationToken.None);
+            Assert.Equal(receipt, Assert.Single(reopened.ProbeReceipts(CancellationToken.None)));
         }
         finally
         {
@@ -232,6 +244,58 @@ public sealed class QualificationIncludedQuotaTests
         yield return [Quota(now.AddHours(1), MetricAvailability.Reported, 5, now.AddHours(2))];
         yield return [Quota(now, MetricAvailability.Reported, -1, now.AddHours(1))];
         yield return [Quota(now, MetricAvailability.Reported, double.NaN, now.AddHours(1))];
+    }
+
+    [Theory]
+    [InlineData("cancel")]
+    [InlineData("invalid-usage")]
+    [InlineData("excess-sends")]
+    public async Task Interrupted_or_invalid_probe_keeps_durable_evidence_without_inventing_cost(string scenario)
+    {
+        var directory = CreatePrivateDirectory();
+        try
+        {
+            var paths = WriteConfiguration(directory);
+            var probes = QuickProbes(2);
+            using var cancellation = new CancellationTokenSource();
+            var provider = new FixtureProvider(probes.Select(p => p.Expected).ToArray(),
+                scenario == "cancel" ? cancellation : null, scenario == "invalid-usage", scenario == "excess-sends" ? 2 : 1);
+            using var host = ModelQualificationHost.Create(directory);
+            var options = Options(provider, probes, [], (_, _) => Task.FromResult(LowQuota(50)));
+            if (scenario == "cancel")
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => host.QualifyAsync(ModelId, options, cancellation.Token));
+            else if (scenario == "excess-sends")
+                await Assert.ThrowsAsync<ModelQualificationProbeBoundExceededException>(() => host.QualifyAsync(ModelId, options, cancellation.Token));
+            else
+                await Assert.ThrowsAsync<ModelQualificationSuiteIncompleteException>(() => host.QualifyAsync(ModelId, options, cancellation.Token));
+            using var reopened = OmniHost.CreateModelQualificationStore(directory);
+            var receipts = reopened.ProbeReceipts(CancellationToken.None);
+            Assert.Equal(scenario == "invalid-usage" ? 2 : 1, receipts.Count);
+            Assert.All(receipts, receipt =>
+            {
+                Assert.Null(receipt.CostUsd);
+                Assert.Equal(BillingMode.IncludedQuota, receipt.BillingMode);
+                Assert.Equal(0m, receipt.MaximumUsd); // No monetary authority, NOT measured zero cost.
+                Assert.Equal(1, receipt.MaximumGenerationAttempts);
+                Assert.Equal(scenario == "excess-sends" ? 2 : 1, receipt.ObservedGenerationSends);
+                var evidence = new FileArtifactStore(paths.DataDirectory).GetText(receipt.Evidence.Hash);
+                Assert.NotNull(evidence);
+                if (scenario == "invalid-usage")
+                {
+                    Assert.Null(receipt.Usage);
+                    Assert.Equal(TokenUsageFields.None, receipt.ReportedUsageFields);
+                    Assert.Contains("invalidReportedUsage", evidence);
+                }
+                else Assert.Equal(17, receipt.Usage!.Input);
+            });
+            Assert.Equal(scenario == "cancel" ? ProbeExecutionTermination.Cancelled :
+                scenario == "invalid-usage" ? ProbeExecutionTermination.Failed : ProbeExecutionTermination.Completed,
+                receipts[0].Termination);
+            var loaded = OmniHost.LoadUserConfiguration(paths);
+            AssertNoProfileOrEvidence(directory, ModelQualificationHost.QualificationKeyFor(
+                loaded.Registry.Model(ModelId)!, loaded.Registry.Provider(ProviderId)!));
+        }
+        finally { DeletePrivateFixture(directory); }
     }
 
     [Theory]
@@ -298,6 +362,33 @@ public sealed class QualificationIncludedQuotaTests
         },
         ConfirmLowQuota = confirmLowQuota,
     };
+
+    [Fact]
+    public async Task Input_only_usage_does_not_become_measured_zero_output_after_reopen()
+    {
+        var directory = CreatePrivateDirectory();
+        try
+        {
+            WriteConfiguration(directory);
+            var probes = QuickProbes(1);
+            var provider = new FixtureProvider(probes.Select(p => p.Expected).ToArray(), inputOnly: true);
+            using var host = ModelQualificationHost.Create(directory);
+            await host.QualifyAsync(ModelId, Options(provider, probes, [],
+                (_, _) => Task.FromResult(LowQuota(50))), CancellationToken.None);
+            using var reopened = OmniHost.CreateModelQualificationStore(directory);
+            var receipt = Assert.Single(reopened.ProbeReceipts(CancellationToken.None));
+            Assert.Equal(TokenUsageFields.Input, receipt.ReportedUsageFields);
+            Assert.Equal(17, receipt.Usage!.Input);
+            Assert.Null(receipt.CostUsd);
+            using var json = System.Text.Json.JsonDocument.Parse(receipt.CanonicalObservationJson());
+            var usage = json.RootElement.GetProperty("usage");
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, usage.GetProperty("output").ValueKind);
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, usage.GetProperty("cacheRead").ValueKind);
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, usage.GetProperty("cacheWrite").ValueKind);
+            Assert.Equal(System.Text.Json.JsonValueKind.Null, usage.GetProperty("reasoning").ValueKind);
+        }
+        finally { DeletePrivateFixture(directory); }
+    }
 
     private static Probe[] QuickProbes(int count) => QuickProbeSuite.Probes().Take(count).ToArray();
 
@@ -398,7 +489,8 @@ public sealed class QualificationIncludedQuotaTests
         SqliteConnection.ClearPool(connection);
     }
 
-    private sealed class FixtureProvider(IReadOnlyList<string> answers) : IModelProvider, IModelRequestAttemptBound
+    private sealed class FixtureProvider(IReadOnlyList<string> answers, CancellationTokenSource? cancelAfterResponse = null,
+        bool invalidUsage = false, int sends = 1, bool inputOnly = false) : IModelProvider, IModelRequestAttemptBound
     {
         private int _streamCalls;
         public int StreamCalls => Volatile.Read(ref _streamCalls);
@@ -411,13 +503,20 @@ public sealed class QualificationIncludedQuotaTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             var index = Interlocked.Increment(ref _streamCalls) - 1;
+            for (var send = 0; send < sends; send++)
+                GenerationRequestAttemptScope.RecordGenerationSend(); // Synthetic fixture, not account consumption.
             if ((uint)index >= (uint)answers.Count)
                 throw new InvalidOperationException("The fixture received more model invocations than expected.");
             await Task.Yield();
             yield return new ResponseCompleted(new ModelResponse([new TextBlock(answers[index])],
-                StopReason.EndTurn, new TokenUsage(17, 4, 0, 0, 0), null,
+                StopReason.EndTurn, new TokenUsage(invalidUsage ? -1 : 17, inputOnly ? 0 : 4, 0, 0, 0), null,
                 new ProviderMetadata("included-quota-fixture", ModelId, null),
-                TokenUsageFields.Input | TokenUsageFields.Output));
+                inputOnly ? TokenUsageFields.Input : TokenUsageFields.Input | TokenUsageFields.Output));
+            if (cancelAfterResponse is not null)
+            {
+                cancelAfterResponse.Cancel();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
         }
     }
 }

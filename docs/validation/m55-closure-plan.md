@@ -1,5 +1,16 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 03:17 UTC / 2026-10-06 21:17 local:
+uso parcial IncludedQuota corregido mediante recibos User/SQLite/CAS por invocación,
+sin perfil parcial ni reservas/cargos USD ficticios. Publicación y root FULL bajo
+la misma lease de GC; REDs reproducidos de recibo ausente y lease prematuramente
+libre. Final 369 PASS / 0 FAIL / 0 SKIP, 16.789s, build0/0; arquitectura56PASS.
+Detalle/reproducción en m55-included-quota-admission-20261006.md. No autenticación
+ni consumo real acreditados. Full nueva pendiente: 2484verde8f837b1 antecede
+0d23177 y este bloque. Ownership Luna auditoría/root implementación y verificación.
+GoalM55ACTIVE: wire razonamiento, políticas de replay/opaque seguro, contratos
+congelados M6 y auditoría integral ADR0046 aún requieren evidencia; no cierre global.
+
 Estado vigente 2026-10-07 03:10 UTC / 2026-10-06 21:10 local:
 full terminal sobre 8f837b1: 2484 casos, 2480 PASS / 0 FAIL / 4 SKIP
 por symlink, 298.957s (declared-reasoning-and-tui-full.log). No incluye

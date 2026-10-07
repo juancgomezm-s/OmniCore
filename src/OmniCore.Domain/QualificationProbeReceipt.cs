@@ -8,6 +8,10 @@ public enum ProbeExecutionTermination { Completed, Cancelled, TimedOut, Failed }
 /// of profile revisions. ExecutionId is a local qualification identity, not AgentExecution,
 /// Session, Run or Turn. Cost is computed USD, not an account debit. Missing cost stays null.
 /// Output/error text belongs only in the redacted CAS evidence, not this relational record.</summary>
+/// <remarks>For IncludedQuota, ReservationId associates the invocation only; it does
+/// not identify a monetary ledger reservation. MaximumUsd=0 grants no USD authority,
+/// and CostUsd=null is unavailable, never a measured zero debit. MaximumGenerationAttempts
+/// remains the declared provider ceiling; ObservedGenerationSends is observed separately.</remarks>
 public sealed record QualificationProbeReceipt(
     Guid ExecutionId, string ProbeId, int Ordinal, string ReservationId, string KeyHash,
     string SuiteId, string SuiteVersion, string TaskSetHash,

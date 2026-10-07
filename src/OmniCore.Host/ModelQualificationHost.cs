@@ -146,7 +146,8 @@ public sealed class ModelQualificationCostEvidenceUnavailableException : Excepti
 
 /// <summary>
 /// Error tipado de nivel Host: la suite no se completó (algún probe terminó en Error/Timeout).
-/// Nada se persistió: una cualificación parcial no existe (ADR-0007 §4).
+/// No se publica un perfil cualificado parcial (ADR-0007 §4). Las observaciones
+/// canónicas de consumo de probes ya ejecutados se conservan por separado.
 /// </summary>
 public sealed class ModelQualificationSuiteIncompleteException : Exception
 {
@@ -294,7 +295,8 @@ public sealed partial class ModelQualificationHost : IDisposable
         }
 
         // El runner revalida consentimiento y tope como defensa en profundidad; el guard del Host
-        // ocurre antes de construir el provider o el runner. Nada se persiste si la suite no completa.
+        // ocurre antes de construir el provider o el runner. Una suite incompleta
+        // no publica perfil; los recibos canónicos de consumo no se descartan.
         var selection = Selection(model, provider);
         var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
         var pricing = _configuration?.Pricing(model.Id);
@@ -320,7 +322,8 @@ public sealed partial class ModelQualificationHost : IDisposable
 
         IProbeExecutionObserver? observer = null;
         if (provider?.BillingMode == BillingMode.IncludedQuota)
-            observer = new QualificationIncludedQuotaAdmission(provider, options);
+            observer = new QualificationIncludedQuotaAdmission(provider, options, _store,
+                key.QualificationKeyHash(), probes, generationAttempts!.Value);
         if (provider?.BillingMode is BillingMode.MeteredCurrency or BillingMode.CreditBalance or BillingMode.Unknown)
         {
             var bound = ModelInvocationCostBound.Quote(selection, pricing, model.ContextWindow, generationAttempts)
