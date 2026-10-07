@@ -1,8 +1,5 @@
-// Proposed once RuntimeFingerprintFactory exposes the planned prepared overloads:
-//   Prepare(...same args as Create...) -> PreparedRuntimeFingerprint { Fingerprint, Artifacts }
-//   PrepareTurnConfiguration(...same args as WithTurnConfiguration...) -> same carrier.
-// No event/schema changes are expected. This file is intentionally outside the repository and
-// has not been compiled against those not-yet-added APIs.
+// Deterministic provider fixtures with real private SQLite/CAS and publication/GC probes.
+// These tests do not certify authenticated provider behavior or real consumption.
 using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
 using OmniCore.Context;
@@ -54,6 +51,8 @@ public sealed class ExplorerFingerprintPublicationPhaseTests
             fixture.Codecs.Decode(evt) is TurnStarted);
         var started = Assert.IsType<TurnStarted>(fixture.Codecs.Decode(startedEvent));
         Assert.NotNull(started.Fingerprint);
+        Assert.NotNull(Assert.Single(started.Fingerprint.Components,
+            component => component.Name == "provider.adapter").Content);
         Assert.True(fixture.StartStore!.TurnStartedLeaseHeldBeforeAppend);
         Assert.True(fixture.StartStore.TurnStartedLeaseHeldAfterAppend);
         Assert.True(fixture.StartStore.TurnStartedAppendDelegated);

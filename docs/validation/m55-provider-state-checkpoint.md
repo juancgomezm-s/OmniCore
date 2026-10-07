@@ -1,5 +1,46 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Contenido de provider.adapter — 2026-10-07 05:37 UTC
+
+RuntimeFingerprintFactory pasa las mismas bytes canónicas v2 del adapter al
+HashComponent existente con store y handles preparados. No cambia versión,
+campos, orden, digest del componente ni hash agregado. Create sin store sigue
+siendo hash-only; Create con store conserva la compatibilidad eager. Prepare no
+escribe CAS hasta publicar bajo la lease corta ya existente de TurnStarted.
+
+El contenido es Sensitive y pasa por la redacción del store. Si cambia, conserva
+el digest original pero Content=null y no genera un handle exacto; no presenta
+bytes redactadas como configuración efectiva. Esto no certifica que todo endpoint
+arbitrario carezca de secretos ni amplía permisos. Ninguna credencial real se usa
+en estas pruebas. Los TurnStarted históricos con Content=null se conservan sin
+retrofit durante resume; cambios de endpoint siguen rechazándose antes del modelo.
+
+Luna entregó diseño y tres propuestas offline; root leyó completos, corrigió
+callback Task a la firma síncrona real antes de compilar, integró y añadió un
+sentinel de redacción privada observado (sin registro global), deduplicación,
+reapertura CAS y comprobación de refs tras GC. RED inicial: 3 casos/2 FAIL en
+0.522s; RED fortalecido: 3/3 FAIL en 0.493s. Builds sin errores/advertencias.
+Final inicial 94/1 FAIL y siguiente 94/1 FAIL correspondían al antiguo oracle
+CLI digest-only y su exclusión de endpoint. Ahora exige ref íntegra + JSON v2
+exacto y endpoint real del fixture sólo en adapter; otros componentes siguen sin
+endpoint. Final: 94 PASS/0 FAIL, 7.551s; arquitectura 56 PASS/0 FAIL, 0.545s.
+
+SQLite/CAS privados y HTTP loopback CLI son reales; providers/conteos son fixtures,
+sin consultas autenticadas, consumo real ni integración real de OmniCoder.
+Logs provider-adapter-content-red/redaction-red/final/expanded-final/cli-final/
+architecture.log en el directorio privado omni-m55-workers-20261006-2103.
+
+Reproducción:
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*ProviderAdapterContentTests' -class '*Fingerprint*' -class '*CliEndToEndTests' -class '*QuestionnaireTurnTests' -class '*M55ThreeStepSuspensionTests'
+```
+
+Full de routing sobre af1918a TERMINALexit0: 2620 casos/2616 PASS/0 FAIL/4 SKIP
+symlink, 231.835s, routing-command-failure-full.log. Full de este bloque pendiente.
+AgentProfile reusable/efectivo, contratos congelados M6 y otras fronteras de
+commands siguen abiertos; este bloque no declara cierre M5.5.
+
 ## Suite completa verificada — 2026-10-07 04:52 UTC
 
 Sobre 185228d, FULL95618 terminó con exit 0: 2584 casos, 2580 PASS,

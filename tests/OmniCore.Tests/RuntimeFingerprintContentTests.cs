@@ -77,17 +77,19 @@ public sealed class RuntimeFingerprintContentTests
             var second = Create(store);
             Assert.Equal(hashOnly.Hash(), first.Hash());
             Assert.Equal(first.Hash(), second.Hash());
-            Assert.Null(Assert.Single(first.Components, c => c.Name == "provider.adapter").Content);
-            foreach (var component in first.Components.Where(c => c.Name != "provider.adapter"))
+            Assert.NotNull(Assert.Single(first.Components, c => c.Name == "provider.adapter").Content);
+            foreach (var component in first.Components)
             {
                 Assert.NotNull(component.Content);
                 Assert.False(component.Content.Redacted);
                 Assert.Equal(component.Hash, component.Content.Hash);
                 Assert.True(store.Verify(component.Hash, component.Content.Size));
                 Assert.Equal(component.Content.Hash, Assert.Single(second.Components, c => c.Name == component.Name).Content!.Hash);
-                Assert.DoesNotContain("private-fixture.invalid", store.GetText(component.Hash)!);
+                if (component.Name == "provider.adapter")
+                    Assert.Contains("private-fixture.invalid", store.GetText(component.Hash)!);
+                else Assert.DoesNotContain("private-fixture.invalid", store.GetText(component.Hash)!);
             }
-            Assert.Equal(5, Directory.GetFiles(root, "*", SearchOption.AllDirectories).Count(path =>
+            Assert.Equal(6, Directory.GetFiles(root, "*", SearchOption.AllDirectories).Count(path =>
                 Path.GetFileName(path).Length == 64));
         });
     }

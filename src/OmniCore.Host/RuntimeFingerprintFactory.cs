@@ -135,9 +135,10 @@ internal static class RuntimeFingerprintFactory
                 }
                 writer.WriteString("replayPolicy", reasoning.ReplayPolicy?.ToString());
             }));
-        // The endpoint may contain private configuration. Only its digest enters the journal.
+        // Endpoint configuration follows the same sensitive/redacted content path as other
+        // components. A changed representation never claims to explain the original digest.
         if (selection.Route is { } route)
-            components.Add(ProviderAdapterComponent(route, provider));
+            components.Add(ProviderAdapterComponent(route, provider, artifacts, pending));
         return new ExecutionFingerprint(model.Id, harnessHash, "core-tools-1", contextPolicyHash,
             "none", RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), modelPolicyHash,
             tokenizerIdentity, components);
@@ -251,7 +252,8 @@ internal static class RuntimeFingerprintFactory
     private static string Digest(string value) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
 
-    private static FingerprintComponent ProviderAdapterComponent(ModelRoute route, IModelProvider? provider)
+    private static FingerprintComponent ProviderAdapterComponent(ModelRoute route, IModelProvider? provider,
+        IArtifactStore? artifacts, ICollection<IPreparedArtifact>? pending)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -273,7 +275,7 @@ internal static class RuntimeFingerprintFactory
             writer.WriteEndObject();
         }
 
-        return HashComponent("provider.adapter", "2", Encoding.UTF8.GetString(stream.ToArray()));
+        return HashComponent("provider.adapter", "2", Encoding.UTF8.GetString(stream.ToArray()), artifacts, pending);
     }
 
     private static FingerprintComponent HashComponent(string name, string value) => HashComponent(name, "1", value);
