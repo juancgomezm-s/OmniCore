@@ -630,6 +630,230 @@ public sealed class UltraCodePolicyTransitionIntegrationTests
             fixture.Store.ReadFrom(fixture.Session, 1)).ModeAuthority);
     }
 
+    [Fact]
+    public void Explicit_user_grant_captures_the_current_plan_identity_revision_and_root_task()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var events = fixture.Store.ReadFrom(fixture.Session, 1);
+        var plan = Assert.IsType<Plan>(PlanProjection.Replay(fixture.Codecs, events).Latest());
+        var rootTask = Assert.IsType<TaskId>(RunProjection.Replay(fixture.Session, fixture.Run,
+            fixture.Codecs, events).RootTask);
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+
+        var grant = SelectAdaptivePlan(fixture, coverCurrentPlan: "true");
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, grant.Outcome?.Kind);
+        // Replacing the existing ACT grant revokes it before writing the new authority batch.
+        Assert.Equal(before + 4, fixture.Store.CurrentSequence(fixture.Session));
+        var authority = Assert.IsType<RunModeAuthority>(RunProjection.Replay(fixture.Session, fixture.Run,
+            fixture.Codecs, fixture.Store.ReadFrom(fixture.Session, 1)).ModeAuthority);
+        Assert.Equal(RunMode.Plan, authority.Mode);
+        Assert.Equal(new ModeSwitchPlanCoverage(fixture.Run, plan.Id, plan.Revision, rootTask),
+            authority.Authorization?.PlanCoverage);
+    }
+
+    [Fact]
+    public void Legacy_adaptive_grant_without_plan_coverage_cannot_automatically_authorize_plan_to_act()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var selected = SelectAdaptivePlan(fixture, coverCurrentPlan: null);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, selected.Outcome?.Kind);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        Assert.Equal(RunMode.Plan, authority.Mode);
+        Assert.Null(authority.Authorization?.PlanCoverage);
+
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Act, "review the authorized plan", authority.Revision, TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("PlanCoverageUnavailable", result.Outcome?.Reason);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        Assert.Equal(RunMode.Plan, fixture.Server.CurrentRunMode());
+        Assert.Null(Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority())
+            .Authorization?.PlanCoverage);
+    }
+
+    [Fact]
+    public void Exact_current_plan_coverage_allows_PLAN_to_ACT_and_is_recorded_on_the_transition()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var plan = Assert.IsType<Plan>(PlanProjection.Replay(fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).Latest());
+        var rootTask = Assert.IsType<TaskId>(RunProjection.Replay(fixture.Session, fixture.Run,
+            fixture.Codecs, fixture.Store.ReadFrom(fixture.Session, 1)).RootTask);
+        var selected = SelectAdaptivePlan(fixture, coverCurrentPlan: "true");
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, selected.Outcome?.Kind);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var expectedCoverage = new ModeSwitchPlanCoverage(fixture.Run, plan.Id, plan.Revision, rootTask);
+        Assert.Equal(expectedCoverage, authority.Authorization?.PlanCoverage);
+
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var transition = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Act, "review the authorized plan", authority.Revision, TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, transition.Outcome?.Kind);
+        Assert.Null(transition.Failure);
+        Assert.Equal(before + 3, fixture.Store.CurrentSequence(fixture.Session));
+        var authorized = Assert.Single(fixture.Store.ReadFrom(fixture.Session, before + 1)
+            .Select(fixture.Codecs.Decode).OfType<RunModeTransitionAuthorized>());
+        Assert.Equal(RunMode.Plan, authorized.From);
+        Assert.Equal(RunMode.Act, authorized.To);
+        Assert.Equal(expectedCoverage, authorized.PlanCoverage);
+        var replay = RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1));
+        Assert.Equal(RunMode.Act, replay.Mode);
+        Assert.Equal(expectedCoverage, replay.ModeAuthority?.Authorization?.PlanCoverage);
+    }
+
+    [Fact]
+    public void A_plan_revision_change_after_grant_defers_PLAN_to_ACT_without_writes()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var plan = Assert.IsType<Plan>(PlanProjection.Replay(fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).Latest());
+        var selected = SelectAdaptivePlan(fixture, coverCurrentPlan: "true");
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, selected.Outcome?.Kind);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        Assert.Equal(plan.Revision, authority.Authorization?.PlanCoverage?.PlanRevision);
+
+        new EventStream(fixture.Store, fixture.Codecs, fixture.Session).Append(new PlanRevised(
+            plan.Id, fixture.Run, checked(plan.Revision + 1), "[]", MutationImpact.Minor));
+        var revisionAfterEdit = PlanProjection.Replay(fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).Revision();
+        Assert.Equal(plan.Revision + 1, revisionAfterEdit);
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Act, "review the authorized plan", authority.Revision, TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("PlanCoverageStale", result.Outcome?.Reason);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        var replay = RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1));
+        Assert.Equal(RunMode.Plan, replay.Mode);
+        Assert.Equal(plan.Revision, replay.ModeAuthority?.Authorization?.PlanCoverage?.PlanRevision);
+        Assert.Equal(revisionAfterEdit, PlanProjection.Replay(fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).Revision());
+    }
+
+    [Fact]
+    public void Policy_transition_cannot_rebind_the_granted_plan_coverage()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var selectedGrant = SelectAdaptivePlan(fixture, coverCurrentPlan: "true");
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, selectedGrant.Outcome?.Kind);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var authorization = Assert.IsType<ModeSwitchAuthorization>(authority.Authorization);
+        var coverage = Assert.IsType<ModeSwitchPlanCoverage>(authorization.PlanCoverage);
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var command = CommandId.New();
+        var revision = checked(authority.Revision + 1);
+        var forgedAuthorization = authorization with
+        {
+            AuthorityRevision = revision,
+            PlanCoverage = coverage with { PlanRevision = checked(coverage.PlanRevision + 1) },
+        };
+        var forgedAuthority = authority with
+        {
+            Revision = revision,
+            Mode = RunMode.Act,
+            Authorization = forgedAuthorization,
+        };
+        var reason = "attempted plan coverage rebind";
+        var payloads = new DomainEventPayload[]
+        {
+            new RunModeChanged(fixture.Run, RunMode.Plan, RunMode.Act, reason),
+            new RunModeTransitionAuthorized(fixture.Run, RunMode.Plan, RunMode.Act, reason,
+                "UltraCodePolicy", command.ToString(), revision, authority.ObjectiveRevision,
+                authority.ObjectiveDigest, authority.PolicyRevision, authorization.AuthorizationId,
+                null, coverage),
+            new RunModeAuthoritySelected(forgedAuthority, command.ToString(), "UltraCodePolicy"),
+        };
+
+        using (CausationScope.Begin(new CommandCausation(command)))
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run)))
+            Assert.Throws<InvalidStateTransitionException>(() => new EventStream(fixture.Store, fixture.Codecs,
+                fixture.Session).AppendBatch(payloads, DurabilityClass.Barrier));
+
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        AssertAuthorityEqual(authority, RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).ModeAuthority);
+    }
+
+    [Fact]
+    public void Pending_interaction_defers_covered_PLAN_to_ACT_without_writing_a_transition()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var selected = SelectAdaptivePlan(fixture, coverCurrentPlan: "true");
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, selected.Outcome?.Kind);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        Assert.NotNull(authority.Authorization?.PlanCoverage);
+        var runProjection = RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1));
+        var rootTask = Assert.IsType<TaskId>(runProjection.RootTask);
+        var lane = Assert.IsType<LaneId>(fixture.Server.LastLaneId());
+        var interaction = new InteractionRequested(InteractionId.New(), InteractionKind.Permission,
+            "{}", "[{\"id\":\"deny\"},{\"id\":\"allow\"}]", "deny", null,
+            lane, rootTask, null, 0, 1);
+        using (ExecutionScope.Begin(new ExecutionScopeState(fixture.Run, rootTask, lane)))
+            new EventStream(fixture.Store, fixture.Codecs, fixture.Session).AppendBatch(
+                new DomainEventPayload[] { interaction, new RunAwaitingInput(fixture.Run, lane) },
+                DurabilityClass.Barrier);
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Act, "review the authorized plan", authority.Revision, TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("PendingInteraction", result.Outcome?.Reason);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        Assert.Equal(RunMode.Plan, RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).Mode);
+        Assert.DoesNotContain(fixture.Store.ReadFrom(fixture.Session, before + 1), item =>
+            fixture.Codecs.Decode(item) is RunModeChanged or RunModeTransitionAuthorized or RunModeAuthoritySelected);
+    }
+
+    [Theory]
+    [InlineData("not-a-boolean", true)]
+    [InlineData("true", false)]
+    public void Plan_coverage_requires_a_valid_value_and_an_explicit_adaptive_grant(
+        string coverCurrentPlan, bool adaptive)
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var result = SelectAdaptivePlan(fixture, coverCurrentPlan, adaptive);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Rejected, result.Outcome?.Kind);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        AssertAuthorityEqual(authority, RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).ModeAuthority);
+    }
+
+    private static CommandAck SelectAdaptivePlan(Fixture fixture, string? coverCurrentPlan,
+        bool adaptive = true)
+    {
+        var fields = new List<string>
+        {
+            JsonObj.Field("cmd", "run.mode.select"),
+            JsonObj.Field("mode", "plan"),
+            JsonObj.Field("effort", "ultracode"),
+            JsonObj.FieldBool("adaptive", adaptive),
+            JsonObj.Field("allowedModes", "plan,act,orq"),
+            JsonObj.FieldRaw("maxAgents", "1"),
+            JsonObj.FieldRaw("maxDepth", "1"),
+            JsonObj.FieldRaw("maxTurns", "3"),
+            JsonObj.FieldRaw("maxToolCalls", "8"),
+            JsonObj.FieldRaw("maxElapsedSeconds", "90"),
+            JsonObj.FieldRaw("maxSpendUsd", "2.50"),
+        };
+        if (coverCurrentPlan is not null)
+            fields.Add(JsonObj.Field("coverCurrentPlan", coverCurrentPlan));
+        return fixture.Server.SendUserAction(Command(Payload(fields.ToArray())), TestContext.Current.CancellationToken);
+    }
+
     private static Fixture OpenGrantedFixture(int maxElapsedSeconds, bool failAfterNextBatchCommit = false,
         string allowedModes = "plan,act,orq")
     {

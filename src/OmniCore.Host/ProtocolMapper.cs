@@ -91,6 +91,9 @@ public sealed class ProtocolMapper
         {
             ["from"] = Mode(e.From), ["to"] = Mode(e.To), ["reason"] = _redaction.Redact(e.Reason),
             ["origin"] = e.Origin, ["authorityRevision"] = e.AuthorityRevision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["proposalEventId"] = e.ProposalEventId?.ToString() ?? "",
+            ["coveredPlanId"] = e.PlanCoverage?.PlanId.ToString() ?? "",
+            ["coveredPlanRevision"] = e.PlanCoverage?.PlanRevision.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
         },
         RunModeAuthorityRevoked e => new()
         {

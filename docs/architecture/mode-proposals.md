@@ -30,9 +30,25 @@ por recibir una recomendación. No se crean Tasks hijas ni workers.
 Aceptar un modo sigue siendo una acción explícita del usuario mediante el
 command existente `run.mode.select` y su frontera confiable. No se interpreta
 una respuesta a `user.ask`, un permiso o consentimiento de gasto como aceptación.
-Esta herramienta tampoco llama a `ApplyUltraCodePolicyTransition`: recomendar
-no es decidir una política. El disparador productivo de UltraCode sigue pendiente;
-estos contratos no acreditan ese criterio ni implementan scheduling M6.
+La herramienta no decide una política. Tras un `EndTurn` con `TurnCompleted`
+durable, `ExecuteExplorerTurn` evalúa la última propuesta de ese turno. El
+predicado productivo implementado permite PLAN→ACT únicamente cuando el usuario
+seleccionó UltraCode adaptativo y cubrió explícitamente el plan actual mediante
+`run.mode.select` con `coverCurrentPlan:true` (TUI: opción `--plan=current`).
+Host captura PlanId, revisión y Task raíz del journal de ese Run bajo la misma
+barrera de autoridad. Omitir la opción conserva cobertura nula, también al leer
+journals antiguos. La cobertura no es una respuesta sintética a PlanApproval.
+
+El plan debe seguir siendo exactamente el cubierto; una revisión diferente,
+interacción pendiente, autorización vencida/revocada, origen/revisión inválidos
+o ruta sin consentimiento impiden la transición. El cambio registra el EventId
+de la propuesta y la cobertura usada; su command/recibo es independiente del
+command de generación. El replay rechaza enlaces y cobertura inconsistentes.
+La respuesta completada no ejecuta otro turno ni reutiliza un executor con un
+techo distinto: la próxima entrada recompone las herramientas del modo vigente.
+La CLI comunica `mode.policy.outcome`; otras recomendaciones adaptativas quedan
+`Deferred/ModePolicyPredicateUnavailable`, sin inventar heurísticas de complejidad.
+No se implementan scheduling ni delegación M6.
 
 ## Evidencia reproducible
 

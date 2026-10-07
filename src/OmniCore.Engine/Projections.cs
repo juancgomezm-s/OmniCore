@@ -158,6 +158,32 @@ public sealed class RunProjection
                 {
                     var previous = authorityBeforeLastExplicitModeChange;
                     var previousAuthorization = previous?.Authorization;
+                    if (transition.PlanCoverage is { } coverage)
+                    {
+                        var preceding = evts.Where(item => item.SessionId == sessionId
+                            && item.RunId == id && item.Sequence < evt.Sequence).ToArray();
+                        var plan = PlanProjection.Replay(registry, preceding).Latest();
+                        if (transition.From != RunMode.Plan || transition.To != RunMode.Act
+                            || coverage != previousAuthorization?.PlanCoverage
+                            || coverage.RunId != id || coverage.RootTaskId != rootTask
+                            || plan is null || coverage.PlanId != plan.Id || coverage.PlanRevision != plan.Revision)
+                            throw new InvalidStateTransitionException("run mode transition", "plan coverage mismatch",
+                                payload.Type().ToString());
+                    }
+                    if (transition.ProposalEventId is { } proposalId)
+                    {
+                        var source = evts.SingleOrDefault(item => item.EventId == proposalId);
+                        if (source is null || source.SessionId != sessionId || source.RunId != id
+                            || source.Sequence >= evt.Sequence
+                            || registry.Decode(source) is not RunModeProposed proposal
+                            || proposal.RunId != id || proposal.From != transition.From || proposal.To != transition.To
+                            || proposal.AuthorityRevision != previous?.Revision
+                            || !evts.Any(item => item.SessionId == sessionId && item.RunId == id
+                                && item.Sequence > source.Sequence && item.Sequence < evt.Sequence
+                                && registry.Decode(item) is TurnCompleted completed && completed.TurnId == proposal.TurnId))
+                            throw new InvalidStateTransitionException("run mode transition", "proposal receipt mismatch",
+                                payload.Type().ToString());
+                    }
                     var policyFailure = string.Join(", ", new string?[]
                     {
                         transition.From == transition.To ? "same-mode transition" : null,
@@ -259,6 +285,7 @@ public sealed class RunProjection
                         || !nextAuthorization.AllowedModes.SequenceEqual(previousAuthorization.AllowedModes)
                         || nextAuthorization.Limits != previousAuthorization.Limits
                         || nextAuthorization.GrantedAtUtc != previousAuthorization.GrantedAtUtc
+                        || nextAuthorization.PlanCoverage != previousAuthorization.PlanCoverage
                         || selected.Authority.Revision != previous.Revision + 1
                         || selected.Authority.ObjectiveRevision != previous.ObjectiveRevision
                         || selected.Authority.ObjectiveDigest != previous.ObjectiveDigest

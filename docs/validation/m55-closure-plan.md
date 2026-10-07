@@ -1,5 +1,32 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## UltraCode productivo con cobertura explícita — 2026-10-07 15:02 UTC
+
+Se conecta la evaluación de política al `EndTurn`/`TurnCompleted` de la ruta
+Host normal. El predicado PLAN→ACT requiere una autorización UltraCode efectiva
+y cobertura explícita de la revisión vigente del plan, capturada por Host desde
+su propio journal (`coverCurrentPlan:true`, TUI `--plan=current`). No se acepta
+una aprobación inventada por el modelo ni se responde sintéticamente a una
+interacción. Otras transiciones sugeridas permanecen Deferred mientras no exista
+un predicado de producto implementado. No se crea otro turno ni workers.
+
+La transición referencia la propuesta y la cobertura; replay rechaza enlaces
+inconsistentes y rebinding de cobertura. El fingerprint incluye la cobertura
+presente y mantiene la representación anterior cuando está ausente. La CLI
+publica el outcome separado del recibo del turno. Root implementó e integró;
+Luna HIGH entregó contrato y pruebas de cobertura, y audita el conjunto.
+
+Build final: 0 errores/0 advertencias, 18.49s. Focal: **74 PASS, 0 FAIL,
+0 SKIP**, 4.494s. Evidencia `plan-policy-final-focal-1501.log` en el directorio
+operativo del 2026-10-07. Provider scripted, journal SQLite en la matriz de
+transición; no autenticación ni consumo real. Suite completa final:
+**2930 casos, 2926 PASS, 0 FAIL, 4 SKIP** por permisos de symlink, 245.529s
+(`plan-policy-full-1501.log`). Arquitectura: build 0 errores/0 advertencias,
+1.68s, **56 PASS**, 0.535s (`plan-policy-architecture-1505.log`). Los conteos
+focales se solapan con la suite completa. Estos resultados no sustituyen la
+aceptación Quick real pendiente ni declaran cerrado todo M5/M5.5.
+
+
 ## Propuesta de modo productiva y alcance Quick — 2026-10-07 14:33 UTC
 
 Root implementó `mode.propose` y `run.mode_proposed` v1, pipeline normal Host,

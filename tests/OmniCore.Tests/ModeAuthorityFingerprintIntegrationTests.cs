@@ -45,6 +45,18 @@ public sealed class ModeAuthorityFingerprintIntegrationTests
             Assert.Equal(authority.Authorization!.AuthorizationId,
                 value.GetProperty("authorization").GetProperty("authorizationId").GetGuid());
             Assert.Equal(4, value.GetProperty("authorization").GetProperty("limits").GetProperty("maxToolCalls").GetInt32());
+            Assert.False(value.GetProperty("authorization").TryGetProperty("planCoverage", out _));
+            var coverage = new ModeSwitchPlanCoverage(authority.RunId, PlanId.New(), 2, TaskId.New());
+            var covered = authority with { Authorization = authority.Authorization with { PlanCoverage = coverage } };
+            var coveredFingerprint = Apply(Baseline, covered);
+            Assert.NotEqual(original.Hash(), coveredFingerprint.Hash());
+            Assert.Equal(coveredFingerprint.Hash(), Apply(coveredFingerprint, covered).Hash());
+            Assert.NotEqual(coveredFingerprint.Hash(), Apply(Baseline, covered with
+            { Authorization = covered.Authorization! with { PlanCoverage = coverage with { PlanRevision = 3 } } }).Hash());
+            var coveredComponent = Assert.Single(coveredFingerprint.Components, part => part.Name == "run.mode_authority");
+            using var coveredJson = JsonDocument.Parse(artifacts.GetText(coveredComponent.Content!.Hash)!);
+            Assert.Equal(2, coveredJson.RootElement.GetProperty("authority").GetProperty("authorization")
+                .GetProperty("planCoverage").GetProperty("planRevision").GetInt32());
             Assert.Equal(original.Hash(), Apply(original, authority).Hash());
             Assert.NotEqual(original.Hash(), Apply(Baseline, authority with { ModePinned = true, AutoModeSwitch = false }).Hash());
             Assert.Equal(Apply(Baseline, null).Hash(), Apply(original, null).Hash());

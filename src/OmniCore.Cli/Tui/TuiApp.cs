@@ -398,7 +398,7 @@ public sealed class TuiApp
         "/act" => Ui("Ejecutar cambios explícitos en archivos", "Execute explicit file changes"),
         "/mode" => Ui("Fijar el modo predeterminado del próximo Run", "Set the next Run's default mode"),
         "/runmode" => Ui("Cambiar el modo del Run activo", "Change the active Run's mode"),
-        "/ultracode" => Ui("Autoridad adaptativa explícita con límites finitos", "Explicit adaptive authority with finite limits"),
+        "/ultracode" => Ui("Autoridad adaptativa explícita con límites finitos; --plan=current cubre sólo el plan actual", "Explicit adaptive authority with finite limits; --plan=current covers only the current plan"),
         "/reasoning" => Ui("Preferencia persistente, selección del Run o impulso de un turno", "Persistent preference, Run selection, or one-turn boost"),
         "/models" => Ui("Seleccionar modelo", "Select model"),
         "/preferences" => Ui("Abrir configuración", "Open settings"),
@@ -500,6 +500,8 @@ public sealed class TuiApp
                 { ShowMessage(Ui("Usa opciones explícitas --clave=valor", "Use explicit --key=value options")); _composer.Text = ""; return; }
             }
             var required = new[] { "mode", "modes", "agents", "depth", "turns", "tools", "seconds", "spend-usd" };
+            if (values.TryGetValue("plan", out var planCoverage) && planCoverage != "current")
+            { ShowMessage(Ui("Usa --plan=current para cubrir sólo la revisión actual", "Use --plan=current to cover only the current revision")); _composer.Text = ""; return; }
             if (required.Any(key => !values.ContainsKey(key))
                 || values["mode"] is not ("plan" or "act" or "orq"))
             { ShowMessage(Ui("UltraCode requiere modo y todos los límites finitos", "UltraCode requires a mode and every finite limit")); _composer.Text = ""; return; }
@@ -519,6 +521,7 @@ public sealed class TuiApp
                 + ",\"maxToolCalls\":" + tools.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + ",\"maxElapsedSeconds\":" + seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + ",\"maxSpendUsd\":" + spend.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (values.ContainsKey("plan")) payload += ",\"coverCurrentPlan\":true";
             SendTrustedModeCommand("run.mode.select", payload);
             _composer.Text = ""; PollEvents(); return;
         }
