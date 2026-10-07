@@ -7,6 +7,22 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 00:59 UTC: frontera por probe preparada en `ProbeRunner`:
+admisión antes de entrar al provider, observación esperada antes del siguiente
+probe o de relanzar cancelación/timeout, coste/usage existentes preservados,
+contador de envíos por invocación y timestamp UTC individual inyectable.
+Error del provider es `Termination=Failed`; respuesta completa mal puntuada sigue
+`Completed` con `ProbeStatus.Failed`. Fallo del observer aborta la suite, no se
+convierte en fallo puntuable del provider. El observer en memoria NO es recibo
+durable; el Host aún no conecta esta frontera al diario User ni al CAS/GC.
+Focal 69 PASS / 0 FAIL / 0 SKIP, 2.200s,
+`qualification-probe-boundary-final.log`; build 0 warnings/errores. Incluye retries
+del adaptador HTTP real con handler inyectado (3 intentos/usage del último),
+cancel/timeout con y sin respuesta, rechazo segunda admisión y rollover UTC.
+Todos fixtures offline. Barrido `-class '*Qualification*'`: 292 casos = 291 PASS /
+1 FAIL, 11.303s, `qualification-all-with-daily-red.log`; único FAIL conocido
+diario agotado permite una llamada. No quitar esa regresión ni afirmar cierre.
+
 Actualización 00:53 UTC: corregido el gate de cualificación `CreditBalance`:
 sin precios completos no se despacha aunque el usuario consienta y el probe
 declare coste máximo cero. RED: 9 casos / 7 PASS / 2 FAIL (ambos CreditBalance,

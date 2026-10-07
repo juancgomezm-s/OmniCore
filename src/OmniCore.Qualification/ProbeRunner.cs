@@ -1,6 +1,7 @@
 namespace OmniCore.Qualification;
 
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
@@ -13,6 +14,8 @@ public sealed class ProbeRunner
 {
     private readonly IModelProvider _provider;
     private readonly Func<TokenUsage, decimal?>? _quoteCost;
+    private readonly IProbeExecutionObserver? _observer;
+    private readonly Func<DateTimeOffset> _utcNow;
 
     public TimeSpan PerProbeTimeout { get; }
 
@@ -26,10 +29,13 @@ public sealed class ProbeRunner
     /// <summary>Uses explicit prices only when input and output are reported;
     /// null means unavailable. This does not establish a pre-call spending bound.</summary>
     public ProbeRunner(IModelProvider provider, TimeSpan perProbeTimeout,
-        Func<TokenUsage, decimal?>? quoteCost)
+        Func<TokenUsage, decimal?>? quoteCost, IProbeExecutionObserver? observer = null,
+        Func<DateTimeOffset>? utcNow = null)
     {
         _provider = provider ?? throw new ArgumentNullException(nameof(provider));
         _quoteCost = quoteCost;
+        _observer = observer;
+        _utcNow = utcNow ?? (static () => DateTimeOffset.UtcNow);
         if (perProbeTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(perProbeTimeout), "PerProbeTimeout debe ser positivo");
@@ -87,12 +93,19 @@ public sealed class ProbeRunner
     /// <summary>Ejecuta un probe individual y lo puntúa por regla exacta.</summary>
     public async Task<ProbeResult> RunProbeAsync(ProbeRequest request, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        // Admission exceptions are not provider failures and must stop the suite.
+        if (_observer is not null)
+            await _observer.BeforeDispatchAsync(request, cancellationToken);
         var sw = Stopwatch.StartNew();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(PerProbeTimeout);
 
         ModelResponse? response = null;
         string? failureMessage = null;
+        ExceptionDispatchInfo? interruption = null;
+        var termination = ProbeExecutionTermination.Completed;
+        using var attempts = GenerationRequestAttemptScope.Enter();
         try
         {
             await foreach (var evt in _provider.StreamAsync(ToModelRequest(request), timeoutCts.Token))
@@ -108,46 +121,61 @@ public sealed class ProbeRunner
                 }
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
         {
-            sw.Stop();
-            throw;
+            interruption = ExceptionDispatchInfo.Capture(exception);
+            termination = ProbeExecutionTermination.Cancelled;
+            failureMessage = "cancelled during probe execution";
         }
         catch (OperationCanceledException)
         {
-            sw.Stop();
-            throw new ProbeTimeoutException(request.Probe.Id.ToString());
+            interruption = ExceptionDispatchInfo.Capture(new ProbeTimeoutException(request.Probe.Id.ToString()));
+            termination = ProbeExecutionTermination.TimedOut;
+            failureMessage = "probe execution timed out";
         }
         catch (Exception ex)
         {
-            sw.Stop();
-            return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null, ex.Message, sw.Elapsed,
-                Cost(response), response?.Usage, response?.ReportedUsageFields ?? TokenUsageFields.None);
+            failureMessage = ex.Message;
         }
         sw.Stop();
+
+        var result = ScoreResult(request, response, failureMessage, sw.Elapsed);
+        if (termination == ProbeExecutionTermination.Completed && result.Status == ProbeStatus.Error)
+            termination = ProbeExecutionTermination.Failed;
+        // Outside the provider catch: storage/admission failures must propagate unchanged.
+        if (_observer is not null)
+            await _observer.CompletedAsync(request, new ProbeExecutionObservation(result,
+                termination, _utcNow().ToUniversalTime(), attempts.ObservedSends));
+        interruption?.Throw();
+        return result;
+    }
+
+    private ProbeResult ScoreResult(ProbeRequest request, ModelResponse? response,
+        string? failureMessage, TimeSpan duration)
+    {
 
         if (failureMessage is not null || response is null)
         {
             return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
-                failureMessage ?? "el provider no devolvió una respuesta completa", sw.Elapsed,
+                failureMessage ?? "el provider no devolvió una respuesta completa", duration,
                 Cost(response), response?.Usage, response?.ReportedUsageFields ?? TokenUsageFields.None);
         }
 
         if (TokenUsageValidation.IsInvalid(response.Usage, response.ReportedUsageFields))
             return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
-                "provider reported inconsistent token usage", sw.Elapsed, null,
+                "provider reported inconsistent token usage", duration, null,
                 response.Usage, response.ReportedUsageFields);
 
         if (response.StopReason is not (StopReason.EndTurn or StopReason.StopSequence or StopReason.MaxOutputTokens))
             return new ProbeResult(request.Probe.Id, ProbeStatus.Error, 0.0, null,
                 "probe did not complete with a scorable terminal response: " + response.StopReason,
-                sw.Elapsed, Cost(response), response.Usage, response.ReportedUsageFields);
+                duration, Cost(response), response.Usage, response.ReportedUsageFields);
 
         var text = ProbeScorer.ExtractText(response);
         var score = ProbeScorer.Score(request.Probe.Kind, text, request.Probe.Expected);
         var passed = score >= 1.0;
         return new ProbeResult(request.Probe.Id, passed ? ProbeStatus.Passed : ProbeStatus.Failed,
-            score, text, null, sw.Elapsed, Cost(response), response.Usage, response.ReportedUsageFields);
+            score, text, null, duration, Cost(response), response.Usage, response.ReportedUsageFields);
     }
 
     private decimal? Cost(ModelResponse? response)
