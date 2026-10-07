@@ -15,9 +15,15 @@ public sealed class MetaModelService
     private readonly ModelSelection _selection;
     private readonly Func<string, string> _redact;
     private readonly Func<TokenUsage, decimal?>? _costEstimator;
+    private readonly Func<string, bool>? _reserve;
+    private readonly Action<string>? _dispatch;
+    private readonly Action<string, decimal?, long>? _afterReceipt;
+    private readonly Action<string>? _releaseBeforeDispatch;
 
     public MetaModelService(IModelProvider provider, IArtifactStore artifacts, IContextEventSink events,
-        ModelSelection selection, Func<string, string>? redact = null, Func<TokenUsage, decimal?>? costEstimator = null)
+        ModelSelection selection, Func<string, string>? redact = null, Func<TokenUsage, decimal?>? costEstimator = null,
+        Func<string, bool>? reserve = null, Action<string>? dispatch = null,
+        Action<string, decimal?, long>? afterReceipt = null, Action<string>? releaseBeforeDispatch = null)
     {
         _provider = provider;
         _artifacts = artifacts;
@@ -25,6 +31,10 @@ public sealed class MetaModelService
         _selection = selection;
         _redact = redact ?? (text => text);
         _costEstimator = costEstimator;
+        _reserve = reserve;
+        _dispatch = dispatch;
+        _afterReceipt = afterReceipt;
+        _releaseBeforeDispatch = releaseBeforeDispatch;
     }
 
     public string Fingerprint(string operation)
@@ -46,9 +56,12 @@ public sealed class MetaModelService
         }
         var modelFingerprint = Fingerprint(operation);
         var invocationId = Guid.NewGuid().ToString("N");
-        var input = _artifacts.PutText(safeInput, "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
-        await _events.AppendAsync(new MetaModelInvocationStarted(invocationId, runId, operation,
-            modelFingerprint, input), cancellationToken).ConfigureAwait(false);
+        var reserved = _reserve?.Invoke(invocationId) ?? false;
+        if (_reserve is not null && !reserved) throw new InvalidOperationException("Meta invocation reservation denied.");
+        var began = false;
+        var dispatched = false;
+        var safeToRelease = true;
+        using var generationAttempts = GenerationRequestAttemptScope.Enter();
 
         var request = new ModelRequest(_selection,
             new ModelMessage[] { new(MessageRole.User, new ContentBlock[] { new TextBlock(
@@ -63,6 +76,14 @@ public sealed class MetaModelService
             ? _costEstimator?.Invoke(usage) : null;
         try
         {
+            var input = _artifacts.PutText(safeInput, "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
+            await _events.AppendAsync(new MetaModelInvocationStarted(invocationId, runId, operation,
+                modelFingerprint, input), cancellationToken).ConfigureAwait(false);
+            began = true;
+            safeToRelease = false;
+            cancellationToken.ThrowIfCancellationRequested();
+            _dispatch?.Invoke(invocationId);
+            dispatched = true;
             var result = "";
             await foreach (var evt in _provider.StreamAsync(request, cancellationToken).ConfigureAwait(false))
             {
@@ -85,13 +106,31 @@ public sealed class MetaModelService
             var output = _artifacts.PutText(result, "text/plain", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
             await _events.AppendAsync(new MetaModelInvocationCompleted(invocationId, runId, operation,
                 modelFingerprint, output, usage, Cost(), fields), cancellationToken).ConfigureAwait(false);
+            _afterReceipt?.Invoke(invocationId, Cost(), generationAttempts.ObservedSends);
             return result;
         }
         catch (Exception ex)
         {
-            await _events.AppendAsync(new MetaModelInvocationFailed(invocationId, runId, operation,
-                modelFingerprint, ex.GetType().Name, usage, Cost(), fields), CancellationToken.None).ConfigureAwait(false);
+            if (began)
+            {
+                if (!dispatched)
+                {
+                    await _events.AppendAsync(new MetaModelInvocationNotDispatched(invocationId, runId, operation,
+                        modelFingerprint), CancellationToken.None).ConfigureAwait(false);
+                    safeToRelease = true;
+                }
+                else
+                {
+                    await _events.AppendAsync(new MetaModelInvocationFailed(invocationId, runId, operation,
+                        modelFingerprint, ex.GetType().Name, usage, Cost(), fields), CancellationToken.None).ConfigureAwait(false);
+                    _afterReceipt?.Invoke(invocationId, Cost(), generationAttempts.ObservedSends);
+                }
+            }
             throw;
+        }
+        finally
+        {
+            if (reserved && !dispatched && safeToRelease) _releaseBeforeDispatch?.Invoke(invocationId);
         }
     }
 }

@@ -53,11 +53,12 @@ public sealed class MetaModelDailySpendIntegrationTests
             }, new NoTools(), new FakeCatalog(),
                 new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
                 new ExecutionFingerprint("fixture-model", "h", "t", "c", "o", "fixture-build"),
-                new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null),
+                new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null, maxOutputTokens: 1000),
                 currentStore, codecs, new FileArtifactStore(current), new InMemoryAuditSink(), new RedactionPolicy(),
                 pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: true,
                 sessionCapUsd: 100m, dailyCapUsd: 0.20m,
-                userSpendReader: new UserWorkspaceSpendReader(root, current));
+                userSpendReader: new UserWorkspaceSpendReader(root, current),
+                modelContextCapacity: 100_000, maximumGenerationRequestAttempts: 1);
             var result = turn.Ask("continue", "system", requester.SessionId, requester.RunId,
                 requester.RootLane, "", CancellationToken.None);
             var allowed = yesterday && !missingEvidence;

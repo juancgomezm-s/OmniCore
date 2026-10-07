@@ -20,19 +20,37 @@ public sealed class SqliteSpendReservationStore
         command.CommandText = """
             CREATE TABLE IF NOT EXISTS spend_reservations (
                 id TEXT PRIMARY KEY, maximum_usd TEXT NOT NULL, state TEXT NOT NULL,
-                actual_usd TEXT, receipt TEXT, created_utc TEXT NOT NULL);
+                actual_usd TEXT, receipt TEXT, created_utc TEXT NOT NULL, pending_usd TEXT);
             CREATE TABLE IF NOT EXISTS spend_reservation_scopes (
                 id TEXT NOT NULL REFERENCES spend_reservations(id), scope TEXT NOT NULL,
                 identity TEXT NOT NULL, PRIMARY KEY(id, scope, identity));
             """;
         command.ExecuteNonQuery();
+        using var transaction = connection.BeginTransaction(deferred: false);
+        using var columns = Command(connection, transaction, "PRAGMA table_info(spend_reservations)");
+        var hasPending = false;
+        using (var reader = columns.ExecuteReader())
+            while (reader.Read()) hasPending |= reader.GetString(1) == "pending_usd";
+        if (!hasPending)
+        {
+            using var migration = Command(connection, transaction, "ALTER TABLE spend_reservations ADD COLUMN pending_usd TEXT");
+            migration.ExecuteNonQuery();
+        }
+        using var initialize = Command(connection, transaction,
+            "UPDATE spend_reservations SET pending_usd=CASE WHEN state IN ('settled','released') THEN '0' ELSE maximum_usd END WHERE pending_usd IS NULL");
+        initialize.ExecuteNonQuery();
+        transaction.Commit();
     }
 
     /// <summary>Read canonical spend while holding the shared write transaction. The callback
     /// must be readonly, must not invoke providers, and must propagate unavailable evidence.
     /// Daily identity is stable across UTC dates so unresolved requests do not disappear at midnight.</summary>
     public Admission TryReserve(string id, decimal maximumUsd, Func<IReadOnlyList<Limit>> readLimits)
+        => TryReserve(id, maximumUsd, readLimits, out _);
+
+    public Admission TryReserve(string id, decimal maximumUsd, Func<IReadOnlyList<Limit>> readLimits, out string? blockedScope)
     {
+        blockedScope = null;
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         if (maximumUsd < 0m) throw new ArgumentOutOfRangeException(nameof(maximumUsd));
         using var connection = Open();
@@ -56,7 +74,7 @@ public sealed class SqliteSpendReservationStore
             if (limit.LimitUsd < 0m || limit.SpentUsd < 0m) throw new ArgumentOutOfRangeException(nameof(readLimits));
             decimal pending = 0m;
             using var command = Command(connection, transaction, """
-                SELECT r.maximum_usd,r.state FROM spend_reservations r JOIN spend_reservation_scopes s ON s.id=r.id
+                SELECT r.pending_usd,r.state FROM spend_reservations r JOIN spend_reservation_scopes s ON s.id=r.id
                 WHERE s.scope=$scope AND s.identity=$identity
                 """);
             command.Parameters.AddWithValue("$scope", limit.Scope);
@@ -69,16 +87,21 @@ public sealed class SqliteSpendReservationStore
                 switch (reader.GetString(1))
                 {
                     case "reserved":
-                    case "dispatched": pending = checked(pending + amount); break;
+                    case "dispatched":
+                    case "uncertain": pending = checked(pending + amount); break;
                     case "released":
                     case "settled": break;
                     default: throw new InvalidDataException("Unsupported reservation state.");
                 }
             }
-            if (checked(limit.SpentUsd + pending + maximumUsd) > limit.LimitUsd) return Admission.Insufficient;
+            if (checked(limit.SpentUsd + pending + maximumUsd) > limit.LimitUsd)
+            {
+                blockedScope = limit.Scope;
+                return Admission.Insufficient;
+            }
         }
         using (var insert = Command(connection, transaction,
-            "INSERT INTO spend_reservations VALUES($id,$maximum,'reserved',NULL,NULL,$created)", id))
+            "INSERT INTO spend_reservations (id,maximum_usd,state,actual_usd,receipt,created_utc,pending_usd) VALUES($id,$maximum,'reserved',NULL,NULL,$created,$maximum)", id))
         {
             insert.Parameters.AddWithValue("$maximum", Format(maximumUsd));
             insert.Parameters.AddWithValue("$created", DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture));
@@ -109,22 +132,33 @@ public sealed class SqliteSpendReservationStore
         Transition(id, "dispatched", "settled", actualUsd, receipt);
     }
 
+    /// <summary>The final response is durable, but earlier sends have no usage receipts.
+    /// Keep the unaccounted bound pending. This is not a claim those sends were billed.</summary>
+    public void RecordUncertainCompletion(string id, decimal knownUsd, string receipt)
+    {
+        if (knownUsd < 0m) throw new ArgumentOutOfRangeException(nameof(knownUsd));
+        ArgumentException.ThrowIfNullOrWhiteSpace(receipt);
+        Transition(id, "dispatched", "uncertain", knownUsd, receipt);
+    }
+
     private void Transition(string id, string from, string to, decimal? actual, string? receipt)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         using var connection = Open();
         using var transaction = connection.BeginTransaction(deferred: false);
         using var lookup = Command(connection, transaction,
-            "SELECT state,actual_usd,receipt FROM spend_reservations WHERE id=$id", id);
+            "SELECT state,actual_usd,receipt,maximum_usd FROM spend_reservations WHERE id=$id", id);
         string state;
         string? previousAmount;
         string? previousReceipt;
+        decimal maximum;
         using (var reader = lookup.ExecuteReader())
         {
             if (!reader.Read()) throw new InvalidOperationException("Unknown reservation.");
             state = reader.GetString(0);
             previousAmount = reader.IsDBNull(1) ? null : reader.GetString(1);
             previousReceipt = reader.IsDBNull(2) ? null : reader.GetString(2);
+            maximum = Parse(reader.GetString(3));
         }
         if (state == to)
         {
@@ -134,10 +168,17 @@ public sealed class SqliteSpendReservationStore
         }
         if (state != from) throw new InvalidOperationException("Illegal reservation transition.");
         using var update = Command(connection, transaction,
-            "UPDATE spend_reservations SET state=$state,actual_usd=$actual,receipt=$receipt WHERE id=$id", id);
+            "UPDATE spend_reservations SET state=$state,actual_usd=$actual,receipt=$receipt,pending_usd=$pending WHERE id=$id", id);
         update.Parameters.AddWithValue("$state", to);
         update.Parameters.AddWithValue("$actual", actual is null ? DBNull.Value : Format(actual.Value));
         update.Parameters.AddWithValue("$receipt", (object?)receipt ?? DBNull.Value);
+        var pending = to switch
+        {
+            "released" or "settled" => 0m,
+            "uncertain" when actual is { } known && known <= maximum => maximum - known,
+            _ => maximum,
+        };
+        update.Parameters.AddWithValue("$pending", Format(pending));
         update.ExecuteNonQuery();
         transaction.Commit();
     }

@@ -95,6 +95,7 @@ internal sealed class ProviderResilience
             try
             {
                 using var httpRequest = buildRequest();
+                OmniCore.Abstractions.GenerationRequestAttemptScope.RecordGenerationSend();
                 var response = await http.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode) return (response, http);
                 var status = (int)response.StatusCode;

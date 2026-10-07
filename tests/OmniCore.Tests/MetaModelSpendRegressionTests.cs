@@ -20,6 +20,86 @@ public sealed class MetaModelSpendRegressionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async System.Threading.Tasks.Task Cancellation_before_meta_dispatch_has_canonical_evidence_before_release(bool rejectMarker)
+    {
+        using var fixture = new Fixture(1m);
+        using var cancellation = new CancellationTokenSource();
+        var meta = new ScriptedMetaProvider("unused", BelowCapUsage);
+        var ledger = fixture.Reservations();
+        var released = false;
+        var dispatched = false;
+        var sink = new CancelMetaSink(new EventStream(fixture.Store, fixture.Codecs, fixture.Session), cancellation, rejectMarker);
+        var service = new MetaModelService(meta, fixture.Artifacts, sink,
+            new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null),
+            costEstimator: usage => Pricing.CostUsd(usage, TokenUsageFields.All),
+            reserve: id => ledger.TryReserve(id, 0.401m, () => [new("run", fixture.Run.RunId.ToString(), 1m, 0m)])
+                == SqliteSpendReservationStore.Admission.Reserved,
+            dispatch: id => { dispatched = true; ledger.MarkDispatched(id); },
+            releaseBeforeDispatch: id =>
+            {
+                Assert.Single(fixture.Payloads().OfType<MetaModelInvocationNotDispatched>());
+                ledger.ReleaseBeforeDispatch(id);
+                released = true;
+            });
+        await Assert.ThrowsAnyAsync<Exception>(() => service.SummarizeAsync(fixture.Run.RunId, "CompressContext",
+            "fixture content", 1000, cancellation.Token));
+        Assert.Equal(0, meta.Calls);
+        Assert.False(dispatched);
+        Assert.Equal(!rejectMarker, released);
+        Assert.Empty(fixture.Payloads().OfType<MetaModelInvocationCompleted>());
+        Assert.Empty(fixture.Payloads().OfType<MetaModelInvocationFailed>());
+        Assert.Equal(rejectMarker ? 0 : 1, fixture.Payloads().OfType<MetaModelInvocationNotDispatched>().Count());
+        var calls = 0;
+        var next = fixture.MakeTurn(meta, (_, _) => { calls++; return EndTurn(new TokenUsage(1, 1, 0, 0, 0)); },
+            compact: false, reservations: fixture.Reservations()).Ask("continue", "system", fixture.Session,
+                fixture.Run.RunId, fixture.Run.RootLane, "", CancellationToken.None);
+        Assert.Equal(rejectMarker ? StopReason.Cancelled : StopReason.EndTurn, next.StopReason);
+        Assert.Equal(rejectMarker ? 0 : 1, calls);
+    }
+
+    private sealed class CancelMetaSink(EventStream stream, CancellationTokenSource cancellation, bool rejectMarker) : IContextEventSink
+    {
+        public ValueTask AppendAsync(DomainEventPayload payload, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (rejectMarker && payload is MetaModelInvocationNotDispatched) throw new IOException("Fixture rejected marker barrier.");
+            stream.Append(payload, DurabilityClass.Barrier);
+            if (payload is MetaModelInvocationStarted) cancellation.Cancel();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [Theory]
+    [InlineData("0.50", 0)]
+    [InlineData("0.60", 1)]
+    public void Shared_reservation_covers_compaction_then_primary_without_counting_receipts_twice(string cap, int expectedPrimary)
+    {
+        using var fixture = new Fixture(decimal.Parse(cap, System.Globalization.CultureInfo.InvariantCulture));
+        fixture.AppendOldConversation();
+        var meta = new ScriptedMetaProvider("older facts preserved", new TokenUsage(100_000, 10, 0, 0, 0));
+        var primary = 0;
+        var reservations = fixture.Reservations();
+        var turn = fixture.MakeTurn(meta, (_, _) =>
+        {
+            primary++;
+            return EndTurn(new TokenUsage(50_000, 10, 0, 0, 0));
+        }, reservations: reservations);
+        var result = turn.Ask("continue", "system", fixture.Session, fixture.Run.RunId,
+            fixture.Run.RootLane, "", CancellationToken.None);
+        Assert.Equal(expectedPrimary == 0 ? StopReason.Cancelled : StopReason.EndTurn, result.StopReason);
+        Assert.Equal(1, meta.Calls);
+        Assert.Equal(expectedPrimary, primary);
+        var completedMeta = Assert.Single(fixture.Payloads().OfType<MetaModelInvocationCompleted>());
+        Assert.Equal(0.10001m, completedMeta.CostUsd);
+        Assert.Equal(expectedPrimary, fixture.Payloads().OfType<ModelStepCompleted>().Count());
+        Assert.Equal(expectedPrimary, fixture.Payloads().OfType<ModelStepStarted>().Count());
+        Assert.Single(fixture.Payloads().OfType<ContextCheckpointRecorded>());
+        if (expectedPrimary == 0) Assert.Single(fixture.Payloads().OfType<InteractionRequested>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Subscription_admission_controls_actual_compaction_calls_without_disabling_fallback(bool admitted)
     {
         using var fixture = new Fixture(100m);
@@ -448,10 +528,12 @@ public sealed class MetaModelSpendRegressionTests
 
         public ExplorerTurn MakeTurn(IModelProvider metaProvider,
             Func<ModelRequest, CancellationToken, ModelResponse> primary, bool compact = true,
-            FakeCatalog? catalog = null, IToolExecutor? executor = null, Func<bool>? quotaAllowsMeta = null)
+            FakeCatalog? catalog = null, IToolExecutor? executor = null, Func<bool>? quotaAllowsMeta = null,
+            SqliteSpendReservationStore? reservations = null)
         {
             catalog ??= new FakeCatalog();
-            var selection = new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null);
+            var selection = new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null,
+                maxOutputTokens: reservations is null ? null : 1000);
             var policy = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 4, GuidanceLevel.Off,
                 0, PlanControl.Assisted, 4,
                 new ContextManagementPolicy(4096, 1000, 0, compact ? 1 : 1000, 3000));
@@ -461,8 +543,12 @@ public sealed class MetaModelSpendRegressionTests
                 new ExecutionFingerprint("fixture-model", "h", "t", "c", "o", "fixture-build"),
                 selection, Store, Codecs, Artifacts, new InMemoryAuditSink(), new RedactionPolicy(), policy,
                 pricing: Pricing, metaModelProvider: metaProvider, recordEffectiveFingerprint: true,
-                quotaAllowsMeta: quotaAllowsMeta);
+                quotaAllowsMeta: quotaAllowsMeta, spendReservations: reservations,
+                modelContextCapacity: reservations is null ? null : 400_000,
+                maximumGenerationRequestAttempts: reservations is null ? null : 1);
         }
+
+        public SqliteSpendReservationStore Reservations() => new(Path.Combine(_root, "reservations.db"));
 
         public DomainEventPayload[] Payloads() => Store.ReadFrom(Session, 1).Select(Codecs.Decode).ToArray();
 

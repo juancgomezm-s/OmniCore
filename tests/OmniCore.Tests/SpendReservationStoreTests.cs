@@ -7,6 +7,44 @@ using Task = System.Threading.Tasks.Task;
 
 public sealed class SpendReservationStoreTests
 {
+    [Theory]
+    [InlineData("reserved", true)]
+    [InlineData("dispatched", true)]
+    [InlineData("uncertain", true)]
+    [InlineData("settled", false)]
+    [InlineData("released", false)]
+    public void Migration_of_ledger_without_pending_column_preserves_unknown_exposure(string state, bool holdsBound)
+    {
+        var root = Root();
+        try
+        {
+            var path = Path.Combine(root, "reservations.db");
+            using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString()))
+            {
+                connection.Open();
+                using var command = connection.CreateCommand();
+                command.CommandText = """
+                    CREATE TABLE spend_reservations (id TEXT PRIMARY KEY,maximum_usd TEXT NOT NULL,state TEXT NOT NULL,
+                        actual_usd TEXT,receipt TEXT,created_utc TEXT NOT NULL);
+                    CREATE TABLE spend_reservation_scopes (id TEXT NOT NULL,scope TEXT NOT NULL,identity TEXT NOT NULL,
+                        PRIMARY KEY(id,scope,identity));
+                    INSERT INTO spend_reservations VALUES ('old','0.401',$state,NULL,NULL,'2026-10-06T23:59:00Z');
+                    INSERT INTO spend_reservation_scopes VALUES ('old','daily','user');
+                    """;
+                command.Parameters.AddWithValue("$state", state);
+                command.ExecuteNonQuery();
+            }
+            var migrated = new SqliteSpendReservationStore(path);
+            var admission = migrated.TryReserve("after-migration", 0.401m, () => [new("daily", "user", 0.5m, 0m)]);
+            Assert.Equal(holdsBound ? SqliteSpendReservationStore.Admission.Insufficient
+                : SqliteSpendReservationStore.Admission.Reserved, admission);
+            Assert.Equal(SqliteSpendReservationStore.Admission.Insufficient,
+                new SqliteSpendReservationStore(path).TryReserve("after-reopen", 0.401m,
+                    () => [new("daily", "user", 0.5m, 0m)]));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Fact]
     public async Task Separate_processes_share_one_atomic_reservation_limit()
     {
@@ -210,6 +248,29 @@ public sealed class SpendReservationStoreTests
             }
             Assert.Throws<InvalidDataException>(() => store.TryReserve("b", 0.2m,
                 () => [new("daily", "user", 0.5m, 0m)]));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void Uncertain_retry_keeps_unaccounted_bound_without_double_counting_known_receipt()
+    {
+        var root = Root();
+        try
+        {
+            var path = Path.Combine(root, "reservations.db");
+            var store = new SqliteSpendReservationStore(path);
+            store.TryReserve("a", 1.203m, () => [new("daily", "user", 2m, 0m)]);
+            store.MarkDispatched("a");
+            store.RecordUncertainCompletion("a", 0.3m, "canonical-receipt-a");
+            store.RecordUncertainCompletion("a", 0.30m, "canonical-receipt-a");
+            store = new SqliteSpendReservationStore(path);
+            Assert.Equal(SqliteSpendReservationStore.Admission.Insufficient,
+                store.TryReserve("b", 0.1m, () => [new("daily", "user", 1.3m, 0.3m)]));
+            Assert.Equal(SqliteSpendReservationStore.Admission.Reserved,
+                store.TryReserve("c", 0.09m, () => [new("daily", "user", 1.3m, 0.3m)]));
+            Assert.Throws<InvalidOperationException>(() => store.ReleaseBeforeDispatch("a"));
+            Assert.Throws<InvalidOperationException>(() => store.Settle("a", 0.3m, "canonical-receipt-a"));
         }
         finally { Directory.Delete(root, true); }
     }

@@ -75,6 +75,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.ModelEscalationApproved())
             .Plus(Typed.ModelEscalationCompleted())
             .Plus(Typed.ModelStepStarted())
+            .Plus(Typed.ModelStepNotDispatched())
             .Plus(Typed.ModelStepCompleted())
             .Plus(Typed.ModelCompleted())
             .Plus(Typed.TurnCompleted())
@@ -115,6 +116,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.MetaModelInvocationStarted())
             .Plus(Typed.MetaModelInvocationCompleted())
             .Plus(Typed.MetaModelInvocationFailed())
+            .Plus(Typed.MetaModelInvocationNotDispatched())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
@@ -365,6 +367,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(EscalationCause))]
 [JsonSerializable(typeof(ModelCompleted))]
 [JsonSerializable(typeof(ModelStepStarted))]
+[JsonSerializable(typeof(ModelStepNotDispatched))]
 [JsonSerializable(typeof(ModelStepCompleted))]
 [JsonSerializable(typeof(TurnCompleted))]
 [JsonSerializable(typeof(TurnInterrupted))]
@@ -404,6 +407,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(MetaModelInvocationStarted))]
 [JsonSerializable(typeof(MetaModelInvocationCompleted))]
 [JsonSerializable(typeof(MetaModelInvocationFailed))]
+[JsonSerializable(typeof(MetaModelInvocationNotDispatched))]
 internal sealed partial class EventJsonContext : JsonSerializerContext
 {
 }
@@ -590,6 +594,9 @@ public sealed class Typed
     public static CodecPair ModelStepCompleted() =>
         Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 2);
 
+    public static CodecPair ModelStepNotDispatched() =>
+        Of(EventType.Of("model_step.not_dispatched"), EventJsonContext.Default.ModelStepNotDispatched);
+
     public static CodecPair TurnCompleted() =>
         Of(EventType.Of("turn.completed"), EventJsonContext.Default.TurnCompleted);
 
@@ -703,4 +710,7 @@ public sealed class Typed
 
     public static CodecPair MetaModelInvocationFailed() =>
         Of(EventType.Of("meta_model.invocation_failed"), EventJsonContext.Default.MetaModelInvocationFailed, currentVersion: 2);
+
+    public static CodecPair MetaModelInvocationNotDispatched() =>
+        Of(EventType.Of("meta_model.invocation_not_dispatched"), EventJsonContext.Default.MetaModelInvocationNotDispatched);
 }

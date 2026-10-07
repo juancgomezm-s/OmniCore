@@ -107,6 +107,14 @@ public record ModelStepCompleted(TurnId TurnId, int StepIndex, TokenUsage Usage,
     public int SchemaVersion() => 2;
 }
 
+/// <summary>A durable start was recorded, but the provider invocation was never entered.
+/// This is absence of dispatch, not provider-reported zero usage. An uncertain send must never emit it.</summary>
+public record ModelStepNotDispatched(TurnId TurnId, int StepIndex) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("model_step.not_dispatched");
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>TurnCompleted: el Turn terminó normalmente.</summary>
 public record TurnCompleted(TurnId TurnId) : DomainEventPayload
 {
