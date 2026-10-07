@@ -121,6 +121,14 @@ public interface IContextEventSink
     ValueTask AppendAsync(DomainEventPayload payload, CancellationToken cancellationToken);
 }
 
+/// <summary>Optional journal-owned synchronous boundary. Publishes prepared bytes
+/// and the referencing event under one short lease; never carries the lease across await.</summary>
+public interface IContextArtifactPublicationSink : IContextEventSink
+{
+    void AppendPreparedArtifact(IPreparedArtifact artifact, DomainEventPayload payload,
+        CancellationToken cancellationToken);
+}
+
 public interface ITokenCounter
 {
     TokenizerId Id { get; }
