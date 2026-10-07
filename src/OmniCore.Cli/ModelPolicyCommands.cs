@@ -606,6 +606,11 @@ public sealed class ModelPolicyCommands
             _output.WriteLine(_loc.Resolve("cli.model.qualify.consent.required"));
             return 1;
         }
+        catch (ModelQualificationCredentialMissingException)
+        {
+            _output.WriteLine(_loc.Resolve("cli.runtime.credential.missing", "command", "model qualify"));
+            return 1;
+        }
 
         // Estado (ADR-0007 §4): Unknown → Declared → ProvisionallyClassified → Qualified.
         _output.WriteLine(_loc.Resolve("cli.model.qualify.state", new Dictionary<string, string>

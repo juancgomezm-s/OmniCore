@@ -165,6 +165,18 @@ public sealed class ModelQualificationSuiteIncompleteException : Exception
     }
 }
 
+/// <summary>
+/// Error tipado de nivel Host: el provider exige API key y no hay credencial en el entorno ni en el
+/// almacén del usuario. Se detecta antes de construir el provider: ningún probe se ejecuta ni se persiste.
+/// </summary>
+public sealed class ModelQualificationCredentialMissingException : Exception
+{
+    public string SecretRef { get; }
+
+    public ModelQualificationCredentialMissingException(string secretRef)
+        : base("falta la credencial del provider (" + secretRef + ")") => SecretRef = secretRef;
+}
+
 /// <summary>Error tipado de nivel Host: suite pedida no existe (solo `quick` en M5).</summary>
 public sealed class ModelQualificationUnsupportedSuiteException : Exception
 {
@@ -320,6 +332,9 @@ public sealed partial class ModelQualificationHost : IDisposable
         if (estimatedCost > options.MaxTotalCostUsd)
             throw new ModelQualificationCostCapException(options.MaxTotalCostUsd, estimatedCost);
 
+        // The provider (and its credential) is resolved before any admission observer exists, so a
+        // missing credential fails once, typed, with no probe attempted and nothing persisted.
+        var connectedProvider = ConnectProvider(model, provider, options);
         IProbeExecutionObserver? observer = null;
         if (provider?.BillingMode == BillingMode.IncludedQuota)
             observer = new QualificationIncludedQuotaAdmission(provider, options, _store,
@@ -332,7 +347,7 @@ public sealed partial class ModelQualificationHost : IDisposable
                 probes, bound, generationAttempts!.Value, provider.BillingMode, options.MaxTotalCostUsd,
                 _configuration?.DailyCapUsd ?? 20m);
         }
-        var runner = new ProbeRunner(ConnectProvider(model, provider, options),
+        var runner = new ProbeRunner(connectedProvider,
             options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout,
             pricing is null ? null : pricing.CostUsd, observer);
         var consent = new QualificationConsent(explicitlyGiven: true, options.MaxTotalCostUsd);
@@ -571,7 +586,8 @@ public sealed partial class ModelQualificationHost : IDisposable
         if (provider?.Auth.Kind == AuthKind.ApiKey)
         {
             key = OmniHost.ResolveApiKey(OmniHost.CreateUserCredentialStore(_paths), secretRef,
-                Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), CancellationToken.None) ?? "";
+                Environment.GetEnvironmentVariable("OMNI_QWEN_KEY"), CancellationToken.None)
+                ?? throw new ModelQualificationCredentialMissingException(secretRef);
         }
 
         var subscription = provider is { Family: ProviderFamily.OpenAIResponses, Profile: "codex" }
