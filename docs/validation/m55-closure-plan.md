@@ -1,5 +1,57 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## PAUSADO por orden del usuario — 2026-10-07 15:43 UTC
+
+Se conserva el trabajo pendiente como checkpoint WIP, sin build ni pruebas de
+esta revisión y sin declarar cierre. Luna confirmó fuentes congeladas y terminó.
+El último baseline verificado sigue siendo `22416b2`; no acredita este checkpoint.
+
+Pendientes al reanudar: compilar y reproducir las cuatro pruebas offline nuevas
+de límites y las regresiones de causalidad/fingerprint; revisar interacción con
+rutas Local/IncludedQuota sin precio inventado; resolver o delimitar admisión
+concurrente (los contadores de turnos/tools no son atómicos entre Explorer distintos,
+y la reserva monetaria requiere inyectar `SqliteSpendReservationStore`). Después,
+suite integral/arquitectura y aceptación Quick real de Sol/Luna con declaración
+de facturación y consentimiento. No se ejecutaron proveedores al detenerse.
+
+## Estado consolidado — 2026-10-07 15:39 UTC
+
+- Último checkpoint verificado: `22416b2`; 2926 PASS, 0 FAIL y 4 SKIP
+  en 2930 casos. No acredita los cambios posteriores todavía en edición.
+- ADR0046: los siete criterios deterministas tienen evidencia de fixtures,
+  SQLite/CAS y arquitectura registrada abajo. No son consultas autenticadas.
+- ADR0047: selección/revocación, propuestas y caller PLAN→ACT con cobertura
+  explícita están conectados. La reparación actual aplica límites del runtime
+  directo y liga el resultado al Turn/command exactos. Su aceptación está pendiente.
+- Delegación útil, scheduler y evaluación de joins pertenecen a M6 conforme
+  ADR0046 §8.4 y ADR0047 §6; no se implementarán para suplir contratos M5.5.
+- M5: falta Quick real de Sol/Luna en User con categoría de facturación
+  declarada y consentimiento correspondiente. Login existente no demuestra esa
+  declaración ni cualificación; fixtures no sustituyen receipts reales.
+- Ownership actual: Luna HIGH, `ExplorerTurn.cs` y pruebas nuevas de límites;
+  root, caller `OmniServer`, regresión de causalidad, auditoría, integración y
+  verificación. No hay entregas recientes verificadas de los workers externos.
+
+Las entradas inferiores son checkpoints fechados: un pendiente histórico puede
+haber sido resuelto después. Este resumen no declara cerrado M5 ni M5.5.
+
+## Auditoría posterior de límites — 2026-10-07 15:21 UTC
+
+La auditoría de Luna encontró una brecha en `22416b2`: los límites del grant
+se registran y se valida su expiración al cambiar modo, pero el runtime directo
+no aplica todavía todos los techos al siguiente dispatch. La suite verde de ese
+checkpoint no demuestra enforcement de MaxTurns/MaxToolCalls/MaxSpendUsd.
+Se está reparando el bloque completo antes de declarar su aceptación: contadores
+durables del Run, distinción Turn/ModelStep, tiempo y cota monetaria antes de
+primary/meta/tools. No se añadirá scheduler ni ejecución de agentes de M6.
+
+Además, el caller se está ligando al Turn exacto del resultado y a la causalidad
+del command, con una regresión que intercala una invocación ajena. Los cambios
+actuales no tienen aún build/pruebas finales; no se acredita el WIP con el verde
+anterior. La aceptación Quick real de M5 sigue pendiente de categoría de
+facturación explícita y consentimiento, no de inventar una ausencia de login.
+
+
 ## UltraCode productivo con cobertura explícita — 2026-10-07 15:02 UTC
 
 Se conecta la evaluación de política al `EndTurn`/`TurnCompleted` de la ruta

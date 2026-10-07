@@ -19,11 +19,12 @@ public sealed class ModeProposalUserAcceptanceTests
     private static WireEnvelope Command(string payload) => WireEnvelope.Command(Ids.NewV7(), payload);
 
     [Theory]
-    [InlineData("orq", false, false)]
-    [InlineData("act", true, false)]
-    [InlineData("act", true, true)]
+    [InlineData("orq", false, false, false)]
+    [InlineData("act", true, false, false)]
+    [InlineData("act", true, true, false)]
+    [InlineData("act", true, true, true)]
     public void Model_proposal_requires_user_selection_or_explicit_current_plan_coverage(
-        string proposedMode, bool adaptive, bool coveredPlan)
+        string proposedMode, bool adaptive, bool coveredPlan, bool foreignCaller)
     {
         var server = OmniHost.CreateInMemoryServer();
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -60,7 +61,7 @@ public sealed class ModeProposalUserAcceptanceTests
             var catalog = OmniHost.CreateExplorerTools().Catalog();
             var toolCall = ToolCallId.New();
             var providerCalls = 0;
-            var turn = new ExplorerTurn((_, _) => ++providerCalls == 1
+            var turn = new ExplorerTurn((_, _) => ++providerCalls == (foreignCaller ? 2 : 1)
                     ? new ModelResponse([new ToolCallBlock(toolCall, "scripted-proposal", "mode.propose",
                         "{\"mode\":\"" + proposedMode + "\",\"reason\":\"Independent review may help\"}")],
                         StopReason.ToolUse, new TokenUsage(3, 1, 0, 0, 0), null,
@@ -71,18 +72,28 @@ public sealed class ModeProposalUserAcceptanceTests
                 ScriptedToolExecutor.WithWorkspace(catalog, new ScriptedPermissionPolicy([]), workspace),
                 catalog, new ContextMaterializer(new FakeTokenCounter(), []),
                 new ExecutionFingerprint("fixture", "model", "tool", "context", "output", "test-build"),
-                new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null),
+                new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null, maxOutputTokens: 1024),
                 store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-                maximumGenerationRequestAttempts: 1);
+                maximumGenerationRequestAttempts: 1, pricing: new ModelPricing(0m, 0m), modelContextCapacity: 8192);
 
             var execution = server.ExecuteExplorerTurn(session, run,
-                token => turn.Ask("Review this task and recommend a mode", "system", session, run, lane, "", token),
+                token =>
+                {
+                    var result = turn.Ask("Review this task and recommend a mode", "system", session, run, lane, "", token);
+                    if (foreignCaller)
+                    {
+                        using var foreignCommand = CausationScope.Begin(new CommandCausation(CommandId.New()));
+                        var foreignResult = turn.Ask("Foreign invocation recommends execution", "system", session, run, lane, "", token);
+                        Assert.Equal(StopReason.EndTurn, foreignResult.StopReason);
+                    }
+                    return result;
+                },
                 cancellationToken);
             Assert.Null(execution.Failure);
             Assert.Equal("ok", execution.Ack.Status);
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, execution.Ack.Outcome?.Kind);
             Assert.Equal(StopReason.EndTurn, Assert.IsType<ExplorerTurn.TurnResult>(execution.Result).StopReason);
-            Assert.Equal(2, providerCalls);
+            Assert.Equal(foreignCaller ? 3 : 2, providerCalls);
             Assert.NotNull(execution.Ack.FirstSeq);
             Assert.NotNull(execution.Ack.LastSeq);
             Assert.Equal(beforeTurnSequence + 1, execution.Ack.FirstSeq.Value);
@@ -96,7 +107,7 @@ public sealed class ModeProposalUserAcceptanceTests
             Assert.Equal(RunMode.Plan, proposal.From);
             Assert.Equal(proposedMode == "act" ? RunMode.Act : RunMode.Orchestrate, proposal.To);
 
-            if (adaptive && coveredPlan)
+            if (adaptive && coveredPlan && !foreignCaller)
             {
                 Assert.Equal(RuntimeCommandOutcomeKind.Accepted, execution.PolicyTransition?.Ack.Outcome?.Kind);
                 Assert.Equal(RunMode.Act, server.CurrentRunMode());
@@ -111,7 +122,9 @@ public sealed class ModeProposalUserAcceptanceTests
                 Assert.Equal(RunMode.Act, RunProjection.Replay(session, run, codecs, afterProposal).Mode);
                 return;
             }
-            if (adaptive)
+            if (foreignCaller)
+                Assert.Null(execution.PolicyTransition);
+            else if (adaptive)
                 Assert.Equal(RuntimeCommandOutcomeKind.Deferred, execution.PolicyTransition?.Ack.Outcome?.Kind);
 
             var advisoryProjection = RunProjection.Replay(session, run, codecs, afterProposal);

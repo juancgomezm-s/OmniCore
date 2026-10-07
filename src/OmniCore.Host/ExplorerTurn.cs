@@ -336,9 +336,11 @@ public sealed class ExplorerTurn
 
         public InteractionId? PendingInteractionId { get; }
 
+        public TurnId? TurnId { get; }
+
         public TurnResult(string? finalText, StopReason stopReason, int steps, TokenUsage usage,
             IReadOnlyList<ToolUseTrace> toolCalls, string? responseArtifactId,
-            InteractionId? pendingInteractionId = null)
+            InteractionId? pendingInteractionId = null, TurnId? turnId = null)
         {
             FinalText = finalText;
             StopReason = stopReason;
@@ -347,6 +349,7 @@ public sealed class ExplorerTurn
             ToolCalls = toolCalls;
             ResponseArtifactId = responseArtifactId;
             PendingInteractionId = pendingInteractionId;
+            TurnId = turnId;
         }
     }
 
@@ -465,6 +468,38 @@ public sealed class ExplorerTurn
             return new TurnResult("Run is terminal; queued FollowUps remain inert.", StopReason.Error,
                 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var turnId = resumedTurnId ?? TurnId.New();
+        bool IsAdaptiveUltraCode(RunModeAuthority? authority) => authority is
+        {
+            ProductEffort: ProductEffort.UltraCode,
+            AutoModeSwitch: true,
+            ModePinned: false,
+            Authorization: not null
+        };
+
+        RunModeAuthority? CurrentAdaptiveUltraCodeAuthority()
+        {
+            var currentEvents = stream.EventsSince(1);
+            var current = RunProjection.Replay(sessionId, runId, _codecs, currentEvents).ModeAuthority;
+            return IsAdaptiveUltraCode(current) ? current : null;
+        }
+
+        (long Turns, HashSet<ToolCallId> ToolCalls) CountRunUsage()
+        {
+            var turns = new HashSet<TurnId>();
+            var toolCalls = new HashSet<ToolCallId>();
+            // Limits are cumulative for this Run, including legacy nullable envelopes resolved
+            // by the same Run-tail rule used by the other Host readers. Re-granting cannot reset them.
+            foreach (var evt in OwnTail(stream, runId))
+            {
+                if (evt.RunId is { } envelopeRun && envelopeRun != runId) continue;
+                var payload = _codecs.Decode(evt);
+                if (payload is TurnStarted started) turns.Add(started.TurnId);
+                else if (payload is ToolCallRequested requested) toolCalls.Add(requested.ToolCallId);
+            }
+            return (turns.Count, toolCalls);
+        }
+
+        var toolCallsAttemptedThisAsk = new HashSet<ToolCallId>();
         using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
             FindTaskForLane(runEvents, runId, laneId), laneId, turnId));
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
@@ -478,12 +513,20 @@ public sealed class ExplorerTurn
         }
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
+        decimal? UltraCodeRunSpendLimit() => CurrentAdaptiveUltraCodeAuthority()?.Authorization?.Limits.MaxSpendUsd;
+        decimal? EffectiveRunSpendLimit()
+        {
+            var ultraCodeLimit = UltraCodeRunSpendLimit();
+            if (budget.MaxCostUsd is not { } taskLimit) return ultraCodeLimit;
+            return ultraCodeLimit is { } authorityLimit ? Math.Min(taskLimit, authorityLimit) : taskLimit;
+        }
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
         // at each boundary, avoiding a gap/overlap between a historical scan and a sequence delta.
         // Known monetary totals must remain representable even without a cap. Only an
         // unpriced session with no historical monetary evidence can omit monetary replay.
         var replayMonetarySpend = _enforceDefaultSpendCaps || budget.MaxCostUsd is not null
-            || _pricing is not null || HasHistoricalMonetaryEvidence(runEvents);
+            || _pricing is not null || HasHistoricalMonetaryEvidence(runEvents)
+            || UltraCodeRunSpendLimit() is not null;
         var persistedSpend = replayMonetarySpend
             ? ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)
             : new PersistedSpend(0m, 0m, 0m, false);
@@ -550,8 +593,21 @@ public sealed class ExplorerTurn
         void ValidateBeforeInvocation()
         {
             ValidateTokenBudget(includeNextInvocation: true);
+            var ultraAuthority = CurrentAdaptiveUltraCodeAuthority();
+            if (ultraAuthority?.Authorization is { } authorityGrant)
+            {
+                if (authorityGrant.IsExpiredAt(DateTimeOffset.UtcNow))
+                    throw new BudgetExceededException("autorización UltraCode expirada");
+                var counts = CountRunUsage();
+                var thisTurnStarted = OwnTail(stream, runId).Any(evt =>
+                    (evt.RunId is null || evt.RunId == runId)
+                    && _codecs.Decode(evt) is TurnStarted started && started.TurnId == turnId);
+                if (!isResume && !thisTurnStarted && counts.Turns >= authorityGrant.Limits.MaxTurns)
+                    throw new BudgetExceededException("límite UltraCode de Turns alcanzado");
+            }
             var spend = CurrentSpend();
-            var capped = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
+            var runSpendLimit = EffectiveRunSpendLimit();
+            var capped = runSpendLimit is not null || _enforceDefaultSpendCaps;
             if (capped && (_pricing is null || !_pricing.IsComplete))
                 throw new BudgetExceededException("precio desconocido: no se puede hacer cumplir el tope");
             if (capped && spend.Incomplete)
@@ -559,15 +615,44 @@ public sealed class ExplorerTurn
             var runCost = AccumulatedSpend(spend.RunUsd, guard.CostUsd(), capped);
             var sessionCost = AccumulatedSpend(spend.SessionUsd, guard.CostUsd(), capped);
             var dailyCost = AccumulatedSpend(spend.DailyUsd, guard.CostUsd(), capped);
-            if (budget.MaxCostUsd is not null && runCost >= budget.MaxCostUsd.Value)
-                throw new BudgetExceededException("límite de costo de Run alcanzado ($" + budget.MaxCostUsd.Value + ")",
-                    new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
+            var ultraCodeSpendLimit = ultraAuthority?.Authorization?.Limits.MaxSpendUsd;
+            if (budget.MaxCostUsd is { } taskRunLimit && runCost >= taskRunLimit)
+                throw new BudgetExceededException("límite de costo de Run alcanzado ($" + taskRunLimit + ")",
+                    configuredRunCap is { } originalRunLimit
+                        ? new("run", originalRunLimit, taskRunLimit, runId.ToString(), null) : null);
+            if (ultraCodeSpendLimit is { } authorityRunLimit)
+            {
+                if (runCost > authorityRunLimit)
+                    throw new BudgetExceededException("límite de gasto UltraCode del Run excedido ($" + authorityRunLimit + ")");
+                var quote = ModelInvocationCostBound.Quote(_selection, _pricing,
+                    _modelContextCapacity, _maximumGenerationRequestAttempts);
+                if (quote is null)
+                    throw new BudgetExceededException("cota monetaria de invocación desconocida");
+                decimal projected;
+                try { projected = checked(runCost + quote.Value); }
+                catch (OverflowException) { throw new BudgetExceededException("cota monetaria UltraCode no representable"); }
+                if (projected > authorityRunLimit)
+                    throw new BudgetExceededException("cota monetaria UltraCode excede el saldo del Run");
+            }
             if (_enforceDefaultSpendCaps && sessionCost >= sessionCap)
                 throw new BudgetExceededException("límite de sesión alcanzado ($" + sessionCap + ")",
                     new("session", _sessionCapUsd, sessionCap, null, null));
             if (_enforceDefaultSpendCaps && dailyCost >= dailyCap)
                 throw new BudgetExceededException("límite diario alcanzado ($" + dailyCap + ")",
                     new("daily", _dailyCapUsd, dailyCap, null, today));
+        }
+
+        string? ValidateUltraCodeToolBoundary(ToolCallId toolCallId)
+        {
+            var authority = CurrentAdaptiveUltraCodeAuthority();
+            if (authority?.Authorization is not { } grant) return null;
+            if (grant.IsExpiredAt(DateTimeOffset.UtcNow)) return "autorización UltraCode expirada";
+            var calls = CountRunUsage().ToolCalls;
+            calls.UnionWith(toolCallsAttemptedThisAsk);
+            if (calls.Count >= grant.Limits.MaxToolCalls)
+                return "límite UltraCode de llamadas a tools alcanzado";
+            toolCallsAttemptedThisAsk.Add(toolCallId);
+            return null;
         }
 
         void ValidateTokenBudget(bool includeNextInvocation)
@@ -597,7 +682,7 @@ public sealed class ExplorerTurn
 
         string? ReserveInvocation(string id)
         {
-            if (_spendReservations is null || (budget.MaxCostUsd is null && !_enforceDefaultSpendCaps)) return null;
+            if (_spendReservations is null || (EffectiveRunSpendLimit() is null && !_enforceDefaultSpendCaps)) return null;
             if (_enforceDefaultSpendCaps && _userSpendReader is not null)
                 QualificationSpendAccounting.Reconcile(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(
                     _userSpendReader.UserDataDirectory, CancellationToken.None), _spendReservations);
@@ -617,7 +702,8 @@ public sealed class ExplorerTurn
                 if (fresh.Incomplete || fresh.RunUsd is null || fresh.SessionUsd is null || fresh.DailyUsd is null)
                     throw new BudgetExceededException("uso histórico incompleto para reserva");
                 var limits = new List<SqliteSpendReservationStore.Limit>();
-                if (budget.MaxCostUsd is { } runLimit) limits.Add(new("run", runId.ToString(), runLimit, fresh.RunUsd.Value));
+                if (EffectiveRunSpendLimit() is { } runLimit)
+                    limits.Add(new("run", runId.ToString(), runLimit, fresh.RunUsd.Value));
                 if (_enforceDefaultSpendCaps)
                 {
                     var effectiveDaily = _dailyCapUsd;
@@ -640,7 +726,8 @@ public sealed class ExplorerTurn
                 throw new BudgetExceededException("cota de invocación excede presupuesto disponible (" + blocked + ")",
                     blocked switch
                     {
-                        "run" => new("run", configuredRunCap!.Value, budget.MaxCostUsd!.Value, runId.ToString(), null),
+                        "run" => UltraCodeRunSpendLimit() is null && configuredRunCap is { } originalCap
+                            ? new("run", originalCap, EffectiveRunSpendLimit() ?? 0m, runId.ToString(), null) : null,
                         "session" => new("session", _sessionCapUsd, sessionCap, null, null),
                         _ => new("daily", _dailyCapUsd, reservationDailyCap, null, reservationDay),
                     });
@@ -655,7 +742,8 @@ public sealed class ExplorerTurn
             else _spendReservations!.RecordUncertainCompletion(id, cost.Value, receipt);
         }
 
-        var hasReservationBoundary = _spendReservations is not null && (budget.MaxCostUsd is not null || _enforceDefaultSpendCaps);
+        var hasReservationBoundary = _spendReservations is not null
+            && (EffectiveRunSpendLimit() is not null || _enforceDefaultSpendCaps);
         string MetaReservationId(string invocation) => $"meta/{sessionId}/{runId}/{laneId}/{turnId}/{invocation}";
         bool ReserveMeta(string invocation)
         {
@@ -680,8 +768,9 @@ public sealed class ExplorerTurn
             {
                 // Preserve uncapped Turn lifecycle diagnostics; monetary caps must block
                 // before context materialization can itself issue a billable request.
-                if (budget.MaxTokens is not null || _metaModelProvider is not null
-                    && (budget.MaxCostUsd is not null || _enforceDefaultSpendCaps)) ValidateBeforeInvocation();
+                if (budget.MaxTokens is not null || CurrentAdaptiveUltraCodeAuthority() is not null
+                    || _metaModelProvider is not null
+                    && (EffectiveRunSpendLimit() is not null || _enforceDefaultSpendCaps)) ValidateBeforeInvocation();
             }
             catch (BudgetExceededException ex)
             {
@@ -817,7 +906,7 @@ public sealed class ExplorerTurn
                 var providerEntered = false;
                 try
                 {
-                    var budgeted = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
+                    var budgeted = EffectiveRunSpendLimit() is not null || _enforceDefaultSpendCaps;
                     ValidateBeforeInvocation();
 
                     stepReservation = ReserveInvocation($"primary/{sessionId}/{runId}/{laneId}/{turnId}/{nextModelStepIndex}");
@@ -912,6 +1001,8 @@ public sealed class ExplorerTurn
                     if (budgeted && stepCost is null)
                         throw new BudgetExceededException("uso del paso incompleto: no se puede hacer cumplir el tope");
                     var spend = CurrentSpend();
+                    if (budgeted && spend.Incomplete)
+                        throw new BudgetExceededException("uso histórico o reintentos incompletos: no se puede hacer cumplir el tope");
                     var runCost = AccumulatedSpend(spend.RunUsd, guard.CostUsd(), budgeted);
                     var sessionCost = AccumulatedSpend(spend.SessionUsd, guard.CostUsd(), budgeted);
                     var dailyCost = AccumulatedSpend(spend.DailyUsd, guard.CostUsd(), budgeted);
@@ -919,6 +1010,9 @@ public sealed class ExplorerTurn
                         && runCost > budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
                             new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
+                    if (CurrentAdaptiveUltraCodeAuthority()?.Authorization?.Limits.MaxSpendUsd is { } ultraSpendLimit
+                        && runCost > ultraSpendLimit)
+                        throw new BudgetExceededException("límite de gasto UltraCode del Run excedido ($" + ultraSpendLimit + ")");
                     if (_enforceDefaultSpendCaps)
                     {
                         ValidateSessionDaily(sessionCost, dailyCost, sessionCap, dailyCap, today);
@@ -965,6 +1059,14 @@ public sealed class ExplorerTurn
 
                 foreach (ToolCallBlock call in toolBlocks)
                 {
+                    var ultraToolLimitError = ValidateUltraCodeToolBoundary(call.Id);
+                    if (ultraToolLimitError is not null)
+                    {
+                        EmitBudgetExceeded(stream, turnId, ultraToolLimitError);
+                        stop = StopReason.Cancelled;
+                        finalText = "Presupuesto agotado: " + ultraToolLimitError;
+                        break;
+                    }
                     try
                     {
                         guard.RecordToolCall();
@@ -1201,7 +1303,7 @@ public sealed class ExplorerTurn
                 ReadTurnModelStepCost(stream, turnId), usageAvailable: !invalidUsageObserved);
             AuditPolicy(sessionId, runId, turnId, stop);
             return new TurnResult(finalText is null ? null : _redaction.Redact(finalText), stop, steps,
-                turnUsage, allToolCalls.ToArray(), artifactId);
+                turnUsage, allToolCalls.ToArray(), artifactId, turnId: turnId);
         }
         catch (Exception ex)
         {

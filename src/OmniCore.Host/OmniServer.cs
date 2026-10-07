@@ -2386,7 +2386,8 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
             var result = execute(cancellationToken);
             var policyTransition = result.StopReason == StopReason.EndTurn
-                ? EvaluateCompletedTurnModePolicy(sessionId, runId, sequenceBefore.Value, cancellationToken) : null;
+                ? EvaluateCompletedTurnModePolicy(sessionId, runId, sequenceBefore.Value,
+                    commandId, result.TurnId, cancellationToken) : null;
             var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                 sessionId, sequenceBefore.Value, commandId);
             return (result, ack, null, policyTransition);
@@ -2402,7 +2403,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private InternalCommandResult? EvaluateCompletedTurnModePolicy(SessionId session, RunId run,
-        long before, CancellationToken cancellationToken)
+        long before, CommandId commandId, TurnId? completedTurnId, CancellationToken cancellationToken)
     {
         lock (_modeAuthorityMutationGate)
         {
@@ -2410,11 +2411,15 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             var own = EventsForRun(all, run);
             var authority = RunProjection.Replay(session, run, _codecs, own).ModeAuthority;
             if (authority is null || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow)) return null;
-            var completed = own.Where(evt => evt.Sequence > before)
-                .Select(_codecs.Decode).OfType<TurnCompleted>().LastOrDefault();
+            if (completedTurnId is null)
+                return PolicyTransitionResult(CommandId.New().ToString(), null,
+                    RuntimeCommandOutcome.Deferred("TurnIdentityUnavailable"));
+            var caused = SelectCommandResultEvents(own, session, before, commandId);
+            var completed = caused.Select(_codecs.Decode).OfType<TurnCompleted>()
+                .SingleOrDefault(item => item.TurnId == completedTurnId);
             if (completed is null) return null;
-            var source = own.LastOrDefault(evt => evt.Sequence > before
-                && _codecs.Decode(evt) is RunModeProposed proposal && proposal.TurnId == completed.TurnId);
+            var source = caused.LastOrDefault(evt =>
+                _codecs.Decode(evt) is RunModeProposed proposal && proposal.TurnId == completed.TurnId);
             if (source is null || _codecs.Decode(source) is not RunModeProposed proposed) return null;
             // Only the explicit covered-plan predicate is implemented here. A model's reason
             // alone is not an observable product-policy justification for other transitions.
