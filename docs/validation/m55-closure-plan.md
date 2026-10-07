@@ -7,6 +7,17 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 00:53 UTC: corregido el gate de cualificación `CreditBalance`:
+sin precios completos no se despacha aunque el usuario consienta y el probe
+declare coste máximo cero. RED: 9 casos / 7 PASS / 2 FAIL (ambos CreditBalance,
+una llamada en vez de cero), `qualification-credit-pricing-red.log`.
+Después del fix: 56 PASS / 0 FAIL / 0 SKIP, 2.665s,
+`qualification-credit-pricing-final.log`; build 0 warnings/errores.
+Incluye precio completo con créditos, Missing/Partial de CreditBalance,
+MeteredCurrency y Unknown, cancelación, retry, evidencia y GC. Todo offline.
+No corrige todavía la brecha del diario User en cualificación descrita debajo,
+ni acredita una suite completa verde o consumo autenticado.
+
 Actualización 00:44 UTC: commit `0ec4955` guardado. Full sobre ese commit terminó:
 2336 casos = 2331 PASS / 1 FAIL / 4 SKIP (symlink), 375.762s,
 `spend-reservation-wired-full.log`. El único fallo fue la fecha fija Oct6 en
