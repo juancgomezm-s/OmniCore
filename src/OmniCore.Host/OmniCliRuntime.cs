@@ -1064,7 +1064,13 @@ public sealed class OmniCliRuntime
         var initialized = server.EnsureSessionRoutingPolicy(session);
         if (initialized.Status != "ok") { writeLine(initialized.Error ?? "Routing policy initialization rejected"); return 1; }
         var authorization = server.AuthorizeModelRoute(session, run, route, mode, requireConsent);
-        if (authorization.Authorized) return null;
+        if (authorization.Failure is { } authorizationFailure)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(authorizationFailure);
+        if (authorization.Ack.Status != "ok")
+        { writeLine(authorization.Ack.Error ?? "Model route authorization could not be confirmed"); return 1; }
+        if (authorization.Authorized
+            && authorization.Ack.Outcome?.Kind is RuntimeCommandOutcomeKind.NoOp or RuntimeCommandOutcomeKind.Accepted)
+            return null;
         if (authorization.Interaction is not { } interaction)
         { writeLine(authorization.Ack.Error ?? "Model route authorization rejected"); return 1; }
         if (HasInteractionClient)
@@ -1076,10 +1082,19 @@ public sealed class OmniCliRuntime
             var selected = CreateInteractionResponder(writeLine, locale)(request) ?? "deny";
             var ack = server.RespondToInteraction(interaction, selected);
             if (ack.Status != "ok") { writeLine(ack.Error ?? "Model route response rejected"); return 1; }
-            if (selected == "allow_route" && server.AuthorizeModelRoute(session, run, route, mode).Authorized) return null;
+            if (selected == "allow_route")
+            {
+                var confirmed = server.AuthorizeModelRoute(session, run, route, mode);
+                if (confirmed.Failure is { } confirmedFailure)
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(confirmedFailure);
+                if (confirmed.Authorized && confirmed.Ack.Status == "ok"
+                    && confirmed.Ack.Outcome?.Kind is RuntimeCommandOutcomeKind.NoOp or RuntimeCommandOutcomeKind.Accepted)
+                    return null;
+            }
             return 1;
         }
         var denial = server.ResolveModelRouteWithoutClient(session, run, interaction);
+        denial.ThrowIfFailure();
         if (denial.Status != "ok") writeLine(denial.Error ?? "NoClient route denial rejected");
         return 1;
     }
@@ -1120,6 +1135,7 @@ public sealed class OmniCliRuntime
             return 3;
         }
         var ack = server.ResolveBudgetWithoutClient(session, run, requestPayload.InteractionId);
+        ack.ThrowIfFailure();
         if (ack.Status != "ok") writeLine(ack.Error ?? "Budget denial was rejected");
         return 1;
     }

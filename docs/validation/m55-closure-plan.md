@@ -1,5 +1,14 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 05:29 UTC: routing y denegaciones conservan Ack/Failure; autorización
+no confirmada bloquea el gate CLI. RED7/7; final52PASS/0FAIL5.588s y arquitectura
+56PASS .599s. SQLite privado real; fallos/proveedores fixtures, sin consumo real.
+Oracle de presupuesto corregido a cinco eventos exactos del lifecycle existente.
+Full nueva pendiente; anterior sobre98224ea terminal2607=2603PASS/0FAIL/4SKIP
+250.515s. Pendientes: EnsureSessionRoutingPolicy/follow-up/escalación excepcionales,
+AgentProfile reusable/efectivo, contenido provider.adapter y tipos/eventos M6
+congelados aceptados. No cierre M5.5 ni implementación scheduler/joins.
+
 2026-10-07 05:15 UTC: PlanApproval errores/persistencia/confirmación conservan
 Ack/Failure y sólo ID confirmada; AwaitingInput recupera pendienteNoOp sin duplicar.
 CLI validaAck antes esperar respuesta; wrapper conservaexception/OCE. RED6/8;

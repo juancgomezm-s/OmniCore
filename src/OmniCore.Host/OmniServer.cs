@@ -1542,99 +1542,151 @@ public sealed class OmniServer : IOmniClient
         return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.Accepted(), session, before, commandId);
     }
 
-    internal (bool Authorized, InteractionId? Interaction, CommandAck Ack) AuthorizeModelRoute(
+    internal (bool Authorized, InteractionId? Interaction, CommandAck Ack, Exception? Failure) AuthorizeModelRoute(
         SessionId session, RunId run, ModelRoute route, BillingMode mode, bool requireConsent = false)
     {
         var commandId = CommandId.New();
         var messageId = commandId.ToString();
-        var control = new RunControlService(_store, _codecs);
-        if (_lastSessionId != session || _lastRunId != run || control.ActiveRun(session) != run)
-            return (false, null, new CommandAck(messageId, "error", "Routing authorization requires the selected active Run",
-                RuntimeCommandOutcome.Rejected()));
-        var before = _store.CurrentSequence(session);
-        var events = _store.ReadFrom(session, 1);
-        var policy = SessionRoutingAuthorization.Read(events, _codecs, session);
-        if (policy is null)
-            return (false, null, new CommandAck(messageId, "error", "Session routing policy is absent", RuntimeCommandOutcome.Rejected()));
-        if (!requireConsent && policy.Allows(route, mode))
-            return (true, null, CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.NoOp(), session, before, commandId));
-        var offer = new SessionRoutingAuthorization.Offer(policy.Revision, AuthorizedModelRoute.From(route, mode));
-        var pending = new Dictionary<InteractionId, InteractionRequested>();
-        foreach (var evt in events)
-        {
-            switch (_codecs.Decode(evt))
-            {
-                case InteractionRequested request when evt.RunId == run:
-                    pending[request.InteractionId] = request; break;
-                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
-                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
-            }
-        }
-        var existing = pending.Values.FirstOrDefault(request => SessionRoutingAuthorization.Parse(request) == offer);
-        if (existing is not null)
-            return (false, existing.InteractionId, CommandOutcomeAck(messageId, "ok", null,
-                RuntimeCommandOutcome.Deferred("ModelRouteConsent"), session, before, commandId));
-        var interaction = InteractionId.New();
-        using var command = CausationScope.Begin(new CommandCausation(commandId));
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: run));
-        new EventStream(_store, _codecs, session).Append(new InteractionRequested(interaction,
-            InteractionKind.ModelRouteConsent, SessionRoutingAuthorization.Context(offer),
-            "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_route\",\"intent\":\"allow\"}]",
-            "deny", null, null, null, null, 0, 1), DurabilityClass.Barrier);
-        return (false, interaction, CommandOutcomeAck(messageId, "ok", null,
-            RuntimeCommandOutcome.Deferred("ModelRouteConsent"), session, before, commandId));
-    }
-
-    internal CommandAck ResolveModelRouteWithoutClient(SessionId session, RunId run, InteractionId interaction)
-    {
-        var commandId = CommandId.New();
-        var control = new RunControlService(_store, _codecs);
-        var events = _store.ReadFrom(session, 1);
-        if (_lastSessionId != session || _lastRunId != run || control.ActiveRun(session) != run
-            || events.LastOrDefault(evt => _codecs.Decode(evt) is InteractionRequested request
-                && request.InteractionId == interaction)?.RunId != run)
-            return new CommandAck(commandId.ToString(), "error", "Routing interaction does not belong to the selected active Run",
-                RuntimeCommandOutcome.Rejected());
-        var before = _store.CurrentSequence(session);
-        using var command = CausationScope.Begin(new CommandCausation(commandId));
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: run));
+        long? before = null;
         try
         {
-            control.ResolveModelRouteWithoutClient(session, interaction);
-            return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.Accepted(), session, before, commandId);
+            var control = new RunControlService(_store, _codecs);
+            if (_lastSessionId != session || _lastRunId != run || control.ActiveRun(session) != run)
+                return (false, null, new CommandAck(messageId, "error", "Routing authorization requires the selected active Run",
+                    RuntimeCommandOutcome.Rejected()), null);
+            before = _store.CurrentSequence(session);
+            var events = _store.ReadFrom(session, 1);
+            var policy = SessionRoutingAuthorization.Read(events, _codecs, session);
+            if (policy is null)
+                return (false, null, new CommandAck(messageId, "error", "Session routing policy is absent", RuntimeCommandOutcome.Rejected()), null);
+            if (!requireConsent && policy.Allows(route, mode))
+            {
+                var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.NoOp(), session, before.Value, commandId);
+                return (ack.Status == "ok" && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.NoOp, null, ack, null);
+            }
+            var offer = new SessionRoutingAuthorization.Offer(policy.Revision, AuthorizedModelRoute.From(route, mode));
+            var pending = new Dictionary<InteractionId, InteractionRequested>();
+            foreach (var evt in events)
+            {
+                switch (_codecs.Decode(evt))
+                {
+                    case InteractionRequested request when evt.RunId == run:
+                        pending[request.InteractionId] = request; break;
+                    case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                    case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+                }
+            }
+            var existing = pending.Values.FirstOrDefault(request => SessionRoutingAuthorization.Parse(request) == offer);
+            if (existing is not null)
+            {
+                var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelRouteConsent"),
+                    session, before.Value, commandId);
+                return (false, ack.Status == "ok" ? existing.InteractionId : null, ack, null);
+            }
+            var interaction = InteractionId.New();
+            using var command = CausationScope.Begin(new CommandCausation(commandId));
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: run));
+            new EventStream(_store, _codecs, session).Append(new InteractionRequested(interaction,
+                InteractionKind.ModelRouteConsent, SessionRoutingAuthorization.Context(offer),
+                "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_route\",\"intent\":\"allow\"}]",
+                "deny", null, null, null, null, 0, 1), DurabilityClass.Barrier);
+            var consentAck = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelRouteConsent"),
+                session, before.Value, commandId);
+            return (false, consentAck.Status == "ok" ? interaction : null, consentAck, null);
         }
-        catch (Exception ex) when (ex is InvalidInteractionOptionException or InteractionNotPendingException)
+        catch (Exception failure)
         {
-            return CommandOutcomeAck(commandId.ToString(), "error", ex.Message, RuntimeCommandOutcome.Rejected(), session, before, commandId);
+            if (before is null) return (false, null, UnavailableCommandOutcome(messageId), failure);
+            try
+            {
+                var persisted = CommandResultEvents(session, before.Value, commandId);
+                var observed = persisted.Select(_codecs.Decode).OfType<InteractionRequested>()
+                    .LastOrDefault(request => request.Kind == InteractionKind.ModelRouteConsent);
+                var ack = persisted.Length == 0
+                    ? new CommandAck(messageId, "error", failure.Message, RuntimeCommandOutcome.Rejected())
+                    : new CommandAck(messageId, "error", failure.Message, RuntimeCommandOutcome.Accepted(),
+                        persisted.Min(evt => evt.Sequence), persisted.Max(evt => evt.Sequence));
+                return (false, observed?.InteractionId, ack, failure);
+            }
+            catch (Exception)
+            {
+                return (false, null, UnavailableCommandOutcome(messageId), failure);
+            }
         }
     }
 
-    internal CommandAck ResolveBudgetWithoutClient(SessionId sessionId, RunId runId, InteractionId interactionId)
+    internal InternalCommandResult ResolveModelRouteWithoutClient(SessionId session, RunId run, InteractionId interaction)
+    {
+        var commandId = CommandId.New();
+        long? before = null;
+        try
+        {
+            var control = new RunControlService(_store, _codecs);
+            var events = _store.ReadFrom(session, 1);
+            if (_lastSessionId != session || _lastRunId != run || control.ActiveRun(session) != run
+                || events.LastOrDefault(evt => _codecs.Decode(evt) is InteractionRequested request
+                    && request.InteractionId == interaction)?.RunId != run)
+                return new CommandAck(commandId.ToString(), "error", "Routing interaction does not belong to the selected active Run",
+                    RuntimeCommandOutcome.Rejected());
+            before = _store.CurrentSequence(session);
+            using var command = CausationScope.Begin(new CommandCausation(commandId));
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: run));
+            try
+            {
+                control.ResolveModelRouteWithoutClient(session, interaction);
+                return CommandOutcomeAck(commandId.ToString(), "ok", null, RuntimeCommandOutcome.Accepted(), session, before.Value, commandId);
+            }
+            catch (Exception ex) when (ex is InvalidInteractionOptionException or InteractionNotPendingException)
+            {
+                return CommandOutcomeAck(commandId.ToString(), "error", ex.Message, RuntimeCommandOutcome.Rejected(), session, before.Value, commandId);
+            }
+        }
+        catch (Exception failure)
+        {
+            return new InternalCommandResult(before is null
+                ? UnavailableCommandOutcome(commandId.ToString())
+                : FailedDurableCommandAck(commandId.ToString(), session, before.Value,
+                    failure.Message, restoreRunIdentity: false), failure);
+        }
+    }
+
+    internal InternalCommandResult ResolveBudgetWithoutClient(SessionId sessionId, RunId runId, InteractionId interactionId)
     {
         var commandId = CommandId.New();
         var messageId = commandId.Value.ToString();
-        var control = new RunControlService(_store, _codecs);
-        if (_lastSessionId != sessionId || _lastRunId != runId || control.ActiveRun(sessionId) != runId)
-            return new CommandAck(messageId, "error", "Budget interaction does not belong to the current active Run",
-                RuntimeCommandOutcome.Rejected());
-        var requestEvent = _store.ReadFrom(sessionId, 1).LastOrDefault(evt =>
-            _codecs.Decode(evt) is InteractionRequested request && request.InteractionId == interactionId);
-        if (requestEvent?.RunId != runId)
-            return new CommandAck(messageId, "error", "Budget interaction has no matching Run attribution",
-                RuntimeCommandOutcome.Rejected());
-        var sequenceBefore = _store.CurrentSequence(sessionId);
-        using var command = CausationScope.Begin(new CommandCausation(commandId));
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: runId));
+        long? sequenceBefore = null;
         try
         {
-            control.ResolveBudgetWithoutClient(sessionId, interactionId);
-            return CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
-                sessionId, sequenceBefore, commandId);
+            var control = new RunControlService(_store, _codecs);
+            if (_lastSessionId != sessionId || _lastRunId != runId || control.ActiveRun(sessionId) != runId)
+                return new CommandAck(messageId, "error", "Budget interaction does not belong to the current active Run",
+                    RuntimeCommandOutcome.Rejected());
+            var requestEvent = _store.ReadFrom(sessionId, 1).LastOrDefault(evt =>
+                _codecs.Decode(evt) is InteractionRequested request && request.InteractionId == interactionId);
+            if (requestEvent?.RunId != runId)
+                return new CommandAck(messageId, "error", "Budget interaction has no matching Run attribution",
+                    RuntimeCommandOutcome.Rejected());
+            sequenceBefore = _store.CurrentSequence(sessionId);
+            using var command = CausationScope.Begin(new CommandCausation(commandId));
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: runId));
+            try
+            {
+                control.ResolveBudgetWithoutClient(sessionId, interactionId);
+                return CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                    sessionId, sequenceBefore.Value, commandId);
+            }
+            catch (Exception ex) when (ex is InteractionNotPendingException or InvalidInteractionOptionException or RunNotActiveException)
+            {
+                return CommandOutcomeAck(messageId, "error", ex.Message, RuntimeCommandOutcome.Rejected(),
+                    sessionId, sequenceBefore.Value, commandId);
+            }
         }
-        catch (Exception ex) when (ex is InteractionNotPendingException or InvalidInteractionOptionException or RunNotActiveException)
+        catch (Exception failure)
         {
-            return CommandOutcomeAck(messageId, "error", ex.Message, RuntimeCommandOutcome.Rejected(),
-                sessionId, sequenceBefore, commandId);
+            return new InternalCommandResult(sequenceBefore is null
+                ? UnavailableCommandOutcome(messageId)
+                : FailedDurableCommandAck(messageId, sessionId, sequenceBefore.Value,
+                    failure.Message, restoreRunIdentity: false), failure);
         }
     }
 
