@@ -1,5 +1,54 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Solicitud de razonamiento declarada — 2026-10-07 02:53 UTC
+
+`ReasoningCapability.ValidateRequest` rechaza una solicitud no nula cuando
+`Supported=false`, o cuando existe una lista declarada de esfuerzos que no
+contiene su `Kind` exacto. Null/Unknown no se convierten en soporte ni en
+ausencia de soporte. Sin solicitud no hay contradicción; una lista vacía no
+equivale a una lista no informada. No hay ranking, cambio de mayúsculas,
+heurística por nombre ni traducción universal entre esfuerzos y budgets.
+
+ExplorerTurn comprueba antes de escribir eventos o invocar; devuelve Error
+sin herramientas ni nuevos ModelSteps ante contradicción. MetaModelService
+comprueba antes de reservar/persistir/despachar y ProbeRunner antes de admitir
+por observer. Ambos rechazan con InvalidOperationException. Los tres conservan
+la selección en `ModelRequest.Reasoning`, sin introducir otra fuente de policy.
+Esto no amplía permisos ni consentimiento de gasto. La cualificación normal
+de Host, que selecciona Reasoning=null, no solicita un esfuerzo por el mero
+hecho de ejecutar un probe de tipo Reasoning.
+
+Luna aportó propuestas offline y auditoría de call sites; root corrigió tipos
+del fixture (IEventCodecRegistry y ExplorerTurn.TurnResult), alineó la respuesta
+scripted del control del probe con su respuesta esperada, reprodujo los 12 REDs
+y realizó la implementación. `declared-reasoning-request-red.log`:
+12 casos / 12 FAIL / 1.128s. `declared-reasoning-request-final.log`:
+67 PASS / 0 FAIL / 5.798s. Barrido ampliado con cualificación y TUI:
+`declared-reasoning-and-tui-final.log`, 154 PASS / 0 FAIL / 0 SKIP,
+95.095s, build 0 warnings / 0 errores. Cifras solapadas, no sumar.
+
+Reproducción mínima de esta frontera, tras el build indicado más abajo:
+
+```powershell
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*DeclaredReasoningRequestTests' -class '*SecondaryReasoningRequestTests'
+```
+
+Fixtures con proveedor en memoria y CAS/SQLite privados; no llamadas
+autenticadas, factura real ni evidencia de protocolos del proveedor. Los
+adaptadores nativos ya recurrían a ModelSelection.Reasoning cuando la request
+era null: no se afirma que todo esfuerzo se perdiera en la transmisión.
+La validación y representación neutral corregidas aquí NO resuelven todavía
+el dialecto de esfuerzo de cada adapter, el storage opaco general seguro ni
+las políticas de replay restantes.
+
+Suite completa sobre89e990a antes de estas correcciones:
+`visible-content-reopen-full.log`, 2469 casos / 2464 PASS / 1 FAIL /
+4 SKIP symlink, 342.495s, terminal exit1. El FAIL fue una lectura del
+SubViews del selector mientras el hilo UI lo reemplazaba en TuiWiringTests.
+La prueba ahora inspecciona sus snapshots y elige en el propio hilo UI,
+manteniendo las mismas assertions; los 154 casos incluyen esa regresión.
+No se acredita aún suite completa verde del estado posterior.
+
 ## Contenido visible durable — 2026-10-07 02:42 UTC
 
 Se corrigió la pérdida de razonamiento y texto intermedio al reabrir SQLite/CAS
