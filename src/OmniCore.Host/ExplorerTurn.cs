@@ -848,8 +848,7 @@ public sealed class ExplorerTurn
                     providerEntered = true;
                     resolved = _complete(request, cancellationToken);
                     continuation = resolved.State;
-                    var stepResponse = string.Join("\n", resolved.Content.OfType<TextBlock>()
-                        .Select(block => _redaction.Redact(block.Text)));
+                    var stepResponse = VisibleAnswerText(resolved.Content) ?? string.Empty;
                     var stepCost = _pricing?.CostUsd(resolved.Usage, resolved.ReportedUsageFields);
                     var completedDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
                         System.Globalization.CultureInfo.InvariantCulture);
@@ -943,15 +942,11 @@ public sealed class ExplorerTurn
                 // Cancellation arriving with a completed response must retain its durable
                 // usage/state, but cannot publish tool effects or a new approval request.
                 cancellationToken.ThrowIfCancellationRequested();
-                finalText = null;
+                finalText = VisibleAnswerText(resolved.Content);
                 var toolBlocks = new List<ToolCallBlock>();
                 foreach (ContentBlock block in resolved.Content)
                 {
-                    if (block is TextBlock text)
-                    {
-                        finalText = _redaction.Redact(text.Text);
-                    }
-                    else if (block is ToolCallBlock call)
+                    if (block is ToolCallBlock call)
                     {
                         toolBlocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
                             _redaction.Redact(call.ArgumentsJson)));
@@ -1429,6 +1424,14 @@ public sealed class ExplorerTurn
             return new PersistedSpend(null, null, null, true);
         }
         return ReadMetaSpend(metaEvents, sessionId, runId, today);
+    }
+
+    // Preserve all answer text exactly, including separators supplied by the provider. Reasoning,
+    // citations and tools are independent blocks, not part of the visible answer or its summary.
+    private string? VisibleAnswerText(IReadOnlyList<ContentBlock> content)
+    {
+        var blocks = content.OfType<TextBlock>().ToArray();
+        return blocks.Length == 0 ? null : _redaction.Redact(string.Concat(blocks.Select(block => block.Text)));
     }
 
     private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,

@@ -1,5 +1,60 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Aceptación en curso: respuesta completa y continuación normal — 2026-10-07 12:03 UTC
+
+El chat no debe perder bloques de texto de una misma respuesta: `ExplorerTurn`
+conservaba sólo el último en `FinalText` y añadía separadores al resumen por paso.
+El cambio concatena el texto superior en orden, sin añadir separadores ni incluir
+razonamiento. Cinco controles verifican respuesta, Markdown de tabla/código,
+redacción, artifacts terminales, reapertura SQLite y contexto del Turn siguiente.
+Verifican conservación del contenido; **no son pruebas del renderer visual**.
+
+La integración normal de `TuiTurnHost` ahora prueba HTTP loopback → pregunta →
+revocación → reapertura SQLite → respuesta al cuestionario → mismo Turn → nuevo
+Turn. El suspendido conserva el reasoning original y el nuevo no revive UltraCode.
+La comparación de ruta usa igualdad de identidad, no referencia de objeto; el
+rechazo de una ruta distinta permanece obligatorio.
+
+Build `turn-continuation-route-build-1202.log`: exit0, cero errores/advertencias,
+15.57 s. Focal `turn-continuation-route-focal-1203.log`: **37 casos, 36 PASS,
+1 FAIL, 0 SKIP**, 8.996 s. El fallo de concurrencia revela que un envío durante
+generación viva puede confundirse con continuación del Turn y reutilizar su boost.
+Se mantiene abierto hasta corregir admisión y verificar el conjunto; la FULL
+anterior no acredita este WIP. Los logs están en el directorio de evidencia de abajo.
+Todo provider es scripted; SQLite/CAS y el camino Host son reales, pero no hay
+consulta autenticada, gasto real ni cualificación real acreditados por estos fixtures.
+
+Actualización 12:10 UTC: los cinco controles de texto fallan al restaurar sólo el
+comportamiento anterior (`visible-response-red-tests-1208.log`, 0.697 s). El
+control normal de continuación falla al desconectar sólo la selección del Turn
+abierto (`normal-continuation-red-tests-1209.log`, 2 casos, 1 PASS/1 FAIL,
+1.183 s). No se modificaron las assertions. Tras restaurar ambos arreglos y
+añadir admisión exclusiva no bloqueante por instancia de runtime, build completo
+exit0, cero errores/advertencias, 15.39 s. Focal ampliada: **135 PASS, 0 FAIL,
+0 SKIP**, 11.469 s; arquitectura **56 PASS**, 0.492 s. La escalación interna
+autorizada conserva su reentrada bajo esa admisión; los entrypoints externos no
+pueden duplicarla. FULL `turn-continuation-full-1210.log` terminó con exit0:
+**2856 casos, 2852 PASS, 0 FAIL, 4 SKIP** por permisos de symlink, 121.660 s.
+Los conteos se solapan con la focal y no se suman. El guard es local a una
+instancia de runtime, no un scheduler ni un lease entre procesos. Continúan
+controles adicionales de resumes concurrentes, liberación por error/cancelación
+y compatibilidad legacy; el objetivo íntegro y las demás filas siguen abiertos.
+
+Integración OmniCoder repetida con todo el grafo recompilado en outputs privados:
+build `turn-continuation-omnicoder-build-1212.log`, exit0, cero errores/advertencias,
+16.78 s. Probe `turn-continuation-omnicoder-probe-1213.log`, exit0: Host/SQLite,
+Explorer, Protocol JSON, ViewModel net8 y binding WPF reales; razonamiento separado
+del primer texto, terminales limpian indicadores, contexto/consumo separados,
+polling idempotente y cambio de sesión aislado, sin modificar Git. Evidencia en
+`C:/Users/juanc/AppData/Local/Temp/omni-observability-probe-cd29012f66334c76b90ffabc7d0e9ecd`.
+Provider scripted; no autenticación ni consumo real. No acredita el cableado de
+toda la aplicación OmniCoder ni una revisión visual interactiva de la TUI.
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor -class '*ExplorerVisibleResponseIntegrationTests' -class '*ModeAuthoritySuspensionIntegrationTests' -class '*TurnBoostTuiAdmissionTests' -class '*ReasoningReplayResumeTests' -class '*CliEndToEndTests'
+```
+
 ## Aceptación de cualificación y suspensión — 2026-10-07 11:44 UTC
 
 Root corrigió el oracle de M5: `ProbeScorer.ExtractText` concatena todo el texto
@@ -65,7 +120,7 @@ y los once de ADR0047 se conservan expresamente.
 | ADR0047 criterio 4: modelo/reasoning no conceden autoridad | `ModeAuthorityContractTests` comprueba origen User confiable, rejects y authority/fingerprint; no atribuir a User un command del modelo. |
 | ADR0047 criterio 5: permisos, gasto y preguntas no cambian modo | Tests de PlanApproval distinguen approve_execute/approve_only/reject; permisos y consentimiento siguen separados. Falta aceptación integral de todos los caminos, no extrapolar del gate interno. |
 | ADR0047 criterio 6: transición UltraCode autorizada | Matriz SQLite de pinned/revoked/expiry/consentimiento/steps/tools/grants falsificados. Método interno sin caller de producción ni trigger determinista aceptado: activación real abierta. |
-| ADR0047 criterio 7: revocación durante espera y reinicio | Nuevos controles pinned/revoked sobreviven reopen; todavía no sustituyen un flujo completo de espera→revocación→reopen→resume. Herencia a hijos no se acredita con un gate de raíz. |
+| ADR0047 criterio 7: revocación durante espera y reinicio | `ModeAuthoritySuspensionIntegrationTests` incluye flujo normal TuiTurnHost→HTTP scripted→pregunta→revocación→SQLite reopen→respuesta→mismo Turn y nuevo Turn sin reactivar UltraCode; focal 12:10 y FULL2856 verdes. Herencia a hijos no se acredita con un gate de raíz ni se implementa scheduling M6. |
 | ADR0047 criterio 8: gates proporcionales / Plan interno | Los tres controles directos verifican un Task/Lane raíz y ausencia de PlanApproval/tools/hijos; conservan el seguimiento técnico. |
 | ADR0047 criterio 9: thinking efectivo y boost de un Turn | Resolución durable, precedencia, capacidad, wire y admisión TUI cuentan con fixtures dedicados. No afirmar thinking real de un modelo por estas pruebas ni usar reasoning para activar UltraCode. |
 | ADR0047 criterio 10: aislamiento Run/restart/retry | Tests de autoridad multi-Run, razonamiento/replay, snapshot y boosts. NotDispatched debe cerrar exclusivamente su `(TurnId, StepIndex)`, no pasos vecinos. |
