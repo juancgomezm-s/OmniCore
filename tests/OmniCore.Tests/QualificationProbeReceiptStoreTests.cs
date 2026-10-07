@@ -9,6 +9,48 @@ namespace OmniCore.Tests;
 public sealed class QualificationProbeReceiptStoreTests
 {
     [Fact]
+    public void Failed_publication_commit_releases_lease_without_a_false_receipt()
+    {
+        using var fixture = new Fixture();
+        using var store = fixture.Open();
+        fixture.Exec("CREATE TRIGGER reject_receipt BEFORE INSERT ON qualification_probe_receipts BEGIN SELECT RAISE(ABORT,'fixture failure'); END");
+        var observation = fixture.Observation();
+        Assert.Throws<SqliteException>(() => store.PublishProbeReceipt(observation, artifacts =>
+            artifacts.PutText("{\"schema\":\"" + QualificationProbeReceipt.EvidenceSchema
+                + "\",\"receipt\":" + observation.CanonicalObservationJson() + "}",
+                "application/json", ArtifactKind.Other, Sensitivity.Sensitive), CancellationToken.None));
+        Assert.Empty(store.ProbeReceipts(CancellationToken.None));
+        using (var available = new FileStream(Path.Combine(fixture.Root, ".artifact-gc.lease"),
+            FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+        Assert.Equal(1, fixture.Sweep().Deleted); // Failed commit left an orphan, not a canonical root.
+    }
+
+    [Fact]
+    public void Publication_and_rooting_hold_one_gc_lease_even_with_zero_grace()
+    {
+        using var fixture = new Fixture();
+        using var store = fixture.Open();
+        var observation = fixture.Observation();
+        var receipt = store.PublishProbeReceipt(observation, artifacts =>
+        {
+            var evidence = artifacts.PutText("{\"schema\":\"" + QualificationProbeReceipt.EvidenceSchema
+                + "\",\"receipt\":" + observation.CanonicalObservationJson() + "}",
+                "application/json", ArtifactKind.Other, Sensitivity.Sensitive);
+            // Deterministic OS evidence: even after PutText returns, a competing
+            // sweep cannot take the lease before the canonical root is committed.
+            Assert.Throws<IOException>(() =>
+            {
+                using var competing = new FileStream(Path.Combine(fixture.Root, ".artifact-gc.lease"),
+                    FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            });
+            return evidence;
+        }, CancellationToken.None);
+        Assert.Equal(0, fixture.Sweep().Deleted);
+        using var reopened = fixture.Open();
+        Assert.Equal(receipt, Assert.Single(reopened.ProbeReceipts(CancellationToken.None)));
+    }
+
+    [Fact]
     public void Canonical_reader_is_readonly_repeated_and_missing_namespace_is_not_created()
     {
         using var fixture = new Fixture();

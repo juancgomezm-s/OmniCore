@@ -1,7 +1,6 @@
 namespace OmniCore.Host;
 
 using System.Globalization;
-using System.Text.Json;
 using OmniCore.Domain;
 using OmniCore.Infrastructure;
 using OmniCore.Qualification;
@@ -13,7 +12,6 @@ internal sealed class QualificationSpendAccounting : IProbeExecutionObserver
     private readonly SqliteModelQualificationStore _store;
     private readonly SqliteSpendReservationStore _reservations;
     private readonly UserWorkspaceSpendReader _workspaces;
-    private readonly FileArtifactStore _artifacts;
     private readonly Guid _executionId = Guid.NewGuid();
     private readonly string _keyHash, _taskSetHash;
     private readonly decimal _maximum, _suiteCap, _dailyCap;
@@ -30,7 +28,6 @@ internal sealed class QualificationSpendAccounting : IProbeExecutionObserver
         _maximum = maximum; _attemptBound = attemptBound; _billing = billing;
         _suiteCap = suiteCap; _dailyCap = dailyCap;
         _workspaces = new UserWorkspaceSpendReader(dataDirectory);
-        _artifacts = new FileArtifactStore(dataDirectory);
         _reservations = new SqliteSpendReservationStore(Path.Combine(dataDirectory, "spend-reservations.db"));
     }
 
@@ -71,37 +68,9 @@ internal sealed class QualificationSpendAccounting : IProbeExecutionObserver
     {
         if (_active is not { } active || active.Request != request)
             throw new InvalidOperationException("Qualification observation has no matching admission.");
-        var result = observation.Result;
-        // Invalid provider counters are raw evidence, not usable measurements. Preserve
-        // them separately in CAS and retain an unknown-cost receipt with its full bound.
-        var invalidUsage = result.Usage is { } raw && TokenUsageValidation.IsInvalid(raw, result.ReportedUsageFields);
-        var receipt = new QualificationProbeReceipt(_executionId, request.Probe.Id.ToString(), _ordinal,
-            active.Id, _keyHash, QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion, _taskSetHash,
-            active.Started, observation.CompletedAtUtc, result.Status, observation.Termination,
-            _billing, _maximum, _attemptBound, observation.ObservedGenerationSends,
-            invalidUsage ? null : result.CostUsd, invalidUsage ? null : result.Usage,
-            invalidUsage ? TokenUsageFields.None : result.ReportedUsageFields, null!);
-        using var buffer = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(buffer))
-        {
-            writer.WriteStartObject(); writer.WriteString("schema", QualificationProbeReceipt.EvidenceSchema);
-            writer.WritePropertyName("receipt"); writer.WriteRawValue(receipt.CanonicalObservationJson());
-            writer.WriteString("output", result.Output); writer.WriteString("error", result.Error);
-            if (invalidUsage && result.Usage is { } rejected)
-            {
-                writer.WritePropertyName("invalidReportedUsage"); writer.WriteStartObject();
-                writer.WriteNumber("fields", (int)result.ReportedUsageFields);
-                writer.WriteNumber("input", rejected.Input); writer.WriteNumber("output", rejected.Output);
-                writer.WriteNumber("cacheRead", rejected.CacheRead); writer.WriteNumber("cacheWrite", rejected.CacheWrite);
-                writer.WriteNumber("reasoning", rejected.Reasoning); writer.WriteEndObject();
-            }
-            writer.WriteEndObject();
-        }
-        var json = System.Text.Encoding.UTF8.GetString(buffer.ToArray());
-        receipt = receipt with { Evidence = _artifacts.PutText(json, "application/json",
-            ArtifactKind.Other, Sensitivity.Sensitive) };
-        // Cancellation does not discard consumption already incurred. FULL receipt precedes settlement.
-        _store.RecordProbeReceipt(receipt, CancellationToken.None);
+        var receipt = QualificationReceiptWriter.Record(_store, _executionId,
+            _keyHash, _taskSetHash, request, _ordinal, active.Id, active.Started,
+            _billing, _maximum, _attemptBound, observation);
         Reconcile([receipt], _reservations);
         _active = null;
         _ordinal++;
