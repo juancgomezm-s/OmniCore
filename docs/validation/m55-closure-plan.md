@@ -1,5 +1,28 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Checkpoint de recuperación y cuota real — 2026-10-07 12:44 UTC
+
+Luna completó controles de route drift con listener separado y cero dispatch,
+cancelación predispatch y error temprano, seguidos de retry válido en la misma
+instancia. Root auditó fixture y compiló: exit0, cero errores/advertencias,
+23.83 s; focal de suspensión/reasoning/boost/CLI **36 PASS**, 9.514 s.
+La FULL `resume-final-controls-full-1245.log` terminó exit0: **2861 casos,
+2857 PASS, 0 FAIL, 4 SKIP** por permisos de symlink, 121.779 s.
+Conteos solapados; los providers de estos controles son fixtures, no consumo real.
+
+Root recompiló el grafo real del probe OmniCoder en outputs privados (exit0,
+cero errores/advertencias, 23.78 s) y consultó cuentas sin inferencia ni renovación
+explícita. Codex reportó semanal 20% usado/80% restante, reset 2026-10-14T03:29:28Z;
+Claude permaneció Unknown por falta de ventanas utilizables en este recorrido.
+Los resultados llegan al ViewModel real, pero esto no acredita consumo de modelo
+ni un éxito autenticado de Claude. [Evidencia y reproducción](m5-live-quota-20261007.md).
+
+Los contratos pre-M6 pendientes tienen ahora una [propuesta conjunta de shapes,
+eventos, compatibilidad y pruebas](../architecture/pre-m6-contract-schema-proposal.md),
+contrastada con el C# real de OmniCoder. Es propuesta para revisión, no schema
+aceptado ni implementado; no inicia scheduler/joins M6. La decisión del conjunto
+sigue pendiente y no se marca el criterio de contratos congelados como cumplido.
+
 ## Alcance M5 y recuperación legacy — 2026-10-07 12:37 UTC
 
 ADR0007 §Clasificación y spec §90/95 asignan a M5 el runner `quick`;

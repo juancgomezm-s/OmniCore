@@ -274,6 +274,7 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
         var root = Path.Combine(Path.GetTempPath(), "omni-mode-authority-cli-resume-" + Guid.NewGuid().ToString("N"));
         var workspace = Path.Combine(root, "workspace");
         var endpoint = new ScriptedQuestionResponsesEndpoint();
+        var driftEndpoint = new ScriptedQuestionResponsesEndpoint();
         var previousData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
         var previousConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
         var previousBase = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
@@ -364,6 +365,16 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                 new[] { new QuestionAnswer("approach", new[] { "safe" }, null, null) }, false).Status);
 
             var reopenedTui = new TuiTurnHost(reopenedRuntime);
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", driftEndpoint.BaseUrl);
+            var routeDriftExit = await reopenedTui.ExecuteAsync("", _ => { }, stop.Token);
+            Assert.NotEqual(0, routeDriftExit);
+            Assert.Equal(0, driftEndpoint.RequestCount);
+            Assert.Equal(1, endpoint.RequestCount);
+            Assert.Single(reopened.AcquireStore().ReadFrom(session, 1)
+                .Select(reopened.AcquireCodecs().Decode).OfType<ModelStepStarted>(),
+                step => step.TurnId == turnStarted.TurnId);
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", endpoint.BaseUrl);
+
             WriteConfiguration(data, endpoint.BaseUrl, maxOutput: 1024);
             var driftDiagnostics = new ConcurrentQueue<string>();
             var driftExit = await reopenedTui.ExecuteAsync("", driftDiagnostics.Enqueue, stop.Token);
@@ -425,6 +436,7 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
             stop.Cancel();
             endpoint.ReleaseHeldRequest();
             await endpoint.DisposeAsync();
+            await driftEndpoint.DisposeAsync();
             await DrainAsync(firstTurn);
             await DrainAsync(resumedTurn);
             await DrainAsync(competingResume);
@@ -464,6 +476,131 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                   effortLevels: [high]
                   replayPolicy: PreserveAcrossSteps
             """);
+    }
+
+    [Fact]
+    public async Task Cancelled_turn_releases_runtime_guard_for_a_later_valid_turn()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-turn-guard-cancel-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var endpoint = new ScriptedQuestionResponsesEndpoint(firstRequestIsQuestion: false);
+        var previousData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var previousConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var previousBase = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
+        var previousModel = Environment.GetEnvironmentVariable("OMNI_MODEL");
+        SqliteEventStore? journal = null;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        stop.CancelAfter(TimeSpan.FromSeconds(45));
+        try
+        {
+            Directory.CreateDirectory(workspace);
+            var data = Path.Combine(root, "data");
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(data, "config"));
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", endpoint.BaseUrl);
+            Environment.SetEnvironmentVariable("OMNI_MODEL", ModelId);
+            WriteConfiguration(data, endpoint.BaseUrl);
+
+            var runtime = OmniCliRuntime.Create(workspace);
+            var server = Assert.IsType<OmniServer>(runtime.Connect(stop.Token));
+            journal = Assert.IsType<SqliteEventStore>(server.AcquireStore());
+            var tui = new TuiTurnHost(runtime);
+            using var cancelled = new CancellationTokenSource();
+            cancelled.Cancel();
+            int? cancelledExit = null;
+            var cancellationObserved = false;
+            try
+            {
+                cancelledExit = await tui.ExecuteAsync("cancel before dispatch", _ => { }, cancelled.Token);
+            }
+            catch (OperationCanceledException) when (cancelled.IsCancellationRequested)
+            {
+                cancellationObserved = true;
+            }
+
+            Assert.True(cancellationObserved || cancelledExit is not null && cancelledExit != 0,
+                "Cancellation must retain the existing cancellation/nonzero-exit contract.");
+            Assert.Equal(0, endpoint.RequestCount);
+            AssertNoTurnStartedOrModelStep(server);
+
+            var retryExit = await tui.ExecuteAsync("retry after cancellation", _ => { }, stop.Token);
+            Assert.Equal(0, retryExit);
+            Assert.Equal(1, endpoint.RequestCount);
+            var session = Assert.IsType<SessionId>(server.LastSessionId());
+            var events = server.AcquireStore().ReadFrom(session, 1);
+            Assert.Single(events, evt => server.AcquireCodecs().Decode(evt) is TurnStarted);
+            Assert.Single(events, evt => server.AcquireCodecs().Decode(evt) is ModelStepStarted);
+        }
+        finally
+        {
+            stop.Cancel();
+            await endpoint.DisposeAsync();
+            CloseJournal(journal);
+            var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "data"));
+            ClearExactPool(paths.UserDatabasePath);
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", previousData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", previousConfig);
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", previousBase);
+            Environment.SetEnvironmentVariable("OMNI_MODEL", previousModel);
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Early_runtime_error_releases_guard_without_dispatch_or_turn_then_retry_works()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-turn-guard-error-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var endpoint = new ScriptedQuestionResponsesEndpoint(firstRequestIsQuestion: false);
+        var previousData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var previousConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var previousBase = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
+        var previousModel = Environment.GetEnvironmentVariable("OMNI_MODEL");
+        SqliteEventStore? journal = null;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        stop.CancelAfter(TimeSpan.FromSeconds(45));
+        try
+        {
+            Directory.CreateDirectory(workspace);
+            var data = Path.Combine(root, "data");
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(data, "config"));
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", endpoint.BaseUrl);
+            Environment.SetEnvironmentVariable("OMNI_MODEL", ModelId);
+            WriteConfiguration(data, endpoint.BaseUrl);
+
+            var runtime = OmniCliRuntime.Create(workspace);
+            var server = Assert.IsType<OmniServer>(runtime.Connect(stop.Token));
+            journal = Assert.IsType<SqliteEventStore>(server.AcquireStore());
+            var tui = new TuiTurnHost(runtime);
+            Environment.SetEnvironmentVariable("OMNI_MODEL", "not-a-registered-private-fixture-model");
+            var errorExit = await tui.ExecuteAsync("reject before dispatch", _ => { }, stop.Token);
+            Assert.Equal(1, errorExit);
+            Assert.Equal(0, endpoint.RequestCount);
+            AssertNoTurnStartedOrModelStep(server);
+
+            Environment.SetEnvironmentVariable("OMNI_MODEL", ModelId);
+            var retryExit = await tui.ExecuteAsync("retry after runtime error", _ => { }, stop.Token);
+            Assert.Equal(0, retryExit);
+            Assert.Equal(1, endpoint.RequestCount);
+            var session = Assert.IsType<SessionId>(server.LastSessionId());
+            var events = server.AcquireStore().ReadFrom(session, 1);
+            Assert.Single(events, evt => server.AcquireCodecs().Decode(evt) is TurnStarted);
+            Assert.Single(events, evt => server.AcquireCodecs().Decode(evt) is ModelStepStarted);
+        }
+        finally
+        {
+            stop.Cancel();
+            await endpoint.DisposeAsync();
+            CloseJournal(journal);
+            var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "data"));
+            ClearExactPool(paths.UserDatabasePath);
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", previousData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", previousConfig);
+            Environment.SetEnvironmentVariable("OMNI_BASE_URL", previousBase);
+            Environment.SetEnvironmentVariable("OMNI_MODEL", previousModel);
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     private static DomainEvent Event(DomainEventPayload payload, SessionId session, RunId? run,
@@ -508,9 +645,11 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
         private TaskCompletionSource<bool>? _releaseHeldRequest;
         private int _heldRequestNumber;
         private int _requestCount;
+        private readonly bool _firstRequestIsQuestion;
 
-        public ScriptedQuestionResponsesEndpoint()
+        public ScriptedQuestionResponsesEndpoint(bool firstRequestIsQuestion = true)
         {
+            _firstRequestIsQuestion = firstRequestIsQuestion;
             _listener.Start();
             BaseUrl = $"http://127.0.0.1:{((IPEndPoint)_listener.LocalEndpoint).Port}/v1";
             _serve = ServeAsync();
@@ -582,7 +721,8 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                     reached.TrySetResult(true);
                     await release.Task.WaitAsync(token).ConfigureAwait(false);
                 }
-                var responseBody = Encoding.UTF8.GetBytes(number == 1 ? QuestionStream() : TextStream("done"));
+                var responseBody = Encoding.UTF8.GetBytes(number == 1 && _firstRequestIsQuestion
+                    ? QuestionStream() : TextStream("done"));
                 var headers = Encoding.ASCII.GetBytes(string.Join("\r\n", "HTTP/1.1 200 OK",
                     "Content-Type: text/event-stream", "Cache-Control: no-cache", "Connection: close",
                     "Content-Length: " + responseBody.Length) + "\r\n\r\n");
@@ -633,6 +773,14 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
             catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
             _stop.Dispose();
         }
+    }
+
+    private static void AssertNoTurnStartedOrModelStep(OmniServer server)
+    {
+        if (server.LastSessionId() is not { } session) return;
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        Assert.DoesNotContain(events, evt => server.AcquireCodecs().Decode(evt) is TurnStarted);
+        Assert.DoesNotContain(events, evt => server.AcquireCodecs().Decode(evt) is ModelStepStarted);
     }
 
     private static void AssertAuthorityEqual(RunModeAuthority expected, RunModeAuthority? actual)
