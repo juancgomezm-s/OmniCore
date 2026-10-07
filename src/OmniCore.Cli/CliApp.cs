@@ -434,6 +434,7 @@ public sealed class CliApp
                 ? UsagePresentation.Tokens(measurement) : UsagePresentation.Tokens(usage.SessionTokens),
             UsagePresentation.Cost(usage.SessionCost),
             UsagePresentation.Remaining(usage.Remaining),
+            UsagePresentation.AccountQuota(usage.AccountQuota),
         }.Where(part => part is not null));
 
     private static void PrintUsage()
