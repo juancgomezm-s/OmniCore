@@ -1,5 +1,16 @@
 # Objetivo activo: llegar a M6
 
+Actualización 2026-10-07 04:22 UTC / 2026-10-06 22:22 local: contador llama.cpp
+fuera de lease remota; preparación exacta de ToolOutput y publicación conjunta
+con snapshots/eventos. RED2/2 y final39=38PASS/0FAIL/1SKIP; control adicional
+13=12PASS/0FAIL/1SKIP; arquitectura56PASS. POST /tokenize autenticado real
+respondió 3 tokens para «Hola OmniCore». Ver detalles y límites de evidencia en
+m55-provider-state-checkpoint.md. Full dbc6d2e terminal2569=2565PASS/0FAIL/4SKIP;
+full nueva pendiente. Este bloque no cierra AgentProfile efectivo, contratos M6
+aceptados ni restantes fronteras CAS del metamodelo/fingerprints. No scheduler/joins.
+Qwen sí ejecutó tres pruebas mediante tool cerrado sobre dbc6d2e, no sólo propuestas.
+Los checkpoints históricos de abajo conservan su fecha y no son estado actual.
+
 Estado vigente 2026-10-07 04:07 UTC / 2026-10-06 22:07 local:
 FULL51789 TERMINALexit0 sobre e467066: 2566 casos, 2562 PASS, 0 FAIL,
 4 SKIP symlink, 271.406s. Después: lease corta para checkpoint de contexto,

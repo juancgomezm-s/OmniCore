@@ -17,6 +17,41 @@ public sealed class FileArtifactStoreTests
     private const string ValidHex64 = "0000000000000000000000000000000000000000000000000000000000000000";
 
     [Fact]
+    public void Prepared_text_freezes_redacted_bytes_and_publishes_the_exact_reference_idempotently()
+    {
+        var (root, data) = NewDirs();
+        try
+        {
+            var redactor = new OmniCore.Security.SecretRedactor();
+            const string secret = "fixture-prepared-secret-123456";
+            redactor.RegisterSecret(secret);
+            var store = new FileArtifactStore(data, redactor);
+            var prepared = store.PrepareText("hola " + secret, "text/plain", ArtifactKind.ToolOutput,
+                Sensitivity.Sensitive);
+            var reference = prepared.Reference;
+            Assert.True(reference.Redacted);
+            Assert.False(store.Verify(reference.Hash, reference.Size));
+            Assert.False(Directory.Exists(Path.Combine(data, "blobs")));
+            // Publication must not run redaction again and change a hash already counted in a stub.
+            redactor.RegisterSecret("hola [REDACTED]");
+            using (store.AcquirePublicationLease(CancellationToken.None))
+            {
+                Assert.Equal(reference, prepared.Publish());
+                Assert.Equal(reference, prepared.Publish());
+            }
+            Assert.True(store.Verify(reference.Hash, reference.Size));
+            Assert.Equal("hola [REDACTED]", store.GetText(reference.Hash));
+            Assert.DoesNotContain(secret, store.GetText(reference.Hash));
+            Assert.Single(Directory.EnumerateFiles(Path.Combine(data, "blobs"), "*",
+                SearchOption.AllDirectories));
+        }
+        finally
+        {
+            TryDeleteTree(root);
+        }
+    }
+
+    [Fact]
     public void PutText_GetText_Verify_roundtrip_is_true_for_intact_blob()
     {
         var (root, data) = NewDirs();

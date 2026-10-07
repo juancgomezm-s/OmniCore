@@ -1,5 +1,40 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Contador llama.cpp: preparación y publicación separadas — 2026-10-07 04:22 UTC
+
+ContextMaterializer.PrepareWithinBudget prepara en memoria las referencias exactas
+con la redacción/hash reales de FileArtifactStore. Contributors, metamodelo y
+POST /tokenize no mantienen la lease de publicación/GC. Explorer publica después
+los ToolOutput preparados, el snapshot y TurnStarted/ModelStepStarted bajo una
+lease síncrona corta, liberada antes de llamar al modelo. Incluye referencias
+sólo presentes en diagnósticos de entradas omitidas; resume no publica un snapshot
+inicial huérfano. MaterializeWithinBudget conserva su contrato inmediato y stores
+sin IArtifactPreparationStore conservan el comportamiento previo, sin atribuirles
+esta garantía de preparación diferida. PutText sigue publicando inmediatamente.
+
+Regresión reproducida antes del arreglo del Host: 2/2 FAIL (0.755s),
+llama-tokenizer-publication-red.log. Después: 39 casos / 38 PASS / 0 FAIL /
+1 SKIP symlink (28.214s), llama-tokenizer-prepared-final.log. Verificación adicional
+de redacción congelada y publicación idempotente: 13 casos / 12 PASS / 0 FAIL /
+1 SKIP (0.910s), llama-tokenizer-redaction-final.log. Arquitectura: 56 PASS /
+0 FAIL (0.688s), llama-tokenizer-publication-architecture.log. Cifras solapadas.
+Fixtures usan HTTP simulado, SQLite y CAS reales: comprueban lease libre durante
+conteo, cancelación sin blob publicado, registro fallido, reapertura y GC sin gracia.
+
+Consulta autenticada real separada: 2026-10-07T04:20:53.1215356Z,
+POST /tokenize del endpoint local configurado, TLS normal, «Hola OmniCore» =
+3 tokens. Evidencia llama-tokenizer-authenticated-smoke.json; no generación,
+credenciales expuestas ni cualificación de ChatGPT/Claude/OmniCoder atribuida.
+Logs privados: C:\Users\juanc\.codex\omni-m55-workers-20261006-2103.
+
+Full anterior dbc6d2e terminó: 2569 casos / 2565 PASS / 0 FAIL / 4 SKIP,
+270.080s. Full posterior a este bloque pendiente; no declarar cierre M5.5.
+Root implementó el contrato/Host/CAS y pruebas de integración; Luna HIGH propuso
+las pruebas de diagnósticos y cancelación, revisadas y ejecutadas por root.
+Qwen ejecutó un tool cerrado de tests del bloque anterior dbc6d2e: 3 PASS,
+0 FAIL (0.870s), qwen-core-focal-test-worker-20261007.execution.json/tests.log.
+Eso no sustituye la verificación de este bloque.
+
 ## Checkpoint de contexto y control propuesto por Qwen — 2026-10-07 04:07 UTC
 
 PersistCheckpointArtifact y ContextCheckpointRecorded comparten ahora una lease
