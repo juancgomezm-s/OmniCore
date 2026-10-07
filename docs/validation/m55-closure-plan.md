@@ -1,5 +1,33 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Redacción de fragmentos y reanudación concurrente — 2026-10-07 12:22 UTC
+
+Root añadió un sexto control de respuesta completa: un secreto ficticio dividido
+entre dos `TextBlock` adyacentes. El resumen era seguro, pero `visibleContent`
+persistía fragmentos que, unidos, reconstruían el secreto. RED reproducido con
+build correcto de 18.44 s: **8 casos, 7 PASS, 1 FAIL**, 1.751 s, en
+`visible-redaction-red-tests-1221.log`. Las assertions anteriores se conservan.
+
+`EncodeVisibleContent` reúne sólo fragmentos de texto adyacentes antes de
+redactarlos. No inventa separadores; herramientas y razonamiento conservan su
+orden y sus fronteras. No transforma `ProviderState` ni concede autorización.
+La proyección visible no garantiza un bloque por fragmento físico del proveedor.
+El test exige igualdad entre texto visible reconstruido, resumen seguro y
+respuesta conservada en artifacts y contexto del Turn posterior.
+
+Luna amplió el flujo normal de suspensión: tras SQLite reopen, el endpoint retiene
+la respuesta de resume; un segundo resume debe terminar rechazado mientras la
+primera petición sigue retenida. Sólo llegan dos peticiones totales (pregunta y
+resume), con el mismo Turn y pasos `[0, 1]`, sin reactivar UltraCode.
+
+Build final `visible-redaction-fixed-build-1221.log`: exit0, cero errores y
+advertencias, 15.40 s. Focal `visible-redaction-fixed-focal-1222.log`: **46 PASS,
+0 FAIL, 0 SKIP**, 9.207 s, incluyendo replay/opaque, marcadores de tool y CLI.
+FULL `visible-redaction-full-1222.log` terminó con exit0: **2857 casos,
+2853 PASS, 0 FAIL, 4 SKIP** por permisos de symlink, 119.455 s. Los conteos
+se solapan; no se suman. Son fixtures scripted y SQLite/CAS reales, no consultas autenticadas,
+facturación, cualificación real ni cierre íntegro de M5/M5.5.
+
 ## Aceptación en curso: respuesta completa y continuación normal — 2026-10-07 12:03 UTC
 
 El chat no debe perder bloques de texto de una misma respuesta: `ExplorerTurn`
