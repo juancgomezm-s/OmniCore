@@ -1,5 +1,41 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Wire nativo Responses — 2026-10-07 03:26 UTC
+
+OpenAIResponsesProvider ya no omite `none`, `xhigh` y `max`. El adapter representa
+exactamente los siete valores publicados de `reasoning.effort`: none/minimal/low/
+medium/high/xhigh/max. Esto es vocabulario de Responses, no un enum/ranking global
+de Domain ni una afirmación de soporte de todos los valores por todos los modelos.
+El subconjunto declarado por ruta se valida también para invocaciones directas
+al adapter; la disponibilidad real sigue siendo responsabilidad del proveedor.
+Fuente contrastada y abierta el 2026-10-07:
+[guía oficial de razonamiento](https://developers.openai.com/api/docs/guides/reasoning).
+
+Una solicitud explícita sin representación en este adapter falla con mensaje
+constante antes de consultar credenciales o enviar HTTP, en lugar de omitirla.
+BudgetTokens numérico (positivo, cero o negativo) no se convierte en un esfuerzo
+ni en max_output_tokens. Se mantiene el fallback existente desde ModelSelection
+si ModelRequest.Reasoning es null; ausencia de ambos no inventa un esfuerzo.
+`none` como esfuerzo explícito no significa ReasoningReplayPolicy.None: no se
+modifica la política de continuidad, la selección, las cotas ni la autorización.
+
+Luna aportó propuesta cerrada offline; root leyó completa, contrastó documentación,
+integró y amplió controles de contradicción declarada/ausencia/case/budgets.
+RED: 20 casos / 8 PASS / 12 FAIL, 0.211s, responses-reasoning-native-red.log.
+Final ampliado: 159 PASS / 0 FAIL / 0 SKIP, 10.302s, build 0/0,
+responses-reasoning-native-final.log; arquitectura56PASS/0FAIL.
+Los perfiles API y Codex usan HttpMessageHandler/SSE y credenciales sintéticas;
+no autenticación ni consumo real. Full2513=2509PASS/4SKIP265.703s sobre2781b71
+antecede este cambio; la suite completa posterior sigue pendiente.
+
+Pendientes distintos: dialectos Anthropic/ChatCompatible, storage opaco seguro y
+otras políticas de replay no se declaran resueltos por estos controles de esfuerzo.
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*OpenAIResponses*' -class '*Reasoning*' -class '*ProviderState*' -class '*NativeOutputTokenLimitTests' -class '*HostOutputTokenLimitTests' -class '*M5QualificationCodexSubscriptionIntegrationTests'
+```
+
 ## Solicitud de razonamiento declarada — 2026-10-07 02:53 UTC
 
 `ReasoningCapability.ValidateRequest` rechaza una solicitud no nula cuando

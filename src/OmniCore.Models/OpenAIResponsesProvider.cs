@@ -181,6 +181,16 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
 
     internal static string BuildBody(ModelRequest request, OpenAIResponsesOptions options)
     {
+        var reasoning = request.Reasoning ?? request.Model.Reasoning;
+        request.Model.Route?.ReasoningCapability.ValidateRequest(reasoning);
+        // Native Responses effort vocabulary, not a Domain-wide ranking or a claim
+        // that every model accepts every value. Never silently drop a selected request.
+        if (reasoning?.BudgetTokens is not null)
+            throw new NotSupportedException("Numeric reasoning budgets are not represented by the Responses adapter.");
+        var effort = reasoning?.Kind is "none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max"
+            ? reasoning.Kind : null;
+        if (reasoning is not null && effort is null)
+            throw new NotSupportedException("Selected reasoning effort is not represented by the Responses adapter.");
         var maxOutput = request.Model.MaxOutputTokens;
         if (options.MaxOutputTokens is { } configured)
             maxOutput = maxOutput is { } selected ? Math.Min(selected, configured) : configured;
@@ -200,8 +210,6 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             if (!string.IsNullOrEmpty(request.Instructions)) w.WriteString("instructions", request.Instructions);
             if (maxOutput is { } max) w.WriteNumber("max_output_tokens", max);
 
-            var reasoning = request.Reasoning ?? request.Model.Reasoning;
-            var effort = reasoning?.Kind is "minimal" or "low" or "medium" or "high" ? reasoning.Kind : null;
             if (effort is not null)
             {
                 w.WriteStartObject("reasoning");
