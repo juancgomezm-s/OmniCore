@@ -20,7 +20,7 @@ public sealed class M5QualificationQuickSuiteCoverageTests
         Assert.Equal(10, first.Select(probe => probe.Id.ToString()).Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(first.Select(probe => probe.Id.ToString()), second.Select(probe => probe.Id.ToString()));
         Assert.Equal(QuickProbeSuite.SuiteId, "omnicore-quick");
-        Assert.Equal(QuickProbeSuite.SuiteVersion, "1.1.0");
+        Assert.Equal(QuickProbeSuite.SuiteVersion, "1.1.1");
         Assert.All(first, probe => Assert.True(ProbeScorer.Score(probe.Kind, probe.Expected, probe.Expected) == 1.0));
 
         Assert.DoesNotContain(first, probe => probe.Kind.ToString() is "ToolCall" or "Coding"

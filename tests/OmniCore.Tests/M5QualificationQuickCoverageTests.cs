@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
@@ -52,6 +53,39 @@ public sealed class M5QualificationQuickCoverageTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public async Task Full_quick_persists_complete_visible_answer_and_qualification_not_a_prefix(bool invalidSuffix)
+    {
+        using var fixture = new Fixture();
+        var probes = QuickProbeSuite.Probes();
+        var result = await fixture.Host.QualifyAsync("fixture-model", new QualificationOptions
+        { ConsentGiven = true, Provider = new Provider(probes, invalidSuffix) },
+            TestContext.Current.CancellationToken);
+        var expectedState = invalidSuffix ? ModelQualificationState.ProvisionallyClassified
+            : ModelQualificationState.Qualified;
+        Assert.True(result.SuiteComplete);
+        Assert.Equal(10, result.Probes.Count);
+        Assert.Equal(expectedState.ToString(), result.NewState);
+        Assert.All(result.Probes, probe => Assert.Equal(invalidSuffix ? "Failed" : "Passed", probe.Status));
+        using var store = fixture.Store();
+        var profile = Assert.IsType<ModelQualificationProfile>(store.Get(fixture.Key,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(expectedState, profile.State);
+        Assert.Equal(QuickProbeSuite.SuiteVersion, profile.SuiteVersion);
+        var evidence = Assert.IsType<ModelQualificationEvidence>(store.Evidence(fixture.Key,
+            profile.ProfileRevision, TestContext.Current.CancellationToken));
+        using var json = JsonDocument.Parse(new FileArtifactStore(fixture.DirectoryPath)
+            .GetText(evidence.Artifact.Hash)!);
+        Assert.Equal(QuickProbeSuite.SuiteVersion, json.RootElement.GetProperty("benchmarkIdentity")
+            .GetProperty("suiteVersion").GetString());
+        var recorded = json.RootElement.GetProperty("probes").EnumerateArray().ToArray();
+        Assert.Equal(10, recorded.Length);
+        Assert.All(recorded, probe => Assert.Equal(probe.GetProperty("expected").GetString()
+            + (invalidSuffix ? " trailing" : string.Empty), probe.GetProperty("output").GetString()));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public async Task Empty_or_duplicate_probe_ids_reject_before_calls_or_profile(bool duplicate)
     {
         using var fixture = new Fixture();
@@ -79,7 +113,7 @@ public sealed class M5QualificationQuickCoverageTests
     }
 
     // Scripted fixture has one generation response per StreamAsync invocation; this is not a billing guarantee.
-    private sealed class Provider(IReadOnlyList<Probe> probes) : IModelProvider, IModelRequestAttemptBound
+    private sealed class Provider(IReadOnlyList<Probe> probes, bool? invalidSuffix = null) : IModelProvider, IModelRequestAttemptBound
     {
         public int Calls { get; private set; }
         public long? MaximumGenerationRequestAttempts => 1;
@@ -89,7 +123,14 @@ public sealed class M5QualificationQuickCoverageTests
         {
             cancellationToken.ThrowIfCancellationRequested(); Calls++; await Task.Yield();
             var prompt = ((TextBlock)request.Messages[0].Content[0]).Text;
-            yield return new ResponseCompleted(new ModelResponse([new TextBlock(probes.First(p => p.Prompt == prompt).Expected)],
+            var expected = probes.First(p => p.Prompt == prompt).Expected;
+            ContentBlock[] content = invalidSuffix switch
+            {
+                true => [new TextBlock(expected), new TextBlock(" trailing")],
+                false => [new TextBlock(expected[..1]), new TextBlock(expected[1..])],
+                null => [new TextBlock(expected)],
+            };
+            yield return new ResponseCompleted(new ModelResponse(content,
                 StopReason.EndTurn, new TokenUsage(10, 5, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture-model", null)));
         }
     }

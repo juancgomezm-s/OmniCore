@@ -113,17 +113,23 @@ public static class ProbeScorer
         }
     }
 
-    /// <summary>Extrae el texto visible de una respuesta de modelo (primer bloque de texto).</summary>
+    /// <summary>
+    /// Extrae todos los bloques de texto de respuesta, en orden y sin inventar separadores.
+    /// El razonamiento y el contenido anidado de herramientas no son la respuesta visible.
+    /// Sin bloques de texto devuelve null; un bloque vacío conserva el texto vacío.
+    /// </summary>
     public static string? ExtractText(ModelResponse response)
     {
+        StringBuilder? text = null;
         foreach (var block in response.Content)
         {
-            if (block is TextBlock text)
+            if (block is TextBlock answer)
             {
-                return text.Text;
+                text ??= new StringBuilder();
+                text.Append(answer.Text);
             }
         }
-        return null;
+        return text?.ToString();
     }
 
     /// <summary>
