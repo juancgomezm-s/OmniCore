@@ -35,12 +35,15 @@ public sealed partial class SqliteModelQualificationStore : IModelQualificationS
 
     /// <summary>Reloj inyectable para tests deterministas.</summary>
     public SqliteModelQualificationStore(string databasePath, Func<DateTimeOffset>? clock)
+        : this(databasePath, clock, readOnly: false) { }
+
+    private SqliteModelQualificationStore(string databasePath, Func<DateTimeOffset>? clock, bool readOnly)
     {
         _clock = clock ?? (static () => DateTimeOffset.UtcNow);
         _dataDirectory = Path.GetDirectoryName(Path.GetFullPath(databasePath))!;
         _isUserDatabase = Path.GetFileName(Path.GetFullPath(databasePath)) == "user.db";
         var parent = Path.GetDirectoryName(databasePath);
-        if (parent is not null && parent!.Length > 0 && !Directory.Exists(parent!))
+        if (!readOnly && parent is not null && parent!.Length > 0 && !Directory.Exists(parent!))
         {
             Directory.CreateDirectory(parent!);
         }
@@ -49,9 +52,10 @@ public sealed partial class SqliteModelQualificationStore : IModelQualificationS
         {
             DataSource = Path.GetFullPath(databasePath),
             Pooling = false,
+            Mode = readOnly ? Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly : Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate,
         }.ToString();
         _conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!.CreateDataSource(connString)!.OpenConnection()!;
-        try { Exec("PRAGMA synchronous=FULL"); InitializeSchema(); }
+        try { if (!readOnly) { Exec("PRAGMA synchronous=FULL"); InitializeSchema(); } }
         catch { _conn.Dispose(); throw; }
     }
 

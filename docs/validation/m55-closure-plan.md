@@ -7,6 +7,20 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 01:36 UTC: integración User diaria de cualificación implementada y
+verificada con 406 PASS / 0 FAIL / 0 SKIP, 36.391s,
+`qualification-user-daily-concurrent-final.log`; build0/0. Reserva por probe para
+Metered/Credit/Unknown, recibo FULL/CAS antes de liquidar, lectura compartida de
+workspace+User sin doble conteo, reconciliación del crash window y readonly User
+reader para Explorer. Cancel/timeout/error/unknown/retry conservan cobertura;
+uso inválido solo raw CAS, exceso de coste/envíos bloquea siguiente probe/perfil.
+Dos Hosts concurrentes y chat normal (hoy/ayer/crash) cubiertos offline. Root
+implementó y verificó; Luna propuso fixtures y auditó límites/extracción. No
+consumo/autenticación reales ni full actual verde acreditados. Histórico RED diario
+de debajo ya corregido; IncludedQuota de cualificación sigue pendiente. Permanecen
+replay opaco seguro/ReasoningCapability, contratos M6 congelados y auditoría de
+los siete criterios; no se reduce el objetivo ni se declara cierre M5.5.
+
 Actualización 01:13 UTC: recibo User ahora contrasta cabecera canónica CAS con
 cada campo financiero/identidad/UTC, no solo hash y tamaño. Auditoría Luna:
 uso inválido con coste nulo y view sin marcador admitidos; corregidos y controles

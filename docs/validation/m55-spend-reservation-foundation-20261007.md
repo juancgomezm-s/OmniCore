@@ -223,3 +223,65 @@ loopback, no consumo ni autenticación reales.
 Esta extracción NO conecta todavía el observador de cualificación ni suma sus
 recibos User al gasto diario. QualificationDailyReservationTests sigue pendiente
 de integración y corrección; no se declara cierre ni suite completa verde.
+
+## Integración User de cualificación — 2026-10-07 01:36 UTC
+
+Root conectó QualificationSpendAccounting al observer de cada probe para rutas
+MeteredCurrency, CreditBalance y Unknown con precios completos y cota finita.
+Antes de dispatch se reserva contra el tope consentido de la operación y el diario
+User compartido. La lectura fresca bajo el lock del ledger suma journals de todos
+los workspaces más recibos User una sola vez; no suma revisiones de perfiles,
+copias de evidencia ni los importes auditados del ledger. La operación tiene un
+GUID de cualificación, no una Session/Run/Turn/AgentExecution ficticia.
+
+Cada terminación guarda output/error redactados en CAS y confirma el recibo User
+con FULL antes de liquidar. Sin coste medible se mantiene la reserva completa;
+retry con consumo previo desconocido conserva el residual máximo menos uso conocido.
+Un recibo medido de un único envío permite liquidar de forma idempotente. Cancelación,
+timeout y error no borran consumo parcial ni habilitan un perfil exitoso. Contadores
+contradictorios se preservan como invalidReportedUsage en CAS, no como mediciones;
+el recibo tiene uso/coste no disponibles y conserva la cobertura íntegra.
+
+La reconciliación previa a admisión recupera un crash entre commit del recibo y
+settlement; verifica el máximo reservado y nunca crea reservas para recibos
+históricos. Un recibo incompleto sin cobertura falla cerrado. Si los envíos o el
+coste observado contradicen su cota declarada, se conserva la evidencia y la
+reserva íntegra, se detiene la suite y se impiden nuevos envíos/perfiles. No se
+pretende conocer el precio de intentos sin recibo ni una factura del proveedor.
+
+Explorer incorpora esta misma fuente al diario, no a Session/Run, y reconcilia
+antes de reservar. ReadCanonicalProbeReceipts abre user.db readonly, sin crear
+ni migrar; valida marker/schema/CAS/filas. El legado sin esta tabla no se transforma
+retrospectivamente en probes facturables: sus perfiles no proporcionan una
+reconstrucción fiable de cada invocation/UTC/retry. IncludedQuota necesita su gate
+propio; este bloque no lo simula ni lo da por cerrado.
+
+Evidencia reproducible offline, directorio
+`C:\Users\juanc\.codex\omni-m55-workers-20261006-2103`:
+
+- RED: qualification-canonical-daily-red.log, 4 casos / 2 PASS / 2 FAIL, 0.863s;
+  ambos negativos enviaban 1 llamada pese a reserva agotada o recibo hoy .04 USD
+  frente a diario .05 y cota .032768. Assertions conservadas.
+- Final: qualification-user-daily-concurrent-final.log, **406 PASS / 0 FAIL /
+  0 SKIP, 36.391s**; build 0 advertencias / 0 errores. Incluye dos Hosts simultáneos
+  con la primera respuesta retenida, chat normal CLI/TuiTurnHost/SQLite/HTTP
+  loopback (hoy/ayer y crash-before-settlement), settlement/reopen/idempotencia,
+  cancel/timeout/failure/unknown/retry, redacción, exceso de cota, readonly y
+  arquitectura. Los pases 383/401/405 se solapan y no son una suite completa.
+- Primer barrido 373=370PASS/3FAIL33.096s expuso excepción incorrecta con usage
+  inválido: producción ahora conserva raw CAS y devuelve la excepción Host
+  de suite incompleta existente; assertions no debilitadas. Tres fallos del
+  ledger en el primer pase56 venían de validación nueva aplicada a MarkDispatched
+  ordinario, corregida limitándola a reconciliación. El primer test excess-sends
+  no activaba sus dos envíos por un patch en la rama equivocada del fixture;
+  se corrigió el fixture, no se acredita ese fallo como RED de producto.
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*Qualification*' -class '*SpendReservationStoreTests' -class '*CrossWorkspaceDailyCapRegressionTests' -class '*ConcurrentSpendAdmissionTests' -class '*CanonicalWriterArchitectureTests' -class '*UserWorkspaceSpendReaderTests' -class '*MetaModelDailySpendIntegrationTests'
+```
+
+Luna HIGH propuso los fixtures diarios y auditó extracción y límites; root leyó,
+integró, implementó producción, añadió controles y ejecutó verificaciones. Ningún
+resultado acredita consultas autenticadas ni cargos reales. Sin cambios en main,
+proveedores, credenciales, servidores ni scheduler/joins M6. M5.5 sigue abierto.

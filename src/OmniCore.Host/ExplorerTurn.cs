@@ -509,6 +509,9 @@ public sealed class ExplorerTurn
         string? ReserveInvocation(string id)
         {
             if (_spendReservations is null || (budget.MaxCostUsd is null && !_enforceDefaultSpendCaps)) return null;
+            if (_enforceDefaultSpendCaps && _userSpendReader is not null)
+                QualificationSpendAccounting.Reconcile(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(
+                    _userSpendReader.UserDataDirectory, CancellationToken.None), _spendReservations);
             var maximum = ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity,
                 _maximumGenerationRequestAttempts);
             if (maximum is null) throw new BudgetExceededException("cota monetaria de invocación desconocida");
@@ -1253,6 +1256,19 @@ public sealed class ExplorerTurn
                 daily = combined.DailyUsd is { } value ? AddHistoricalSpend(daily, value) : null;
                 incomplete |= combined.Incomplete;
             }
+            // One User namespace, not once per workspace and never charged to Session/Run.
+            var receipts = SqliteModelQualificationStore.ReadCanonicalProbeReceipts(
+                _userSpendReader.UserDataDirectory, CancellationToken.None);
+            if (_spendReservations is null && receipts.Any(r => r.CostUsd is null
+                && r.BillingMode is BillingMode.MeteredCurrency or BillingMode.CreditBalance or BillingMode.Unknown))
+                return new(0m, null, 0m, true);
+            if (_spendReservations is not null)
+                daily = AddHistoricalSpend(daily, QualificationSpendAccounting.Daily(receipts, today, _spendReservations));
+            else
+                daily = AddHistoricalSpend(daily, receipts.Where(r => r.CompletedAtUtc.UtcDateTime.ToString("yyyy-MM-dd",
+                    System.Globalization.CultureInfo.InvariantCulture) == today
+                    && r.BillingMode is BillingMode.MeteredCurrency or BillingMode.CreditBalance or BillingMode.Unknown)
+                    .Aggregate(0m, (sum, r) => checked(sum + r.CostUsd!.Value)));
             // Session and Run budgets remain scoped to their own workspace, even if IDs were copied.
             return new(0m, daily, 0m, incomplete || daily is null);
         }

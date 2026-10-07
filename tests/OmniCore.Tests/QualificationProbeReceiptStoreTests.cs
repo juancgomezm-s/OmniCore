@@ -9,6 +9,23 @@ namespace OmniCore.Tests;
 public sealed class QualificationProbeReceiptStoreTests
 {
     [Fact]
+    public void Canonical_reader_is_readonly_repeated_and_missing_namespace_is_not_created()
+    {
+        using var fixture = new Fixture();
+        Assert.Empty(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(fixture.Root, CancellationToken.None));
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "user.db")));
+        var receipt = fixture.Receipt();
+        using (var store = fixture.Open()) store.RecordProbeReceipt(receipt, CancellationToken.None);
+        var path = Path.Combine(fixture.Root, "user.db");
+        var before = File.ReadAllBytes(path);
+        Assert.Equal(receipt, Assert.Single(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(fixture.Root, CancellationToken.None)));
+        Assert.Equal(receipt, Assert.Single(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(fixture.Root, CancellationToken.None)));
+        Assert.Equal(before, File.ReadAllBytes(path));
+        fixture.Exec("DROP TABLE qualification_probe_receipts");
+        Assert.Throws<InvalidDataException>(() => SqliteModelQualificationStore.ReadCanonicalProbeReceipts(fixture.Root, CancellationToken.None));
+    }
+
+    [Fact]
     public void Full_receipt_survives_reopen_and_exact_repetition_is_idempotent_without_profile()
     {
         using var fixture = new Fixture();
