@@ -60,6 +60,29 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.AgentExecutionStarted())
             .Plus(Typed.AgentExecutionCompleted())
             .Plus(Typed.AgentExecutionFailed())
+            .Plus(Typed.DelegationCreated())
+            .Plus(Typed.DelegationAccepted())
+            .Plus(Typed.DelegationReturned())
+            .Plus(Typed.DelegationFailed())
+            .Plus(Typed.ExecutionJoinCreated())
+            .Plus(Typed.ExecutionJoinResolved())
+            .Plus(Typed.ExecutionJoinFailed())
+            .Plus(Typed.SupervisionBindingCreated())
+            .Plus(Typed.SupervisionBindingAccepted())
+            .Plus(Typed.SupervisionBindingFailed())
+            .Plus(Typed.ExecutionMailboxCreated())
+            .Plus(Typed.ExecutionMailboxMessageReceived())
+            .Plus(Typed.ExecutionMailboxMessageAcknowledged())
+            .Plus(Typed.WakeRequestCreated())
+            .Plus(Typed.WakeRequestAccepted())
+            .Plus(Typed.WakeRequestResolved())
+            .Plus(Typed.WakeRequestFailed())
+            .Plus(Typed.AgentResultProduced())
+            .Plus(Typed.ResultDispositionRecorded())
+            .Plus(Typed.ValidationStateRecorded())
+            .Plus(Typed.ValidationDebtCreated())
+            .Plus(Typed.ValidationDebtResolved())
+            .Plus(Typed.IntegrationStatusRecorded())
             .Plus(Typed.TaskReady())
             .Plus(Typed.TaskStarted())
             .Plus(Typed.TaskBlocked())
@@ -191,7 +214,10 @@ public sealed class EventCodecs : IEventCodecRegistry
             json = upcaster.Upcast(json);
         }
 
-        return CodecFor(evt.Type).Decode(evt.Type, json);
+        var payload = CodecFor(evt.Type).Decode(evt.Type, json);
+        if (payload is IPreM6ContractEvent && evt.SchemaVersion < 1)
+            throw new EventParseException(evt.Type.ToString(), "new pre-M6 contracts start at schema version 1");
+        return payload;
     }
 
     /// <summary>Registra un upcaster (se usa también en tests para versiones sintéticas).</summary>
@@ -265,9 +291,11 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
     {
         try
         {
-            return JsonSerializer.Deserialize(payloadJson, _info) ?? throw new FormatException("payload null");
+            var payload = JsonSerializer.Deserialize(payloadJson, _info) ?? throw new FormatException("payload null");
+            if (payload is IPreM6ContractEvent record) record.Validate();
+            return payload;
         }
-        catch (Exception ex) when (ex is JsonException or FormatException or NotSupportedException)
+        catch (Exception ex) when (ex is JsonException or FormatException or NotSupportedException or ArgumentException)
         {
             throw new EventParseException(type.ToString(), ex.Message);
         }
@@ -279,6 +307,7 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
     /// </summary>
     public string Encode(DomainEventPayload payload)
     {
+        if (payload is IPreM6ContractEvent record) record.Validate();
         var json = JsonSerializer.Serialize((T) payload, _info);
         var redactor = OmniCore.Abstractions.SecretRedactorRegistry.Current;
         // Por valor y respetando ids: sustituir sobre el JSON crudo podía corromper un GUID que
@@ -366,6 +395,29 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(AgentExecutionStarted))]
 [JsonSerializable(typeof(AgentExecutionCompleted))]
 [JsonSerializable(typeof(AgentExecutionFailed))]
+[JsonSerializable(typeof(DelegationCreated))]
+[JsonSerializable(typeof(DelegationAccepted))]
+[JsonSerializable(typeof(DelegationReturned))]
+[JsonSerializable(typeof(DelegationFailed))]
+[JsonSerializable(typeof(ExecutionJoinCreated))]
+[JsonSerializable(typeof(ExecutionJoinResolved))]
+[JsonSerializable(typeof(ExecutionJoinFailed))]
+[JsonSerializable(typeof(SupervisionBindingCreated))]
+[JsonSerializable(typeof(SupervisionBindingAccepted))]
+[JsonSerializable(typeof(SupervisionBindingFailed))]
+[JsonSerializable(typeof(ExecutionMailboxCreated))]
+[JsonSerializable(typeof(ExecutionMailboxMessageReceived))]
+[JsonSerializable(typeof(ExecutionMailboxMessageAcknowledged))]
+[JsonSerializable(typeof(WakeRequestCreated))]
+[JsonSerializable(typeof(WakeRequestAccepted))]
+[JsonSerializable(typeof(WakeRequestResolved))]
+[JsonSerializable(typeof(WakeRequestFailed))]
+[JsonSerializable(typeof(AgentResultProduced))]
+[JsonSerializable(typeof(ResultDispositionRecorded))]
+[JsonSerializable(typeof(ValidationStateRecorded))]
+[JsonSerializable(typeof(ValidationDebtCreated))]
+[JsonSerializable(typeof(ValidationDebtResolved))]
+[JsonSerializable(typeof(IntegrationStatusRecorded))]
 [JsonSerializable(typeof(TaskReady))]
 [JsonSerializable(typeof(TaskStarted))]
 [JsonSerializable(typeof(TaskBlocked))]
@@ -560,6 +612,75 @@ public sealed class Typed
 
     public static CodecPair TaskCreated() =>
         Of(EventType.Of("task.created"), EventJsonContext.Default.TaskCreated, currentVersion: 2);
+
+    public static CodecPair DelegationCreated() =>
+        Of(EventType.Of("delegation.created"), EventJsonContext.Default.DelegationCreated);
+
+    public static CodecPair DelegationAccepted() =>
+        Of(EventType.Of("delegation.accepted"), EventJsonContext.Default.DelegationAccepted);
+
+    public static CodecPair DelegationReturned() =>
+        Of(EventType.Of("delegation.returned"), EventJsonContext.Default.DelegationReturned);
+
+    public static CodecPair DelegationFailed() =>
+        Of(EventType.Of("delegation.failed"), EventJsonContext.Default.DelegationFailed);
+
+    public static CodecPair ExecutionJoinCreated() =>
+        Of(EventType.Of("execution_join.created"), EventJsonContext.Default.ExecutionJoinCreated);
+
+    public static CodecPair ExecutionJoinResolved() =>
+        Of(EventType.Of("execution_join.resolved"), EventJsonContext.Default.ExecutionJoinResolved);
+
+    public static CodecPair ExecutionJoinFailed() =>
+        Of(EventType.Of("execution_join.failed"), EventJsonContext.Default.ExecutionJoinFailed);
+
+    public static CodecPair SupervisionBindingCreated() =>
+        Of(EventType.Of("supervision_binding.created"), EventJsonContext.Default.SupervisionBindingCreated);
+
+    public static CodecPair SupervisionBindingAccepted() =>
+        Of(EventType.Of("supervision_binding.accepted"), EventJsonContext.Default.SupervisionBindingAccepted);
+
+    public static CodecPair SupervisionBindingFailed() =>
+        Of(EventType.Of("supervision_binding.failed"), EventJsonContext.Default.SupervisionBindingFailed);
+
+    public static CodecPair ExecutionMailboxCreated() =>
+        Of(EventType.Of("execution_mailbox.created"), EventJsonContext.Default.ExecutionMailboxCreated);
+
+    public static CodecPair ExecutionMailboxMessageReceived() =>
+        Of(EventType.Of("execution_mailbox.message_received"), EventJsonContext.Default.ExecutionMailboxMessageReceived);
+
+    public static CodecPair ExecutionMailboxMessageAcknowledged() =>
+        Of(EventType.Of("execution_mailbox.message_acknowledged"), EventJsonContext.Default.ExecutionMailboxMessageAcknowledged);
+
+    public static CodecPair WakeRequestCreated() =>
+        Of(EventType.Of("wake_request.created"), EventJsonContext.Default.WakeRequestCreated);
+
+    public static CodecPair WakeRequestAccepted() =>
+        Of(EventType.Of("wake_request.accepted"), EventJsonContext.Default.WakeRequestAccepted);
+
+    public static CodecPair WakeRequestResolved() =>
+        Of(EventType.Of("wake_request.resolved"), EventJsonContext.Default.WakeRequestResolved);
+
+    public static CodecPair WakeRequestFailed() =>
+        Of(EventType.Of("wake_request.failed"), EventJsonContext.Default.WakeRequestFailed);
+
+    public static CodecPair AgentResultProduced() =>
+        Of(EventType.Of("agent_result.produced"), EventJsonContext.Default.AgentResultProduced);
+
+    public static CodecPair ResultDispositionRecorded() =>
+        Of(EventType.Of("result_disposition.recorded"), EventJsonContext.Default.ResultDispositionRecorded);
+
+    public static CodecPair ValidationStateRecorded() =>
+        Of(EventType.Of("validation_state.recorded"), EventJsonContext.Default.ValidationStateRecorded);
+
+    public static CodecPair ValidationDebtCreated() =>
+        Of(EventType.Of("validation_debt.created"), EventJsonContext.Default.ValidationDebtCreated);
+
+    public static CodecPair ValidationDebtResolved() =>
+        Of(EventType.Of("validation_debt.resolved"), EventJsonContext.Default.ValidationDebtResolved);
+
+    public static CodecPair IntegrationStatusRecorded() =>
+        Of(EventType.Of("integration_status.recorded"), EventJsonContext.Default.IntegrationStatusRecorded);
 
     public static CodecPair AgentExecutionStarted() =>
         Of(EventType.Of("agent_execution.started"), EventJsonContext.Default.AgentExecutionStarted);

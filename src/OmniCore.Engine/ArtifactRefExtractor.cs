@@ -27,6 +27,9 @@ internal static class ArtifactRefExtractor
         // For events with multiple ref fields, the order follows the field declaration order.
         switch (payload)
         {
+            case IPreM6ContractEvent record:
+                AddRange(refs, record.RecordArtifacts());
+                break;
             // Run/Task events
             case RunValidationRejected r when r.OutputArtifacts is not null:
                 AddRange(refs, r.OutputArtifacts);
