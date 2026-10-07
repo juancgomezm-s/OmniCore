@@ -7,6 +7,19 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 02:06 UTC: full sobre47cdf9c terminal:2449 casos = 2444PASS /
+1FAIL / 4SKIPsymlink,353.192s (`reasoning-and-gate-scope-full.log`). Único fallo
+InternalActCommandTests suponía que todo envelope conTurnId comparte el command
+del modelo; gates ahora conservan eseTurn pero tienen su propio command.
+Fixture corregido para exigir partición completa por secuencia: resume hasta
+TurnCompleted usa segundoCommand, todos los eventos posteriores de validación
+usan un tercero distinto y mismoRun/Lane/Turn; ningún evento queda excluido.
+También comprueba restauración del ExecutionScope. Focal16PASS0FAIL0SKIP5.648s
+(`completion-gate-causation-final.log`), build0/0. No full verde posterior aún.
+Freeze96633 levantado solo al terminal. Propuestas Luna replayNone/preserve y
+SQLite/CASreopen leídas por root; cambio de política usa huella real y debe
+rechazar resume, no omitir el guard con un fingerprint constante.
+
 Actualización 01:56 UTC: corregida atribución de gates process.exec.
 CheckRunCompletionAndGate selecciona el último Turn persistido de la Lane raíz
 única, exige que esté completado y conserva ExecutionId de origen. No crea un
