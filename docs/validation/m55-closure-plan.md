@@ -1,5 +1,17 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 04:07 UTC / 2026-10-06 22:07 local:
+FULL51789 TERMINALexit0 sobre e467066: 2566 casos, 2562 PASS, 0 FAIL,
+4 SKIP symlink, 271.406s. Después: lease corta para checkpoint de contexto,
+RED2/2 reproducido, prueba de diagnóstico de uso inválido propuesta por Qwen
+e integrada/ampliada por root; final69PASS/0FAIL29.413s, arquitectura56PASS.
+Qwen sí produjo respuestas por inferencia local autenticada; no ejecutó tests.
+Luna propuso fixtures, root revisó/implementó/reprodujo. Full nueva pendiente.
+Persisten snapshots/externalización CAS, AgentProfile efectivo y contratos M6
+completos aceptados; M5.5 NO cerrado. No scheduler/joins ni éxito autenticado
+de cuenta/cualificación/OmniCoder atribuido a fixtures. Detalles en el runbook
+de ProviderState; el objetivo y sus siete criterios siguen íntegros.
+
 Estado vigente 2026-10-07 03:55 UTC / 2026-10-06 21:55 local:
 FULL88713 TERMINALexit0 sobre f2ca9cf: 2564 casos, 2560 PASS, 0 FAIL,
 4 SKIP symlink, 272.183s. Freeze levantado tras su terminación.
