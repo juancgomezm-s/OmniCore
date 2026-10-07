@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900" role="img" aria-labelledby="title desc">
+  <title id="title">OmniCore: experiencia objetivo v1</title>
+  <desc id="desc">Ilustración conceptual, no captura real. Conversación con código y tabla, entrada multilínea, barra de actividad y panel lateral de sesión con contexto, consumo, plan y evidencia.</desc>
+  <defs>
+    <linearGradient id="back" x2="1" y2="1"><stop stop-color="#081F2C"/><stop offset="1" stop-color="#14152D"/></linearGradient>
+    <linearGradient id="accent"><stop stop-color="#67D4D0"/><stop offset="1" stop-color="#B47CE7"/></linearGradient>
+    <style>text{font-family:Segoe UI,Arial,sans-serif;fill:#F4F7FB}.muted{fill:#AABED0}.cyan{fill:#67D4D0}.purple{fill:#C8A0F5}.mono{font-family:Consolas,monospace}.small{font-size:16px}.body{font-size:19px}.label{font-size:14px;letter-spacing:2px}.heading{font-weight:600}</style>
+  </defs>
+  <rect width="1440" height="900" rx="24" fill="url(#back)"/>
+  <text x="48" y="54" class="label cyan">OMNICORE / VISIÓN DEL PRODUCTO</text>
+  <text x="48" y="98" font-size="32" class="heading">Una conversación. Todo el trabajo a la vista.</text>
+  <rect x="1085" y="39" width="306" height="34" rx="17" fill="#293648"/>
+  <text x="1238" y="61" text-anchor="middle" class="small muted">CONCEPTO v1 · NO CAPTURA REAL</text>
+  <rect x="36" y="129" width="1368" height="727" rx="16" fill="#061822"/>
+  <path d="M52 129h1336" stroke="url(#accent)" stroke-width="3"/>
+  <text x="64" y="164" font-size="21" class="heading cyan">◎ OmniCore</text>
+  <text x="223" y="164" class="body muted">/ workspace / conversación de ejemplo</text>
+  <text x="1329" y="164" text-anchor="end" class="small muted">PLAN · ACT · ORQ</text>
+  <rect x="1040" y="183" width="364" height="673" fill="#202C3B"/>
+  <text x="1070" y="220" font-size="21" class="heading cyan">Sesión</text>
+  <text x="1070" y="251" class="small muted">Identidad y métricas del mismo chat</text>
+  <text x="1070" y="294" class="label muted">CONTEXTO ACTUAL</text>
+  <text x="1070" y="326" class="body">Tokens / capacidad del modelo</text>
+  <rect x="1070" y="343" width="302" height="8" rx="4" fill="#344559"/>
+  <text x="1070" y="379" class="small muted">Fuente · hora · medido o estimado</text>
+  <text x="1070" y="403" class="small cyan">Mostrar más ↗</text>
+  <text x="1070" y="447" class="label muted">CONSUMO Y CUOTAS</text>
+  <text x="1070" y="479" class="body">Entrada · salida · caché</text>
+  <text x="1070" y="506" class="small muted">Coste y ventanas si el proveedor informa</text>
+  <text x="1070" y="558" class="label muted">PLAN / EVIDENCIAS</text>
+  <text x="1070" y="591" class="body">✓ Explorar el módulo</text>
+  <text x="1070" y="624" class="body cyan">◉ Implementar el cambio</text>
+  <text x="1070" y="657" class="body muted">○ Verificar e integrar</text>
+  <text x="1070" y="700" class="small purple">Cada resultado enlaza su evidencia</text>
+  <path d="M1070 729h302" stroke="#405666"/>
+  <text x="1070" y="763" class="label muted">GIT / WORKSPACE</text>
+  <text x="1070" y="794" class="small muted">Panel independiente de las métricas</text>
+  <rect x="66" y="202" width="4" height="76" fill="#B47CE7"/>
+  <text x="92" y="224" class="label purple">TÚ</text>
+  <text x="92" y="253" class="body">Explícame el cambio aquí en el chat, con código y una tabla.</text>
+  <rect x="66" y="310" width="4" height="333" fill="#67D4D0"/>
+  <text x="92" y="332" class="label cyan">◎ OMNICORE</text>
+  <text x="92" y="366" class="body">Aquí tienes el ejemplo. No es necesario crear archivos.</text>
+  <rect x="92" y="391" width="912" height="95" rx="6" fill="#0A2330"/>
+  <text x="112" y="417" class="small cyan mono">&lt;/&gt; C#</text>
+  <text x="112" y="452" class="body mono"><tspan fill="#C8A0F5">double</tspan> Convertir(<tspan fill="#C8A0F5">double</tspan> celsius) =&gt; celsius * 9 / 5 + 32;</text>
+  <rect x="92" y="510" width="912" height="40" fill="#142636"/>
+  <text x="112" y="537" class="small cyan heading">Caso</text><text x="363" y="537" class="small cyan heading">Entrada</text><text x="617" y="537" class="small cyan heading">Resultado esperado</text>
+  <path d="M92 551h912M92 591h912M92 631h912" stroke="#344559"/>
+  <text x="112" y="578" class="body">Congelación</text><text x="363" y="578" class="body">0 °C</text><text x="617" y="578" class="body">32 °F</text>
+  <text x="112" y="618" class="body">Ebullición</text><text x="363" y="618" class="body">100 °C</text><text x="617" y="618" class="body">212 °F</text>
+  <text x="92" y="677" class="small muted">Respuestas, herramientas y aprobaciones con identidad de turno.</text>
+  <rect x="61" y="706" width="956" height="81" rx="8" fill="#293648"/>
+  <text x="81" y="738" class="body cyan">›</text><text x="108" y="738" class="body">Ahora verifica los casos límite,</text>
+  <text x="108" y="765" class="body">sin modificar el repositorio.</text><rect x="373" y="748" width="11" height="20" fill="#85E6DF"/>
+  <g fill="#67D4D0"><rect x="72" y="801" width="7" height="9" opacity=".2"/><rect x="83" y="801" width="7" height="9" opacity=".35"/><rect x="94" y="801" width="7" height="9" opacity=".5"/><rect x="105" y="801" width="7" height="9" opacity=".65"/><rect x="116" y="801" width="7" height="9" opacity=".85"/><rect x="127" y="801" width="7" height="9"/></g>
+  <text x="150" y="812" class="small cyan">Actividad debajo del composer</text>
+  <text x="72" y="841" class="small muted">Enter enviar · Shift+Enter salto · / comandos · F3 modelos · F4 ajustes</text>
+  <text x="48" y="882" class="small muted">Experiencia objetivo: CLI y OmniCoder sobre el mismo núcleo. No todas las funciones están entregadas.</text>
+</svg>

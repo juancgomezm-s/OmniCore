@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="660" viewBox="0 0 1440 660" role="img" aria-labelledby="title desc">
+  <title id="title">Camino hacia OmniCore v1</title>
+  <desc id="desc">M1–M4 base con M2 y M3 de código completo y aceptación pendiente, M5 cerrado en Windows, M5.5 en curso. Planificados: M6 multiagente, M7 aislamiento, M8 extensibilidad, M9 Host y protocolo, M10 madurez v1. Sin fechas prometidas ni porcentajes de avance.</desc>
+  <defs><style>text{font-family:Segoe UI,Arial,sans-serif;fill:#F4F7FB}.muted{fill:#AABED0}.cyan{fill:#67D4D0}.purple{fill:#C8A0F5}.h{font-size:23px;font-weight:600}.b{font-size:18px}.s{font-size:16px}.tag{font-size:14px;letter-spacing:1px}</style></defs>
+  <rect width="1440" height="660" rx="20" fill="#081C28"/>
+  <text x="48" y="50" class="s cyan">ROADMAP / ENTREGA PROGRESIVA</text>
+  <text x="48" y="97" font-size="34" font-weight="600">De un Turn fiable a un sistema multiagente verificable.</text>
+  <path d="M202 170h1030M202 410h1030" stroke="#405666" stroke-width="2"/>
+  <g fill="#202C3B"><rect x="48" y="188" width="318" height="181" rx="10"/><rect x="390" y="188" width="318" height="181" rx="10"/><rect x="732" y="188" width="318" height="181" rx="10"/><rect x="1074" y="188" width="318" height="181" rx="10"/><rect x="48" y="428" width="318" height="166" rx="10"/><rect x="390" y="428" width="318" height="166" rx="10"/><rect x="732" y="428" width="318" height="166" rx="10"/><rect x="1074" y="428" width="318" height="166" rx="10"/></g>
+  <g fill="#67D4D0"><circle cx="202" cy="170" r="7"/><circle cx="544" cy="170" r="7"/></g><circle cx="886" cy="170" r="8" fill="#B47CE7"/>
+  <g fill="#AABED0"><circle cx="1232" cy="170" r="5"/><circle cx="202" cy="410" r="5"/><circle cx="544" cy="410" r="5"/><circle cx="886" cy="410" r="5"/><circle cx="1232" cy="410" r="5"/></g>
+  <text x="72" y="223" class="tag cyan">M1–M4 · BASE</text><text x="72" y="260" class="h">Runtime y contexto</text><text x="72" y="296" class="b muted">Journal · tools · TUI</text><text x="72" y="337" class="s muted">M2/M3: aceptación local pendiente</text>
+  <text x="414" y="223" class="tag cyan">M5 · CERRADO EN WINDOWS</text><text x="414" y="260" class="h">Modelos y evidencia</text><text x="414" y="296" class="b muted">Local + frontier · quick real</text><text x="414" y="337" class="s muted">Recomendar no amplía permisos</text>
+  <text x="756" y="223" class="tag purple">M5.5 · EN CURSO</text><text x="756" y="260" class="h">Fronteras pre-M6</text><text x="756" y="296" class="b muted">Identidad · routing · autoridad</text><text x="756" y="337" class="s muted">Cerrar antes de abrir M6</text>
+  <text x="1098" y="223" class="tag muted">M6 · PLANIFICADO</text><text x="1098" y="260" class="h">Coordinar agentes</text><text x="1098" y="296" class="b muted">Scheduler · joins · supervisión</text><text x="1098" y="337" class="s muted">Lecturas en paralelo</text>
+  <text x="72" y="463" class="tag muted">M7 · PLANIFICADO</text><text x="72" y="500" class="h">Aislar e integrar</text><text x="72" y="536" class="b muted">Worktrees · reconciliación</text><text x="72" y="572" class="s muted">Undo respetando cambios ajenos</text>
+  <text x="414" y="463" class="tag muted">M8 · PLANIFICADO</text><text x="414" y="500" class="h">Extender con límites</text><text x="414" y="536" class="b muted">MCP · hooks · skills</text><text x="414" y="572" class="s muted">Memoria de sesión</text>
+  <text x="756" y="463" class="tag muted">M9 · PLANIFICADO</text><text x="756" y="500" class="h">Host y protocolo</text><text x="756" y="536" class="b muted">Stdio · lease · reconexión</text><text x="756" y="572" class="s muted">OmniCoder como cliente net8</text>
+  <text x="1098" y="463" class="tag muted">M10 · PLANIFICADO</text><text x="1098" y="500" class="h">Madurez v1</text><text x="1098" y="536" class="b muted">CLI · memoria · calibración</text><text x="1098" y="572" class="s muted">Entrega e integración completas</text>
+  <text x="48" y="631" class="s muted">Orden de hitos, no calendario. Validación adaptativa cruza M6/M7. Fuente de verdad: arquitectura §24.</text>
+</svg>
