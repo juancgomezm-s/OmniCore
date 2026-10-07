@@ -923,7 +923,10 @@ public sealed class OmniCliRuntime
                 }
                 return checkResults;
             }, turn.MutationLedger);
+            if (completion.Failure is { } completionFailure)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(completionFailure);
             if (completion.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
+                || completion.Ack.Status != "ok"
                 || completion.Completed is not { } completed)
             {
                 writeLine(Text(Localized("cli.runtime.error", ("command", "act"),
@@ -973,7 +976,10 @@ public sealed class OmniCliRuntime
                         "confirmado por el usuario")).ToArray();
                     var resumedEvaluation = server.CheckRunCompletionAndGate(sessionId, runId,
                         _ => acceptedResults, turn.MutationLedger);
+                    if (resumedEvaluation.Failure is { } resumedFailure)
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(resumedFailure);
                     if (resumedEvaluation.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
+                        || resumedEvaluation.Ack.Status != "ok"
                         || resumedEvaluation.Completed is not { } resumed)
                     {
                         writeLine(Text(Localized("cli.runtime.error", ("command", "act"),

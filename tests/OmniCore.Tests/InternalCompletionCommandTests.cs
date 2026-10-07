@@ -180,8 +180,13 @@ public sealed class InternalCompletionCommandTests
         using (CausationScope.Begin(cause))
         using (ExecutionScope.Begin(parentExecution))
         {
-            Assert.Throws<InvalidOperationException>(() => setup.Server.CheckRunCompletionAndGate(
-                setup.Session, setup.Run, _ => throw new InvalidOperationException("controlled gate failure"), null));
+            var original = new InvalidOperationException("controlled gate failure");
+            var result = setup.Server.CheckRunCompletionAndGate(
+                setup.Session, setup.Run, _ => throw original, null);
+            Assert.Same(original, result.Failure);
+            Assert.Null(result.Completed);
+            Assert.Equal("error", result.Ack.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, result.Ack.Outcome?.Kind);
             Assert.Equal(cause, CausationScope.Current);
             Assert.Equal(parentExecution, ExecutionScope.Current);
             var prefix = setup.Store.ReadFrom(setup.Session, before + 1);
@@ -193,6 +198,11 @@ public sealed class InternalCompletionCommandTests
                 Assert.NotEqual(parentExecution.RunId, evt.RunId);
             });
             Assert.DoesNotContain(prefix, evt => evt.Type.ToString() == "run.completed");
+            var own = prefix.Where(evt => evt.Causation is CommandCausation command
+                && command.CommandId.Value.ToString() == result.Ack.CommandId).ToArray();
+            Assert.NotEmpty(own);
+            Assert.Equal(own.Min(evt => evt.Sequence), result.Ack.FirstSeq);
+            Assert.Equal(own.Max(evt => evt.Sequence), result.Ack.LastSeq);
         }
 
         Assert.Null(CausationScope.Current);
@@ -210,18 +220,25 @@ public sealed class InternalCompletionCommandTests
         using (CausationScope.Begin(parentCause))
         using (ExecutionScope.Begin(parentExecution))
         {
-            Assert.Throws<IOException>(() => setup.Server.CheckRunCompletionAndGate(setup.Session, setup.Run,
-                _ => Array.Empty<ExternalCompletionGateResult>(), null));
+            var failed = setup.Server.CheckRunCompletionAndGate(setup.Session, setup.Run,
+                _ => Array.Empty<ExternalCompletionGateResult>(), null);
+            Assert.IsType<IOException>(failed.Failure);
+            Assert.Null(failed.Completed);
+            Assert.Equal("error", failed.Ack.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, failed.Ack.Outcome?.Kind);
             var durablePrefix = setup.Store.ReadFrom(setup.Session, before + 1);
             Assert.NotEmpty(durablePrefix);
             Assert.DoesNotContain(durablePrefix, evt => evt.Type.ToString() == "run.validation_started");
             Assert.DoesNotContain(durablePrefix, evt => evt.Type.ToString() == "run.completed");
+            Assert.Equal(durablePrefix.Min(evt => evt.Sequence), failed.Ack.FirstSeq);
+            Assert.Equal(durablePrefix.Max(evt => evt.Sequence), failed.Ack.LastSeq);
             Assert.Equal(parentCause, CausationScope.Current);
             Assert.Equal(parentExecution, ExecutionScope.Current);
 
             var retry = setup.Server.CheckRunCompletionAndGate(setup.Session, setup.Run,
                 _ => Array.Empty<ExternalCompletionGateResult>(), null);
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, retry.Ack.Outcome?.Kind);
+            Assert.NotEqual(failed.Ack.CommandId, retry.Ack.CommandId);
             Assert.True(retry.Completed);
             Assert.Equal(parentCause, CausationScope.Current);
             Assert.Equal(parentExecution, ExecutionScope.Current);

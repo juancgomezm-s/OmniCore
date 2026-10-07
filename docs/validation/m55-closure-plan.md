@@ -1,5 +1,12 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 05:05 UTC: completion errores/OCE/prefix/read/checkpoint ahora conserva
+Failure original, Completed=null y ACK causal, sin cambiar sesión seleccionada.
+RED7/12, final61PASS/0FAIL9.897s, arquitectura56PASS .727s; SQLite real/reopen,
+fixtures explícitos. Full nueva pendiente. FULL30365 anterior sobre2b03571
+terminalexit0:2589=2585PASS/0FAIL/4SKIP260.875s. PlanApproval, AgentProfile reusable,
+contenido provider.adapter y payloadsM6 aceptados siguen pendientes; no cierreM55.
+
 2026-10-07 04:56 UTC: ExecuteExplorerTurn conserva Failure original + ACK
 correlacionable ante callback fallido/cancelado; CLI mantiene propagación sin
 confundir Accepted parcial con éxito. RED3/7; final59PASS + arquitectura56PASS.
