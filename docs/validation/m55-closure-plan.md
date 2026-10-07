@@ -1,4 +1,41 @@
-# Objetivo activo: llegar a M6
+# Objetivo activo: cerrar M5 y M5.5
+
+## Alcance íntegro y equipo — 2026-10-07 06:38 UTC
+
+El propietario reanudó exclusivamente M5/M5.5, con bloques agrupados y monitor
+cada 30 minutos. No se redefine el objetivo alrededor del último fix. Contratos
+de etapas posteriores necesarios para M5.5 se congelan sin lógica de scheduling,
+joins o delegación M6. Main y cambios ajenos quedan intactos; no push/merge.
+
+- P0: comandos/admisión/checkpoint/followup/escalación integrados en b2ac3fe.
+  Full terminal exit0: 2637 casos = 2633 PASS/0 FAIL/4 SKIP symlink, 239.434s.
+  Focal 57 PASS y arquitectura 56 PASS; cifras solapadas, no se suman.
+- P0 restante: autoridad explícita de modos y UltraCode, selección/revocación
+  durable, consultas directas y gates proporcionales de ADR0047. El documento
+  aceptado estaba en el checkout principal y faltaba en este worktree; ahora se
+  conserva fielmente aquí. Reasoning high/max no prueba esa autoridad. Sus once
+  criterios deben cubrirse, además de los siete de ADR0046; no se omiten.
+- P1: AgentProfile reutilizable/efectivo y fingerprint de configuración, no sólo
+  UUID de Lane. GLM propone paquete independiente; root integra y audita.
+- P1: conjunto completo de contratos congelados pre-M6. Propuestas con métodos
+  vacíos o semánticas inventadas no son una implementación aceptable.
+- P2: aceptación real M5 y acta de cierre coherente con el roadmap. Fixtures,
+  llamadas a workers y tokenización local no acreditan cualificación autenticada
+  del circuito Quick. No reabrir defectos históricos ya corregidos.
+
+Luna HIGH implementa el bloque crítico completo; root conserva auditoría,
+integración y commits. Nemotron gratuito/GLM/DeepSeek usan paquetes disjuntos
+sin historial ni secretos, timeout de generación 20 minutos y sin fallback
+pagado. Las entregas parciales o finish_reason error/length se rechazan. Qwen
+local queda para pruebas cerradas; dos encargos recientes no solicitaron una
+tool válida y NO ejecutaron tests. Root verificó comandos para no bloquearlo.
+NVIDIA devolvió HTTP504 tras unos cinco minutos en requests no streaming; un
+paquete DeepSeek streaming también devolvió504. Esos fallos se preservan, sin
+reconfigurar servidores/TLS ni presentar workers vivos como progreso.
+
+Logs y ownership vigentes: C:/Users/juanc/.codex/omni-overnight-20261005.md y
+C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0623/, 0626 y 0631.
+Los checkpoints históricos siguientes mantienen su fecha; no son la cola actual.
 
 2026-10-07 05:37 UTC: provider.adapter contiene JSON v2 exacto/redactado sólo
 cuando el store lo permite; Prepare no publica temprano, misma versión/hash,
