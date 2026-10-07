@@ -49,7 +49,8 @@ public sealed class ExplorerFinalResponsePublicationLeaseTests
             }, executor, catalog,
                 new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
                 new ExecutionFingerprint("scripted", "h", "t", "c", "o", "fixture-build"), selection,
-                eventObserver, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+                eventObserver, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                maximumGenerationRequestAttempts: 1);
 
             var result = turn.Ask("ask", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
 
@@ -153,7 +154,8 @@ public sealed class ExplorerFinalResponsePublicationLeaseTests
             }, executor, catalog,
                 new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
                 new ExecutionFingerprint("scripted", "h", "t", "c", "o", "fixture-build"), selection,
-                failingEvents, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+                failingEvents, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                maximumGenerationRequestAttempts: 1);
 
             var result = turn.Ask("ask", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
 
@@ -233,7 +235,8 @@ public sealed class ExplorerFinalResponsePublicationLeaseTests
                 new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
                 new ExecutionFingerprint("scripted", "h", "t", "c", "o", "fixture-build"), selection,
                 eventObserver, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-                pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: true);
+                pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: true,
+                maximumGenerationRequestAttempts: 1);
 
             var result = turn.Ask("ask", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
 

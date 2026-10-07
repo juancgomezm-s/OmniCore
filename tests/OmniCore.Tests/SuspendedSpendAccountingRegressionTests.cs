@@ -308,7 +308,8 @@ public sealed class SuspendedSpendAccountingRegressionTests
             new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
             store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
             pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: true,
-            sessionCapUsd: sessionCapUsd, dailyCapUsd: dailyCapUsd, questionnaires: service);
+            sessionCapUsd: sessionCapUsd, dailyCapUsd: dailyCapUsd, questionnaires: service,
+            maximumGenerationRequestAttempts: 1);
 
     private static ModelResponse FinalResponse() => new(new ContentBlock[] { new TextBlock("done") },
         StopReason.EndTurn, new TokenUsage(1, 0, 0, 0, 0), null, new ProviderMetadata("scripted", "", null));

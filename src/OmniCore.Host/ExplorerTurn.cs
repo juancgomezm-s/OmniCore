@@ -878,7 +878,9 @@ public sealed class ExplorerTurn
                         Sensitivity.Sensitive);
                     var completionAfter = stepReservation is not null ? _store.CurrentSequence(sessionId) : 0;
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
-                        resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields), DurabilityClass.Barrier);
+                        resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields,
+                        new GenerationRequestAttemptEvidence(generationAttempts.ObservedSends,
+                            _maximumGenerationRequestAttempts)), DurabilityClass.Barrier);
                     if (TokenUsageValidation.IsInvalid(resolved.Usage, resolved.ReportedUsageFields))
                     {
                         invalidUsageObserved = true;

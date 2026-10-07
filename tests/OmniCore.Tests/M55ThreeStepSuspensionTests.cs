@@ -50,7 +50,8 @@ public sealed class M55ThreeStepSuspensionTests
                     new ModelSelection(new ModelIdValue("test"), 8192, ToolMode.Direct, null),
                     store!, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
                     pricing: new ModelPricing(1m, 2m),
-                    questionnaires: new QuestionnaireInteractionService(store!, codecs, artifacts));
+                    questionnaires: new QuestionnaireInteractionService(store!, codecs, artifacts),
+                    maximumGenerationRequestAttempts: 1);
             }
 
             var suspended = MakeTurn((request, _) =>

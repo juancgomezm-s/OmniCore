@@ -46,7 +46,7 @@ public sealed class UncappedSpendReplayTests
                 new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
                 store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
                 pricing: priced ? new ModelPricing(1m, 1m) : null, enforceDefaultSpendCaps: capped,
-                sessionCapUsd: 100m, dailyCapUsd: 100m);
+                sessionCapUsd: 100m, dailyCapUsd: 100m, maximumGenerationRequestAttempts: 1);
             var turn = CreateTurn(firstPriced);
             Assert.Equal(StopReason.EndTurn, turn.Ask("first", "system", run.SessionId, run.RunId,
                 run.RootLane, "", CancellationToken.None).StopReason);

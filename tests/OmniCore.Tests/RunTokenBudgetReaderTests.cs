@@ -43,7 +43,8 @@ public sealed class RunTokenBudgetReaderTests
             new ModelStepStarted(turn, 1, "fixture", 100, "Direct", null, null, null),
         };
         if (condition != "unsettled")
-            payloads.Add(new ModelStepCompleted(turn, 1, usage, StopReason.EndTurn, null, "2026-10-07", null, fields));
+            payloads.Add(new ModelStepCompleted(turn, 1, usage, StopReason.EndTurn, null, "2026-10-07", null, fields,
+                new GenerationRequestAttemptEvidence(1, 1)));
         var result = RunTokenBudgetReader.Read(Encode(payloads, codecs, session, run), codecs, run, 10);
         Assert.Null(result.Remaining);
         Assert.NotNull(result.Limitation);
@@ -68,7 +69,8 @@ public sealed class RunTokenBudgetReaderTests
         else payloads.Add(new ModelStepCompleted(turn, 1,
             condition == "reported_zero" ? new TokenUsage(0, 0, 0, 0, 0) : new TokenUsage(2, 3, 0, 0, 0),
             StopReason.EndTurn, null, "2026-10-07", null,
-            condition == "legacy_reported_fields" ? null : TokenUsageFields.All));
+            condition == "legacy_reported_fields" ? null : TokenUsageFields.All,
+            new GenerationRequestAttemptEvidence(1, 1)));
         var events = Encode(payloads, codecs, session, run);
         var limit = condition == "overdrawn" ? 4 : 10;
         var result = RunTokenBudgetReader.Read(events, codecs, run, limit);
@@ -81,4 +83,29 @@ public sealed class RunTokenBudgetReaderTests
         SessionId session, RunId run) => payloads.Select(payload => DomainEvent.Create(session, payload.Type(),
             payload.SchemaVersion(), null, run, run, null, null, null, null, null, [],
             codecs.CodecFor(payload.Type()).Encode(payload))).ToArray();
+
+    [Theory]
+    [InlineData(null, null, false)]
+    [InlineData(0L, 1L, true)]
+    [InlineData(0L, 2L, false)]
+    [InlineData(1L, null, false)]
+    [InlineData(1L, 3L, true)]
+    [InlineData(2L, 3L, false)]
+    public void Legacy_and_retry_uncertainty_are_not_reported_as_complete_consumption(long? sends, long? bound, bool known)
+    {
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var turn = TurnId.New();
+        var attempts = sends is { } count ? new GenerationRequestAttemptEvidence(count, bound) : null;
+        var events = Encode([
+            new ModelStepStarted(turn, 0, "fixture", 100, "Direct", null, null, null),
+            new ModelStepCompleted(turn, 0, new TokenUsage(17, 4, 0, 0, 0), StopReason.EndTurn,
+                null, "2026-10-07", null, TokenUsageFields.Input | TokenUsageFields.Output, attempts),
+        ], codecs, session, run);
+        var result = RunTokenBudgetReader.Read(events, codecs, run, 100);
+        Assert.Equal(known ? 79L : (long?)null, result.Remaining);
+        Assert.Equal(known, result.Limitation is null);
+        Assert.Equal(result, RunTokenBudgetReader.Read(events.Concat(events).ToArray(), codecs, run, 100));
+    }
 }
