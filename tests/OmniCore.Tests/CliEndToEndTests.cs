@@ -22,6 +22,44 @@ namespace OmniCore.Tests;
 [Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class CliEndToEndTests
 {
+    [Theory]
+    [InlineData(RunMode.Plan, "PLAN")]
+    [InlineData(RunMode.Act, "ACT")]
+    [InlineData(RunMode.Orchestrate, "ORQ")]
+    public async Task Direct_explanation_preserves_selected_mode_without_plan_tools_or_children(RunMode mode, string instructionMode)
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            using (var preferences = new RunModePreferenceStore(OmniHost.CreatePlatformPaths().UserDatabasePath))
+                preferences.Set(mode, 0);
+            string? submitted = null;
+            provider.RespondWith((_, body) => { submitted = body; return TextResponse("La función suma sus dos argumentos."); });
+            var runtime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(runtime);
+            var diagnostics = new List<string>();
+            Assert.Equal(0, await host.ExecuteAsync("¿Qué hace esta función? int Sum(int a, int b) => a + b;",
+                diagnostics.Add, TestContext.Current.CancellationToken));
+            Assert.Equal(1, provider.RequestCount);
+            Assert.Contains("You are in " + instructionMode + " mode", submitted!);
+            // Read helpers open a new SQLite connection: assertions inspect durable state, not host cache.
+            var events = ReadCurrentSessionEvents(workspace);
+            var created = Assert.Single(events.OfType<RunCreated>());
+            Assert.Equal(mode, created.Mode);
+            Assert.Single(events.OfType<TaskCreated>());
+            Assert.Single(events.OfType<LaneCreated>());
+            Assert.Single(events.OfType<TurnStarted>());
+            Assert.Single(events.OfType<TurnCompleted>());
+            Assert.DoesNotContain(events, item => item is ToolCallRequested or ToolCallStarted or AgentExecutionStarted
+                or RunModeChanged or RunModeTransitionAuthorized);
+            Assert.DoesNotContain(events.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.PlanApproval);
+            Assert.Empty(Directory.GetFiles(workspace, "*", SearchOption.AllDirectories));
+            var journal = ReadCurrentSessionJournalEvents(workspace);
+            var replay = RunProjection.Replay(created.SessionId, created.RunId, EventCodecs.Create(), journal);
+            Assert.Equal(mode, replay.Mode);
+            Assert.False(replay.ModeAuthority!.AutoModeSwitch);
+        });
+    }
+
     [Fact]
     public async Task Tui_reasoning_budget_boost_requires_an_explicit_nontrivial_budget()
     {
