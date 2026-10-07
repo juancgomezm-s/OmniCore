@@ -1,5 +1,29 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Aceptación de cualificación y suspensión — 2026-10-07 11:44 UTC
+
+Root corrigió el oracle de M5: `ProbeScorer.ExtractText` concatena todo el texto
+de respuesta, sin separadores inventados; no puntúa reasoning ni tools anidadas.
+Quick `1.1.1` identifica la corrección sin cambiar prompts, umbrales ni TaskSetHash.
+Siete RED reproducidos incluían falsos `Qualified` persistidos por Host/SQLite/CAS.
+Luna construyó `ModeAuthoritySuspensionIntegrationTests`; root auditó y reprodujo
+el flujo de cuestionario, revocación, cierre/reapertura y mismo Turn en Explorer.
+La resolución y límites originales se conservan y la autoridad revocada no revive.
+
+Build final 0 errores/advertencias, 14.96 s. Barrido `*Qualification*` más suspensión:
+**378 PASS, 0 FAIL, 0 SKIP**, 8.096 s. FULL `qualification-blocks-full-1144.log`
+terminó con exit0: **2850 casos, 2846 PASS, 0 FAIL, 4 SKIP** por permisos de
+symlink, 120.258 s. Conteos solapados no se suman a ejecuciones anteriores. Logs
+`qualification-blocks-*` en el directorio de evidencia de la matriz de abajo.
+
+Brecha real encontrada durante esta aceptación: CLI recalcula la resolución del
+Run tras revocar UltraCode, mientras el Turn suspendido exige su resolución durable
+original. El fixture directo conserva la selección y no acredita ese camino normal.
+Luna tiene ownership de `OmniCliRuntime.cs` y su integración para corregirlo;
+permanecen abiertos el criterio 7 integral y los demás pendientes de la matriz.
+Toda esta ejecución usa providers scripted; no acredita consultas autenticadas,
+consumo real, nuevos workers de runtime ni aceptación real de Quick en Sol/Luna.
+
 ## Matriz de aceptación íntegra — 2026-10-07 11:28 UTC
 
 Checkpoint conjunto: build final 0 errores/advertencias, 14.60 s; focal de CLI,
