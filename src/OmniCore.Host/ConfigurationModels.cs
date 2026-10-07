@@ -75,6 +75,8 @@ public sealed class ReasoningCapabilityYaml
     public bool? Supported { get; set; }
     public List<string>? EffortLevels { get; set; }
     public string? ReplayPolicy { get; set; }
+    public int? UltraCodeBudgetTokens { get; set; }
+    public int? UltraCodeOutputReserveTokens { get; set; }
 }
 
 public sealed class WorkspaceSettingsYaml

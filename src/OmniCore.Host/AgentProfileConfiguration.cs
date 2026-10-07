@@ -11,7 +11,11 @@ using YamlDotNet.RepresentationModel;
 /// </summary>
 public static class AgentProfileConfiguration
 {
-    public static AgentProfileRegistry Load(string yaml, ScopeLevel sourceScope)
+    public sealed record Loaded(AgentProfileRegistry Registry, AgentProfile? DefaultProfile);
+
+    public static AgentProfileRegistry Load(string yaml, ScopeLevel sourceScope) => LoadSelection(yaml, sourceScope).Registry;
+
+    public static Loaded LoadSelection(string yaml, ScopeLevel sourceScope)
     {
         ArgumentNullException.ThrowIfNull(yaml);
         if (sourceScope != ScopeLevel.User)
@@ -19,7 +23,7 @@ public static class AgentProfileConfiguration
         var stream = new YamlStream();
         stream.Load(new StringReader(yaml));
         if (stream.Documents.Count != 1) throw Invalid("Expected one document.");
-        var root = Mapping(stream.Documents[0].RootNode, ["agentProfiles"]);
+        var root = Mapping(stream.Documents[0].RootNode, ["agentProfiles", "defaultProfile"]);
         var profiles = Mapping(Required(root, "agentProfiles"), null);
         var definitions = new List<AgentProfile>();
         foreach (var pair in profiles.Children)
@@ -35,7 +39,7 @@ public static class AgentProfileConfiguration
             {
                 var rule = Mapping(node, ["executablePattern", "argvPatterns", "decision"]);
                 return new ProcessRule(Scalar(Required(rule, "executablePattern")),
-                    Strings(Required(rule, "argvPatterns")), Decision(Required(rule, "decision")));
+                    ArgvStrings(Required(rule, "argvPatterns")), Decision(Required(rule, "decision")));
             }).ToArray();
             var network = Sequence(Required(ceiling, "network")).Select(node =>
             {
@@ -53,7 +57,12 @@ public static class AgentProfileConfiguration
                     process, network, Strings(Required(ceiling, "secrets")), shell),
                 Strings(Required(entry, "preferredTools")).Select(value => new ToolId(value)).ToArray()));
         }
-        return new AgentProfileRegistry(definitions);
+        var registry = new AgentProfileRegistry(definitions);
+        var selected = root.Children.TryGetValue(new YamlScalarNode("defaultProfile"), out var selectedNode)
+            ? registry.Find(ProfileId.Parse(Scalar(selectedNode)))
+                ?? throw Invalid("defaultProfile must name an explicit profile identity in this User document.")
+            : null;
+        return new Loaded(registry, selected);
     }
 
     private static PermissionDecision Decision(YamlNode node) => Scalar(node) switch
@@ -85,5 +94,13 @@ public static class AgentProfileConfiguration
         node is YamlSequenceNode sequence ? sequence.Children : throw Invalid("Expected a sequence.");
 
     private static string[] Strings(YamlNode node) => Sequence(node).Select(Scalar).ToArray();
+    private static string[] ArgvStrings(YamlNode node) => Sequence(node).Select(argument =>
+    {
+        if (argument is not YamlScalarNode scalar || scalar.Value is null
+            || (scalar.Value.Length == 0 && scalar.Style is not
+                (YamlDotNet.Core.ScalarStyle.DoubleQuoted or YamlDotNet.Core.ScalarStyle.SingleQuoted)))
+            throw Invalid("Expected an explicit argv scalar; quote empty arguments.");
+        return scalar.Value;
+    }).ToArray();
     private static InvalidDataException Invalid(string reason) => new(reason);
 }

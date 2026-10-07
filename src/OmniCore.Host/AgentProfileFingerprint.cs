@@ -1,12 +1,25 @@
 namespace OmniCore.Host;
 
 using System.Text.Json;
+using System.Security.Cryptography;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
 /// <summary>Canonical reusable configuration; excludes every execution/session identity.</summary>
 internal static class AgentProfileFingerprint
 {
+    internal static ContentHash Hash(AgentProfile profile)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            Write(writer, profile);
+            writer.WriteEndObject();
+        }
+        return ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(stream.ToArray())));
+    }
+
     internal static void Write(Utf8JsonWriter writer, AgentProfile profile)
     {
         writer.WriteString("profileId", profile.Id.ToString());

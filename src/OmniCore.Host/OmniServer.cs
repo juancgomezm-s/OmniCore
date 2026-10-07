@@ -9,6 +9,7 @@ using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
+using Microsoft.Data.Sqlite;
 using System.Globalization;
 
 /// <summary>
@@ -16,7 +17,7 @@ using System.Globalization;
 /// (ADR-0019 §1). Traduce los comandos wire a llamadas del Engine y acumula los eventos wire.
 /// En M1 atiende <c>sim</c> y la query <c>state</c>.
 /// </summary>
-public sealed class OmniServer : IOmniClient
+public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
 {
     private readonly IEventStore _store;
 
@@ -58,10 +59,34 @@ public sealed class OmniServer : IOmniClient
 
     private readonly IArtifactStore? _artifacts;
     private readonly UserWorkspaceSpendReader? _userSpendReader;
+    private readonly string? _userDatabasePath;
     public SessionObservationHub Observability { get; }
 
     private string? _workspaceRoot;
     private SessionRoutingPolicy _newSessionRoutingPolicy = SessionRoutingPolicy.Empty();
+    private AgentProfileConfiguration.Loaded _agentProfiles = new(new AgentProfileRegistry([]), null);
+
+    internal void ConfigureAgentProfiles(AgentProfileConfiguration.Loaded profiles)
+    {
+        ArgumentNullException.ThrowIfNull(profiles);
+        _agentProfiles = profiles;
+    }
+
+    internal AgentProfile? ResolveLaneAgentProfile(SessionId sessionId, RunId runId, LaneId laneId)
+    {
+        var lane = new EventStream(_store, _codecs, sessionId).EventsSince(1)
+            .Where(evt => evt.RunId == runId).Select(_codecs.Decode)
+            .OfType<LaneCreated>().SingleOrDefault(created => created.LaneId == laneId)
+            ?? throw new InvalidOperationException("Cannot resolve the requested Run/Lane configuration.");
+        if (lane.AgentProfileRevision is null && lane.AgentProfileHash is null) return null;
+        if (lane.AgentProfileRevision is null || lane.AgentProfileHash is null)
+            throw new InvalidOperationException("Incomplete durable AgentProfile binding.");
+        var profile = _agentProfiles.Registry.Find(lane.AgentProfile)
+            ?? throw new InvalidOperationException("The Lane's configured AgentProfile is unavailable.");
+        if (profile.Revision != lane.AgentProfileRevision || AgentProfileFingerprint.Hash(profile) != lane.AgentProfileHash)
+            throw new InvalidOperationException("The Lane's configured AgentProfile has changed; execution is blocked.");
+        return profile;
+    }
 
     internal void ConfigureNewSessionRoutingPolicy(SessionRoutingPolicy policy)
     {
@@ -82,6 +107,7 @@ public sealed class OmniServer : IOmniClient
         _audit = audit;
         _artifacts = artifacts;
         _userSpendReader = userSpendReader;
+        _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
         Observability = new SessionObservationHub(store, codecs, artifacts);
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = null;
@@ -99,6 +125,7 @@ public sealed class OmniServer : IOmniClient
         _audit = audit;
         _artifacts = artifacts;
         _userSpendReader = userSpendReader;
+        _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
         Observability = new SessionObservationHub(store, codecs, artifacts);
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = stateFile;
@@ -361,7 +388,13 @@ public sealed class OmniServer : IOmniClient
         return events;
     }
 
-    public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken)
+    public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken) =>
+        SendCore(command, cancellationToken, trustedUserAction: false);
+
+    public CommandAck SendUserAction(WireEnvelope command, CancellationToken cancellationToken) =>
+        SendCore(command, cancellationToken, trustedUserAction: true);
+
+    private CommandAck SendCore(WireEnvelope command, CancellationToken cancellationToken, bool trustedUserAction)
     {
         if (command.MessageType != MessageTypes.Command)
         {
@@ -423,12 +456,31 @@ public sealed class OmniServer : IOmniClient
         // Conversación ↔ Run, interrupción, cancelación e interacciones (ADR-0035, ADR-0034).
         if (commandName is "session.input" or "run.interrupt" or "run.cancel" or "interaction.respond")
         {
-            return RunControl(command, commandName, fields);
+            return RunControl(command, commandName, fields, trustedUserAction);
         }
 
         if (commandName == "explore.start")
         {
             return StartExplorerRun(command, fields);
+        }
+
+        if (commandName is "mode.default.set" or "run.mode.select" or "run.mode.revoke"
+            or "reasoning.default.set" or "reasoning.default.revoke"
+            or "run.reasoning.select" or "run.reasoning.revoke")
+        {
+            if (!trustedUserAction)
+                return new CommandAck(command.MessageId, "error", "mode and reasoning authority require a trusted user action",
+                    RuntimeCommandOutcome.Rejected());
+            return commandName switch
+            {
+                "mode.default.set" => SetDefaultRunMode(command, fields),
+                "run.mode.select" => SelectRunMode(command, fields),
+                "run.mode.revoke" => RevokeRunModeAuthority(command, fields),
+                "reasoning.default.set" => SetDefaultReasoning(command, fields),
+                "reasoning.default.revoke" => RevokeDefaultReasoning(command, fields),
+                "run.reasoning.select" => SelectRunReasoning(command, fields),
+                _ => RevokeRunReasoning(command, fields),
+            };
         }
 
         if (commandName == "act")
@@ -589,9 +641,514 @@ public sealed class OmniServer : IOmniClient
 
     public RunMode CurrentRunMode()
     {
-        if (_lastSessionId is null || _lastRunId is null) return RunMode.Plan;
+        if (_lastSessionId is null || _lastRunId is null) return RunMode.Act;
         var events = EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId);
-        return RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, events).Mode ?? RunMode.Plan;
+        return RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, events).Mode ?? ReadModePreference().Mode;
+    }
+
+    public RunModeAuthority? CurrentModeAuthority()
+    {
+        if (_lastSessionId is null || _lastRunId is null) return null;
+        var events = EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId);
+        return RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, events).ModeAuthority;
+    }
+
+    public RunReasoningSelectionState? CurrentRunReasoningSelection()
+    {
+        if (_lastSessionId is null || _lastRunId is null) return null;
+        var events = EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId);
+        return RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, events).ReasoningSelection;
+    }
+
+    private RunModePreference ReadModePreference()
+    {
+        if (_userDatabasePath is null) return new RunModePreference(RunMode.Act, 0);
+        using var store = new RunModePreferenceStore(_userDatabasePath);
+        return store.Read();
+    }
+
+    private UserReasoningPreference ReadReasoningPreference()
+    {
+        if (_userDatabasePath is null) return new UserReasoningPreference(false, null, 0);
+        using var store = new ReasoningPreferenceStore(_userDatabasePath);
+        return store.Read();
+    }
+
+    private static bool TryParseRunMode(string? value, out RunMode mode)
+    {
+        mode = value?.ToLowerInvariant() switch
+        {
+            "plan" => RunMode.Plan,
+            "act" => RunMode.Act,
+            "orq" or "orchestrate" => RunMode.Orchestrate,
+            _ => (RunMode)(-1),
+        };
+        return Enum.IsDefined(mode);
+    }
+
+    internal static string ModeAuthorityJson(RunModeAuthority authority, DateTimeOffset utcNow)
+    {
+        var auth = authority.Authorization;
+        var allowed = auth?.AllowedModes ?? Array.Empty<RunMode>();
+        var limits = auth?.Limits;
+        var authorization = auth is null ? "null" : "{"
+            + JsonObj.Field("authorizationId", auth.AuthorizationId.ToString("D"))
+            + ",\"allowedModes\":[" + string.Join(",", allowed.Select(mode =>
+                "\"" + mode.ToString().ToLowerInvariant() + "\"")) + "],\"limits\":{"
+            + "\"maxAgents\":" + limits!.MaxAgents.ToString(CultureInfo.InvariantCulture)
+            + ",\"maxDepth\":" + limits.MaxDepth.ToString(CultureInfo.InvariantCulture)
+            + ",\"maxTurns\":" + limits.MaxTurns.ToString(CultureInfo.InvariantCulture)
+            + ",\"maxToolCalls\":" + limits.MaxToolCalls.ToString(CultureInfo.InvariantCulture)
+            + ",\"maxElapsedSeconds\":" + limits.MaxElapsedSeconds.ToString(CultureInfo.InvariantCulture)
+            + ",\"maxSpendUsd\":" + limits.MaxSpendUsd.ToString(CultureInfo.InvariantCulture)
+            + "}," + JsonObj.Field("grantedAtUtc", auth.GrantedAtUtc!.Value.ToString("O", CultureInfo.InvariantCulture))
+            + ",\"expired\":" + (auth.IsExpiredAt(utcNow) ? "true" : "false") + "}";
+        return "{" + JsonObj.Field("runId", authority.RunId.ToString())
+            + ",\"revision\":" + authority.Revision.ToString(CultureInfo.InvariantCulture)
+            + "," + JsonObj.Field("mode", authority.Mode.ToString().ToLowerInvariant())
+            + "," + JsonObj.Field("strategy", authority.Strategy.ToString().ToLowerInvariant())
+            + "," + JsonObj.Field("effort", authority.ProductEffort.ToString().ToLowerInvariant())
+            + ",\"modePinned\":" + (authority.ModePinned ? "true" : "false")
+            + ",\"autoModeSwitch\":" + (authority.AutoModeSwitch ? "true" : "false")
+            + ",\"effectiveAutoModeSwitch\":" + (authority.IsAutoModeSwitchEffectiveAt(utcNow) ? "true" : "false")
+            + "," + JsonObj.Field("objectiveDigest", authority.ObjectiveDigest)
+            + ",\"authorization\":" + authorization + "}";
+    }
+
+    private CommandAck SetDefaultRunMode(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        try
+        {
+            if (_userDatabasePath is null || !fields.TryGetValue("mode", out var rawMode)
+                || !TryParseRunMode(rawMode, out var mode)
+                || !fields.TryGetValue("expectedRevision", out var rawRevision)
+                || !long.TryParse(rawRevision, NumberStyles.None, CultureInfo.InvariantCulture, out var expectedRevision))
+                return new CommandAck(command.MessageId, "error",
+                    "mode.default.set requires a valid mode, User database, and expectedRevision",
+                    RuntimeCommandOutcome.Rejected());
+
+            using var store = new RunModePreferenceStore(_userDatabasePath);
+            store.Set(mode, expectedRevision);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
+        catch (RunModePreferenceConflictException)
+        {
+            return new CommandAck(command.MessageId, "error", "Run mode preference revision conflict",
+                RuntimeCommandOutcome.Rejected());
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or UnauthorizedAccessException or SqliteException or OverflowException)
+        {
+            return new CommandAck(command.MessageId, "error", "Could not persist the User Run mode preference",
+                RuntimeCommandOutcome.Rejected());
+        }
+    }
+
+    private CommandAck SelectRunMode(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        var messageId = command.MessageId;
+        if (_lastSessionId is not { } session || _lastRunId is not { } run
+            || !fields.TryGetValue("mode", out var rawMode) || !TryParseRunMode(rawMode, out var mode))
+            return new CommandAck(messageId, "error", "run.mode.select requires an active Run and a valid mode",
+                RuntimeCommandOutcome.Rejected());
+
+        var commandId = new CommandId(Guid.Parse(messageId));
+        long? before = null;
+        try
+        {
+            var all = _store.ReadFrom(session, 1);
+            var own = EventsForRun(all, run);
+            var projection = RunProjection.Replay(session, run, _codecs, own);
+            if (projection.IsTerminal())
+                return new CommandAck(messageId, "error", "the active Run is terminal", RuntimeCommandOutcome.Rejected());
+            if (HasOpenModelStep(own))
+                return new CommandAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelStepActive"));
+            if (HasOpenToolCall(own))
+                return new CommandAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ToolCallActive"));
+
+            var current = projection.ModeAuthority ?? RunModeAuthority.Legacy(
+                own.Select(_codecs.Decode).OfType<RunCreated>().Single(created => created.RunId == run));
+            var effort = fields.TryGetValue("effort", out var rawEffort) ? rawEffort.ToLowerInvariant() : "standard";
+            if (effort is not ("standard" or "ultracode"))
+                return new CommandAck(messageId, "error", "effort must be standard or ultracode",
+                    RuntimeCommandOutcome.Rejected());
+
+            var adaptive = false;
+            if (fields.TryGetValue("adaptive", out var rawAdaptive))
+            {
+                if (rawAdaptive is not ("true" or "false"))
+                    return new CommandAck(messageId, "error", "adaptive must be true or false",
+                        RuntimeCommandOutcome.Rejected());
+                adaptive = rawAdaptive == "true";
+            }
+            ModeSwitchAuthorization? authorization = null;
+            var productEffort = effort == "ultracode" ? ProductEffort.UltraCode : ProductEffort.Standard;
+            if (adaptive)
+            {
+                if (productEffort != ProductEffort.UltraCode || !TryReadUltraCodeLimits(fields, out var limits, out var allowedModes))
+                    return new CommandAck(messageId, "error",
+                        "adaptive mode switching requires explicit UltraCode limits and allowedModes",
+                        RuntimeCommandOutcome.Rejected());
+                if (!allowedModes.Contains(mode))
+                    return new CommandAck(messageId, "error", "allowedModes must include the selected mode",
+                        RuntimeCommandOutcome.Rejected());
+                var nextRevision = checked(current.Revision + (current.Authorization is null ? 1 : 2));
+                authorization = new ModeSwitchAuthorization(Guid.NewGuid(), nextRevision,
+                    current.ObjectiveRevision, current.ObjectiveDigest, current.PolicyRevision, allowedModes,
+                    limits, DateTimeOffset.UtcNow);
+                authorization.Validate();
+            }
+            else if (fields.ContainsKey("maxAgents") || fields.ContainsKey("maxDepth")
+                || fields.ContainsKey("maxTurns") || fields.ContainsKey("maxToolCalls")
+                || fields.ContainsKey("maxElapsedSeconds") || fields.ContainsKey("maxSpendUsd")
+                || fields.ContainsKey("allowedModes"))
+            {
+                return new CommandAck(messageId, "error",
+                    "mode-switch limits are accepted only with explicit adaptive UltraCode",
+                    RuntimeCommandOutcome.Rejected());
+            }
+
+            var sequenceBefore = _store.CurrentSequence(session);
+            before = sequenceBefore;
+            var next = new RunModeAuthority(run,
+                checked(current.Revision + (current.Authorization is null ? 1 : 2)), mode,
+                current.Strategy, productEffort, !adaptive, adaptive, current.ObjectiveRevision,
+                current.ObjectiveDigest, current.PolicyRevision, authorization);
+            next.Validate();
+
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run, projection.RootTask,
+                LastLaneId()));
+            var payloads = new List<DomainEventPayload>();
+            if (current.Authorization is { } oldAuthorization)
+                payloads.Add(new RunModeAuthorityRevoked(run, current.Revision + 1,
+                    oldAuthorization.AuthorizationId, "User selected a new mode authority", messageId, "User"));
+            if (current.Mode != mode)
+                payloads.Add(new RunModeChanged(run, current.Mode, mode, "ExplicitUserSelection"));
+            payloads.Add(new RunModeTransitionAuthorized(run, current.Mode, mode,
+                "ExplicitUserSelection", "User", messageId, next.Revision, next.ObjectiveRevision,
+                next.ObjectiveDigest, next.PolicyRevision, authorization?.AuthorizationId));
+            payloads.Add(new RunModeAuthoritySelected(next, messageId, "User"));
+            new EventStream(_store, _codecs, session).AppendBatch(payloads, DurabilityClass.Barrier);
+            return CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                session, sequenceBefore, commandId);
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or ArgumentException
+            or OverflowException or IOException or UnauthorizedAccessException or SqliteException)
+        {
+            return before is null ? UnavailableCommandOutcome(messageId)
+                : FailedDurableCommandAck(messageId, session, before.Value, "Could not persist Run mode authority");
+        }
+    }
+
+    private CommandAck RevokeRunModeAuthority(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        var messageId = command.MessageId;
+        if (_lastSessionId is not { } session || _lastRunId is not { } run)
+            return new CommandAck(messageId, "error", "run.mode.revoke requires an active Run",
+                RuntimeCommandOutcome.Rejected());
+        long? before = null;
+        try
+        {
+            var own = EventsForRun(_store.ReadFrom(session, 1), run);
+            var projection = RunProjection.Replay(session, run, _codecs, own);
+            var current = projection.ModeAuthority;
+            if (projection.IsTerminal())
+                return new CommandAck(messageId, "error", "the active Run is terminal", RuntimeCommandOutcome.Rejected());
+            if (current?.Authorization is not { } authorization || !current.AutoModeSwitch)
+                return new CommandAck(messageId, "ok", null, RuntimeCommandOutcome.NoOp());
+            if (HasOpenModelStep(own))
+                return new CommandAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelStepActive"));
+            if (HasOpenToolCall(own))
+                return new CommandAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ToolCallActive"));
+            var commandId = new CommandId(Guid.Parse(messageId));
+            var sequenceBefore = _store.CurrentSequence(session);
+            before = sequenceBefore;
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run, projection.RootTask, LastLaneId()));
+            new EventStream(_store, _codecs, session).Append(new RunModeAuthorityRevoked(run,
+                checked(current.Revision + 1), authorization.AuthorizationId, "User revoked UltraCode",
+                messageId, "User"), DurabilityClass.Barrier);
+            return CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                session, sequenceBefore, commandId);
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or ArgumentException
+            or OverflowException or IOException or UnauthorizedAccessException or SqliteException)
+        {
+            return before is null ? UnavailableCommandOutcome(messageId)
+                : FailedDurableCommandAck(messageId, session, before.Value, "Could not revoke mode authority");
+        }
+    }
+
+    private CommandAck SetDefaultReasoning(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        if (_userDatabasePath is null || !TryReadExpectedRevision(fields, out var expectedRevision)
+            || !TryReadReasoningRequest(fields, out var request))
+            return new CommandAck(command.MessageId, "error",
+                "reasoning.default.set requires a User database, explicit kind (off is allowed), and expectedRevision",
+                RuntimeCommandOutcome.Rejected());
+        try
+        {
+            using var store = new ReasoningPreferenceStore(_userDatabasePath);
+            store.Set(request, expectedRevision);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
+        catch (ReasoningPreferenceConflictException)
+        {
+            return new CommandAck(command.MessageId, "error", "User reasoning preference revision conflict",
+                RuntimeCommandOutcome.Rejected());
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or ArgumentException or UnauthorizedAccessException or SqliteException or OverflowException)
+        {
+            return new CommandAck(command.MessageId, "error", "Could not persist the User reasoning preference",
+                RuntimeCommandOutcome.Rejected());
+        }
+    }
+
+    private CommandAck RevokeDefaultReasoning(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        if (_userDatabasePath is null || !TryReadExpectedRevision(fields, out var expectedRevision))
+            return new CommandAck(command.MessageId, "error",
+                "reasoning.default.revoke requires a User database and expectedRevision",
+                RuntimeCommandOutcome.Rejected());
+        try
+        {
+            using var store = new ReasoningPreferenceStore(_userDatabasePath);
+            store.Reset(expectedRevision);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
+        catch (ReasoningPreferenceConflictException)
+        {
+            return new CommandAck(command.MessageId, "error", "User reasoning preference revision conflict",
+                RuntimeCommandOutcome.Rejected());
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or ArgumentException or UnauthorizedAccessException or SqliteException or OverflowException)
+        {
+            return new CommandAck(command.MessageId, "error", "Could not revoke the User reasoning preference",
+                RuntimeCommandOutcome.Rejected());
+        }
+    }
+
+    private CommandAck SelectRunReasoning(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        if (_lastSessionId is not { } session || _lastRunId is not { } run
+            || !TryReadExpectedRevision(fields, out var expectedRevision)
+            || !TryReadReasoningRequest(fields, out var request))
+            return new CommandAck(command.MessageId, "error",
+                "run.reasoning.select requires an active Run, explicit kind, and expectedRevision",
+                RuntimeCommandOutcome.Rejected());
+
+        long? before = null;
+        try
+        {
+            var own = EventsForRun(_store.ReadFrom(session, 1), run);
+            var projection = RunProjection.Replay(session, run, _codecs, own);
+            if (projection.IsTerminal())
+                return new CommandAck(command.MessageId, "error", "the active Run is terminal",
+                    RuntimeCommandOutcome.Rejected());
+            if (HasOpenModelStep(own))
+                return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelStepActive"));
+            if (HasOpenToolCall(own))
+                return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Deferred("ToolCallActive"));
+            var currentRevision = projection.ReasoningSelection?.Revision ?? 0;
+            if (expectedRevision != currentRevision)
+                return new CommandAck(command.MessageId, "error", "Run reasoning preference revision conflict",
+                    RuntimeCommandOutcome.Rejected());
+
+            var sequenceBefore = _store.CurrentSequence(session);
+            before = sequenceBefore;
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run, projection.RootTask, LastLaneId()));
+            new EventStream(_store, _codecs, session).Append(new RunReasoningPreferenceSelected(run,
+                checked(currentRevision + 1), request, "User", command.MessageId), DurabilityClass.Barrier);
+            return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                session, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or ArgumentException
+            or OverflowException or IOException or UnauthorizedAccessException or SqliteException)
+        {
+            return before is null ? UnavailableCommandOutcome(command.MessageId)
+                : FailedDurableCommandAck(command.MessageId, session, before.Value,
+                    "Could not persist Run reasoning preference");
+        }
+    }
+
+    private CommandAck RevokeRunReasoning(WireEnvelope command, Dictionary<string, string> fields)
+    {
+        if (_lastSessionId is not { } session || _lastRunId is not { } run
+            || !TryReadExpectedRevision(fields, out var expectedRevision))
+            return new CommandAck(command.MessageId, "error",
+                "run.reasoning.revoke requires an active Run and expectedRevision",
+                RuntimeCommandOutcome.Rejected());
+
+        long? before = null;
+        try
+        {
+            var own = EventsForRun(_store.ReadFrom(session, 1), run);
+            var projection = RunProjection.Replay(session, run, _codecs, own);
+            if (projection.IsTerminal())
+                return new CommandAck(command.MessageId, "error", "the active Run is terminal",
+                    RuntimeCommandOutcome.Rejected());
+            var current = projection.ReasoningSelection;
+            var revision = current?.Revision ?? 0;
+            if (expectedRevision != revision)
+                return new CommandAck(command.MessageId, "error", "Run reasoning preference revision conflict",
+                    RuntimeCommandOutcome.Rejected());
+            if (current is null || !current.HasSelection || current.Source != "User")
+                return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.NoOp());
+            if (HasOpenModelStep(own))
+                return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelStepActive"));
+            if (HasOpenToolCall(own))
+                return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Deferred("ToolCallActive"));
+
+            var sequenceBefore = _store.CurrentSequence(session);
+            before = sequenceBefore;
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run, projection.RootTask, LastLaneId()));
+            new EventStream(_store, _codecs, session).Append(new RunReasoningPreferenceRevoked(run,
+                checked(revision + 1), command.MessageId), DurabilityClass.Barrier);
+            return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                session, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or ArgumentException
+            or OverflowException or IOException or UnauthorizedAccessException or SqliteException)
+        {
+            return before is null ? UnavailableCommandOutcome(command.MessageId)
+                : FailedDurableCommandAck(command.MessageId, session, before.Value,
+                    "Could not revoke Run reasoning preference");
+        }
+    }
+
+    private static bool TryReadExpectedRevision(Dictionary<string, string> fields, out long revision)
+    {
+        revision = 0;
+        return fields.TryGetValue("expectedRevision", out var raw)
+            && long.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out revision)
+            && revision >= 0;
+    }
+
+    private static bool TryReadReasoningRequest(Dictionary<string, string> fields, out ReasoningRequest? request)
+    {
+        request = null;
+        if (!fields.TryGetValue("kind", out var kind) || string.IsNullOrWhiteSpace(kind)) return false;
+        if (kind == "off") return !fields.ContainsKey("budgetTokens");
+        if (fields.TryGetValue("budgetTokens", out var rawBudget))
+        {
+            if (!int.TryParse(rawBudget, NumberStyles.None, CultureInfo.InvariantCulture, out var budget)
+                || budget < 1024 || kind != "budget")
+                return false;
+            request = new ReasoningRequest(kind, budget);
+        }
+        else
+        {
+            if (kind == "budget") return false;
+            request = new ReasoningRequest(kind, null);
+        }
+        return request.Kind == kind;
+    }
+
+    private static string ReasoningRequestJson(ReasoningRequest? request) => request is null
+        ? "null"
+        : "{" + JsonObj.Field("kind", request.Kind) + ",\"budgetTokens\":"
+            + (request.BudgetTokens?.ToString(CultureInfo.InvariantCulture) ?? "null") + "}";
+
+    private static bool TryReadUltraCodeLimits(Dictionary<string, string> fields,
+        out ModeSwitchLimits limits, out IReadOnlyList<RunMode> allowedModes)
+    {
+        limits = null!;
+        allowedModes = Array.Empty<RunMode>();
+        bool Int(string key, out int value)
+        {
+            value = 0;
+            return fields.TryGetValue(key, out var raw)
+                && int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+        }
+        bool Long(string key, out long value)
+        {
+            value = 0;
+            return fields.TryGetValue(key, out var raw)
+                && long.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out value);
+        }
+        if (!Int("maxAgents", out var agents) || !Int("maxDepth", out var depth)
+            || !Int("maxTurns", out var turns) || !Int("maxToolCalls", out var tools)
+            || !Long("maxElapsedSeconds", out var seconds)
+            || !fields.TryGetValue("maxSpendUsd", out var spendText)
+            || !decimal.TryParse(spendText, NumberStyles.Number, CultureInfo.InvariantCulture, out var spend)
+            || !fields.TryGetValue("allowedModes", out var modeText)) return false;
+        var modes = new List<RunMode>();
+        var modeParts = modeText.Split(',');
+        if (modeParts.Length == 0 || modeParts.Any(string.IsNullOrWhiteSpace)) return false;
+        foreach (var part in modeParts.Select(value => value.Trim()))
+        {
+            if (!TryParseRunMode(part, out var parsed) || modes.Contains(parsed)) return false;
+            modes.Add(parsed);
+        }
+        if (modes.Count == 0) return false;
+        limits = new ModeSwitchLimits(agents, depth, turns, tools, seconds, spend);
+        try { limits.Validate(); }
+        catch (ArgumentOutOfRangeException) { return false; }
+        allowedModes = modes.AsReadOnly();
+        return true;
+    }
+
+    private bool HasOpenModelStep(IReadOnlyList<DomainEvent> events)
+    {
+        var starts = new HashSet<(TurnId Turn, int Step)>();
+        foreach (var evt in events)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ModelStepStarted started:
+                    // Duplicate starts are malformed journal state; treating one as open fails closed.
+                    if (!starts.Add((started.TurnId, started.StepIndex))) return true;
+                    break;
+                case ModelStepCompleted completed: starts.Remove((completed.TurnId, completed.StepIndex)); break;
+            }
+        }
+        return starts.Count > 0;
+    }
+
+    /// <summary>
+    /// A completed model step does not mean its tool loop is finished: ToolCallStarted is
+    /// deliberately journaled after ModelStepCompleted. Do not apply a mode downgrade/revocation
+    /// while any tool lifecycle is still nonterminal, including an uncertain effect awaiting
+    /// reconciliation.
+    /// </summary>
+    private bool HasOpenToolCall(IReadOnlyList<DomainEvent> events)
+    {
+        var calls = new Dictionary<ToolCallId, ToolCallState>();
+        foreach (var evt in events)
+        {
+            var payload = _codecs.Decode(evt);
+            if (payload is ToolCallRequested requested)
+            {
+                if (!calls.TryAdd(requested.ToolCallId, ToolCallState.Requested)) return true;
+                continue;
+            }
+
+            var id = payload switch
+            {
+                ToolCallPrepared value => value.ToolCallId,
+                ToolCallRejected value => value.ToolCallId,
+                PermissionEvaluated value => value.ToolCallId,
+                PermissionRequested value => value.ToolCallId,
+                PermissionGranted value => value.ToolCallId,
+                PermissionDenied value => value.ToolCallId,
+                ToolCallAuthorized value => value.ToolCallId,
+                ToolCallStarted value => value.ToolCallId,
+                ToolCallSucceeded value => value.ToolCallId,
+                ToolCallFailed value => value.ToolCallId,
+                ToolCallEffectUnknown value => value.ToolCallId,
+                ToolCallReconciled value => value.ToolCallId,
+                ToolCallCancelled value => value.ToolCallId,
+                _ => (ToolCallId?)null,
+            };
+            if (id is not { } callId) continue;
+            if (!calls.TryGetValue(callId, out var state)) return true;
+            try { calls[callId] = StateMachines.ApplyToolCall(state, payload); }
+            catch (InvalidStateTransitionException) { return true; }
+        }
+
+        return calls.Values.Any(state => state is not (ToolCallState.Succeeded or ToolCallState.Failed
+            or ToolCallState.Rejected or ToolCallState.Cancelled or ToolCallState.Reconciled));
     }
 
     public SessionId? LastSessionId() => _lastSessionId;
@@ -621,6 +1178,8 @@ public sealed class OmniServer : IOmniClient
                 RuntimeCommandOutcome.Rejected());
         }
 
+        // `explore.start` is the explicit PLAN/exploration flow; the product default applies to
+        // ordinary `session.input`, not to this command's declared semantics.
         return StartRunAct(command, objective!, Path.GetFullPath("."), RunMode.Plan);
     }
 
@@ -674,11 +1233,12 @@ public sealed class OmniServer : IOmniClient
         var budget = new TaskBudget(null, null, null, null);
         try
         {
+            var reasoningPreference = ReadReasoningPreference();
             var physicalWorkspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspacePath);
             // Establish the existing workspace marker before committing its reference. The
             // journal initialization is all-or-nothing; no incomplete Run becomes selectable.
             var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
-            stream.AppendBatch(new DomainEventPayload[]
+            var creationEvents = new List<DomainEventPayload>
             {
                 new SessionCreated(sessionId,
                     WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalWorkspaceRoot)).ToString(),
@@ -687,14 +1247,28 @@ public sealed class OmniServer : IOmniClient
                 new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity),
                 new RunCreated(runId, sessionId, objective, mode,
                     ExecutionStrategy.Direct, FailurePolicy.BlockDependents, budget, taskId, now),
+                new RunModeAuthoritySelected(new RunModeAuthority(runId, 1, mode,
+                    ExecutionStrategy.Direct, ProductEffort.Standard, false, false, 1,
+                    RunModeAuthority.ObjectiveDigestFor(objective), 1, null), command.MessageId, "RunCreated"),
+            };
+            // Capture only an explicit User choice. Absence remains absence, so a new Run
+            // does not manufacture a reasoning selection or alter legacy event counts.
+            if (reasoningPreference.HasSelection)
+                creationEvents.Add(new RunReasoningPreferenceSelected(runId, 1, reasoningPreference.Request,
+                    "UserDefault", "RunCreated", reasoningPreference.Revision));
+            creationEvents.AddRange(new DomainEventPayload[]
+            {
                 new RunStarted(runId),
                 new TaskCreated(taskId, runId, objective, Array.Empty<TaskDependency>(), budget),
                 new TaskReady(taskId),
-                new LaneCreated(laneId, taskId, ProfileId.New()),
+                new LaneCreated(laneId, taskId, _agentProfiles.DefaultProfile?.Id ?? ProfileId.New(),
+                    _agentProfiles.DefaultProfile?.Revision, _agentProfiles.DefaultProfile is { } rootProfile
+                        ? AgentProfileFingerprint.Hash(rootProfile) : null),
                 new LaneStarted(laneId),
                 new TaskStarted(taskId, laneId),
                 new PlanCreated(planId, runId, PlanItemId.New(), objective),
-            }, DurabilityClass.Barrier);
+            });
+            stream.AppendBatch(creationEvents, DurabilityClass.Barrier);
 
             _lastSessionId = sessionId;
             _lastRunId = runId;
@@ -858,7 +1432,39 @@ public sealed class OmniServer : IOmniClient
             return new SessionQueryResult("sessionObservability", ObservabilityJson.Encode(Observability.Snapshot(_lastSessionId, after)));
         }
         if (name == "commands")
-            return new SessionQueryResult("commands", "{\"commands\":[\"explain\"]}");
+            return new SessionQueryResult("commands", "{\"commands\":[\"mode\",\"ultracode\",\"reasoning\",\"explain\"]}");
+        if (name == "modePreference")
+        {
+            var preference = ReadModePreference();
+            return new SessionQueryResult(name, "{" + JsonObj.Field("mode", preference.Mode.ToString().ToLowerInvariant())
+                + ",\"revision\":" + preference.Revision.ToString(CultureInfo.InvariantCulture) + "}");
+        }
+        if (name == "modeAuthority")
+        {
+            var authority = CurrentModeAuthority();
+            return new SessionQueryResult(name, authority is null ? "null" : ModeAuthorityJson(authority, DateTimeOffset.UtcNow));
+        }
+        if (name == "reasoningPreference")
+        {
+            var preference = ReadReasoningPreference();
+            return new SessionQueryResult(name, "{\"hasSelection\":" + (preference.HasSelection ? "true" : "false")
+                + ",\"request\":" + ReasoningRequestJson(preference.Request)
+                + ",\"revision\":" + preference.Revision.ToString(CultureInfo.InvariantCulture) + "}");
+        }
+        if (name == "runReasoningPreference")
+        {
+            var selection = CurrentRunReasoningSelection();
+            return new SessionQueryResult(name, selection is null ? "null"
+                : "{\"revision\":" + selection.Revision.ToString(CultureInfo.InvariantCulture)
+                    + ",\"hasSelection\":" + (selection.HasSelection ? "true" : "false")
+                    + ",\"request\":" + ReasoningRequestJson(selection.Request)
+                    + "," + JsonObj.Field("source", selection.Source)
+                    + ",\"userPreferenceRevision\":" + (selection.UserPreferenceRevision?.ToString(CultureInfo.InvariantCulture) ?? "null")
+                    + ",\"hasCapturedUserDefault\":" + (selection.HasCapturedUserDefault ? "true" : "false")
+                    + ",\"capturedUserDefault\":" + ReasoningRequestJson(selection.CapturedUserDefault)
+                    + ",\"capturedUserPreferenceRevision\":" + (selection.CapturedUserPreferenceRevision?.ToString(CultureInfo.InvariantCulture) ?? "null")
+                    + "}");
+        }
         if (name == "workspaceStatus")
             return new SessionQueryResult("workspaceStatus", "{" + JsonObj.Field("workingDirectory", _workspaceRoot ?? "") + "}");
         if (name.StartsWith("complete:", StringComparison.Ordinal))
@@ -1202,10 +1808,22 @@ public sealed class OmniServer : IOmniClient
     /// Comandos de control del Run sobre la sesión en curso del servidor. Los errores de dominio
     /// vuelven como <c>CommandAck</c> fallido con su motivo (nunca se inventa un estado).
     /// </summary>
-    private CommandAck RunControl(WireEnvelope command, string commandName, Dictionary<string, string> fields)
+    private CommandAck RunControl(WireEnvelope command, string commandName, Dictionary<string, string> fields,
+        bool trustedUserAction)
     {
         var control = new RunControlService(_store, _codecs, (day, baseline) =>
-            UserDailyBudgetContinuation.Limit(_userSpendReader, _codecs, day, baseline));
+            UserDailyBudgetContinuation.Limit(_userSpendReader, _codecs, day, baseline),
+            rootProfile: _agentProfiles.DefaultProfile?.Id,
+            rootProfileRevision: _agentProfiles.DefaultProfile?.Revision,
+            rootProfileHash: _agentProfiles.DefaultProfile is { } rootProfile ? AgentProfileFingerprint.Hash(rootProfile) : null,
+            initialReasoningSelection: runId =>
+            {
+                var preference = ReadReasoningPreference();
+                return preference.HasSelection
+                    ? new RunReasoningPreferenceSelected(runId, 1, preference.Request,
+                        "UserDefault", "RunCreated", preference.Revision)
+                    : null;
+            });
         SessionId? outcomeSession = null;
         long outcomeSequenceBefore = 0;
         var explicitOutcome = commandName is "session.input" or "run.interrupt" or "run.cancel"
@@ -1243,7 +1861,12 @@ public sealed class OmniServer : IOmniClient
                         outcomeSession = session; // keep the attempted identity even if initialization fails
                         StartSession(session);
                     }
-                    var mode = fields.TryGetValue("mode", out var m) && m == "plan" ? RunMode.Plan : RunMode.Act;
+                    var mode = ReadModePreference().Mode;
+                    if (trustedUserAction && fields.TryGetValue("mode", out var requestedMode))
+                    {
+                        if (!TryParseRunMode(requestedMode, out mode))
+                            throw new FormatException("mode de session.input inválido");
+                    }
                     _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin());
                     _lastSessionId = session;
                     break;
@@ -1294,7 +1917,7 @@ public sealed class OmniServer : IOmniClient
                         outcomeSession = session;
                         outcomeSequenceBefore = sequenceBeforeResponse;
                         control.Respond(session, interaction,
-                            fields.TryGetValue("optionId", out var o) ? o : "");
+                            fields.TryGetValue("optionId", out var o) ? o : "", command.MessageId);
                         AuditEffectResolutions(session, sequenceBeforeResponse, interaction);
                         if (control.UnreconciledEffects(session).Count == 0) _recoveryProblem = null;
                     }
@@ -1613,11 +2236,27 @@ public sealed class OmniServer : IOmniClient
             }
             var interaction = InteractionId.New();
             using var command = CausationScope.Begin(new CommandCausation(commandId));
-            using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: run));
-            new EventStream(_store, _codecs, session).Append(new InteractionRequested(interaction,
-                InteractionKind.ModelRouteConsent, SessionRoutingAuthorization.Context(offer),
+            var requestEvent = new InteractionRequested(interaction, InteractionKind.ModelRouteConsent,
+                SessionRoutingAuthorization.Context(offer),
                 "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_route\",\"intent\":\"allow\"}]",
-                "deny", null, null, null, null, 0, 1), DurabilityClass.Barrier);
+                "deny", null, null, null, null, 0, 1);
+            var runProjection = RunProjection.Replay(session, run, _codecs, events);
+            var runLane = runProjection.RootTask is { } rootTask
+                ? LaneProjection.Replay(_codecs, events).ForTask(rootTask)
+                    .FirstOrDefault(lane => lane.State == LaneState.Running)
+                : null;
+            var requestScope = new ExecutionScopeState(run, runProjection.RootTask, runLane?.Id);
+            var batch = new List<DomainEventPayload> { requestEvent };
+            var scopes = new List<ExecutionScopeState?> { requestScope };
+            if (runProjection.State == RunState.Running && pending.Count == 0)
+            {
+                if (runLane is null)
+                    throw new InvalidStateTransitionException("run", "running without a root Lane for route consent",
+                        requestEvent.Type().ToString());
+                batch.Add(new RunAwaitingInput(run, runLane.Id));
+                scopes.Add(requestScope);
+            }
+            new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier, scopes);
             var consentAck = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelRouteConsent"),
                 session, before.Value, commandId);
             return (false, consentAck.Status == "ok" ? interaction : null, consentAck, null);

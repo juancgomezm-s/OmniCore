@@ -84,7 +84,8 @@ public sealed class ConfigLoader
                     m.RecommendedUsableContext ?? context, m.MaxOutput ?? 2048, m.ParametersBillions, m.Aliases ?? [],
                     m.Reasoning is { } reasoning
                         ? new ReasoningCapability(reasoning.Supported, reasoning.EffortLevels,
-                            reasoning.ReplayPolicy is null ? null : Enum.Parse<ReasoningReplayPolicy>(reasoning.ReplayPolicy))
+                            reasoning.ReplayPolicy is null ? null : Enum.Parse<ReasoningReplayPolicy>(reasoning.ReplayPolicy),
+                            reasoning.UltraCodeBudgetTokens, reasoning.UltraCodeOutputReserveTokens)
                         : null));
             }
         }
@@ -400,7 +401,8 @@ public sealed class ConfigLoader
             AddAtNode(diagnostics, file, path, "config.wrongType", node);
             return;
         }
-        CheckKeys(map, file, path, ["supported", "effortLevels", "replayPolicy"], diagnostics);
+        CheckKeys(map, file, path, ["supported", "effortLevels", "replayPolicy", "ultraCodeBudgetTokens",
+            "ultraCodeOutputReserveTokens"], diagnostics);
         var supported = false;
         if (map.Children.TryGetValue(new YamlScalarNode("supported"), out var supportNode))
         {
@@ -415,7 +417,30 @@ public sealed class ConfigLoader
             else if (!Enum.GetNames<ReasoningReplayPolicy>().Contains(((YamlScalarNode)policyNode).Value, StringComparer.Ordinal))
                 AddAtNode(diagnostics, file, path + ".replayPolicy", "config.outOfRange", policyNode);
         }
-        if (!map.Children.TryGetValue(new YamlScalarNode("effortLevels"), out var levelsNode)) return;
+        int? budget = null;
+        int? reserve = null;
+        if (map.Children.TryGetValue(new YamlScalarNode("ultraCodeBudgetTokens"), out var budgetNode))
+        {
+            if (budgetNode is YamlScalarNode { Style: ScalarStyle.Plain, Value: { } rawBudget }
+                && int.TryParse(rawBudget, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedBudget)
+                && parsedBudget >= 1024)
+                budget = parsedBudget;
+            else AddAtNode(diagnostics, file, path + ".ultraCodeBudgetTokens", "config.outOfRange", budgetNode);
+        }
+        if (map.Children.TryGetValue(new YamlScalarNode("ultraCodeOutputReserveTokens"), out var reserveNode))
+        {
+            if (reserveNode is YamlScalarNode { Style: ScalarStyle.Plain, Value: { } rawReserve }
+                && int.TryParse(rawReserve, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedReserve)
+                && parsedReserve > 0)
+                reserve = parsedReserve;
+            else AddAtNode(diagnostics, file, path + ".ultraCodeOutputReserveTokens", "config.outOfRange", reserveNode);
+        }
+        if (!map.Children.TryGetValue(new YamlScalarNode("effortLevels"), out var levelsNode))
+        {
+            if (budget is not null || reserve is not null)
+                AddAtNode(diagnostics, file, path + ".ultraCodeBudgetTokens", "config.outOfRange", map);
+            return;
+        }
         if (levelsNode is not YamlSequenceNode levels)
         {
             AddAtNode(diagnostics, file, path + ".effortLevels", "config.wrongType", levelsNode);
@@ -432,6 +457,9 @@ public sealed class ConfigLoader
                 || !unique.Add(((YamlScalarNode)level).Value!))
                 AddAtNode(diagnostics, file, path + ".effortLevels", "config.outOfRange", level);
         }
+        if ((budget is not null || reserve is not null)
+            && (supported != true || !unique.Contains("budget") || budget is null || reserve is null))
+            AddAtNode(diagnostics, file, path + ".ultraCodeBudgetTokens", "config.outOfRange", map);
     }
 
     internal static bool IsYamlString(YamlNode node)

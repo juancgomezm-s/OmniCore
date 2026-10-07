@@ -47,6 +47,17 @@ public sealed class DeclaredReasoningRequestTests
     }
 
     [Fact]
+    public void UltraCode_budget_capability_requires_both_explicit_token_values()
+    {
+        Assert.Throws<ArgumentException>(() => new ReasoningCapability(true, ["budget"],
+            ultraCodeBudgetTokens: null, ultraCodeOutputReserveTokens: 1));
+        Assert.Throws<ArgumentException>(() => new ReasoningCapability(true, ["budget"],
+            ultraCodeBudgetTokens: 1024, ultraCodeOutputReserveTokens: null));
+        _ = new ReasoningCapability(true, ["budget"], ultraCodeBudgetTokens: 1024,
+            ultraCodeOutputReserveTokens: 1);
+    }
+
+    [Fact]
     public void Explicitly_unsupported_reasoning_is_rejected_before_provider_or_tool_authorization()
     {
         var result = Execute(new ReasoningCapability(false));

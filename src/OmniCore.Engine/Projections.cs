@@ -20,6 +20,10 @@ public sealed class RunProjection
 
     public RunMode? Mode { get; }
 
+    public RunModeAuthority? ModeAuthority { get; }
+
+    public RunReasoningSelectionState? ReasoningSelection { get; }
+
     public ExecutionStrategy? Strategy { get; }
 
     public FailurePolicy? FailurePolicy { get; }
@@ -31,14 +35,16 @@ public sealed class RunProjection
     public bool HasPlan { get; }
 
     private RunProjection(SessionId sessionId, RunId id, DateTimeOffset createdAt, string? objective,
-        RunMode? mode, ExecutionStrategy? strategy, FailurePolicy? failurePolicy, RunState state,
-        TaskId? rootTask, bool hasPlan)
+        RunMode? mode, RunModeAuthority? modeAuthority, RunReasoningSelectionState? reasoningSelection,
+        ExecutionStrategy? strategy, FailurePolicy? failurePolicy, RunState state, TaskId? rootTask, bool hasPlan)
     {
         SessionId = sessionId;
         Id = id;
         CreatedAt = createdAt;
         Objective = objective;
         Mode = mode;
+        ModeAuthority = modeAuthority;
+        ReasoningSelection = reasoningSelection;
         Strategy = strategy;
         FailurePolicy = failurePolicy;
         State = state;
@@ -58,10 +64,14 @@ public sealed class RunProjection
         var createdAt = DateTimeOffset.Now;
         string? objective = null;
         RunMode? mode = null;
+        RunModeAuthority? modeAuthority = null;
+        RunReasoningSelectionState? reasoningSelection = null;
         ExecutionStrategy? strategy = null;
         FailurePolicy? failurePolicy = null;
         TaskId? rootTask = null;
         var hasPlan = false;
+        RunModeTransitionAuthorized? pendingModeTransition = null;
+        (RunMode From, RunMode To)? lastExplicitModeChange = null;
 
         var created = false;
         foreach (var evt in evts)
@@ -82,6 +92,7 @@ public sealed class RunProjection
                 created = true;
                 objective = runCreated.Objective;
                 mode = runCreated.Mode;
+                modeAuthority = RunModeAuthority.Legacy(runCreated);
                 strategy = runCreated.Strategy;
                 failurePolicy = runCreated.FailurePolicy;
                 rootTask = runCreated.RootTask;
@@ -94,11 +105,115 @@ public sealed class RunProjection
                     throw new InvalidStateTransitionException("run", "inexistente", payload.Type().ToString());
                 }
 
+                if (payload is RunInteractionResumed resumed
+                    && !ValidInteractionResume(resumed, evt, registry, evts))
+                    throw new InvalidStateTransitionException("run", "interaction resume lacks matching resolved user consent",
+                        payload.Type().ToString());
+
                 state = StateMachines.ApplyRun(state, payload);
             }
             else if (payload is RunModeChanged changed && changed.RunId.Equals(id))
             {
+                lastExplicitModeChange = (changed.From, changed.To);
                 mode = changed.To;
+                if (modeAuthority is not null) modeAuthority = modeAuthority with { Mode = changed.To };
+            }
+            else if (payload is RunModeTransitionAuthorized transition && transition.RunId.Equals(id))
+            {
+                if (string.IsNullOrWhiteSpace(transition.CommandId)
+                    || transition.Origin != "User"
+                    || pendingModeTransition is not null || modeAuthority is null
+                    || transition.To != mode || transition.AuthorityRevision != modeAuthority.Revision + 1
+                    || (transition.From == transition.To && transition.From != modeAuthority.Mode)
+                    || (transition.From != transition.To
+                        && lastExplicitModeChange != (transition.From, transition.To)))
+                    throw new InvalidStateTransitionException("run mode transition", "authorization does not match the effective mode/revision",
+                        payload.Type().ToString());
+                pendingModeTransition = transition;
+                lastExplicitModeChange = null;
+            }
+            else if (payload is RunModeAuthoritySelected selected
+                && selected.Authority.RunId.Equals(id))
+            {
+                if (string.IsNullOrWhiteSpace(selected.CommandId)
+                    || selected.Origin is not ("RunCreated" or "User" or "PlanApproval"))
+                    throw new InvalidStateTransitionException("run mode authority", "invalid selection provenance",
+                        payload.Type().ToString());
+                selected.Authority.Validate();
+                if (modeAuthority is null || selected.Authority.Revision != modeAuthority.Revision + 1
+                    || selected.Authority.ObjectiveDigest != RunModeAuthority.ObjectiveDigestFor(objective ?? ""))
+                    throw new InvalidStateTransitionException("run mode authority", "revision or objective mismatch",
+                        payload.Type().ToString());
+                if (pendingModeTransition is null)
+                {
+                    if (selected.Origin != "RunCreated" || selected.Authority.Revision != 1
+                        || selected.Authority.Mode != mode)
+                        throw new InvalidStateTransitionException("run mode authority", "selection has no matching authorization",
+                            payload.Type().ToString());
+                }
+                else if (selected.Origin == "RunCreated"
+                    || selected.Origin is not ("User" or "PlanApproval")
+                    || pendingModeTransition.CommandId != selected.CommandId
+                    || pendingModeTransition.To != selected.Authority.Mode
+                    || pendingModeTransition.AuthorityRevision != selected.Authority.Revision
+                    || pendingModeTransition.ObjectiveRevision != selected.Authority.ObjectiveRevision
+                    || pendingModeTransition.ObjectiveDigest != selected.Authority.ObjectiveDigest
+                    || pendingModeTransition.PolicyRevision != selected.Authority.PolicyRevision
+                    || pendingModeTransition.AuthorizationId != selected.Authority.Authorization?.AuthorizationId)
+                    throw new InvalidStateTransitionException("run mode authority", "selection does not match its transition authorization",
+                        payload.Type().ToString());
+                modeAuthority = selected.Authority;
+                mode = selected.Authority.Mode;
+                strategy = selected.Authority.Strategy;
+                pendingModeTransition = null;
+            }
+            else if (payload is RunModeAuthorityRevoked revoked && revoked.RunId.Equals(id))
+            {
+                if (string.IsNullOrWhiteSpace(revoked.CommandId) || string.IsNullOrWhiteSpace(revoked.Reason)
+                    || revoked.Origin != "User"
+                    || modeAuthority?.Authorization is not { } authorization
+                    || authorization.AuthorizationId != revoked.AuthorizationId
+                    || revoked.AuthorityRevision != modeAuthority.Revision + 1)
+                    throw new InvalidStateTransitionException("run mode authority", "invalid revocation",
+                        payload.Type().ToString());
+                modeAuthority = modeAuthority with { Revision = revoked.AuthorityRevision,
+                    AutoModeSwitch = false, Authorization = null, ProductEffort = ProductEffort.Standard,
+                    ModePinned = true };
+            }
+            else if (payload is RunReasoningPreferenceSelected selectedReasoning
+                && selectedReasoning.RunId.Equals(id))
+            {
+                if (string.IsNullOrWhiteSpace(selectedReasoning.CommandId)
+                    || selectedReasoning.Source is not ("User" or "UserDefault")
+                    || (selectedReasoning.Source == "UserDefault"
+                        ? selectedReasoning.CommandId != "RunCreated" || selectedReasoning.UserPreferenceRevision is not > 0
+                            || selectedReasoning.Revision != 1
+                        : selectedReasoning.CommandId == "RunCreated" || selectedReasoning.UserPreferenceRevision is not null)
+                    || selectedReasoning.Revision != (reasoningSelection?.Revision ?? 0) + 1)
+                    throw new InvalidStateTransitionException("run reasoning preference", "invalid selection provenance or revision",
+                        payload.Type().ToString());
+                ValidateReasoningRequest(selectedReasoning.Request);
+                var capturedDefault = selectedReasoning.Source == "UserDefault"
+                    ? (HasSelection: true, Request: selectedReasoning.Request,
+                        Revision: selectedReasoning.UserPreferenceRevision)
+                    : (HasSelection: reasoningSelection?.HasCapturedUserDefault ?? false,
+                        Request: reasoningSelection?.CapturedUserDefault,
+                        Revision: reasoningSelection?.CapturedUserPreferenceRevision);
+                reasoningSelection = new RunReasoningSelectionState(selectedReasoning.Revision, true,
+                    selectedReasoning.Request, selectedReasoning.Source, selectedReasoning.UserPreferenceRevision,
+                    capturedDefault.HasSelection, capturedDefault.Request, capturedDefault.Revision);
+            }
+            else if (payload is RunReasoningPreferenceRevoked revokedReasoning
+                && revokedReasoning.RunId.Equals(id))
+            {
+                if (string.IsNullOrWhiteSpace(revokedReasoning.CommandId) || revokedReasoning.Origin != "User"
+                    || reasoningSelection is null || !reasoningSelection.HasSelection
+                    || revokedReasoning.Revision != reasoningSelection.Revision + 1)
+                    throw new InvalidStateTransitionException("run reasoning preference", "invalid revocation",
+                        payload.Type().ToString());
+                reasoningSelection = new RunReasoningSelectionState(revokedReasoning.Revision, false,
+                    null, "User", null, reasoningSelection.HasCapturedUserDefault,
+                    reasoningSelection.CapturedUserDefault, reasoningSelection.CapturedUserPreferenceRevision);
             }
             else if (payload is PlanCreated plan && plan.RunId.Equals(id))
             {
@@ -106,8 +221,12 @@ public sealed class RunProjection
             }
         }
 
-        return new RunProjection(sessionId, id, createdAt, objective, mode, strategy, failurePolicy, state,
-            rootTask, hasPlan);
+        if (pendingModeTransition is not null)
+            throw new InvalidStateTransitionException("run mode transition", "authorized selection is missing",
+                pendingModeTransition.Type().ToString());
+
+        return new RunProjection(sessionId, id, createdAt, objective, mode, modeAuthority, reasoningSelection,
+            strategy, failurePolicy, state, rootTask, hasPlan);
     }
 
     /// <summary>RunId de los eventos que cambian el estado del Run (ADR-0036 §1).</summary>
@@ -115,6 +234,7 @@ public sealed class RunProjection
     {
         RunStarted e => e.RunId,
         RunAwaitingInput e => e.RunId,
+        RunInteractionResumed e => e.RunId,
         UserInputReceived e => e.RunId,
         RunValidationStarted e => e.RunId,
         RunValidationRejected e => e.RunId,
@@ -124,14 +244,64 @@ public sealed class RunProjection
         _ => null,
     };
 
+    private static bool ValidInteractionResume(RunInteractionResumed resumed, DomainEvent envelope,
+        IEventCodecRegistry registry, IReadOnlyList<DomainEvent> events)
+    {
+        if (resumed.InteractionId.Value == Guid.Empty || string.IsNullOrWhiteSpace(resumed.CommandId)
+            || envelope.RunId != resumed.RunId
+            || envelope.Causation is not CommandCausation resumeCause
+            || resumeCause.CommandId.ToString() != resumed.CommandId)
+            return false;
+
+        var requestEvent = events.Where(item => item.Sequence < envelope.Sequence
+                && registry.Decode(item) is InteractionRequested request
+                && request.InteractionId == resumed.InteractionId)
+            .OrderBy(item => item.Sequence).LastOrDefault();
+        if (requestEvent is null || requestEvent.RunId != resumed.RunId
+            || registry.Decode(requestEvent) is not InteractionRequested
+                { Kind: InteractionKind.ModelRouteConsent })
+            return false;
+
+        var resolutions = events.Where(item => item.Sequence > requestEvent.Sequence
+            && item.Sequence < envelope.Sequence
+            && registry.Decode(item) is InteractionResolved resolved
+            && resolved.InteractionId == resumed.InteractionId
+            && resolved.OptionId == "allow_route" && resolved.Cause == InteractionCause.User).ToArray();
+        if (resolutions.Length != 1) return false;
+        var resolution = resolutions[0];
+        if (resolution is null || resolution.RunId != resumed.RunId
+            || resolution.Causation is not CommandCausation resolutionCause
+            || resolutionCause.CommandId != resumeCause.CommandId)
+            return false;
+
+        var pending = new HashSet<InteractionId>();
+        foreach (var item in events.Where(item => item.Sequence < envelope.Sequence).OrderBy(item => item.Sequence))
+        {
+            switch (registry.Decode(item))
+            {
+                case InteractionRequested requested: pending.Add(requested.InteractionId); break;
+                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+            }
+        }
+        return pending.Count == 0;
+    }
+
     public bool IsTerminal() => StateMachines.IsRunTerminal(State);
 
     public bool IsActiveNonTerminal() => !IsTerminal();
 
     /// <summary>Construye una proyección Run mínima para samples/demos (M2).</summary>
     public static RunProjection ForSample(SessionId sessionId, RunId id, string objective) =>
-        new RunProjection(sessionId, id, DateTimeOffset.Now, objective, RunMode.Act, ExecutionStrategy.Direct,
+        new RunProjection(sessionId, id, DateTimeOffset.Now, objective, RunMode.Act, null, null, ExecutionStrategy.Direct,
             OmniCore.Domain.FailurePolicy.BlockDependents, RunState.Running, null, true);
+
+    private static void ValidateReasoningRequest(ReasoningRequest? request)
+    {
+        if (request is not null && (string.IsNullOrWhiteSpace(request.Kind)
+            || (request.Kind == "budget" ? request.BudgetTokens is null or < 1024 : request.BudgetTokens is not null)))
+            throw new InvalidStateTransitionException("run reasoning preference", "invalid request", "run.reasoning_preference_selected");
+    }
 }
 
 /// <summary>Proyección del TaskGraph (spec §9, ADR-0036 §2).</summary>

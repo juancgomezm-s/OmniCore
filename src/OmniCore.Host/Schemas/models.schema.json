@@ -24,9 +24,17 @@
             "properties": {
               "supported": { "type": "boolean" },
               "effortLevels": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1, "pattern": "\\S" } },
-              "replayPolicy": { "type": "string", "enum": ["None", "ProviderManaged", "RequiredWithTools", "PreserveAcrossSteps"] }
+              "replayPolicy": { "type": "string", "enum": ["None", "ProviderManaged", "RequiredWithTools", "PreserveAcrossSteps"] },
+              "ultraCodeBudgetTokens": { "type": "integer", "minimum": 1024 },
+              "ultraCodeOutputReserveTokens": { "type": "integer", "minimum": 1 }
             },
-            "allOf": [{ "if": { "required": ["effortLevels"] }, "then": { "required": ["supported"], "properties": { "supported": { "const": true } } } }]
+            "allOf": [
+              { "if": { "required": ["effortLevels"] }, "then": { "required": ["supported"], "properties": { "supported": { "const": true } } } },
+              { "if": { "anyOf": [{ "required": ["ultraCodeBudgetTokens"] }, { "required": ["ultraCodeOutputReserveTokens"] }] }, "then": {
+                "required": ["supported", "effortLevels", "ultraCodeBudgetTokens", "ultraCodeOutputReserveTokens"],
+                "properties": { "supported": { "const": true }, "effortLevels": { "contains": { "const": "budget" } } }
+              } }
+            ]
           }
         }
       }

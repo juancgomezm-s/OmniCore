@@ -355,6 +355,16 @@ public sealed class OmniHost
     public static LoadedUserConfiguration LoadUserConfiguration(IPlatformPaths paths) =>
         LoadUserConfiguration(paths.ConfigDirectory);
 
+    /// <summary>Only trusted User config is read; workspace files and model output are never merged.</summary>
+    internal static AgentProfileConfiguration.Loaded LoadAgentProfiles(IPlatformPaths paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        var file = Path.Combine(paths.ConfigDirectory, "agent-profiles.yaml");
+        return File.Exists(file)
+            ? AgentProfileConfiguration.LoadSelection(File.ReadAllText(file), ScopeLevel.User)
+            : new AgentProfileConfiguration.Loaded(new AgentProfileRegistry([]), null);
+    }
+
     public static LoadedUserConfiguration LoadUserConfiguration(string configDirectory)
     {
         var providersPath = Path.Combine(configDirectory, "providers.yaml");

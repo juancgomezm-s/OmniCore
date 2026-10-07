@@ -10,6 +10,97 @@ using OmniCore.Tools;
 public sealed class RuntimeFingerprintContentTests
 {
     [Fact]
+    public void Turn_instruction_intent_is_exact_fingerprinted_and_not_inherited_by_legacy_turns()
+    {
+        WithDirectory(root =>
+        {
+            var artifacts = new FileArtifactStore(root);
+            var catalog = new FakeCatalog();
+            var baseline = new ExecutionFingerprint("model", "h", "t", "c", "o", "build");
+            ExecutionFingerprint Apply(ExecutionFingerprint fingerprint, TurnInstructionSnapshot? snapshot) =>
+                RuntimeFingerprintFactory.WithTurnConfiguration(fingerprint, catalog, [], "system", null,
+                    artifacts, instructionSnapshot: snapshot);
+            var original = Apply(baseline, new TurnInstructionSnapshot(true, "system"));
+            var component = Assert.Single(original.Components, part => part.Name == "turn.instruction");
+            Assert.NotNull(component.Content);
+            Assert.True(artifacts.Verify(component.Hash, component.Content.Size));
+            using var json = System.Text.Json.JsonDocument.Parse(artifacts.GetText(component.Hash)!);
+            Assert.True(json.RootElement.GetProperty("conversationOnly").GetBoolean());
+            Assert.Equal("system", json.RootElement.GetProperty("resolvedInstruction").GetString());
+            Assert.Equal(original.Hash(), Apply(original, new TurnInstructionSnapshot(true, "system")).Hash());
+            Assert.NotEqual(original.Hash(), Apply(baseline, new TurnInstructionSnapshot(false, "system")).Hash());
+            Assert.NotEqual(original.Hash(), Apply(baseline, new TurnInstructionSnapshot(true, "changed")).Hash());
+            Assert.Equal(Apply(baseline, null).Hash(), Apply(original, null).Hash());
+            Assert.DoesNotContain(Apply(original, null).Components, part => part.Name == "turn.instruction");
+        });
+    }
+
+    [Fact]
+    public void Reasoning_resolution_fingerprints_requested_applied_source_revisions_reserve_and_reductions()
+    {
+        var requested = new ReasoningRequest("fixture-effort", null);
+        var applied = new ReasoningRequest("budget", 1024);
+        ReasoningResolution Resolution(long revision = 1, int reserve = 512,
+            ReasoningReduction reduction = ReasoningReduction.Capability) => new(requested, applied,
+                ReasoningSelectionSource.UltraCode, modeAuthorityRevision: revision,
+                outputReserveTokens: reserve, reductions: [reduction]);
+        ExecutionFingerprint Create(ReasoningResolution? resolution)
+        {
+            var model = new ModelDefinition("fixture-model", "fixture-provider", 8192, 7000, 4096);
+            var profile = new ModelProfileResolver().Resolve(model, null);
+            return RuntimeFingerprintFactory.Create(model, profile, new HarnessPolicyResolver().Resolve(profile),
+                new ModelSelection(new ModelIdValue(model.Id), 7000, ToolMode.Direct,
+                    resolution?.AppliedRequest, reasoningResolution: resolution), "h", "c", "p", "t");
+        }
+        Assert.DoesNotContain(Create(null).Components, component => component.Name == "model.reasoning.resolved");
+        var original = Create(Resolution());
+        var component = Assert.Single(original.Components, part => part.Name == "model.reasoning.resolved");
+        Assert.Equal(original.Hash(), Create(Resolution()).Hash());
+        foreach (var changed in new[]
+        {
+            Resolution(revision: 2), Resolution(reserve: 1024), Resolution(reduction: ReasoningReduction.ContextCapacity),
+            new ReasoningResolution(requested, applied, ReasoningSelectionSource.RunOverride,
+                runPreferenceRevision: 1, reductions: [ReasoningReduction.Capability]),
+            new ReasoningResolution(new ReasoningRequest("fixture-other", null), applied,
+                ReasoningSelectionSource.UltraCode, modeAuthorityRevision: 1, outputReserveTokens: 512,
+                reductions: [ReasoningReduction.Capability]),
+        })
+        {
+            var fingerprint = Create(changed);
+            Assert.NotEqual(component.Hash, Assert.Single(fingerprint.Components,
+                part => part.Name == component.Name).Hash);
+            Assert.All(original.Components.Where(part => part.Name != component.Name),
+                part => Assert.Equal(part.Hash, Assert.Single(fingerprint.Components, candidate => candidate.Name == part.Name).Hash));
+        }
+    }
+
+    [Fact]
+    public void Explicit_UltraCode_budget_and_output_reserve_are_fingerprinted_without_upgrading_legacy_capabilities()
+    {
+        static ExecutionFingerprint Create(int? budget, int? reserve)
+        {
+            var model = new ModelDefinition("fixture-model", "fixture-provider", 8192, 7000, 4096,
+                reasoningCapability: new ReasoningCapability(true, ["budget"],
+                    ReasoningReplayPolicy.PreserveAcrossSteps, budget, reserve));
+            var profile = new ModelProfileResolver().Resolve(model, null);
+            return RuntimeFingerprintFactory.Create(model, profile, new HarnessPolicyResolver().Resolve(profile),
+                new ModelSelection(new ModelIdValue(model.Id), 7000, ToolMode.Direct, null), "h", "c", "p", "t");
+        }
+        var legacy = Assert.Single(Create(null, null).Components, component => component.Name == "model.reasoning.declared");
+        Assert.Equal("1", legacy.Version);
+        var first = Create(1024, 512);
+        var configured = Assert.Single(first.Components, component => component.Name == "model.reasoning.declared");
+        Assert.Equal("2", configured.Version);
+        foreach (var changed in new[] { Create(2048, 512), Create(1024, 1024) })
+        {
+            Assert.NotEqual(configured.Hash, Assert.Single(changed.Components,
+                component => component.Name == "model.reasoning.declared").Hash);
+            foreach (var other in first.Components.Where(component => component.Name != "model.reasoning.declared"))
+                Assert.Equal(other.Hash, Assert.Single(changed.Components, component => component.Name == other.Name).Hash);
+        }
+    }
+
+    [Fact]
     public void Prepared_components_have_exact_future_refs_without_publishing_or_changing_configuration_hash()
     {
         WithDirectory(root =>

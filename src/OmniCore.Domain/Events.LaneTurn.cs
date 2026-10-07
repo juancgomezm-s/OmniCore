@@ -2,11 +2,12 @@ namespace OmniCore.Domain;
 
 
 /// <summary>LaneCreated: la Lane entra en Queued.</summary>
-public record LaneCreated(LaneId LaneId, TaskId TaskId, ProfileId AgentProfile) : DomainEventPayload
+public record LaneCreated(LaneId LaneId, TaskId TaskId, ProfileId AgentProfile,
+    long? AgentProfileRevision = null, ContentHash? AgentProfileHash = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("lane.created");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>LaneProvisioning: Queued → Provisioning (worktree/proceso externo).</summary>
@@ -75,11 +76,12 @@ public record LaneHeartbeatRecorded(LaneId LaneId, LaneHeartbeat Heartbeat) : Do
 
 /// <summary>TurnStarted: un Turn de la Lane arranca y registra su fingerprint de ejecución (ADR-0017).</summary>
 public record TurnStarted(TurnId TurnId, LaneId LaneId, ExecutionFingerprint? Fingerprint = null,
-    ArtifactRef? ContextSnapshotRef = null) : DomainEventPayload
+    ArtifactRef? ContextSnapshotRef = null, TurnInstructionSnapshot? InstructionSnapshot = null,
+    ReasoningResolution? ReasoningResolution = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("turn.started");
 
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
 }
 
 /// <summary>ModelCompleted: el modelo terminó su respuesta completa (ADR-0036 §6).</summary>
@@ -93,10 +95,11 @@ public record ModelCompleted(TurnId TurnId, ArtifactRef? ResponseArtifact) : Dom
 /// <summary>Una invocación concreta al modelo comienza; no contiene estado opaco del provider.</summary>
 public record ModelStepStarted(TurnId TurnId, int StepIndex, string ModelId, long ContextBudget,
     string ToolMode, string? ReasoningKind, int? ReasoningBudgetTokens,
-    ArtifactRef? ContextSnapshotRef, long? ModelContextCapacity = null, RouteId? RouteId = null) : DomainEventPayload
+    ArtifactRef? ContextSnapshotRef, long? ModelContextCapacity = null, RouteId? RouteId = null,
+    ReasoningResolution? ReasoningResolution = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("model_step.started");
-    public int SchemaVersion() => 3;
+    public int SchemaVersion() => 4;
 }
 
 /// <summary>Uso confirmado de una invocación, durable aunque el Turn luego quede suspendido.</summary>

@@ -44,10 +44,11 @@ public sealed class RunCreationSqliteBoundaryTests
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, successful.Outcome?.Kind);
             var session = Assert.IsType<SessionId>(server.LastSessionId());
             var events = store.ReadFrom(session, 1);
-            Assert.Equal(11, events.Count);
-            Assert.Equal(Enumerable.Range(1, 11).Select(i => (long)i), events.Select(e => e.Sequence));
+            Assert.Equal(12, events.Count);
+            Assert.Single(events, evt => EventCodecs.Create().Decode(evt) is RunModeAuthoritySelected);
+            Assert.Equal(Enumerable.Range(1, 12).Select(i => (long)i), events.Select(e => e.Sequence));
             Assert.Equal(1L, successful.FirstSeq);
-            Assert.Equal(11L, successful.LastSeq);
+            Assert.Equal(12L, successful.LastSeq);
             Assert.Equal(2L, store.LastCommitSynchronousLevel);
             Assert.All(events, e =>
             {
@@ -94,9 +95,10 @@ public sealed class RunCreationSqliteBoundaryTests
             var run = Assert.IsType<RunId>(server.LastRunId());
             Assert.NotEqual(previous, session);
             var events = store.ReadFrom(session, 1);
-            Assert.Equal(11, events.Count);
+            Assert.Equal(12, events.Count);
+            Assert.Single(events, evt => codecs.Decode(evt) is RunModeAuthoritySelected);
             Assert.Equal(1L, ack.FirstSeq);
-            Assert.Equal(11L, ack.LastSeq);
+            Assert.Equal(12L, ack.LastSeq);
             Assert.All(events, e => Assert.Equal(
                 new CommandCausation(new CommandId(Guid.Parse(ack.CommandId))), e.Causation));
             var created = Assert.Single(events, e => codecs.Decode(e) is RunCreated);

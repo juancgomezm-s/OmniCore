@@ -1,5 +1,124 @@
 # M5.5 — perfil de lane en el fingerprint
 
+## Checkpoint completo verificado — 2026-10-07 09:04 UTC
+
+FULL `snapshot-full-0859.log`: 2704 casos, 2700 PASS, 0 FAIL, 4 SKIP
+(permisos de symlink), 239.129 s, exit 0. Build final 0 errores/advertencias.
+Focal previa 235 PASS; conteos solapados, no acumulables. Los ocho controles
+de suspensión/reapertura incluyen perfil, revisión/origen/solicitud de
+razonamiento, ausencia y redacción de instrucciones, con journal SQLite/CAS y
+request de proveedor fixture inspeccionada. No son cualificación autenticada
+ni integración real con OmniCoder. Contratos y pendientes íntegros en
+`m55-closure-plan.md`; no declara cierre M5/M5.5.
+
+## Integración perfil/autoridad/lifecycle verificada — 2026-10-07 08:20 UTC
+
+Build: 0 errores/0 advertencias, 14.42 s. Focal conjunta: **120 PASS/0 FAIL/
+0 SKIP**, 7.550 s, exit 0 (`integrated-build-0819.log`,
+`integrated-focal-0820.log`, directorio de logs indicado abajo). Incluye los
+tres controles nuevos de suspensión de perfil con SQLite/CAS reales y los dos
+de escalación consentida con/sin reapertura. El consentimiento ahora registra
+la espera y su reanudación causal; Explorer no añade una espera ficticia cuando
+no escribe un input nuevo. No se duplica la intención original ni se promueve
+el follow-up reservado dentro del turno autorizado.
+
+La captura inicial del default de razonamiento funciona tanto por `act` como
+por creación del Run desde `session.input`. El presupuesto manual exige valor
+explícito y reserva de salida. Una auditoría posterior detectó que el store de
+preferencias aún permitía guardar un request budget sin valor; se exige su
+corrección y prueba antes de la suite completa. La focal no acredita cierre
+integral, autenticación ni cualificación real; M5 y M5.5 permanecen abiertos.
+
+## Checkpoint integrado — 2026-10-07 08:09 UTC
+
+La compilación integrada terminó con 0 errores y 0 advertencias (4.33 s).
+La focal conjunta de perfiles, autoridad, CLI, razonamiento y lifecycle terminó
+con exit 1: **133 casos, 130 PASS, 3 FAIL, 0 SKIP**, 7.166 s. Los controles de
+perfil User, argv literal, binding durable y presupuesto en fingerprint pasan
+en esta ejecución. Los fallos restantes son captura del default de razonamiento
+y dos variantes de escalación consentida/reapertura. No se acredita cierre.
+
+Logs: `C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0649/integrated-build-0810.log`
+y `integrated-focal-0811.log` en el mismo directorio. Fixtures privados, no
+consultas autenticadas ni cualificación de proveedores.
+
+Se añadieron tres controles `AgentProfileSuspensionIntegrationTests` para
+suspensión por cuestionario, SQLite close/reopen, rechazo de cambio de revisión
+o contenido antes de append/dispatch, y reanudación con la configuración exacta.
+Exigen un único Turn, dos ModelSteps y conservación de receipts CAS originales.
+**Estos tres controles nuevos aún no se han compilado ni ejecutado**; esperan
+el checkpoint coherente del worker antes de iniciar la verificación conjunta.
+
+Reproducción focal de esos controles, después de compilar el checkpoint:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*AgentProfileSuspensionIntegrationTests'
+```
+
+## Primer checkpoint normal ejecutado — 2026-10-07 08:00 UTC
+
+Build corregido: 0 errores/0 advertencias, 4.91 s. Focal conjunta: 155 casos,
+144 PASS/11 FAIL/0 SKIP, 94.385 s. El nuevo control CLI con configuración User,
+HTTP loopback, CAS y rechazo de cambio de perfil pasó; no es cualificación
+autenticada. Las cuatro reaperturas fallaron en limpieza de pools SQLite y tres
+controles de markers en conversión de InlineData, no en sus assertions de
+negocio. Root corrigió esos fixtures; todavía requieren rerun.
+
+Los otros cuatro fallos pertenecen a autoridad/lifecycle: acción humana enviada
+por entrada genérica no confiable, caso de redacción que no redactaba, y dos
+escalaciones consentidas cuyo Run permanecía AwaitingInput al validar. Luna los
+corrige sin cambiar el modo ni duplicar la intención. El proceso de tests emitió
+Finished y summary completo; sus lectores de salida se atascaron sobre una
+línea ANSI extensa. Se terminaron sólo esos lectores propios tras verificar que
+el programa de tests había salido. Logs preservados; su exit -1 no se presenta
+como código de salida del programa de tests.
+
+Root amplió los controles de origen User y argv vacío explícito frente a argv
+ausente. Se conservan argumentos literales vacíos/espacios; siguen rechazadas
+reglas incompletas. Estas últimas fuentes aún no han sido compiladas ni probadas.
+La última suite completa sigue roja; M5/M5.5 permanecen abiertos e íntegros.
+
+## Resolución normal y binding durable en implementación — 2026-10-07 07:40 UTC
+
+El Host carga exclusivamente `agent-profiles.yaml` del directorio User. El campo
+opcional `defaultProfile` selecciona un UUID declarado en `agentProfiles`; un
+UUID ausente se rechaza. Sin selección se conserva el comportamiento histórico.
+Los Runs nuevos guardan en `LaneCreated` v2 la identidad reusable, revisión y
+hash del JSON canónico de configuración. El upcaster v1 conserva ambos campos
+opcionales ausentes: un Lane histórico no adquiere un nuevo default al reabrir.
+
+Los callsites normales CLI resuelven la configuración de la misma sesión/Run/Lane
+y la pasan al executor. Un perfil eliminado, revisión distinta o contenido
+distinto con igual revisión bloquea ejecución: no hay fallback permisivo.
+Explorer verifica también ese binding antes de crear el Turn o llamar al modelo.
+El hash coincide con el componente `agent.profile` v2; no significa que exista
+un receipt CAS antes del primer Turn ni que haya ejecución AgentExecution nueva.
+
+Se añadieron controles SQLite de reapertura y un control CLI con HTTP loopback,
+todos fixtures privados, **todavía sin compilar ni ejecutar este checkpoint**.
+No acreditan autenticación, consumo real, integración OmniCoder ni cierre.
+El trabajo de autoridad/reasoning de Luna sigue concurrente y requiere un
+checkpoint coherente antes del build. La última suite completa continúa roja.
+
+Ejemplo de configuración exclusivamente User:
+
+```yaml
+defaultProfile: 0199a000-0000-7000-8000-000000000001
+agentProfiles:
+  explorer:
+    id: 0199a000-0000-7000-8000-000000000001
+    revision: 1
+    permissions:
+      reads: ["**"]
+      writes: []
+      process: []
+      network: []
+      secrets: []
+      allowShell: false
+    preferredTools: [filesystem.read]
+```
+
 ## Integración efectiva parcial verificada — 2026-10-07 07:12 UTC
 
 `AgentProfilePermissionPolicy` intersecta el perfil resuelto con la política

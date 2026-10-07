@@ -80,6 +80,9 @@ public static class LaneActivityProjection
                 case RunAwaitingInput awaiting when awaiting.RootLaneId.Equals(lane):
                     awaitingRun = awaiting.RunId;
                     break;
+                case RunInteractionResumed resumed when resumed.RunId.Equals(awaitingRun):
+                    awaitingRun = null;
+                    break;
                 case UserInputReceived input when input.RunId.Equals(awaitingRun): awaitingRun = null; break;
                 case RunCancelled e when e.RunId.Equals(awaitingRun): awaitingRun = null; break;
                 case RunFailed e when e.RunId.Equals(awaitingRun): awaitingRun = null; break;

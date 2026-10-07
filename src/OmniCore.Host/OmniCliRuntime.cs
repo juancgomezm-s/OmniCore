@@ -94,9 +94,17 @@ public sealed class OmniCliRuntime
 
     /// <summary>Output guidance, not a substitute for tool permissions or completion gates.</summary>
     internal static string TurnInstruction(bool executingAct) =>
-        (executingAct
-            ? "You are executing the approved plan in the current workspace. Use the available tools under effective policy. Never invent reads or version tokens; read before patching."
-            : "You are helping explain an engineering workspace. Use available read-only tools when helpful and distinguish observed facts from inference.")
+        TurnInstruction(executingAct ? RunMode.Act : RunMode.Plan);
+
+    internal static string TurnInstruction(RunMode mode, bool conversationOnly = false) =>
+        (mode switch
+        {
+            RunMode.Plan => "You are in PLAN mode. Answer, explain, investigate, or prepare a proposal using only the available observational tools. Do not modify files.",
+            RunMode.Act => "You are in ACT mode. Resolve the request directly in the current workspace using the available tools under effective policy. Never invent reads or version tokens; read before patching.",
+            RunMode.Orchestrate => "You are in ORQ mode. Coordinate only within the authorized objective and the same effective permissions and route. Resolve simple work directly; do not invent or launch workers unless an authorized coordinator is available.",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+        })
+        + (conversationOnly ? " This is a conversational input; answer directly when no work is required." : "")
         + " Answer in the conversation. For examples, demonstrations, or rendering tests, include the requested code, Markdown tables, and explanation directly in your final response."
         + " Do not create or modify workspace files unless the user explicitly requests file changes. Do not replace a requested inline answer with links to generated files."
         + " A conversational example does not require filesystem tools or a new plan. Preserve explicit user requests to edit files and all approval and completion requirements.";
@@ -109,7 +117,8 @@ public sealed class OmniCliRuntime
     }
 
     /// <summary>Ejecuta un Run Act real bajo las políticas del modelo y del Permission Engine.</summary>
-    public Task<int> ActAsync(string objective, Action<string> writeLine, CancellationToken cancellationToken)
+    public Task<int> ActAsync(string objective, Action<string> writeLine, CancellationToken cancellationToken,
+        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
     {
         ArgumentNullException.ThrowIfNull(writeLine);
         if (string.IsNullOrWhiteSpace(objective))
@@ -118,7 +127,8 @@ public sealed class OmniCliRuntime
             return System.Threading.Tasks.Task.FromResult(2);
         }
 
-        return RunTurnAsync(objective, act: true, writeLine, cancellationToken);
+        return RunTurnAsync(objective, act: true, writeLine, cancellationToken, turnBoost: turnBoost,
+            turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed);
     }
 
     /// <summary>Diagnóstico de componentes de runtime en DTOs de texto para el CLI.</summary>
@@ -214,11 +224,102 @@ public sealed class OmniCliRuntime
         SessionId session, RunId run, LaneId lane, string prompt, string? origin) =>
         FollowUpQueue.TryQueue(store, codecs, session, run, lane, prompt, origin);
 
-    internal Task<int> ConversationAsync(string prompt, Action<string> writeLine, CancellationToken cancellationToken) =>
-        RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true);
+    internal Task<int> ConversationAsync(string prompt, Action<string> writeLine, CancellationToken cancellationToken,
+        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null) =>
+        RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true, turnBoost: turnBoost,
+            turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed);
 
     private sealed record RoutingResume(SessionId Session, RunId Run, InteractionId? Interaction, string Model,
-        ModelRoute? Route = null, string Origin = "InteractionResponse(ModelRouteConsent)");
+        ModelRoute? Route = null, string Origin = "InteractionResponse(ModelRouteConsent)",
+        TurnInstructionSnapshot? InstructionSnapshot = null, ReasoningResolution? ReasoningResolution = null,
+        ReasoningRequest? LegacyReasoningRequest = null, bool ContinueExistingTurn = false);
+
+    private static ReasoningRequest? LegacyReasoningForTurn(IEnumerable<DomainEvent> events,
+        IEventCodecRegistry codecs, RunId run, TurnId turn)
+    {
+        var step = events.Where(evt => evt.RunId == run && evt.TurnId == turn)
+            .Select(codecs.Decode).OfType<ModelStepStarted>().LastOrDefault();
+        if (step is null || step.ReasoningKind is null) return null;
+        var request = new ReasoningRequest(step.ReasoningKind, step.ReasoningBudgetTokens);
+        if (string.IsNullOrWhiteSpace(request.Kind)
+            || (request.Kind == "budget" ? request.BudgetTokens is null or < 1024 : request.BudgetTokens is not null))
+            throw new InvalidDataException("Legacy model step contains a malformed reasoning request.");
+        return request;
+    }
+
+    private static ReasoningResolution ResolveReasoningResolution(RunReasoningSelectionState? runSelection,
+        RunModeAuthority? authority, ReasoningCapability capability, ReasoningRequest? turnBoost,
+        Guid? turnBoostId, long? outputLimit)
+    {
+        if (turnBoost is not null)
+        {
+            if (turnBoostId is not { } boostId || boostId == Guid.Empty)
+                throw new InvalidOperationException("A Turn reasoning boost requires a durable identity.");
+            capability.ValidateRequest(turnBoost);
+            return new ReasoningResolution(turnBoost, turnBoost, ReasoningSelectionSource.TurnBoost,
+                turnBoostId: boostId);
+        }
+
+        if (runSelection is { HasSelection: true })
+        {
+            if (runSelection.Source == "UserDefault")
+            {
+                var revision = runSelection.UserPreferenceRevision;
+                if (revision is not > 0)
+                    throw new InvalidOperationException("Captured User reasoning preference is missing its durable revision.");
+                capability.ValidateRequest(runSelection.Request);
+                return new ReasoningResolution(runSelection.Request, runSelection.Request,
+                    ReasoningSelectionSource.UserDefault, userPreferenceRevision: revision);
+            }
+
+            if (runSelection.Source != "User" || runSelection.Revision <= 0)
+                throw new InvalidOperationException("Run reasoning preference has invalid provenance.");
+            capability.ValidateRequest(runSelection.Request);
+            return new ReasoningResolution(runSelection.Request, runSelection.Request,
+                ReasoningSelectionSource.RunOverride, runPreferenceRevision: runSelection.Revision);
+        }
+
+        if (runSelection is { HasCapturedUserDefault: true })
+        {
+            if (runSelection.CapturedUserPreferenceRevision is not > 0)
+                throw new InvalidOperationException("Captured User reasoning preference is missing its durable revision.");
+            capability.ValidateRequest(runSelection.CapturedUserDefault);
+            return new ReasoningResolution(runSelection.CapturedUserDefault, runSelection.CapturedUserDefault,
+                ReasoningSelectionSource.UserDefault,
+                userPreferenceRevision: runSelection.CapturedUserPreferenceRevision);
+        }
+
+        if (authority is null || authority.ProductEffort != ProductEffort.UltraCode)
+            return new ReasoningResolution(null, null, ReasoningSelectionSource.None);
+        if (authority.Revision <= 0)
+            throw new InvalidOperationException("UltraCode reasoning requires a durable mode-authority revision.");
+
+        var high = new ReasoningRequest("high", null);
+        if (capability.Supported == true
+            && capability.EffortLevels?.Contains(high.Kind, StringComparer.Ordinal) == true)
+            return new ReasoningResolution(high, high, ReasoningSelectionSource.UltraCode,
+                modeAuthorityRevision: authority.Revision);
+
+        if (capability.Supported == true
+            && capability.UltraCodeBudgetTokens is { } budget
+            && capability.UltraCodeOutputReserveTokens is { } reserve)
+        {
+            var requestedBudget = new ReasoningRequest("budget", budget);
+            var fits = outputLimit is { } limit && (long)budget + reserve <= limit;
+            return new ReasoningResolution(requestedBudget, fits ? requestedBudget : null,
+                ReasoningSelectionSource.UltraCode, modeAuthorityRevision: authority.Revision,
+                outputReserveTokens: reserve,
+                reductions: fits ? Array.Empty<ReasoningReduction>() : [ReasoningReduction.OutputReserve]);
+        }
+
+        return new ReasoningResolution(high, null, ReasoningSelectionSource.UltraCode,
+            modeAuthorityRevision: authority.Revision, reductions: [ReasoningReduction.Capability]);
+    }
+
+    private static bool HasStartedTurnWithBoost(OmniServer server, SessionId session, RunId run, Guid boostId) =>
+        server.AcquireStore().ReadFrom(session, 1).Any(evt => evt.RunId == run
+            && server.AcquireCodecs().Decode(evt) is TurnStarted started
+            && started.ReasoningResolution?.TurnBoostId == boostId);
 
     internal bool HasEscalationForInteraction(InteractionId interaction)
     {
@@ -267,10 +368,17 @@ public sealed class OmniCliRuntime
                     && server.AcquireCodecs().Decode(evt) is UserInputReceived input
                     && input.Origin?.StartsWith("InteractionResponse(", StringComparison.Ordinal) != true))
             { writeLine("Escalation has no durable original input; resume rejected"); return 1; }
+            var originalTurn = (TurnStarted)server.AcquireCodecs().Decode(originStart);
             var before = server.AcquireStore().CurrentSequence(session);
             var code = await RunTurnAsync("", server.CurrentRunMode() == RunMode.Act, writeLine,
-                cancellationToken, conversationOnly: server.CurrentRunMode() == RunMode.Plan,
-                routingResume: new(session, run, interaction, model.Id, grantedRoute)).ConfigureAwait(false);
+                cancellationToken, conversationOnly: originalTurn.InstructionSnapshot?.ConversationOnly
+                    ?? server.CurrentRunMode() == RunMode.Plan,
+                routingResume: new(session, run, interaction, model.Id, grantedRoute,
+                    InstructionSnapshot: originalTurn.InstructionSnapshot,
+                    ReasoningResolution: originalTurn.ReasoningResolution,
+                    LegacyReasoningRequest: LegacyReasoningForTurn(events, server.AcquireCodecs(), run, originalTurn.TurnId),
+                    ContinueExistingTurn: true))
+                .ConfigureAwait(false);
             // Completed means the target was actually invoked, not merely approved or deferred.
             if (server.LastSessionId() == session && server.LastRunId() == run
                 && server.AcquireStore().ReadFrom(session, before + 1).Any(evt => evt.RunId == run
@@ -295,8 +403,10 @@ public sealed class OmniCliRuntime
             && server.AcquireCodecs().Decode(evt) is InteractionRequested request
             && request.InteractionId == interaction && request.Kind == InteractionKind.BudgetExceeded);
         if (origin is null || origin.TurnId is null) return 1;
-        if (!events.Any(evt => evt.RunId == run && server.AcquireCodecs().Decode(evt) is TurnStarted start
-            && start.TurnId == origin.TurnId && start.LaneId == origin.LaneId)
+        var originalStart = events.LastOrDefault(evt => evt.RunId == run
+            && server.AcquireCodecs().Decode(evt) is TurnStarted start
+            && start.TurnId == origin.TurnId && start.LaneId == origin.LaneId);
+        if (originalStart is null
             || events.Any(evt => evt.RunId == run && server.AcquireCodecs().Decode(evt) is TurnCompleted completed
                 && completed.TurnId == origin.TurnId
                 || evt.RunId == run && server.AcquireCodecs().Decode(evt) is TurnAbandoned abandoned
@@ -320,17 +430,28 @@ public sealed class OmniCliRuntime
             var model = loaded.Registry.Models().SingleOrDefault(candidate => candidate.Id == subject.GetProperty("modelId").GetString());
             if (model is null || model.ProviderId != subject.GetProperty("providerId").GetString()
                 || loaded.Registry.Provider(model.ProviderId)?.BillingMode != BillingMode.IncludedQuota) return 1;
+            var originalTurn = (TurnStarted)server.AcquireCodecs().Decode(originalStart);
             return await RunTurnAsync("", server.CurrentRunMode() == RunMode.Act, writeLine, cancellationToken,
-                conversationOnly: server.CurrentRunMode() == RunMode.Plan,
-                routingResume: new(session, run, null, model.Id, Origin: "InteractionResponse(IncludedQuota)")).ConfigureAwait(false);
+                conversationOnly: originalTurn.InstructionSnapshot?.ConversationOnly
+                    ?? server.CurrentRunMode() == RunMode.Plan,
+                routingResume: new(session, run, null, model.Id, Origin: "InteractionResponse(IncludedQuota)",
+                    InstructionSnapshot: originalTurn.InstructionSnapshot,
+                    ReasoningResolution: originalTurn.ReasoningResolution,
+                    LegacyReasoningRequest: LegacyReasoningForTurn(events, server.AcquireCodecs(), run, originalTurn.TurnId),
+                    ContinueExistingTurn: true))
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException
             or InvalidOperationException or FormatException) { writeLine("Quota consent is invalid; resume rejected"); return 1; }
     }
 
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
-        CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null)
+        CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
+        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
     {
+        if (turnBoost is null && turnBoostId is not null)
+            throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
+        if (turnBoost is not null && turnBoostId is null) turnBoostId = Guid.NewGuid();
         var paths = OmniHost.CreatePlatformPaths();
         var workspaceData = OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
         LoadedUserConfiguration loaded;
@@ -500,9 +621,8 @@ public sealed class OmniCliRuntime
             }
             else if (conversationOnly)
             {
-                var input = server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
-                    + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt)
-                    + "," + JsonObj.Field("mode", "plan") + "}"), cancellationToken);
+                var input = server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
+                    + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt) + "}"), cancellationToken);
                 if (input.Status != "ok") throw new InvalidOperationException(input.Error ?? "Conversation input rejected");
                 // session.input already persisted/queued the intent. Explorer reads that history;
                 // submitting the same text again would duplicate input and provider context.
@@ -570,6 +690,53 @@ public sealed class OmniCliRuntime
             {
                 writeLine("Selected route no longer matches configured model/provider. Select a current route before sending.");
                 return 1;
+            }
+            var selectedMaxOutputTokens = ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription);
+            ReasoningResolution? reasoningResolution;
+            ReasoningRequest? productReasoning;
+            if (routingResume is { ContinueExistingTurn: true })
+            {
+                // Same-Turn continuation is bound to the original durable selection. A legacy
+                // Turn has no resolution snapshot, so preserve only the request from its step.
+                reasoningResolution = routingResume.ReasoningResolution;
+                productReasoning = reasoningResolution?.AppliedRequest
+                    ?? (reasoningResolution is null ? routingResume.LegacyReasoningRequest : null);
+            }
+            else
+            {
+                try
+                {
+                    reasoningResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
+                        server.CurrentModeAuthority(), route.ReasoningCapability, turnBoost, turnBoostId,
+                        selectedMaxOutputTokens);
+                    productReasoning = reasoningResolution.AppliedRequest;
+                }
+                catch (InvalidOperationException)
+                {
+                    writeLine(locale == "en"
+                        ? "The selected reasoning request conflicts with this route's declared capability; no provider request was sent."
+                        : "La solicitud de razonamiento elegida contradice la capacidad declarada de esta ruta; no se envió ninguna solicitud al proveedor.");
+                    return 1;
+                }
+            }
+            var modeAuthority = server.CurrentModeAuthority();
+            try
+            {
+                route.ReasoningCapability.ValidateRequest(productReasoning);
+            }
+            catch (InvalidOperationException)
+            {
+                writeLine(locale == "en"
+                    ? "The selected reasoning request conflicts with this route's declared capability; no provider request was sent."
+                    : "La solicitud de razonamiento elegida contradice la capacidad declarada de esta ruta; no se envió ninguna solicitud al proveedor.");
+                return 1;
+            }
+            if (reasoningResolution?.Source == ReasoningSelectionSource.UltraCode
+                && reasoningResolution.AppliedRequest is null)
+            {
+                writeLine(locale == "en"
+                    ? "UltraCode is selected, but this route has no compatible declared reasoning capability and finite configured budget; no native reasoning request was sent."
+                    : "UltraCode está seleccionado, pero la ruta no declara una capacidad compatible ni un presupuesto finito configurado; no se envió una solicitud de razonamiento nativo.");
             }
             if (routingResume?.Interaction is not null)
             {
@@ -644,36 +811,31 @@ public sealed class OmniCliRuntime
                 }
                 if (selected is "approve_only" or "reject") return 0;
             }
-            var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null, route.Id, route,
-                ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription));
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
-            var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
-                selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value,
-                provider, qualification, artifacts);
-            var fingerprint = preparedFingerprint.Fingerprint;
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.managedHost.active")));
             }
 
-            var executingAct = !conversationOnly && (act || server.CurrentRunMode() == RunMode.Act);
+            var effectiveMode = server.CurrentRunMode();
+            var executingAct = act || effectiveMode is RunMode.Act or RunMode.Orchestrate;
             _usageContext = (provider, loaded.Pricing(model), baseUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
             var hostTools = executingAct
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
-            server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary,
-                executingAct ? RunMode.Act : RunMode.Plan);
+            server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary, effectiveMode);
             var workspaceRoot = _workspaceRoot;
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
             var audit = new FileAuditSink(paths.DataDirectory);
             var interactive = UseConsoleInput && !Console.IsInputRedirected;
             var interactionResponder = CreateInteractionResponder(writeLine, locale);
+            var agentProfile = server.ResolveLaneAgentProfile(sessionId, runId, laneId);
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    audit, interactionResponder, interactive, artifacts)
-                : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId);
+                    audit, interactionResponder, interactive, artifacts, agentProfile)
+                : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId, agentProfile);
             var contributors = executingAct
                 ? Array.Empty<IContextContributor>()
                 : new IContextContributor[] { new WorkingStateContributor(workingState) };
@@ -707,22 +869,37 @@ public sealed class OmniCliRuntime
                 RefreshProviderQuotaAsync(providerDescription!.Id, cancellationToken).GetAwaiter().GetResult();
                 return IncludedQuotaAdmission.AllowsMeta(server, sessionId, providerDescription.Id);
             }
-            var turn = new ExplorerTurn((request, token) => server.Observability.Complete(sessionId, provider, request,
-                modelDefinition?.ContextWindow, token), executor,
-                hostTools.Catalog(), materializer, fingerprint, selection, server.AcquireStore(),
-                server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
-                loaded.Pricing(model), providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
-                sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
-                questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
-                metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
-                recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
-                userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
-                quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
-                    ? QuotaAdmission : null,
-                quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
-                    ? QuotaAllowsMeta : null,
-                maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts);
-            var instruction = TurnInstruction(executingAct);
+            ExplorerTurn BuildTurn(ReasoningRequest? appliedReasoning, ReasoningResolution? resolution,
+                IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null)
+            {
+                var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct,
+                    appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution);
+                var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
+                    selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value,
+                    provider, qualification, artifacts);
+                return new ExplorerTurn((request, token) => server.Observability.Complete(sessionId, provider, request,
+                    modelDefinition?.ContextWindow, token), turnExecutor ?? executor,
+                    turnCatalog ?? hostTools.Catalog(), materializer, preparedFingerprint.Fingerprint, selection, server.AcquireStore(),
+                    server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
+                    loaded.Pricing(model), providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
+                    sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
+                    questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
+                    metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
+                    recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
+                    userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
+                    quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
+                        ? QuotaAdmission : null,
+                    quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
+                        ? QuotaAllowsMeta : null,
+                    maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts);
+            }
+
+            var turn = BuildTurn(productReasoning, reasoningResolution);
+            var instructionSnapshot = routingResume?.InstructionSnapshot;
+            instructionSnapshot?.Validate();
+            conversationOnly = instructionSnapshot?.ConversationOnly ?? conversationOnly;
+            var instruction = instructionSnapshot?.ResolvedInstruction ?? TurnInstruction(effectiveMode, conversationOnly);
+            instructionSnapshot ??= new TurnInstructionSnapshot(conversationOnly, instruction);
             if (questionnaireService.Pending(sessionId).FirstOrDefault() is { } pendingQuestion)
             {
                 var pendingSchema = questionnaireService.SchemaFor(
@@ -736,13 +913,40 @@ public sealed class OmniCliRuntime
                 }
             }
             if (act)
+            {
+                ExplorerTurn? BuildSubsequentActTurn(int _)
+                {
+                    try
+                    {
+                        var nextResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
+                            server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
+                        route.ReasoningCapability.ValidateRequest(nextResolution.AppliedRequest);
+                        return BuildTurn(nextResolution.AppliedRequest, nextResolution);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        writeLine(locale == "en"
+                            ? "The current reasoning preference conflicts with this route; no next Turn was sent."
+                            : "La preferencia de razonamiento vigente contradice esta ruta; no se envió el siguiente Turn.");
+                        return null;
+                    }
+                }
                 return RunActLoop(turn, writeLine, prompt, instruction, sessionId, runId, laneId, workingState,
                     workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
-                    interactionResponder, interactive, locale, cancellationToken, promptOrigin);
+                    interactionResponder, interactive, locale, cancellationToken, promptOrigin,
+                    instructionSnapshot: instructionSnapshot,
+                    subsequentTurnFactory: reasoningResolution?.Source == ReasoningSelectionSource.TurnBoost
+                        ? BuildSubsequentActTurn : null,
+                    turnBoostId: turnBoostId ?? reasoningResolution?.TurnBoostId,
+                    turnBoostConsumed: turnBoostConsumed);
+            }
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
-                    promptOrigin), cancellationToken);
+                    promptOrigin, instructionSnapshot), cancellationToken);
+            if (turnBoostId is { } consumedBoostId && turnBoostConsumed is not null
+                && HasStartedTurnWithBoost(server, sessionId, runId, consumedBoostId))
+                turnBoostConsumed(consumedBoostId);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
@@ -803,28 +1007,21 @@ public sealed class OmniCliRuntime
                 {
                     var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
-                        boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts);
-                    var actTurn = new ExplorerTurn((request, token) => server.Observability.Complete(sessionId, provider, request,
-                        modelDefinition?.ContextWindow, token),
-                        actExecutor, actTools.Catalog(), materializer, fingerprint, selection,
-                        server.AcquireStore(), server.AcquireCodecs(), artifacts, audit,
-                        new RedactionPolicy(), harness, boundary, loaded.Pricing(model),
-                        providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
-                        sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
-                        questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
-                        metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
-                        recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
-                        userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
-                        quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
-                            ? QuotaAdmission : null,
-                        quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
-                            ? QuotaAllowsMeta : null,
-                        maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts);
+                        boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
+                        server.ResolveLaneAgentProfile(sessionId, runId, laneId));
+                    var approvedResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
+                        server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
+                    route.ReasoningCapability.ValidateRequest(approvedResolution.AppliedRequest);
+                    const string approvedInstruction = "You are executing the approved plan in the same Run. Use available tools safely and report verified results.";
+                    var approvedSnapshot = new TurnInstructionSnapshot(false, approvedInstruction);
+                    var actTurn = BuildTurn(approvedResolution.AppliedRequest, approvedResolution,
+                        actExecutor, actTools.Catalog());
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
-                        "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",
+                        approvedInstruction,
                         sessionId, runId, laneId, approvedState, workspaceConfig.Settings?.Gates, restrictions,
-                        server, artifacts, audit, interactionResponder, interactive, locale, cancellationToken);
+                        server, artifacts, audit, interactionResponder, interactive, locale, cancellationToken,
+                        instructionSnapshot: approvedSnapshot);
                 }
             }
 
@@ -855,7 +1052,9 @@ public sealed class OmniCliRuntime
         IReadOnlyDictionary<string, string>? restrictions, OmniServer server, IArtifactStore artifacts,
         IAuditSink audit, Func<InteractionRequested, string?>? interactionResponder, bool interactive,
         string locale, CancellationToken cancellationToken, string? origin = null,
-        Func<InteractionRequested, string?>? acceptanceResponder = null)
+        Func<InteractionRequested, string?>? acceptanceResponder = null,
+        TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
+        Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
     {
         var hasExternalGates = gateConfiguration is { Build: not null } or { Test: not null };
         var hasAcceptance = gateConfiguration?.Acceptance == true;
@@ -866,9 +1065,19 @@ public sealed class OmniCliRuntime
 
         for (var attempt = 0; attempt < maxTurns; attempt++)
         {
+            var activeTurn = turn;
+            if (attempt > 0 && subsequentTurnFactory is not null)
+            {
+                var nextTurn = subsequentTurnFactory(attempt);
+                if (nextTurn is null) return 1;
+                activeTurn = nextTurn;
+            }
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
-                token => turn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
-                    token, origin), cancellationToken);
+                token => activeTurn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
+                    token, origin, instructionSnapshot), cancellationToken);
+            if (turnBoostId is { } boostId && turnBoostConsumed is not null
+                && HasStartedTurnWithBoost(server, sessionId, runId, boostId))
+                turnBoostConsumed(boostId);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
@@ -1242,9 +1451,12 @@ public sealed class OmniCliRuntime
 
     private OmniServer Server(string workspaceData)
     {
+        var paths = OmniHost.CreatePlatformPaths();
+        var agentProfiles = OmniHost.LoadAgentProfiles(paths);
         // Auditoría en scope User (<data>/audit/, ADR-0043 §1), separada del journal del workspace.
         _server ??= OmniHost.OpenPersistentServer(Path.Combine(workspaceData, "journal.db"),
-            OmniHost.CreatePlatformPaths().DataDirectory);
+            paths.DataDirectory);
+        _server.ConfigureAgentProfiles(agentProfiles);
         _server.ConfigureWorkspaceRoot(_workspaceRoot);
         return _server;
     }
@@ -1393,8 +1605,10 @@ public sealed class OmniCliRuntime
         try
         {
             var code = await RunTurnAsync("", act, writeLine, cancellationToken,
-                conversationOnly: !act && server.CurrentRunMode() == RunMode.Plan,
-                routingResume: new(session, run, null, next.ModelId, next.Route)).ConfigureAwait(false);
+                conversationOnly: originatingTurn?.InstructionSnapshot?.ConversationOnly
+                    ?? (!act && server.CurrentRunMode() == RunMode.Plan),
+                routingResume: new(session, run, null, next.ModelId, next.Route,
+                    InstructionSnapshot: originatingTurn?.InstructionSnapshot)).ConfigureAwait(false);
             if (server.LastSessionId() == session && server.LastRunId() == run
                 && server.AcquireStore().ReadFrom(session, beforeTarget + 1).Any(evt => evt.RunId == run
                     && server.AcquireCodecs().Decode(evt) is ModelStepCompleted))

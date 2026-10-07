@@ -37,7 +37,10 @@ public sealed record StatusLinePresentation(string Left, string Right)
     /// <summary>Formats only reported data; unknown/not-supported quota is an em dash, never an estimate.</summary>
     public static StatusLinePresentation From(StatusLineModel model)
     {
-        var left = model.Mode;
+        var left = model.Mode + (StringComparer.OrdinalIgnoreCase.Equals(model.ProductEffort, "ultracode")
+            ? " · UltraCode" : "");
+        if (!string.IsNullOrWhiteSpace(model.AppliedReasoning))
+            left += " · reasoning " + model.AppliedReasoning;
         var right = string.IsNullOrWhiteSpace(model.Quota) ? "—" : model.Quota;
         if (model.PendingInteractions is > 0) right += " · ! " + model.PendingInteractions + " pending";
         return new(left, right);
