@@ -1484,7 +1484,7 @@ public sealed class OmniServer : IOmniClient
         catch (Exception failure)
         {
             return (null, FailedDurableCommandAck(messageId, sessionId, sequenceBefore,
-                failure.Message), failure);
+                failure.Message, restoreRunIdentity: false), failure);
         }
         var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
             sessionId, sequenceBefore, commandId);
@@ -1636,54 +1636,65 @@ public sealed class OmniServer : IOmniClient
             sessionId, sequenceBefore, commandId);
     }
 
-    internal (bool? Completed, CommandAck Ack) CheckRunCompletionAndGate(SessionId sessionId, RunId runId,
+    internal (bool? Completed, CommandAck Ack, Exception? Failure) CheckRunCompletionAndGate(SessionId sessionId, RunId runId,
         Func<EventStream, IReadOnlyList<ExternalCompletionGateResult>>? runExternalGates,
         MutationLedger? mutationLedger)
     {
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var commandMessageId = commandId.Value.ToString();
-        var all = _store.ReadFrom(sessionId, 1);
-        if (!all.Select(_codecs.Decode).OfType<RunCreated>().Any(created => created.RunId.Equals(runId)))
+        long? sequenceBefore = null;
+        try
         {
-            return (null, new CommandAck(commandMessageId, "error", "the Run does not belong to the requested Session",
-                RuntimeCommandOutcome.Rejected()));
-        }
+            var all = _store.ReadFrom(sessionId, 1);
+            if (!all.Select(_codecs.Decode).OfType<RunCreated>().Any(created => created.RunId.Equals(runId)))
+            {
+                return (null, new CommandAck(commandMessageId, "error", "the Run does not belong to the requested Session",
+                    RuntimeCommandOutcome.Rejected()), null);
+            }
 
-        var own = EventsForRun(all, runId);
-        var run = RunProjection.Replay(sessionId, runId, _codecs, own);
-        var tasks = TaskGraphProjection.Replay(_codecs, own);
-        var plan = PlanProjection.Replay(_codecs, own);
-        var laneProjection = LaneProjection.Replay(_codecs, own);
-        LaneId? rootLane = null;
-        if (run.RootTask is { } rootTask)
+            var own = EventsForRun(all, runId);
+            var run = RunProjection.Replay(sessionId, runId, _codecs, own);
+            var tasks = TaskGraphProjection.Replay(_codecs, own);
+            var plan = PlanProjection.Replay(_codecs, own);
+            var laneProjection = LaneProjection.Replay(_codecs, own);
+            LaneId? rootLane = null;
+            if (run.RootTask is { } rootTask)
+            {
+                var runningRootLanes = laneProjection.ForTask(rootTask)
+                    .Where(lane => lane.State == LaneState.Running).ToArray();
+                if (runningRootLanes.Length == 1) rootLane = runningRootLanes[0].Id;
+            }
+
+            sequenceBefore = _store.CurrentSequence(sessionId);
+            using var internalCommand = ambientCommand is null
+                ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+            // Gates validate the latest completed intent on the root Lane, not a synthetic Turn
+            // or an unrelated ambient/other-Lane attribution. An open latest Turn cannot borrow
+            // attribution from an older completed one.
+            var sourceTurnEvent = rootLane is null ? null : own.LastOrDefault(evt =>
+                _codecs.Decode(evt) is TurnStarted started && started.LaneId == rootLane);
+            var sourceTurn = sourceTurnEvent is null ? null : ((TurnStarted)_codecs.Decode(sourceTurnEvent)).TurnId;
+            if (sourceTurn is not null && !own.Any(evt =>
+                    _codecs.Decode(evt) is TurnCompleted completed && completed.TurnId == sourceTurn))
+                sourceTurn = null;
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, run.RootTask, rootLane,
+                sourceTurn, ExecutionId: sourceTurn is null ? null : sourceTurnEvent?.ExecutionId));
+            var stream = new EventStream(_store, _codecs, sessionId);
+            var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
+                new ProgressReconciler(), _store, _codecs, sessionId, stream,
+                runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger);
+            var ack = CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                sessionId, sequenceBefore.Value, commandId);
+            return (completed, ack, null);
+        }
+        catch (Exception failure)
         {
-            var runningRootLanes = laneProjection.ForTask(rootTask)
-                .Where(lane => lane.State == LaneState.Running).ToArray();
-            if (runningRootLanes.Length == 1) rootLane = runningRootLanes[0].Id;
+            return (null, sequenceBefore is null
+                ? UnavailableCommandOutcome(commandMessageId)
+                : FailedDurableCommandAck(commandMessageId, sessionId, sequenceBefore.Value,
+                    failure.Message, restoreRunIdentity: false), failure);
         }
-
-        var sequenceBefore = _store.CurrentSequence(sessionId);
-        using var internalCommand = ambientCommand is null
-            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-        // Gates validate the latest completed intent on the root Lane, not a synthetic Turn
-        // or an unrelated ambient/other-Lane attribution. An open latest Turn cannot borrow
-        // attribution from an older completed one.
-        var sourceTurnEvent = rootLane is null ? null : own.LastOrDefault(evt =>
-            _codecs.Decode(evt) is TurnStarted started && started.LaneId == rootLane);
-        var sourceTurn = sourceTurnEvent is null ? null : ((TurnStarted)_codecs.Decode(sourceTurnEvent)).TurnId;
-        if (sourceTurn is not null && !own.Any(evt =>
-                _codecs.Decode(evt) is TurnCompleted completed && completed.TurnId == sourceTurn))
-            sourceTurn = null;
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, run.RootTask, rootLane,
-            sourceTurn, ExecutionId: sourceTurn is null ? null : sourceTurnEvent?.ExecutionId));
-        var stream = new EventStream(_store, _codecs, sessionId);
-        var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
-            new ProgressReconciler(), _store, _codecs, sessionId, stream,
-            runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger);
-        var ack = CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
-            sessionId, sequenceBefore, commandId);
-        return (completed, ack);
     }
 
     private void AuditEffectResolutions(SessionId session, long sequenceBeforeResponse, InteractionId interaction)
@@ -1766,7 +1777,7 @@ public sealed class OmniServer : IOmniClient
         => FailedDurableCommandAck(command.MessageId, session, sequenceBefore, error, newSession);
 
     private CommandAck FailedDurableCommandAck(string commandMessageId, SessionId session,
-        long sequenceBefore, string error, bool newSession = false)
+        long sequenceBefore, string error, bool newSession = false, bool restoreRunIdentity = true)
     {
         var commandId = new CommandId(Guid.Parse(commandMessageId));
         DomainEvent[] persisted;
@@ -1780,6 +1791,12 @@ public sealed class OmniServer : IOmniClient
         }
         if (persisted.Length == 0)
             return new CommandAck(commandMessageId, "error", error, RuntimeCommandOutcome.Rejected());
+
+        // Internal evaluations can target another persisted Run/Session. Confirm their effects
+        // without changing which Run the Host has selected or re-decoding unrelated lifecycle data.
+        if (!restoreRunIdentity)
+            return new CommandAck(commandMessageId, "error", error, RuntimeCommandOutcome.Accepted(),
+                persisted.Min(evt => evt.Sequence), persisted.Max(evt => evt.Sequence));
 
         if (newSession)
         {

@@ -1,5 +1,31 @@
 # Rango causal y confirmación durable del command
 
+## Completion: errores correlacionables — 2026-10-07 05:05 UTC
+
+CheckRunCompletionAndGate conserva Failure original, Completed=null y ACK ante
+errores de gates, cancelación y appends. Un prefijo confirmado da Accepted/error
+con rango exacto; ausencia confirmada de eventos da Rejected; fallo de lectura o
+checkpoint no verificable da Deferred/JournalOutcomeUnavailable sin rango.
+No repite gates ni cambia la sesión/Run seleccionado al confirmar un error de
+otra sesión. Explorer usa también la confirmación sin recuperar identidad de Run.
+Los callsites CLI inicial y posterior a aceptación preservan la excepción con
+ExceptionDispatchInfo y comprueban Status, no sólo Accepted.
+
+RunValidationStarted deja el Run en Validating: no se finge un rollback a Running
+ni un RunCompleted al fallar. Esto no implementa recuperación de validación
+inconclusa, scheduler ni joins.
+
+Luna entregó propuesta externa y root la leyó completa, integró, corrigió el
+oracle Running por Validating confirmado por StateMachines, y añadió admission
+read/checkpoint, aislamiento entre sesiones y SQLite real/reopen.
+RED válido 12 casos/7 FAIL en 0.801s; final 61 PASS/0 FAIL/0 SKIP en 9.897s,
+arquitectura 56 PASS en 0.727s, builds sin errores/advertencias.
+Logs completion-command-failure-red/sqlite-final/architecture.log. Los errores
+de callbacks/stores son fixtures; no acreditan consultas autenticadas.
+Full del bloque pendiente. Full anterior sobre 2b03571 terminal exit0: 2589 casos,
+2585 PASS/0 FAIL/4 SKIP symlink en 260.875s, explorer-command-failure-full.log.
+PlanApproval y el inventario completo de commands aún requieren seguimiento.
+
 ## Explorer: errores correlacionables — 2026-10-07 04:56 UTC
 
 `ExecuteExplorerTurn` devuelve también `Failure`, la excepción original del
