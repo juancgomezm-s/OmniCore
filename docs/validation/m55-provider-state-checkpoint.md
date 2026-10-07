@@ -1,5 +1,33 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Replay explícito None — 2026-10-07 02:13 UTC
+
+La declaración `ReasoningCapability` ya carga desde YAML y participa en el
+fingerprint efectivo. `None` retira la continuación de la solicitud saliente y
+las referencias opacas de ReasoningBlock, incluso en contenidos ToolResult
+anidados; no elimina los checkpoints ni modifica los contadores persistidos.
+Unknown conserva compatibilidad y no se interpreta como None. Un cambio de
+declaración al reanudar sigue rechazado por el fingerprint, antes de invocar.
+
+Pruebas offline: M5ReasoningReplayPolicyTests y ReasoningReplayResumeTests,
+con tool real read-only y reapertura SQLite/CAS. El proveedor es scripted;
+no acreditan llamadas autenticadas. RED adicional `reasoning-opaque-none-red.log`:
+2 casos, 1 FAIL por referencia opaca reenviada. Focal final ampliado:
+68 PASS / 0 FAIL / 0 SKIP, 5.898s, build 0 warnings/errores,
+`reasoning-none-expanded-final.log` en
+`C:\Users\juanc\.codex\omni-m55-workers-20261006-2103`.
+Reproducir con el comando de abajo añadiendo los dos nuevos filtros `-class` y
+`-class '*InternalActCommandTests'`. Los resultados se solapan; no sumar.
+
+Auditoría adicional: `LoadConversation` reconstruye tool calls/resultados y
+texto, no ReasoningBlock al reabrir. El ensayo que exigía conservar ese bloque
+produjo 2 FAIL (`reasoning-none-expanded.log`); es una carencia pendiente,
+no evidencia de un round-trip implementado. El fixture final verifica el
+ProviderState durable y el rechazo de replay None, sin acreditar conservación
+de ReasoningBlock en resume. También siguen pendientes almacenamiento opaco
+seguro, semántica/enforcement de las otras políticas y esfuerzo por adapter.
+No hay nueva suite completa verde ni cierre de M5.5 por este bloque.
+
 2026-10-06 06:27 UTC / 00:27 America/Mexico_City.
 
 Implementación de Host sobre los contratos existentes de ADR-0005/0046; no añade
@@ -54,5 +82,6 @@ la llamada ya consumió tokens, y el fallo del checkpoint no puede borrar esa ev
 No se ejecutan sus herramientas ni se publica un cuestionario después del fallo.
 No se ha añadido un bypass de redacción ni almacenamiento de credenciales en artifacts.
 Hace falta resolver un storage opaco seguro que conserve esos bytes antes de declarar
-el replay completo para todos los providers. ReasoningCapability y la aplicación de
-ReasoningReplayPolicy también siguen pendientes. Este bloque no cierra M5.5.
+el replay completo para todos los providers. ReasoningCapability y el bloqueo
+None se incorporaron posteriormente como se documenta arriba; el resto de
+ReasoningReplayPolicy sigue pendiente. Este bloque no cierra M5.5.

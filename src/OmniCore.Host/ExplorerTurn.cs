@@ -688,11 +688,18 @@ public sealed class ExplorerTurn
 
                 var request = new ModelRequest(
                     _selection,
-                    preparedContext.Messages,
+                    _selection.Route?.ReasoningCapability.ReplayPolicy == ReasoningReplayPolicy.None
+                        ? preparedContext.Messages.Select(message => new ModelMessage(message.Role,
+                            WithoutOpaqueReplay(message.Content))).ToArray()
+                        : preparedContext.Messages,
                     RenderContext(materialized),
                     VisibleTools(),
                     ToolChoice.Auto(),
-                    null, null, new CacheHints(4, "automatic"), continuation);
+                    null, null, new CacheHints(4, "automatic"),
+                    // None is an explicit outbound replay prohibition. Keep the checkpoint
+                    // and its integrity/usage evidence, but never resend it (including resume).
+                    _selection.Route?.ReasoningCapability.ReplayPolicy == ReasoningReplayPolicy.None
+                        ? null : continuation);
 
                 ModelResponse resolved;
                 string? stepReservation = null;
@@ -2011,6 +2018,16 @@ public sealed class ExplorerTurn
             return ValueTask.CompletedTask;
         }
     }
+
+    // Apply only at the outbound boundary: persisted response/checkpoint evidence stays intact.
+    private static IReadOnlyList<ContentBlock> WithoutOpaqueReplay(IReadOnlyList<ContentBlock> blocks)
+        => blocks.Select<ContentBlock, ContentBlock>(block => block switch
+        {
+            ReasoningBlock reasoning => reasoning with { OpaquePayload = null },
+            ToolResultBlock result => result with { Content = WithoutOpaqueReplay(result.Content) },
+            ProviderOpaqueBlock => new TextBlock("[estado opaco del provider omitido]"),
+            _ => block,
+        }).ToArray();
 
     private ModelMessage RedactMessage(ModelMessage message)
     {
