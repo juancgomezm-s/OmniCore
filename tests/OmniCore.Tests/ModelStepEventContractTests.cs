@@ -7,7 +7,7 @@ using OmniCore.Infrastructure;
 
 namespace OmniCore.Tests;
 
-/// <summary>Contracts of started v4 and completed v2, including legacy journals, without a provider.</summary>
+/// <summary>Contracts of started v4 and completed v3, including legacy journals, without a provider.</summary>
 public sealed class ModelStepEventContractTests
 {
     [Theory]
@@ -31,7 +31,7 @@ public sealed class ModelStepEventContractTests
         Assert.Equal("model_step.completed", completed.Type().Value());
         foreach (var payload in new DomainEventPayload[] { started, completed })
         {
-            var expectedVersion = payload is ModelStepStarted ? 4 : 2;
+            var expectedVersion = payload is ModelStepStarted ? 4 : 3;
             Assert.Equal(expectedVersion, payload.SchemaVersion());
             Assert.Equal(expectedVersion, codecs.CurrentVersion(payload.Type()));
             var restored = codecs.Decode(Envelope(payload, codecs));

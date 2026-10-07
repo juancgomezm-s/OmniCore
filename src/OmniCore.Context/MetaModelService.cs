@@ -72,6 +72,9 @@ public sealed class MetaModelService
             Array.Empty<ToolDefinition>(), ToolChoice.None(), null, _selection.Reasoning, null, null);
         TokenUsage? usage = null;
         var fields = TokenUsageFields.None;
+        var maximumGenerationAttempts = (_provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts;
+        GenerationRequestAttemptEvidence AttemptEvidence() => new(generationAttempts.ObservedSends,
+            maximumGenerationAttempts);
         decimal? Cost() => usage is not null && fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
             && !TokenUsageValidation.IsInvalid(usage, fields)
             ? _costEstimator?.Invoke(usage) : null;
@@ -106,7 +109,7 @@ public sealed class MetaModelService
             if (result.Length > maxCharacters) result = result[..maxCharacters].TrimEnd() + "…";
             await PublishArtifactAsync(result, ArtifactKind.ModelResponse,
                 output => new MetaModelInvocationCompleted(invocationId, runId, operation,
-                    modelFingerprint, output, usage, Cost(), fields), cancellationToken).ConfigureAwait(false);
+                    modelFingerprint, output, usage, Cost(), fields, AttemptEvidence()), cancellationToken).ConfigureAwait(false);
             _afterReceipt?.Invoke(invocationId, Cost(), generationAttempts.ObservedSends);
             return result;
         }
@@ -123,7 +126,8 @@ public sealed class MetaModelService
                 else
                 {
                     await _events.AppendAsync(new MetaModelInvocationFailed(invocationId, runId, operation,
-                        modelFingerprint, ex.GetType().Name, usage, Cost(), fields), CancellationToken.None).ConfigureAwait(false);
+                        modelFingerprint, ex.GetType().Name, usage, Cost(), fields, AttemptEvidence()),
+                        CancellationToken.None).ConfigureAwait(false);
                     _afterReceipt?.Invoke(invocationId, Cost(), generationAttempts.ObservedSends);
                 }
             }

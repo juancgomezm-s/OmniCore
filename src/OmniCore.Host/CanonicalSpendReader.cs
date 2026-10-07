@@ -55,6 +55,15 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
                     _ => default,
                 };
                 if (payload is not (MetaModelInvocationCompleted or MetaModelInvocationFailed)) continue;
+                var attempts = payload switch
+                {
+                    MetaModelInvocationCompleted c => c.GenerationAttempts,
+                    MetaModelInvocationFailed f => f.GenerationAttempts,
+                    _ => null,
+                };
+                // Retain the final response cost; it is not proof of all retry consumption.
+                // Legacy receipts retain their established monetary interpretation.
+                if (attempts is { HasCompleteUsageCoverage: false }) incomplete = true;
                 if (string.IsNullOrWhiteSpace(identity.InvocationId)) { incomplete = true; continue; }
                 var key = (evt.SessionId, identity.InvocationId);
                 if (notDispatched.Contains(key)) incomplete = true;
@@ -176,6 +185,7 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
                 continue;
             }
             var key = (evt.SessionId.ToString(), completed.TurnId.ToString(), completed.StepIndex);
+            if (completed.GenerationAttempts is { HasCompleteUsageCoverage: false }) incomplete = true;
             UsageEnvelope stepEnvelope;
             bool artifactValid;
             try

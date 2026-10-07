@@ -13,15 +13,19 @@ public static partial class SessionUsageReporter
         IArtifactStore artifacts, SessionId session)
     {
         var events = store.ReadFrom(session, 1).ToArray();
-        var steps = new Dictionary<string, (TokenUsage? Usage, decimal? Cost, TokenUsageFields Fields)>();
+        var steps = new Dictionary<string, (TokenUsage? Usage, decimal? Cost, TokenUsageFields Fields,
+            GenerationRequestAttemptEvidence? Attempts)>();
         var stepTurns = new HashSet<TurnId>();
         var legacy = new Dictionary<TurnId, ModelCompleted>();
+        var uncertainAttempts = new HashSet<string>(StringComparer.Ordinal);
         var conflict = false;
-        void Start(string key) { steps.TryAdd(key, (null, null, TokenUsageFields.None)); }
-        void Complete(string key, TokenUsage? usage, decimal? cost, TokenUsageFields fields = TokenUsageFields.Input | TokenUsageFields.Output)
+        void Start(string key) { steps.TryAdd(key, (null, null, TokenUsageFields.None, null)); }
+        void Complete(string key, TokenUsage? usage, decimal? cost, TokenUsageFields fields = TokenUsageFields.Input | TokenUsageFields.Output,
+            GenerationRequestAttemptEvidence? attempts = null)
         {
-            if (steps.TryGetValue(key, out var prior) && prior.Usage is not null && prior != (usage, cost, fields)) conflict = true;
-            else steps[key] = (usage, cost, fields);
+            if (attempts is { HasCompleteUsageCoverage: false }) uncertainAttempts.Add(key);
+            if (steps.TryGetValue(key, out var prior) && prior.Usage is not null && prior != (usage, cost, fields, attempts)) conflict = true;
+            else steps[key] = (usage, cost, fields, attempts);
         }
         foreach (var e in events)
         {
@@ -31,10 +35,10 @@ public static partial class SessionUsageReporter
                     stepTurns.Add(s.TurnId); Start("step:" + s.TurnId + ":" + s.StepIndex); break;
                 case ModelStepCompleted s:
                     stepTurns.Add(s.TurnId); Complete("step:" + s.TurnId + ":" + s.StepIndex, s.Usage, s.CostUsd,
-                        s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output)); break;
+                        s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output), s.GenerationAttempts); break;
                 case MetaModelInvocationStarted s: Start("meta:" + s.InvocationId); break;
-                case MetaModelInvocationCompleted s: Complete("meta:" + s.InvocationId, s.Usage, s.CostUsd, s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output)); break;
-                case MetaModelInvocationFailed s: Complete("meta:" + s.InvocationId, s.Usage, s.CostUsd, s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output)); break;
+                case MetaModelInvocationCompleted s: Complete("meta:" + s.InvocationId, s.Usage, s.CostUsd, s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output), s.GenerationAttempts); break;
+                case MetaModelInvocationFailed s: Complete("meta:" + s.InvocationId, s.Usage, s.CostUsd, s.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output), s.GenerationAttempts); break;
                 case ModelCompleted s: legacy.TryAdd(s.TurnId, s); break;
             }
         }
@@ -65,7 +69,9 @@ public static partial class SessionUsageReporter
             && !TokenUsageValidation.IsInvalid(s.Usage, s.Fields)).ToArray();
         var tokens = new TokenTotals(measured.Sum(s => s.Usage!.Input), measured.Sum(s => s.Usage!.Output),
             measured.Sum(s => s.Usage!.CacheRead), measured.Sum(s => s.Usage!.CacheWrite));
-        var incomplete = steps.Count - measured.Count(s => s.Fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output));
+        var incomplete = steps.Count(pair => uncertainAttempts.Contains(pair.Key) || pair.Value.Usage is null
+            || TokenUsageValidation.IsInvalid(pair.Value.Usage, pair.Value.Fields)
+            || !pair.Value.Fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output));
         var allTokens = incomplete == 0 && !conflict;
         var allCost = allTokens && measured.All(s => s.Cost is >= 0);
         var date = events.LastOrDefault()?.Timestamp ?? DateTimeOffset.UtcNow;

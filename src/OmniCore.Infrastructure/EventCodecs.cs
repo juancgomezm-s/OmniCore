@@ -137,8 +137,11 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 3))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_failed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_failed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1))
@@ -390,6 +393,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(EscalationCause))]
 [JsonSerializable(typeof(ModelCompleted))]
 [JsonSerializable(typeof(ModelStepStarted))]
+[JsonSerializable(typeof(GenerationRequestAttemptEvidence))]
 [JsonSerializable(typeof(ModelStepNotDispatched))]
 [JsonSerializable(typeof(ModelStepCompleted))]
 [JsonSerializable(typeof(TurnCompleted))]
@@ -633,7 +637,7 @@ public sealed class Typed
         Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 4);
 
     public static CodecPair ModelStepCompleted() =>
-        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 2);
+        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 3);
 
     public static CodecPair ModelStepNotDispatched() =>
         Of(EventType.Of("model_step.not_dispatched"), EventJsonContext.Default.ModelStepNotDispatched);
@@ -747,10 +751,10 @@ public sealed class Typed
         Of(EventType.Of("meta_model.invocation_started"), EventJsonContext.Default.MetaModelInvocationStarted);
 
     public static CodecPair MetaModelInvocationCompleted() =>
-        Of(EventType.Of("meta_model.invocation_completed"), EventJsonContext.Default.MetaModelInvocationCompleted, currentVersion: 2);
+        Of(EventType.Of("meta_model.invocation_completed"), EventJsonContext.Default.MetaModelInvocationCompleted, currentVersion: 3);
 
     public static CodecPair MetaModelInvocationFailed() =>
-        Of(EventType.Of("meta_model.invocation_failed"), EventJsonContext.Default.MetaModelInvocationFailed, currentVersion: 2);
+        Of(EventType.Of("meta_model.invocation_failed"), EventJsonContext.Default.MetaModelInvocationFailed, currentVersion: 3);
 
     public static CodecPair MetaModelInvocationNotDispatched() =>
         Of(EventType.Of("meta_model.invocation_not_dispatched"), EventJsonContext.Default.MetaModelInvocationNotDispatched);

@@ -45,7 +45,7 @@ internal static class RunTokenBudgetReader
                     break;
                 case ModelStepCompleted step:
                     if (!pendingSteps.Remove((step.TurnId, step.StepIndex))) limitation = "unmatched model completion";
-                    AddUsage(step.Usage, step.ReportedUsageFields ?? TokenUsageFields.All);
+                    AddUsage(step.Usage, step.ReportedUsageFields ?? TokenUsageFields.All, step.GenerationAttempts);
                     break;
                 case ModelStepNotDispatched step:
                     if (!pendingSteps.Remove((step.TurnId, step.StepIndex))) limitation = "unmatched no-dispatch marker";
@@ -55,11 +55,11 @@ internal static class RunTokenBudgetReader
                     break;
                 case MetaModelInvocationCompleted meta:
                     if (!pendingMeta.Remove(meta.InvocationId)) limitation = "unmatched context-service completion";
-                    AddUsage(meta.Usage, meta.ReportedUsageFields ?? TokenUsageFields.All);
+                    AddUsage(meta.Usage, meta.ReportedUsageFields ?? TokenUsageFields.All, meta.GenerationAttempts);
                     break;
                 case MetaModelInvocationFailed meta:
                     if (!pendingMeta.Remove(meta.InvocationId)) limitation = "unmatched context-service failure";
-                    AddUsage(meta.Usage, meta.ReportedUsageFields ?? TokenUsageFields.All);
+                    AddUsage(meta.Usage, meta.ReportedUsageFields ?? TokenUsageFields.All, meta.GenerationAttempts);
                     break;
                 case MetaModelInvocationNotDispatched meta:
                     if (!pendingMeta.Remove(meta.InvocationId)) limitation = "unmatched context-service no-dispatch marker";
@@ -72,8 +72,13 @@ internal static class RunTokenBudgetReader
             ? new(limit, limit.Value - total, null)
             : new(limit, null, limitation);
 
-        void AddUsage(TokenUsage? usage, TokenUsageFields fields)
+        void AddUsage(TokenUsage? usage, TokenUsageFields fields, GenerationRequestAttemptEvidence? attempts)
         {
+            if (attempts is not { HasCompleteUsageCoverage: true })
+            {
+                limitation = "generation attempt usage coverage unknown";
+                return;
+            }
             if (usage is null || !fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
                 || TokenUsageValidation.IsInvalid(usage, fields))
             {

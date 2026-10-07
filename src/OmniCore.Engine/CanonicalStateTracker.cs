@@ -308,6 +308,15 @@ public sealed class CanonicalStateTracker
                     throw new InvalidStateTransitionException("model step reasoning", "durable resolution is missing",
                         payload.Type().ToString());
                 break;
+            case ModelStepCompleted stepCompleted:
+                ValidateGenerationAttempts(stepCompleted.GenerationAttempts, payload);
+                break;
+            case MetaModelInvocationCompleted metaCompleted:
+                ValidateGenerationAttempts(metaCompleted.GenerationAttempts, payload);
+                break;
+            case MetaModelInvocationFailed metaFailed:
+                ValidateGenerationAttempts(metaFailed.GenerationAttempts, payload);
+                break;
             case ModelCompleted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
             case TurnCompleted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
             case TurnInterrupted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
@@ -399,6 +408,14 @@ public sealed class CanonicalStateTracker
         try { resolution.Validate(); }
         catch (ArgumentException)
         { throw new InvalidStateTransitionException("reasoning resolution", "invalid or inconsistent provenance", payload.Type().ToString()); }
+    }
+
+    private static void ValidateGenerationAttempts(GenerationRequestAttemptEvidence? evidence,
+        DomainEventPayload payload)
+    {
+        if (evidence is not null && !evidence.IsValid)
+            throw new InvalidStateTransitionException("generation attempt evidence", "invalid observed count or bound",
+                payload.Type().ToString());
     }
 
     private void ToolCallTransition(ToolCallId id, DomainEventPayload payload) =>

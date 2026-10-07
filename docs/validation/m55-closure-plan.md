@@ -1,5 +1,20 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Checkpoint de evidencia de intentos — 2026-10-07 10:09 UTC
+
+Build 0 errores/advertencias. Suite completa `retry-evidence-full-1007.log`:
+**2780 casos, 2776 PASS, 0 FAIL, 4 SKIP**, 118.617 s. Focal relacionada 114 PASS,
+1.472 s; conteos solapados no sumables. La ejecución anterior encontró siete
+fixtures single-call sin cota declarada; se corrigió su configuración sin
+debilitar assertions. Los terminales primary/meta v3 ahora conservan contador
+y cota de intentos, y los lectores mantienen incertidumbre tras retries/reopen.
+Contrato y reproducción en `m55-generation-attempt-evidence.md`.
+
+Este checkpoint resuelve la brecha de persistencia descrita abajo, no el cierre
+íntegro. No demuestra consumo autenticado ni integración real OmniCoder.
+Continúan los demás criterios completos de ADR0007/0046/0047; la distribución
+de ownership entre agentes no divide ni reduce los objetivos M5 y M5.5.
+
 ## Checkpoint de inicio durable y presupuesto — 2026-10-07 09:48 UTC
 
 Build sin errores ni advertencias. Suite completa `boost-budget-full-0943.log`:

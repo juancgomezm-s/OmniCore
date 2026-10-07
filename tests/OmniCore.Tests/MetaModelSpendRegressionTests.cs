@@ -545,7 +545,7 @@ public sealed class MetaModelSpendRegressionTests
                 pricing: Pricing, metaModelProvider: metaProvider, recordEffectiveFingerprint: true,
                 quotaAllowsMeta: quotaAllowsMeta, spendReservations: reservations,
                 modelContextCapacity: reservations is null ? null : 400_000,
-                maximumGenerationRequestAttempts: reservations is null ? null : 1);
+                maximumGenerationRequestAttempts: 1); // this scripted primary delegate never retries
         }
 
         public SqliteSpendReservationStore Reservations() => new(Path.Combine(_root, "reservations.db"));
@@ -558,9 +558,10 @@ public sealed class MetaModelSpendRegressionTests
         }
     }
 
-    private sealed class ScriptedMetaProvider(string summary, TokenUsage usage) : IModelProvider
+    private sealed class ScriptedMetaProvider(string summary, TokenUsage usage) : IModelProvider, IModelRequestAttemptBound
     {
         public ProviderCapabilities Capabilities { get; } = ProviderCapabilities.Local();
+        public long? MaximumGenerationRequestAttempts => 1; // one scripted response, no transport retry
         public int Calls { get; private set; }
 
         public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,

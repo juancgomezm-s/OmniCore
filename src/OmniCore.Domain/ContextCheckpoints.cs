@@ -39,18 +39,18 @@ public record MetaModelInvocationStarted(string InvocationId, RunId RunId, strin
 /// <summary>Resultado auditable del MetaModelService; el texto vive en un artifact inmutable.</summary>
 public record MetaModelInvocationCompleted(string InvocationId, RunId RunId, string Operation,
     string ModelFingerprint, ArtifactRef OutputArtifact, TokenUsage? Usage = null, decimal? CostUsd = null,
-    TokenUsageFields? ReportedUsageFields = null) : DomainEventPayload
+    TokenUsageFields? ReportedUsageFields = null, GenerationRequestAttemptEvidence? GenerationAttempts = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("meta_model.invocation_completed");
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
 }
 
 public record MetaModelInvocationFailed(string InvocationId, RunId RunId, string Operation,
     string ModelFingerprint, string ErrorCode, TokenUsage? Usage = null, decimal? CostUsd = null,
-    TokenUsageFields? ReportedUsageFields = null) : DomainEventPayload
+    TokenUsageFields? ReportedUsageFields = null, GenerationRequestAttemptEvidence? GenerationAttempts = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("meta_model.invocation_failed");
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
 }
 
 /// <summary>Known failure before entering the provider; carries no usage or monetary receipt.</summary>
