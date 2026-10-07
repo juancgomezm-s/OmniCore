@@ -109,6 +109,55 @@ public sealed class ModelQualificationCliTests
     }
 
     [Fact]
+    public async Task Qualify_without_provider_credential_fails_before_any_probe_and_persists_nothing()
+    {
+        var dir = TempDir();
+        await using var provider = new ScriptedHttpProvider();
+        provider.RespondWith((_, body) => QuickFixtureResponse(body));
+        var paths = OmniHost.CreatePlatformPaths(dir);
+        Directory.CreateDirectory(paths.ConfigDirectory);
+        File.WriteAllText(Path.Combine(paths.ConfigDirectory, "providers.yaml"), $$"""
+            providers:
+              local:
+                family: OpenAiChatCompatible
+                baseUrl: {{provider.BaseUrl}}
+                authRef: local-key
+                billingMode: Local
+            """);
+        File.WriteAllText(Path.Combine(paths.ConfigDirectory, "models.yaml"), """
+            models:
+              qwen-test:
+                provider: local
+                context: 8192
+                recommendedUsableContext: 8192
+                maxOutput: 2048
+            """);
+
+        var priorKey = Environment.GetEnvironmentVariable("OMNI_QWEN_KEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNI_QWEN_KEY", null);
+            var output = new StringWriter();
+
+            var code = await OmniCore.Cli.ModelPolicyCommands.Run(new[] { "model", "qualify", "qwen-test", "--yes" },
+                new StringReader(""), output, false, dir, cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, code);
+            var text = output.ToString();
+            Assert.Contains("falta la credencial del provider", text);
+            Assert.Contains("OMNI_QWEN_KEY", text);
+            Assert.DoesNotContain("must contain at least", text);
+            Assert.Equal(0, provider.RequestCount);
+            using var store = OmniHost.CreateModelQualificationStore(dir);
+            Assert.Null(store.Get(QualificationKey(dir), CancellationToken.None));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OMNI_QWEN_KEY", priorKey);
+        }
+    }
+
+    [Fact]
     public async Task Qualify_runs_the_quick_suite_over_the_runtime_provider_and_persists()
     {
         var dir = TempDir();
