@@ -7,6 +7,26 @@ using OmniCore.Domain;
 /// a finite physical generation-send bound. A token estimate is not an input ceiling.</summary>
 internal static class ModelInvocationCostBound
 {
+    /// <summary>
+    /// Conservative input + output exposure across the declared physical send attempts.
+    /// ContextBudget is an estimated materialization policy, not a native input ceiling.
+    /// Null means no representable declared bound; it never means zero consumption.
+    /// </summary>
+    public static long? TokenCeiling(ModelSelection selection, long? modelContextCapacity,
+        long? maximumGenerationRequestAttempts)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        if (modelContextCapacity is not > 0 || selection.MaxOutputTokens is not > 0
+            || maximumGenerationRequestAttempts is not > 0)
+            return null;
+        try
+        {
+            return checked((modelContextCapacity.Value + selection.MaxOutputTokens.Value)
+                * maximumGenerationRequestAttempts.Value);
+        }
+        catch (OverflowException) { return null; }
+    }
+
     public static decimal? Quote(ModelSelection selection, ModelPricing? pricing,
         long? modelContextCapacity, long? maximumGenerationRequestAttempts)
     {

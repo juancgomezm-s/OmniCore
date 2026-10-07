@@ -50,6 +50,14 @@ public sealed class AgentProfileSuspensionIntegrationTests
             var catalog = new FakeCatalog().Add(new UserAskTool());
             var service = new QuestionnaireInteractionService(store, codecs, artifacts);
             var calls = 0;
+            var durableStarts = 0;
+            void OnStarted(TurnStarted started)
+            {
+                durableStarts++;
+                Assert.Contains(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>(),
+                    persisted => persisted.TurnId == started.TurnId);
+                Assert.Equal(0, calls);
+            }
             var requested = new ReasoningRequest("high", null);
             var resolution = new ReasoningResolution(requested, requested, ReasoningSelectionSource.UserDefault,
                 userPreferenceRevision: 1);
@@ -89,7 +97,8 @@ public sealed class AgentProfileSuspensionIntegrationTests
             }
 
             var suspended = Turn(profile, true, resolution).Ask("ask the user", instruction, session, run, lane, "",
-                TestContext.Current.CancellationToken, instructionSnapshot: new TurnInstructionSnapshot(true, instruction));
+                TestContext.Current.CancellationToken, instructionSnapshot: new TurnInstructionSnapshot(true, instruction),
+                turnStarted: OnStarted);
             Assert.Equal(StopReason.InputRequired, suspended.StopReason);
             Assert.NotNull(suspended.PendingInteractionId);
             var original = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>());
@@ -97,6 +106,7 @@ public sealed class AgentProfileSuspensionIntegrationTests
             Assert.Equal("2", Assert.Single(original.Fingerprint!.Components,
                 component => component.Name == "agent.profile").Version);
             Assert.Equal(1, calls);
+            Assert.Equal(1, durableStarts);
             Assert.Equal(new TurnInstructionSnapshot(true, safeInstruction), original.InstructionSnapshot);
             Assert.DoesNotContain(fixtureSecret, Assert.Single(store.ReadFrom(session, 1),
                 evt => codecs.Decode(evt) is TurnStarted).PayloadJson, StringComparison.Ordinal);
@@ -141,7 +151,7 @@ public sealed class AgentProfileSuspensionIntegrationTests
                 _ => resolution,
             };
             var result = Turn(applied, false, changedReasoning).Ask("", "changed current instruction", session, run, lane, "",
-                TestContext.Current.CancellationToken);
+                TestContext.Current.CancellationToken, turnStarted: OnStarted);
             if (change is not ("same" or "redacted"))
             {
                 Assert.Equal(StopReason.Error, result.StopReason);
@@ -152,10 +162,11 @@ public sealed class AgentProfileSuspensionIntegrationTests
                 Assert.Empty(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnCompleted>());
                 // Restoring the exact reusable configuration can finish the original Turn.
                 result = Turn(profile, false, resolution).Ask("", "changed current instruction", session, run, lane, "",
-                    TestContext.Current.CancellationToken);
+                    TestContext.Current.CancellationToken, turnStarted: OnStarted);
             }
             Assert.Equal(StopReason.EndTurn, result.StopReason);
             Assert.Equal(2, calls);
+            Assert.Equal(1, durableStarts);
             var restored = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>());
             Assert.Equal(original.TurnId, restored.TurnId);
             Assert.Equal(original.Fingerprint.Hash(), restored.Fingerprint!.Hash());

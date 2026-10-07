@@ -21,6 +21,8 @@ public sealed class TuiTurnHost : ITuiTurnHost
     private readonly object _boostGate = new();
     private sealed record PendingTurnBoost(Guid Id, ReasoningRequest Request);
     private PendingTurnBoost? _nextTurnReasoningBoost;
+    private Guid? _reservedBoostId;
+    private TaskCompletionSource<bool>? _boostDecision;
     public TuiTurnHost(OmniCliRuntime runtime)
     {
         _runtime = runtime;
@@ -28,18 +30,26 @@ public sealed class TuiTurnHost : ITuiTurnHost
         _runtime.HasInteractionClient = true;
         _runtime.QuestionnaireInput = null;
     }
-    public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
+    public async Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
     {
-        var boost = PeekBoost();
-        return _runtime.ConversationAsync(input, diagnostics, cancellationToken, boost?.Request, boost?.Id,
-            boost is null ? null : CompleteBoost);
+        var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _runtime.ConversationAsync(input, diagnostics, cancellationToken, boost?.Request, boost?.Id,
+                boost is null ? null : CompleteBoost).ConfigureAwait(false);
+        }
+        finally { ReleaseBoostReservation(boost); }
     }
 
-    public Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
+    public async Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
     {
-        var boost = PeekBoost();
-        return _runtime.ActAsync(input, diagnostics, cancellationToken, boost?.Request, boost?.Id,
-            boost is null ? null : CompleteBoost);
+        var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _runtime.ActAsync(input, diagnostics, cancellationToken, boost?.Request, boost?.Id,
+                boost is null ? null : CompleteBoost).ConfigureAwait(false);
+        }
+        finally { ReleaseBoostReservation(boost); }
     }
     public Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         _runtime.ResumeEscalationAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
@@ -62,14 +72,56 @@ public sealed class TuiTurnHost : ITuiTurnHost
         }
     }
 
-    private PendingTurnBoost? PeekBoost()
+    private async Task<PendingTurnBoost?> ReserveBoostAsync(CancellationToken cancellationToken)
     {
-        lock (_boostGate) return _nextTurnReasoningBoost;
+        while (true)
+        {
+            System.Threading.Tasks.Task? waitForDecision = null;
+            lock (_boostGate)
+            {
+                if (_nextTurnReasoningBoost is null) return null;
+                if (_reservedBoostId is null)
+                {
+                    _reservedBoostId = _nextTurnReasoningBoost.Id;
+                    _boostDecision = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    return _nextTurnReasoningBoost;
+                }
+
+                waitForDecision = _boostDecision?.Task
+                    ?? throw new InvalidOperationException("A reserved reasoning boost has no completion signal.");
+            }
+
+            await waitForDecision.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private void CompleteBoost(Guid id)
     {
+        TaskCompletionSource<bool>? decision = null;
         lock (_boostGate)
-            if (_nextTurnReasoningBoost?.Id == id) _nextTurnReasoningBoost = null;
+        {
+            if (_nextTurnReasoningBoost?.Id != id || _reservedBoostId != id) return;
+            _nextTurnReasoningBoost = null;
+            _reservedBoostId = null;
+            decision = _boostDecision;
+            _boostDecision = null;
+        }
+
+        decision?.TrySetResult(true);
+    }
+
+    private void ReleaseBoostReservation(PendingTurnBoost? boost)
+    {
+        if (boost is null) return;
+        TaskCompletionSource<bool>? decision = null;
+        lock (_boostGate)
+        {
+            if (_reservedBoostId != boost.Id) return;
+            _reservedBoostId = null;
+            decision = _boostDecision;
+            _boostDecision = null;
+        }
+
+        decision?.TrySetResult(true);
     }
 }

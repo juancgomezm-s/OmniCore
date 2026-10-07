@@ -1,5 +1,36 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Checkpoint de inicio durable y presupuesto — 2026-10-07 09:48 UTC
+
+Build sin errores ni advertencias. Suite completa `boost-budget-full-0943.log`:
+**2743 casos, 2739 PASS, 0 FAIL, 4 SKIP** por permisos de symlink, 238.950 s.
+La focal de lifecycle/presupuestos pasó 97/97; otra de regresión M2 pasó 56/56.
+Los conteos se solapan y no se suman. Logs en el mismo directorio indicado abajo.
+
+El refuerzo TUI se reserva de forma exclusiva y se consume al publicar un nuevo
+`TurnStarted` durable, antes del proveedor; un rechazo anterior libera la reserva,
+resume no consume otro refuerzo y un turno posterior vuelve a su configuración.
+Los controles verifican concurrencia con HTTP privado y ambos journals de sesión,
+duración a través del loop y conservación tras reapertura SQLite.
+
+La admisión de tokens reconstruye input+output del Run, incluyendo llamadas de
+compactación, sin sumar otra vez cache/razonamiento ni contar duplicados EventId.
+Uso ausente, inválido, overflow o invocación sin resolver no se vuelve cero.
+La cota de la siguiente invocación usa capacidad declarada, salida e intentos
+físicos; `ContextBudget` estimado no demuestra una capacidad nativa.
+
+**Limitación abierta detectada en esta auditoría:** los terminales actuales no
+persisten el número de envíos HTTP. El uso de una respuesta final tras retries no
+demuestra consumo completo de la invocación. Falta evidencia durable aditiva de
+intentos en primary/meta y lectura incierta tras replay; el ledger monetario ya
+mantiene su reserva incierta. Este checkpoint no acredita todavía ese criterio.
+
+Todo lo anterior usa fixtures offline, SQLite/CAS y HTTP controlado; no demuestra
+consumo autenticado, cualificación real ni integración real con OmniCoder. Los
+objetivos completos ADR0007/0046/0047 siguen abiertos: retries, resolución de
+límites, transición UltraCodePolicy autorizada, contratos pre-M6 aceptados y
+cualificación real. Un checkpoint verde no sustituye el cierre íntegro.
+
 ## Checkpoint verificado — 2026-10-07 09:04 UTC
 
 La suite completa `snapshot-full-0859.log` terminó con exit 0: **2704 casos,

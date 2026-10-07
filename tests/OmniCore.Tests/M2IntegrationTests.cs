@@ -207,7 +207,8 @@ public sealed class M2IntegrationTests
             ScriptedPermissionPolicy.WithTool("plan.propose", PermissionDecision.Allow)
                 .WithModeDefaults(RunMode.Act));
         var fingerprint = new ExecutionFingerprint("m", "h", "t", "c", "o", "M2");
-        var selection = new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null);
+        var selection = new ModelSelection(new ModelIdValue("m"), 8192, ToolMode.Direct, null,
+            maxOutputTokens: 1024);
         var materializer = new ContextMaterializer(new FakeTokenCounter(), new IContextContributor[0]);
         var sessionId = SessionId.New();
         var runId = RunId.New();
@@ -215,12 +216,13 @@ public sealed class M2IntegrationTests
             (request, token) => FakeResponses.PlanThenEnd(request),
             executor, hostTools.Catalog(), materializer, fingerprint, selection,
             store, codecs, new FileArtifactStore(Path.Combine(TestCwd, ".omnicore-plan-artifacts")),
-            new InMemoryAuditSink(), new RedactionPolicy());
+            new InMemoryAuditSink(), new RedactionPolicy(),
+            modelContextCapacity: 8192, maximumGenerationRequestAttempts: 1);
         // El journal necesita un Run con Plan (P0 como item) para que plan.propose (start P1) aplique.
         var stream = new EventStream(store, codecs, sessionId);
         var rootItem = PlanItemId.New();
         stream.Append(new RunCreated(runId, sessionId, "objetivo", RunMode.Act, ExecutionStrategy.Direct,
-            FailurePolicy.BlockDependents, new TaskBudget(null, 1000L, 10, 20), CreatenRootTask(), DateTimeOffset.Now));
+            FailurePolicy.BlockDependents, new TaskBudget(null, 20000L, 10, 20), CreatenRootTask(), DateTimeOffset.Now));
         stream.Append(new RunStarted(runId));
         stream.Append(new PlanCreated(PlanId.New(), runId, rootItem, "objetivo"));
         var p1 = PlanItemId.New();
