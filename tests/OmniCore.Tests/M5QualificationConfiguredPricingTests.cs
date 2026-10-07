@@ -81,14 +81,16 @@ public sealed class M5QualificationConfiguredPricingTests
         Directory.Delete(directory, recursive: true);
     }
 
-    [Fact]
-    public async Task Host_uses_configured_provider_prices_and_preserves_only_reported_usage_fields()
+    [Theory]
+    [InlineData("Unknown")]
+    [InlineData("CreditBalance")]
+    public async Task Host_uses_configured_provider_prices_and_preserves_only_reported_usage_fields(string billingMode)
     {
         var directory = TempDir();
         try
         {
             WriteConfiguration(directory,
-                "      inputPricePerMillionUsd: 2\n      outputPricePerMillionUsd: 8");
+                "      inputPricePerMillionUsd: 2\n      outputPricePerMillionUsd: 8", billingMode);
             var probe = Probe();
             var provider = new FixtureProvider(probe.Expected);
             QualificationRunResult result;
@@ -112,6 +114,43 @@ public sealed class M5QualificationConfiguredPricingTests
             Assert.Equal(ModelQualificationState.ProvisionallyClassified, persisted!.State);
             Assert.Equal(1L, persisted.ProfileRevision);
             Assert.Single(store.List(CancellationToken.None));
+        }
+        finally
+        {
+            DeleteFixtureDirectory(directory);
+        }
+    }
+
+    [Theory]
+    [InlineData("CreditBalance", "")]
+    [InlineData("CreditBalance", "      inputPricePerMillionUsd: 2")]
+    [InlineData("MeteredCurrency", "")]
+    [InlineData("MeteredCurrency", "      inputPricePerMillionUsd: 2")]
+    [InlineData("Unknown", "")]
+    [InlineData("Unknown", "      inputPricePerMillionUsd: 2")]
+    public async Task Potentially_paid_route_without_complete_prices_rejects_before_send_or_profile(
+        string billingMode, string pricing)
+    {
+        var directory = TempDir();
+        try
+        {
+            WriteConfiguration(directory, pricing, billingMode);
+            var probe = Probe();
+            var provider = new FixtureProvider(probe.Expected);
+            using var host = ModelQualificationHost.Create(directory);
+            var exception = await Record.ExceptionAsync(() => host.QualifyAsync(ModelId,
+                new QualificationOptions
+                {
+                    Suite = "quick", ConsentGiven = true, MaxTotalCostUsd = 0m,
+                    Probes = [probe], Provider = provider,
+                }, CancellationToken.None));
+
+            Assert.Equal(0, provider.Calls);
+            Assert.IsType<ModelQualificationCostEvidenceUnavailableException>(exception);
+            using var store = OmniHost.CreateModelQualificationStore(directory);
+            Assert.Empty(store.List(CancellationToken.None));
+            Assert.Null(((IModelQualificationEvidenceStore)store).Evidence(
+                Identity(directory).Key, 1, CancellationToken.None));
         }
         finally
         {

@@ -300,9 +300,9 @@ public sealed partial class ModelQualificationHost : IDisposable
             estimatedCost = Math.Max(estimatedCost, configured);
             estimateSource = "max-declared-and-configured-descriptor-token-estimate";
         }
-        // Unknown is potentially paid, not a free route. Consent does not turn an
+        // CreditBalance and Unknown are potentially paid, not free routes. Consent does not turn an
         // unavailable estimate into evidence that the accepted monetary cap can be respected.
-        else if (provider?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown)
+        else if (provider?.BillingMode is BillingMode.MeteredCurrency or BillingMode.CreditBalance or BillingMode.Unknown)
         {
             throw new ModelQualificationCostEvidenceUnavailableException();
         }
