@@ -65,6 +65,14 @@ internal sealed class ConfiguredCompletionGates
         List<ExternalCompletionGateResult> results, CancellationToken cancellationToken)
     {
         if (argv is null) return;
+        var scope = ExecutionScope.Current;
+        if (scope?.RunId != _runId || scope.TaskId is null || scope.TaskId != _taskId
+            || scope.LaneId != _laneId || scope.TurnId is null)
+        {
+            results.Add(new ExternalCompletionGateResult(key, false,
+                "El gate necesita atribución durable de Run/Task/Lane/Turn antes de ejecutar."));
+            return;
+        }
         var executable = argv[0];
         var arguments = argv.Skip(1).ToArray();
         var callId = ToolCallId.New();

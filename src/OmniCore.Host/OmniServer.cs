@@ -1655,7 +1655,17 @@ public sealed class OmniServer : IOmniClient
         var sequenceBefore = _store.CurrentSequence(sessionId);
         using var internalCommand = ambientCommand is null
             ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, run.RootTask, rootLane));
+        // Gates validate the latest completed intent on the root Lane, not a synthetic Turn
+        // or an unrelated ambient/other-Lane attribution. An open latest Turn cannot borrow
+        // attribution from an older completed one.
+        var sourceTurnEvent = rootLane is null ? null : own.LastOrDefault(evt =>
+            _codecs.Decode(evt) is TurnStarted started && started.LaneId == rootLane);
+        var sourceTurn = sourceTurnEvent is null ? null : ((TurnStarted)_codecs.Decode(sourceTurnEvent)).TurnId;
+        if (sourceTurn is not null && !own.Any(evt =>
+                _codecs.Decode(evt) is TurnCompleted completed && completed.TurnId == sourceTurn))
+            sourceTurn = null;
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, run.RootTask, rootLane,
+            sourceTurn, ExecutionId: sourceTurn is null ? null : sourceTurnEvent?.ExecutionId));
         var stream = new EventStream(_store, _codecs, sessionId);
         var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
             new ProgressReconciler(), _store, _codecs, sessionId, stream,
