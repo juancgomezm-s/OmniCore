@@ -19,6 +19,10 @@ resolver una Task/Lane/Profile durable y coincidir con el envelope.
 Sequence sigue siendo local a Session. No se toma identidad de la selección UI.
 Una segunda AgentExecutionStarted idéntica es compatible; con la misma
 ExecutionId y otros metadatos se rechaza antes de append y durante replay.
+Al registrar Started, Lane/Profile/Task deben resolver y un ParentExecutionId
+no nulo debe identificar un inicio durable previo. Run/Correlation/Lane/Execution
+del envelope deben coincidir; TaskId presente también. TaskId nulo del v1 sigue
+siendo compatible, pues no existía en el payload de Started.
 
 ## Tipos y eventos schemaVersion 1
 
@@ -81,6 +85,11 @@ real privado verifica sus propios blobs; no acredita artifacts de un usuario.
 referencias desde el journal. Un lector puede aportar un callback readonly para
 resolver eventos de otras sesiones. Sin él, una referencia externa no disponible
 se rechaza, no se convierte en evidencia vacía. No crea un segundo journal.
+El callback debe devolver el journal completo y ordenado de esa sesión, no un
+evento aislado: se reproduce con CanonicalStateTracker antes de indexar receipts.
+Sesiones mezcladas e identidades de evento duplicadas se rechazan. El índice se
+congela por sesión durante cada Replay, sin volver a consultar por cada receipt.
+El journal local también se reproduce canónicamente antes de proyectar registros.
 
 EventStream valida la sesión más el candidato antes de Append/AppendBatch. Un
 candidato inválido no se persiste; la proyección temporal no sobrevive a un fallo.
@@ -111,8 +120,8 @@ dotnet build tests/OmniCore.ArchitectureTests --no-restore
 dotnet run --project tests/OmniCore.ArchitectureTests --no-build -- -noColor
 ```
 
-2026-10-07: focal final 16 PASS; FULL final 2887 casos/2883 PASS/0 FAIL/4 SKIP symlink,
-126.976 s; arquitectura 56 PASS tras build actualizado (0 advertencias/errores).
+2026-10-07 14:00 UTC: focal final 35 PASS; FULL final 2901 casos/2897 PASS/0 FAIL/4 SKIP symlink,
+126.417 s; arquitectura 56 PASS tras build actualizado (0 advertencias/errores).
 Primer focal 10 PASS/1 FAIL detectó EventType
 comparado por referencia en la deduplicación; corrección sin cambiar assertions.
 Auditoría Luna detectó además rebinding de ExecutionId y hashes inválidos; cinco
@@ -124,13 +133,26 @@ Logs iniciales `pre-m6-*-1337/1338/1340.log` y finales
 Son fixtures deterministas con SQLite/CAS reales privados, no workers reales,
 consultas autenticadas, consumo real ni aceptación integral M5/M5.5.
 
-## Auditoría pendiente antes del cierre
+## Segunda auditoría: enlaces y recibos
 
-La segunda revisión de Luna encontró que AgentExecutionStarted conserva un
-ParentExecutionId sin resolverlo y no valida sus enlaces/envelope al registrarlo:
-RequireExecution comprueba Lane/Profile/Task cuando los registros nuevos lo usan,
-pero no comprueba el padre. No se acredita integridad completa de lineage todavía.
-También falta demostrar que un callback de evidencia cross-session no puede
-presentar un ToolCallSucceeded aislado sin lifecycle canónico válido.
-Los tests verdes anteriores no cubren esos escenarios; deben reproducirse y
-corregirse antes de declarar el conjunto completamente congelado/cerrado.
+Luna aportó PreM6ExecutionIntegrityTests; root corrigió el fixture antes de
+reproducir el defecto (hash válido, EventId exacto del receipt, dos Started
+idénticos en journal y un único resultado proyectado). La reproducción produjo
+10 casos/1 PASS/9 FAIL con compilación correcta. La corrección valida enlaces de
+Started y lifecycle canónico local/externo antes de resolver el receipt. No cambia
+la interpretación de Relation/Supervision ni ejecuta agentes.
+
+Root añadió sesiones mezcladas, evento duplicado, fallo I/O de commit seguido de
+retry exacto y rechazo de schema0. Los fixtures antiguos se actualizaron para usar
+el Profile de la Lane y un padre Started real; conservan roundtrip, campos,
+cantidad de ejecuciones, estados de Task/Lane/Run y ausencia de terminales
+automáticos. TaskId legacy nulo permanece probado. Focal inicial tras fix:
+31 casos/28 PASS/3 FAIL por fixtures incoherentes y cleanup SQLite; después de
+corregirlos, 31 PASS y focal ampliado 35 PASS, sin quitar assertions.
+
+Logs adicionales: `pre-m6-lineage-red-1353.log`,
+`pre-m6-lineage-initial-fixed-1354.log`, `pre-m6-lineage-fixed-1356.log`,
+`pre-m6-lineage-final-focal-1357.log`, `pre-m6-lineage-full-1358.log` y
+`pre-m6-lineage-architecture-1400.log` en el mismo directorio de evidencia.
+La auditoría integral de M5/M5.5 sigue siendo necesaria; estos resultados no
+sustituyen cualificación Quick autenticada ni el cableado de autoridad UltraCode.

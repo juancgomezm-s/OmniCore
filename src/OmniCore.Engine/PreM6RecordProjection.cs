@@ -21,6 +21,7 @@ public sealed class PreM6RecordProjection
     private readonly Dictionary<LaneId, LaneCreated> _lanes = new();
     private readonly Dictionary<ExecutionId, AgentExecutionStarted> _executions = new();
     private readonly Dictionary<EventId, DomainEvent> _events = new();
+    private readonly Dictionary<SessionId, IReadOnlyDictionary<EventId, DomainEvent>> _externalJournals = new();
     private readonly Dictionary<ExecutionId, AgentResultProduced> _latestResults = new();
     private readonly IEventCodecRegistry _codecs;
     private readonly SessionId _session;
@@ -37,7 +38,9 @@ public sealed class PreM6RecordProjection
         IEnumerable<DomainEvent> events, Func<SessionId, IReadOnlyList<DomainEvent>>? externalEvents = null)
     {
         var projection = new PreM6RecordProjection(session, codecs, externalEvents);
-        foreach (var evt in events)
+        var journal = events.ToArray();
+        _ = CanonicalStateTracker.Replay(codecs, journal);
+        foreach (var evt in journal)
         {
             if (evt.SessionId != session) throw Invalid("Journal contains a foreign session.");
             projection.Apply(evt, codecs.Decode(evt));
@@ -49,12 +52,13 @@ public sealed class PreM6RecordProjection
 
     private void Apply(DomainEvent evt, DomainEventPayload payload)
     {
-        // Legacy execution facts remain readable. Their links are checked when a new record uses them.
+        // Identity facts are validated independently from scheduling and executor completion.
         switch (payload)
         {
             case TaskCreated task: _tasks[task.TaskId] = task; return;
             case LaneCreated lane: _lanes[lane.LaneId] = lane; return;
             case AgentExecutionStarted execution:
+                ValidateExecutionStart(evt, execution);
                 if (_executions.TryGetValue(execution.ExecutionId, out var started) && started != execution)
                     throw Invalid("Execution identity cannot be rebound to different start metadata.");
                 _executions[execution.ExecutionId] = execution;
@@ -173,9 +177,28 @@ public sealed class PreM6RecordProjection
     private AgentExecutionStarted RequireExecution(ExecutionId id)
     {
         if (!_executions.TryGetValue(id, out var execution) || !_lanes.TryGetValue(execution.LaneId, out var lane)
-            || lane.AgentProfile != execution.ProfileId || !_tasks.ContainsKey(lane.TaskId))
+            || lane.AgentProfile != execution.ProfileId || !_tasks.ContainsKey(lane.TaskId)
+            || execution.ParentExecutionId is {} parent && !_executions.ContainsKey(parent))
             throw Invalid("Execution has no matching durable Task/Lane/Profile.");
         return execution;
+    }
+
+    private void ValidateExecutionStart(DomainEvent evt, AgentExecutionStarted execution)
+    {
+        if (execution.ExecutionId is null || execution.ExecutionId.Value == Guid.Empty
+            || execution.LaneId is null || execution.ProfileId is null
+            || !Enum.IsDefined(execution.Relation) || !Enum.IsDefined(execution.Supervision)
+            || !_lanes.TryGetValue(execution.LaneId, out var lane)
+            || lane.AgentProfile != execution.ProfileId || !_tasks.TryGetValue(lane.TaskId, out var task))
+            throw Invalid("Execution start has no matching durable Task/Lane/Profile.");
+        if (execution.ParentExecutionId is {} parent && !_executions.ContainsKey(parent))
+            throw Invalid("Execution parent has no prior durable start.");
+        // Started v1 has no TaskId in its payload. A legacy null remains readable;
+        // when attribution is present it must identify the actual owning Task.
+        if (evt.ExecutionId != execution.ExecutionId || evt.LaneId != execution.LaneId
+            || evt.RunId != task.RunId || evt.CorrelationId != task.RunId
+            || evt.TaskId is {} attributedTask && attributedTask != task.TaskId)
+            throw Invalid("Execution start envelope does not match its durable owner.");
     }
 
     private void Scope(ValidationScope scope)
@@ -189,8 +212,25 @@ public sealed class PreM6RecordProjection
 
     private DomainEvent ResolveEvent(EvidenceEventRef reference)
     {
-        var evt = reference.SessionId == _session ? _events.GetValueOrDefault(reference.EventId)
-            : _externalEvents?.Invoke(reference.SessionId).SingleOrDefault(item => item.EventId == reference.EventId);
+        DomainEvent? evt;
+        if (reference.SessionId == _session) evt = _events.GetValueOrDefault(reference.EventId);
+        else
+        {
+            if (!_externalJournals.TryGetValue(reference.SessionId, out var index))
+            {
+                var journal = _externalEvents?.Invoke(reference.SessionId)?.ToArray()
+                    ?? throw Invalid("Referenced session journal is unavailable.");
+                if (journal.Any(item => item.SessionId != reference.SessionId))
+                    throw Invalid("Referenced journal contains a foreign session.");
+                _ = CanonicalStateTracker.Replay(_codecs, journal);
+                var byId = new Dictionary<EventId, DomainEvent>();
+                foreach (var item in journal)
+                    if (!byId.TryAdd(item.EventId, item)) throw Invalid("Duplicate event identity in referenced journal.");
+                index = new ReadOnlyDictionary<EventId, DomainEvent>(byId);
+                _externalJournals.Add(reference.SessionId, index);
+            }
+            evt = index.GetValueOrDefault(reference.EventId);
+        }
         if (evt is null || evt.SessionId != reference.SessionId) throw Invalid("Referenced event is unavailable in its session.");
         return evt;
     }

@@ -64,24 +64,28 @@ public sealed class AgentExecutionContractTests
             store = new SqliteEventStore(journal);
             var codecs = EventCodecs.Create();
             var session = SessionId.New();
-            var run = TestRun.Open(store, session);
             var stream = new EventStream(store, codecs, session);
+            var rootProfile = ProfileId.New();
+            var run = TestRun.Open(stream, session, agentProfile: rootProfile);
             var childTask = TaskId.New();
             stream.Append(new TaskCreated(childTask, run.RunId, "nested work", Array.Empty<TaskDependency>(),
                 new TaskBudget(null, null, null, null), run.RootTask));
-            var beforeLifecycle = CanonicalStateTracker.Replay(codecs, store.ReadFrom(session, 1)).Snapshot();
             var execution = ExecutionId.New();
             var parent = ExecutionId.New();
             var profile = ProfileId.New();
-            var detachedManaged = new AgentExecutionStarted(execution, run.RootLane, profile, parent,
+            var childLane = LaneId.New();
+            stream.Append(new LaneCreated(childLane, childTask, profile));
+            var beforeLifecycle = CanonicalStateTracker.Replay(codecs, store.ReadFrom(session, 1)).Snapshot();
+            // A parent is a durable execution, not a random ID in the child's payload.
+            var awaitedUnmanagedId = parent;
+            var awaitedUnmanaged = new AgentExecutionStarted(awaitedUnmanagedId, run.RootLane,
+                rootProfile, null, ExecutionRelation.Awaited, ExecutionSupervision.Unmanaged);
+            stream.Append(awaitedUnmanaged);
+            var detachedManaged = new AgentExecutionStarted(execution, childLane, profile, parent,
                 ExecutionRelation.Detached, ExecutionSupervision.Managed);
             stream.Append(detachedManaged);
-            stream.Append(new AgentExecutionCompleted(execution, run.RootLane, profile, parent,
+            stream.Append(new AgentExecutionCompleted(execution, childLane, profile, parent,
                 ExecutionRelation.Detached, ExecutionSupervision.Managed));
-            var awaitedUnmanagedId = ExecutionId.New();
-            var awaitedUnmanaged = new AgentExecutionStarted(awaitedUnmanagedId, run.RootLane,
-                ProfileId.New(), null, ExecutionRelation.Awaited, ExecutionSupervision.Unmanaged);
-            stream.Append(awaitedUnmanaged);
             stream.Append(new AgentExecutionFailed(awaitedUnmanaged.ExecutionId, awaitedUnmanaged.LaneId,
                 awaitedUnmanaged.ProfileId, awaitedUnmanaged.ParentExecutionId,
                 awaitedUnmanaged.Relation, awaitedUnmanaged.Supervision));
@@ -93,18 +97,18 @@ public sealed class AgentExecutionContractTests
             var started = payloads.OfType<AgentExecutionStarted>().ToArray();
             Assert.Equal(2, started.Length);
             Assert.Contains(started, evt => evt.ExecutionId == execution && evt.ParentExecutionId == parent
-                && evt.LaneId == run.RootLane && evt.ProfileId == profile
+                && evt.LaneId == childLane && evt.ProfileId == profile
                 && evt.Relation == ExecutionRelation.Detached && evt.Supervision == ExecutionSupervision.Managed);
             Assert.Contains(started, evt => evt.ExecutionId == awaitedUnmanagedId && evt.ParentExecutionId is null
                 && evt.Relation == ExecutionRelation.Awaited && evt.Supervision == ExecutionSupervision.Unmanaged);
             var completed = Assert.Single(payloads.OfType<AgentExecutionCompleted>());
-            Assert.Equal(new AgentExecutionCompleted(execution, run.RootLane, profile, parent,
+            Assert.Equal(new AgentExecutionCompleted(execution, childLane, profile, parent,
                 ExecutionRelation.Detached, ExecutionSupervision.Managed), completed);
             var failed = Assert.Single(payloads.OfType<AgentExecutionFailed>());
             Assert.Equal(new AgentExecutionFailed(awaitedUnmanagedId, awaitedUnmanaged.LaneId,
                 awaitedUnmanaged.ProfileId, null, ExecutionRelation.Awaited, ExecutionSupervision.Unmanaged), failed);
-            Assert.Equal(new[] { "agent_execution.started", "agent_execution.completed",
-                    "agent_execution.started", "agent_execution.failed" },
+            Assert.Equal(new[] { "agent_execution.started", "agent_execution.started",
+                    "agent_execution.completed", "agent_execution.failed" },
                 persisted.Where(evt => evt.Type.ToString().StartsWith("agent_execution.", StringComparison.Ordinal))
                     .Select(evt => evt.Type.ToString()));
 
@@ -112,6 +116,7 @@ public sealed class AgentExecutionContractTests
             Assert.Equal(run.RootTask, persistedChild.ParentTaskId);
             var replayed = CanonicalStateTracker.Replay(codecs, persisted);
             Assert.Equal(beforeLifecycle, replayed.Snapshot());
+            _ = PreM6RecordProjection.Replay(session, codecs, persisted);
             Assert.Equal(RunState.Running, replayed.Run(run.RunId));
             Assert.Equal(TaskState.Running, replayed.Task(run.RootTask));
             Assert.Equal(TaskState.Pending, replayed.Task(childTask));
