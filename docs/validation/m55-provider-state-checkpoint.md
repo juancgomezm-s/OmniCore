@@ -1,5 +1,12 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Suite completa verificada — 2026-10-07 04:52 UTC
+
+Sobre 185228d, FULL95618 terminó con exit 0: 2584 casos, 2580 PASS,
+0 FAIL y 4 SKIP por permisos de symlink, en 263.263s. Evidencia:
+`fingerprint-publication-phase-full.log`. Esto confirma las regresiones del
+contador y publicación; no acredita integración real con OmniCoder ni cierre M5.5.
+
 ## Publicación de componentes del fingerprint — 2026-10-07 04:46 UTC
 
 RuntimeFingerprintFactory.Prepare/PrepareTurnConfiguration conservan los JSON,

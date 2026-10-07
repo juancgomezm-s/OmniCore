@@ -1,5 +1,9 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 04:52 UTC: FULL95618 sobre185228d terminal exit0 verificada;
+2584=2580PASS/0FAIL/4SKIP symlink, 263.263s. Freeze levantado tras terminal.
+Contador llama.cpp y publicación cubiertos; restantes de M5.5 siguen abiertos.
+
 2026-10-07 04:46 UTC: fingerprint baseline CLI y componentes porTurn preparados
 sin CAS temprano; publicación con TurnStarted normal/overflow bajo lease corta.
 Resume conserva refs originales, no nuevos receipts hash-equivalentes. RED4/4
