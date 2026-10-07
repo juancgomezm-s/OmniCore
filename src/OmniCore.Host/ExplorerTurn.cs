@@ -1065,6 +1065,10 @@ public sealed class ExplorerTurn
             string? artifactId = null;
             if (finalText is not null && finalText!.Length > 0)
             {
+                // Keep both final CAS objects protected until their canonical references
+                // commit together. No provider work runs while this publication lease is held.
+                using var finalPublication = (_artifacts as IArtifactPublicationLease)
+                    ?.AcquirePublicationLease(CancellationToken.None);
                 var safeResponse = _redaction.Redact(finalText!);
                 var responseEvents = new List<DomainEventPayload>();
                 if (!invalidUsageObserved)

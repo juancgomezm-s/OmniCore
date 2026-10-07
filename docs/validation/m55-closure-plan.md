@@ -1,5 +1,15 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 03:55 UTC / 2026-10-06 21:55 local:
+FULL88713 TERMINALexit0 sobre f2ca9cf: 2564 casos, 2560 PASS, 0 FAIL,
+4 SKIP symlink, 272.183s. Freeze levantado tras su terminación.
+Respuesta final CAS→batch cubierta ahora por lease común: RED2/2 reproducido,
+47 PASS focales y 56 PASS arquitectura; nueva full posterior pendiente.
+Detalles y reproducción en m55-provider-state-checkpoint.md. Fixtures offline,
+no autenticación/consumo real. Luna aporta pruebas y auditoría; root revisa,
+integra, reproduce y corrige. Continúan publicación de contexto, AgentProfile
+efectivo y contratos M6 completos aceptados; no scheduler/joins ni cierre M5.5.
+
 Estado vigente 2026-10-07 03:44 UTC / 2026-10-06 21:44 local:
 FULL1781 TERMINALexit0 sobre6bbbcfa:2561=2557PASS/0FAIL/4SKIPsymlink,
 268.114s, other-adapters-reasoning-full.log. Después: lease común CAS/checkpoint/

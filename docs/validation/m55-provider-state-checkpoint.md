@@ -1,5 +1,36 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Publicación de la respuesta final — 2026-10-07 03:55 UTC
+
+La misma interfaz de lease protege ahora los dos objetos CAS finales (resumen
+de uso y texto Markdown) hasta que ModelCompleted y AssistantMessageRecorded
+se registran juntos. Se conserva el orden y la durabilidad Standard existentes;
+no se mantiene la lease durante una llamada al proveedor. Si falla el append,
+se libera la lease: permanece el ModelStepCompleted ya durable, no aparecen
+eventos falsos de respuesta final y GC puede eliminar sólo los objetos huérfanos.
+
+Luna propuso el fixture; root revisó fuente/auditoría, corrigió dos assertions
+para cumplir los analyzers y reprodujo RED válido: 2 casos / 2 FAIL, 0.751s
+(lease ausente). Tras el arreglo final: 47 PASS / 0 FAIL, 2.710s; arquitectura
+56 PASS / 0 FAIL, 0.713s. Los filtros focales se solapan con la suite completa.
+ExplorerFinalResponsePublicationLeaseTests usa SQLite y FileArtifactStore
+reales, proveedor scripted offline, probe exclusivo de la lease antes/después
+del append, reopen, GC sin gracia y lecturas repetidas de consumo idempotente.
+No acredita consultas autenticadas, facturación real ni integración OmniCoder.
+
+Reproducción desde la raíz del worktree autorizado:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*ExplorerFinalResponsePublicationLeaseTests'
+```
+
+Logs privados: final-response-publication-red.log,
+final-response-publication-final.log y final-response-publication-architecture.log
+en C:\Users\juanc\.codex\omni-m55-workers-20261006-2103.
+La suite completa anterior sobre f2ca9cf terminó: 2564 casos, 2560 PASS,
+0 FAIL, 4 SKIP symlink, 272.183s. Una nueva suite debe verificar este bloque.
+
 ## Publicación del paso y cancelación — 2026-10-07 03:44 UTC
 
 ExplorerTurn toma la lease opcional existente IArtifactPublicationLease después
