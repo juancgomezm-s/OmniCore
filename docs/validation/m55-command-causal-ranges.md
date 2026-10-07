@@ -1,5 +1,35 @@
 # Rango causal y confirmación durable del command
 
+## Routing y denegaciones: frontera excepcional — 2026-10-07 05:29 UTC
+
+AuthorizeModelRoute devuelve Ack + Failure original y sólo autoriza cuando el
+NoOp permitido puede confirmarse. Un fallo de lectura de outcome devuelve
+Deferred/JournalOutcomeUnavailable, Authorized=false y ninguna ID no confirmada.
+Append que persiste y luego lanza confirma una sola vez su rango causal y la
+solicitud observada (Accepted/error); ausencia confirmada da Rejected; incertidumbre
+da Deferred sin rango. Nunca reintenta ni concede permiso en el catch.
+
+ResolveModelRouteWithoutClient y ResolveBudgetWithoutClient conservan el ACK
+correlacionable junto a la excepción/OCE original mediante InternalCommandResult,
+un carrier exclusivo del Host: no cambia el contrato wire ni su vocabulario.
+El CLI valida Status/Outcome antes de permitir el paso al proveedor y propaga
+Failure con ExceptionDispatchInfo. No cambia la política de gasto ni la selección
+de sesión/Run al confirmar errores.
+
+Fixtures de fallos con SQLite privado real, sin consultas de proveedor ni consumo.
+RED válido: 7 casos/7 FAIL en 0.716s. Primer final ampliado: 62 casos/1 FAIL,
+porque el fixture esperaba dos filas de denegación; el lifecycle real produce
+InteractionResolved, LaneCancelled, TaskCancelled, PlanItemCancelled y RunFailed.
+Root corrigió el oracle a esos cinco eventos exactos y comprobó orden, secuencias,
+Run y causation, además de ausencia de duplicados. Final con admission-read,
+confirmación de consentimiento y cancelación: 52 PASS/0 FAIL en 5.588s.
+Arquitectura: 56 PASS/0 FAIL en 0.599s; builds sin errores ni advertencias.
+Logs routing-command-failure-red/expanded-final/admission-final/architecture.log.
+Full nueva pendiente. Full anterior sobre98224ea: 2607 casos/2603 PASS/0 FAIL/
+4 SKIP symlink, 250.515s, plan-approval-command-failure-full.log.
+EnsureSessionRoutingPolicy, follow-up y escalación aún requieren fronteras
+excepcionales; estos resultados no acreditan cierre de todos los commands.
+
 ## PlanApproval: errores y consulta idempotente — 2026-10-07 05:15 UTC
 
 RequestPlanApprovalCommand devuelve Failure original + Ack + InteractionId.
