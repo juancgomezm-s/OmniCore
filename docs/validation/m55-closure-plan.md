@@ -1,11 +1,24 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-07 00:34 UTC / 2026-10-06 18:34 America/Mexico_City.
+Actualizado 2026-10-07 01:44 UTC / 2026-10-06 19:44 America/Mexico_City.
 Objetivo vigente: cerrar M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
 
 ### Estado vigente de reservas (00:34 UTC)
+
+Actualización 01:44 UTC: suite completa sobre `d285983` terminada:
+2422 casos = 2418 PASS / 0 FAIL / 4 SKIP por permisos symlink, 350.643s;
+`qualification-user-daily-full.log`, handle 69420 terminal. Estos resultados
+reemplazan el estado pendiente de la suite, no acreditan consumo real ni consultas
+autenticadas. Las cifras focales siguientes se solapan y no se suman.
+Qwen local: GET /v1/models en los dos endpoints configurados rechazado a
+01:44 UTC; ningún catálogo ni generación disponibles, sin arrancar servidores,
+reconfigurar TLS o usar fallback pagado. ADR0047 existe sin commit en el repositorio
+principal y fue leída sin modificarlo; no fue incorporada a esta rama.
+Auditoría readonly de Luna confirma familias M6 aún ausentes (Delegation,
+WakeRequest, JoinPolicy, SupervisionBinding, ResultDisposition) y sin esquemas
+completos aceptados en la rama; no se inventan payloads ni scheduler/joins.
 
 Actualización 01:36 UTC: integración User diaria de cualificación implementada y
 verificada con 406 PASS / 0 FAIL / 0 SKIP, 36.391s,
@@ -16,7 +29,7 @@ reader para Explorer. Cancel/timeout/error/unknown/retry conservan cobertura;
 uso inválido solo raw CAS, exceso de coste/envíos bloquea siguiente probe/perfil.
 Dos Hosts concurrentes y chat normal (hoy/ayer/crash) cubiertos offline. Root
 implementó y verificó; Luna propuso fixtures y auditó límites/extracción. No
-consumo/autenticación reales ni full actual verde acreditados. Histórico RED diario
+consumo/autenticación reales; la full posterior se acredita arriba. Histórico RED diario
 de debajo ya corregido; IncludedQuota de cualificación sigue pendiente. Permanecen
 replay opaco seguro/ReasoningCapability, contratos M6 congelados y auditoría de
 los siete criterios; no se reduce el objetivo ni se declara cierre M5.5.
