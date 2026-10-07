@@ -20,6 +20,7 @@ public sealed class ExplorerVisibleResponseIntegrationTests
     [InlineData("| A | B |\n", "|---|---|\n| 1 | 2 |")]
     [InlineData("```cs\n", "int value = 42;\n```")]
     [InlineData("secret sk-super-secret-value ", "safe tail")]
+    [InlineData("split sk-", "super-secret-value tail")]
     [InlineData("complete answer", "")]
     public void Full_visible_answer_survives_terminal_artifacts_reopen_and_next_turn_context(
         string first, string second)
@@ -71,6 +72,14 @@ public sealed class ExplorerVisibleResponseIntegrationTests
             {
                 using var json = JsonDocument.Parse(artifacts.GetText(reference.Hash)!);
                 Assert.Equal(expected, json.RootElement.GetProperty("response").GetString());
+            }
+            using (var stepJson = JsonDocument.Parse(artifacts.GetText(step.ResponseArtifact!.Hash)!))
+            {
+                var visibleText = string.Concat(stepJson.RootElement.GetProperty("visibleContent")
+                    .GetProperty("blocks").EnumerateArray()
+                    .Where(block => block.GetProperty("kind").GetString() == "text")
+                    .Select(block => block.GetProperty("text").GetString()));
+                Assert.Equal(expected, visibleText);
             }
             Assert.Equal(firstTurn.TurnId, assistant.TurnId);
             Assert.Equal(firstTurn.TurnId, summary.TurnId);

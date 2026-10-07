@@ -220,6 +220,7 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
         SqliteEventStore? journal = null;
         Task<int>? firstTurn = null;
         Task<int>? resumedTurn = null;
+        Task<int>? competingResume = null;
         Task<int>? newTurn = null;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         stop.CancelAfter(TimeSpan.FromSeconds(45));
@@ -302,8 +303,15 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                 new[] { new QuestionAnswer("approach", new[] { "safe" }, null, null) }, false).Status);
 
             var reopenedTui = new TuiTurnHost(reopenedRuntime);
+            endpoint.HoldRequest(2);
             var resumeDiagnostics = new ConcurrentQueue<string>();
             resumedTurn = Task.Run(async () => await reopenedTui.ExecuteAsync("", resumeDiagnostics.Enqueue, stop.Token));
+            await endpoint.WaitForHeldRequestAsync(stop.Token).WaitAsync(TimeSpan.FromSeconds(15), stop.Token);
+            competingResume = Task.Run(async () => await reopenedTui.ExecuteAsync("", _ => { }, stop.Token));
+            var competingExit = await competingResume.WaitAsync(TimeSpan.FromSeconds(10), stop.Token);
+            Assert.Equal(1, competingExit);
+            Assert.Equal(2, endpoint.RequestCount);
+            endpoint.ReleaseHeldRequest();
             var resumedExit = await resumedTurn.WaitAsync(TimeSpan.FromSeconds(20), stop.Token);
             Assert.True(resumedExit == 0, "The exact suspended Turn should resume from its durable reasoning selection. Diagnostics: "
                 + string.Join(" | ", resumeDiagnostics));
@@ -344,9 +352,11 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
         finally
         {
             stop.Cancel();
+            endpoint.ReleaseHeldRequest();
             await endpoint.DisposeAsync();
             await DrainAsync(firstTurn);
             await DrainAsync(resumedTurn);
+            await DrainAsync(competingResume);
             await DrainAsync(newTurn);
             CloseJournal(journal);
             var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "data"));
@@ -418,6 +428,9 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
         private readonly ConcurrentBag<Task> _handlers = [];
         private readonly ConcurrentQueue<CapturedHttpRequest> _requests = new();
         private readonly Task _serve;
+        private TaskCompletionSource<bool>? _heldRequestReached;
+        private TaskCompletionSource<bool>? _releaseHeldRequest;
+        private int _heldRequestNumber;
         private int _requestCount;
 
         public ScriptedQuestionResponsesEndpoint()
@@ -430,6 +443,20 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
         public string BaseUrl { get; }
         public int RequestCount => Volatile.Read(ref _requestCount);
         public IReadOnlyList<CapturedHttpRequest> Requests => _requests.ToArray();
+
+        public void HoldRequest(int requestNumber)
+        {
+            if (requestNumber < 1) throw new ArgumentOutOfRangeException(nameof(requestNumber));
+            _heldRequestReached = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _releaseHeldRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _heldRequestNumber, requestNumber);
+        }
+
+        public Task WaitForHeldRequestAsync(CancellationToken cancellationToken) =>
+            (_heldRequestReached ?? throw new InvalidOperationException("No request is configured to be held."))
+                .Task.WaitAsync(cancellationToken);
+
+        public void ReleaseHeldRequest() => _releaseHeldRequest?.TrySetResult(true);
 
         private async Task ServeAsync()
         {
@@ -470,6 +497,15 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                     && maxElement.TryGetInt32(out var parsedMax) ? parsedMax : null;
                 var number = Interlocked.Increment(ref _requestCount);
                 _requests.Enqueue(new CapturedHttpRequest(requestBody, effort, maxOutput));
+                if (number == Volatile.Read(ref _heldRequestNumber))
+                {
+                    var reached = _heldRequestReached
+                        ?? throw new InvalidOperationException("Held request has no barrier.");
+                    var release = _releaseHeldRequest
+                        ?? throw new InvalidOperationException("Held request has no release signal.");
+                    reached.TrySetResult(true);
+                    await release.Task.WaitAsync(token).ConfigureAwait(false);
+                }
                 var responseBody = Encoding.UTF8.GetBytes(number == 1 ? QuestionStream() : TextStream("done"));
                 var headers = Encoding.ASCII.GetBytes(string.Join("\r\n", "HTTP/1.1 200 OK",
                     "Content-Type: text/event-stream", "Cache-Control: no-cache", "Connection: close",
@@ -512,6 +548,7 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
 
         public async ValueTask DisposeAsync()
         {
+            ReleaseHeldRequest();
             _stop.Cancel();
             _listener.Stop();
             try { await _serve.ConfigureAwait(false); }

@@ -1453,8 +1453,29 @@ public sealed class ExplorerTurn
 
     private string? EncodeVisibleContent(IReadOnlyList<ContentBlock> content)
     {
-        var blocks = content.Where(block => block is ReasoningBlock or TextBlock or ToolCallBlock).ToArray();
-        if (blocks.Length == 0) return null;
+        // Text fragments are not separate security boundaries: a secret may span adjacent
+        // fragments. Redact the complete contiguous text while preserving reasoning/tool order.
+        // This is only the visible projection; opaque ProviderState is never normalized here.
+        var blocks = new List<ContentBlock>();
+        System.Text.StringBuilder? adjacentText = null;
+        void FlushText()
+        {
+            if (adjacentText is null) return;
+            blocks.Add(new TextBlock(adjacentText.ToString()));
+            adjacentText = null;
+        }
+        foreach (var block in content)
+        {
+            if (block is TextBlock text)
+            {
+                (adjacentText ??= new System.Text.StringBuilder()).Append(text.Text);
+                continue;
+            }
+            FlushText();
+            if (block is ReasoningBlock or ToolCallBlock) blocks.Add(block);
+        }
+        FlushText();
+        if (blocks.Count == 0) return null;
         using var buffer = new System.IO.MemoryStream();
         using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
         {
