@@ -49,15 +49,35 @@ public sealed class InternalActCommandTests
         Assert.Equal(2, fx.ProviderCalls);
         var resumedEvents = fx.Store.ReadFrom(fx.Session, beforeResume + 1);
         Assert.NotEmpty(resumedEvents);
-        var resumedTurnEvents = resumedEvents.Where(evt => evt.TurnId == originalTurnId).ToArray();
+        var turnCompletion = Assert.Single(resumedEvents, evt =>
+            fx.Codecs.Decode(evt) is TurnCompleted completed && completed.TurnId == originalTurnId);
+        var resumedTurnEvents = resumedEvents.Where(evt => evt.Sequence <= turnCompletion.Sequence).ToArray();
         Assert.NotEmpty(resumedTurnEvents);
         var secondCommandId = Assert.IsType<CommandCausation>(resumedTurnEvents[0].Causation).CommandId;
         Assert.False(firstCommandId.Value.Equals(secondCommandId.Value));
         Assert.All(resumedTurnEvents, evt => Assert.Equal(secondCommandId,
             Assert.IsType<CommandCausation>(evt.Causation).CommandId));
+        Assert.All(resumedTurnEvents, evt => Assert.Equal(originalTurnId, evt.TurnId));
+        // Completing the model intent and validating the Run are distinct commands. The
+        // validation effects retain the source Turn without impersonating the model command.
+        var validationEvents = resumedEvents.Where(evt => evt.Sequence > turnCompletion.Sequence).ToArray();
+        Assert.NotEmpty(validationEvents);
+        var validationStart = Assert.Single(validationEvents, evt => fx.Codecs.Decode(evt) is RunValidationStarted);
+        var validationCommandId = Assert.IsType<CommandCausation>(validationStart.Causation).CommandId;
+        Assert.NotEqual(firstCommandId, validationCommandId);
+        Assert.NotEqual(secondCommandId, validationCommandId);
+        Assert.All(validationEvents, evt =>
+        {
+            Assert.Equal(validationCommandId, Assert.IsType<CommandCausation>(evt.Causation).CommandId);
+            Assert.Equal(originalTurnId, evt.TurnId);
+            Assert.Equal(fx.Run, evt.RunId);
+            Assert.Equal(fx.Lane, evt.LaneId);
+        });
+        Assert.Equal(resumedEvents.Count, resumedTurnEvents.Length + validationEvents.Length);
         var turnIds = fx.Server.AcquireStore().ReadFrom(fx.Session, 1).Select(fx.Codecs.Decode)
             .OfType<TurnStarted>().Select(evt => evt.TurnId).ToArray();
         Assert.Equal(new[] { originalTurnId }, turnIds);
         Assert.Null(CausationScope.Current);
+        Assert.Null(ExecutionScope.Current);
     }
 }
