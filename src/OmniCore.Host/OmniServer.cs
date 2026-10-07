@@ -1262,6 +1262,9 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                     if (!starts.Add((started.TurnId, started.StepIndex))) return true;
                     break;
                 case ModelStepCompleted completed: starts.Remove((completed.TurnId, completed.StepIndex)); break;
+                case ModelStepNotDispatched notDispatched:
+                    starts.Remove((notDispatched.TurnId, notDispatched.StepIndex));
+                    break;
             }
         }
         return starts.Count > 0;

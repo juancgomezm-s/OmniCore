@@ -263,11 +263,14 @@ public sealed class UltraCodePolicyTransitionIntegrationTests
             RunMode.Plan, "stale", authority.Revision - 1, TestContext.Current.CancellationToken);
         var wrongSession = fixture.Server.ApplyUltraCodePolicyTransition(SessionId.New(), fixture.Run,
             RunMode.Plan, "wrong session", authority.Revision, TestContext.Current.CancellationToken);
+        var wrongRun = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, RunId.New(),
+            RunMode.Plan, "wrong run", authority.Revision, TestContext.Current.CancellationToken);
         var deniedMode = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
             RunMode.Plan, "not allowlisted", authority.Revision, TestContext.Current.CancellationToken);
 
         Assert.Equal(RuntimeCommandOutcomeKind.Rejected, stale.Outcome?.Kind);
         Assert.Equal(RuntimeCommandOutcomeKind.Rejected, wrongSession.Outcome?.Kind);
+        Assert.Equal(RuntimeCommandOutcomeKind.Rejected, wrongRun.Outcome?.Kind);
         Assert.Equal(RuntimeCommandOutcomeKind.Rejected, deniedMode.Outcome?.Kind);
         Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
         AssertAuthorityEqual(authority, RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
@@ -304,6 +307,292 @@ public sealed class UltraCodePolicyTransitionIntegrationTests
                 fixture.Session).AppendBatch(batch, DurabilityClass.Barrier));
 
         Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+    }
+
+    [Theory]
+    [InlineData("pinned")]
+    [InlineData("revoked")]
+    public void Pinned_or_revoked_authority_rejects_internal_policy_transition_after_reopen(string state)
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        if (state == "pinned")
+        {
+            var pin = fixture.Server.SendUserAction(Command(Payload(JsonObj.Field("cmd", "run.mode.select"),
+                JsonObj.Field("mode", "act"), JsonObj.Field("effort", "standard"))),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, pin.Outcome?.Kind);
+        }
+        else
+        {
+            var revoke = fixture.Server.SendUserAction(Command(Payload(JsonObj.Field("cmd", "run.mode.revoke"))),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, revoke.Outcome?.Kind);
+        }
+
+        fixture.CloseStore();
+        fixture.ReopenStore();
+        var reopenedServer = new OmniServer(fixture.Store, fixture.Codecs, new InMemoryAuditSink());
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var current = Assert.IsType<RunModeAuthority>(RunProjection.Replay(fixture.Session, fixture.Run,
+            fixture.Codecs, fixture.Store.ReadFrom(fixture.Session, 1)).ModeAuthority);
+
+        var result = reopenedServer.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Plan, "must not widen pinned or revoked authority", current.Revision,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Rejected, result.Outcome?.Kind);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        var replay = RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1));
+        AssertAuthorityEqual(current, replay.ModeAuthority);
+        Assert.DoesNotContain(fixture.Store.ReadFrom(fixture.Session, 1), item =>
+            fixture.Codecs.Decode(item) is RunModeTransitionAuthorized { Origin: "UltraCodePolicy" });
+    }
+
+    [Fact]
+    public void Pending_model_route_consent_defers_policy_transition_without_mode_events()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var interaction = InteractionId.New();
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run)))
+        {
+            new EventStream(fixture.Store, fixture.Codecs, fixture.Session).Append(new InteractionRequested(
+                interaction, InteractionKind.ModelRouteConsent, "{\"billingMode\":\"MeteredCurrency\"}",
+                "[{\"id\":\"allow_route\"},{\"id\":\"deny\"}]", "deny",
+                DateTimeOffset.UtcNow.AddMinutes(5), null, null, null, 1, 1), DurabilityClass.Barrier);
+        }
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Plan, "route consent is a separate gate", authority.Revision,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("ModelRouteConsent", result.Outcome?.Reason);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        Assert.DoesNotContain(fixture.Store.ReadFrom(fixture.Session, 1), item =>
+            fixture.Codecs.Decode(item) is RunModeChanged
+                or RunModeTransitionAuthorized { Origin: "UltraCodePolicy" }
+                or RunModeAuthoritySelected { Origin: "UltraCodePolicy" });
+    }
+
+    [Fact]
+    public void A_not_dispatched_model_step_is_a_safe_boundary_for_policy_transition()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var turn = TurnId.New();
+        var lane = Assert.IsType<LaneId>(fixture.Server.LastLaneId());
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run, LaneId: lane, TurnId: turn)))
+        {
+            var stream = new EventStream(fixture.Store, fixture.Codecs, fixture.Session);
+            stream.Append(new TurnStarted(turn, lane), DurabilityClass.Barrier);
+            stream.Append(new ModelStepStarted(turn, 0, "private-fixture-model", 1, "none", null, null, null),
+                DurabilityClass.Barrier);
+            stream.Append(new ModelStepNotDispatched(turn, 0), DurabilityClass.Barrier);
+        }
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Plan, "no provider dispatch occurred", authority.Revision,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, result.Outcome?.Kind);
+        Assert.Null(result.Failure);
+        Assert.Equal(before + 3, fixture.Store.CurrentSequence(fixture.Session));
+        Assert.Contains(fixture.Store.ReadFrom(fixture.Session, 1), item =>
+            fixture.Codecs.Decode(item) is ModelStepNotDispatched { TurnId: var id, StepIndex: 0 } && id == turn);
+        Assert.Equal(RunMode.Plan, RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).Mode);
+    }
+
+    [Fact]
+    public void An_unfinished_model_step_still_defers_policy_transition()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var turn = TurnId.New();
+        var lane = Assert.IsType<LaneId>(fixture.Server.LastLaneId());
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run, LaneId: lane, TurnId: turn)))
+        {
+            var stream = new EventStream(fixture.Store, fixture.Codecs, fixture.Session);
+            stream.Append(new TurnStarted(turn, lane), DurabilityClass.Barrier);
+            stream.Append(
+                new ModelStepStarted(turn, 0, "private-fixture-model", 1, "none", null, null, null),
+                DurabilityClass.Barrier);
+        }
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Plan, "model request is still open", authority.Revision,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("ModelStepActive", result.Outcome?.Reason);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+    }
+
+    [Fact]
+    public void Closing_one_exact_step_does_not_close_another_open_step()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var turn = TurnId.New();
+        var lane = Assert.IsType<LaneId>(fixture.Server.LastLaneId());
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run, LaneId: lane, TurnId: turn)))
+        {
+            var stream = new EventStream(fixture.Store, fixture.Codecs, fixture.Session);
+            stream.Append(new TurnStarted(turn, lane), DurabilityClass.Barrier);
+            stream.Append(new ModelStepStarted(turn, 0, "private-fixture-model", 1,
+                "none", null, null, null), DurabilityClass.Barrier);
+            stream.Append(new ModelStepNotDispatched(turn, 0), DurabilityClass.Barrier);
+            stream.Append(
+                new ModelStepStarted(turn, 1, "private-fixture-model", 1, "none", null, null, null),
+                DurabilityClass.Barrier);
+        }
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Plan, "the second model step remains open", authority.Revision,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("ModelStepActive", result.Outcome?.Reason);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        Assert.Contains(fixture.Store.ReadFrom(fixture.Session, 1), item =>
+            fixture.Codecs.Decode(item) is ModelStepNotDispatched { TurnId: var id, StepIndex: 0 } && id == turn);
+    }
+
+    [Fact]
+    public void An_unfinished_tool_call_defers_policy_transition_without_writes()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var call = ToolCallId.New();
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run, ToolCallId: call)))
+            new EventStream(fixture.Store, fixture.Codecs, fixture.Session).Append(
+                new ToolCallRequested(call, "fixture-provider-call", "fixture.read", "{}"),
+                DurabilityClass.Barrier);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+
+        var result = fixture.Server.ApplyUltraCodePolicyTransition(fixture.Session, fixture.Run,
+            RunMode.Plan, "tool lifecycle is still open", authority.Revision,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("ToolCallActive", result.Outcome?.Reason);
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+    }
+
+    [Theory]
+    [InlineData("objective-revision")]
+    [InlineData("policy-revision")]
+    [InlineData("authorization-id")]
+    [InlineData("allowed-modes")]
+    [InlineData("limits")]
+    public void Forged_policy_transition_metadata_is_rejected_before_append_and_reopen(string field)
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var priorAuthorization = Assert.IsType<ModeSwitchAuthorization>(authority.Authorization);
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var command = CommandId.New();
+        var revision = checked(authority.Revision + 1);
+        var objectiveRevision = authority.ObjectiveRevision;
+        var objectiveDigest = authority.ObjectiveDigest;
+        var policyRevision = authority.PolicyRevision;
+        var authorizationId = priorAuthorization.AuthorizationId;
+        var allowedModes = priorAuthorization.AllowedModes.ToArray();
+        var limits = priorAuthorization.Limits;
+
+        switch (field)
+        {
+            case "objective-revision": objectiveRevision++; break;
+            case "policy-revision": policyRevision++; break;
+            case "authorization-id": authorizationId = Guid.NewGuid(); break;
+            case "allowed-modes": allowedModes = [RunMode.Plan]; break;
+            case "limits": limits = limits with { MaxSpendUsd = limits.MaxSpendUsd + 0.01m }; break;
+            default: throw new ArgumentOutOfRangeException(nameof(field));
+        }
+
+        var reason = "forged authority metadata";
+        var authorization = priorAuthorization with
+        {
+            AuthorizationId = authorizationId,
+            AuthorityRevision = revision,
+            ObjectiveRevision = objectiveRevision,
+            ObjectiveDigest = objectiveDigest,
+            PolicyRevision = policyRevision,
+            AllowedModes = allowedModes,
+            Limits = limits,
+        };
+        var selected = authority with
+        {
+            Revision = revision,
+            Mode = RunMode.Plan,
+            ObjectiveRevision = objectiveRevision,
+            ObjectiveDigest = objectiveDigest,
+            PolicyRevision = policyRevision,
+            Authorization = authorization,
+        };
+        var payloads = new DomainEventPayload[]
+        {
+            new RunModeChanged(fixture.Run, authority.Mode, RunMode.Plan, reason),
+            new RunModeTransitionAuthorized(fixture.Run, authority.Mode, RunMode.Plan, reason,
+                "UltraCodePolicy", command.ToString(), revision, objectiveRevision, objectiveDigest,
+                policyRevision, authorizationId),
+            new RunModeAuthoritySelected(selected, command.ToString(), "UltraCodePolicy"),
+        };
+
+        using (CausationScope.Begin(new CommandCausation(command)))
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run)))
+            Assert.Throws<InvalidStateTransitionException>(() => new EventStream(fixture.Store, fixture.Codecs,
+                fixture.Session).AppendBatch(payloads, DurabilityClass.Barrier));
+
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        fixture.CloseStore();
+        fixture.ReopenStore();
+        var replay = RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1));
+        AssertAuthorityEqual(authority, replay.ModeAuthority);
+    }
+
+    [Fact]
+    public void Policy_triplet_with_mixed_command_causes_is_rejected_before_any_batch_row()
+    {
+        using var fixture = OpenGrantedFixture(maxElapsedSeconds: 90);
+        var authority = Assert.IsType<RunModeAuthority>(fixture.Server.CurrentModeAuthority());
+        var authorization = Assert.IsType<ModeSwitchAuthorization>(authority.Authorization);
+        var before = fixture.Store.CurrentSequence(fixture.Session);
+        var command = CommandId.New();
+        var foreignCommand = CommandId.New();
+        var nextRevision = checked(authority.Revision + 1);
+        var selected = authority with
+        {
+            Revision = nextRevision,
+            Mode = RunMode.Plan,
+            Authorization = authorization with { AuthorityRevision = nextRevision },
+        };
+        var reason = "causal scope fixture";
+        var payloads = new DomainEventPayload[]
+        {
+            new RunModeChanged(fixture.Run, authority.Mode, RunMode.Plan, reason),
+            new RunModeTransitionAuthorized(fixture.Run, authority.Mode, RunMode.Plan, reason,
+                "UltraCodePolicy", command.ToString(), nextRevision, authority.ObjectiveRevision,
+                authority.ObjectiveDigest, authority.PolicyRevision, authorization.AuthorizationId),
+            new RunModeAuthoritySelected(selected, command.ToString(), "UltraCodePolicy"),
+        };
+        CausationId?[] causations =
+        [new CommandCausation(command), new CommandCausation(command), new CommandCausation(foreignCommand)];
+
+        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: fixture.Run)))
+            Assert.Throws<InvalidStateTransitionException>(() => new EventStream(fixture.Store, fixture.Codecs,
+                fixture.Session).AppendBatch(payloads, DurabilityClass.Barrier, null, causations));
+
+        Assert.Equal(before, fixture.Store.CurrentSequence(fixture.Session));
+        AssertAuthorityEqual(authority, RunProjection.Replay(fixture.Session, fixture.Run, fixture.Codecs,
+            fixture.Store.ReadFrom(fixture.Session, 1)).ModeAuthority);
     }
 
     [Fact]

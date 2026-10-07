@@ -1,5 +1,59 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Matriz de aceptación íntegra — 2026-10-07 11:28 UTC
+
+Checkpoint conjunto: build final 0 errores/advertencias, 14.60 s; focal de CLI,
+authority y policy 58 PASS, 0 FAIL, 8.845 s; arquitectura 56 PASS, 0 FAIL,
+0.632 s. FULL `mode-acceptance-full-1127.log`: **2841 casos, 2837 PASS,
+0 FAIL, 4 SKIP**, 121.096 s. Conteos solapados, no sumables. Logs en
+`C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0649/`.
+
+Luna implementó cierre exacto de `ModelStepNotDispatched` en el gate de autoridad
+y la matriz SQLite de rechazo/reopen. Root auditó y reprodujo RED retirando sólo
+las tres líneas del fix: 24 casos, 23 PASS, 1 FAIL (`Accepted` esperado,
+`Deferred` real), 2.413 s; restauró el fix sin modificar assertions. Root añadió
+los tres controles de explicación directa en los modos y validó el árbol conjunto.
+Las propuestas/fixtures no acreditan activación automática ni cualificación real.
+
+```powershell
+dotnet build OmniCore.slnx --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor -class '*CliEndToEndTests' -class '*UltraCodePolicyTransitionIntegrationTests' -class '*ModeAuthorityContractTests'
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor
+```
+
+Esta matriz prevalece como índice operativo sobre las colas históricas de abajo.
+No elimina requisitos ni convierte cobertura offline en aceptación autenticada.
+Una fila con evidencia parcial permanece abierta; los siete criterios de ADR0046
+y los once de ADR0047 se conservan expresamente.
+
+| Requisito | Evidencia inspeccionada / pendiente que impide afirmar cierre |
+|---|---|
+| ADR0046 salida 1: tres ModelSteps y una suspensión, mismo Turn y gasto completo | `M55ThreeStepSuspensionTests` ejecuta Explorer, SQLite/CAS, cuestionario y reopen; contadores de intentos y readers adicionales. Es proveedor scripted, no consumo autenticado. |
+| ADR0046 salida 2: ProviderState exacto, misma ruta/modelo | `ReasoningReplayResumeTests` y contrato de binding físico. La evidencia de una ruta compatible no acredita almacenamiento exacto de todo opaque que la redacción pueda alterar; no eludir el redactor. |
+| ADR0046 salida 3: Local no amplía gasto sin consentimiento | Routing/consentimiento, suspensión y presupuesto tienen integración offline. Credenciales o el éxito de un worker no son consentimiento ni aceptación real de M5. |
+| ADR0046 salida 4: Task/Lane/Turn, UTC y ArtifactRefs en ToolCalls | Preimagen y envelopes con SQLite/reopen; la ronda previa reparó aislamiento de la prueba que mutaba el entorno. No implementa restore M7. |
+| ADR0046 salida 5: escritor autoritativo y CommandOutcome | `CanonicalWriterArchitectureTests` verifica call sites y controles positivos; tests de commands verifican ranges/faults. Conservar revisión de todos los caminos excepcionales, no sólo un command exitoso. |
+| ADR0046 salida 6: contratos futuros serializan y se reproducen | `AgentExecutionContractTests` prueba identidad, parent y lifecycle independiente. Aún faltan contratos completos Delegation/Wake, JoinPolicy, SupervisionBinding, ResultDisposition y registros de validación; el nombre en el ADR no es implementación. |
+| ADR0046 salida 7: deltas fuera del journal | `TelemetryBoundaryTests` ejecuta wrapper y Explorer real con fixture; guard de arquitectura. No confundir telemetría con recibos canónicos. |
+| ADR0047 criterio 1: explicación PLAN directa | Nuevo `CliEndToEndTests.Direct_explanation_preserves_selected_mode_without_plan_tools_or_children`: TuiTurnHost→adapter HTTP loopback→SQLite, sin tools, hijos, archivos ni PlanApproval. |
+| ADR0047 criterio 2: corrección ACT en Lane raíz | `CliEndToEndTests.Act_executes_read_and_approved_patch_before_completing_gates`; no sustituir esta prueba por la explicación sin tools. |
+| ADR0047 criterio 3: consulta ORQ directa / delegación acotada | Nuevo control ORQ verifica consulta directa y modo conservado. Delegación útil no queda acreditada; scheduling/delegación M6 no se implementan aquí. |
+| ADR0047 criterio 4: modelo/reasoning no conceden autoridad | `ModeAuthorityContractTests` comprueba origen User confiable, rejects y authority/fingerprint; no atribuir a User un command del modelo. |
+| ADR0047 criterio 5: permisos, gasto y preguntas no cambian modo | Tests de PlanApproval distinguen approve_execute/approve_only/reject; permisos y consentimiento siguen separados. Falta aceptación integral de todos los caminos, no extrapolar del gate interno. |
+| ADR0047 criterio 6: transición UltraCode autorizada | Matriz SQLite de pinned/revoked/expiry/consentimiento/steps/tools/grants falsificados. Método interno sin caller de producción ni trigger determinista aceptado: activación real abierta. |
+| ADR0047 criterio 7: revocación durante espera y reinicio | Nuevos controles pinned/revoked sobreviven reopen; todavía no sustituyen un flujo completo de espera→revocación→reopen→resume. Herencia a hijos no se acredita con un gate de raíz. |
+| ADR0047 criterio 8: gates proporcionales / Plan interno | Los tres controles directos verifican un Task/Lane raíz y ausencia de PlanApproval/tools/hijos; conservan el seguimiento técnico. |
+| ADR0047 criterio 9: thinking efectivo y boost de un Turn | Resolución durable, precedencia, capacidad, wire y admisión TUI cuentan con fixtures dedicados. No afirmar thinking real de un modelo por estas pruebas ni usar reasoning para activar UltraCode. |
+| ADR0047 criterio 10: aislamiento Run/restart/retry | Tests de autoridad multi-Run, razonamiento/replay, snapshot y boosts. NotDispatched debe cerrar exclusivamente su `(TurnId, StepIndex)`, no pasos vecinos. |
+| ADR0047 criterio 11: delegación selectiva y aceptación de evidencia | No hay aceptación integral de delegación útil; los contratos congelados pendientes y el scheduler futuro no se sustituyen por Tasks creadas en un fixture. Mantener el criterio explícito y su dependencia de M6. |
+| AgentProfile reusable/efectivo | `ReusableAgentProfileTests`, `EffectiveAgentProfileTests`, `DurableAgentProfileBindingTests`, `AgentProfileSuspensionIntegrationTests` y CLI verifican configuración User, ceiling, fingerprint/CAS y drift antes de dispatch. |
+| M5 / ADR0007: Quick, perfiles, receipts y aceptación real | Runner/store/evidencia/coste y cuotas tienen controles offline; la lectura autenticada de cuotas del 06/10 es histórica y no cualifica Sol/Luna. La ejecución reproducible de Quick sobre proveedores reales y su acta siguen pendientes. No afirmar credencial ausente sin comprobarla ni ejecutar gasto sin presupuesto autorizado. |
+
+Prioridad siguiente: terminar el bloque de autoridad/espera/replay y su integración;
+cerrar los esquemas aceptados faltantes sin lógica M6; verificar la aceptación real
+de M5 con límites explícitos. La distribución de archivos entre root y Luna es
+ownership, no una división del objetivo ni un cambio de sus criterios de salida.
+
 ## Checkpoint conjunto — 2026-10-07 11:11 UTC
 
 FULL `authority-report-full-1110.log`: **2819 casos, 2815 PASS, 0 FAIL,
