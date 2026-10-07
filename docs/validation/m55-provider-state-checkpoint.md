@@ -28,7 +28,9 @@ credenciales expuestas ni cualificación de ChatGPT/Claude/OmniCoder atribuida.
 Logs privados: C:\Users\juanc\.codex\omni-m55-workers-20261006-2103.
 
 Full anterior dbc6d2e terminó: 2569 casos / 2565 PASS / 0 FAIL / 4 SKIP,
-270.080s. Full posterior a este bloque pendiente; no declarar cierre M5.5.
+270.080s. Full posterior sobre 97bb197 terminó exit0: 2574 casos / 2570 PASS /
+0 FAIL / 4 SKIP symlink, 267.608s, llama-tokenizer-publication-full.log.
+Resultado verificado en la misma ejecución 94395; no declarar cierre M5.5.
 Root implementó el contrato/Host/CAS y pruebas de integración; Luna HIGH propuso
 las pruebas de diagnósticos y cancelación, revisadas y ejecutadas por root.
 Qwen ejecutó un tool cerrado de tests del bloque anterior dbc6d2e: 3 PASS,

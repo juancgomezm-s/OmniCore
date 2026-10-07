@@ -6,7 +6,8 @@ con snapshots/eventos. RED2/2 y final39=38PASS/0FAIL/1SKIP; control adicional
 13=12PASS/0FAIL/1SKIP; arquitectura56PASS. POST /tokenize autenticado real
 respondió 3 tokens para «Hola OmniCore». Ver detalles y límites de evidencia en
 m55-provider-state-checkpoint.md. Full dbc6d2e terminal2569=2565PASS/0FAIL/4SKIP;
-full nueva pendiente. Este bloque no cierra AgentProfile efectivo, contratos M6
+full nueva terminal sobre 97bb197: 2574=2570PASS/0FAIL/4SKIP, 267.608s.
+Este bloque no cierra AgentProfile efectivo, contratos M6
 aceptados ni restantes fronteras CAS del metamodelo/fingerprints. No scheduler/joins.
 Qwen sí ejecutó tres pruebas mediante tool cerrado sobre dbc6d2e, no sólo propuestas.
 Los checkpoints históricos de abajo conservan su fecha y no son estado actual.
