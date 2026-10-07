@@ -37,6 +37,17 @@ internal static class ModeAuthorityFingerprint
             writer.WriteString("objectiveDigest", authorization.ObjectiveDigest);
             writer.WriteNumber("policyRevision", authorization.PolicyRevision);
             writer.WriteString("grantedAtUtc", authorization.GrantedAtUtc!.Value);
+            // Preserve legacy hashes when coverage is absent; covered revisions are
+            // additional authority and must participate in every new turn fingerprint.
+            if (authorization.PlanCoverage is { } coverage)
+            {
+                writer.WriteStartObject("planCoverage");
+                writer.WriteString("runId", coverage.RunId.ToString());
+                writer.WriteString("planId", coverage.PlanId.ToString());
+                writer.WriteNumber("planRevision", coverage.PlanRevision);
+                writer.WriteString("rootTaskId", coverage.RootTaskId.ToString());
+                writer.WriteEndObject();
+            }
             writer.WriteStartArray("allowedModes");
             foreach (var mode in authorization.AllowedModes) writer.WriteStringValue(mode.ToString());
             writer.WriteEndArray();

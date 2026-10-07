@@ -709,6 +709,11 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             + ",\"maxElapsedSeconds\":" + limits.MaxElapsedSeconds.ToString(CultureInfo.InvariantCulture)
             + ",\"maxSpendUsd\":" + limits.MaxSpendUsd.ToString(CultureInfo.InvariantCulture)
             + "}," + JsonObj.Field("grantedAtUtc", auth.GrantedAtUtc!.Value.ToString("O", CultureInfo.InvariantCulture))
+            + ",\"planCoverage\":" + (auth.PlanCoverage is not { } coverage ? "null" : "{"
+                + JsonObj.Field("runId", coverage.RunId.ToString()) + ","
+                + JsonObj.Field("planId", coverage.PlanId.ToString())
+                + ",\"planRevision\":" + coverage.PlanRevision.ToString(CultureInfo.InvariantCulture) + ","
+                + JsonObj.Field("rootTaskId", coverage.RootTaskId.ToString()) + "}")
             + ",\"expired\":" + (auth.IsExpiredAt(utcNow) ? "true" : "false") + "}";
         return "{" + JsonObj.Field("runId", authority.RunId.ToString())
             + ",\"revision\":" + authority.Revision.ToString(CultureInfo.InvariantCulture)
@@ -758,7 +763,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     /// </summary>
     internal InternalCommandResult ApplyUltraCodePolicyTransition(SessionId sessionId, RunId runId,
         RunMode targetMode, string reason, long expectedAuthorityRevision,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, EventId? proposalEventId = null)
     {
         var commandId = CommandId.New();
         var messageId = commandId.ToString();
@@ -815,6 +820,32 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                 if (targetMode == current.Mode)
                     return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.NoOp());
 
+                if (proposalEventId is not null)
+                {
+                    var source = all.SingleOrDefault(evt => evt.EventId == proposalEventId);
+                    if (source is null || source.RunId != runId
+                        || _codecs.Decode(source) is not RunModeProposed proposal
+                        || proposal.AuthorityRevision != current.Revision || proposal.From != current.Mode
+                        || proposal.To != targetMode
+                        || !own.Any(evt => _codecs.Decode(evt) is TurnCompleted completed
+                            && completed.TurnId == proposal.TurnId))
+                        return PolicyTransitionResult(messageId, "Proposal is not a completed current-authority recommendation",
+                            RuntimeCommandOutcome.Rejected());
+                    _ = ModeProposalProjection.Replay(sessionId, runId, _codecs, all);
+                }
+
+                if (current.Mode == RunMode.Plan && targetMode == RunMode.Act)
+                {
+                    if (HasPendingInteraction(own))
+                        return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.Deferred("PendingInteraction"));
+                    if (authorization.PlanCoverage is not { } coverage)
+                        return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.Deferred("PlanCoverageUnavailable"));
+                    var plan = PlanProjection.Replay(_codecs, own).Latest();
+                    if (plan is null || coverage.RunId != runId || coverage.PlanId != plan.Id
+                        || coverage.PlanRevision != plan.Revision || coverage.RootTaskId != projection.RootTask)
+                        return PolicyTransitionResult(messageId, null, RuntimeCommandOutcome.Deferred("PlanCoverageStale"));
+                }
+
                 // A mode decision cannot grant a route or consume a pending consent. Any following
                 // provider selection still passes the ordinary SessionRoutingAuthorization gate.
                 var nextRevision = checked(current.Revision + 1);
@@ -835,7 +866,9 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                     new RunModeChanged(runId, current.Mode, targetMode, durableReason),
                     new RunModeTransitionAuthorized(runId, current.Mode, targetMode, durableReason,
                         "UltraCodePolicy", messageId, nextRevision, current.ObjectiveRevision,
-                        current.ObjectiveDigest, current.PolicyRevision, authorization.AuthorizationId),
+                        current.ObjectiveDigest, current.PolicyRevision, authorization.AuthorizationId,
+                        proposalEventId, current.Mode == RunMode.Plan && targetMode == RunMode.Act
+                            ? authorization.PlanCoverage : null),
                     new RunModeAuthoritySelected(next, messageId, "UltraCodePolicy"),
                 };
                 new EventStream(_store, _codecs, sessionId).AppendBatch(batch, DurabilityClass.Barrier);
@@ -895,6 +928,21 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
         return pending.Values.Contains(InteractionKind.ModelRouteConsent);
     }
 
+    private bool HasPendingInteraction(IReadOnlyList<DomainEvent> events)
+    {
+        var pending = new HashSet<InteractionId>();
+        foreach (var evt in events)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case InteractionRequested requested: pending.Add(requested.InteractionId); break;
+                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+            }
+        }
+        return pending.Count != 0;
+    }
+
     private CommandAck SelectRunMode(WireEnvelope command, Dictionary<string, string> fields)
     {
         lock (_modeAuthorityMutationGate) return SelectRunModeCore(command, fields);
@@ -938,6 +986,15 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                 adaptive = rawAdaptive == "true";
             }
             ModeSwitchAuthorization? authorization = null;
+            var coverCurrentPlan = false;
+            if (fields.TryGetValue("coverCurrentPlan", out var rawPlanCoverage))
+            {
+                if (rawPlanCoverage is not ("true" or "false") || !adaptive)
+                    return new CommandAck(messageId, "error",
+                        "coverCurrentPlan requires explicit adaptive UltraCode and a boolean value",
+                        RuntimeCommandOutcome.Rejected());
+                coverCurrentPlan = rawPlanCoverage == "true";
+            }
             var productEffort = effort == "ultracode" ? ProductEffort.UltraCode : ProductEffort.Standard;
             if (adaptive)
             {
@@ -949,9 +1006,18 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                     return new CommandAck(messageId, "error", "allowedModes must include the selected mode",
                         RuntimeCommandOutcome.Rejected());
                 var nextRevision = checked(current.Revision + (current.Authorization is null ? 1 : 2));
+                ModeSwitchPlanCoverage? planCoverage = null;
+                if (coverCurrentPlan)
+                {
+                    var plan = PlanProjection.Replay(_codecs, own).Latest();
+                    if (plan is null || plan.RunId != run || projection.RootTask is not { } rootTask)
+                        return new CommandAck(messageId, "ok", null,
+                            RuntimeCommandOutcome.Deferred("PlanCoverageUnavailable"));
+                    planCoverage = new ModeSwitchPlanCoverage(run, plan.Id, plan.Revision, rootTask);
+                }
                 authorization = new ModeSwitchAuthorization(Guid.NewGuid(), nextRevision,
                     current.ObjectiveRevision, current.ObjectiveDigest, current.PolicyRevision, allowedModes,
-                    limits, DateTimeOffset.UtcNow);
+                    limits, DateTimeOffset.UtcNow, planCoverage);
                 authorization.Validate();
             }
             else if (fields.ContainsKey("maxAgents") || fields.ContainsKey("maxDepth")
@@ -2295,7 +2361,8 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     /// Failure preserves the original exception (including cancellation) alongside the durable outcome.
     /// Accepted with error describes partial effects, never successful completion or safe blind retry.
     /// </summary>
-    internal (ExplorerTurn.TurnResult? Result, CommandAck Ack, Exception? Failure) ExecuteExplorerTurn(SessionId sessionId,
+    internal (ExplorerTurn.TurnResult? Result, CommandAck Ack, Exception? Failure,
+        InternalCommandResult? PolicyTransition) ExecuteExplorerTurn(SessionId sessionId,
         RunId runId, Func<CancellationToken, ExplorerTurn.TurnResult> execute,
         CancellationToken cancellationToken)
     {
@@ -2311,16 +2378,18 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             {
                 return (null, new CommandAck(messageId, "error",
                     "the requested session/run is not the current active Run",
-                    RuntimeCommandOutcome.Rejected()), null);
+                    RuntimeCommandOutcome.Rejected()), null, null);
             }
 
             sequenceBefore = _store.CurrentSequence(sessionId);
             using var internalCommand = ambientCommand is null
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
             var result = execute(cancellationToken);
+            var policyTransition = result.StopReason == StopReason.EndTurn
+                ? EvaluateCompletedTurnModePolicy(sessionId, runId, sequenceBefore.Value, cancellationToken) : null;
             var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                 sessionId, sequenceBefore.Value, commandId);
-            return (result, ack, null);
+            return (result, ack, null, policyTransition);
         }
         catch (Exception failure)
         {
@@ -2328,7 +2397,33 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                 ? UnavailableCommandOutcome(messageId)
                 : FailedDurableCommandAck(messageId, sessionId, sequenceBefore.Value,
                     failure.Message, restoreRunIdentity: false);
-            return (null, ack, failure);
+            return (null, ack, failure, null);
+        }
+    }
+
+    private InternalCommandResult? EvaluateCompletedTurnModePolicy(SessionId session, RunId run,
+        long before, CancellationToken cancellationToken)
+    {
+        lock (_modeAuthorityMutationGate)
+        {
+            var all = _store.ReadFrom(session, 1);
+            var own = EventsForRun(all, run);
+            var authority = RunProjection.Replay(session, run, _codecs, own).ModeAuthority;
+            if (authority is null || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow)) return null;
+            var completed = own.Where(evt => evt.Sequence > before)
+                .Select(_codecs.Decode).OfType<TurnCompleted>().LastOrDefault();
+            if (completed is null) return null;
+            var source = own.LastOrDefault(evt => evt.Sequence > before
+                && _codecs.Decode(evt) is RunModeProposed proposal && proposal.TurnId == completed.TurnId);
+            if (source is null || _codecs.Decode(source) is not RunModeProposed proposed) return null;
+            // Only the explicit covered-plan predicate is implemented here. A model's reason
+            // alone is not an observable product-policy justification for other transitions.
+            if (authority.Mode != RunMode.Plan || proposed.To != RunMode.Act)
+                return PolicyTransitionResult(CommandId.New().ToString(), null,
+                    RuntimeCommandOutcome.Deferred("ModePolicyPredicateUnavailable"));
+            return ApplyUltraCodePolicyTransition(session, run, RunMode.Act,
+                "Explicitly covered current plan revision; completed turn recommends execution",
+                proposed.AuthorityRevision, cancellationToken, source.EventId);
         }
     }
 

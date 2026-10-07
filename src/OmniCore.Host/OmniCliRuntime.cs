@@ -1086,6 +1086,8 @@ public sealed class OmniCliRuntime
                 await TryEscalateAsync(loaded, model!, route.Id, usableContext, prompt, act, writeLine, cancellationToken) is { } escalatedCode)
                 return escalatedCode;
 
+            if (!ReportModePolicyTransition(askExecution.PolicyTransition, writeLine)) return 1;
+
             if (!executingAct && OmniServer.RequirePlanApprovalInteraction(server.RequestPlanApprovalCommand()) is { } approvalId)
             {
                 if (Console.IsInputRedirected)
@@ -1149,6 +1151,15 @@ public sealed class OmniCliRuntime
 
             return 1;
         }
+    }
+
+    private static bool ReportModePolicyTransition(InternalCommandResult? transition, Action<string> writeLine)
+    {
+        if (transition is null) return true;
+        writeLine("{" + JsonObj.Field("event", "mode.policy.outcome") + ","
+            + JsonObj.Field("outcome", transition.Ack.Outcome?.Kind.ToString() ?? "Unavailable") + ","
+            + JsonObj.Field("reason", transition.Ack.Outcome?.Reason ?? transition.Ack.Error ?? "") + "}");
+        return transition.Failure is null && transition.Ack.Status == "ok";
     }
 
     internal int RunActLoop(ExplorerTurn turn, Action<string> writeLine, string objective, string instruction,
@@ -1220,6 +1231,10 @@ public sealed class OmniCliRuntime
                 return 1;
             }
 
+            if (!ReportModePolicyTransition(askExecution.PolicyTransition, writeLine)) return 1;
+            // A completed turn is the safe hand-off boundary. Never reuse a mutating
+            // executor or run ACT completion gates after a policy downgrade to PLAN.
+            if (server.CurrentRunMode() == RunMode.Plan) return 0;
             IReadOnlyList<ExternalCompletionGateResult> checkResults = Array.Empty<ExternalCompletionGateResult>();
             var completion = server.CheckRunCompletionAndGate(sessionId, runId, stream =>
             {

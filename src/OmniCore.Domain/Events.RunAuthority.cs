@@ -29,7 +29,9 @@ public sealed record RunModeTransitionAuthorized(
     long ObjectiveRevision,
     string ObjectiveDigest,
     long PolicyRevision,
-    Guid? AuthorizationId) : DomainEventPayload
+    Guid? AuthorizationId,
+    EventId? ProposalEventId = null,
+    ModeSwitchPlanCoverage? PlanCoverage = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("run.mode_transition_authorized");
     public int SchemaVersion() => 1;

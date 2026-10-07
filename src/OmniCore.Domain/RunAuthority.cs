@@ -26,6 +26,26 @@ public sealed record ModeSwitchLimits(
     }
 }
 
+/// <summary>
+/// Optional, Run-scoped coverage of one concrete plan revision for an adaptive mode authorization.
+/// This records scope only; it does not mean the plan was approved or authorize execution by itself.
+/// </summary>
+public sealed record ModeSwitchPlanCoverage(
+    RunId RunId,
+    PlanId PlanId,
+    int PlanRevision,
+    TaskId RootTaskId)
+{
+    public void Validate()
+    {
+        if (RunId is null || RunId.Value == Guid.Empty
+            || PlanId is null || PlanId.Value == Guid.Empty
+            || PlanRevision <= 0
+            || RootTaskId is null || RootTaskId.Value == Guid.Empty)
+            throw new ArgumentException("Plan coverage requires non-empty Run, Plan, and root Task identities and a positive revision.");
+    }
+}
+
 /// <summary>Run-scoped permission to change modes; not a tool permission or route grant.</summary>
 public sealed record ModeSwitchAuthorization(
     Guid AuthorizationId,
@@ -35,7 +55,8 @@ public sealed record ModeSwitchAuthorization(
     long PolicyRevision,
     IReadOnlyList<RunMode> AllowedModes,
     ModeSwitchLimits Limits,
-    DateTimeOffset? GrantedAtUtc = null)
+    DateTimeOffset? GrantedAtUtc = null,
+    ModeSwitchPlanCoverage? PlanCoverage = null)
 {
     private IReadOnlyList<RunMode> _allowedModes = Array.AsReadOnly(AllowedModes.ToArray());
 
@@ -60,6 +81,7 @@ public sealed record ModeSwitchAuthorization(
         try { _ = granted.AddSeconds(Limits.MaxElapsedSeconds); }
         catch (ArgumentOutOfRangeException exception)
         { throw new ArgumentException("Adaptive authorization elapsed-time limit exceeds the UTC range.", exception); }
+        PlanCoverage?.Validate();
     }
 
     public bool IsExpiredAt(DateTimeOffset utcNow)
@@ -129,6 +151,8 @@ public sealed record RunModeAuthority(
                 || Authorization.ObjectiveDigest != ObjectiveDigest
                 || Authorization.PolicyRevision != PolicyRevision)
                 throw new ArgumentException("Mode-switch authorization must match its Run authority revisions.");
+            if (Authorization.PlanCoverage is { } planCoverage && planCoverage.RunId != RunId)
+                throw new ArgumentException("Plan coverage must belong to the same Run as its mode authority.");
             if (!Authorization.AllowedModes.Contains(Mode))
                 throw new ArgumentException("The selected mode must be covered by its adaptive authorization.");
         }

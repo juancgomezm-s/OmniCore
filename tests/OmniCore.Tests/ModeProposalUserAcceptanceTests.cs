@@ -18,8 +18,12 @@ public sealed class ModeProposalUserAcceptanceTests
 
     private static WireEnvelope Command(string payload) => WireEnvelope.Command(Ids.NewV7(), payload);
 
-    [Fact]
-    public void Model_proposal_stays_advisory_until_trusted_user_selects_mode_in_same_run()
+    [Theory]
+    [InlineData("orq", false, false)]
+    [InlineData("act", true, false)]
+    [InlineData("act", true, true)]
+    public void Model_proposal_requires_user_selection_or_explicit_current_plan_coverage(
+        string proposedMode, bool adaptive, bool coveredPlan)
     {
         var server = OmniHost.CreateInMemoryServer();
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -34,6 +38,16 @@ public sealed class ModeProposalUserAcceptanceTests
         var lane = Assert.IsType<LaneId>(server.LastLaneId());
         var store = server.AcquireStore();
         var codecs = server.AcquireCodecs();
+        if (adaptive)
+        {
+            Assert.Null(server.EnsureSessionRoutingPolicy(session).Failure);
+            var granted = server.SendUserAction(Command("{\"cmd\":\"run.mode.select\",\"mode\":\"plan\","
+                + "\"effort\":\"ultracode\",\"adaptive\":true,\"allowedModes\":\"plan,act,orq\","
+                + "\"maxAgents\":1,\"maxDepth\":1,\"maxTurns\":3,\"maxToolCalls\":8,"
+                + "\"maxElapsedSeconds\":120,\"maxSpendUsd\":2.5,\"coverCurrentPlan\":"
+                + (coveredPlan ? "true" : "false") + "}"), cancellationToken);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, granted.Outcome?.Kind);
+        }
         var initialAuthority = Assert.IsType<RunModeAuthority>(server.CurrentModeAuthority());
         Assert.Equal(RunMode.Plan, initialAuthority.Mode);
         var beforeTurnSequence = store.CurrentSequence(session);
@@ -48,7 +62,7 @@ public sealed class ModeProposalUserAcceptanceTests
             var providerCalls = 0;
             var turn = new ExplorerTurn((_, _) => ++providerCalls == 1
                     ? new ModelResponse([new ToolCallBlock(toolCall, "scripted-proposal", "mode.propose",
-                        "{\"mode\":\"orq\",\"reason\":\"Independent review may help\"}")],
+                        "{\"mode\":\"" + proposedMode + "\",\"reason\":\"Independent review may help\"}")],
                         StopReason.ToolUse, new TokenUsage(3, 1, 0, 0, 0), null,
                         new ProviderMetadata("fixture", "test", null))
                     : new ModelResponse([new TextBlock("The mode is unchanged until the user selects it.")],
@@ -80,15 +94,33 @@ public sealed class ModeProposalUserAcceptanceTests
             var proposal = Assert.Single(ModeProposalProjection.Replay(session, run, codecs, afterProposal));
             Assert.Equal(toolCall, proposal.ToolCallId);
             Assert.Equal(RunMode.Plan, proposal.From);
-            Assert.Equal(RunMode.Orchestrate, proposal.To);
+            Assert.Equal(proposedMode == "act" ? RunMode.Act : RunMode.Orchestrate, proposal.To);
+
+            if (adaptive && coveredPlan)
+            {
+                Assert.Equal(RuntimeCommandOutcomeKind.Accepted, execution.PolicyTransition?.Ack.Outcome?.Kind);
+                Assert.Equal(RunMode.Act, server.CurrentRunMode());
+                var transitionEvent = Assert.Single(afterProposal, evt => codecs.Decode(evt)
+                    is RunModeTransitionAuthorized { Origin: "UltraCodePolicy" });
+                var automaticTransition = Assert.IsType<RunModeTransitionAuthorized>(codecs.Decode(transitionEvent));
+                var proposalEvent = Assert.Single(afterProposal, evt => codecs.Decode(evt) is RunModeProposed);
+                Assert.Equal(proposalEvent.EventId, automaticTransition.ProposalEventId);
+                Assert.Equal(initialAuthority.Authorization?.PlanCoverage, automaticTransition.PlanCoverage);
+                Assert.True(transitionEvent.Sequence > execution.Ack.LastSeq);
+                Assert.DoesNotContain(afterProposal.Select(codecs.Decode), payload => payload is InteractionResolved);
+                Assert.Equal(RunMode.Act, RunProjection.Replay(session, run, codecs, afterProposal).Mode);
+                return;
+            }
+            if (adaptive)
+                Assert.Equal(RuntimeCommandOutcomeKind.Deferred, execution.PolicyTransition?.Ack.Outcome?.Kind);
 
             var advisoryProjection = RunProjection.Replay(session, run, codecs, afterProposal);
             Assert.Equal(RunMode.Plan, advisoryProjection.Mode);
             Assert.Equal(initialAuthority.Revision, advisoryProjection.ModeAuthority?.Revision);
             Assert.Equal(initialAuthority.ObjectiveRevision, advisoryProjection.ModeAuthority?.ObjectiveRevision);
             Assert.Equal(initialAuthority.PolicyRevision, advisoryProjection.ModeAuthority?.PolicyRevision);
-            Assert.False(advisoryProjection.ModeAuthority?.AutoModeSwitch);
-            Assert.DoesNotContain(afterProposal.Select(codecs.Decode), payload => payload is RunModeChanged
+            Assert.Equal(adaptive, advisoryProjection.ModeAuthority?.AutoModeSwitch);
+            Assert.DoesNotContain(afterProposal.Where(evt => evt.Sequence > beforeTurnSequence).Select(codecs.Decode), payload => payload is RunModeChanged
                 or RunModeTransitionAuthorized or RunModeAuthorityRevoked);
 
             // A generic wire command carries no trusted-user origin and must not consume a sequence.
@@ -118,7 +150,7 @@ public sealed class ModeProposalUserAcceptanceTests
             Assert.Equal(ProductEffort.Standard, finalProjection.ModeAuthority?.ProductEffort);
             Assert.True(finalProjection.ModeAuthority?.ModePinned);
             Assert.False(finalProjection.ModeAuthority?.AutoModeSwitch);
-            var transition = Assert.Single(completeJournal.Select(codecs.Decode).OfType<RunModeTransitionAuthorized>());
+            var transition = completeJournal.Select(codecs.Decode).OfType<RunModeTransitionAuthorized>().Last();
             Assert.Equal(select.MessageId, transition.CommandId);
             Assert.Equal("User", transition.Origin);
             Assert.Equal(RunMode.Plan, transition.From);
