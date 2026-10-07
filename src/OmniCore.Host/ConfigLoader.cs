@@ -27,7 +27,7 @@ public sealed class ConfigLoader
                 "billingMode", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models", "routing" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
-                "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases" });
+                "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases", "reasoning" });
         ValidateRequiredAndRanges(providerNodes, modelNodes, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
 
@@ -81,7 +81,11 @@ public sealed class ConfigLoader
                 var m = pair.Value;
                 var context = m.Context ?? 8192;
                 registry.AddModel(new ModelDefinition(pair.Key, m.Provider!, context,
-                    m.RecommendedUsableContext ?? context, m.MaxOutput ?? 2048, m.ParametersBillions, m.Aliases ?? []));
+                    m.RecommendedUsableContext ?? context, m.MaxOutput ?? 2048, m.ParametersBillions, m.Aliases ?? [],
+                    m.Reasoning is { } reasoning
+                        ? new ReasoningCapability(reasoning.Supported, reasoning.EffortLevels,
+                            reasoning.ReplayPolicy is null ? null : Enum.Parse<ReasoningReplayPolicy>(reasoning.ReplayPolicy))
+                        : null));
             }
         }
 
@@ -362,6 +366,10 @@ public sealed class ConfigLoader
             {
                 if (!IsYamlString(pair.Value)) AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
             }
+            else if (key == "reasoning")
+            {
+                ValidateReasoning(pair.Value, path + ".reasoning", file, diagnostics);
+            }
             else if (key == "aliases")
             {
                 if (pair.Value is not YamlSequenceNode aliasSequence)
@@ -381,6 +389,48 @@ public sealed class ConfigLoader
             }
             else if (pair.Value is not YamlScalarNode)
                 AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+        }
+    }
+
+    private static void ValidateReasoning(YamlNode node, string path, string file,
+        List<ConfigDiagnostic> diagnostics)
+    {
+        if (node is not YamlMappingNode map)
+        {
+            AddAtNode(diagnostics, file, path, "config.wrongType", node);
+            return;
+        }
+        CheckKeys(map, file, path, ["supported", "effortLevels", "replayPolicy"], diagnostics);
+        var supported = false;
+        if (map.Children.TryGetValue(new YamlScalarNode("supported"), out var supportNode))
+        {
+            if (supportNode is not YamlScalarNode { Style: ScalarStyle.Plain, Value: "true" or "false" } support)
+                AddAtNode(diagnostics, file, path + ".supported", "config.wrongType", supportNode);
+            else supported = support.Value == "true";
+        }
+        if (map.Children.TryGetValue(new YamlScalarNode("replayPolicy"), out var policyNode))
+        {
+            if (!IsYamlString(policyNode))
+                AddAtNode(diagnostics, file, path + ".replayPolicy", "config.wrongType", policyNode);
+            else if (!Enum.GetNames<ReasoningReplayPolicy>().Contains(((YamlScalarNode)policyNode).Value, StringComparer.Ordinal))
+                AddAtNode(diagnostics, file, path + ".replayPolicy", "config.outOfRange", policyNode);
+        }
+        if (!map.Children.TryGetValue(new YamlScalarNode("effortLevels"), out var levelsNode)) return;
+        if (levelsNode is not YamlSequenceNode levels)
+        {
+            AddAtNode(diagnostics, file, path + ".effortLevels", "config.wrongType", levelsNode);
+            return;
+        }
+        if (!supported)
+            AddAtNode(diagnostics, file, path + ".effortLevels", "config.outOfRange", levelsNode);
+        var unique = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var level in levels)
+        {
+            if (!IsYamlString(level))
+                AddAtNode(diagnostics, file, path + ".effortLevels", "config.wrongType", level);
+            else if (string.IsNullOrWhiteSpace(((YamlScalarNode)level).Value)
+                || !unique.Add(((YamlScalarNode)level).Value!))
+                AddAtNode(diagnostics, file, path + ".effortLevels", "config.outOfRange", level);
         }
     }
 

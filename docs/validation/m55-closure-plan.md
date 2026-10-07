@@ -7,6 +7,20 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 01:51 UTC: `models.yaml` acepta una declaración `reasoning`
+con `supported` boolean opcional, `effortLevels` lista opcional y `replayPolicy`
+enum exacto opcional. DTO/cargador generado AOT y schema embebido conectados.
+Omisión/objeto vacío son Unknown; strings boolean, valores desconocidos, claves
+extra, duplicados/listas inválidas y esfuerzo sin soporte explícito se rechazan
+con ruta y ubicación. Un YAML válido llega a route/profile/fingerprint sin
+activar ReasoningRequest ni gasto y no se copia a endpoint override.
+RED: 19 casos / 18 FAIL / 1 PASS, 0.380s (`reasoning-capability-yaml-red.log`).
+Final configuración+contratos/fingerprint: 86 PASS / 0 FAIL / 0 SKIP, 1.329s
+(`reasoning-capability-yaml-final.log`); build 0/0. Son fixtures sin catálogo
+autenticado ni consumo real. Aplicación del esfuerzo/replay y almacenamiento
+seguro siguen pendientes. Auditoría readonly Luna halló gates Build/Test sin
+TurnId; root comprobó el scope de CheckRunCompletionAndGate y revisa regresión.
+
 Actualización 01:48 UTC: añadido `ReasoningCapability` como hechos declarados
 inmutables: `Supported` nullable, `EffortLevels` nullable (etiquetas opacas del
 provider, sin ranking universal) y `ReplayPolicy` nullable. Unknown no implica

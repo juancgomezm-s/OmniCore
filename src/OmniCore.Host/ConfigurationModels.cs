@@ -58,6 +58,7 @@ public sealed class EscalationYaml
 
 public sealed class ModelFileYaml
 {
+    public ReasoningCapabilityYaml? Reasoning { get; set; }
     public string? Provider { get; set; }
     public long? Context { get; set; }
     public long? RecommendedUsableContext { get; set; }
@@ -66,6 +67,14 @@ public sealed class ModelFileYaml
     public List<string>? Aliases { get; set; }
     public decimal? InputPricePerMillionUsd { get; set; }
     public decimal? OutputPricePerMillionUsd { get; set; }
+}
+
+/// <summary>Declared facts only; omission remains unknown, not unsupported.</summary>
+public sealed class ReasoningCapabilityYaml
+{
+    public bool? Supported { get; set; }
+    public List<string>? EffortLevels { get; set; }
+    public string? ReplayPolicy { get; set; }
 }
 
 public sealed class WorkspaceSettingsYaml
@@ -113,6 +122,7 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(ProviderAuthYaml))]
 [YamlSerializable(typeof(ModelsFileYaml))]
 [YamlSerializable(typeof(ModelFileYaml))]
+[YamlSerializable(typeof(ReasoningCapabilityYaml))]
 [YamlSerializable(typeof(RoutingYaml))]
 [YamlSerializable(typeof(EscalationYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
