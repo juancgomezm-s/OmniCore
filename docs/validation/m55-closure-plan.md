@@ -1,5 +1,21 @@
 # Objetivo activo: llegar a M6
 
+Actualización vigente 2026-10-07 02:42 UTC / 2026-10-06 20:42 local:
+contenido visible del mismo Turn restaurado tras reapertura SQLite/CAS,
+incluido razonamiento, texto intermedio y orden con herramientas canónicas.
+Scope Run/Lane/Turn/paso y ruta física contrastados; corrupción y marcadores
+ajenos rechazan antes del proveedor. Focal 79 PASS / 0 FAIL / 0 SKIP,
+51.403s, build 0/0 (`visible-content-contract-final.log`). Fixtures offline,
+no consultas autenticadas ni gasto real. Contrato y reproducción en
+`m55-provider-state-checkpoint.md`. Full previa 0fbb322 no incluye este bloque.
+Luna aportó fixtures y auditoría; root implementó, reprodujo REDs y verificó.
+Luna entregó además propuesta externa aún no integrada de validación/forwarding
+ReasoningRequest: persiste esfuerzo pero la solicitud actual no lo reenvía.
+Siguen pendientes esfuerzo/wire, otras políticas de replay, storage opaco seguro,
+IncludedQuota de cualificación, contratos congelados M6 y auditoría de salidas.
+M5 cerrado por el usuario; no se declara cerrado M5.5. Qwen último chequeo
+01:44 UTC rechazó conexión en ambos endpoints, sin generación ni fallback pagado.
+
 Actualizado 2026-10-07 01:44 UTC / 2026-10-06 19:44 America/Mexico_City.
 Objetivo vigente: cerrar M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.

@@ -423,7 +423,13 @@ public sealed class ExplorerTurn
             ? ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)
             : new PersistedSpend(0m, 0m, 0m, false);
 
-        var messages = LoadConversation(stream, runId);
+        List<ModelMessage> messages;
+        try { messages = LoadConversation(stream, runId, isResume ? turnId : null, laneId); }
+        catch (InvalidDataException)
+        {
+            return new TurnResult("Persisted visible reasoning is invalid.", StopReason.Error, 0,
+                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+        }
         var safeQuestion = isResume || queuedQuestion ? "" : _redaction.Redact(question ?? "");
         var pendingFollowUps = isResume || origin == "InteractionResponse(ModelRouteConsent)"
             ? Array.Empty<FollowUpQueue.Item>()
@@ -753,7 +759,7 @@ public sealed class ExplorerTurn
                     }
                     var stepArtifact = _artifacts.PutText(
                         EncodeUsageResponse(stepResponse, resolved.Usage, stepCost, runId, completedDay,
-                            stateDescriptor),
+                            stateDescriptor, EncodeVisibleContent(resolved.Content)),
                         "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse,
                         Sensitivity.Sensitive);
                     var completionAfter = stepReservation is not null ? _store.CurrentSequence(sessionId) : 0;
@@ -1302,7 +1308,7 @@ public sealed class ExplorerTurn
     }
 
     private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,
-        RunId runId, string day, string? providerStateDescriptor = null)
+        RunId runId, string day, string? providerStateDescriptor = null, string? visibleContent = null)
     {
         var costJson = cost is null ? "null" : "\""
             + cost.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\"";
@@ -1314,7 +1320,105 @@ public sealed class ExplorerTurn
             + ",\"cacheWrite\":" + usage.CacheWrite.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ",\"reasoning\":" + usage.Reasoning.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ",\"costUsd\":" + costJson
-            + ",\"providerState\":" + (providerStateDescriptor ?? "null") + "}";
+            + ",\"providerState\":" + (providerStateDescriptor ?? "null")
+            + (visibleContent is null ? "" : ",\"visibleContent\":" + visibleContent) + "}";
+    }
+
+    private string? EncodeVisibleContent(IReadOnlyList<ContentBlock> content)
+    {
+        var blocks = content.Where(block => block is ReasoningBlock or TextBlock or ToolCallBlock).ToArray();
+        if (blocks.Length == 0) return null;
+        using var buffer = new System.IO.MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("version", 1);
+            writer.WriteString("routeIdentityHash", _selection.RouteIdentityHash);
+            writer.WriteStartArray("blocks");
+            foreach (var block in blocks)
+            {
+                writer.WriteStartObject();
+                if (block is ReasoningBlock reasoning)
+                {
+                    writer.WriteString("kind", "reasoning");
+                    writer.WriteString("text", reasoning.VisibleText is null ? null : _redaction.Redact(reasoning.VisibleText));
+                    writer.WriteString("visibility", reasoning.Visibility.ToString());
+                }
+                else if (block is TextBlock text)
+                {
+                    writer.WriteString("kind", "text");
+                    writer.WriteString("text", _redaction.Redact(text.Text));
+                }
+                else if (block is ToolCallBlock call)
+                {
+                    // Only an ordering marker. Tool identity/arguments come from its canonical event.
+                    writer.WriteString("kind", "tool-call");
+                    writer.WriteString("callId", call.Id.ToString());
+                }
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    private IReadOnlyList<ContentBlock> ReadVisibleContent(ArtifactRef? artifact,
+        IReadOnlyDictionary<string, ToolCallRequested> canonicalCalls,
+        IReadOnlyDictionary<string, ToolCallRequested> allTurnCalls,
+        IReadOnlyDictionary<string, string> questionnaireArguments)
+    {
+        const string failure = "Persisted visible reasoning is invalid.";
+        if (artifact is null) return Array.Empty<ContentBlock>();
+        try
+        {
+            if (artifact.Kind != ArtifactKind.ModelResponse || !_artifacts.Verify(artifact.Hash, artifact.Size))
+                throw new InvalidDataException(failure);
+            using var document = System.Text.Json.JsonDocument.Parse(_artifacts.GetText(artifact.Hash)!);
+            if (!document.RootElement.TryGetProperty("visibleContent", out var visible))
+                return Array.Empty<ContentBlock>(); // legacy artifacts remain readable
+            if (visible.GetProperty("version").GetInt32() != 1) throw new InvalidDataException(failure);
+            var routeHash = visible.GetProperty("routeIdentityHash").GetString();
+            if (_selection.RouteIdentityHash is null || routeHash != _selection.RouteIdentityHash)
+                return Array.Empty<ContentBlock>();
+            var blocks = new List<ContentBlock>();
+            foreach (var block in visible.GetProperty("blocks").EnumerateArray())
+            {
+                var kind = block.GetProperty("kind").GetString();
+                if (kind == "tool-call")
+                {
+                    var callId = block.GetProperty("callId").GetString();
+                    if (callId is null || !Guid.TryParse(callId, out _)) throw new InvalidDataException(failure);
+                    if (canonicalCalls.TryGetValue(callId, out var call))
+                    {
+                        var arguments = questionnaireArguments.TryGetValue(callId, out var schema) ? schema : call.ArgumentsJson;
+                        blocks.Add(new ToolCallBlock(call.ToolCallId, call.ProviderCallId, call.ToolName, _redaction.Redact(arguments)));
+                    }
+                    else if (allTurnCalls.ContainsKey(callId)) throw new InvalidDataException(failure);
+                    // An unexecuted call has no canonical requested event; don't manufacture one.
+                    continue;
+                }
+                var text = block.GetProperty("text").GetString();
+                if (kind == "text" && text is not null)
+                {
+                    blocks.Add(new TextBlock(_redaction.Redact(text)));
+                    continue;
+                }
+                if (kind != "reasoning") throw new InvalidDataException(failure);
+                var visibilityName = block.GetProperty("visibility").GetString();
+                if (!Enum.TryParse<ReasoningVisibility>(visibilityName, out var visibility)
+                    || !Enum.IsDefined(visibility) || visibility.ToString() != visibilityName)
+                    throw new InvalidDataException(failure);
+                // Provider signatures and opaque artifact refs are never stored in this projection.
+                blocks.Add(new ReasoningBlock(text is null ? null : _redaction.Redact(text), visibility, null));
+            }
+            return blocks;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+            or IOException or ArgumentException or KeyNotFoundException)
+        {
+            throw new InvalidDataException(failure);
+        }
     }
 
     private static string DecodeUsageResponse(string? text) =>
@@ -1447,7 +1551,8 @@ public sealed class ExplorerTurn
         return string.Join("\n", parts.ToArray());
     }
 
-    internal List<ModelMessage> LoadConversation(EventStream stream, RunId runId)
+    internal List<ModelMessage> LoadConversation(EventStream stream, RunId runId,
+        TurnId? activeTurnId = null, LaneId? activeLaneId = null)
     {
         var history = new List<ModelMessage>();
         var steeringInputs = new Dictionary<SteeringId, TurnSteeringReceived>();
@@ -1455,9 +1560,44 @@ public sealed class ExplorerTurn
         var questionnaireResults = new Dictionary<string, string>(StringComparer.Ordinal);
         var interactionCalls = new Dictionary<string, string>(StringComparer.Ordinal);
         var questionnaireArguments = new Dictionary<string, string>(StringComparer.Ordinal);
+        var activeStepStarts = new Dictionary<int, ModelStepStarted>();
+        var canonicalCalls = new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal);
+        var callsByStep = new Dictionary<int, Dictionary<string, ToolCallRequested>>();
+        var restoredCalls = new HashSet<string>(StringComparer.Ordinal);
+        int? activeStepIndex = null;
+        int? completedStepIndex = null;
+        var completedSteps = new HashSet<int>();
         foreach (var evt in stream.EventsSince(1))
         {
             var payload = _codecs.Decode(evt);
+            if (activeTurnId is not null && evt.RunId == runId && evt.LaneId == activeLaneId)
+            {
+                if (payload is ModelStepStarted stepStart && stepStart.TurnId == activeTurnId)
+                {
+                    if (!activeStepStarts.TryAdd(stepStart.StepIndex, stepStart))
+                        throw new InvalidDataException("Persisted visible reasoning is invalid.");
+                    activeStepIndex = stepStart.StepIndex;
+                    completedStepIndex = null;
+                }
+                else if (payload is ModelStepCompleted completion && completion.TurnId == activeTurnId)
+                {
+                    if (activeStepIndex != completion.StepIndex || !completedSteps.Add(completion.StepIndex))
+                        throw new InvalidDataException("Persisted visible reasoning is invalid.");
+                    completedStepIndex = completion.StepIndex;
+                }
+                else if (evt.TurnId == activeTurnId && payload is ToolCallRequested canonicalCall)
+                {
+                    var callId = canonicalCall.ToolCallId.ToString();
+                    if (!canonicalCalls.TryAdd(callId, canonicalCall))
+                        throw new InvalidDataException("Persisted visible reasoning is invalid.");
+                    if (completedStepIndex is { } owner)
+                    {
+                        if (!callsByStep.TryGetValue(owner, out var ownedCalls))
+                            callsByStep.Add(owner, ownedCalls = new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal));
+                        ownedCalls.Add(callId, canonicalCall);
+                    }
+                }
+            }
             if (payload is InteractionRequested request && request.Kind == InteractionKind.Question
                 && request.ToolCallJson is not null)
             {
@@ -1537,11 +1677,30 @@ public sealed class ExplorerTurn
                 }
                 catch (System.Text.Json.JsonException) { }
             }
+            else if (type == "model_step.completed" && activeTurnId is not null
+                && evt.RunId == runId && evt.LaneId == activeLaneId
+                && _codecs.Decode(evt) is ModelStepCompleted stepCompleted
+                && stepCompleted.TurnId == activeTurnId)
+            {
+                if (!activeStepStarts.TryGetValue(stepCompleted.StepIndex, out var stepStart))
+                    throw new InvalidDataException("Persisted visible reasoning is invalid.");
+                if (Equals(stepStart.RouteId, _selection.RouteId) && stepStart.ModelId == _selection.Model.ToString())
+                {
+                    var ownedCalls = callsByStep.TryGetValue(stepCompleted.StepIndex, out var calls)
+                        ? calls : new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal);
+                    var visible = ReadVisibleContent(stepCompleted.ResponseArtifact, ownedCalls, canonicalCalls, questionnaireArguments);
+                    foreach (var call in visible.OfType<ToolCallBlock>())
+                        if (!restoredCalls.Add(call.Id.ToString()))
+                            throw new InvalidDataException("Persisted visible reasoning is invalid.");
+                    if (visible.Count > 0) history.Add(new ModelMessage(MessageRole.Assistant, visible));
+                }
+            }
             else if (type == "toolcall.requested")
             {
                 var call = _codecs.Decode(evt) as ToolCallRequested;
                 if (call is not null)
                 {
+                    if (restoredCalls.Contains(call.ToolCallId.ToString())) continue;
                     var arguments = questionnaireArguments.TryGetValue(call.ToolCallId.ToString(), out var schemaJson)
                         ? schemaJson : call.ArgumentsJson;
                     history.Add(new ModelMessage(MessageRole.Assistant, new ContentBlock[] {

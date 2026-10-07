@@ -28,6 +28,9 @@ public sealed class ReasoningReplayResumeTests
     [InlineData("none", false)]
     [InlineData("preserve", true)]
     [InlineData("changed-to-none-after-reopen", false)]
+    [InlineData("visible-secret", true)]
+    [InlineData("corrupt-visible", true)]
+    [InlineData("interleaved-visible", true)]
     public void Reopened_questionnaire_resume_obeys_explicit_reasoning_replay_policy(
         string scenario, bool shouldReplay)
     {
@@ -57,6 +60,8 @@ public sealed class ReasoningReplayResumeTests
             var opaque = artifacts.PutText("verified resume reasoning", "text/plain",
                 ArtifactKind.ProviderOpaqueState, Sensitivity.Sensitive);
             var totalCalls = 0;
+            var visibleText = scenario == "visible-secret" ? "visible sk-super-secret-value" : "visible reasoning";
+            var safeVisibleText = new RedactionPolicy().Redact(visibleText);
 
             ExecutionFingerprint Fingerprint()
             {
@@ -79,12 +84,14 @@ public sealed class ReasoningReplayResumeTests
             {
                 totalCalls++;
                 Assert.Null(request.Continuation);
-                return new ModelResponse(new ContentBlock[]
+                var content = new List<ContentBlock>
                 {
-                    new ReasoningBlock("visible reasoning", ReasoningVisibility.Full, opaque),
+                    new ReasoningBlock(visibleText, ReasoningVisibility.Full, opaque),
                     new ToolCallBlock(ToolCallId.New(), "provider-question", "user.ask",
                         QuestionnaireCodec.EncodeSchema(Schema))
-                }, StopReason.ToolUse, new TokenUsage(10, 2, 0, 0, 0), continuationState,
+                };
+                if (scenario == "interleaved-visible") content.Add(new TextBlock("after the call"));
+                return new ModelResponse(content, StopReason.ToolUse, new TokenUsage(10, 2, 0, 0, 0), continuationState,
                     new ProviderMetadata("scripted", "", null));
             }).Ask("ask", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
 
@@ -92,6 +99,15 @@ public sealed class ReasoningReplayResumeTests
             Assert.NotNull(first.PendingInteractionId);
             var firstStep = store.ReadFrom(session, 1).Select(codecs.Decode).OfType<ModelStepCompleted>().Single();
             Assert.Equal(0, firstStep.StepIndex);
+            Assert.Equal(10, firstStep.Usage.Input);
+            Assert.Equal(2, firstStep.Usage.Output);
+            var persisted = artifacts.GetText(firstStep.ResponseArtifact!.Hash)!;
+            Assert.Contains("visibleContent", persisted, StringComparison.Ordinal);
+            if (scenario == "visible-secret")
+            {
+                Assert.DoesNotContain("sk-super-secret-value", persisted, StringComparison.Ordinal);
+                Assert.Contains("[REDACTED]", persisted, StringComparison.Ordinal);
+            }
 
             store.Close();
             store = new SqliteEventStore(journal);
@@ -102,6 +118,47 @@ public sealed class ReasoningReplayResumeTests
             var server = new OmniServer(store, codecs, new InMemoryAuditSink(), stateFile, artifacts);
             Assert.Equal("ok", server.RespondToQuestionnaire(first.PendingInteractionId!,
                 new[] { new QuestionAnswer("approach", new[] { "safe" }, null, null) }, false).Status);
+
+            var sequenceBeforeRead = store.CurrentSequence(session);
+            var explorer = MakeTurn((_, _) => throw new InvalidOperationException("Read-only projection must not invoke."));
+            var eventStream = new EventStream(store, codecs, session);
+            foreach (var _ in new[] { 0, 1 })
+            {
+                var replay = explorer.LoadConversation(eventStream, run.RunId, firstStep.TurnId, run.RootLane);
+                Assert.Equal(safeVisibleText, Assert.Single(replay.SelectMany(m => m.Content)
+                    .OfType<ReasoningBlock>()).VisibleText);
+                Assert.Single(replay.SelectMany(m => m.Content).OfType<ToolCallBlock>());
+                Assert.Single(replay.SelectMany(m => m.Content).OfType<ToolResultBlock>());
+            }
+            Assert.Equal(sequenceBeforeRead, store.CurrentSequence(session));
+            Assert.Empty(explorer.LoadConversation(eventStream, run.RunId, firstStep.TurnId, LaneId.New())
+                .SelectMany(m => m.Content).OfType<ReasoningBlock>());
+            Assert.Empty(explorer.LoadConversation(eventStream, run.RunId, TurnId.New(), run.RootLane)
+                .SelectMany(m => m.Content).OfType<ReasoningBlock>());
+            Assert.Empty(explorer.LoadConversation(eventStream, RunId.New(), firstStep.TurnId, run.RootLane)
+                .SelectMany(m => m.Content).OfType<ReasoningBlock>());
+            var originalSelection = selection;
+            var otherEndpoint = new ModelRoute(physicalRoute.ProviderId, "http://127.0.0.1:9902",
+                physicalRoute.Protocol, physicalRoute.Profile, physicalRoute.ProviderModelName,
+                physicalRoute.Id, physicalRoute.ReasoningCapability);
+            selection = new ModelSelection(selection.Model, 8192, ToolMode.Direct, null,
+                otherEndpoint.Id, otherEndpoint);
+            Assert.Empty(MakeTurn((_, _) => throw new InvalidOperationException("Read-only projection must not invoke."))
+                .LoadConversation(eventStream, run.RunId, firstStep.TurnId, run.RootLane)
+                .SelectMany(m => m.Content).OfType<ReasoningBlock>());
+            selection = new ModelSelection(new ModelIdValue("different-model"), 8192, ToolMode.Direct, null,
+                physicalRoute.Id, physicalRoute);
+            Assert.Empty(MakeTurn((_, _) => throw new InvalidOperationException("Read-only projection must not invoke."))
+                .LoadConversation(eventStream, run.RunId, firstStep.TurnId, run.RootLane)
+                .SelectMany(m => m.Content).OfType<ReasoningBlock>());
+            selection = originalSelection;
+            Assert.Equal(sequenceBeforeRead, store.CurrentSequence(session));
+
+            if (scenario == "corrupt-visible")
+            {
+                var hash = firstStep.ResponseArtifact.Hash.Value;
+                File.WriteAllText(Path.Combine(root, "blobs", "sha256", hash[..2], hash.Substring(2, 2), hash), "tampered");
+            }
 
             // A policy change is not a physical-route change: route identity intentionally
             // excludes declared capabilities. Keep provider, endpoint, protocol, profile,
@@ -116,6 +173,7 @@ public sealed class ReasoningReplayResumeTests
             }
 
             var changedPolicy = scenario == "changed-to-none-after-reopen";
+            var cannotResume = changedPolicy || scenario == "corrupt-visible";
             var secondCalls = 0;
             var second = MakeTurn((request, _) =>
             {
@@ -123,18 +181,22 @@ public sealed class ReasoningReplayResumeTests
                 totalCalls++;
                 if (shouldReplay) Assert.Equal(continuationState, request.Continuation);
                 else Assert.Null(request.Continuation);
-                // Durable history currently restores tool messages and ProviderState, not
-                // ReasoningBlock payloads. Do not claim that missing round-trip is implemented.
-                if (!shouldReplay)
-                    Assert.All(request.Messages.SelectMany(message => message.Content).OfType<ReasoningBlock>(),
-                        reasoning => Assert.Null(reasoning.OpaquePayload));
+                var reasoning = Assert.Single(request.Messages.SelectMany(message => message.Content).OfType<ReasoningBlock>());
+                Assert.Equal(safeVisibleText, reasoning.VisibleText);
+                Assert.Equal(ReasoningVisibility.Full, reasoning.Visibility);
+                Assert.Null(reasoning.OpaquePayload); // the visible projection never contains opaque bytes/refs
+                if (scenario == "interleaved-visible")
+                    Assert.Collection(request.Messages.Where(m => m.Role == MessageRole.Assistant).SelectMany(m => m.Content),
+                        block => Assert.IsType<ReasoningBlock>(block),
+                        block => Assert.IsType<ToolCallBlock>(block),
+                        block => Assert.Equal("after the call", Assert.IsType<TextBlock>(block).Text));
                 return new ModelResponse(new ContentBlock[] { new TextBlock("done") }, StopReason.EndTurn,
                     new TokenUsage(4, 1, 0, 0, 0), null, new ProviderMetadata("scripted", "", null));
             }).Ask("continue", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
 
-            Assert.Equal(changedPolicy ? 0 : 1, secondCalls);
-            Assert.Equal(changedPolicy ? 1 : 2, totalCalls);
-            Assert.Equal(changedPolicy ? StopReason.Error : StopReason.EndTurn, second.StopReason);
+            Assert.Equal(cannotResume ? 0 : 1, secondCalls);
+            Assert.Equal(cannotResume ? 1 : 2, totalCalls);
+            Assert.Equal(cannotResume ? StopReason.Error : StopReason.EndTurn, second.StopReason);
             if (changedPolicy)
                 Assert.Contains("effective fingerprint differs", second.FinalText, StringComparison.Ordinal);
             var decoded = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
@@ -142,10 +204,25 @@ public sealed class ReasoningReplayResumeTests
             Assert.Single(turnStarts);
             var turnId = turnStarts[0].TurnId;
             var completions = decoded.OfType<ModelStepCompleted>().ToArray();
-            Assert.Equal(changedPolicy ? 1 : 2, completions.Length);
+            Assert.Equal(cannotResume ? 1 : 2, completions.Length);
             Assert.All(completions, completion => Assert.Equal(turnId, completion.TurnId));
-            Assert.Equal(changedPolicy ? new[] { 0 } : new[] { 0, 1 }, completions.OrderBy(completion => completion.StepIndex)
+            Assert.Equal(cannotResume ? new[] { 0 } : new[] { 0, 1 }, completions.OrderBy(completion => completion.StepIndex)
                 .Select(completion => completion.StepIndex).ToArray());
+            if (!cannotResume)
+            {
+                var freshCalls = 0;
+                var fresh = MakeTurn((request, _) =>
+                {
+                    freshCalls++;
+                    Assert.Null(request.Continuation);
+                    Assert.Empty(request.Messages.SelectMany(message => message.Content).OfType<ReasoningBlock>());
+                    return new ModelResponse(new ContentBlock[] { new TextBlock("fresh") }, StopReason.EndTurn,
+                        new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("scripted", "", null));
+                }).Ask("new intention", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
+                Assert.Equal(StopReason.EndTurn, fresh.StopReason);
+                Assert.Equal(1, freshCalls);
+                Assert.Equal(2, store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>().Count());
+            }
         }
         finally
         {
