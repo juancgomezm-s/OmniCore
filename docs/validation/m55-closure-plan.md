@@ -1,5 +1,18 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 03:44 UTC / 2026-10-06 21:44 local:
+FULL1781 TERMINALexit0 sobre6bbbcfa:2561=2557PASS/0FAIL/4SKIPsymlink,
+268.114s, other-adapters-reasoning-full.log. Después: lease común CAS/checkpoint/
+ModelStepCompleted FULL y cancelación tras respuesta antes tools/aprobación.
+REDlease2/2 y REDcancel1/68 reproducidos; final68PASS/0FAIL5.762s/build0/0,
+arquitectura56PASS. Detalles/reproducción en m55-provider-state-checkpoint.md.
+Full posterior pendiente; fixtures no autenticación ni consumo real.
+Auditoría fingerprint encontró ProfileId generado por Lane, no configuración
+reutilizable resuelta. No se quita el componente ni se inventa un resolver para
+declarar cierre. Los contratos M6 de Delegation/Wake/JoinPolicy/mailbox/binding/
+ResultDisposition aún carecen de payloads completos aceptados; AgentExecution
+no los sustituye. Continúa auditoría CAS y de siete criterios; no scheduler/joins.
+
 Estado vigente 2026-10-07 03:34 UTC / 2026-10-06 21:34 local:
 FULL94484 TERMINALexit0 sobre0e83092:2545=2541PASS/0FAIL/4SKIPsymlink,
 268.165s, responses-reasoning-native-full.log. Freeze levantado tras terminal.

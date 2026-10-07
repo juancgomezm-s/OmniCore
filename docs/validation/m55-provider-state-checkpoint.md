@@ -1,5 +1,45 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Publicación del paso y cancelación — 2026-10-07 03:44 UTC
+
+ExplorerTurn toma la lease opcional existente IArtifactPublicationLease después
+de terminar la invocación al proveedor, antes de publicar ProviderOpaqueState y
+ModelResponse, y la conserva hasta el commit Barrier de ModelStepCompleted.
+FileArtifactStore implementa esa frontera; sus PutText reutilizan la lease del
+mismo hilo. No se mantiene durante el trabajo remoto ni durante la ejecución de
+herramientas. Los stores de fixtures sin la interfaz conservan su compatibilidad;
+la exclusión física de GC se acredita con FileArtifactStore, no con esos dobles.
+
+La respuesta ya recibida conserva uso/estado aunque el token haya sido cancelado.
+Después de registrar el paso y liquidar la reserva existente, una comprobación
+de cancelación impide publicar ToolCalls o abrir cuestionarios nuevos. El Turn
+termina Interrupted/Cancelled, no InputRequired. No se inventan uso ni coste.
+Si falla el append del paso, la lease se libera, no queda un completion falso ni
+se ejecutan tools; los blobs no referenciados siguen siendo huérfanos recolectables.
+
+Luna aportó propuesta offline y auditoría; root leyó ambas completas, corrigió
+el fixture de limpieza SQLite y los asserts de colección sin desactivar analyzers,
+reprodujo RED válido (2 FAIL / 2, 0.700s) por lease ausente y aplicó el cambio.
+Los primeros errores de compilación/limpieza no son evidencia de fallo del producto.
+Root amplió el control de cancelación tras respuesta: 68 casos / 67 PASS / 1 FAIL
+(InputRequired inesperado), 5.775s; corrigió el guard y obtuvo 68 PASS / 0 FAIL /
+0 SKIP, 5.762s, build 0 errores/advertencias; arquitectura final 56 PASS.
+Los controles observan el bloqueo exclusivo real inmediatamente después de cada
+PutText y antes/después del append SQLite, verifican GC de gracia cero y la
+continuación exacta tras reapertura. No dependen de sleeps ni carreras de hilos.
+
+Logs en C:\Users\juanc\.codex\omni-m55-workers-20261006-2103:
+explorer-step-publication-lease-valid-red.log, -expanded.log, -cancel-final.log,
+-architecture-final.log. Proveedor guionado; SQLite/CAS privados reales; no
+autenticación, consumo real ni integración OmniCoder acreditados por estos tests.
+FULL sobre6bbbcfa:2561=2557PASS/0FAIL/4SKIPsymlink268.114s precede este cambio;
+suite completa posterior pendiente. Otras fronteras CAS/journal siguen en auditoría.
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*ExplorerStepPublicationLeaseTests' -class '*ProviderState*' -class '*M55ThreeStepSuspensionTests' -class '*ReasoningReplayResumeTests' -class '*AnthropicVisible*' -class '*SpendReservation*' -class '*Cancelled*'
+```
+
 ## Otras familias: solicitud explícita sin omisión — 2026-10-07 03:34 UTC
 
 Anthropic representa la forma existente `ReasoningRequest("budget", n)` con

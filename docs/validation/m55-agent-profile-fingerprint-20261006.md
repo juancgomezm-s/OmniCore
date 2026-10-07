@@ -1,5 +1,19 @@
 # M5.5 — perfil de lane en el fingerprint
 
+## Auditoría actual — 2026-10-07 03:44 UTC
+
+El bloque descrito abajo registra fielmente ProfileId de LaneCreated, pero eso
+no acredita el componente de configuración reutilizable requerido por ADR0046.
+OmniServer y RunControlService crean ProfileId.New para cada Lane sin resolver
+una definición de AgentProfile. Dos ejecuciones con defaults idénticos pueden
+tener distintos hashes sólo por esa identidad generada; el test con IDs
+manuales iguales no prueba el wiring normal ni contenido/revisión del perfil.
+Luna detectó esta diferencia; root contrastó callsites y ADR0017/0037/0046.
+Pendiente resolver/fingerprintear configuración efectiva con autoridad definida,
+no quitar el componente, convertir desconocido en defaults inventados o cambiar
+fingerprints históricos. La evidencia histórica siguiente sigue siendo válida
+sólo para identidad de Lane, aislamiento y round-trip, no para cierre de §7.
+
 2026-10-06 22:40 UTC / 16:40 America/Mexico_City.
 
 ADR-0046 §7 requiere AgentProfile entre los componentes del fingerprint.
