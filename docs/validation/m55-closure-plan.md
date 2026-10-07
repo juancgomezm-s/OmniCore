@@ -1,5 +1,24 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Cuota de suscripción en status line — 2026-10-07 13:07 UTC
+
+Root conectó UsageSnapshot.AccountQuota, caché por sesión/proveedor y
+formatter/CLI; Luna HIGH aportó integración normal loopback/SQLite.
+Cuota de cuenta y límites de respuesta permanecen separados; fuente/AsOf,
+reset, stale y scopes saldo/clave conservados, desconocidos no son cero.
+RED retirando sólo cableado CLI: 13 casos, 11 PASS/2 FAIL. Restaurado,
+build 0 errores/advertencias y focal 71 PASS. FULL terminal exit0:
+2874 casos, 2870 PASS/0 FAIL/4 SKIP symlink, 123.724 s.
+[Contrato, reproducción y límites](m5-subscription-statusline-20261007.md).
+Fixtures sintéticos no acreditan consulta autenticada ni consumo real.
+
+Auditoría de facturación: ADR0011/0037 describen Codex como suscripción,
+pero ADR0046 §3 exige Unknown sin declaración de BillingMode. Root descartó
+la propuesta de inferir IncludedQuota del perfil; ConfigLoader y su test
+se conservan. La aceptación Quick real sigue pendiente de declaración
+correcta y consentimiento, sin inventar precio cero ni alterar credenciales.
+M5/M5.5 siguen abiertos; no se implementa scheduler/joins M6.
+
 ## Namespace User: aceptación ausente — 2026-10-07 12:48 UTC
 
 Lectura SQLite real, `mode=ro`/`query_only`, sin migraciones ni claves:

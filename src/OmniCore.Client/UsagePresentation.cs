@@ -39,6 +39,41 @@ public static class UsagePresentation
         }
     }
 
+    /// <summary>Account/subscription readings stay distinct from response token/request rate limits.
+    /// Unknown values remain unknown; the full snapshot retains source, account, measurement date and resets.</summary>
+    public static string? AccountQuota(ProviderQuotaSnapshot? quota)
+    {
+        if (quota is null || quota.Availability == MetricAvailability.NotApplicable) return null;
+        var prefix = quota.ProviderId;
+        var parts = new List<string>();
+        foreach (var window in quota.Windows)
+        {
+            var duration = window.DurationMinutes;
+            var label = duration is > 0 && duration % 1440 == 0 ? (duration / 1440).Value.ToString(CultureInfo.InvariantCulture) + "d"
+                : duration is > 0 && duration % 60 == 0 ? (duration / 60).Value.ToString(CultureInfo.InvariantCulture) + "h"
+                : duration is > 0 ? duration.Value.ToString(CultureInfo.InvariantCulture) + "m" : window.Id;
+            var metric = window.RemainingPercent;
+            var reported = quota.Availability is MetricAvailability.Reported or MetricAvailability.Stale
+                && metric.Availability is MetricAvailability.Reported or MetricAvailability.Stale;
+            var text = reported && metric.Value is { } value && double.IsFinite(value) && value is >= 0 and <= 100
+                ? value.ToString("0.##", CultureInfo.InvariantCulture) + "%" : Missing;
+            var stale = quota.Availability == MetricAvailability.Stale || metric.Availability == MetricAvailability.Stale;
+            parts.Add(prefix + " " + label + " remaining " + text + (stale ? " stale" : ""));
+        }
+        foreach (var credit in quota.Credits)
+        {
+            if (!Enum.IsDefined(credit.Scope)) continue;
+            var amount = credit.Amount;
+            var text = amount.Availability is MetricAvailability.Reported or MetricAvailability.Stale
+                && amount.Value is >= 0 ? amount.Value.Value.ToString("0.##", CultureInfo.InvariantCulture) : Missing;
+            var scope = credit.Scope == CreditScope.AccountBalance ? "account balance" : "key limit";
+            var stale = quota.Availability == MetricAvailability.Stale || amount.Availability == MetricAvailability.Stale;
+            parts.Add(prefix + " " + scope + " " + text + " " + credit.Unit
+                + (credit.Currency is null ? "" : " " + credit.Currency) + (stale ? " stale" : ""));
+        }
+        return parts.Count == 0 ? prefix + " quota " + Missing : string.Join(" · ", parts);
+    }
+
     public static string Tokens(TokenTotals totals)
     {
         if (totals.Input < 0 || totals.Output < 0 || totals.CacheRead < 0 || totals.CacheWrite < 0)

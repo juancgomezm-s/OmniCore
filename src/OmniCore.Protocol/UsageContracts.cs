@@ -30,6 +30,10 @@ public sealed record TokenTotals(long Input, long Output, long CacheRead, long C
 
 /// <summary>Uso de la sesión que viaja al cliente (ADR-0031 §3).</summary>
 /// <remarks>SessionTokenMeasurement carries availability. New clients prefer it over the legacy
-/// numeric slots, which cannot represent unknown consumption. Null retains legacy behavior.</remarks>
+/// numeric slots, which cannot represent unknown consumption. Null retains legacy behavior.
+/// AccountQuota is the cached account/subscription reading for the active session/provider,
+/// independent of Remaining (response rate limits). Its own AsOf, source, availability,
+/// windows, reset times and credit scopes are retained; absence is not a zero balance.</remarks>
 public sealed record UsageSnapshot(TokenTotals SessionTokens, Metric<Money> SessionCost, Metric<QuotaInfo> Remaining,
-    DateTimeOffset AsOf, Metric<TokenTotals>? SessionTokenMeasurement = null);
+    DateTimeOffset AsOf, Metric<TokenTotals>? SessionTokenMeasurement = null,
+    ProviderQuotaSnapshot? AccountQuota = null);

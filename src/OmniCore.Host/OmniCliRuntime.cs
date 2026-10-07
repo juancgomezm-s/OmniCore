@@ -21,7 +21,8 @@ public sealed class OmniCliRuntime
     private readonly Func<string, CancellationToken, Task<ProviderQuotaSnapshot>> _queryQuota;
     private OmniServer? _server;
     private string? _escalatedModel;
-    private (IModelProvider Provider, ModelPricing? Pricing, string BaseUrl, IArtifactStore Artifacts)? _usageContext;
+    private (SessionId Session, string ProviderId, IModelProvider Provider, ModelPricing? Pricing,
+        string BaseUrl, IArtifactStore Artifacts)? _usageContext;
     private bool _workspaceWarningShown;
     private bool _providerDeprecationShown;
 
@@ -925,7 +926,7 @@ public sealed class OmniCliRuntime
 
             var effectiveMode = server.CurrentRunMode();
             var executingAct = act || effectiveMode is RunMode.Act or RunMode.Orchestrate;
-            _usageContext = (provider, loaded.Pricing(model), baseUrl, artifacts);
+            _usageContext = (sessionId, route.ProviderId, provider, loaded.Pricing(model), baseUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
             var hostTools = executingAct
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
@@ -1606,19 +1607,26 @@ public sealed class OmniCliRuntime
     }
 
     /// <summary>
-    /// Uso de la sesión para la status line (ADR-0031 §3): tokens y costo desde el journal, cuota solo
-    /// si el provider la informó. Null si todavía no hubo ningún Turn con modelo en este proceso.
+    /// Uso de la sesión para la status line (ADR-0031 §3): tokens/costo desde el journal,
+    /// límites de respuesta del adaptador y cuota de cuenta cacheada por sesión/proveedor, separados.
+    /// Null antes del primer Turn con modelo o si el contexto pertenece a otra sesión.
     /// </summary>
     public UsageSnapshot? CurrentUsage()
     {
-        if (_server is null || _usageContext is not { } context || _server.LastSessionId() is not { } session) return null;
+        if (_server is null || _usageContext is not { } context || _server.LastSessionId() is not { } session
+            || context.Session != session) return null;
         var consumption = SessionUsageReporter.ReadConversation(_server.AcquireStore(), _server.AcquireCodecs(),
             context.Artifacts, session);
         var windows = context.Provider is IReportsRateLimits reporter ? reporter.LastRateLimits : [];
         return SessionUsageReporter.Build(consumption.Tokens.Value ?? new TokenTotals(0, 0, 0, 0),
             consumption.Cost.Value?.Amount ?? 0m, consumption.Cost.Availability == MetricAvailability.Estimated,
             context.Pricing?.IsComplete == true, OmniHost.IsPrivateHost(context.BaseUrl), windows,
-            DateTimeOffset.UtcNow, consumption.Tokens);
+            DateTimeOffset.UtcNow, consumption.Tokens) with
+        {
+            // Account windows and credits are not interchangeable with response rate limits.
+            // Read the cached measurement for this exact session/provider; rendering never queries credentials.
+            AccountQuota = _server.Observability.Quota(session, context.ProviderId),
+        };
     }
 
     /// <summary>Read-only account queries through official CLI login; no model prompt and no renderer credentials.</summary>
