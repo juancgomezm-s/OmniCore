@@ -7,6 +7,17 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 02:22 UTC: suite completa sobre0fbb322 TERMINALexit0:
+2458 casos = 2454 PASS / 0 FAIL / 4 SKIP symlink, 352.538s,
+`reasoning-targetref-full.log`. Incluye causalidad61c46d9, Nonee3ee7ea y
+TargetRef0fbb322; no suma los focales anteriores. Freeze20164 levantado al terminal.
+No acredita consultas autenticadas ni cierra pendientes de ADR0046.
+Auditoría root+Luna: firmas Anthropic/Responses sí restauradas mediante
+ProviderState; ReasoningBlock.OpaquePayload no lo usan esos adapters.
+La pérdida pendiente es razonamiento visible en ModelRequest.Messages al reabrir
+(ADR0005§3). Propuesta anthropic-reopen.proposed.cs leída por root, aún sin
+integrar/compilar/ejecutar; separa firma y bloque visible y exige no duplicar tools.
+
 Actualización 02:16 UTC: TargetRef normalizado al workspace de ejecución, raíz
 `.`/subdirectorios relativos; no modifica autorización/claims/cwd/reversibility.
 RED3=1PASS2FAIL; final93PASS0FAIL0SKIP7.735s/build0/0, targetref-relative-expanded.log.
