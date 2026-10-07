@@ -6,6 +6,43 @@ ejecutan benchmarks autenticados ni se modifican credenciales o políticas del u
 
 ## Contratos conservados y cambios
 
+### Corrección del oracle multibloque — 2026-10-07
+
+`quick` versión `1.1.1` conserva los diez prompts, sus umbrales y `TaskSetHash`.
+Corrige la extracción de la respuesta: concatena todos los `TextBlock` superiores
+en orden, sin insertar espacios ni saltos inexistentes. No puntúa razonamiento ni
+resultados anidados de herramientas. Ausencia de texto sigue siendo `null`; texto
+vacío sigue siendo vacío. Las comparaciones exactas no se relajan.
+
+La versión anterior puntuaba sólo el primer bloque: podía persistir `Qualified`
+si otro bloque añadía contenido inválido y rechazar respuestas correctas partidas.
+La versión corregida queda en `BenchmarkIdentity`, perfil y receipts; no modifica
+perfiles históricos ni presenta evidencia `1.1.0` como una ejecución `1.1.1`.
+
+RED reproducido tras build fresco (0 advertencias/errores, 3.00 s): cinco casos
+del runner fallan por truncamiento y dos integraciones Host/SQLite fallan por
+estado incorrecto (`Qualified` frente a `ProvisionallyClassified` y viceversa).
+Log `qualification-blocks-red-tests-1140.log` en
+`C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0649/`. La ejecución conjunta
+tuvo 25 casos, 17 PASS y 8 FAIL, 0.640 s: el octavo fallo es un error del fixture
+de suspensión (`InteractionId` tratado como string), no del oracle.
+
+Estos son providers scripted, con SQLite/CAS real; no acreditan cualificación
+autenticada, consumo real ni cierre de M5. Build final 0 advertencias/errores,
+14.96 s, `qualification-blocks-fixed-build-1143.log`; barrido de cualificación
+y suspensión `qualification-blocks-fixed-focal-1143.log`: 378 PASS, 0 FAIL,
+0 SKIP, 8.096 s. Incluye los ocho controles nuevos de este bloque y conserva los
+anteriores. FULL `qualification-blocks-full-1144.log` terminó exit0: 2850 casos,
+2846 PASS, 0 FAIL, 4 SKIP por permisos Windows de symlink, 120.258 s. Conteos
+solapados no se suman. La FULL también incluye el control directo de suspensión
+de Luna; la reanudación por CLI tras revocación sigue siendo trabajo abierto.
+
+```powershell
+dotnet build OmniCore.slnx --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor -class '*Qualification*' -class '*ModeAuthoritySuspensionIntegrationTests'
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor
+```
+
 - `QuickProbeSuite`: diez probes deterministas, versión `1.1.0`, en vez de tres.
   Siete Reading/Reasoning alimentan InstructionFollowing y tres miden StructuredOutput.
   No acreditan tool calling, coding, recuperación, planificación ni mutaciones.

@@ -13,8 +13,8 @@ public static class QuickProbeSuite
     /// <summary>Id de la suite para BenchmarkIdentity.</summary>
     public const string SuiteId = "omnicore-quick";
 
-    /// <summary>Versión de la suite; incrementa ante un cambio de probes o umbrales.</summary>
-    public const string SuiteVersion = "1.1.0";
+    /// <summary>Versión de la suite; incluye correcciones del oracle de puntuación.</summary>
+    public const string SuiteVersion = "1.1.1";
 
     public static IReadOnlyList<Probe> Probes() =>
     [
