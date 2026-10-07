@@ -1,5 +1,36 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Propuesta de modo productiva y alcance Quick — 2026-10-07 14:33 UTC
+
+Root implementó `mode.propose` y `run.mode_proposed` v1, pipeline normal Host,
+codec, protocolo y replay advisory aislado por sesión/Run. No cambia autoridad,
+modo, permisos, rutas ni presupuesto. La aceptación usa el command existente
+y la acción confiable del usuario, no una respuesta genérica a una herramienta.
+Luna entregó la prueba de aceptación por Host y la precisión documental de
+Qualified/Quick; root auditó, integró y verificó.
+
+Hallazgo Luna reproducido: scopes Task/Lane/Execution de la propuesta podían
+diferir del recibo. RED 9 casos/7 PASS/2 FAIL; corregido sin debilitar assertions,
+incluido append rechazado→retry correcto sin consumo de identidad/secuencia.
+La primera FULL (2911 casos) detectó un fallo de `/tools`: insertar el descriptor
+antes de filesystem.read desplazaba su texto fuera del overlay. Se conserva la
+assertion y el orden previo del catálogo; la herramienta nueva se agrega al final.
+
+Focal actualizado de propuestas/autoridad/UltraCode: **56 PASS**; focal anterior
+con CLI y TUI: **139 PASS**; arquitectura con build actualizado: **56 PASS**.
+Conteos solapados. FULL final pendiente al escribir esta entrada; no acreditar
+su resultado anticipadamente. [Contrato y reproducción](../architecture/mode-proposals.md).
+
+Actualización final: handle57931 terminal exit0, **2912 casos/2908 PASS/0 FAIL/
+4 SKIP** symlink, 244.409 s; `mode-proposal-final-full-1433.log`. Incluye la prueba
+Luna de aceptación explícita y las correcciones de atribución y catálogo.
+
+Son fixtures scripted y HTTP loopback con Host/CLI/journal SQLite reales; no
+acreditan consultas autenticadas, consumo real ni integración visual OmniCoder.
+La propuesta NO es el disparador de política UltraCode: ese wiring sigue pendiente.
+M5 Quick real también sigue pendiente; [alcance de Qualified](m5-quick-qualification-scope.md)
+no exige full/calibración M10+ ni inventa traits no medidos. No M6 scheduler/joins.
+
 ## Integridad de ejecuciones y evidencia cross-session — 2026-10-07 14:00 UTC
 
 Root resolvió los hallazgos de la segunda auditoría Luna: Started valida
@@ -17,6 +48,13 @@ exacto y schema0 de familias nuevas. [Contrato y reproducción](../architecture/
 Son fixtures; no acreditan consulta autenticada ni consumo real. No M6 scheduling,
 joins/wake/mailbox ni aceptación automática. Auditoría integral ADR46/47/M5 en curso,
 Quick real y llamada productiva de política UltraCode siguen pendientes.
+
+La semántica M5 de `Qualified` se limita a pasar íntegramente la suite `quick`
+para la `ModelQualificationKey`; no afirma que Quick mida todos los traits
+mínimos v1 ni que el perfil esté calibrado. Los dos traits empíricos que aporta
+la suite actual y los que quedan ausentes/conservados están descritos en
+[alcance de cualificación Quick](m5-quick-qualification-scope.md). La suite
+`full` y la calibración permanecen en M10+ según ADR-0007.
 
 ## Registros pre-M6 implementados y probados — 2026-10-07 13:45 UTC
 
@@ -1199,10 +1237,11 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   Inyectar IModelProvider sigue siendo responsabilidad del consumidor: puede ser
   remoto y no demuestra identidad/billing correspondiente al descriptor.
 - Auditoría Luna HIGH: Quick mide InstructionFollowing (7 probes, confianza de
-  conteo .7) y StructuredOutputReliability (3, .3), no los nueve traits mínimos.
-  Qualified significa pasar Quick completa; no calibración ni confianza estadística.
-  Full/calibración quedan en M10+. Siguiente auditoría M5: coste potencial de retries
-  y campos omitidos; la cobertura Quick no acredita garantía monetaria.
+  conteo .7) y StructuredOutputReliability (3, .3). `Qualified` significa pasar
+  Quick completa para la clave, no haber medido los nueve traits mínimos ni estar
+  calibrado; los demás traits no se fabrican. Véase
+  [alcance Quick](m5-quick-qualification-scope.md). Full/calibración quedan en M10+;
+  la cobertura Quick tampoco acredita una garantía monetaria.
 
 - M5 cobertura Quick/namespace: Qualified requiere hash del conjunto canónico completo
   + todos Passed; subsets/modificaciones quedan Provisional, SuiteComplete explícito.
@@ -1228,7 +1267,9 @@ M4 Windows ya tiene evidencia de cierre; esta ronda no la reemplaza.
   incorrecto para subsets de probes: próximo RED/fix de cobertura Quick; verificar
   también writer con nombreDB legacy distinto de user.db frente namespace de GC.
   Pendientes M5: límites reales/reservas/retries, ruta sin descriptor, validación conectada
-  y auditoría de cobertura quick frente traits mínimos; no cierre por guardar artifacts.
+  y precisión documental sobre el alcance de Quick/traits mínimos; no cierre por
+  guardar artifacts. La precisión vigente está en
+  [alcance Quick](m5-quick-qualification-scope.md).
 - Reanudación confirmada: objetivo de producto ACTIVE a las19:44UTC. Se mantienen
   M5 + M5.5 y preparación M6, Luna HIGH y paquetes externos autorizados; la
   automatización nocturna histórica permanece pausada.

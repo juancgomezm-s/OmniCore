@@ -1050,6 +1050,15 @@ public sealed class ExplorerTurn
                     }
 
                     toPersist.AddRange(planEvents);
+                    if (call.ToolName == "mode.propose" && outcome.Succeeded
+                        && ModeProposeTool.TryParse(call.ArgumentsJson, out var proposedMode, out var modeReason))
+                    {
+                        var authority = RunProjection.Replay(sessionId, runId, _codecs,
+                            _store.ReadFrom(sessionId, 1)).ModeAuthority!;
+                        toPersist.Add(new RunModeProposed(runId, turnId, call.Id, authority.Mode,
+                            proposedMode, _redaction.Redact(modeReason), authority.Revision,
+                            authority.ObjectiveRevision, authority.ObjectiveDigest, authority.PolicyRevision));
+                    }
                     if (questionPublication is { Published: true, RequestEvent: not null })
                     {
                         toPersist.Add(questionPublication.RequestEvent!);

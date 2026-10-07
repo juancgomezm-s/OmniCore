@@ -45,7 +45,7 @@ public sealed class HostTools
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
         if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);
-        _catalog = catalog.Add(_planPropose);
+        _catalog = catalog.Add(_planPropose).Add(new ModeProposeTool());
     }
 
     public static HostTools Default()

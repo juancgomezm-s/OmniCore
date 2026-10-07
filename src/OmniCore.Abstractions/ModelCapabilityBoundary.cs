@@ -56,6 +56,7 @@ public sealed class ModelCapabilityBoundary
             { "filesystem.search", ModelToolCapability.Search },
             { "reference.resolve", ModelToolCapability.ReferenceResolve },
             { "plan.propose", ModelToolCapability.PlanProposal },
+            { "mode.propose", ModelToolCapability.PlanProposal },
             { "filesystem.patch", ModelToolCapability.PatchExisting },
             { "filesystem.write", ModelToolCapability.ReplaceFile },
             { "filesystem.delete", ModelToolCapability.DeleteFile },
