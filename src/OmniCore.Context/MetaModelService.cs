@@ -77,9 +77,9 @@ public sealed class MetaModelService
             ? _costEstimator?.Invoke(usage) : null;
         try
         {
-            var input = _artifacts.PutText(safeInput, "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
-            await _events.AppendAsync(new MetaModelInvocationStarted(invocationId, runId, operation,
-                modelFingerprint, input), cancellationToken).ConfigureAwait(false);
+            await PublishArtifactAsync(safeInput, ArtifactKind.Other,
+                input => new MetaModelInvocationStarted(invocationId, runId, operation,
+                    modelFingerprint, input), cancellationToken).ConfigureAwait(false);
             began = true;
             safeToRelease = false;
             cancellationToken.ThrowIfCancellationRequested();
@@ -104,9 +104,9 @@ public sealed class MetaModelService
             result = _redact(result).Trim();
             if (result.Length == 0) throw new InvalidOperationException("MetaModelService returned an empty summary");
             if (result.Length > maxCharacters) result = result[..maxCharacters].TrimEnd() + "…";
-            var output = _artifacts.PutText(result, "text/plain", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
-            await _events.AppendAsync(new MetaModelInvocationCompleted(invocationId, runId, operation,
-                modelFingerprint, output, usage, Cost(), fields), cancellationToken).ConfigureAwait(false);
+            await PublishArtifactAsync(result, ArtifactKind.ModelResponse,
+                output => new MetaModelInvocationCompleted(invocationId, runId, operation,
+                    modelFingerprint, output, usage, Cost(), fields), cancellationToken).ConfigureAwait(false);
             _afterReceipt?.Invoke(invocationId, Cost(), generationAttempts.ObservedSends);
             return result;
         }
@@ -133,6 +133,22 @@ public sealed class MetaModelService
         {
             if (reserved && !dispatched && safeToRelease) _releaseBeforeDispatch?.Invoke(invocationId);
         }
+    }
+
+    private ValueTask PublishArtifactAsync(string content, ArtifactKind kind,
+        Func<ArtifactRef, DomainEventPayload> payload, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_artifacts is IArtifactPreparationStore preparing
+            && _events is IContextArtifactPublicationSink publisher)
+        {
+            var artifact = preparing.PrepareText(content, "text/plain", kind, Sensitivity.Sensitive);
+            publisher.AppendPreparedArtifact(artifact, payload(artifact.Reference), cancellationToken);
+            return ValueTask.CompletedTask;
+        }
+        // Compatibility for sinks/stores without the optional joint-publication capability.
+        var reference = _artifacts.PutText(content, "text/plain", kind, Sensitivity.Sensitive);
+        return _events.AppendAsync(payload(reference), cancellationToken);
     }
 }
 

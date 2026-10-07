@@ -1964,7 +1964,7 @@ public sealed class ExplorerTurn
             if (_metaModelProvider is not null && (canInvokeMeta?.Invoke() ?? true))
             {
                 metaModel = new MetaModelService(_metaModelProvider, _artifacts,
-                    new ContextStreamEventSink(stream), _selection, _redaction.Redact, usage => _pricing?.CostUsd(usage),
+                    new ContextStreamEventSink(stream, _artifacts), _selection, _redaction.Redact, usage => _pricing?.CostUsd(usage),
                     reserveMeta, dispatchMeta, finishMeta, releaseMeta);
                 try
                 {
@@ -2206,10 +2206,25 @@ public sealed class ExplorerTurn
                 System.Globalization.CultureInfo.InvariantCulture, out var index) ? index : -1;
     }
 
-    private sealed class ContextStreamEventSink : IContextEventSink
+    private sealed class ContextStreamEventSink : IContextArtifactPublicationSink
     {
         private readonly EventStream _stream;
-        public ContextStreamEventSink(EventStream stream) => _stream = stream;
+        private readonly IArtifactStore _artifacts;
+        public ContextStreamEventSink(EventStream stream, IArtifactStore artifacts)
+        {
+            _stream = stream;
+            _artifacts = artifacts;
+        }
+        public void AppendPreparedArtifact(IPreparedArtifact artifact, DomainEventPayload payload,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var publication = (_artifacts as IArtifactPublicationLease)
+                ?.AcquirePublicationLease(CancellationToken.None);
+            if (artifact.Publish() != artifact.Reference)
+                throw new InvalidDataException("Prepared meta artifact publication changed its reference.");
+            _stream.Append(payload, DurabilityClass.Barrier);
+        }
         public ValueTask AppendAsync(DomainEventPayload payload, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

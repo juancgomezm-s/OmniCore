@@ -61,6 +61,8 @@ public sealed class ExplorerContextCheckpointPublicationLeaseTests
             Assert.Equal(2, primaryCalls);
             Assert.Equal(1, metaProvider.Calls);
             Assert.True(metaProvider.LeaseWasAvailableDuringStream);
+            Assert.Equal(2, events.MetaPublicationLeases.Count);
+            Assert.All(events.MetaPublicationLeases, held => Assert.True(held));
             Assert.True(artifacts.TryOpenLeaseProbe());
             Assert.True(events.CheckpointLeaseHeldBeforeAppend);
             Assert.True(events.CheckpointLeaseHeldAfterAppend);
@@ -97,6 +99,12 @@ public sealed class ExplorerContextCheckpointPublicationLeaseTests
             Assert.True(innerArtifacts.Verify(priorAssistant.ContentRef!.Hash, priorAssistant.ContentRef.Size));
             Assert.Contains("durable scripted summary",
                 innerArtifacts.GetText(reopenedCheckpoint.CheckpointArtifact.Hash));
+            var metaStart = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode)
+                .OfType<MetaModelInvocationStarted>());
+            var metaCompleted = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode)
+                .OfType<MetaModelInvocationCompleted>());
+            Assert.True(innerArtifacts.Verify(metaStart.InputArtifact.Hash, metaStart.InputArtifact.Size));
+            Assert.True(innerArtifacts.Verify(metaCompleted.OutputArtifact.Hash, metaCompleted.OutputArtifact.Size));
         }
         finally
         {
@@ -221,12 +229,15 @@ public sealed class ExplorerContextCheckpointPublicationLeaseTests
     }
 
     private sealed class LeaseObservingArtifacts(IArtifactStore inner, string root)
-        : IArtifactStore, IArtifactPublicationLease
+        : IArtifactStore, IArtifactPublicationLease, IArtifactPreparationStore
     {
         public List<PublicationObservation> Observed { get; } = new();
 
         public IDisposable AcquirePublicationLease(CancellationToken cancellationToken) =>
             ((IArtifactPublicationLease)inner).AcquirePublicationLease(cancellationToken);
+
+        public IPreparedArtifact PrepareText(string content, string mediaType, ArtifactKind kind,
+            Sensitivity sensitivity) => ((IArtifactPreparationStore)inner).PrepareText(content, mediaType, kind, sensitivity);
 
         public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
         {
@@ -264,10 +275,18 @@ public sealed class ExplorerContextCheckpointPublicationLeaseTests
         public bool CheckpointLeaseHeldAfterAppend { get; private set; }
         public bool CheckpointAppendDelegated { get; private set; }
         public ContextCheckpointRecorded? ObservedCheckpoint { get; private set; }
+        public List<bool> MetaPublicationLeases { get; } = new();
 
         public void Append(SessionId sessionId, DomainEvent evt, DurabilityClass durability,
             CancellationToken cancellationToken)
         {
+            if (codecs.Decode(evt) is MetaModelInvocationStarted or MetaModelInvocationCompleted)
+            {
+                var before = LeaseHeld(root);
+                inner.Append(sessionId, evt, durability, cancellationToken);
+                MetaPublicationLeases.Add(before && LeaseHeld(root));
+                return;
+            }
             if (codecs.Decode(evt) is not ContextCheckpointRecorded checkpoint)
             {
                 inner.Append(sessionId, evt, durability, cancellationToken);

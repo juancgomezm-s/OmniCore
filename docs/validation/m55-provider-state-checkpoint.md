@@ -1,5 +1,37 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Publicación del metamodelo — 2026-10-07 04:34 UTC
+
+MetaModelService prepara input/output mediante IArtifactPreparationStore cuando
+el sink soporta IContextArtifactPublicationSink. El Host publica el handle exacto
+y su evento MetaModelInvocationStarted/Completed en una frontera síncrona bajo
+lease corta y Barrier; nunca mantiene una lease ThreadLocal a través de await ni
+durante StreamAsync. Los sinks/stores sin esas capacidades conservan su contrato
+previo, sin atribuirles garantía de publicación conjunta. No cambia schemas,
+coste, reservas ni el fallback determinista del Host tras fallo del metamodelo.
+
+Root reprodujo RED: 2 casos / 1 FAIL (0.956s); las dos observaciones de publicación
+meta eran false. Log meta-artifact-publication-red.log. Tras la corrección:
+50 PASS / 0 FAIL (30.184s); ampliada final 65 PASS / 0 FAIL (29.657s), incluidos
+guards de escritor canónico/telemetría, gasto y reasoning secundario. Arquitectura
+56 PASS / 0 FAIL (0.723s). Build 0 errores/advertencias. Logs meta-artifact-publication-
+final/expanded-final/architecture en el directorio privado citado más abajo.
+
+La integración Host usa SQLite/CAS reales, provider scripted async, lease libre
+durante generación, lease retenida en ambos append meta, reopen y GC sin gracia
+conservando input/output. Luna HIGH propuso cuatro controles de fallo de
+MetaModelService con sink de fixture que refleja la frontera síncrona; root leyó
+propuesta/audit completos, integró y endureció los umbrales de admisión para que
+una reserva no liberada falle, además de reconcile idempotente del mismo receipt.
+Esos cuatro controles no se presentan como pruebas del sink privado real del Host:
+verifican Started rechazado, Completed rechazado preservando usage/cost en Failed,
+cancelación pre-dispatch y bound desconocido retenido tras envío observado.
+Todo es offline/fixture, sin consultas autenticadas ni consumo proveedor real.
+
+Full anterior 97bb197 verde: 2574=2570 PASS/0 FAIL/4 SKIP (267.608s).
+Full posterior de este bloque pendiente. M5.5 sigue abierto: AgentProfile efectivo,
+esquemas M6 aceptados y contenido/publicación del fingerprint aún requieren cierre.
+
 ## Contador llama.cpp: preparación y publicación separadas — 2026-10-07 04:22 UTC
 
 ContextMaterializer.PrepareWithinBudget prepara en memoria las referencias exactas

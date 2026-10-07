@@ -1,5 +1,12 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 04:34 UTC: nueva frontera de publicación meta input/output protegida
+sin lease durante await/provider. RED2=1PASS/1FAIL y final65PASS/0FAIL29.657s;
+arquitectura56PASS. Ver contrato y alcance distinto Host/fixture en el checkpoint.
+Full nueva pendiente; anterior97bb1972574verde. No cierra schemasM6 ni AgentProfile
+efectivo. Luna READONLY siguiente paquete: diseño concreto de publicación de
+componentes fingerprint CLI/Turn sin remoto bajo lease ni Verify ficticio.
+
 Actualización 2026-10-07 04:22 UTC / 2026-10-06 22:22 local: contador llama.cpp
 fuera de lease remota; preparación exacta de ToolOutput y publicación conjunta
 con snapshots/eventos. RED2/2 y final39=38PASS/0FAIL/1SKIP; control adicional
