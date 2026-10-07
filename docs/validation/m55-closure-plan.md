@@ -1,5 +1,17 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 02:53 UTC / 2026-10-06 20:53 local:
+validación declarada de razonamiento y forwarding neutral conectados en
+ExplorerTurn/MetaModelService/ProbeRunner antes de admisión/reserva/provider.
+12 REDs reproducidos y final154 PASS / 0 FAIL / 0 SKIP95.095s/build0/0,
+incluida TUI. Full89e990a anterior2469=2464PASS1FAIL4SKIP342.495s:
+único fallo era lectura concurrente de controles desde la prueba, corregida
+sin suprimir assertions ni reintentar hasta verde. Full posterior pendiente.
+Contrato y límites en m55-provider-state-checkpoint.md. Dialecto wire por
+adapter sigue pendiente, no atribuir omisión a los adapters que ya recurrían
+a selección. GoalM55ACTIVE; storage opaco seguro/otrasReplayPolicies/
+IncludedQuotaqualification/frozenM6/auditoría de criterios siguen pendientes.
+
 Actualización vigente 2026-10-07 02:42 UTC / 2026-10-06 20:42 local:
 contenido visible del mismo Turn restaurado tras reapertura SQLite/CAS,
 incluido razonamiento, texto intermedio y orden con herramientas canónicas.

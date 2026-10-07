@@ -46,6 +46,7 @@ public sealed class MetaModelService
     public async Task<string> SummarizeAsync(RunId runId, string operation, string content,
         int maxCharacters, CancellationToken cancellationToken)
     {
+        _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning);
         var safeInput = _redact(content);
         var inputLimit = (int)Math.Clamp(_selection.ContextBudget * 4, 1024, int.MaxValue);
         if (safeInput.Length > inputLimit)
@@ -68,7 +69,7 @@ public sealed class MetaModelService
                 "Summarize the following older conversation into durable facts, decisions, constraints, failed attempts, and unresolved questions. Do not invent information.\n\n"
                 + safeInput) }) },
             "You are a deterministic context summarization service. Preserve uncertainty and redact secrets.",
-            Array.Empty<ToolDefinition>(), ToolChoice.None(), null, null, null, null);
+            Array.Empty<ToolDefinition>(), ToolChoice.None(), null, _selection.Reasoning, null, null);
         TokenUsage? usage = null;
         var fields = TokenUsageFields.None;
         decimal? Cost() => usage is not null && fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)

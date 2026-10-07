@@ -15,6 +15,17 @@ public sealed class ReasoningCapability
 
     public static ReasoningCapability Unknown { get; } = new(null, null, null);
 
+    /// <summary>Rejects only a contradiction with declared route facts, before admission
+    /// or dispatch. Unknown is not permission, but neither is it an invented negative.
+    /// Provider labels are compared exactly; this does not define their wire dialect.</summary>
+    public void ValidateRequest(ReasoningRequest? request)
+    {
+        if (request is null) return;
+        if (Supported == false || (EffortLevels is not null
+            && !EffortLevels.Contains(request.Kind, StringComparer.Ordinal)))
+            throw new InvalidOperationException("Selected reasoning is incompatible with declared route capability.");
+    }
+
     [JsonConstructor]
     public ReasoningCapability(bool? supported, IReadOnlyList<string>? effortLevels = null,
         ReasoningReplayPolicy? replayPolicy = null)

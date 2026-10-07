@@ -375,6 +375,12 @@ public sealed class ExplorerTurn
     public TurnResult Ask(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null)
     {
+        try { _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning); }
+        catch (InvalidOperationException)
+        {
+            return new TurnResult("Selected reasoning is incompatible with declared route capability.",
+                StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+        }
         var stream = new EventStream(_store, _codecs, sessionId);
         var resumedTurnId = FindOpenTurn(stream, runId, laneId);
         var isResume = resumedTurnId is not null;
@@ -701,7 +707,7 @@ public sealed class ExplorerTurn
                     RenderContext(materialized),
                     VisibleTools(),
                     ToolChoice.Auto(),
-                    null, null, new CacheHints(4, "automatic"),
+                    null, _selection.Reasoning, new CacheHints(4, "automatic"),
                     // None is an explicit outbound replay prohibition. Keep the checkpoint
                     // and its integrity/usage evidence, but never resend it (including resume).
                     _selection.Route?.ReasoningCapability.ReplayPolicy == ReasoningReplayPolicy.None

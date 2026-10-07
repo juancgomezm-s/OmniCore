@@ -94,6 +94,7 @@ public sealed class ProbeRunner
     public async Task<ProbeResult> RunProbeAsync(ProbeRequest request, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        request.Selection.Route?.ReasoningCapability.ValidateRequest(request.Selection.Reasoning);
         // Admission exceptions are not provider failures and must stop the suite.
         if (_observer is not null)
             await _observer.BeforeDispatchAsync(request, cancellationToken);
@@ -205,7 +206,7 @@ public sealed class ProbeRunner
             tools: Array.Empty<ToolDefinition>(),
             ToolChoice.None(),
             output: null,
-            reasoning: null,
+            reasoning: request.Selection.Reasoning,
             cache: null,
             continuation: null);
     }
