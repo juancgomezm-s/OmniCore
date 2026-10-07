@@ -46,6 +46,8 @@ public sealed class ExplorerTurn
 
     private readonly IArtifactStore _artifacts;
     private readonly UserWorkspaceSpendReader? _userSpendReader;
+    private readonly SqliteSpendReservationStore? _spendReservations;
+    private readonly long? _maximumGenerationRequestAttempts;
 
     private readonly IAuditSink _audit;
 
@@ -222,7 +224,9 @@ public sealed class ExplorerTurn
         bool recordEffectiveFingerprint = false, UserWorkspaceSpendReader? userSpendReader = null,
         IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null,
         Func<SessionId, RunId, LaneId, TurnId, int, InteractionId?>? quotaAdmission = null,
-        Func<bool>? quotaAllowsMeta = null)
+        Func<bool>? quotaAllowsMeta = null,
+        SqliteSpendReservationStore? spendReservations = null,
+        long? maximumGenerationRequestAttempts = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -238,6 +242,9 @@ public sealed class ExplorerTurn
         _codecs = codecs;
         _artifacts = artifacts;
         _userSpendReader = userSpendReader;
+        _spendReservations = spendReservations ?? (enforceDefaultSpendCaps && userSpendReader is not null
+            ? new SqliteSpendReservationStore(Path.Combine(userSpendReader.UserDataDirectory, "spend-reservations.db")) : null);
+        _maximumGenerationRequestAttempts = maximumGenerationRequestAttempts;
         _audit = audit;
         _redaction = redaction;
         _harness = harness;
@@ -297,6 +304,7 @@ public sealed class ExplorerTurn
         var starts = new Dictionary<(SessionId, string), (DomainEvent Event, MetaModelInvocationStarted Payload)>();
         var outcomes = new Dictionary<(SessionId, string), (TokenUsage Usage, TokenUsageFields Fields,
             decimal Cost, string Day)>();
+        var notDispatched = new HashSet<(SessionId, string)>();
         foreach (var evt in events.OrderBy(e => e.SessionId.ToString(), StringComparer.Ordinal).ThenBy(e => e.Sequence))
         {
             try
@@ -311,6 +319,17 @@ public sealed class ExplorerTurn
                         || !starts.TryAdd((evt.SessionId, start.InvocationId), (evt, start))) incomplete = true;
                     continue;
                 }
+                if (payload is MetaModelInvocationNotDispatched unsent)
+                {
+                    var unsentKey = (evt.SessionId, unsent.InvocationId);
+                    if (!starts.TryGetValue(unsentKey, out var unsentOrigin) || unsentOrigin.Event.Sequence >= evt.Sequence
+                        || evt.RunId != unsent.RunId || unsentOrigin.Payload.RunId != unsent.RunId
+                        || unsentOrigin.Payload.Operation != unsent.Operation || unsentOrigin.Payload.ModelFingerprint != unsent.ModelFingerprint
+                        || evt.TaskId != unsentOrigin.Event.TaskId || evt.LaneId != unsentOrigin.Event.LaneId
+                        || evt.TurnId != unsentOrigin.Event.TurnId || evt.ExecutionId != unsentOrigin.Event.ExecutionId
+                        || outcomes.ContainsKey(unsentKey) || !notDispatched.Add(unsentKey)) incomplete = true;
+                    continue;
+                }
                 var identity = payload switch
                 {
                     MetaModelInvocationCompleted c => (c.InvocationId, c.RunId, c.Operation, c.ModelFingerprint,
@@ -322,6 +341,7 @@ public sealed class ExplorerTurn
                 if (payload is not (MetaModelInvocationCompleted or MetaModelInvocationFailed)) continue;
                 if (string.IsNullOrWhiteSpace(identity.InvocationId)) { incomplete = true; continue; }
                 var key = (evt.SessionId, identity.InvocationId);
+                if (notDispatched.Contains(key)) incomplete = true;
                 if (!starts.TryGetValue(key, out var origin) || origin.Event.Sequence >= evt.Sequence
                     || evt.RunId != identity.RunId || origin.Payload.RunId != identity.RunId
                     || origin.Payload.Operation != identity.Operation || origin.Payload.ModelFingerprint != identity.ModelFingerprint
@@ -354,7 +374,7 @@ public sealed class ExplorerTurn
                 incomplete = true;
             }
         }
-        if (starts.Keys.Any(key => !outcomes.ContainsKey(key))) incomplete = true;
+        if (starts.Keys.Any(key => !outcomes.ContainsKey(key) && !notDispatched.Contains(key))) incomplete = true;
         foreach (var pair in outcomes)
         {
             var cost = pair.Value.Cost;
@@ -578,6 +598,82 @@ public sealed class ExplorerTurn
             catch (BudgetExceededException) { return false; }
         }
 
+        string? ReserveInvocation(string id)
+        {
+            if (_spendReservations is null || (budget.MaxCostUsd is null && !_enforceDefaultSpendCaps)) return null;
+            var maximum = ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity,
+                _maximumGenerationRequestAttempts);
+            if (maximum is null) throw new BudgetExceededException("cota monetaria de invocación desconocida");
+            var reservationDay = today;
+            var reservationDailyCap = dailyCap;
+            IReadOnlyList<SqliteSpendReservationStore.Limit> ReadLimits()
+            {
+                // Fresh canonical totals already contain completed steps of this Ask: do not add guard again.
+                var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                reservationDay = day;
+                var fresh = CombineSpend(CombineSpend(ReadJournalSpend(stream, sessionId, runId, day, _enforceDefaultSpendCaps),
+                    ReadMetaJournalSpend(stream, sessionId, runId, day, _enforceDefaultSpendCaps)),
+                    ReadOtherWorkspaceSpend(stream, sessionId, runId, day));
+                if (fresh.Incomplete || fresh.RunUsd is null || fresh.SessionUsd is null || fresh.DailyUsd is null)
+                    throw new BudgetExceededException("uso histórico incompleto para reserva");
+                var limits = new List<SqliteSpendReservationStore.Limit>();
+                if (budget.MaxCostUsd is { } runLimit) limits.Add(new("run", runId.ToString(), runLimit, fresh.RunUsd.Value));
+                if (_enforceDefaultSpendCaps)
+                {
+                    var effectiveDaily = _dailyCapUsd;
+                    if (_store is IWorkspaceJournalReader journal)
+                        effectiveDaily = BudgetContinuation.Limit(journal.ReadEvents(EventType.Of("interaction.requested"))
+                            .Concat(journal.ReadEvents(EventType.Of("interaction.resolved")))
+                            .Concat(journal.ReadEvents(EventType.Of("interaction.expired"))), _codecs,
+                            sessionId, runId, day, "daily", _dailyCapUsd);
+                    effectiveDaily = Math.Max(effectiveDaily, UserDailyBudgetContinuation.Limit(_userSpendReader, _codecs, day, _dailyCapUsd));
+                    reservationDailyCap = effectiveDaily;
+                    limits.Add(new("session", sessionId.ToString(), sessionCap, fresh.SessionUsd.Value));
+                    limits.Add(new("daily", "user", effectiveDaily, fresh.DailyUsd.Value));
+                }
+                return limits;
+            }
+            var admission = _spendReservations.TryReserve(id, maximum.Value, ReadLimits, out var blocked);
+            if (admission == SqliteSpendReservationStore.Admission.AlreadyExists)
+                throw new BudgetExceededException("invocación ya reservada: no se permite repetir el envío");
+            if (admission == SqliteSpendReservationStore.Admission.Insufficient)
+                throw new BudgetExceededException("cota de invocación excede presupuesto disponible (" + blocked + ")",
+                    blocked switch
+                    {
+                        "run" => new("run", configuredRunCap!.Value, budget.MaxCostUsd!.Value, runId.ToString(), null),
+                        "session" => new("session", _sessionCapUsd, sessionCap, null, null),
+                        _ => new("daily", _dailyCapUsd, reservationDailyCap, null, reservationDay),
+                    });
+            return id;
+        }
+
+        void FinishReservation(string? id, decimal? cost, string receipt, long observedSends)
+        {
+            if (id is null || cost is null) return; // Unavailable usage cannot release an in-flight bound.
+            if (observedSends == 1 || observedSends == 0 && _maximumGenerationRequestAttempts == 1)
+                _spendReservations!.Settle(id, cost.Value, receipt);
+            else _spendReservations!.RecordUncertainCompletion(id, cost.Value, receipt);
+        }
+
+        var hasReservationBoundary = _spendReservations is not null && (budget.MaxCostUsd is not null || _enforceDefaultSpendCaps);
+        string MetaReservationId(string invocation) => $"meta/{sessionId}/{runId}/{laneId}/{turnId}/{invocation}";
+        bool ReserveMeta(string invocation)
+        {
+            try { return ReserveInvocation(MetaReservationId(invocation)) is not null; }
+            catch (BudgetExceededException) { return false; }
+        }
+        void FinishMeta(string invocation, decimal? cost, long observedSends)
+        {
+            if (cost is null) return;
+            var receipt = stream.EventsSince(1).First(evt => _codecs.Decode(evt) switch
+            {
+                MetaModelInvocationCompleted completed => completed.InvocationId == invocation,
+                MetaModelInvocationFailed failed => failed.InvocationId == invocation,
+                _ => false,
+            });
+            FinishReservation(MetaReservationId(invocation), cost, receipt.EventId.ToString(), observedSends);
+        }
+
         try
         {
             try
@@ -594,7 +690,11 @@ public sealed class ExplorerTurn
                     usage, allToolCalls.ToArray(), null);
             }
             var preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta);
+                workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta,
+                hasReservationBoundary ? ReserveMeta : null,
+                hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
+                hasReservationBoundary ? FinishMeta : null,
+                hasReservationBoundary ? id => _spendReservations!.ReleaseBeforeDispatch(MetaReservationId(id)) : null);
             var materialized = preparedContext.Snapshot;
             var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
 
@@ -660,7 +760,11 @@ public sealed class ExplorerTurn
                 if (step > 0 || steering.Count > 0)
                 {
                     preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                        workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta);
+                        workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta,
+                        hasReservationBoundary ? ReserveMeta : null,
+                        hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
+                        hasReservationBoundary ? FinishMeta : null,
+                        hasReservationBoundary ? id => _spendReservations!.ReleaseBeforeDispatch(MetaReservationId(id)) : null);
                     materialized = preparedContext.Snapshot;
                     if (materialized.Overflowed)
                     {
@@ -680,10 +784,16 @@ public sealed class ExplorerTurn
                     null, null, new CacheHints(4, "automatic"), continuation);
 
                 ModelResponse resolved;
+                string? stepReservation = null;
+                var reservationDispatched = false;
+                int? durableStepIndex = null;
+                var providerEntered = false;
                 try
                 {
                     var budgeted = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
                     ValidateBeforeInvocation();
+
+                    stepReservation = ReserveInvocation($"primary/{sessionId}/{runId}/{laneId}/{turnId}/{nextModelStepIndex}");
 
                     var stepIndex = nextModelStepIndex++;
                     var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
@@ -694,6 +804,15 @@ public sealed class ExplorerTurn
                     var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
                     stepEvents.Add(stepStart);
                     stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
+                    durableStepIndex = stepIndex;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (stepReservation is not null)
+                    {
+                        _spendReservations!.MarkDispatched(stepReservation);
+                        reservationDispatched = true;
+                    }
+                    using var generationAttempts = GenerationRequestAttemptScope.Enter();
+                    providerEntered = true;
                     resolved = _complete(request, cancellationToken);
                     continuation = resolved.State;
                     var stepResponse = string.Join("\n", resolved.Content.OfType<TextBlock>()
@@ -719,6 +838,7 @@ public sealed class ExplorerTurn
                             stateDescriptor),
                         "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse,
                         Sensitivity.Sensitive);
+                    var completionAfter = stepReservation is not null ? _store.CurrentSequence(sessionId) : 0;
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
                         resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields), DurabilityClass.Barrier);
                     if (TokenUsageValidation.IsInvalid(resolved.Usage, resolved.ReportedUsageFields))
@@ -727,6 +847,13 @@ public sealed class ExplorerTurn
                         if (budgeted)
                             throw new BudgetExceededException("uso del paso inválido: no se puede hacer cumplir el tope");
                         throw new InvalidDataException("Provider token usage is invalid.");
+                    }
+                    if (stepReservation is not null)
+                    {
+                        var completionEvent = stream.EventsSince(completionAfter + 1).Single(evt =>
+                            _codecs.Decode(evt) is ModelStepCompleted completed && completed.TurnId == turnId
+                                && completed.StepIndex == stepIndex);
+                        FinishReservation(stepReservation, stepCost, completionEvent.EventId.ToString(), generationAttempts.ObservedSends);
                     }
                     // Preserve the individual invocation before attempting aggregate arithmetic.
                     // An unrepresentable total cannot become a wrapped summary or authorize tools.
@@ -763,6 +890,13 @@ public sealed class ExplorerTurn
                     stop = StopReason.Cancelled;
                     finalText = "Presupuesto agotado: " + budgetEx.Detail;
                     break;
+                }
+                finally
+                {
+                    if (durableStepIndex is { } unsentIndex && !providerEntered)
+                        stream.Append(new ModelStepNotDispatched(turnId, unsentIndex), DurabilityClass.Barrier);
+                    if (stepReservation is not null && !reservationDispatched)
+                        _spendReservations!.ReleaseBeforeDispatch(stepReservation);
                 }
 
                 finalText = null;
@@ -1160,6 +1294,7 @@ public sealed class ExplorerTurn
         var incomplete = false;
         IReadOnlyList<DomainEvent>? stepStarts = evidenceEvents?.Where(evt => evt.Type.ToString() == "model_step.started").ToArray();
         IReadOnlyList<DomainEvent>? stepCompletions = evidenceEvents?.Where(evt => evt.Type.ToString() == "model_step.completed").ToArray();
+        IReadOnlyList<DomainEvent>? unsentSteps = evidenceEvents?.Where(evt => evt.Type.ToString() == "model_step.not_dispatched").ToArray();
         IReadOnlyList<DomainEvent>? completions = evidenceEvents?.Where(evt => evt.Type.ToString() == "model.completed").ToArray();
         if (evidenceEvents is null && includeWorkspaceDaily && _store is IWorkspaceJournalReader store)
         {
@@ -1167,6 +1302,7 @@ public sealed class ExplorerTurn
             {
                 stepStarts = store.ReadEvents(EventType.Of("model_step.started"));
                 stepCompletions = store.ReadEvents(EventType.Of("model_step.completed"));
+                unsentSteps = store.ReadEvents(EventType.Of("model_step.not_dispatched"));
                 completions = store.ReadEvents(EventType.Of("model.completed"));
             }
             catch (Exception)
@@ -1185,12 +1321,15 @@ public sealed class ExplorerTurn
                 .Where(evt => evt.Type.ToString().Equals("model_step.started", StringComparison.Ordinal)).ToArray();
             stepCompletions = stream.EventsSince(1)
                 .Where(evt => evt.Type.ToString().Equals("model_step.completed", StringComparison.Ordinal)).ToArray();
+            unsentSteps = stream.EventsSince(1)
+                .Where(evt => evt.Type.ToString() == "model_step.not_dispatched").ToArray();
         }
 
         stepStarts ??= Array.Empty<DomainEvent>();
         stepCompletions ??= Array.Empty<DomainEvent>();
         var startedKeys = new HashSet<(string Session, string Turn, int Index)>();
         var startedRuns = new Dictionary<(string Session, string Turn, int Index), string>();
+        var startedEvents = new Dictionary<(string Session, string Turn, int Index), DomainEvent>();
         foreach (var evt in stepStarts)
         {
             try
@@ -1207,6 +1346,7 @@ public sealed class ExplorerTurn
                     continue;
                 }
                 startedRuns[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = evt.RunId!.ToString();
+                startedEvents[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = evt;
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
                 or FormatException or ArgumentException)
@@ -1276,7 +1416,22 @@ public sealed class ExplorerTurn
             if (evt.SessionId == sessionId) session = AddHistoricalSpend(session, cost);
             if (evt.SessionId == sessionId && evt.RunId == runId) run = AddHistoricalSpend(run, cost);
         }
-        if (startedKeys.Any(key => !completedKeys.Contains(key))) incomplete = true;
+        var unsentKeys = new HashSet<(string Session, string Turn, int Index)>();
+        foreach (var evt in unsentSteps ?? Array.Empty<DomainEvent>())
+        {
+            try
+            {
+                if (_codecs.Decode(evt) is not ModelStepNotDispatched unsent) { incomplete = true; continue; }
+                var key = (evt.SessionId.ToString(), unsent.TurnId.ToString(), unsent.StepIndex);
+                if (!startedEvents.TryGetValue(key, out var origin) || origin.Sequence >= evt.Sequence
+                    || evt.TurnId != unsent.TurnId || evt.RunId != origin.RunId || evt.TaskId != origin.TaskId
+                    || evt.LaneId != origin.LaneId || evt.ExecutionId != origin.ExecutionId
+                    || completedKeys.Contains(key) || !unsentKeys.Add(key)) incomplete = true;
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException) { incomplete = true; }
+        }
+        if (startedKeys.Any(key => !completedKeys.Contains(key) && !unsentKeys.Contains(key))) incomplete = true;
         foreach (var group in startedKeys.GroupBy(key => (key.Session, key.Turn)))
         {
             var indexes = group.Select(key => key.Index).OrderBy(index => index).ToArray();
@@ -1373,7 +1528,8 @@ public sealed class ExplorerTurn
         try
         {
             metaEvents = includeWorkspaceDaily && _store is IWorkspaceJournalReader reader
-                ? new[] { "meta_model.invocation_started", "meta_model.invocation_completed", "meta_model.invocation_failed" }
+                ? new[] { "meta_model.invocation_started", "meta_model.invocation_completed", "meta_model.invocation_failed",
+                    "meta_model.invocation_not_dispatched" }
                     .SelectMany(type => reader.ReadEvents(EventType.Of(type))).ToArray()
                 : stream.EventsSince(1).Where(e => e.Type.ToString().StartsWith("meta_model.invocation_", StringComparison.Ordinal));
         }
@@ -1828,7 +1984,9 @@ public sealed class ExplorerTurn
     private PreparedTurnContext MaterializeTurnContext(EventStream stream, SessionId sessionId, RunId runId,
         LaneId laneId, TurnId turnId, string workingStateText, string instruction,
         IReadOnlyList<ModelMessage> messages, ExecutionFingerprint fingerprint, CancellationToken cancellationToken,
-        Func<bool>? canInvokeMeta = null)
+        Func<bool>? canInvokeMeta = null, Func<string, bool>? reserveMeta = null,
+        Action<string>? dispatchMeta = null, Action<string, decimal?, long>? finishMeta = null,
+        Action<string>? releaseMeta = null)
     {
         var contributors = new List<IContextContributor>();
         var hasWorkingState = false;
@@ -1891,7 +2049,8 @@ public sealed class ExplorerTurn
             if (_metaModelProvider is not null && (canInvokeMeta?.Invoke() ?? true))
             {
                 metaModel = new MetaModelService(_metaModelProvider, _artifacts,
-                    new ContextStreamEventSink(stream), _selection, _redaction.Redact, usage => _pricing?.CostUsd(usage));
+                    new ContextStreamEventSink(stream), _selection, _redaction.Redact, usage => _pricing?.CostUsd(usage),
+                    reserveMeta, dispatchMeta, finishMeta, releaseMeta);
                 try
                 {
                     summary = metaModel.SummarizeAsync(runId, "CompressContext", material,
@@ -2131,7 +2290,7 @@ public sealed class ExplorerTurn
         public ValueTask AppendAsync(DomainEventPayload payload, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _stream.Append(payload);
+            _stream.Append(payload, DurabilityClass.Barrier);
             return ValueTask.CompletedTask;
         }
     }

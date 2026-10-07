@@ -1,9 +1,34 @@
 # Objetivo activo: llegar a M6
 
-Actualizado 2026-10-06 23:29 UTC / 17:29 America/Mexico_City.
+Actualizado 2026-10-07 00:34 UTC / 2026-10-06 18:34 America/Mexico_City.
 Objetivo vigente: cerrar M5.5 con implementación y evidencia reproducible,
 conforme a ADR-0007/0044/0046/0047, y dejar M6 listo para empezar.
 No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus fronteras.
+
+### Estado vigente de reservas (00:34 UTC)
+
+Cableado de reserva conservadora a Explorer/compactación, CLI ASK/ACT y escalación
+que regresa al mismo runtime implementado. Lectura fresca atómica, recibos Barrier,
+retry parcial conserva uncertain; cancelpre-send tiene eventos canónicos v1 sin
+fingir consumo. Regresión concurrente RED previa ahora GREEN: una llamada/.30 USD
+ante cap .50 (no éxito vacío bloqueando ambas). Focal67PASS y crossworkspace10PASS,
+cifras solapadas. [Contratos y reproducción](m55-spend-reservation-foundation-20261007.md).
+La focal ampliada dio inicialmente124=123PASS/1FAIL por descriptor desconocido de
+un fixture meta de ayer; límites explícitos añadidos sin debilitar assertions.
+Nueva ejecución terminal: 116 PASS / 0 FAIL / 0 SKIP, 26.869s,
+spend-reservation-wired-final2.log, build 0 warnings/errores. Incluye codec,
+ledger/migración, intents de retry, meta/CAS diario, reopen, suspensión y guard
+de escritores. Excluye los ocho ContextManagementTests ya pasados en la ejecución
+anterior; no sumar cifras solapadas ni afirmar full verde de estas fuentes.
+
+Brecha comprobada por lectura de código de Luna: ModelQualificationHost aplica el
+cap autorizado de su suite, pero no el ledger diario/User ni acumulado canónico.
+Siguiente bloque de presupuesto: RED offline con diario agotado, integración de
+probes/costes inciertos y verificación. M5 permanece cerrado por el usuario.
+ReasoningCapability/ReplayPolicy y almacenamiento opaco seguro, contratos M6
+congelados y auditoría de los siete criterios de ADR0046 siguen pendientes.
+Las secciones cronológicas siguientes conservan evidencia histórica; sus RED y
+notas de "sin cableado" no describen el estado vigente de Explorer.
 
 ### Checkpoint de verificación 2026-10-06 23:29 UTC
 

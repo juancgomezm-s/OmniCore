@@ -9,12 +9,15 @@ public sealed class UserWorkspaceSpendReader
 {
     private readonly string _workspaces;
     private readonly string _currentWorkspace;
-    private static readonly string[] Types = ["model_step.started", "model_step.completed", "model.completed",
+    public string UserDataDirectory { get; }
+    private static readonly string[] Types = ["model_step.started", "model_step.completed", "model_step.not_dispatched", "model.completed",
         "meta_model.invocation_started", "meta_model.invocation_completed", "meta_model.invocation_failed",
+        "meta_model.invocation_not_dispatched",
         "interaction.requested", "interaction.resolved", "interaction.expired"];
 
     public UserWorkspaceSpendReader(string userDataDirectory, string currentWorkspaceDataDirectory)
     {
+        UserDataDirectory = Path.GetFullPath(userDataDirectory);
         _workspaces = Path.GetFullPath(Path.Combine(userDataDirectory, "workspaces"));
         _currentWorkspace = Path.GetFullPath(currentWorkspaceDataDirectory);
     }

@@ -20,6 +20,134 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
     private const string ProviderId = "cross-workspace-budget-provider";
 
     [Theory]
+    [InlineData(false, "valid", 1)]
+    [InlineData(true, "valid", 1)]
+    [InlineData(false, "missing", 0)]
+    [InlineData(true, "missing", 0)]
+    [InlineData(false, "duplicate", 0)]
+    [InlineData(true, "duplicate", 0)]
+    [InlineData(false, "wrong-identity", 0)]
+    [InlineData(true, "wrong-identity", 0)]
+    [InlineData(false, "before-start", 0)]
+    [InlineData(true, "before-start", 0)]
+    public async Task Other_workspace_not_dispatched_evidence_is_replayed_and_validated(bool meta, string evidence, int expectedCalls)
+    {
+        var root = FixtureRoot();
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        var workspaceA = Path.Combine(root, "workspace-a");
+        var workspaceB = Path.Combine(root, "workspace-b");
+        foreach (var directory in new[] { data, config, workspaceA, workspaceB }) Directory.CreateDirectory(directory);
+        var environment = ProcessEnvironment.Capture();
+        var provider = new ScriptedHttpProvider(100);
+        var runtime = OmniCliRuntime.Create(workspaceB);
+        SqliteEventStore? journal = null;
+        try
+        {
+            SetEnvironment(data, config);
+            WriteConfiguration(config, provider.BaseUrl, 0.50m, contextCapacity: 100_000);
+            var otherData = OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspaceA);
+            Directory.CreateDirectory(otherData);
+            journal = new SqliteEventStore(Path.Combine(otherData, "journal.db"));
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var stream = new EventStream(journal, codecs, session);
+            var run = TestRun.Open(stream, session);
+            var turn = TurnId.New();
+            stream.Append(new TurnStarted(turn, run.RootLane), DurabilityClass.Barrier);
+            DomainEventPayload start;
+            DomainEventPayload marker;
+            if (meta)
+            {
+                var input = new FileArtifactStore(otherData).PutText("offline fixture", "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
+                start = new MetaModelInvocationStarted("fixture-meta", run.RunId, "CompressContext", "fixture-fingerprint", input);
+                marker = new MetaModelInvocationNotDispatched(evidence == "wrong-identity" ? "other-meta" : "fixture-meta",
+                    run.RunId, "CompressContext", "fixture-fingerprint");
+            }
+            else
+            {
+                start = new ModelStepStarted(turn, 0, ModelId, 100_000, "Direct", null, null, null);
+                marker = new ModelStepNotDispatched(evidence == "wrong-identity" ? TurnId.New() : turn, 0);
+            }
+            if (evidence == "before-start") stream.Append(marker, DurabilityClass.Barrier);
+            stream.Append(start, DurabilityClass.Barrier);
+            if (evidence != "missing" && evidence != "before-start") stream.Append(marker, DurabilityClass.Barrier);
+            if (evidence == "duplicate") stream.Append(marker, DurabilityClass.Barrier);
+            stream.Append(new TurnInterrupted(turn), DurabilityClass.Barrier);
+            journal.Close();
+            var output = new List<string>();
+            await new TuiTurnHost(runtime).ExecuteAsync("continue from different workspace", output.Add, TestContext.Current.CancellationToken);
+            Assert.Equal(expectedCalls, provider.RequestCount);
+            var events = ReadCurrentEvents(workspaceB);
+            Assert.Equal(expectedCalls, events.OfType<ModelStepCompleted>().Count());
+            Assert.Equal(expectedCalls == 0 ? 1 : 0, events.OfType<InteractionRequested>().Count());
+        }
+        finally
+        {
+            journal?.Close();
+            await provider.DisposeAsync();
+            CloseRuntime(runtime);
+            ProcessEnvironment.Restore(environment);
+            ClearFixturePools(data, workspaceA, workspaceB);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 2)]
+    [InlineData(true, 1)]
+    public async Task Native_retry_with_unknown_prior_usage_holds_remaining_reservation(bool retryFirst, int expectedCompletions)
+    {
+        var root = FixtureRoot();
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        var workspace = Path.Combine(root, "workspace");
+        foreach (var directory in new[] { data, config, workspace }) Directory.CreateDirectory(directory);
+        var environment = ProcessEnvironment.Capture();
+        var provider = new ScriptedHttpProvider(10_000, retryFirst);
+        var runtime = OmniCliRuntime.Create(workspace);
+        try
+        {
+            SetEnvironment(data, config);
+            WriteConfiguration(config, provider.BaseUrl, 0.50m, contextCapacity: 100_000);
+            var output = new List<string>();
+            await new TuiTurnHost(runtime).ExecuteAsync("first fixture invocation", output.Add, TestContext.Current.CancellationToken);
+            await new TuiTurnHost(runtime).ExecuteAsync("second fixture invocation", output.Add, TestContext.Current.CancellationToken);
+            Assert.Equal(2, provider.RequestCount);
+            var events = ReadCurrentEvents(workspace);
+            var completed = events.OfType<ModelStepCompleted>().ToArray();
+            Assert.Equal(expectedCompletions, completed.Length);
+            Assert.All(completed, item => Assert.Equal(0.01m, item.CostUsd));
+            Assert.Equal(retryFirst ? 1 : 0, events.OfType<InteractionRequested>().Count());
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+                { DataSource = Path.Combine(data, "spend-reservations.db"), Pooling = false }.ToString());
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT state,actual_usd,pending_usd,receipt FROM spend_reservations ORDER BY created_utc";
+            using var reader = command.ExecuteReader();
+            var count = 0;
+            while (reader.Read())
+            {
+                count++;
+                Assert.Equal(retryFirst ? "uncertain" : "settled", reader.GetString(0));
+                Assert.Equal(0.01m, decimal.Parse(reader.GetString(1), System.Globalization.CultureInfo.InvariantCulture));
+                Assert.Equal(retryFirst ? 0.296144m : 0m,
+                    decimal.Parse(reader.GetString(2), System.Globalization.CultureInfo.InvariantCulture));
+                Assert.False(string.IsNullOrWhiteSpace(reader.GetString(3)));
+            }
+            Assert.Equal(expectedCompletions, count);
+        }
+        finally
+        {
+            await provider.DisposeAsync();
+            CloseRuntime(runtime);
+            ProcessEnvironment.Restore(environment);
+            ClearFixturePools(data, workspace);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
     [InlineData(9.0, 1)]
     [InlineData(10.0, 2)]
     [InlineData(9.0, 2, "unknown")]
@@ -198,7 +326,8 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
         try
         {
             SetEnvironment(data, config);
-            WriteConfiguration(config, provider.BaseUrl, dailyCapUsd: 0.50m);
+            // Seed valid historical usage under a cap that admits the declared worst case.
+            WriteConfiguration(config, provider.BaseUrl, dailyCapUsd: 10m);
 
             var firstOutput = new List<string>();
             var firstExitCode = await new TuiTurnHost(runtimeA).ExecuteAsync(
@@ -210,6 +339,8 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
             var historical = Assert.Single(firstSteps);
             Assert.Equal(0.60m, historical.CostUsd);
             Assert.Equal(new TokenUsage(600_000, 0, 0, 0, 0), historical.Usage);
+
+            WriteConfiguration(config, provider.BaseUrl, dailyCapUsd: 0.50m);
 
             var secondOutput = new List<string>();
             var secondExitCode = await new TuiTurnHost(runtimeB).ExecuteAsync(
@@ -262,7 +393,7 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
         try
         {
             SetEnvironment(data, config);
-            WriteConfiguration(config, provider.BaseUrl, dailyCapUsd: 0.50m);
+            WriteConfiguration(config, provider.BaseUrl, dailyCapUsd: 0.50m, contextCapacity: 100_000);
 
             Assert.Empty(ReadCurrentEvents(workspaceA));
             if (corruptJournal)
@@ -312,7 +443,7 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
     }
 
     private static void WriteConfiguration(string config, string baseUrl, decimal dailyCapUsd, decimal sessionCapUsd = 5m,
-        string billingMode = "CreditBalance")
+        string billingMode = "CreditBalance", long contextCapacity = 1_000_000)
     {
         File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
             providers:
@@ -328,7 +459,7 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
             models:
               {{ModelId}}:
                 provider: {{ProviderId}}
-                context: 1000000
+                context: {{contextCapacity}}
                 maxOutput: 2048
             """);
         File.WriteAllText(Path.Combine(config, "settings.yaml"), $$"""
@@ -415,11 +546,13 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
         private readonly CancellationTokenSource _stop = new();
         private readonly Task _serve;
         private readonly long _inputTokens;
+        private readonly bool _retryFirst;
         private int _requestCount;
 
-        public ScriptedHttpProvider(long inputTokens)
+        public ScriptedHttpProvider(long inputTokens, bool retryFirst = false)
         {
             _inputTokens = inputTokens;
+            _retryFirst = retryFirst;
             _listener.Start();
             var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
             BaseUrl = $"http://127.0.0.1:{port}/v1";
@@ -460,7 +593,13 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
                     read += count;
                 }
 
-                Interlocked.Increment(ref _requestCount);
+                var requestIndex = Interlocked.Increment(ref _requestCount);
+                if (_retryFirst && requestIndex == 1)
+                {
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"), cancellationToken);
+                    await stream.FlushAsync(cancellationToken);
+                    return;
+                }
                 var eventBody = "data: " + JsonSerializer.Serialize(new
                 {
                     choices = new[] { new { delta = new { content = "fixture response" }, finish_reason = "stop" } },

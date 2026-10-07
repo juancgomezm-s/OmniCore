@@ -716,7 +716,8 @@ public sealed class OmniCliRuntime
                 quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
                     ? QuotaAdmission : null,
                 quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
-                    ? QuotaAllowsMeta : null);
+                    ? QuotaAllowsMeta : null,
+                maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts);
             var instruction = TurnInstruction(executingAct);
             if (questionnaireService.Pending(sessionId).FirstOrDefault() is { } pendingQuestion)
             {
@@ -810,7 +811,8 @@ public sealed class OmniCliRuntime
                         quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
                             ? QuotaAdmission : null,
                         quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
-                            ? QuotaAllowsMeta : null);
+                            ? QuotaAllowsMeta : null,
+                        maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts);
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         "You are executing the approved plan in the same Run. Use available tools safely and report verified results.",

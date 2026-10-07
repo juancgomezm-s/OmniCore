@@ -52,3 +52,11 @@ public record MetaModelInvocationFailed(string InvocationId, RunId RunId, string
     public EventType Type() => EventType.Of("meta_model.invocation_failed");
     public int SchemaVersion() => 2;
 }
+
+/// <summary>Known failure before entering the provider; carries no usage or monetary receipt.</summary>
+public record MetaModelInvocationNotDispatched(string InvocationId, RunId RunId, string Operation,
+    string ModelFingerprint) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("meta_model.invocation_not_dispatched");
+    public int SchemaVersion() => 1;
+}
