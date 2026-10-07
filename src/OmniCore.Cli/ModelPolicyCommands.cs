@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using OmniCore.Client;
 using OmniCore.Host;
+using OmniCore.Protocol;
 
 namespace OmniCore.Cli;
 
@@ -44,6 +45,35 @@ public sealed class ModelPolicyCommands
         _interactive = interactive;
         _workspaceId = workspaceId;
         _cancellationToken = cancellationToken;
+    }
+
+    /// <summary>Presents the quota measurement before asking permission for one probe.</summary>
+    internal static bool ConfirmQualificationQuota(ProviderQuotaSnapshot snapshot, Localization localization,
+        TextReader input, TextWriter output, bool interactive, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        output.WriteLine(localization.Resolve("cli.model.qualify.quota.header", new Dictionary<string, string>
+        {
+            ["provider"] = snapshot.ProviderId, ["account"] = snapshot.AccountId ?? "—",
+            ["source"] = snapshot.Source, ["date"] = snapshot.AsOf.ToString("O", CultureInfo.InvariantCulture),
+            ["availability"] = localization.Resolve("cli.model.qualify.quota.availability." + snapshot.Availability),
+        }));
+        foreach (var window in snapshot.Windows)
+            output.WriteLine(localization.Resolve("cli.model.qualify.quota.window", new Dictionary<string, string>
+            {
+                ["window"] = window.Id,
+                ["remaining"] = window.RemainingPercent.Value?.ToString("0.##", CultureInfo.InvariantCulture) ?? "—",
+                ["reset"] = window.ResetsAt?.ToString("O", CultureInfo.InvariantCulture) ?? "—",
+            }));
+        if (!interactive)
+        {
+            output.WriteLine(localization.Resolve("cli.model.qualify.quota.noninteractive"));
+            return false;
+        }
+        output.Write(localization.Resolve("cli.model.qualify.quota.prompt"));
+        output.Flush();
+        cancellationToken.ThrowIfCancellationRequested();
+        return input.ReadLine()?.Trim().ToLowerInvariant() is "s" or "si" or "sí" or "y" or "yes";
     }
 
     /// <summary>Entrada desde CliApp. input/output/interactive inyectables para tests.</summary>
@@ -541,6 +571,8 @@ public sealed class ModelPolicyCommands
                 Suite = suite,
                 ConsentGiven = true,
                 MaxTotalCostUsd = maxCost,
+                ConfirmLowQuota = (snapshot, token) => System.Threading.Tasks.Task.FromResult(
+                    ConfirmQualificationQuota(snapshot, _loc, _input, _output, _interactive, token)),
             }, _cancellationToken).GetAwaiter().GetResult();
         }
         catch (ModelQualificationCostCapException ex)

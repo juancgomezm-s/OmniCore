@@ -8,6 +8,7 @@ using OmniCore.Domain;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
+using OmniCore.Protocol;
 using OmniCore.Qualification;
 using Task = System.Threading.Tasks.Task;
 
@@ -54,6 +55,9 @@ public sealed class M5QualificationCodexSubscriptionIntegrationTests
                     Suite = "quick",
                     ConsentGiven = true,
                     MaxTotalCostUsd = 1m,
+                    QueryQuota = (id, _) => Task.FromResult(new ProviderQuotaSnapshot(id, null,
+                        "private-loopback-fixture:no-account-query", DateTimeOffset.UtcNow,
+                        MetricAvailability.Unknown, [], [], "Offline fixture; no authenticated quota query.")),
                 }, CancellationToken.None);
 
                 Assert.Equal(ModelQualificationState.Qualified.ToString(), result.NewState);
