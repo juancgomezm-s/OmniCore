@@ -2,6 +2,13 @@
 
 ## Replay explícito None — 2026-10-07 02:13 UTC
 
+Actualización 02:22 UTC: full sobre0fbb322, 2458 casos / 2454 PASS / 0 FAIL /
+4 SKIP symlink / 352.538s (`reasoning-targetref-full.log`), terminal exit0.
+No incluye la propuesta nueva de reapertura Anthropic aún fuera del repo.
+Anthropic y Responses restauran firmas/items cifrados mediante ProviderState,
+no ReasoningBlock.OpaquePayload; la carencia confirmada es la reconstrucción
+del bloque visible en el historial durable, no una pérdida demostrada de firmas.
+
 La declaración `ReasoningCapability` ya carga desde YAML y participa en el
 fingerprint efectivo. `None` retira la continuación de la solicitud saliente y
 las referencias opacas de ReasoningBlock, incluso en contenidos ToolResult
