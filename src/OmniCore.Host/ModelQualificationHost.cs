@@ -309,9 +309,18 @@ public sealed partial class ModelQualificationHost : IDisposable
         if (estimatedCost > options.MaxTotalCostUsd)
             throw new ModelQualificationCostCapException(options.MaxTotalCostUsd, estimatedCost);
 
+        IProbeExecutionObserver? observer = null;
+        if (provider?.BillingMode is BillingMode.MeteredCurrency or BillingMode.CreditBalance or BillingMode.Unknown)
+        {
+            var bound = ModelInvocationCostBound.Quote(selection, pricing, model.ContextWindow, generationAttempts)
+                ?? throw new ModelQualificationCostEvidenceUnavailableException();
+            observer = new QualificationSpendAccounting(_store, _paths.DataDirectory, key.QualificationKeyHash(),
+                probes, bound, generationAttempts!.Value, provider.BillingMode, options.MaxTotalCostUsd,
+                _configuration?.DailyCapUsd ?? 20m);
+        }
         var runner = new ProbeRunner(ConnectProvider(model, provider, options),
             options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout,
-            pricing is null ? null : pricing.CostUsd);
+            pricing is null ? null : pricing.CostUsd, observer);
         var consent = new QualificationConsent(explicitlyGiven: true, options.MaxTotalCostUsd);
         IReadOnlyList<ProbeResult> results;
         try

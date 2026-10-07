@@ -8,6 +8,33 @@ using Task = System.Threading.Tasks.Task;
 public sealed class SpendReservationStoreTests
 {
     [Theory]
+    [InlineData("complete")]
+    [InlineData("retry")]
+    [InlineData("unknown")]
+    public void Canonical_reconciliation_recovers_crash_window_and_is_idempotent(string kind)
+    {
+        var root = Root();
+        try
+        {
+            var store = new SqliteSpendReservationStore(Path.Combine(root, "reservations.db"));
+            Assert.False(store.ReconcileCanonicalReceipt("historical-no-ledger", 0.05m, 0.01m, "receipt", true));
+            Assert.Equal(SqliteSpendReservationStore.Admission.Reserved,
+                store.TryReserve("a", 0.05m, () => [new("daily", "user", 0.08m, 0m)]));
+            store.MarkDispatched("a");
+            decimal? cost = kind == "unknown" ? null : 0.01m;
+            Assert.Throws<InvalidDataException>(() => store.ReconcileCanonicalReceipt("a", 0.04m, cost, "receipt", kind == "complete"));
+            Assert.True(store.ReconcileCanonicalReceipt("a", 0.05m, cost, "receipt", kind == "complete"));
+            Assert.True(store.ReconcileCanonicalReceipt("a", 0.05m, cost, "receipt", kind == "complete"));
+            Assert.Equal(kind == "unknown", store.HasFullDispatchedBound("a", 0.05m));
+            var result = store.TryReserve("b", 0.04m, () => [new("daily", "user", 0.08m, cost ?? 0m)]);
+            Assert.Equal(kind == "complete" ? SqliteSpendReservationStore.Admission.Reserved
+                : SqliteSpendReservationStore.Admission.Insufficient, result);
+            Assert.Throws<InvalidOperationException>(() => store.ReleaseBeforeDispatch("a"));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
     [InlineData("reserved", true)]
     [InlineData("dispatched", true)]
     [InlineData("uncertain", true)]

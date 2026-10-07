@@ -20,6 +20,64 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
     private const string ProviderId = "cross-workspace-budget-provider";
 
     [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    [InlineData(false, 0, true)]
+    [InlineData(true, 1, true)]
+    public async Task Normal_chat_admission_counts_user_qualification_receipts_once_by_utc_day(bool yesterday, int expectedCalls,
+        bool crashBeforeSettlement = false)
+    {
+        var root = FixtureRoot();
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        var workspace = Path.Combine(root, "workspace");
+        foreach (var directory in new[] { data, config, workspace }) Directory.CreateDirectory(directory);
+        var environment = ProcessEnvironment.Capture();
+        var provider = new ScriptedHttpProvider(inputTokens: 100);
+        var runtime = OmniCliRuntime.Create(workspace);
+        try
+        {
+            SetEnvironment(data, config);
+            WriteConfiguration(config, provider.BaseUrl, 0.50m, contextCapacity: 100_000);
+            var completed = DateTimeOffset.UtcNow.AddDays(yesterday ? -1 : 0);
+            var execution = Guid.NewGuid();
+            var receipt = new QualificationProbeReceipt(execution, "prior-fixture-probe", 0,
+                $"qualification/{execution:D}/0", new string('a', 64), "quick", "1.0", new string('b', 64),
+                completed.AddSeconds(-1), completed, ProbeStatus.Passed, ProbeExecutionTermination.Completed,
+                BillingMode.MeteredCurrency, 0.45m, 1, 1, 0.4m,
+                new TokenUsage(400_000, 0, 0, 0, 0), TokenUsageFields.Input | TokenUsageFields.Output, null!);
+            var artifacts = new FileArtifactStore(data);
+            receipt = receipt with { Evidence = artifacts.PutText("{\"schema\":\""
+                + QualificationProbeReceipt.EvidenceSchema + "\",\"receipt\":" + receipt.CanonicalObservationJson()
+                + ",\"output\":\"offline fixture\"}", "application/json", ArtifactKind.Other, Sensitivity.Sensitive) };
+            using (var store = OmniHost.CreateModelQualificationStore(data))
+                store.RecordProbeReceipt(receipt, CancellationToken.None);
+            if (crashBeforeSettlement)
+            {
+                var reservations = new SqliteSpendReservationStore(Path.Combine(data, "spend-reservations.db"));
+                Assert.Equal(SqliteSpendReservationStore.Admission.Reserved,
+                    reservations.TryReserve(receipt.ReservationId, receipt.MaximumUsd,
+                        () => [new("daily", "user", 0.50m, 0m)]));
+                reservations.MarkDispatched(receipt.ReservationId);
+            }
+            var output = new List<string>();
+            await new TuiTurnHost(runtime).ExecuteAsync("fixture normal chat", output.Add,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(expectedCalls, provider.RequestCount);
+            var events = ReadCurrentEvents(workspace);
+            Assert.Equal(expectedCalls, events.OfType<ModelStepCompleted>().Count());
+            Assert.Equal(expectedCalls == 0 ? 1 : 0, events.OfType<InteractionRequested>().Count());
+            Assert.Equal(receipt, Assert.Single(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(data, CancellationToken.None)));
+        }
+        finally
+        {
+            await provider.DisposeAsync(); CloseRuntime(runtime);
+            ProcessEnvironment.Restore(environment); ClearFixturePools(data, workspace);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
     [InlineData(false, "valid", 1)]
     [InlineData(true, "valid", 1)]
     [InlineData(false, "missing", 0)]

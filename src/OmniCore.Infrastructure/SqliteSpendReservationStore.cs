@@ -142,30 +142,67 @@ public sealed class SqliteSpendReservationStore
         Transition(id, "dispatched", "uncertain", knownUsd, receipt);
     }
 
-    private void Transition(string id, string from, string to, decimal? actual, string? receipt)
+    /// <summary>Recover the receipt-before-settlement crash window. The caller has already
+    /// verified immutable canonical evidence. A receipt without a reservation is historical
+    /// consumption only; it must not manufacture a ledger entry. Unknown usage requires the
+    /// original full dispatched bound to remain held.</summary>
+    public bool ReconcileCanonicalReceipt(string id, decimal maximumUsd, decimal? knownUsd,
+        string receipt, bool fullyAccounted)
+    {
+        if (maximumUsd < 0m || knownUsd < 0m) throw new ArgumentOutOfRangeException(nameof(maximumUsd));
+        ArgumentException.ThrowIfNullOrWhiteSpace(receipt);
+        return Transition(id, "dispatched", knownUsd is null ? "dispatched"
+            : fullyAccounted ? "settled" : "uncertain", knownUsd,
+            knownUsd is null ? null : receipt, maximumUsd, allowMissing: true);
+    }
+
+    /// <summary>Readonly proof used while admission holds the write lock. Unknown usage
+    /// may contribute no measured amount only while its entire original bound is pending.</summary>
+    public bool HasFullDispatchedBound(string id, decimal maximumUsd)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT state,maximum_usd,pending_usd,actual_usd,receipt FROM spend_reservations WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        return reader.Read() && reader.GetString(0) == "dispatched"
+            && Parse(reader.GetString(1)) == maximumUsd && Parse(reader.GetString(2)) == maximumUsd
+            && reader.IsDBNull(3) && reader.IsDBNull(4);
+    }
+
+    private bool Transition(string id, string from, string to, decimal? actual, string? receipt,
+        decimal? expectedMaximum = null, bool allowMissing = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         using var connection = Open();
         using var transaction = connection.BeginTransaction(deferred: false);
         using var lookup = Command(connection, transaction,
-            "SELECT state,actual_usd,receipt,maximum_usd FROM spend_reservations WHERE id=$id", id);
+            "SELECT state,actual_usd,receipt,maximum_usd,pending_usd FROM spend_reservations WHERE id=$id", id);
         string state;
         string? previousAmount;
         string? previousReceipt;
         decimal maximum;
         using (var reader = lookup.ExecuteReader())
         {
-            if (!reader.Read()) throw new InvalidOperationException("Unknown reservation.");
+            if (!reader.Read())
+            {
+                if (allowMissing) return false;
+                throw new InvalidOperationException("Unknown reservation.");
+            }
             state = reader.GetString(0);
             previousAmount = reader.IsDBNull(1) ? null : reader.GetString(1);
             previousReceipt = reader.IsDBNull(2) ? null : reader.GetString(2);
             maximum = Parse(reader.GetString(3));
+            if (expectedMaximum is { } expected && maximum != expected)
+                throw new InvalidDataException("Canonical receipt differs from reserved maximum.");
+            if (expectedMaximum is not null && to == "dispatched" && actual is null && Parse(reader.GetString(4)) != maximum)
+                throw new InvalidDataException("Unknown usage must retain its full dispatched bound.");
         }
         if (state == to)
         {
             if (previousAmount != (actual is null ? null : Format(actual.Value)) || previousReceipt != receipt)
                 throw new InvalidDataException("Conflicting reservation settlement.");
-            return;
+            return true;
         }
         if (state != from) throw new InvalidOperationException("Illegal reservation transition.");
         using var update = Command(connection, transaction,
@@ -182,6 +219,7 @@ public sealed class SqliteSpendReservationStore
         update.Parameters.AddWithValue("$pending", Format(pending));
         update.ExecuteNonQuery();
         transaction.Commit();
+        return true;
     }
 
     private SqliteConnection Open()

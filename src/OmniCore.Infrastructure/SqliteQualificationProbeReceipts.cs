@@ -10,6 +10,36 @@ public sealed partial class SqliteModelQualificationStore
     internal const string ProbeReceiptSchemaMarker = "m55-qualification-probe-receipts-v1";
     private const string ReceiptColumns = "execution_id,probe_id,ordinal,reservation_id,key_hash,suite_id,suite_version,task_set_hash,started_utc,completed_utc,status,termination,billing_mode,maximum_usd,maximum_attempts,observed_sends,cost_usd,has_usage,usage_fields,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,artifact_id,artifact_algorithm,artifact_hash,artifact_size,media_type,artifact_kind,sensitivity,redacted";
 
+    /// <summary>Fresh readonly User receipt snapshot, without migrations or creation. A
+    /// legacy namespace with no installed receipt schema has no per-probe receipts; profile
+    /// artifacts are not retrospectively split into billable invocations or UTC days.</summary>
+    public static IReadOnlyList<QualificationProbeReceipt> ReadCanonicalProbeReceipts(
+        string dataDirectory, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var path = Path.Combine(Path.GetFullPath(dataDirectory), "user.db");
+        if (!File.Exists(path)) return [];
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Canonical User receipt database cannot be a link.");
+        using var store = new SqliteModelQualificationStore(path, null, readOnly: true);
+        using var command = store._conn.CreateCommand();
+        command.CommandText = "SELECT type FROM sqlite_master WHERE name='qualification_probe_receipts' COLLATE NOCASE";
+        var receiptType = command.ExecuteScalar();
+        command.CommandText = "SELECT type FROM sqlite_master WHERE name='model_profile_migrations' COLLATE NOCASE";
+        var markerType = command.ExecuteScalar();
+        var installed = false;
+        if (Equals(markerType, "table"))
+        {
+            command.CommandText = "SELECT COUNT(*) FROM model_profile_migrations WHERE name=:marker";
+            Add(command, "marker", ProbeReceiptSchemaMarker);
+            installed = Convert.ToInt64(command.ExecuteScalar()) != 0;
+        }
+        if (!installed && receiptType is null) return [];
+        if (!installed || !Equals(receiptType, "table"))
+            throw new InvalidDataException("Canonical User receipt schema is inconsistent.");
+        return store.ProbeReceipts(cancellationToken);
+    }
+
     private void InitializeProbeReceiptSchema(DbTransaction transaction)
     {
         using var command = _conn.CreateCommand();

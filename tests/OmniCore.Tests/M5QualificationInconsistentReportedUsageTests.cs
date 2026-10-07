@@ -42,6 +42,14 @@ public sealed class M5QualificationInconsistentReportedUsageTests
         Assert.Equal(1, provider.Calls);
         using var store = OmniHost.CreateModelQualificationStore(fixture.DirectoryPath);
         Assert.Empty(store.List(CancellationToken.None));
+        var receipt = Assert.Single(store.ProbeReceipts(CancellationToken.None));
+        Assert.Null(receipt.CostUsd);
+        Assert.Null(receipt.Usage);
+        Assert.Equal(TokenUsageFields.None, receipt.ReportedUsageFields);
+        Assert.True(new SqliteSpendReservationStore(Path.Combine(fixture.DirectoryPath, "spend-reservations.db"))
+            .HasFullDispatchedBound(receipt.ReservationId, receipt.MaximumUsd));
+        using var evidence = JsonDocument.Parse(new FileArtifactStore(fixture.DirectoryPath).GetText(receipt.Evidence.Hash)!);
+        Assert.True(evidence.RootElement.TryGetProperty("invalidReportedUsage", out _));
     }
 
     [Fact]
