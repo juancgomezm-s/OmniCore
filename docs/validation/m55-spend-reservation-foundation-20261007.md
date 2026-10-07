@@ -48,6 +48,20 @@ Root implementó el ledger y sus tests; Luna sólo auditó, sin producir este c�
 
 ## Pendiente antes de acreditar la corrección del presupuesto
 
+Actualización 2026-10-07 00:07 UTC: `ModelInvocationCostBound` calcula una cota
+conservadora desde capacidad declarada de entrada, techo explícito de salida
+aplicado por el request y cantidad máxima de envíos. No usa ContextBudget ni
+token estimates como techo físico. Precio/capacidad/salida/intentos desconocidos,
+negativos o cálculo no representable devuelven null, nunca cero. Precio declarado
+cero es distinto de ausencia de tarifa. La cota no se escribe como consumo real.
+Focal nuevo: 23 PASS / 0 FAIL / 0 SKIP, 2.655s,
+9 casos de cota + 10 ledger + 4 guard; `spend-reservation-bound-final2.log`.
+El primer intento de las teorías nullable falló por Int32 vs Nullable Int64 en
+InlineData: fixture corregido con literales long; no RED del cálculo productivo.
+La cota todavía no tiene callers productivos, igual que el ledger.
+La regresión de Explorer se reforzó además para exigir una llamada y 0.30 USD:
+no puede pasar vacíamente bloqueando las dos llamadas.
+
 Este fundamento todavía NO está conectado a ExplorerTurn ni a compactación.
 `ConcurrentSpendAdmissionTests` sigue RED: dos workspaces gastan 0.60 USD ante
 un máximo de 0.50 USD. La suite completa verde de 291842f precede esa regresión.
