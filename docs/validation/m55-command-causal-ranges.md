@@ -1,5 +1,33 @@
 # Rango causal y confirmación durable del command
 
+## PlanApproval: errores y consulta idempotente — 2026-10-07 05:15 UTC
+
+RequestPlanApprovalCommand devuelve Failure original + Ack + InteractionId.
+Ante append que persiste y luego lanza, confirma una sola vez los eventos
+causales posteriores al checkpoint y devuelve la ID observada, Accepted/error
+y rango exacto. Sin eventos confirmados: Rejected sin ID/rango. Si no puede
+confirmar: Deferred/JournalOutcomeUnavailable sin ID ni rango; nunca publica de
+nuevo en el catch. Tampoco modifica la sesión seleccionada ni aprueba el plan.
+
+La consulta del Run AwaitingInput devuelve NoOp con la misma aprobación pendiente
+y sin eventos nuevos. Sólo un Run Running puede publicar una nueva solicitud.
+El CLI recibe el resultado del command y valida Status/Outcome antes de pedir
+respuesta. El wrapper público mantiene su firma y preserva exception/OCE original,
+pero no reduce silenciosamente un error/Deferred a «sin interacción».
+
+Luna propuso cuatro casos offline; root leyó/integró y añadió confirmación fallida
+después de append normal, propagación OCE del wrapper y dos pruebas SQLite con
+reapertura del journal + archivo de sesión realmente guardado. El primer fixture
+de reapertura omitía stateFile (2 FAIL): se corrigió la configuración del fixture,
+sin quitar assertions de identidad/ID/no duplicación. No es un fallo del producto.
+RED válido: 8 casos/6 FAIL, 1.010s, build sin errores/advertencias. Final ampliado:
+81 PASS/0 FAIL/0 SKIP, 12.268s; arquitectura 56 PASS en 0.776s.
+Logs plan-approval-command-failure-red/expanded-final/architecture.log. Providers
+scripted y fallos de store son fixtures; SQLite y stateFile privados son reales.
+Full del bloque pendiente. Full anterior sobre565f747 terminal exit0:2599 casos,
+2595 PASS/0 FAIL/4 SKIP symlink,264.680s,completion-command-failure-full.log.
+Routing/follow-up/escalación aún requieren el inventario excepcional completo.
+
 ## Completion: errores correlacionables — 2026-10-07 05:05 UTC
 
 CheckRunCompletionAndGate conserva Failure original, Completed=null y ACK ante

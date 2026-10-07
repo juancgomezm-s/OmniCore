@@ -624,7 +624,7 @@ public sealed class OmniCliRuntime
             var boundary = CreateBoundary(effectivePolicy, _workspaceRoot);
             if (act && effectivePolicy.IsFallback)
                 writeLine(Text(LocalizedText.Of("coder.policy.observeOnly")));
-            if (!act && server.RequestPlanApprovalIfNeeded() is { } pendingApproval)
+            if (!act && OmniServer.RequirePlanApprovalInteraction(server.RequestPlanApprovalCommand()) is { } pendingApproval)
             {
                 var selected = ReadPlanApprovalOption(writeLine, locale);
                 if (selected is null)
@@ -775,7 +775,7 @@ public sealed class OmniCliRuntime
                 await TryEscalateAsync(loaded, model!, route.Id, usableContext, prompt, act, writeLine, cancellationToken) is { } escalatedCode)
                 return escalatedCode;
 
-            if (!executingAct && server.RequestPlanApprovalIfNeeded() is { } approvalId)
+            if (!executingAct && OmniServer.RequirePlanApprovalInteraction(server.RequestPlanApprovalCommand()) is { } approvalId)
             {
                 if (Console.IsInputRedirected)
                 {

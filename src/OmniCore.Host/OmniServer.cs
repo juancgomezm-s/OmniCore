@@ -458,72 +458,110 @@ public sealed class OmniServer : IOmniClient
     }
 
     /// <summary>Publica PlanApproval tras una propuesta aceptada de plan.propose; no contesta por el usuario.</summary>
-    public InteractionId? RequestPlanApprovalIfNeeded() => RequestPlanApprovalCommand().InteractionId;
+    public InteractionId? RequestPlanApprovalIfNeeded() => RequirePlanApprovalInteraction(RequestPlanApprovalCommand());
+
+    internal static InteractionId? RequirePlanApprovalInteraction(
+        (InteractionId? InteractionId, CommandAck Ack, Exception? Failure) publication)
+    {
+        if (publication.Failure is { } failure)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+        if (publication.Ack.Status != "ok"
+            || publication.Ack.Outcome?.Kind is not (RuntimeCommandOutcomeKind.Accepted or RuntimeCommandOutcomeKind.NoOp))
+            throw new InvalidOperationException(publication.Ack.Error ?? "Plan approval publication was not confirmed");
+        return publication.InteractionId;
+    }
 
     /// <summary>Internal command boundary for the conditional PlanApproval publication.</summary>
-    internal (InteractionId? InteractionId, CommandAck Ack) RequestPlanApprovalCommand()
+    internal (InteractionId? InteractionId, CommandAck Ack, Exception? Failure) RequestPlanApprovalCommand()
     {
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var commandMessageId = commandId.Value.ToString();
         var sessionId = _lastSessionId;
-        var sequenceBefore = sessionId is null ? 0 : _store.CurrentSequence(sessionId);
-        using var internalCommand = ambientCommand is null
-            ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-
-        CommandAck NoOpAck() => new(commandMessageId, "ok", null, RuntimeCommandOutcome.NoOp());
-
-        if (sessionId is null || _lastRunId is null) return (null, NoOpAck());
-        var runId = _lastRunId;
-        var all = _store.ReadFrom(sessionId, 1);
-        var own = EventsForRun(all, runId);
-        var projection = RunProjection.Replay(sessionId, runId, _codecs, own);
-        if (projection.Mode != RunMode.Plan || projection.State != RunState.Running
-            || projection.RootTask is null) return (null, NoOpAck());
-
-        var requested = new HashSet<ToolCallId>();
-        long acceptedProposalSequence = 0;
-        long lastApprovalResolutionSequence = 0;
-        var pendingApproval = new Dictionary<InteractionId, InteractionRequested>();
-        foreach (var evt in own)
+        long? sequenceBefore = null;
+        try
         {
-            switch (_codecs.Decode(evt))
+            sequenceBefore = sessionId is null ? 0 : _store.CurrentSequence(sessionId);
+            using var internalCommand = ambientCommand is null
+                ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+
+            CommandAck NoOpAck() => new(commandMessageId, "ok", null, RuntimeCommandOutcome.NoOp());
+
+            if (sessionId is null || _lastRunId is null) return (null, NoOpAck(), null);
+            var runId = _lastRunId;
+            var all = _store.ReadFrom(sessionId, 1);
+            var own = EventsForRun(all, runId);
+            var projection = RunProjection.Replay(sessionId, runId, _codecs, own);
+            if (projection.Mode != RunMode.Plan || projection.State is not (RunState.Running or RunState.AwaitingInput)
+                || projection.RootTask is null) return (null, NoOpAck(), null);
+
+            var requested = new HashSet<ToolCallId>();
+            long acceptedProposalSequence = 0;
+            long lastApprovalResolutionSequence = 0;
+            var pendingApproval = new Dictionary<InteractionId, InteractionRequested>();
+            foreach (var evt in own)
             {
-                case ToolCallRequested call when call.ToolName == "plan.propose": requested.Add(call.ToolCallId); break;
-                case ToolCallSucceeded succeeded when requested.Contains(succeeded.ToolCallId):
-                    acceptedProposalSequence = evt.Sequence;
-                    break;
-                case InteractionRequested approvalRequest when approvalRequest.Kind == InteractionKind.PlanApproval:
-                    pendingApproval[approvalRequest.InteractionId] = approvalRequest;
-                    break;
-                case InteractionResolved resolved when pendingApproval.ContainsKey(resolved.InteractionId):
-                    pendingApproval.Remove(resolved.InteractionId);
-                    lastApprovalResolutionSequence = evt.Sequence;
-                    break;
+                switch (_codecs.Decode(evt))
+                {
+                    case ToolCallRequested call when call.ToolName == "plan.propose": requested.Add(call.ToolCallId); break;
+                    case ToolCallSucceeded succeeded when requested.Contains(succeeded.ToolCallId):
+                        acceptedProposalSequence = evt.Sequence;
+                        break;
+                    case InteractionRequested approvalRequest when approvalRequest.Kind == InteractionKind.PlanApproval:
+                        pendingApproval[approvalRequest.InteractionId] = approvalRequest;
+                        break;
+                    case InteractionResolved resolved when pendingApproval.ContainsKey(resolved.InteractionId):
+                        pendingApproval.Remove(resolved.InteractionId);
+                        lastApprovalResolutionSequence = evt.Sequence;
+                        break;
+                }
+            }
+            if (pendingApproval.Count > 0) return (pendingApproval.Keys.Last(), NoOpAck(), null);
+            if (projection.State != RunState.Running || acceptedProposalSequence <= lastApprovalResolutionSequence)
+                return (null, NoOpAck(), null);
+            var rootLane = LaneProjection.Replay(_codecs, own).ForTask(projection.RootTask!)
+                .FirstOrDefault(lane => lane.State == LaneState.Running)?.Id;
+            if (rootLane is null) return (null, NoOpAck(), null);
+
+            var interaction = InteractionId.New();
+            var request = new InteractionRequested(interaction, InteractionKind.PlanApproval,
+                "{\"operation\":\"plan.approval\",\"reason\":\"El plan fue propuesto por el modelo y requiere aprobación\"}",
+                "[{\"id\":\"approve_execute\",\"intent\":\"allow\"},"
+                    + "{\"id\":\"approve_only\",\"intent\":\"allow\"},"
+                    + "{\"id\":\"continue_planning\",\"intent\":\"allow\"},"
+                    + "{\"id\":\"reject\",\"intent\":\"deny\"}]",
+                "reject", null, rootLane, projection.RootTask, null, 0, 1);
+            // PlanApproval es una espera humana durable: publica la interacción y la transición
+            // canónica del Run a AwaitingInput en el mismo commit (ADR-0034/0035/0036).
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, projection.RootTask, rootLane));
+            new EventStream(_store, _codecs, sessionId).AppendBatch(
+                new DomainEventPayload[] { request, new RunAwaitingInput(runId, rootLane) },
+                DurabilityClass.Standard);
+            var publicationAck = CommandOutcomeAck(commandMessageId, "ok", null,
+                RuntimeCommandOutcome.Accepted(), sessionId, sequenceBefore.Value, commandId);
+            return (publicationAck.Status == "ok" ? interaction : null, publicationAck, null);
+        }
+        catch (Exception failure)
+        {
+            if (sessionId is null || sequenceBefore is null)
+                return (null, UnavailableCommandOutcome(commandMessageId), failure);
+            try
+            {
+                // Confirm once: neither a locally generated ID nor an uncertain append is durable proof.
+                var persisted = CommandResultEvents(sessionId, sequenceBefore.Value, commandId);
+                var interaction = persisted.Select(_codecs.Decode).OfType<InteractionRequested>()
+                    .LastOrDefault(request => request.Kind == InteractionKind.PlanApproval)?.InteractionId;
+                var ack = persisted.Length == 0
+                    ? new CommandAck(commandMessageId, "error", failure.Message, RuntimeCommandOutcome.Rejected())
+                    : new CommandAck(commandMessageId, "error", failure.Message, RuntimeCommandOutcome.Accepted(),
+                        persisted.Min(evt => evt.Sequence), persisted.Max(evt => evt.Sequence));
+                return (interaction, ack, failure);
+            }
+            catch (Exception)
+            {
+                return (null, UnavailableCommandOutcome(commandMessageId), failure);
             }
         }
-        if (pendingApproval.Count > 0) return (pendingApproval.Keys.Last(), NoOpAck());
-        if (acceptedProposalSequence <= lastApprovalResolutionSequence) return (null, NoOpAck());
-        var rootLane = LaneProjection.Replay(_codecs, own).ForTask(projection.RootTask!)
-            .FirstOrDefault(lane => lane.State == LaneState.Running)?.Id;
-        if (rootLane is null) return (null, NoOpAck());
-
-        var interaction = InteractionId.New();
-        var request = new InteractionRequested(interaction, InteractionKind.PlanApproval,
-            "{\"operation\":\"plan.approval\",\"reason\":\"El plan fue propuesto por el modelo y requiere aprobación\"}",
-            "[{\"id\":\"approve_execute\",\"intent\":\"allow\"},"
-                + "{\"id\":\"approve_only\",\"intent\":\"allow\"},"
-                + "{\"id\":\"continue_planning\",\"intent\":\"allow\"},"
-                + "{\"id\":\"reject\",\"intent\":\"deny\"}]",
-            "reject", null, rootLane, projection.RootTask, null, 0, 1);
-        // PlanApproval es una espera humana durable: publica la interacción y la transición
-        // canónica del Run a AwaitingInput en el mismo commit (ADR-0034/0035/0036).
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, projection.RootTask, rootLane));
-        new EventStream(_store, _codecs, sessionId).AppendBatch(
-            new DomainEventPayload[] { request, new RunAwaitingInput(runId, rootLane) },
-            DurabilityClass.Standard);
-        return (interaction, CommandOutcomeAck(commandMessageId, "ok", null,
-            RuntimeCommandOutcome.Accepted(), sessionId, sequenceBefore, commandId));
     }
 
     /// <summary>Resuelve una interacción usando el protocolo tipado del servidor.</summary>

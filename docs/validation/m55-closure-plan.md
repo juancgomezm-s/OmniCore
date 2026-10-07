@@ -1,5 +1,13 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 05:15 UTC: PlanApproval errores/persistencia/confirmación conservan
+Ack/Failure y sólo ID confirmada; AwaitingInput recupera pendienteNoOp sin duplicar.
+CLI validaAck antes esperar respuesta; wrapper conservaexception/OCE. RED6/8;
+final81PASS/0FAIL12.268s + arquitectura56PASS .776s, SQLite/stateFile reales y
+providers/faults fixtures. Full nueva pendiente. FULL77248 anterior sobre565f747
+terminalexit0:2599=2595PASS/0FAIL/4SKIP264.680s. Commandsrouting/followup/escalation,
+AgentProfile reusable, contenido provider.adapter y payloadsM6 aceptados pendientes.
+
 2026-10-07 05:05 UTC: completion errores/OCE/prefix/read/checkpoint ahora conserva
 Failure original, Completed=null y ACK causal, sin cambiar sesión seleccionada.
 RED7/12, final61PASS/0FAIL9.897s, arquitectura56PASS .727s; SQLite real/reopen,
