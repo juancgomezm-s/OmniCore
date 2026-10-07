@@ -55,13 +55,14 @@ public sealed class ExecutionIdEnvelopeTests
         var session = SessionId.New();
         var stream = new EventStream(store, EventCodecs.Create(), session);
         var scopeExecution = ExecutionId.New();
-        var run = TestRun.Open(stream, session);
+        var profile = ProfileId.New();
+        var run = TestRun.Open(stream, session, agentProfile: profile);
         Assert.All(store.ReadFrom(session, 1), evt => Assert.Null(evt.ExecutionId));
 
         var payloadExecution = ExecutionId.New();
         using (ExecutionScope.Begin(new ExecutionScopeState(ExecutionId: scopeExecution)))
         {
-            stream.Append(new AgentExecutionStarted(payloadExecution, run.RootLane, ProfileId.New(), null,
+            stream.Append(new AgentExecutionStarted(payloadExecution, run.RootLane, profile, null,
                 ExecutionRelation.Awaited, ExecutionSupervision.Managed));
         }
 
@@ -91,11 +92,18 @@ public sealed class ExecutionIdEnvelopeTests
             var codecs = EventCodecs.Create();
             var session = SessionId.New();
             var stream = new EventStream(store, codecs, session);
-            var run = TestRun.Open(stream, session);
+            var profile = ProfileId.New();
+            var run = TestRun.Open(stream, session, agentProfile: profile);
             var expected = ExecutionId.New();
-            stream.Append(new AgentExecutionStarted(expected, run.RootLane, ProfileId.New(), null,
-                ExecutionRelation.Detached, ExecutionSupervision.Unmanaged));
-            Release(store);
+            try
+            {
+                stream.Append(new AgentExecutionStarted(expected, run.RootLane, profile, null,
+                    ExecutionRelation.Detached, ExecutionSupervision.Unmanaged));
+            }
+            finally
+            {
+                Release(store);
+            }
 
             store = new SqliteEventStore(journal);
             try

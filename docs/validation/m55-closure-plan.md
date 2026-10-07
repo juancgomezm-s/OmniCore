@@ -1,5 +1,23 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Integridad de ejecuciones y evidencia cross-session — 2026-10-07 14:00 UTC
+
+Root resolvió los hallazgos de la segunda auditoría Luna: Started valida
+Lane/Profile/Task/padre durable y envelope; TaskId legacy nulo sigue permitido.
+Los journals local y externo se validan canónicamente antes de aceptar un receipt,
+sin consultar credenciales ni convertir un éxito aislado en evidencia tool-backed.
+Nuevo test Luna auditado por root: RED 10 casos/1 PASS/9 FAIL, corregido sin quitar
+assertions. Fixtures previos ahora usan perfiles/padres reales, manteniendo
+serialización/reopen y estados sin terminales automáticos.
+
+Focal ampliado **35 PASS**; FULL terminal exit0: **2901 casos/2897 PASS/0 FAIL/
+4 SKIP** symlink, 126.417 s. Arquitectura tras build actualizado: **56 PASS**.
+Root añadió rechazo de mezcla de sesiones/duplicados, store commit fallido→retry
+exacto y schema0 de familias nuevas. [Contrato y reproducción](../architecture/pre-m6-record-contracts.md).
+Son fixtures; no acreditan consulta autenticada ni consumo real. No M6 scheduling,
+joins/wake/mailbox ni aceptación automática. Auditoría integral ADR46/47/M5 en curso,
+Quick real y llamada productiva de política UltraCode siguen pendientes.
+
 ## Registros pre-M6 implementados y probados — 2026-10-07 13:45 UTC
 
 Root implementó los tipos/23 eventos schema1, codecs, extracción ArtifactRefs y
@@ -19,10 +37,9 @@ Esto no cierra íntegramente M5/M5.5: cualificación Quick real y cableado de
 política UltraCode siguen pendientes; la auditoría final debe cubrir todos los
 criterios, no sólo estos registros. Se retiró el gate artificial de aprobación
 por campo técnico; las políticas nuevas no definidas siguen fuera de alcance.
-La segunda revisión de Luna señaló enlaces de AgentExecutionStarted aún sin
-validar (padre, envelope) y la necesidad de validar el journal externo de un
-receipt cross-session. Son pendientes comprobables, no cubiertos por la FULL
-actual; no se declara completo el freeze hasta reproducirlos y resolverlos.
+La segunda revisión de Luna señaló enlaces de AgentExecutionStarted y journal
+externo de receipts; se resolvieron en la entrada superior. Esta evidencia inicial
+se conserva para trazabilidad, no como estado pendiente actual.
 
 ## Cuota de suscripción en status line — 2026-10-07 13:07 UTC
 
