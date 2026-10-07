@@ -35,6 +35,7 @@ public sealed class ExplorerTurn
     private readonly ContextMaterializer _materializer;
 
     private readonly ExecutionFingerprint _fingerprint;
+    private readonly IReadOnlyList<IPreparedArtifact> _fingerprintArtifacts;
 
     private readonly bool _recordEffectiveFingerprint;
     private readonly IReadOnlyList<ActiveSkillFingerprint>? _activeSkills;
@@ -227,7 +228,8 @@ public sealed class ExplorerTurn
         Func<SessionId, RunId, LaneId, TurnId, int, InteractionId?>? quotaAdmission = null,
         Func<bool>? quotaAllowsMeta = null,
         SqliteSpendReservationStore? spendReservations = null,
-        long? maximumGenerationRequestAttempts = null)
+        long? maximumGenerationRequestAttempts = null,
+        IReadOnlyList<IPreparedArtifact>? fingerprintArtifacts = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -236,6 +238,7 @@ public sealed class ExplorerTurn
         _catalog = catalog;
         _materializer = materializer;
         _fingerprint = fingerprint;
+        _fingerprintArtifacts = fingerprintArtifacts?.ToArray() ?? Array.Empty<IPreparedArtifact>();
         _recordEffectiveFingerprint = recordEffectiveFingerprint;
         _activeSkills = activeSkills?.ToArray();
         _selection = selection;
@@ -390,15 +393,22 @@ public sealed class ExplorerTurn
         // Freeze the initial plan revision, not later mutations legitimately emitted by this Turn.
         var initialPlanEvents = OwnTail(stream, runId).Where(evt => originalStart is null
             || evt.Sequence <= originalStart.Sequence).ToArray();
-        var fingerprint = _recordEffectiveFingerprint
-            ? RuntimeFingerprintFactory.WithTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
+        var preparedTurnFingerprint = _recordEffectiveFingerprint
+            ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
                 FindAgentProfileForLane(stream.EventsSince(1), runId, laneId), _activeSkills)
-            : _fingerprint;
+            : null;
+        var fingerprint = preparedTurnFingerprint?.Fingerprint ?? _fingerprint;
         if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
-            { Fingerprint: { } originalFingerprint } && originalFingerprint.Hash() != fingerprint.Hash())
-            return new TurnResult("Cannot resume Turn: effective fingerprint differs from its original configuration.",
-                StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+            { Fingerprint: { } originalFingerprint })
+        {
+            if (originalFingerprint.Hash() != fingerprint.Hash())
+                return new TurnResult("Cannot resume Turn: effective fingerprint differs from its original configuration.",
+                    StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+            // Equal configuration hashes do not make newly allocated artifact receipts durable.
+            // Resume retains the fingerprint and exact refs rooted by the original TurnStarted.
+            fingerprint = originalFingerprint;
+        }
         var queuedQuestion = _redaction.Redact(question ?? "").Length > 0
             && FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, question ?? "", origin);
         var runEvents = stream.EventsSince(1);
@@ -628,6 +638,7 @@ public sealed class ExplorerTurn
                 var overflowStart = new List<DomainEventPayload>();
                 if (!isResume)
                 {
+                    PublishFingerprintArtifacts(fingerprint, preparedTurnFingerprint?.Artifacts);
                     preparedContext.PublishArtifacts();
                     var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
                     overflowStart.AddRange(FollowUpQueue.PromotionEvents(pendingFollowUps, runId, laneId, turnId));
@@ -651,6 +662,7 @@ public sealed class ExplorerTurn
                 cancellationToken.ThrowIfCancellationRequested();
                 using var contextPublication = (_artifacts as IArtifactPublicationLease)
                     ?.AcquirePublicationLease(CancellationToken.None);
+                PublishFingerprintArtifacts(fingerprint, preparedTurnFingerprint?.Artifacts);
                 preparedContext.PublishArtifacts();
                 var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
                 var startEvents = new List<DomainEventPayload>();
@@ -1819,6 +1831,20 @@ public sealed class ExplorerTurn
         }
 
         return null;
+    }
+
+    private void PublishFingerprintArtifacts(ExecutionFingerprint fingerprint,
+        IReadOnlyList<IPreparedArtifact>? turnArtifacts)
+    {
+        var references = fingerprint.Components.Where(component => component.Content is not null)
+            .Select(component => component.Content!).ToHashSet();
+        foreach (var artifact in _fingerprintArtifacts.Concat(turnArtifacts ?? Array.Empty<IPreparedArtifact>())
+            .Where(artifact => references.Contains(artifact.Reference)))
+            if (artifact.Publish() != artifact.Reference)
+                throw new InvalidDataException("Prepared fingerprint publication changed its reference.");
+        foreach (var reference in references)
+            if (!_artifacts.Verify(reference.Hash, reference.Size))
+                throw new InvalidDataException("Fingerprint component artifact failed publication integrity verification.");
     }
 
     private ProfileId? FindAgentProfileForLane(IReadOnlyList<DomainEvent> events, RunId runId, LaneId laneId)

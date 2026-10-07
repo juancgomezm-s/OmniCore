@@ -1,5 +1,45 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Publicación de componentes del fingerprint — 2026-10-07 04:46 UTC
+
+RuntimeFingerprintFactory.Prepare/PrepareTurnConfiguration conservan los JSON,
+nombres/versiones y hashes de configuración existentes. Con store capaz de
+preparar, devuelven el fingerprint y handles inmutables de contenidos exactos
+sin publicar CAS. Contenido redactado mantiene Content=null y no entra en los
+handles pendientes. Create/WithTurnConfiguration conservan su camino inmediato
+para compatibilidad; stores sin preparación también mantienen ese fallback.
+No se finge Verify sobre bytes aún no publicados.
+
+El CLI lleva los handles baseline hasta ExplorerTurn, incluidos los cambios
+de Plan a Act. Explorer prepara los componentes por Turn y publica únicamente
+handles presentes en el fingerprint efectivo dentro de la lease corta ya usada
+por TurnStarted normal/overflow, antes del snapshot y Barrier. Verifica todos
+los contenidos efectivos después de publicar: una ref ausente no se anuncia
+como válida. Contributors, conteo, cuota y proveedores permanecen fuera de lease.
+Resume compara hashes y conserva el fingerprint/ref originales de TurnStarted;
+no publica los nuevos receipts equivalentes ni reescribe el evento histórico.
+
+Luna HIGH identificó los callsites y propuso fixture; root leyó ambos paquetes
+completos, implementó factory/CLI/Host y corrigió cuatro errores de compilación
+del fixture (no considerados RED). Root añadió overflow coherente con su budget,
+contributor realmente asíncrono y conteo de escrituras eager para que resume no
+pase sólo por contar Publish de handles. RED válido: 4 casos/4 FAIL (0.838s),
+fingerprint-publication-phase-host-valid-red.log. Control independiente antes
+del wiring Host: 7 casos/1 FAIL (0.915s), fingerprint-publication-phase-red.log:
+retry anunciaba un componente baseline que no verificaba.
+
+Final ampliada: 63 PASS/0 FAIL/0 SKIP (8.772s), build0/0,
+fingerprint-publication-phase-expanded-final.log. Arquitectura: 56 PASS/0 FAIL
+(0.716s), fingerprint-publication-phase-architecture.log. Incluye SQLite/CAS
+reales, GC sin gracia durante materialización y tras reopen, lease alrededor del
+append, provider libre, fallo/orphans/retry, mismatch/same-config resume, CLI,
+cuestionarios y Turn de tres pasos. Providers/conteo/cuota son fixtures;
+no acredita consultas autenticadas ni integración real OmniCoder.
+
+Full anterior ad5d7c6 terminó exit0: 2578 casos/2574 PASS/0 FAIL/4 SKIP symlink,
+268.451s, meta-artifact-publication-full.log (misma handle52609). Nueva full
+posterior a este bloque pendiente. No cierra AgentProfile efectivo ni schemas M6.
+
 ## Publicación del metamodelo — 2026-10-07 04:34 UTC
 
 MetaModelService prepara input/output mediante IArtifactPreparationStore cuando

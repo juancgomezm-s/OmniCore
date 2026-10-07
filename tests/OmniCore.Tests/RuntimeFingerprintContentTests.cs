@@ -10,6 +10,55 @@ using OmniCore.Tools;
 public sealed class RuntimeFingerprintContentTests
 {
     [Fact]
+    public void Prepared_components_have_exact_future_refs_without_publishing_or_changing_configuration_hash()
+    {
+        WithDirectory(root =>
+        {
+            var store = new FileArtifactStore(root);
+            var model = new ModelDefinition("fixture-model", "fixture-provider", 8192, 7000, 1024);
+            var profile = new ModelProfileResolver().Resolve(model, null);
+            var harness = new HarnessPolicyResolver().Resolve(profile);
+            var selection = new ModelSelection(new ModelIdValue(model.Id), 7000, ToolMode.Direct, null);
+            var hashOnly = RuntimeFingerprintFactory.Create(model, profile, harness, selection,
+                "harness", "context", "policy", "counter");
+            var prepared = RuntimeFingerprintFactory.Prepare(model, profile, harness, selection,
+                "harness", "context", "policy", "counter", artifacts: store);
+            Assert.Equal(hashOnly.Hash(), prepared.Fingerprint.Hash());
+            Assert.NotEmpty(prepared.Artifacts);
+            Assert.False(Directory.Exists(Path.Combine(root, "blobs")));
+            foreach (var component in prepared.Fingerprint.Components)
+            {
+                Assert.NotNull(component.Content);
+                var handle = Assert.Single(prepared.Artifacts, item => item.Reference == component.Content);
+                Assert.Equal(component.Hash, handle.Reference.Hash);
+                Assert.False(store.Verify(handle.Reference.Hash, handle.Reference.Size));
+                using (store.AcquirePublicationLease(CancellationToken.None))
+                    Assert.Equal(component.Content, handle.Publish());
+                Assert.True(store.Verify(handle.Reference.Hash, handle.Reference.Size));
+            }
+        });
+    }
+
+    [Fact]
+    public void Prepared_redacted_component_has_no_exact_ref_or_pending_publication()
+    {
+        WithDirectory(root =>
+        {
+            const string secret = "private-fixture-value";
+            var store = new FileArtifactStore(root, new FixtureRedactor(secret));
+            var catalog = new FakeCatalog();
+            var baseline = new ExecutionFingerprint("model", "harness", "tools", "context", "none", "build");
+            var prepared = RuntimeFingerprintFactory.PrepareTurnConfiguration(baseline, catalog,
+                catalog.Definitions(), secret, null, store);
+            var prompt = Assert.Single(prepared.Fingerprint.Components, item => item.Name == "prompt.template");
+            Assert.Null(prompt.Content);
+            Assert.DoesNotContain(prepared.Artifacts, item => item.Reference.Hash == prompt.Hash);
+            Assert.All(prepared.Artifacts, item => Assert.False(item.Reference.Redacted));
+            Assert.False(Directory.Exists(Path.Combine(root, "blobs")));
+        });
+    }
+
+    [Fact]
     public void Resolved_components_are_exact_deduplicated_and_do_not_change_configuration_hash()
     {
         WithDirectory(root =>

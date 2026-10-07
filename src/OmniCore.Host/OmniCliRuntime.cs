@@ -644,9 +644,10 @@ public sealed class OmniCliRuntime
             var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct, null, route.Id, route,
                 ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription));
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
-            var fingerprint = RuntimeFingerprintFactory.Create(runtimeModel, effectiveProfile, harness,
+            var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
                 selection, harnessHash, contextPolicyHash, effectivePolicy.Fingerprint(), tokenCounter.Id.Value,
                 provider, qualification, artifacts);
+            var fingerprint = preparedFingerprint.Fingerprint;
             var localHost = OmniHost.CreateLocalModelHost();
             if (!act && localHost.IsManagedRunning())
             {
@@ -711,7 +712,7 @@ public sealed class OmniCliRuntime
                 sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
                 questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                 metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
-                recordEffectiveFingerprint: true,
+                recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
                 userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
                 quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
                     ? QuotaAdmission : null,
@@ -806,7 +807,7 @@ public sealed class OmniCliRuntime
                         sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
                         questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                         metaModelProvider: provider, modelContextCapacity: modelDefinition?.ContextWindow,
-                        recordEffectiveFingerprint: true,
+                        recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
                         userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
                         quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
                             ? QuotaAdmission : null,
