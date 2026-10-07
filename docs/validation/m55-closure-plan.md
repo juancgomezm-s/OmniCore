@@ -1,5 +1,14 @@
 # Objetivo activo: llegar a M6
 
+2026-10-07 04:46 UTC: fingerprint baseline CLI y componentes porTurn preparados
+sin CAS temprano; publicación con TurnStarted normal/overflow bajo lease corta.
+Resume conserva refs originales, no nuevos receipts hash-equivalentes. RED4/4
+válido; final63PASS/0FAIL8.772s + arquitectura56PASS. Full previa ad5d7c6 terminal
+2578=2574PASS/0FAIL/4SKIP268.451s. Full del bloque fingerprint pendiente.
+AgentProfile efectivo/configuración reutilizable, contenido provider.adapter y
+payloadsM6 aceptados aún pendientes: esta protección CAS no acredita cierre §7
+ni de los siete criterios. Detalle/capabilities/fixtures en el checkpoint.
+
 2026-10-07 04:34 UTC: nueva frontera de publicación meta input/output protegida
 sin lease durante await/provider. RED2=1PASS/1FAIL y final65PASS/0FAIL29.657s;
 arquitectura56PASS. Ver contrato y alcance distinto Host/fixture en el checkpoint.

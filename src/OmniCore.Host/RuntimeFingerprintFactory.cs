@@ -11,17 +11,43 @@ using OmniCore.Tools;
 /// <summary>Fingerprints resolved runtime facts, not phase names or guessed configuration.</summary>
 internal static class RuntimeFingerprintFactory
 {
-    internal static ExecutionFingerprint Create(ModelDefinition model, EffectiveModelProfile profile,
+    internal sealed record PreparedRuntimeFingerprint(ExecutionFingerprint Fingerprint,
+        IReadOnlyList<IPreparedArtifact> Artifacts);
+
+    internal static PreparedRuntimeFingerprint Prepare(ModelDefinition model, EffectiveModelProfile profile,
         HarnessPolicy harness, ModelSelection selection, string harnessHash, string contextPolicyHash,
         string modelPolicyHash, string tokenizerIdentity, IModelProvider? provider = null,
         ModelQualificationSnapshot? qualification = null, IArtifactStore? artifacts = null)
     {
+        var pending = new List<IPreparedArtifact>();
+        var fingerprint = Create(model, profile, harness, selection, harnessHash, contextPolicyHash,
+            modelPolicyHash, tokenizerIdentity, provider, qualification, artifacts, pending);
+        return new PreparedRuntimeFingerprint(fingerprint, pending.AsReadOnly());
+    }
+
+    internal static PreparedRuntimeFingerprint PrepareTurnConfiguration(ExecutionFingerprint baseline,
+        FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
+        IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
+        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null)
+    {
+        var pending = new List<IPreparedArtifact>();
+        var fingerprint = WithTurnConfiguration(baseline, catalog, visibleTools, systemPrompt, plan,
+            artifacts, agentProfile, activeSkills, pending);
+        return new PreparedRuntimeFingerprint(fingerprint, pending.AsReadOnly());
+    }
+
+    internal static ExecutionFingerprint Create(ModelDefinition model, EffectiveModelProfile profile,
+        HarnessPolicy harness, ModelSelection selection, string harnessHash, string contextPolicyHash,
+        string modelPolicyHash, string tokenizerIdentity, IModelProvider? provider = null,
+        ModelQualificationSnapshot? qualification = null, IArtifactStore? artifacts = null,
+        ICollection<IPreparedArtifact>? pending = null)
+    {
         FingerprintComponent ResolvedComponent(string name, Action<Utf8JsonWriter> write, string version = "1") =>
-            Component(name, write, version, artifacts);
+            Component(name, write, version, artifacts, pending);
         var components = new List<FingerprintComponent>
         {
             HashComponent(RuntimeBuildIdentity.FingerprintComponentName, RuntimeBuildIdentity.FingerprintComponentVersion,
-                RuntimeBuildIdentity.CanonicalJsonFor(typeof(OmniCliRuntime).Assembly), artifacts),
+                RuntimeBuildIdentity.CanonicalJsonFor(typeof(OmniCliRuntime).Assembly), artifacts, pending),
             ResolvedComponent("model.descriptor", writer =>
             {
                 writer.WriteString("modelId", model.Id);
@@ -120,7 +146,8 @@ internal static class RuntimeFingerprintFactory
     internal static ExecutionFingerprint WithTurnConfiguration(ExecutionFingerprint baseline,
         FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
         IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
-        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null)
+        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null,
+        ICollection<IPreparedArtifact>? pending = null)
     {
         var tools = Component("tools.plan", writer =>
         {
@@ -151,24 +178,24 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
-        }, "2", artifacts);
+        }, "2", artifacts, pending);
         var prompt = Component("prompt.template", writer =>
         {
             writer.WriteString("templateId", "ExplorerTurn.SystemPrompt");
             writer.WriteString("renderedHash", Digest(systemPrompt));
             writer.WriteString("renderedText", systemPrompt);
-        }, "2", artifacts);
+        }, "2", artifacts, pending);
         var revision = Component("plan.revision", writer =>
         {
             writer.WriteString("planId", plan?.Id.ToString());
             if (plan is null) writer.WriteNull("revision");
             else writer.WriteNumber("revision", plan.Revision);
-        }, artifacts: artifacts);
+        }, artifacts: artifacts, pending: pending);
         var profile = Component("agent.profile", writer =>
         {
             writer.WriteString("profileId", agentProfile?.ToString());
             writer.WriteString("source", agentProfile is null ? "unavailable" : "lane.created");
-        }, artifacts: artifacts);
+        }, artifacts: artifacts, pending: pending);
         var skills = Component("skills.active", writer =>
         {
             writer.WriteString("source", activeSkills is null ? "unavailable" : "provided");
@@ -190,7 +217,7 @@ internal static class RuntimeFingerprintFactory
                 }
                 writer.WriteEndArray();
             }
-        }, artifacts: artifacts);
+        }, artifacts: artifacts, pending: pending);
         var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name, profile.Name, skills.Name }, StringComparer.Ordinal);
         var components = baseline.Components.Where(component => !names.Contains(component.Name))
             .Concat(new[] { tools, prompt, revision, profile, skills }).ToArray();
@@ -209,7 +236,7 @@ internal static class RuntimeFingerprintFactory
     }
 
     private static FingerprintComponent Component(string name, Action<Utf8JsonWriter> write, string version = "1",
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null, ICollection<IPreparedArtifact>? pending = null)
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream))
@@ -218,7 +245,7 @@ internal static class RuntimeFingerprintFactory
             write(writer);
             writer.WriteEndObject();
         }
-        return HashComponent(name, version, Encoding.UTF8.GetString(stream.ToArray()), artifacts);
+        return HashComponent(name, version, Encoding.UTF8.GetString(stream.ToArray()), artifacts, pending);
     }
 
     private static string Digest(string value) =>
@@ -252,12 +279,25 @@ internal static class RuntimeFingerprintFactory
     private static FingerprintComponent HashComponent(string name, string value) => HashComponent(name, "1", value);
 
     private static FingerprintComponent HashComponent(string name, string version, string value,
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null, ICollection<IPreparedArtifact>? pending = null)
     {
         var hash = ContentHash.Sha256(Digest(value));
         ArtifactRef? content = null;
         if (artifacts is not null)
         {
+            if (pending is not null && artifacts is IArtifactPreparationStore preparing)
+            {
+                var prepared = preparing.PrepareText(value, "application/vnd.omnicore.fingerprint-component+json",
+                    ArtifactKind.Other, Sensitivity.Sensitive);
+                if (!prepared.Reference.Redacted)
+                {
+                    if (prepared.Reference.Hash != hash)
+                        throw new InvalidDataException("Prepared fingerprint component changed its canonical hash.");
+                    pending.Add(prepared);
+                    content = prepared.Reference;
+                }
+                return new FingerprintComponent(name, version, hash, content);
+            }
             // ADR0018 still applies: never bypass the text store's redactor. A redacted
             // representation is not the exact configuration and must not masquerade as it.
             var stored = artifacts.PutText(value, "application/vnd.omnicore.fingerprint-component+json",

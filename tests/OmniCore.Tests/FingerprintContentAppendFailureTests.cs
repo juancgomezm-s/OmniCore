@@ -36,9 +36,16 @@ public sealed class FingerprintContentAppendFailureTests
             var catalog = new FakeCatalog().Add(FakeTool.Read("fixture.inspect"));
             var executor = new NoTools();
             var providerCalls = 0;
-            var baseline = new ExecutionFingerprint("fixture-model", "harness", "legacy-tools", "context",
-                "none", "fixture-build");
             var selection = new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null);
+            var model = new ModelDefinition("fixture-model", "fixture-provider", 8192, 7000, 1024);
+            var profile = new ModelProfileResolver().Resolve(model, null);
+            var harness = new HarnessPolicyResolver().Resolve(profile);
+            var preparedBaseline = RuntimeFingerprintFactory.Prepare(model, profile, harness, selection,
+                "harness", "context", "policy", "counter", artifacts: artifacts);
+            var baseline = preparedBaseline.Fingerprint;
+            Assert.NotEmpty(preparedBaseline.Artifacts);
+            Assert.All(preparedBaseline.Artifacts, artifact =>
+                Assert.False(artifacts.Verify(artifact.Reference.Hash, artifact.Reference.Size)));
             var turn = new ExplorerTurn((_, _) =>
                 {
                     providerCalls++;
@@ -47,7 +54,7 @@ public sealed class FingerprintContentAppendFailureTests
                         new ProviderMetadata("scripted-fixture", "fixture-model", null));
                 }, executor, catalog, new ContextMaterializer(new FakeTokenCounter(), []), baseline, selection,
                 failingStore, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-                recordEffectiveFingerprint: true);
+                recordEffectiveFingerprint: true, fingerprintArtifacts: preparedBaseline.Artifacts);
 
             var beforeAttempt = store.CurrentSequence(session);
             var beforeBlobs = BlobPaths(artifactDirectory).ToHashSet(StringComparer.OrdinalIgnoreCase);
