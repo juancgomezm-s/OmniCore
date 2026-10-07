@@ -22,13 +22,15 @@ public sealed class EffectiveModelProfile
     public IReadOnlyList<ToolCallFormat> ToolCallFormats { get; }
 
     public bool SupportsParallelTools { get; }
+    public ReasoningCapability ReasoningCapability { get; }
 
     /// <summary>Rasgos empíricos o heurísticos, por nombre de trait (0..1).</summary>
     public IReadOnlyDictionary<string, double> Traits { get; }
 
     public EffectiveModelProfile(string modelId, long contextWindow, long recommendedUsableContext,
         long maxOutputTokens, IReadOnlyList<string> inputModalities, IReadOnlyList<ToolCallFormat> toolCallFormats,
-        bool supportsParallelTools, IReadOnlyDictionary<string, double> traits, RouteId? routeId = null)
+        bool supportsParallelTools, IReadOnlyDictionary<string, double> traits, RouteId? routeId = null,
+        ReasoningCapability? reasoningCapability = null)
     {
         ModelId = modelId;
         RouteId = routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(modelId);
@@ -38,6 +40,7 @@ public sealed class EffectiveModelProfile
         InputModalities = inputModalities;
         ToolCallFormats = toolCallFormats;
         SupportsParallelTools = supportsParallelTools;
+        ReasoningCapability = reasoningCapability ?? OmniCore.Domain.ReasoningCapability.Unknown;
         Traits = traits;
     }
 

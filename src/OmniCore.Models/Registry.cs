@@ -217,9 +217,11 @@ public sealed class ModelDefinition
 
     /// <summary>Alias declarativos para este modelo (p. ej. "local", "frontier", "fast").</summary>
     public IReadOnlyList<string> Aliases { get; }
+    public ReasoningCapability ReasoningCapability { get; }
 
     public ModelDefinition(string id, string providerId, long contextWindow, long recommendedUsableContext,
-        long maxOutputTokens, double? parameterCountBillions = null, IEnumerable<string>? aliases = null)
+        long maxOutputTokens, double? parameterCountBillions = null, IEnumerable<string>? aliases = null,
+        ReasoningCapability? reasoningCapability = null)
     {
         Id = id;
         ProviderId = providerId;
@@ -228,6 +230,7 @@ public sealed class ModelDefinition
         MaxOutputTokens = maxOutputTokens;
         ParameterCountBillions = parameterCountBillions;
         Aliases = (aliases ?? Array.Empty<string>()).ToArray();
+        ReasoningCapability = reasoningCapability ?? OmniCore.Domain.ReasoningCapability.Unknown;
     }
 }
 
