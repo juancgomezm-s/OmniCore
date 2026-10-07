@@ -109,6 +109,9 @@ public sealed class ProbeRunner
         using var attempts = GenerationRequestAttemptScope.Enter();
         try
         {
+            // Admission may yield while the caller cancels. Observe the interruption,
+            // but do not enter the provider even if it ignores its cancellation token.
+            timeoutCts.Token.ThrowIfCancellationRequested();
             await foreach (var evt in _provider.StreamAsync(ToModelRequest(request), timeoutCts.Token))
             {
                 if (evt is ResponseCompleted completed)

@@ -1,5 +1,22 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 03:10 UTC / 2026-10-06 21:10 local:
+full terminal sobre 8f837b1: 2484 casos, 2480 PASS / 0 FAIL / 4 SKIP
+por symlink, 298.957s (declared-reasoning-and-tui-full.log). No incluye
+el bloque posterior de admisión de cuota durante cualificación.
+Ese bloque consulta por probe, separa consentimiento de suite y de ventana
+baja, conserva origen/fecha/disponibilidad y rechaza identidad de provider
+ajena. CLI no interactivo no autoriza con --yes. Cancelación después de
+admisión impide entrar al provider conservando la observación de interrupción.
+RED auditoría: 25 casos / 3 FAIL; final focal: 45 PASS / 0 FAIL / 0 SKIP,
+8.174s, build 0/0 (quota-audit-red.log / quota-audit-final.log).
+ArchitectureTests anterior al último ajuste: 56 PASS / 0 FAIL, 0.743s.
+Fixtures offline; no autenticación ni consumo acreditados. Falta persistir
+el consumo parcial IncludedQuota si un probe posterior se deniega: no se
+declara cerrado ese punto ni M5.5. Luna auditoría/propuestas; root integración,
+correcciones y ejecución. Qwen no disponible: ambos endpoints rechazaron
+conexión en último chequeo 01:44 UTC, sin relanzar ni cambiar configuración.
+
 Estado vigente 2026-10-07 02:53 UTC / 2026-10-06 20:53 local:
 validación declarada de razonamiento y forwarding neutral conectados en
 ExplorerTurn/MetaModelService/ProbeRunner antes de admisión/reserva/provider.

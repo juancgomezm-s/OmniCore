@@ -227,6 +227,7 @@ public sealed class QualificationProbeExecutionBoundaryTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Runner(provider, observer).RunProbeAsync(Request("first"), cts.Token));
         var receipt = Assert.Single(observer.Receipts);
         Assert.Equal(ProbeExecutionTermination.Cancelled, receipt.Termination);
+        Assert.Equal(0, provider.Entries);
         Assert.Equal(0, receipt.ObservedGenerationSends);
         Assert.Null(receipt.Result.CostUsd);
         Assert.Null(receipt.Result.Usage);
@@ -314,10 +315,12 @@ public sealed class QualificationProbeExecutionBoundaryTests
         bool emitResponse = true, Exception? providerError = null, bool failedEvent = false) : IModelProvider
     {
         public int Calls { get; private set; }
+        public int Entries { get; private set; }
         public ProviderCapabilities Capabilities => new(true, false, false);
         public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
             [EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            Entries++;
             cancellationToken.ThrowIfCancellationRequested();
             Calls++;
             order?.Add("send:" + Calls);

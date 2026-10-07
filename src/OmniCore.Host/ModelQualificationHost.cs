@@ -5,6 +5,7 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
+using OmniCore.Protocol;
 using OmniCore.Qualification;
 
 /// <summary>
@@ -30,6 +31,14 @@ public sealed class QualificationOptions
 
     /// <summary>Provider ya construido (tests con provider scripteado); null → conexión normal.</summary>
     public IModelProvider? Provider { get; init; }
+
+    /// <summary>Read-only quota query for the configured provider ID. Null uses the
+    /// existing subscription CLI adapter; tests inject synthetic snapshots explicitly.</summary>
+    public Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? QueryQuota { get; init; }
+
+    /// <summary>Separate informed consent to one probe against a reported low window.
+    /// General suite consent does not substitute for presenting this measurement.</summary>
+    public Func<ProviderQuotaSnapshot, CancellationToken, Task<bool>>? ConfirmLowQuota { get; init; }
 }
 
 /// <summary>Resultado de un probe individual, con campos primitivos para el cliente.</summary>
@@ -310,6 +319,8 @@ public sealed partial class ModelQualificationHost : IDisposable
             throw new ModelQualificationCostCapException(options.MaxTotalCostUsd, estimatedCost);
 
         IProbeExecutionObserver? observer = null;
+        if (provider?.BillingMode == BillingMode.IncludedQuota)
+            observer = new QualificationIncludedQuotaAdmission(provider, options);
         if (provider?.BillingMode is BillingMode.MeteredCurrency or BillingMode.CreditBalance or BillingMode.Unknown)
         {
             var bound = ModelInvocationCostBound.Quote(selection, pricing, model.ContextWindow, generationAttempts)

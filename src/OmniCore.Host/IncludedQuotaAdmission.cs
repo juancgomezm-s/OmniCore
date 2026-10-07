@@ -34,7 +34,7 @@ internal static class IncludedQuotaAdmission
     internal static bool AllowsMeta(OmniServer server, SessionId session, string provider) =>
         LowWindows(server.Observability.Quota(session, provider)).Length == 0;
 
-    private static ProviderUsageWindow[] LowWindows(ProviderQuotaSnapshot? quota)
+    internal static ProviderUsageWindow[] LowWindows(ProviderQuotaSnapshot? quota)
     {
         var now = DateTimeOffset.UtcNow;
         if (quota is null || quota.AsOf > now

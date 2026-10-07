@@ -1,5 +1,41 @@
 # M5.5: admisión de cuota incluida
 
+## Cualificación: actualización 2026-10-07 03:10 UTC
+
+ModelQualificationHost utiliza QualificationIncludedQuotaAdmission antes de
+cada probe IncludedQuota. QualificationOptions.QueryQuota consulta el ID del
+provider configurado; ConfirmLowQuota autoriza sólo ese probe y no sustituye
+ConsentGiven. Se reutiliza el umbral de runtime: ventana reportada no vencida
+con remanente [0,10). Identidad ajena y errores de consulta abortan sin enviar.
+Unknown no significa cero ni disponibilidad verificada. Sin adaptador reconocido
+se conserva Unknown con limitación. Un provider inyectado sin QueryQuota nunca
+consulta la cuenta real del desarrollador.
+
+El CLI muestra proveedor, cuenta, fuente, fecha, disponibilidad (incluida Stale),
+ventanas y reinicios antes del consentimiento separado. No interactivo deniega;
+--yes no concede esta aprobación. La consulta por defecto reutiliza el adaptador
+de suscripción existente y el login existente, sin nuevas claves, resets o cargos.
+Cancelación después de admisión produce observación Cancelled sin entrar al
+provider; no convierte cero envíos observados en coste cero conocido.
+
+Auditoría Luna de sólo lectura detectó fecha antigua presentada como actual y
+entrada al provider tras cancelación. Root reprodujo 3 fallos entre 25 casos,
+implementó ambas correcciones y obtuvo 45 PASS / 0 FAIL / 0 SKIP, 8.174s,
+build 0 warnings / 0 errores. Logs quota-audit-red.log / quota-audit-final.log
+en el directorio de evidencias citado abajo. Suite completa 8f837b1 verde
+2484=2480 PASS/4 SKIP antecede este bloque; no se atribuye a cambios nuevos.
+
+Límite pendiente explícito: CompletedAsync de este observer todavía no persiste
+un recibo durable de uso parcial si una llamada posterior es rechazada. No se
+inventan recibos monetarios, USD cero ni Session/Run/Turn para ocultarlo.
+Todos los snapshots de estas pruebas son fixtures offline; no acreditan consultas
+autenticadas, consumo real ni cierre global M5.5.
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*QualificationQuotaPromptTests' -class '*QualificationProbeExecutionBoundaryTests' -class '*QualificationIncludedQuotaTests' -class '*M5QualificationCodexSubscriptionIntegrationTests' -class '*QualificationCanonicalDailyIntegrationTests' -class '*QualificationCrossWorkspaceDailyTests' -class '*QualificationAttemptBoundTests' -class '*IncludedQuotaAdmissionTests'
+```
+
 ## Regla y contratos reutilizados
 
 ADR0037 §7 exige Ask cuando una ventana reportada deja menos del 10%.
