@@ -1282,7 +1282,8 @@ public sealed class TuiWiringTests
         fx.StartTui(policies, account);
         KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "modelos visibles");
         fx.Wait(() => PickerItems(fx).Any(item => item.Contains("Subscription Test")), "catálogo consultado automáticamente");
-        Assert.DoesNotContain(fx.App.Overlay!.SubViews.OfType<Button>(), b => b.Text.ToString().Contains("Añadir"));
+        fx.Invoke(() => Assert.DoesNotContain(fx.App.Overlay!.SubViews.OfType<Button>(),
+            b => b.Text.ToString().Contains("Añadir")));
         ChoosePickerItem(fx, "Subscription Test");
         fx.Wait(() => fx.App.Overlay is null, "selección rápida sin formulario de política");
         Assert.True(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.ObserveOnly);
@@ -1325,8 +1326,15 @@ public sealed class TuiWiringTests
         fx.Invoke(() => button.InvokeCommand(Command.Accept));
     }
 
-    private static string[] PickerItems(TuiFixture fx) => fx.App.Overlay?.SubViews.OfType<ListView>().SingleOrDefault()
-        ?.Source?.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray() ?? Array.Empty<string>();
+    private static string[] PickerItems(TuiFixture fx)
+    {
+        string[] items = [];
+        // Catalog discovery replaces the overlay on the UI loop. Read the complete
+        // snapshot on that same loop, not while its SubViews collection is mutating.
+        fx.Invoke(() => items = fx.App.Overlay?.SubViews.OfType<ListView>().SingleOrDefault()
+            ?.Source?.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray() ?? []);
+        return items;
+    }
 
     [Fact]
     public void Model_palette_search_filters_safely_and_shortcuts_open_maintenance() => RunTuiTest(fx =>
@@ -1356,11 +1364,12 @@ public sealed class TuiWiringTests
 
     private static void ChoosePickerItem(TuiFixture fx, string text)
     {
-        var index = Array.FindIndex(PickerItems(fx), item => item.Contains(text));
-        Assert.True(index >= 0);
         fx.Invoke(() =>
         {
             var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+            var items = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
+            var index = Array.FindIndex(items, item => item.Contains(text));
+            Assert.True(index >= 0);
             list.SelectedItem = index;
             list.InvokeCommand(Command.Accept);
         });
