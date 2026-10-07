@@ -619,20 +619,23 @@ public sealed class ExplorerTurn
                 hasReservationBoundary ? FinishMeta : null,
                 hasReservationBoundary ? id => _spendReservations!.ReleaseBeforeDispatch(MetaReservationId(id)) : null);
             var materialized = preparedContext.Snapshot;
-            var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
 
             // ContextOverflow: el contenido protegido no cabe ni después de recortar la conversación.
             if (materialized.Overflowed)
             {
+                using var overflowPublication = !isResume
+                    ? (_artifacts as IArtifactPublicationLease)?.AcquirePublicationLease(CancellationToken.None) : null;
                 var overflowStart = new List<DomainEventPayload>();
                 if (!isResume)
                 {
+                    preparedContext.PublishArtifacts();
+                    var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
                     overflowStart.AddRange(FollowUpQueue.PromotionEvents(pendingFollowUps, runId, laneId, turnId));
                     if (safeQuestion.Length > 0)
                         overflowStart.Add(new UserInputReceived(runId,
                             "\"" + System.Text.Json.JsonEncodedText.Encode(safeQuestion) + "\"", null, origin));
+                    overflowStart.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact));
                 }
-                if (!isResume) overflowStart.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact));
                 stream.AppendBatch(overflowStart, DurabilityClass.Barrier);
                 started = true;
                 // La state machine de Turn: Started → … → Abandoned (terminal). NUNCA se emite
@@ -645,6 +648,11 @@ public sealed class ExplorerTurn
 
             if (!isResume)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                using var contextPublication = (_artifacts as IArtifactPublicationLease)
+                    ?.AcquirePublicationLease(CancellationToken.None);
+                preparedContext.PublishArtifacts();
+                var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
                 var startEvents = new List<DomainEventPayload>();
                 if (RunProjection.Replay(sessionId, runId, _codecs, stream.EventsSince(1)).State == RunState.Running)
                     startEvents.Add(new RunAwaitingInput(runId, laneId));
@@ -726,14 +734,20 @@ public sealed class ExplorerTurn
                     stepReservation = ReserveInvocation($"primary/{sessionId}/{runId}/{laneId}/{turnId}/{nextModelStepIndex}");
 
                     var stepIndex = nextModelStepIndex++;
-                    var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
-                        _selection.ContextBudget, _selection.ToolMode.ToString(),
-                        _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
-                        PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
-                        _selection.RouteId);
-                    var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
-                    stepEvents.Add(stepStart);
-                    stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    using (var contextPublication = (_artifacts as IArtifactPublicationLease)
+                        ?.AcquirePublicationLease(CancellationToken.None))
+                    {
+                        preparedContext.PublishArtifacts();
+                        var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
+                            _selection.ContextBudget, _selection.ToolMode.ToString(),
+                            _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
+                            PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
+                            _selection.RouteId);
+                        var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
+                        stepEvents.Add(stepStart);
+                        stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
+                    }
                     durableStepIndex = stepIndex;
                     cancellationToken.ThrowIfCancellationRequested();
                     if (stepReservation is not null)
@@ -1999,9 +2013,10 @@ public sealed class ExplorerTurn
             new ContextProvenance("session-conversation", ContributionCategory.Conversation, "engine",
                 ScopeLevel.Session, false), ContextDecision.Compacted, e.Content.Length)).ToArray();
         var materializer = new ContextMaterializer(_materializer.Counter(), contributors, _artifacts, policy);
-        var snapshot = materializer.MaterializeWithinBudget(
+        var prepared = materializer.PrepareWithinBudget(
             new MaterializeRequest(sessionId, runId, null, laneId, turnId, _store.CurrentSequence(sessionId),
                 fingerprint, priorDiagnostics), cancellationToken, (int)_selection.ContextBudget);
+        var snapshot = prepared.Snapshot;
         var selectedMessages = new List<ModelMessage>();
         foreach (var item in snapshot.Items)
         {
@@ -2013,7 +2028,7 @@ public sealed class ExplorerTurn
             }
         }
 
-        return new PreparedTurnContext(snapshot, selectedMessages.ToArray());
+        return new PreparedTurnContext(prepared, selectedMessages.ToArray());
     }
 
     private static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,
@@ -2389,14 +2404,17 @@ public sealed class ExplorerTurn
 
     private sealed class PreparedTurnContext
     {
+        private readonly PreparedContextSnapshot _prepared;
         public ContextSnapshot Snapshot { get; }
         public IReadOnlyList<ModelMessage> Messages { get; }
 
-        public PreparedTurnContext(ContextSnapshot snapshot, IReadOnlyList<ModelMessage> messages)
+        public PreparedTurnContext(PreparedContextSnapshot prepared, IReadOnlyList<ModelMessage> messages)
         {
-            Snapshot = snapshot;
+            _prepared = prepared;
+            Snapshot = prepared.Snapshot;
             Messages = messages;
         }
+        public void PublishArtifacts() => _prepared.PublishArtifacts();
     }
 
     private sealed class RedactingContextContributor : IContextContributor

@@ -37,6 +37,21 @@ public sealed class ContextMaterializer
     /// <summary>Cuenta y aplica poda, externalización, compresión y la última barrera de presupuesto.</summary>
     public ContextSnapshot MaterializeWithinBudget(MaterializeRequest request,
         CancellationToken cancellationToken, int maxTokens)
+        => MaterializeCore(request, cancellationToken, maxTokens, null);
+
+    /// <summary>Journaled callers prepare externalized outputs without CAS writes,
+    /// then publish them with the snapshot under their synchronous journal lease.
+    /// Stores without preparation retain their existing immediate behavior.</summary>
+    public PreparedContextSnapshot PrepareWithinBudget(MaterializeRequest request,
+        CancellationToken cancellationToken, int maxTokens)
+    {
+        var pending = _artifacts is IArtifactPreparationStore ? new List<IPreparedArtifact>() : null;
+        var snapshot = MaterializeCore(request, cancellationToken, maxTokens, pending);
+        return new PreparedContextSnapshot(snapshot, pending?.ToArray() ?? Array.Empty<IPreparedArtifact>());
+    }
+
+    private ContextSnapshot MaterializeCore(MaterializeRequest request,
+        CancellationToken cancellationToken, int maxTokens, List<IPreparedArtifact>? pending)
     {
         var items = new List<ContextItem>();
         foreach (var contributor in _contributors)
@@ -60,8 +75,16 @@ public sealed class ContextMaterializer
                 && candidate.Content.Length > _policy.ExternalizeAboveCharacters)
             {
                 var safeOutput = new RedactionPolicy().Redact(candidate.Content);
-                var artifact = _artifacts.PutText(safeOutput, "text/plain", ArtifactKind.ToolOutput,
-                    candidate.Provenance.Sensitive ? Sensitivity.Sensitive : Sensitivity.Normal);
+                var sensitivity = candidate.Provenance.Sensitive ? Sensitivity.Sensitive : Sensitivity.Normal;
+                ArtifactRef artifact;
+                if (pending is not null)
+                {
+                    var prepared = ((IArtifactPreparationStore)_artifacts).PrepareText(safeOutput,
+                        "text/plain", ArtifactKind.ToolOutput, sensitivity);
+                    pending.Add(prepared);
+                    artifact = prepared.Reference;
+                }
+                else artifact = _artifacts.PutText(safeOutput, "text/plain", ArtifactKind.ToolOutput, sensitivity);
                 var preview = safeOutput[..Math.Min(240, safeOutput.Length)];
                 var stub = "[tool output externalized; re-read with artifact.read using hash=\""
                     + artifact.Hash.Value + "\" (offset=0, limit=4096); repeat with next offset for more.]\nPreview: " + preview;
@@ -335,6 +358,25 @@ public sealed class ContextMaterializer
     }
 
     private static bool IsWorkingState(ContextItem item) => item.Kind == ContextItemKind.WorkingState;
+}
+
+/// <summary>In-memory context plan. Includes diagnostic references as well as included
+/// items, so omitted/pruned entries never advertise an unpublished artifact.</summary>
+public sealed class PreparedContextSnapshot
+{
+    private readonly IReadOnlyList<IPreparedArtifact> _artifacts;
+    public ContextSnapshot Snapshot { get; }
+    internal PreparedContextSnapshot(ContextSnapshot snapshot, IReadOnlyList<IPreparedArtifact> artifacts)
+    {
+        Snapshot = snapshot;
+        _artifacts = artifacts;
+    }
+    public void PublishArtifacts()
+    {
+        foreach (var artifact in _artifacts)
+            if (artifact.Publish() != artifact.Reference)
+                throw new InvalidDataException("Prepared artifact publication changed its reference.");
+    }
 }
 
 /// <summary>Solicitud de materialización del contexto de un Turn.</summary>

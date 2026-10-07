@@ -78,7 +78,7 @@ public sealed class BlobProbe
 /// no tampering del store.
 /// </para>
 /// </summary>
-public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLease
+public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLease, IArtifactPreparationStore
 {
     private const string HashAlgorithm = "sha256";
     private const int HashHexLength = 64;
@@ -119,6 +119,9 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
     }
 
     public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
+        => PrepareText(content, mediaType, kind, sensitivity).Publish();
+
+    public IPreparedArtifact PrepareText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
     {
         // Redacción obligatoria del contenido antes de persistir (ADR-0018 §4): ningún blob
         // del store lleva secretos en claro.
@@ -127,7 +130,14 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
         var redacted = !string.Equals(safe, content, StringComparison.Ordinal);
         var bytes = Encoding.UTF8.GetBytes(safe);
         var hash = Sha256.Hex(bytes);
-        var blobPath = BlobPath(hash);
+        var reference = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(hash), bytes.LongLength, mediaType, kind,
+            sensitivity, redacted);
+        return new PreparedArtifact(this, reference, bytes);
+    }
+
+    private ArtifactRef PublishPrepared(ArtifactRef reference, byte[] bytes)
+    {
+        var blobPath = BlobPath(reference.Hash.Value);
         using (_publicationLease.Value is null ? ArtifactStoreLease.Acquire(_dataDirectory, CancellationToken.None) : null)
         {
             if (!File.Exists(blobPath)) WriteAtomically(blobPath, bytes);
@@ -136,8 +146,13 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
             File.SetLastWriteTimeUtc(blobPath, DateTime.UtcNow);
         }
 
-        return new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(hash), bytes.LongLength, mediaType, kind,
-            sensitivity, redacted);
+        return reference;
+    }
+
+    private sealed class PreparedArtifact(FileArtifactStore owner, ArtifactRef reference, byte[] bytes) : IPreparedArtifact
+    {
+        public ArtifactRef Reference => reference;
+        public ArtifactRef Publish() => owner.PublishPrepared(reference, bytes);
     }
 
     public string? GetText(ContentHash hash)

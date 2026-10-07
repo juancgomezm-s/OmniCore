@@ -52,6 +52,21 @@ public interface IArtifactPublicationLease
     IDisposable AcquirePublicationLease(CancellationToken cancellationToken);
 }
 
+/// <summary>Optional preparation without CAS writes. The store applies its actual
+/// redaction and hashing before returning a store-owned immutable publication handle.</summary>
+public interface IArtifactPreparationStore
+{
+    IPreparedArtifact PrepareText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity);
+}
+
+/// <summary>Exact future reference; Publish writes the prepared redacted bytes and
+/// returns the same reference. Call under the journal publisher's short lease.</summary>
+public interface IPreparedArtifact
+{
+    ArtifactRef Reference { get; }
+    ArtifactRef Publish();
+}
+
 /// <summary>
 /// Codificador de payloads de eventos canónicos (ADR-0013 §2). Cada EventType tiene exactamente
 /// un codec; se registran aquí sin reflexión.
