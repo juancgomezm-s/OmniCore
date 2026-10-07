@@ -19,6 +19,12 @@ Las notas RED de abajo describen el hallazgo previo, no un fallo dejado sin corr
 
 ### Regresión concurrente confirmada — 2026-10-06 23:56 UTC
 
+Fundamento posterior: ledger SQLite de reservas con transacción inmediata,
+10 casos propios incluidos en focal14PASS/0FAIL/0SKIP2.620s con architectureguard.
+Incluye dos procesos independientes y rechazo de estado desconocido tras RED.
+[Contrato, límites y reproducción](m55-spend-reservation-foundation-20261007.md).
+Todavía sin cableado a Explorer/compacción: la regresión siguiente sigue RED.
+
 Se añadió `ConcurrentSpendAdmissionTests.Two_workspace_admissions_must_not_exceed_shared_daily_cap`.
 Dos journals SQLite y CAS independientes bajo un mismo User data directory, lector
 real `UserWorkspaceSpendReader` y dos `ExplorerTurn`, sincronizados al persistir
