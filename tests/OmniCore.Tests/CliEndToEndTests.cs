@@ -23,6 +23,67 @@ namespace OmniCore.Tests;
 public sealed class CliEndToEndTests
 {
     [Fact]
+    public async Task Tui_reasoning_budget_boost_requires_an_explicit_nontrivial_budget()
+    {
+        await InIsolatedCli((workspace, _, _, _) =>
+        {
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            Assert.Throws<ArgumentException>(() => host.SetNextTurnReasoningBoost(new ReasoningRequest("budget", null)));
+            Assert.Throws<ArgumentException>(() => host.SetNextTurnReasoningBoost(new ReasoningRequest("budget", 1023)));
+            Assert.True(host.SetNextTurnReasoningBoost(new ReasoningRequest("budget", 1024)));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task User_profile_is_applied_by_normal_CLI_and_changed_content_blocks_followup_before_HTTP()
+    {
+        await InIsolatedCli(async (workspace, config, _, provider) =>
+        {
+            // This is a loopback HTTP adapter fixture, not an authenticated provider call.
+            var profileFile = Path.Combine(config, "agent-profiles.yaml");
+            const string yaml = """
+                defaultProfile: 0199a000-0000-7000-8000-000000000001
+                agentProfiles:
+                  explorer:
+                    id: 0199a000-0000-7000-8000-000000000001
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: []
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read]
+                """;
+            File.WriteAllText(profileFile, yaml);
+            provider.RespondWith((_, _) => TextResponse("profile fixture"));
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            var output = new List<string>();
+            Assert.Equal(0, await host.ExecuteAsync("inspect fixture", output.Add, TestContext.Current.CancellationToken));
+            Assert.Equal(1, provider.RequestCount);
+            var events = ReadCurrentSessionEvents(workspace);
+            var lane = Assert.Single(events.OfType<LaneCreated>());
+            var turn = Assert.Single(events.OfType<TurnStarted>());
+            var profileComponent = Assert.Single(turn.Fingerprint!.Components, component => component.Name == "agent.profile");
+            Assert.Equal("2", profileComponent.Version);
+            Assert.Equal(lane.AgentProfileHash, profileComponent.Hash);
+            Assert.Equal(1, lane.AgentProfileRevision);
+            var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace));
+            using var content = JsonDocument.Parse(artifacts.GetText(profileComponent.Hash)!);
+            Assert.Equal("resolved.configuration", content.RootElement.GetProperty("source").GetString());
+            Assert.Empty(content.RootElement.GetProperty("permissionCeiling").GetProperty("writes").EnumerateArray());
+            File.WriteAllText(profileFile, yaml.Replace("reads: [\"**\"]", "reads: [\"src/**\"]", StringComparison.Ordinal));
+            output.Clear();
+            Assert.Equal(1, await host.ExecuteAsync("inspect again", output.Add, TestContext.Current.CancellationToken));
+            Assert.Equal(1, provider.RequestCount);
+            Assert.Single(ReadCurrentSessionEvents(workspace).OfType<TurnStarted>());
+            Assert.Contains(output, line => line.Contains("AgentProfile", StringComparison.Ordinal));
+        });
+    }
+
+    [Fact]
     public async Task Routed_override_invokes_logical_model_and_persists_the_selected_physical_route()
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
@@ -55,7 +116,8 @@ public sealed class CliEndToEndTests
             Assert.NotNull(turn.Fingerprint);
             Assert.Equal(RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), turn.Fingerprint.Build);
             Assert.Equal(new[] { "agent.profile", "context.policy", "model.descriptor", "model.harness", "model.profile",
-                "plan.revision", "prompt.template", "provider.adapter", "runtime.build", "skills.active", "tools.plan" },
+                "model.reasoning.resolved", "plan.revision", "prompt.template", "provider.adapter", "run.mode_authority",
+                "runtime.build", "skills.active", "tools.plan", "turn.instruction" },
                 turn.Fingerprint.Components.Select(component => component.Name));
             Assert.NotEqual("core-tools-1", turn.Fingerprint.ToolkitHash);
             var adapter = Assert.Single(turn.Fingerprint.Components, component => component.Name == "provider.adapter");
@@ -285,6 +347,18 @@ public sealed class CliEndToEndTests
             Assert.Equal("ok", client.Send(OmniCore.Protocol.WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
                 "{\"cmd\":\"interaction.respond\",\"interactionId\":\"" + consent.InteractionId
                 + "\",\"optionId\":\"allow_route\"}"), CancellationToken.None).Status);
+            var afterConsent = ReadCurrentSessionJournalEvents(workspace);
+            var codecs = EventCodecs.Create();
+            var resumedEnvelope = Assert.Single(afterConsent, item =>
+                codecs.Decode(item) is RunInteractionResumed resumed && resumed.InteractionId == consent.InteractionId);
+            var resumedMarker = Assert.IsType<RunInteractionResumed>(codecs.Decode(resumedEnvelope));
+            Assert.Equal(requested.RunId, resumedMarker.RunId);
+            Assert.Equal(RunState.Running,
+                RunProjection.Replay(resumedEnvelope.SessionId, requested.RunId, codecs, afterConsent).State);
+            var resolutionEnvelope = Assert.Single(afterConsent, item =>
+                codecs.Decode(item) is InteractionResolved resolved && resolved.InteractionId == consent.InteractionId);
+            Assert.Equal(requested.RunId, resolutionEnvelope.RunId);
+            Assert.Equal(resumedEnvelope.Causation, resolutionEnvelope.Causation);
             if (reopenRuntime)
             {
                 runtime = OmniCliRuntime.Create(workspace);
@@ -302,6 +376,10 @@ public sealed class CliEndToEndTests
             var after = ReadCurrentSessionEvents(workspace);
             Assert.Single(after.OfType<ModelEscalationApproved>());
             Assert.Single(after.OfType<ModelEscalationCompleted>());
+            var resumed = Assert.Single(after.OfType<RunInteractionResumed>());
+            Assert.Equal(requested.RunId, resumed.RunId);
+            Assert.Equal(consent.InteractionId, resumed.InteractionId);
+            Assert.NotEqual("", resumed.CommandId);
             Assert.Single(after.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.ModelRouteConsent);
             Assert.All(after.OfType<ModelStepStarted>(), step => Assert.Equal("target-model", step.ModelId));
             Assert.Equal(inputCount, after.OfType<UserInputReceived>().Count());
@@ -797,6 +875,15 @@ public sealed class CliEndToEndTests
         var sessionId = SessionId.Parse(File.ReadAllLines(Path.Combine(workspaceData, "lastsession.txt"))[0]);
         var store = new SqliteEventStore(Path.Combine(workspaceData, "journal.db"));
         try { return store.ReadFrom(sessionId, 1).Select(EventCodecs.Create().Decode).ToArray(); }
+        finally { store.Close(); }
+    }
+
+    private static IReadOnlyList<DomainEvent> ReadCurrentSessionJournalEvents(string workspace)
+    {
+        var workspaceData = OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace);
+        var sessionId = SessionId.Parse(File.ReadAllLines(Path.Combine(workspaceData, "lastsession.txt"))[0]);
+        var store = new SqliteEventStore(Path.Combine(workspaceData, "journal.db"));
+        try { return store.ReadFrom(sessionId, 1); }
         finally { store.Close(); }
     }
 

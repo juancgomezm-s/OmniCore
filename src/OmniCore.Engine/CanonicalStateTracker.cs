@@ -14,6 +14,10 @@ public sealed class CanonicalStateTracker
 {
     private readonly Dictionary<RunId, RunState> _runs;
 
+    private readonly Dictionary<RunId, RunReasoningSelectionState> _runReasoningSelections;
+    private readonly Dictionary<InteractionId, (InteractionKind Kind, bool Pending, string? OptionId,
+        InteractionCause? Cause)> _interactionStates;
+
     private readonly Dictionary<TaskId, TaskState> _tasks;
 
     private readonly Dictionary<LaneId, LaneState> _lanes;
@@ -31,11 +35,12 @@ public sealed class CanonicalStateTracker
     private readonly Dictionary<TaskId, RunId> _taskRuns;
     private readonly Dictionary<LaneId, TaskId> _laneTasks;
     private readonly Dictionary<TurnId, LaneId> _turnLanes;
+    private readonly Dictionary<TurnId, ReasoningResolution?> _turnReasoningResolutions;
     private sealed record SteeringEntry(RunId Run, LaneId Lane, TurnId Turn, string State);
     private readonly Dictionary<SteeringId, SteeringEntry> _steering;
 
     public CanonicalStateTracker()
-        : this(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new())
+        : this(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new())
     {
     }
 
@@ -45,9 +50,15 @@ public sealed class CanonicalStateTracker
         Dictionary<ToolCallId, ReconciliationOutcome> toolCallReconciliationOutcomes,
         Dictionary<PlanItemId, PlanItemState> planItems, Dictionary<TaskId, RunId> taskRuns,
         Dictionary<LaneId, TaskId> laneTasks, Dictionary<TurnId, LaneId> turnLanes,
-        Dictionary<SteeringId, SteeringEntry> steering)
+        Dictionary<TurnId, ReasoningResolution?> turnReasoningResolutions,
+        Dictionary<SteeringId, SteeringEntry> steering,
+        Dictionary<RunId, RunReasoningSelectionState> runReasoningSelections,
+        Dictionary<InteractionId, (InteractionKind Kind, bool Pending, string? OptionId,
+            InteractionCause? Cause)> interactionStates)
     {
         _runs = runs;
+        _runReasoningSelections = runReasoningSelections;
+        _interactionStates = interactionStates;
         _tasks = tasks;
         _lanes = lanes;
         _turns = turns;
@@ -57,6 +68,7 @@ public sealed class CanonicalStateTracker
         _taskRuns = taskRuns;
         _laneTasks = laneTasks;
         _turnLanes = turnLanes;
+        _turnReasoningResolutions = turnReasoningResolutions;
         _steering = steering;
     }
 
@@ -75,7 +87,8 @@ public sealed class CanonicalStateTracker
     /// <summary>Copia independiente (para validar un lote sin tocar el estado si falla).</summary>
     public CanonicalStateTracker Clone() => new(new(_runs), new(_tasks), new(_lanes), new(_turns),
         new(_toolCalls), new(_toolCallReconciliationOutcomes), new(_planItems), new(_taskRuns),
-        new(_laneTasks), new(_turnLanes), new(_steering));
+        new(_laneTasks), new(_turnLanes), new(_turnReasoningResolutions), new(_steering),
+        new(_runReasoningSelections), new(_interactionStates));
 
     /// <summary>
     /// Foto canónica y ordenada de todos los estados ("entidad:id=estado"), para comparar dos
@@ -85,11 +98,17 @@ public sealed class CanonicalStateTracker
     {
         var lines = new List<string>();
         lines.AddRange(_runs.Select(kv => "run:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_runReasoningSelections.Select(kv => "run_reasoning:" + kv.Key + "="
+            + kv.Value.Revision + ":" + kv.Value.HasSelection + ":" + kv.Value.Request?.Kind
+            + ":captured=" + kv.Value.HasCapturedUserDefault + ":" + kv.Value.CapturedUserDefault?.Kind
+            + ":capturedRevision=" + kv.Value.CapturedUserPreferenceRevision));
         lines.AddRange(_tasks.Select(kv => "task:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_lanes.Select(kv => "lane:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_turns.Select(kv => "turn:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_toolCalls.Select(kv => "toolcall:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_planItems.Select(kv => "plan_item:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_interactionStates.Select(kv => "interaction:" + kv.Key + "=" + kv.Value.Kind + ":"
+            + kv.Value.Pending + ":" + kv.Value.OptionId + ":" + kv.Value.Cause));
         lines.AddRange(_steering.Select(kv => "steering:" + kv.Key + "=" + kv.Value.State));
         lines.Sort(StringComparer.Ordinal);
         return lines;
@@ -116,12 +135,44 @@ public sealed class CanonicalStateTracker
         ArgumentNullException.ThrowIfNull(payload);
         switch (payload)
         {
+            case InteractionRequested requested:
+                if (requested.InteractionId.Value == Guid.Empty || !Enum.IsDefined(requested.Kind))
+                    throw new InvalidStateTransitionException("interaction", "invalid request identity or kind",
+                        payload.Type().ToString());
+                if (_interactionStates.TryGetValue(requested.InteractionId, out var priorInteraction)
+                    && priorInteraction.Pending)
+                    throw new InvalidStateTransitionException("interaction", "duplicate pending identity",
+                        payload.Type().ToString());
+                _interactionStates[requested.InteractionId] = (requested.Kind, true, null, null);
+                break;
+            case InteractionResolved resolved when _interactionStates.TryGetValue(resolved.InteractionId,
+                out var pendingResolved):
+                if (pendingResolved.Pending)
+                    _interactionStates[resolved.InteractionId] = (pendingResolved.Kind, false,
+                        resolved.OptionId, resolved.Cause);
+                break;
+            case InteractionExpired expired when _interactionStates.TryGetValue(expired.InteractionId,
+                out var pendingExpired) && pendingExpired.Pending:
+                _interactionStates[expired.InteractionId] = (pendingExpired.Kind, false, null, null);
+                break;
+
             // ── Run ──
             case RunCreated created:
                 Create(_runs, created.RunId, RunState.Created, "run", payload);
                 break;
             case RunStarted e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
             case RunAwaitingInput e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
+            case RunInteractionResumed e:
+                if (e.InteractionId.Value == Guid.Empty || string.IsNullOrWhiteSpace(e.CommandId))
+                    throw new InvalidStateTransitionException("run", "incomplete interaction resume", payload.Type().ToString());
+                if (!_interactionStates.TryGetValue(e.InteractionId, out var resumedInteraction)
+                    || resumedInteraction.Kind != InteractionKind.ModelRouteConsent || resumedInteraction.Pending
+                    || resumedInteraction.OptionId != "allow_route" || resumedInteraction.Cause != InteractionCause.User
+                    || _interactionStates.Values.Any(state => state.Pending))
+                    throw new InvalidStateTransitionException("run", "interaction resume lacks resolved user route consent",
+                        payload.Type().ToString());
+                Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun);
+                break;
             case UserInputReceived e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
             case RunValidationStarted e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
             case RunValidationRejected e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
@@ -129,6 +180,68 @@ public sealed class CanonicalStateTracker
             case RunFailed e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
             case RunCancelled e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
             case RunModeChanged e: RequireNonTerminalRun(e.RunId, payload); break;
+            case RunModeAuthoritySelected e:
+                e.Authority.Validate();
+                if (string.IsNullOrWhiteSpace(e.CommandId)
+                    || e.Origin is not ("RunCreated" or "User" or "PlanApproval"))
+                    throw new InvalidStateTransitionException("run mode authority", "invalid selection provenance",
+                        payload.Type().ToString());
+                RequireNonTerminalRun(e.Authority.RunId, payload);
+                break;
+            case RunModeTransitionAuthorized e:
+                if (string.IsNullOrWhiteSpace(e.CommandId) || string.IsNullOrWhiteSpace(e.Origin)
+                    || string.IsNullOrWhiteSpace(e.Reason) || e.AuthorityRevision <= 0
+                    || e.ObjectiveRevision <= 0 || e.PolicyRevision <= 0
+                    || string.IsNullOrWhiteSpace(e.ObjectiveDigest)
+                    || e.Origin != "User")
+                    throw new InvalidStateTransitionException("run mode authority", "incomplete transition metadata",
+                        payload.Type().ToString());
+                RequireNonTerminalRun(e.RunId, payload);
+                break;
+            case RunModeAuthorityRevoked e:
+                if (e.AuthorizationId == Guid.Empty || e.AuthorityRevision <= 0
+                    || string.IsNullOrWhiteSpace(e.CommandId) || string.IsNullOrWhiteSpace(e.Origin)
+                    || string.IsNullOrWhiteSpace(e.Reason)
+                    || e.Origin != "User")
+                    throw new InvalidStateTransitionException("run mode authority", "incomplete revocation",
+                        payload.Type().ToString());
+                RequireNonTerminalRun(e.RunId, payload);
+                break;
+            case RunReasoningPreferenceSelected e:
+                RequireNonTerminalRun(e.RunId, payload);
+                if (string.IsNullOrWhiteSpace(e.CommandId) || e.Source is not ("User" or "UserDefault")
+                    || (e.Source == "UserDefault"
+                        ? e.CommandId != "RunCreated" || e.UserPreferenceRevision is not > 0 || e.Revision != 1
+                        : e.CommandId == "RunCreated" || e.UserPreferenceRevision is not null))
+                    throw new InvalidStateTransitionException("run reasoning preference", "invalid selection provenance",
+                        payload.Type().ToString());
+                var priorReasoningRevision = _runReasoningSelections.TryGetValue(e.RunId, out var previousSelection)
+                    ? previousSelection.Revision : 0;
+                if (e.Revision != priorReasoningRevision + 1)
+                    throw new InvalidStateTransitionException("run reasoning preference", "revision mismatch",
+                        payload.Type().ToString());
+                ValidateReasoningRequest(e.Request, payload);
+                var hasCapturedDefault = e.Source == "UserDefault"
+                    || previousSelection?.HasCapturedUserDefault == true;
+                var capturedDefaultRequest = e.Source == "UserDefault"
+                    ? e.Request : previousSelection?.CapturedUserDefault;
+                var capturedDefaultRevision = e.Source == "UserDefault"
+                    ? e.UserPreferenceRevision : previousSelection?.CapturedUserPreferenceRevision;
+                _runReasoningSelections[e.RunId] = new RunReasoningSelectionState(e.Revision, true,
+                    e.Request, e.Source, e.UserPreferenceRevision, hasCapturedDefault,
+                    capturedDefaultRequest, capturedDefaultRevision);
+                break;
+            case RunReasoningPreferenceRevoked e:
+                RequireNonTerminalRun(e.RunId, payload);
+                if (string.IsNullOrWhiteSpace(e.CommandId) || e.Origin != "User"
+                    || !_runReasoningSelections.TryGetValue(e.RunId, out var currentSelection)
+                    || !currentSelection.HasSelection || e.Revision != currentSelection.Revision + 1)
+                    throw new InvalidStateTransitionException("run reasoning preference", "invalid revocation",
+                        payload.Type().ToString());
+                _runReasoningSelections[e.RunId] = new RunReasoningSelectionState(e.Revision, false, null, "User", null,
+                    currentSelection.HasCapturedUserDefault, currentSelection.CapturedUserDefault,
+                    currentSelection.CapturedUserPreferenceRevision);
+                break;
 
             // ── Task ──
             case TaskCreated created:
@@ -148,6 +261,10 @@ public sealed class CanonicalStateTracker
             // ── Lane ──
             case LaneCreated created:
                 Require(_tasks, created.TaskId, "task", payload);
+                if ((created.AgentProfileRevision is null) != (created.AgentProfileHash is null)
+                    || created.AgentProfileRevision is < 1)
+                    throw new InvalidStateTransitionException("lane", "incomplete AgentProfile binding",
+                        payload.Type().ToString());
                 Create(_lanes, created.LaneId, LaneState.Queued, "lane", payload);
                 _laneTasks[created.LaneId] = created.TaskId;
                 break;
@@ -161,8 +278,35 @@ public sealed class CanonicalStateTracker
 
             // ── Turn ──
             case TurnStarted started:
+                if (started.InstructionSnapshot is { } instructionSnapshot)
+                {
+                    try { instructionSnapshot.Validate(); }
+                    catch (ArgumentException)
+                    { throw new InvalidStateTransitionException("turn", "invalid instruction snapshot", payload.Type().ToString()); }
+                }
+                if (started.ReasoningResolution is { } turnReasoning)
+                    ValidateReasoningResolution(turnReasoning, payload);
                 Create(_turns, started.TurnId, TurnState.Started, "turn", payload);
                 _turnLanes[started.TurnId] = started.LaneId;
+                _turnReasoningResolutions[started.TurnId] = started.ReasoningResolution;
+                break;
+            case ModelStepStarted stepStarted:
+                if (stepStarted.StepIndex < 0)
+                    throw new InvalidStateTransitionException("model step", "negative step index", payload.Type().ToString());
+                if (stepStarted.ReasoningResolution is { } stepReasoning)
+                {
+                    ValidateReasoningResolution(stepReasoning, payload);
+                    if (!_turnReasoningResolutions.TryGetValue(stepStarted.TurnId, out var turnResolution)
+                        || turnResolution is null || !turnResolution.IsEquivalentTo(stepReasoning)
+                        || stepReasoning.AppliedRequest?.Kind != stepStarted.ReasoningKind
+                        || stepReasoning.AppliedRequest?.BudgetTokens != stepStarted.ReasoningBudgetTokens)
+                        throw new InvalidStateTransitionException("model step reasoning", "does not match the durable Turn resolution",
+                            payload.Type().ToString());
+                }
+                else if (_turnReasoningResolutions.TryGetValue(stepStarted.TurnId, out var expectedResolution)
+                    && expectedResolution is not null)
+                    throw new InvalidStateTransitionException("model step reasoning", "durable resolution is missing",
+                        payload.Type().ToString());
                 break;
             case ModelCompleted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
             case TurnCompleted e: Transition(_turns, e.TurnId, "turn", payload, StateMachines.ApplyTurn); break;
@@ -241,6 +385,20 @@ public sealed class CanonicalStateTracker
             // Resto (sesión, interacciones, audit, mensajes, reordenación…): no son transiciones de
             // estado canónico de una entidad.
         }
+    }
+
+    private static void ValidateReasoningRequest(ReasoningRequest? request, DomainEventPayload payload)
+    {
+        if (request is not null && (string.IsNullOrWhiteSpace(request.Kind)
+            || (request.Kind == "budget" ? request.BudgetTokens is null or < 1024 : request.BudgetTokens is not null)))
+            throw new InvalidStateTransitionException("run reasoning preference", "invalid request", payload.Type().ToString());
+    }
+
+    private static void ValidateReasoningResolution(ReasoningResolution resolution, DomainEventPayload payload)
+    {
+        try { resolution.Validate(); }
+        catch (ArgumentException)
+        { throw new InvalidStateTransitionException("reasoning resolution", "invalid or inconsistent provenance", payload.Type().ToString()); }
     }
 
     private void ToolCallTransition(ToolCallId id, DomainEventPayload payload) =>

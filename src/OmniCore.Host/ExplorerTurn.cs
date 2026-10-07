@@ -378,7 +378,8 @@ public sealed class ExplorerTurn
 
     /// <summary>Ejecuta la pregunta del usuario con contexto real y persiste el Turn en el journal.</summary>
     public TurnResult Ask(string question, string instruction, SessionId sessionId, RunId runId,
-        LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null)
+        LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null,
+        TurnInstructionSnapshot? instructionSnapshot = null)
     {
         try { _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning); }
         catch (InvalidOperationException)
@@ -392,17 +393,55 @@ public sealed class ExplorerTurn
         var originalStart = isResume ? stream.EventsSince(1).LastOrDefault(evt =>
             evt.RunId == runId && _codecs.Decode(evt) is TurnStarted start
                 && start.TurnId == resumedTurnId && start.LaneId == laneId) : null;
+        var originalConfiguration = originalStart is null ? null : (TurnStarted)_codecs.Decode(originalStart);
+        if (instructionSnapshot is not null)
+        {
+            instructionSnapshot.Validate();
+            if (!string.Equals(instructionSnapshot.ResolvedInstruction, instruction, StringComparison.Ordinal))
+                throw new ArgumentException("Turn instruction snapshot must match the applied instruction.", nameof(instructionSnapshot));
+            // Instructions pass through the same redaction boundary as the materialized prompt.
+            // Do not expose an unredacted copy in the canonical event payload.
+            instructionSnapshot = instructionSnapshot with { ResolvedInstruction = _redaction.Redact(instruction) };
+        }
+        // Historical Turns without this contract must not acquire a current intent snapshot.
+        if (isResume) instructionSnapshot = originalConfiguration?.InstructionSnapshot;
+        if (originalConfiguration?.InstructionSnapshot is { } originalInstruction)
+        {
+            originalInstruction.Validate();
+            instructionSnapshot = originalInstruction;
+            instruction = originalInstruction.ResolvedInstruction;
+        }
+        var reasoningResolution = _selection.ReasoningResolution;
+        if (isResume && (originalConfiguration?.ReasoningResolution is { } originalReasoning
+            ? !originalReasoning.IsEquivalentTo(reasoningResolution) : reasoningResolution is not null))
+            return new TurnResult("Cannot resume Turn: reasoning resolution differs from its original configuration.",
+                StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         // Freeze the initial plan revision, not later mutations legitimately emitted by this Turn.
         var initialPlanEvents = OwnTail(stream, runId).Where(evt => originalStart is null
             || evt.Sequence <= originalStart.Sequence).ToArray();
-        var laneProfileId = FindAgentProfileForLane(stream.EventsSince(1), runId, laneId);
+        var initialAuthority = RunProjection.Replay(sessionId, runId, _codecs, initialPlanEvents).ModeAuthority;
+        // Legacy Runs have no explicit authority selection. Do not upgrade a historical Turn
+        // fingerprint on resume; revocation remains effective in the live Run projection.
+        var fingerprintAuthority = initialAuthority is { Revision: > 0 }
+            && (originalStart is null || _codecs.Decode(originalStart) is TurnStarted
+                { Fingerprint: { } existing } && existing.Components.Any(component => component.Name == "run.mode_authority"))
+            ? initialAuthority : null;
+        var laneConfiguration = FindAgentProfileForLane(stream.EventsSince(1), runId, laneId);
+        var laneProfileId = laneConfiguration?.AgentProfile;
         if (_resolvedAgentProfile is not null && laneProfileId != _resolvedAgentProfile.Id)
             return new TurnResult("Cannot execute Turn: applied AgentProfile ceiling differs from the Lane configuration.",
+                StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+        if (laneConfiguration is { } configured
+            && (configured.AgentProfileRevision is not null || configured.AgentProfileHash is not null)
+            && (_resolvedAgentProfile is null || configured.AgentProfileRevision != _resolvedAgentProfile.Revision
+                || configured.AgentProfileHash != AgentProfileFingerprint.Hash(_resolvedAgentProfile)))
+            return new TurnResult("Cannot execute Turn: durable AgentProfile revision or content differs from its applied configuration.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var preparedTurnFingerprint = _recordEffectiveFingerprint
             ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
-                laneProfileId, _activeSkills, _resolvedAgentProfile)
+                laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority, instructionSnapshot,
+                reasoningResolution)
             : null;
         var fingerprint = preparedTurnFingerprint?.Fingerprint ?? _fingerprint;
         if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
@@ -651,7 +690,8 @@ public sealed class ExplorerTurn
                     if (safeQuestion.Length > 0)
                         overflowStart.Add(new UserInputReceived(runId,
                             "\"" + System.Text.Json.JsonEncodedText.Encode(safeQuestion) + "\"", null, origin));
-                    overflowStart.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact));
+                    overflowStart.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact,
+                        instructionSnapshot, reasoningResolution));
                 }
                 stream.AppendBatch(overflowStart, DurabilityClass.Barrier);
                 started = true;
@@ -672,14 +712,19 @@ public sealed class ExplorerTurn
                 preparedContext.PublishArtifacts();
                 var snapshotArtifact = PersistContextSnapshot(materialized, _selection.ContextBudget);
                 var startEvents = new List<DomainEventPayload>();
-                if (RunProjection.Replay(sessionId, runId, _codecs, stream.EventsSince(1)).State == RunState.Running)
+                var recordsUserInput = safeQuestion.Length > 0 || pendingFollowUps.Length == 0
+                    && origin is not ("InteractionResponse(ModelRouteConsent)" or "AlreadyPersisted(ConversationInput)");
+                // A consent resumes existing intent, not a new user message. Only pair this
+                // synthetic input boundary with the input that actually returns it to Running.
+                if (recordsUserInput
+                    && RunProjection.Replay(sessionId, runId, _codecs, stream.EventsSince(1)).State == RunState.Running)
                     startEvents.Add(new RunAwaitingInput(runId, laneId));
                 startEvents.AddRange(FollowUpQueue.PromotionEvents(pendingFollowUps, runId, laneId, turnId));
                 var encodedInput = System.Text.Json.JsonEncodedText.Encode(safeQuestion);
-                if (safeQuestion.Length > 0 || pendingFollowUps.Length == 0
-                    && origin is not ("InteractionResponse(ModelRouteConsent)" or "AlreadyPersisted(ConversationInput)"))
+                if (recordsUserInput)
                     startEvents.Add(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
-                startEvents.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact));
+                startEvents.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact,
+                    instructionSnapshot, reasoningResolution));
                 stream.AppendBatch(startEvents, DurabilityClass.Barrier);
                 // Límites de mutación por Turn (ADR-0044 §5): un Turn nuevo reinicia el contador del
                 // Turn; los totales del Run se conservan. Un Turn reanudado sigue con su contador.
@@ -761,7 +806,7 @@ public sealed class ExplorerTurn
                             _selection.ContextBudget, _selection.ToolMode.ToString(),
                             _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
                             PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
-                            _selection.RouteId);
+                            _selection.RouteId, reasoningResolution);
                         var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
                         stepEvents.Add(stepStart);
                         stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
@@ -1853,13 +1898,13 @@ public sealed class ExplorerTurn
                 throw new InvalidDataException("Fingerprint component artifact failed publication integrity verification.");
     }
 
-    private ProfileId? FindAgentProfileForLane(IReadOnlyList<DomainEvent> events, RunId runId, LaneId laneId)
+    private LaneCreated? FindAgentProfileForLane(IReadOnlyList<DomainEvent> events, RunId runId, LaneId laneId)
     {
         foreach (var evt in events)
         {
             if (evt.RunId != runId) continue;
             if (_codecs.Decode(evt) is LaneCreated created && created.LaneId == laneId)
-                return created.AgentProfile;
+                return created;
         }
         return null;
     }
@@ -2505,6 +2550,7 @@ public sealed class ExplorerTurn
         {
             var type = evt.Type.ToString();
             if (type != "run.created" && type != "run.started" && type != "run.awaiting_input"
+                && type != "run.interaction_resumed"
                 && type != "user_input.received" && type != "run.validation_started"
                 && type != "run.validation_rejected" && type != "run.completed"
                 && type != "run.failed" && type != "run.cancelled") continue;
@@ -2515,6 +2561,7 @@ public sealed class ExplorerTurn
                 RunCreated e => e.RunId,
                 RunStarted e => e.RunId,
                 RunAwaitingInput e => e.RunId,
+                RunInteractionResumed e => e.RunId,
                 UserInputReceived e => e.RunId,
                 RunValidationStarted e => e.RunId,
                 RunValidationRejected e => e.RunId,

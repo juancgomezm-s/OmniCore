@@ -71,13 +71,21 @@ public sealed class SessionRoutingHostIntegrationTests
             Assert.NotNull(blocked.Interaction);
             Assert.Equal(RuntimeCommandOutcomeKind.Deferred, blocked.Ack.Outcome?.Kind);
             Assert.Equal(before + 1, blocked.Ack.FirstSeq);
-            Assert.Equal(before + 1, blocked.Ack.LastSeq);
-            var written = Assert.Single(store.ReadFrom(session, before + 1));
+            Assert.Equal(before + 2, blocked.Ack.LastSeq);
+            var consentBatch = store.ReadFrom(session, before + 1);
+            Assert.Equal(new[] { "interaction.requested", "run.awaiting_input" },
+                consentBatch.Select(evt => evt.Type.ToString()));
+            var written = consentBatch[0];
             Assert.Equal(run, written.RunId);
             Assert.IsType<CommandCausation>(written.Causation);
+            Assert.All(consentBatch, evt =>
+            {
+                Assert.Equal(run, evt.RunId);
+                Assert.Equal(written.Causation, evt.Causation);
+            });
             var again = server.AuthorizeModelRoute(session, run, Route(), mode);
             Assert.Equal(blocked.Interaction, again.Interaction);
-            Assert.Equal(before + 1, store.CurrentSequence(session));
+            Assert.Equal(before + 2, store.CurrentSequence(session));
 
             var projection = new ClientProjection(Localization.Spanish());
             var state = ClientState.Empty();

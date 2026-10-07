@@ -28,11 +28,14 @@ internal static class RuntimeFingerprintFactory
     internal static PreparedRuntimeFingerprint PrepareTurnConfiguration(ExecutionFingerprint baseline,
         FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
         IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
-        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null, AgentProfile? resolvedAgentProfile = null)
+        IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null, AgentProfile? resolvedAgentProfile = null,
+        RunModeAuthority? modeAuthority = null, TurnInstructionSnapshot? instructionSnapshot = null,
+        ReasoningResolution? reasoningResolution = null)
     {
         var pending = new List<IPreparedArtifact>();
         var fingerprint = WithTurnConfiguration(baseline, catalog, visibleTools, systemPrompt, plan,
-            artifacts, agentProfile, activeSkills, pending, resolvedAgentProfile);
+            artifacts, agentProfile, activeSkills, pending, resolvedAgentProfile, modeAuthority, instructionSnapshot,
+            reasoningResolution);
         return new PreparedRuntimeFingerprint(fingerprint, pending.AsReadOnly());
     }
 
@@ -134,11 +137,27 @@ internal static class RuntimeFingerprintFactory
                     writer.WriteEndArray();
                 }
                 writer.WriteString("replayPolicy", reasoning.ReplayPolicy?.ToString());
-            }));
+                if (reasoning.UltraCodeBudgetTokens is not null || reasoning.UltraCodeOutputReserveTokens is not null)
+                {
+                    if (reasoning.UltraCodeBudgetTokens is { } budget) writer.WriteNumber("ultraCodeBudgetTokens", budget);
+                    else writer.WriteNull("ultraCodeBudgetTokens");
+                    if (reasoning.UltraCodeOutputReserveTokens is { } reserve) writer.WriteNumber("ultraCodeOutputReserveTokens", reserve);
+                    else writer.WriteNull("ultraCodeOutputReserveTokens");
+                }
+            }, reasoning.UltraCodeBudgetTokens is not null || reasoning.UltraCodeOutputReserveTokens is not null ? "2" : "1"));
         // Endpoint configuration follows the same sensitive/redacted content path as other
         // components. A changed representation never claims to explain the original digest.
         if (selection.Route is { } route)
             components.Add(ProviderAdapterComponent(route, provider, artifacts, pending));
+        if (selection.ReasoningResolution is { } resolution)
+        {
+            resolution.Validate();
+            components.Add(ResolvedComponent("model.reasoning.resolved", writer =>
+            {
+                writer.WritePropertyName("resolution");
+                WriteReasoningResolution(writer, resolution);
+            }));
+        }
         return new ExecutionFingerprint(model.Id, harnessHash, "core-tools-1", contextPolicyHash,
             "none", RuntimeBuildIdentity.ForAssembly(typeof(OmniCliRuntime).Assembly), modelPolicyHash,
             tokenizerIdentity, components);
@@ -148,7 +167,9 @@ internal static class RuntimeFingerprintFactory
         FakeCatalog catalog, IReadOnlyList<ToolDefinition> visibleTools, string systemPrompt, Plan? plan,
         IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
         IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null,
-        ICollection<IPreparedArtifact>? pending = null, AgentProfile? resolvedAgentProfile = null)
+        ICollection<IPreparedArtifact>? pending = null, AgentProfile? resolvedAgentProfile = null,
+        RunModeAuthority? modeAuthority = null, TurnInstructionSnapshot? instructionSnapshot = null,
+        ReasoningResolution? reasoningResolution = null)
     {
         var tools = Component("tools.plan", writer =>
         {
@@ -226,12 +247,77 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteEndArray();
             }
         }, artifacts: artifacts, pending: pending);
-        var names = new HashSet<string>(new[] { tools.Name, prompt.Name, revision.Name, profile.Name, skills.Name }, StringComparer.Ordinal);
+        var resolved = new List<FingerprintComponent> { tools, prompt, revision, profile, skills };
+        if (reasoningResolution is not null)
+        {
+            reasoningResolution.Validate();
+            resolved.Add(Component("model.reasoning.resolved", writer =>
+            {
+                writer.WritePropertyName("resolution");
+                WriteReasoningResolution(writer, reasoningResolution);
+            }, artifacts: artifacts, pending: pending));
+        }
+        if (instructionSnapshot is not null)
+        {
+            instructionSnapshot.Validate();
+            resolved.Add(Component("turn.instruction", writer =>
+            {
+                writer.WriteBoolean("conversationOnly", instructionSnapshot.ConversationOnly);
+                writer.WriteString("resolvedInstruction", instructionSnapshot.ResolvedInstruction);
+            }, artifacts: artifacts, pending: pending));
+        }
+        if (modeAuthority is not null)
+        {
+            modeAuthority.Validate();
+            resolved.Add(Component("run.mode_authority", writer =>
+            {
+                writer.WritePropertyName("authority");
+                ModeAuthorityFingerprint.Write(writer, modeAuthority);
+            }, artifacts: artifacts, pending: pending));
+        }
+        // Absent authority must not inherit a previous Turn's authorization from its baseline.
+        // The optional component leaves pre-ADR0047 journals' hashes unchanged.
+        var names = new HashSet<string>(resolved.Select(component => component.Name), StringComparer.Ordinal)
+            { "run.mode_authority", "turn.instruction", "model.reasoning.resolved" };
         var components = baseline.Components.Where(component => !names.Contains(component.Name))
-            .Concat(new[] { tools, prompt, revision, profile, skills }).ToArray();
+            .Concat(resolved).ToArray();
         return new ExecutionFingerprint(baseline.ModelKey, baseline.HarnessPolicyHash, tools.Hash.Value,
             baseline.ContextPolicyHash, baseline.OverridesHash, baseline.Build, baseline.ModelPolicyHash,
             baseline.TokenizerHash, components);
+    }
+
+    private static void WriteReasoningResolution(Utf8JsonWriter writer, ReasoningResolution resolution)
+    {
+        writer.WriteStartObject();
+        WriteRequest("requestedRequest", resolution.RequestedRequest);
+        WriteRequest("appliedRequest", resolution.AppliedRequest);
+        writer.WriteString("source", resolution.Source.ToString());
+        WriteRevision("userPreferenceRevision", resolution.UserPreferenceRevision);
+        WriteRevision("runPreferenceRevision", resolution.RunPreferenceRevision);
+        WriteRevision("modeAuthorityRevision", resolution.ModeAuthorityRevision);
+        if (resolution.TurnBoostId is { } boost) writer.WriteString("turnBoostId", boost);
+        else writer.WriteNull("turnBoostId");
+        if (resolution.OutputReserveTokens is { } reserve) writer.WriteNumber("outputReserveTokens", reserve);
+        else writer.WriteNull("outputReserveTokens");
+        writer.WriteStartArray("reductions");
+        foreach (var reduction in resolution.Reductions) writer.WriteStringValue(reduction.ToString());
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+
+        void WriteRevision(string name, long? revision)
+        {
+            if (revision is { } value) writer.WriteNumber(name, value);
+            else writer.WriteNull(name);
+        }
+        void WriteRequest(string name, ReasoningRequest? request)
+        {
+            if (request is null) { writer.WriteNull(name); return; }
+            writer.WriteStartObject(name);
+            writer.WriteString("kind", request.Kind);
+            if (request.BudgetTokens is { } budget) writer.WriteNumber("budgetTokens", budget);
+            else writer.WriteNull("budgetTokens");
+            writer.WriteEndObject();
+        }
     }
 
     private static void WriteContextPolicy(Utf8JsonWriter writer, ContextManagementPolicy policy)

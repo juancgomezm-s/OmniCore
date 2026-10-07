@@ -39,7 +39,7 @@ public sealed class Epic009ContractTests
         var storedV1 = DomainEvent.Create(SessionId.New(), EventType.Of("turn.started"), 1,
             null, null, null, null, null, null, null, null, Array.Empty<ArtifactRef>(), payload);
 
-        Assert.Equal(2, codecs.CurrentVersion(EventType.Of("turn.started")));
+        Assert.Equal(3, codecs.CurrentVersion(EventType.Of("turn.started")));
         var decoded = Assert.IsType<TurnStarted>(codecs.Decode(storedV1));
         Assert.Equal(turnId, decoded.TurnId);
         Assert.Equal(laneId, decoded.LaneId);

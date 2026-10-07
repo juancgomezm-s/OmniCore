@@ -69,6 +69,46 @@ public sealed class ProtocolMapper
         RunFailed e => new() { ["cause"] = _redaction.Redact(e.Cause) },
         RunCancelled => new(),
         RunModeChanged e => new() { ["from"] = Mode(e.From), ["to"] = Mode(e.To) },
+        RunModeAuthoritySelected e => new()
+        {
+            ["mode"] = Mode(e.Authority.Mode), ["strategy"] = e.Authority.Strategy.ToString(),
+            ["effort"] = e.Authority.ProductEffort.ToString().ToLowerInvariant(),
+            ["authorityRevision"] = e.Authority.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["modePinned"] = e.Authority.ModePinned.ToString().ToLowerInvariant(),
+            ["autoModeSwitch"] = e.Authority.AutoModeSwitch.ToString().ToLowerInvariant(),
+        },
+        RunModeTransitionAuthorized e => new()
+        {
+            ["from"] = Mode(e.From), ["to"] = Mode(e.To), ["reason"] = _redaction.Redact(e.Reason),
+            ["origin"] = e.Origin, ["authorityRevision"] = e.AuthorityRevision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        },
+        RunModeAuthorityRevoked e => new()
+        {
+            ["authorityRevision"] = e.AuthorityRevision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["reason"] = _redaction.Redact(e.Reason), ["origin"] = e.Origin,
+        },
+        RunReasoningPreferenceSelected e => new()
+        {
+            ["revision"] = e.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["hasSelection"] = "true", ["kind"] = e.Request?.Kind ?? "off",
+            ["budgetTokens"] = e.Request?.BudgetTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
+            ["source"] = e.Source,
+        },
+        RunReasoningPreferenceRevoked e => new()
+        {
+            ["revision"] = e.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["hasSelection"] = "false", ["origin"] = e.Origin,
+        },
+        RunInteractionResumed e => new()
+        {
+            ["interactionId"] = e.InteractionId.ToString(), ["commandId"] = e.CommandId, ["runState"] = "running",
+        },
+        ModelStepStarted e => new()
+        {
+            ["turnId"] = e.TurnId.ToString(), ["stepIndex"] = e.StepIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["modelId"] = e.ModelId, ["reasoningKind"] = e.ReasoningKind ?? "",
+            ["reasoningBudgetTokens"] = e.ReasoningBudgetTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
+        },
         UserInputReceived e => new() { ["text"] = _redaction.Redact(InputText(e.InputPartsJson)) },
         AssistantMessageRecorded e => new() { ["text"] = _redaction.Redact(ArtifactText(e.ContentRef)) },
         TurnStarted e => new() { ["turnId"] = e.TurnId.ToString(), ["laneId"] = e.LaneId.ToString() },

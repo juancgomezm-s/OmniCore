@@ -213,7 +213,8 @@ public sealed class RunControlTests
     public void Session_input_with_mode_plan_starts_the_run_in_plan_mode()
     {
         var server = OmniHost.CreateInMemoryServer();
-        Assert.Equal("ok", Send(server, SessionInput("diseña el cambio", "plan")).Status);
+        var input = WireEnvelope.Command(Ids.NewV7(), SessionInput("diseña el cambio", "plan"));
+        Assert.Equal("ok", server.SendUserAction(input, TestContext.Current.CancellationToken).Status);
 
         var projection = RunProjection.Replay(server.LastSessionId()!, server.LastRunId()!, Codecs,
             Journal(server));

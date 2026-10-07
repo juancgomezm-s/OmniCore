@@ -378,3 +378,12 @@ public interface IOmniClient
 
     SessionQueryResult? Query(string name, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Typed in-process UI boundary for commands directly initiated by a human. The marker is not
+/// serialized and cannot be supplied by model output or a generic wire payload.
+/// </summary>
+public interface ITrustedUserActionClient
+{
+    CommandAck SendUserAction(WireEnvelope command, CancellationToken cancellationToken);
+}

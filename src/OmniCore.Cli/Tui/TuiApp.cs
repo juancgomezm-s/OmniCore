@@ -362,7 +362,8 @@ public sealed class TuiApp
         var draft = _composer.Text?.ToString() ?? "";
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
         var names = ReadStringArray(_client.Query("commands", CancellationToken.None)?.Json, "commands")
-            .Concat(new[] { "act", "context", "tools", "plan", "cancel", "interrupt", "preferences", "models", "login", "sidebar" });
+            .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar" });
         var suggestions = ComposerAutocomplete.Complete(draft,
             names, ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
         _completion.Text = string.Join("   ", suggestions.Take(5).Select(suggestion => suggestion.Value));
@@ -395,6 +396,10 @@ public sealed class TuiApp
     private string CommandDescription(string command) => command switch
     {
         "/act" => Ui("Ejecutar cambios explícitos en archivos", "Execute explicit file changes"),
+        "/mode" => Ui("Fijar el modo predeterminado del próximo Run", "Set the next Run's default mode"),
+        "/runmode" => Ui("Cambiar el modo del Run activo", "Change the active Run's mode"),
+        "/ultracode" => Ui("Autoridad adaptativa explícita con límites finitos", "Explicit adaptive authority with finite limits"),
+        "/reasoning" => Ui("Preferencia persistente, selección del Run o impulso de un turno", "Persistent preference, Run selection, or one-turn boost"),
         "/models" => Ui("Seleccionar modelo", "Select model"),
         "/preferences" => Ui("Abrir configuración", "Open settings"),
         "/login" => Ui("Cuenta y conexión ChatGPT", "ChatGPT account and connection"),
@@ -435,6 +440,88 @@ public sealed class TuiApp
         HideCommandHelper();
         if (input.StartsWith("/act ", StringComparison.Ordinal))
         { if (StartModelTurn(input[5..], act: true)) { _composer.Text = ""; PollEvents(); } return; }
+        if (input == "/mode")
+        {
+            var preference = _client.Query("modePreference", CancellationToken.None)?.Json ?? "{}";
+            var authority = _client.Query("modeAuthority", CancellationToken.None)?.Json ?? "null";
+            ShowMessage(Ui("Predeterminado del próximo Run: ", "Next Run default: ") + preference
+                + Environment.NewLine + Ui("Autoridad del Run activo: ", "Active Run authority: ") + authority);
+            _composer.Text = ""; return;
+        }
+        if (input.StartsWith("/mode ", StringComparison.Ordinal))
+        {
+            var requested = input[6..].Trim().ToLowerInvariant();
+            if (requested is not ("plan" or "act" or "orq"))
+            { ShowMessage(Ui("Uso: /mode plan|act|orq", "Usage: /mode plan|act|orq")); _composer.Text = ""; return; }
+            var preference = _client.Query("modePreference", CancellationToken.None)?.Json ?? "{}";
+            if (!TryReadLong(preference, "revision", out var revision))
+            { ShowMessage(Ui("No se pudo leer la revisión del modo", "Could not read the mode revision")); _composer.Text = ""; return; }
+            SendTrustedModeCommand("mode.default.set", JsonObj.Field("mode", requested)
+                + ",\"expectedRevision\":" + revision.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            _composer.Text = ""; return;
+        }
+        if (input.StartsWith("/runmode ", StringComparison.Ordinal))
+        {
+            var requested = input[9..].Trim().ToLowerInvariant();
+            if (requested is not ("plan" or "act" or "orq"))
+            { ShowMessage(Ui("Uso: /runmode plan|act|orq", "Usage: /runmode plan|act|orq")); _composer.Text = ""; return; }
+            SendTrustedModeCommand("run.mode.select", JsonObj.Field("mode", requested)
+                + ",\"effort\":\"standard\"");
+            _composer.Text = ""; PollEvents(); return;
+        }
+        if (input == "/reasoning")
+        {
+            var user = _client.Query("reasoningPreference", CancellationToken.None)?.Json ?? "null";
+            var run = _client.Query("runReasoningPreference", CancellationToken.None)?.Json ?? "null";
+            ShowMessage(Ui("Preferencia de usuario: ", "User preference: ") + user
+                + Environment.NewLine + Ui("Selección del Run: ", "Run selection: ") + run);
+            _composer.Text = ""; return;
+        }
+        if (input.StartsWith("/reasoning ", StringComparison.Ordinal))
+        {
+            HandleReasoningCommand(input[11..].Trim());
+            _composer.Text = ""; return;
+        }
+        if (input == "/ultracode off")
+        {
+            SendTrustedModeCommand("run.mode.revoke", "");
+            _composer.Text = ""; PollEvents(); return;
+        }
+        if (input.StartsWith("/ultracode on ", StringComparison.Ordinal))
+        {
+            var parts = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            for (var part = 2; part < parts.Length; part++)
+            {
+                var item = parts[part];
+                var equals = item.IndexOf('=');
+                if (!item.StartsWith("--", StringComparison.Ordinal) || equals <= 2
+                    || !values.TryAdd(item[2..equals], item[(equals + 1)..]))
+                { ShowMessage(Ui("Usa opciones explícitas --clave=valor", "Use explicit --key=value options")); _composer.Text = ""; return; }
+            }
+            var required = new[] { "mode", "modes", "agents", "depth", "turns", "tools", "seconds", "spend-usd" };
+            if (required.Any(key => !values.ContainsKey(key))
+                || values["mode"] is not ("plan" or "act" or "orq"))
+            { ShowMessage(Ui("UltraCode requiere modo y todos los límites finitos", "UltraCode requires a mode and every finite limit")); _composer.Text = ""; return; }
+            if (!int.TryParse(values["agents"], out var agents) || !int.TryParse(values["depth"], out var depth)
+                || !int.TryParse(values["turns"], out var turns) || !int.TryParse(values["tools"], out var tools)
+                || !long.TryParse(values["seconds"], out var seconds)
+                || !decimal.TryParse(values["spend-usd"], System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture, out var spend)
+                || values["modes"].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Any(mode => mode is not ("plan" or "act" or "orq")))
+            { ShowMessage(Ui("Límites UltraCode inválidos", "Invalid UltraCode limits")); _composer.Text = ""; return; }
+            var payload = JsonObj.Field("mode", values["mode"])
+                + ",\"effort\":\"ultracode\",\"adaptive\":true," + JsonObj.Field("allowedModes", values["modes"])
+                + ",\"maxAgents\":" + agents.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"maxDepth\":" + depth.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"maxTurns\":" + turns.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"maxToolCalls\":" + tools.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"maxElapsedSeconds\":" + seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"maxSpendUsd\":" + spend.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            SendTrustedModeCommand("run.mode.select", payload);
+            _composer.Text = ""; PollEvents(); return;
+        }
         if (input == "/preferences") { ShowPreferences(); _composer.Text = ""; return; }
         if (input == "/login") { ShowAccount(); _composer.Text = ""; return; }
         if (input == "/models") { ShowModelPicker(); _composer.Text = ""; return; }
@@ -464,7 +551,7 @@ public sealed class TuiApp
                 if (text.TryGetValue("outcome", out var _) && TryReadOutcome(outcome, out var expanded))
                 {
                     if (_turnHost is not null) { if (!StartModelTurn(expanded)) return; }
-                    else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(expanded) + "\"") + ",\"mode\":\"act\"");
+                    else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(expanded) + "\""));
                 }
             }
             else ShowMessage("/" + invocation.Name + ": " + (ack.Error ?? "command failed"));
@@ -476,7 +563,7 @@ public sealed class TuiApp
         else
         {
             if (_turnHost is not null) { if (!StartModelTurn(input)) return; }
-            else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(input) + "\"") + ",\"mode\":\"act\"");
+            else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(input) + "\""));
         }
         _composer.Text = "";
         PollEvents();
@@ -1338,6 +1425,138 @@ public sealed class TuiApp
         foreach (var view in retired) view.Dispose();
         foreach (var view in _overlaysReadyForDisposal) view.Dispose();
         _overlaysReadyForDisposal.Clear();
+    }
+
+    private void SendTrustedModeCommand(string command, string fields)
+    {
+        if (_client is not OmniCore.Protocol.ITrustedUserActionClient trusted)
+        { ShowMessage(Ui("Este cliente no permite cambiar autoridad local", "This client cannot change local authority")); return; }
+        var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", command)
+            + (fields.Length == 0 ? "" : "," + fields) + "}"), CancellationToken.None);
+        if (ack.Status != "ok") ShowMessage(ack.Error ?? Ui("Cambio de modo rechazado", "Mode change rejected"));
+        else ShowMessage(ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred
+            ? Ui("El turno aún tiene un paso activo; vuelve a intentarlo cuando termine",
+                "The active turn still has a model step; retry after it completes")
+            : Ui("Modo actualizado", "Mode updated"));
+    }
+
+    private void HandleReasoningCommand(string arguments)
+    {
+        var parts = arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            ShowMessage(Ui("Uso: /reasoning [default|run] <kind|off|reset> [budgetTokens] o /reasoning boost <kind|budget> [budgetTokens]",
+                "Usage: /reasoning [default|run] <kind|off|reset> [budgetTokens] or /reasoning boost <kind|budget> [budgetTokens]"));
+            return;
+        }
+
+        if (parts[0] == "boost")
+        {
+            if (_turnHost is null || parts.Length is < 2 or > 3
+                || !TryBuildReasoningRequest(parts[1], parts.Length == 3 ? parts[2] : null, out var boost)
+                || boost is null)
+            {
+                ShowMessage(Ui("Impulso de un turno inválido o no disponible", "One-turn boost is invalid or unavailable"));
+                return;
+            }
+            if (!_turnHost.SetNextTurnReasoningBoost(boost))
+            {
+                ShowMessage(Ui("Ya hay un impulso pendiente", "A reasoning boost is already pending"));
+                return;
+            }
+            ShowMessage(Ui("Impulso aplicado al próximo turno nuevo: ", "Boost queued for the next fresh turn: ")
+                + boost.Kind + (boost.BudgetTokens is { } budget ? ":" + budget : ""));
+            return;
+        }
+
+        if (parts.Length is < 2 or > 3 || parts[0] is not ("default" or "run"))
+        {
+            ShowMessage(Ui("Uso: /reasoning [default|run] <kind|off|reset> [budgetTokens]",
+                "Usage: /reasoning [default|run] <kind|off|reset> [budgetTokens]"));
+            return;
+        }
+        var isRun = parts[0] == "run";
+        var json = _client.Query(isRun ? "runReasoningPreference" : "reasoningPreference",
+            CancellationToken.None)?.Json ?? "null";
+        long revision = 0;
+        if (json != "null" && !TryReadLong(json, "revision", out revision))
+        {
+            ShowMessage(Ui("No se pudo leer la revisión de razonamiento", "Could not read the reasoning revision"));
+            return;
+        }
+        if (parts[1] == "reset")
+        {
+            if (parts.Length != 2)
+            {
+                ShowMessage(Ui("reset no acepta un presupuesto", "reset does not accept a budget"));
+                return;
+            }
+            SendTrustedReasoningCommand(isRun ? "run.reasoning.revoke" : "reasoning.default.revoke",
+                "\"expectedRevision\":" + revision.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            PollEvents();
+            return;
+        }
+        if (!TryBuildReasoningRequest(parts[1], parts.Length == 3 ? parts[2] : null, out var request))
+        {
+            ShowMessage(Ui("Tipo o presupuesto de razonamiento inválido", "Invalid reasoning kind or budget"));
+            return;
+        }
+        var fields = JsonObj.Field("kind", request?.Kind ?? "off")
+            + (request?.BudgetTokens is { } tokenBudget
+                ? ",\"budgetTokens\":" + tokenBudget.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                : "")
+            + ",\"expectedRevision\":" + revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        SendTrustedReasoningCommand(isRun ? "run.reasoning.select" : "reasoning.default.set", fields);
+        PollEvents();
+    }
+
+    private static bool TryBuildReasoningRequest(string kind, string? budgetText,
+        out OmniCore.Domain.ReasoningRequest? request)
+    {
+        request = null;
+        if (kind == "off") return budgetText is null;
+        if (string.IsNullOrWhiteSpace(kind)) return false;
+        if (kind == "budget")
+        {
+            if (!int.TryParse(budgetText, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var budget) || budget < 1024)
+                return false;
+            request = new OmniCore.Domain.ReasoningRequest(kind, budget);
+            return true;
+        }
+        if (budgetText is not null) return false;
+        request = new OmniCore.Domain.ReasoningRequest(kind, null);
+        return true;
+    }
+
+    private void SendTrustedReasoningCommand(string command, string fields)
+    {
+        if (_client is not OmniCore.Protocol.ITrustedUserActionClient trusted)
+        {
+            ShowMessage(Ui("Este cliente no permite cambiar razonamiento", "This client cannot change reasoning"));
+            return;
+        }
+        var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", command)
+            + (fields.Length == 0 ? "" : "," + fields) + "}"), CancellationToken.None);
+        if (ack.Status != "ok")
+            ShowMessage(ack.Error ?? Ui("Cambio de razonamiento rechazado", "Reasoning change rejected"));
+        else if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred)
+            ShowMessage(Ui("El turno aún tiene un paso activo; vuelve a intentarlo cuando termine",
+                "The active turn still has a model step; retry after it completes"));
+        else
+            ShowMessage(Ui("Razonamiento actualizado", "Reasoning updated"));
+    }
+
+    private static bool TryReadLong(string json, string name, out long value)
+    {
+        value = 0;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.TryGetProperty(name, out var property)
+                && property.TryGetInt64(out value);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 
     private void SendCommand(string command, string fields) => _client.Send(

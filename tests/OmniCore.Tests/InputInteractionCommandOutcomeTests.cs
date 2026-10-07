@@ -67,8 +67,9 @@ public sealed class InputInteractionCommandOutcomeTests
         var server = new OmniServer(store, codecs, new InMemoryAuditSink());
         var ack = Send(server, commandId, SessionInput("new session objective"));
 
-        Assert.Equal("ok", ack.Status);
+        if (ack.Error is { } error) Assert.Fail(error);
         Assert.Null(ack.Error);
+        Assert.Equal("ok", ack.Status);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
         var session = Assert.IsType<SessionId>(server.LastSessionId());
         Assert.NotEqual(otherSession, session);

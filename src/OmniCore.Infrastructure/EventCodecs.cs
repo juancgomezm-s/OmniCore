@@ -42,6 +42,12 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunFailed())
             .Plus(Typed.RunCancelled())
             .Plus(Typed.RunModeChanged())
+            .Plus(Typed.RunModeAuthoritySelected())
+            .Plus(Typed.RunModeTransitionAuthorized())
+            .Plus(Typed.RunModeAuthorityRevoked())
+            .Plus(Typed.RunReasoningPreferenceSelected())
+            .Plus(Typed.RunReasoningPreferenceRevoked())
+            .Plus(Typed.RunInteractionResumed())
             .Plus(Typed.SessionCreated())
             .Plus(Typed.SessionRoutingPolicySet())
             .Plus(Typed.SessionRoutingPolicyRevised())
@@ -125,8 +131,11 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("lane.created"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 3))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_failed"), 1))
@@ -332,6 +341,16 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(RunFailed))]
 [JsonSerializable(typeof(RunCancelled))]
 [JsonSerializable(typeof(RunModeChanged))]
+[JsonSerializable(typeof(RunModeAuthoritySelected))]
+[JsonSerializable(typeof(RunModeTransitionAuthorized))]
+[JsonSerializable(typeof(RunModeAuthorityRevoked))]
+[JsonSerializable(typeof(RunReasoningPreferenceSelected))]
+[JsonSerializable(typeof(RunReasoningPreferenceRevoked))]
+[JsonSerializable(typeof(RunInteractionResumed))]
+[JsonSerializable(typeof(RunModeAuthority))]
+[JsonSerializable(typeof(ModeSwitchAuthorization))]
+[JsonSerializable(typeof(ModeSwitchLimits))]
+[JsonSerializable(typeof(ProductEffort))]
 [JsonSerializable(typeof(SessionCreated))]
 [JsonSerializable(typeof(SessionRoutingPolicySet))]
 [JsonSerializable(typeof(SessionRoutingPolicyRevised))]
@@ -361,6 +380,10 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(LaneFailed))]
 [JsonSerializable(typeof(LaneCancelled))]
 [JsonSerializable(typeof(TurnStarted))]
+[JsonSerializable(typeof(TurnInstructionSnapshot))]
+[JsonSerializable(typeof(ReasoningResolution))]
+[JsonSerializable(typeof(ReasoningSelectionSource))]
+[JsonSerializable(typeof(ReasoningReduction))]
 [JsonSerializable(typeof(ModelEscalationRequested))]
 [JsonSerializable(typeof(ModelEscalationApproved))]
 [JsonSerializable(typeof(ModelEscalationCompleted))]
@@ -489,6 +512,24 @@ public sealed class Typed
     public static CodecPair RunModeChanged() =>
         Of(EventType.Of("run.mode_changed"), EventJsonContext.Default.RunModeChanged);
 
+    public static CodecPair RunModeAuthoritySelected() =>
+        Of(EventType.Of("run.mode_authority_selected"), EventJsonContext.Default.RunModeAuthoritySelected);
+
+    public static CodecPair RunModeTransitionAuthorized() =>
+        Of(EventType.Of("run.mode_transition_authorized"), EventJsonContext.Default.RunModeTransitionAuthorized);
+
+    public static CodecPair RunModeAuthorityRevoked() =>
+        Of(EventType.Of("run.mode_authority_revoked"), EventJsonContext.Default.RunModeAuthorityRevoked);
+
+    public static CodecPair RunReasoningPreferenceSelected() =>
+        Of(EventType.Of("run.reasoning_preference_selected"), EventJsonContext.Default.RunReasoningPreferenceSelected);
+
+    public static CodecPair RunReasoningPreferenceRevoked() =>
+        Of(EventType.Of("run.reasoning_preference_revoked"), EventJsonContext.Default.RunReasoningPreferenceRevoked);
+
+    public static CodecPair RunInteractionResumed() =>
+        Of(EventType.Of("run.interaction_resumed"), EventJsonContext.Default.RunInteractionResumed);
+
     public static CodecPair SessionCreated() =>
         Of(EventType.Of("session.created"), EventJsonContext.Default.SessionCreated);
 
@@ -550,7 +591,7 @@ public sealed class Typed
         Of(EventType.Of("task.cancelled"), EventJsonContext.Default.TaskCancelled);
 
     public static CodecPair LaneCreated() =>
-        Of(EventType.Of("lane.created"), EventJsonContext.Default.LaneCreated);
+        Of(EventType.Of("lane.created"), EventJsonContext.Default.LaneCreated, currentVersion: 2);
 
     public static CodecPair LaneProvisioning() =>
         Of(EventType.Of("lane.provisioning"), EventJsonContext.Default.LaneProvisioning);
@@ -574,7 +615,7 @@ public sealed class Typed
         Of(EventType.Of("lane.cancelled"), EventJsonContext.Default.LaneCancelled);
 
     public static CodecPair TurnStarted() =>
-        Of(EventType.Of("turn.started"), EventJsonContext.Default.TurnStarted, currentVersion: 2);
+        Of(EventType.Of("turn.started"), EventJsonContext.Default.TurnStarted, currentVersion: 3);
 
     public static CodecPair ModelEscalationRequested() =>
         Of(EventType.Of("model.escalation_requested"), EventJsonContext.Default.ModelEscalationRequested, currentVersion: 2);
@@ -589,7 +630,7 @@ public sealed class Typed
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
 
     public static CodecPair ModelStepStarted() =>
-        Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 3);
+        Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 4);
 
     public static CodecPair ModelStepCompleted() =>
         Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 2);

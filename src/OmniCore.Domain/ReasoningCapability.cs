@@ -12,6 +12,10 @@ public sealed class ReasoningCapability
     public bool? Supported { get; }
     public IReadOnlyList<string>? EffortLevels { get; }
     public ReasoningReplayPolicy? ReplayPolicy { get; }
+    /// <summary>Explicit User-configured fallback for UltraCode; null means no budget may be inferred.</summary>
+    public int? UltraCodeBudgetTokens { get; }
+    /// <summary>Explicit visible-output reserve paired with <see cref="UltraCodeBudgetTokens"/>.</summary>
+    public int? UltraCodeOutputReserveTokens { get; }
 
     public static ReasoningCapability Unknown { get; } = new(null, null, null);
 
@@ -28,7 +32,8 @@ public sealed class ReasoningCapability
 
     [JsonConstructor]
     public ReasoningCapability(bool? supported, IReadOnlyList<string>? effortLevels = null,
-        ReasoningReplayPolicy? replayPolicy = null)
+        ReasoningReplayPolicy? replayPolicy = null, int? ultraCodeBudgetTokens = null,
+        int? ultraCodeOutputReserveTokens = null)
     {
         if (replayPolicy is { } policy && !Enum.IsDefined(policy))
             throw new ArgumentOutOfRangeException(nameof(replayPolicy));
@@ -40,8 +45,16 @@ public sealed class ReasoningCapability
                 || effortLevels.Distinct(StringComparer.Ordinal).Count() != effortLevels.Count)
                 throw new ArgumentException("Effort levels must be non-empty, unique provider labels.", nameof(effortLevels));
         }
+        if (ultraCodeBudgetTokens is not null || ultraCodeOutputReserveTokens is not null)
+        {
+            if (supported != true || effortLevels?.Contains("budget", StringComparer.Ordinal) != true
+                || ultraCodeBudgetTokens is null or < 1024 || ultraCodeOutputReserveTokens is null or <= 0)
+                throw new ArgumentException("UltraCode manual reasoning requires a declared budget capability, explicit budget, and positive output reserve.");
+        }
         Supported = supported;
         EffortLevels = effortLevels is null ? null : Array.AsReadOnly(effortLevels.ToArray());
         ReplayPolicy = replayPolicy;
+        UltraCodeBudgetTokens = ultraCodeBudgetTokens;
+        UltraCodeOutputReserveTokens = ultraCodeOutputReserveTokens;
     }
 }

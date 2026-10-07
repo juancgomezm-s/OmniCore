@@ -158,11 +158,19 @@ public sealed class StatusLineModel
 
     public string Mode { get; }
 
-    public StatusLineModel(string? quota, int? pendingInteractions, string mode)
+    public string ProductEffort { get; }
+
+    /// <summary>Native reasoning value applied to the most recently started model step; null means none reported.</summary>
+    public string? AppliedReasoning { get; }
+
+    public StatusLineModel(string? quota, int? pendingInteractions, string mode, string productEffort = "standard",
+        string? appliedReasoning = null)
     {
         Quota = quota;
         PendingInteractions = pendingInteractions;
         Mode = mode;
+        ProductEffort = productEffort;
+        AppliedReasoning = appliedReasoning;
     }
 
     public static StatusLineModel Empty() => new(null, null, "act");
@@ -266,11 +274,23 @@ public sealed class ClientProjection
         {
             case "run.created":
                 return WithStatus(Append(state, Block(evt, ConversationRole.System,
-                    _text.Resolve("run.created", "objective", Get(f, "objective")))), Get(f, "mode"), null);
+                    _text.Resolve("run.created", "objective", Get(f, "objective")))), Get(f, "mode"), null,
+                    replaceAppliedReasoning: true);
             case "run.mode_changed":
                 return WithStatus(Append(state, Block(evt, ConversationRole.System,
                     _text.Resolve("run.mode_changed", "mode", _text.Resolve("status.mode." + Get(f, "to"), null, null)))),
                     Get(f, "to"), null);
+            case "run.mode_authority_selected":
+                return WithStatus(state, Get(f, "mode"), null, Get(f, "effort"));
+            case "run.mode_authority_revoked":
+                return WithStatus(state, null, null, "standard");
+            case "model_step.started":
+            {
+                var kind = Get(f, "reasoningKind");
+                var budget = Get(f, "reasoningBudgetTokens");
+                var applied = kind.Length == 0 ? null : kind + (budget.Length == 0 ? "" : ":" + budget);
+                return WithStatus(state, null, null, appliedReasoning: applied, replaceAppliedReasoning: true);
+            }
             case "run.awaiting_input":
                 return Append(state, Block(evt, ConversationRole.System, _text.Resolve("run.awaiting_input", null, null)));
             case "run.completed":
@@ -423,15 +443,19 @@ public sealed class ClientProjection
         new(state.Header, new ConversationModel(state.Conversation.Blocks.Append(block).ToArray()), state.Sidebar,
             state.Composer, state.StatusLine, state.Overlays, state.Connection);
 
-    private static ClientState WithStatus(ClientState state, string? mode, int? pending) =>
+    private static ClientState WithStatus(ClientState state, string? mode, int? pending, string? effort = null,
+        string? appliedReasoning = null, bool replaceAppliedReasoning = false) =>
         new(state.Header, state.Conversation, state.Sidebar, state.Composer,
             new StatusLineModel(state.StatusLine.Quota, pending ?? state.StatusLine.PendingInteractions,
-                string.IsNullOrEmpty(mode) ? state.StatusLine.Mode : mode!),
+                string.IsNullOrEmpty(mode) ? state.StatusLine.Mode : mode!,
+                string.IsNullOrEmpty(effort) ? state.StatusLine.ProductEffort : effort!,
+                replaceAppliedReasoning ? appliedReasoning : state.StatusLine.AppliedReasoning),
             state.Overlays, state.Connection);
 
     /// <summary>Los overlays y el contador de pendientes de la status line cambian juntos.</summary>
     private static ClientState WithOverlays(ClientState state, IReadOnlyList<InteractionOverlayModel> overlays) =>
         new(state.Header, state.Conversation, state.Sidebar, state.Composer,
-            new StatusLineModel(state.StatusLine.Quota, overlays.Count, state.StatusLine.Mode),
+            new StatusLineModel(state.StatusLine.Quota, overlays.Count, state.StatusLine.Mode,
+                state.StatusLine.ProductEffort, state.StatusLine.AppliedReasoning),
             overlays, state.Connection);
 }

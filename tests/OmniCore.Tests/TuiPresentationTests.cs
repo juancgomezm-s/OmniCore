@@ -296,6 +296,15 @@ public sealed class TuiPresentationTests
         Assert.Equal("ACT", presentation.Left);
     }
 
+    [Fact]
+    public void StatusLine_SeparatesUltraCodeProductModeFromAppliedNativeReasoning()
+    {
+        var model = new StatusLineModel(null, null, "plan", "ultracode", "budget:4096");
+        var presentation = StatusLinePresentation.From(model);
+
+        Assert.Equal("plan · UltraCode · reasoning budget:4096", presentation.Left);
+    }
+
     #endregion
 
     #region SidebarHost — widget ordering

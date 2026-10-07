@@ -27,15 +27,22 @@ public sealed class RoutingCommandFailureBoundaryTests
         Assert.IsType<IOException>(result.Failure);
         Assert.Equal("error", result.Ack.Status);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, result.Ack.Outcome?.Kind);
-        var row = Assert.Single(fixture.Store.Inner.ReadFrom(session, before + 1));
+        var rows = fixture.Store.Inner.ReadFrom(session, before + 1);
+        Assert.Equal(new[] { "interaction.requested", "run.awaiting_input" }, rows.Select(evt => evt.Type.ToString()));
+        var row = rows[0];
         var request = Assert.IsType<InteractionRequested>(fixture.Codecs.Decode(row));
         Assert.Equal(InteractionKind.ModelRouteConsent, request.Kind);
         Assert.Equal(request.InteractionId, result.Interaction);
         Assert.Equal(row.Sequence, result.Ack.FirstSeq);
-        Assert.Equal(row.Sequence, result.Ack.LastSeq);
+        Assert.Equal(rows[1].Sequence, result.Ack.LastSeq);
         Assert.Equal(result.Ack.CommandId,
             Assert.IsType<CommandCausation>(row.Causation).CommandId.Value.ToString());
         Assert.Equal(run, row.RunId);
+        Assert.All(rows, item =>
+        {
+            Assert.Equal(run, item.RunId);
+            Assert.Equal(row.Causation, item.Causation);
+        });
         Assert.Null(CausationScope.Current);
         Assert.Null(ExecutionScope.Current);
     }

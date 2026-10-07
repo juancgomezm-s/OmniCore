@@ -1,5 +1,156 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Checkpoint verificado — 2026-10-07 09:04 UTC
+
+La suite completa `snapshot-full-0859.log` terminó con exit 0: **2704 casos,
+2700 PASS, 0 FAIL, 4 SKIP** por permisos de symlink, 239.129 s. La focal previa
+pasó 235/235, 18.202 s; no se suman sus conteos a la suite completa. Build final:
+0 errores y 0 advertencias, 15.67 s. Logs en
+`C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0649/`.
+
+Esto verifica el checkpoint de perfiles, autoridad, consentimiento y snapshots;
+NO cierra M5/M5.5 ni acredita consultas autenticadas, consumo real o integración
+real con OmniCoder. Las pruebas emplean proveedores fixture, HTTP loopback,
+SQLite y CAS. Siguen pendientes los criterios completos de duración/consumo
+single-use de boost, límites de contexto/TaskBudget, transición UltraCode
+autorizada, contratos pre-M6 sin payloads aceptados completos y cualificación
+real de M5. El anexo ausente se solicitó al usuario sin detener los otros frentes.
+
+### Contratos incluidos en este checkpoint
+
+- `lane.created` v2 añade `AgentProfileRevision` y `AgentProfileHash` opcionales.
+  La configuración reusable sólo se carga de `agent-profiles.yaml` User; una
+  Lane vinculada no puede reanudarse con revisión/contenido diferentes. v1
+  conserva marcadores ausentes y no adquiere el default actual.
+- `turn.started` v3 añade `InstructionSnapshot` (`ConversationOnly`,
+  `ResolvedInstruction`) y `ReasoningResolution` opcionales. La instrucción
+  publicada está redactada; resume conserva la instrucción original. v1/v2
+  mantienen nulls, sin reconstruir intención a partir del modo actual.
+- `model_step.started` v4 añade la misma `ReasoningResolution`. El tracker
+  exige equivalencia completa con el Turn y coincidencia de `AppliedRequest`
+  con los campos existentes `ReasoningKind`/`ReasoningBudgetTokens`; no admite
+  añadir, omitir o alterar procedencia entre pasos de un Turn con snapshot.
+- `ReasoningResolution` es inmutable: `RequestedRequest`, `AppliedRequest`,
+  `Source` (`None`, `UserDefault`, `RunOverride`, `TurnBoost`, `UltraCode`),
+  revisiones User/Run/ModeAuthority, `TurnBoostId`, `OutputReserveTokens` y
+  `Reductions` canónicas. `None` no equivale a un off explícito. Registrar
+  reducciones no demuestra todavía que todos los límites estén conectados.
+- `model.reasoning.resolved` y `turn.instruction` entran en el fingerprint
+  efectivo del Turn con contenido canonical referenciado por CAS. Ausencia
+  significa ausencia: no heredan componentes de otro baseline ni actualizan
+  retroactivamente fingerprints legacy. Se rechaza drift antes de append o
+  dispatch, conservando los receipts originales en resume.
+- `run.interaction_resumed` conserva identidad de interacción y causalidad del
+  command al salir de una espera resuelta. El consentimiento de ruta publica
+  petición y espera correlacionadas, sin fingir un nuevo `UserInputReceived`.
+- La consulta de autoridad separa `autoModeSwitch` almacenado de
+  `effectiveAutoModeSwitch` calculado con el reloj UTC de consulta. Un control
+  exige una sola clave JSON; el reloj no modifica el fingerprint durable.
+
+Reproducción:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none
+```
+
+## Configuración original del Turn — 2026-10-07 08:38 UTC
+
+WIP integrado, aún sin compilar/verificar: `TurnStarted` v3 conserva una
+`TurnInstructionSnapshot` opcional y una `ReasoningResolution` opcional;
+`ModelStepStarted` v4 conserva la misma resolución. Las versiones anteriores
+se leen con snapshots ausentes, sin atribuirles preferencias actuales.
+
+Explorer conserva la instrucción durable en resume y rechaza una resolución
+de razonamiento diferente antes de publicar eventos o invocar al proveedor.
+El snapshot de instrucciones pasa por la redacción existente; no se guarda
+una copia sin redactar. El fingerprint añade `model.reasoning.resolved` sólo
+si la selección contiene la resolución, incluyendo solicitud, aplicación,
+origen, revisiones, reserva y reducciones. No confunde solicitud con soporte
+verificado ni afirma que el proveedor haya honrado la configuración.
+También incorpora `turn.instruction` cuando existe el snapshot (flag e
+instrucción). Su ausencia elimina cualquier componente heredado, y resume de
+un Turn legacy no incorpora el snapshot actual. El control de CAS/hash y
+no-herencia está añadido; `git diff --check` pasó, pero no sustituye al build
+ni a la ejecución de las pruebas.
+
+Se amplió la prueba SQLite/CAS de suspensión/reapertura a siete variantes
+(perfil y drift de razonamiento) y se añadió control determinista del
+fingerprint de procedencia. Son fixtures offline, pendientes de ejecución.
+El wiring CLI, validadores y proyecciones permanece bajo ownership Luna.
+La última suite completa sigue siendo la roja de 08:28; este avance no cambia
+el estado de cierre ni sustituye los criterios íntegros ADR0007/0046/0047.
+
+## Evidencia integral actual — 2026-10-07 08:28 UTC
+
+La focal de integración de perfiles, autoridad y lifecycle pasó 120/120;
+la verificación posterior del almacén de preferencias pasó 26/26 (conteos
+solapados). La suite **completa** posterior terminó con exit 1: **2692 casos,
+2665 PASS, 23 FAIL, 4 SKIP**, 235.954 s. Es evidencia roja, no cierre.
+Log reproducible: `C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0649/integrated-full-0822.log`.
+
+Se localizaron las causas a corregir antes de aceptar el checkpoint: el comando
+explícito `explore.start` dejó de conservar PLAN al adoptar el default ACT;
+cuatro controles de cuota rechazan resume porque el runtime cambia el flag
+conversacional y con ello la plantilla/instrucción del fingerprint original;
+las expectativas de tres controles de routing requieren el nuevo batch exacto
+de petición y espera. No se elimina el guard de fingerprint ni se simula
+respuesta humana. Los tres controles de perfil suspendido/reabierto sí pasan.
+
+El objetivo sigue íntegro. También falta completar el snapshot durable de
+razonamiento solicitado/aplicado, origen y reducciones, boost por Turn y retry;
+el camino autorizado UltraCode del criterio 6 no se sustituye por rechazo
+genérico; continúan pendientes contratos pre-M6 y evidencia real de M5.
+
+## Integración y regresiones reales — 2026-10-07 07:28 UTC
+
+El objetivo no se fracciona ni se considera cerrado por pruebas focales.
+Root guardó el techo AgentProfile efectivo y orden de preferencias en `58acacb`.
+El wiring User/Lane/AgentExecution normal sigue pendiente; no basta la selección
+manual de perfiles en un fixture.
+
+Root conectó (todavía WIP) `run.mode_authority` al fingerprint y al Turn. Se
+prepara/publica por el CAS existente; reemplaza, no acumula ni hereda autoridad
+de otro baseline. Un Turn reanudado conserva selección inicial y sus refs;
+revocación posterior permanece vigente en la proyección actual. Journals legacy
+no adquieren retroactivamente el componente. Pruebas SQLite close/reopen y
+provider fixture verifican estos casos. No hay llamadas autenticadas en ellas.
+
+- Build checkpoint: 0 errores/0 advertencias, 16.69 s.
+- Focal autoridad/fingerprint/perfil: 35 PASS/0 FAIL/0 SKIP, 1.297 s.
+- FULL sesión50312, terminal exit1: **2662 casos = 2650 PASS / 8 FAIL /
+  4 SKIP**, 249.340 s. No sustituye la última full verde ni acredita cierre.
+- Fallos: default ACT cambiado accidentalmente a PLAN (dos tests); binding del
+  digest de objetivo crudo frente al journal redactado (un test); prefijo `/mod`
+  ahora ambiguo con `/mode` (un test); metadata exacta requiere nuevo componente
+  y evento de autoridad (cuatro tests). Clasificación contrastada con código;
+  todavía exige rerun integral posterior a los fixes.
+- Root actualizó las assertions exactas de metadata (incluyendo unicidad del
+  evento añadido), no quitó verificaciones: focal CLI/input/rollback, 26 casos =
+  25 PASS/1 FAIL, 5.191 s. Input aislado reproduce error de revision/objective
+  mismatch: 6 casos = 5 PASS/1 FAIL, 0.521 s.
+
+También se detectó que el guard de selección de modo observa ModelStep, pero
+puede permitir downgrade PLAN mientras una ToolCall con efectos sigue en vuelo:
+ModelStepCompleted se emite antes de ejecutar tools. Luna corrige este guard y
+sus regresiones, preserva el default existente y vincula el digest a la misma
+representación redactada durable, sin desactivar redacción ni comparación.
+Después continúa ADR0047 completo: reasoning por capacidades/budget declarado,
+precedencia User/Run/Turn, boost y retry, con wire/UI efectivos. Root mantiene
+ownership factory/Explorer/perfiles/aceptación. No scheduler/joins M6.
+
+Reproducción del checkpoint rojo:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none
+```
+
+La suite posterior puede cambiar al aplicar fixes: estas cifras corresponden al
+checkpoint congelado anterior, no a todas las fuentes WIP posteriores. M5 real
+qualification, perfiles efectivos normales, contratos pre-M6 y los siete/once
+criterios de ADR0046/0047 continúan siendo requisitos íntegros de salida.
+
 ## Alcance íntegro y equipo — 2026-10-07 06:38 UTC
 
 El propietario reanudó exclusivamente M5/M5.5, con bloques agrupados y monitor

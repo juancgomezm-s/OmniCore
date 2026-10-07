@@ -138,6 +138,9 @@ public sealed class ModelSelection
 
     public ReasoningRequest? Reasoning { get; }
 
+    /// <summary>Requested/applied reasoning provenance for this selection, when resolved by the CLI.</summary>
+    public ReasoningResolution? ReasoningResolution { get; }
+
     /// <summary>Ruta concreta; los journals antiguos conservan la ruta 1:1 del modelo (ADR-0046).</summary>
     public RouteId RouteId { get; }
 
@@ -154,7 +157,8 @@ public sealed class ModelSelection
     public long? MaxOutputTokens { get; }
 
     public ModelSelection(ModelIdValue model, long contextBudget, ToolMode toolMode, ReasoningRequest? reasoning,
-        RouteId? routeId = null, ModelRoute? route = null, long? maxOutputTokens = null)
+        RouteId? routeId = null, ModelRoute? route = null, long? maxOutputTokens = null,
+        ReasoningResolution? reasoningResolution = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         if (maxOutputTokens is <= 0)
@@ -164,10 +168,14 @@ public sealed class ModelSelection
         if (route is not null && route.Id.Equals(OmniCore.Domain.RouteId.ForDefaultModel(model.ToString()))
             && !StringComparer.Ordinal.Equals(route.ProviderModelName, model.ToString()))
             throw new ArgumentException("Default route model name must match the selected model.", nameof(route));
+        reasoningResolution?.Validate();
+        if (reasoningResolution is not null && reasoningResolution.AppliedRequest != reasoning)
+            throw new ArgumentException("Model selection reasoning must match its resolved applied request.", nameof(reasoning));
         Model = model;
         ContextBudget = contextBudget;
         ToolMode = toolMode;
         Reasoning = reasoning;
+        ReasoningResolution = reasoningResolution;
         Route = route;
         RouteId = route?.Id ?? routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(model.ToString());
         RouteIdentityHash = route is null ? null

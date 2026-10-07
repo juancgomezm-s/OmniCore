@@ -37,10 +37,10 @@ public sealed class AgentProfile
 
     private static PermissionScope Freeze(PermissionScope scope)
     {
-        static IReadOnlyList<string> Strings(IReadOnlyList<string> values)
+        static IReadOnlyList<string> Strings(IReadOnlyList<string> values, bool allowEmptyArguments = false)
         {
             ArgumentNullException.ThrowIfNull(values);
-            if (values.Any(string.IsNullOrWhiteSpace))
+            if (values.Any(value => value is null || (!allowEmptyArguments && string.IsNullOrWhiteSpace(value))))
                 throw new ArgumentException("Permission rules cannot contain empty values.", nameof(scope));
             return Array.AsReadOnly(values.ToArray());
         }
@@ -52,7 +52,8 @@ public sealed class AgentProfile
             ArgumentNullException.ThrowIfNull(rule);
             ArgumentException.ThrowIfNullOrWhiteSpace(rule.ExecutablePattern);
             if (!Enum.IsDefined(rule.Decision)) throw new ArgumentException("Invalid process decision.", nameof(scope));
-            return rule with { ArgvPatterns = Strings(rule.ArgvPatterns) };
+            // An explicitly empty/whitespace argv item is a real argument, not a missing rule.
+            return rule with { ArgvPatterns = Strings(rule.ArgvPatterns, allowEmptyArguments: true) };
         }).ToArray();
         var networks = scope.Network.Select(rule =>
         {

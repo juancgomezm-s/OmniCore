@@ -15,14 +15,27 @@ public sealed class RunControlService
     private readonly IEventCodecRegistry _codecs;
     private readonly Func<string, decimal, decimal>? _otherDailyLimit;
     private readonly Func<DateTimeOffset> _utcNow;
+    private readonly ProfileId? _rootProfile;
+    private readonly long? _rootProfileRevision;
+    private readonly ContentHash? _rootProfileHash;
+    private readonly Func<RunId, RunReasoningPreferenceSelected?>? _initialReasoningSelection;
 
     public RunControlService(IEventStore store, IEventCodecRegistry codecs,
-        Func<string, decimal, decimal>? otherDailyLimit = null, Func<DateTimeOffset>? utcNow = null)
+        Func<string, decimal, decimal>? otherDailyLimit = null, Func<DateTimeOffset>? utcNow = null,
+        ProfileId? rootProfile = null, long? rootProfileRevision = null, ContentHash? rootProfileHash = null,
+        Func<RunId, RunReasoningPreferenceSelected?>? initialReasoningSelection = null)
     {
         _store = store;
         _codecs = codecs;
         _otherDailyLimit = otherDailyLimit;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+        if ((rootProfileRevision is null) != (rootProfileHash is null)
+            || (rootProfileRevision is not null && (rootProfile is null || rootProfileRevision < 1)))
+            throw new ArgumentException("A resolved root profile requires identity, revision and configuration hash.");
+        _rootProfile = rootProfile;
+        _rootProfileRevision = rootProfileRevision;
+        _rootProfileHash = rootProfileHash;
+        _initialReasoningSelection = initialReasoningSelection;
     }
 
     /// <summary>Run no terminal de la sesión (hay como mucho uno, ADR-0035 §1), o null.</summary>
@@ -90,17 +103,27 @@ public sealed class RunControlService
         var task = TaskId.New();
         var lane = LaneId.New();
         var budget = new TaskBudget(null, null, null, null);
-        new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {
-            new RunCreated(run, session, objective, mode, ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
-                budget, task, DateTimeOffset.UtcNow),
+        var created = new RunCreated(run, session, objective, mode, ExecutionStrategy.Direct,
+            FailurePolicy.BlockDependents, budget, task, DateTimeOffset.UtcNow);
+        var commandId = CausationScope.Current is CommandCausation command ? command.CommandId.ToString() : "internal";
+        var authority = new RunModeAuthority(run, 1, mode, ExecutionStrategy.Direct, ProductEffort.Standard,
+            false, false, 1, RunModeAuthority.ObjectiveDigestFor(objective), 1, null);
+        var creation = new List<DomainEventPayload> {
+            created,
+            new RunModeAuthoritySelected(authority, commandId, "RunCreated"),
+        };
+        if (_initialReasoningSelection?.Invoke(run) is { } reasoningSelection)
+            creation.Add(reasoningSelection);
+        creation.AddRange(new DomainEventPayload[] {
             new RunStarted(run),
             new TaskCreated(task, run, objective, Array.Empty<TaskDependency>(), budget),
             new TaskReady(task),
-            new LaneCreated(lane, task, ProfileId.New()),
+            new LaneCreated(lane, task, _rootProfile ?? ProfileId.New(), _rootProfileRevision, _rootProfileHash),
             new LaneStarted(lane),
             new TaskStarted(task, lane),
             new PlanCreated(PlanId.New(), run, PlanItemId.New(), objective),
-        }, DurabilityClass.Standard);
+        });
+        new EventStream(_store, _codecs, session).AppendBatch(creation, DurabilityClass.Standard);
         return run;
     }
 
@@ -229,8 +252,8 @@ public sealed class RunControlService
     /// opción debe ser una de las que decidió el servidor. Para <c>PlanApproval</c> aplica además
     /// su efecto (ADR-0035 §4).
     /// </summary>
-    public void Respond(SessionId session, InteractionId interaction, string optionId)
-        => ResolveInteraction(session, interaction, optionId, InteractionCause.User, noClient: false);
+    public void Respond(SessionId session, InteractionId interaction, string optionId, string? commandId = null)
+        => ResolveInteraction(session, interaction, optionId, InteractionCause.User, noClient: false, commandId);
 
     /// <summary>Aplica el default deny de ADR-0003 a una interacción presupuestaria sin cliente.</summary>
     public void ResolveBudgetWithoutClient(SessionId session, InteractionId interaction)
@@ -246,7 +269,7 @@ public sealed class RunControlService
     }
 
     private void ResolveInteraction(SessionId session, InteractionId interaction, string optionId,
-        InteractionCause cause, bool noClient)
+        InteractionCause cause, bool noClient, string? commandId = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(optionId);
         var events = _store.ReadFrom(session, 1);
@@ -306,6 +329,14 @@ public sealed class RunControlService
                 throw new InvalidInteractionOptionException(interaction, optionId);
             var revised = SessionRoutingAuthorization.Resolve(events, _codecs, session, request);
             batch.Add(new SessionRoutingPolicyRevised(session, revised, interaction));
+            if (pendingRequest?.Envelope.RunId is { } resumeRun
+                && RunProjection.Replay(session, resumeRun, _codecs, events).State == RunState.AwaitingInput
+                && PendingInteractionEnvelopes(events).All(item => item.Request.InteractionId == interaction))
+            {
+                if (string.IsNullOrWhiteSpace(commandId))
+                    throw new InvalidOperationException("Resuming a route-consent Run requires its command identity.");
+                batch.Add(new RunInteractionResumed(resumeRun, interaction, commandId));
+            }
         }
         RunId? budgetDeniedRun = null;
         if (request.Kind == InteractionKind.BudgetExceeded && optionId == "deny")
@@ -382,6 +413,17 @@ public sealed class RunControlService
                 : requestScope)
                 .Cast<ExecutionScopeState?>().ToArray();
             stream.AppendBatch(batch, DurabilityClass.Standard, scopes);
+        }
+        else if (request.Kind == InteractionKind.ModelRouteConsent
+            && pendingRequest?.Envelope.RunId is { } routeRun)
+        {
+            // Keep the durable resolution and resume marker attached to the exact Run that
+            // requested consent. Replay requires this provenance before AwaitingInput→Running.
+            var requestScope = new ExecutionScopeState(routeRun, pendingRequest.Envelope.TaskId,
+                pendingRequest.Envelope.LaneId, pendingRequest.Envelope.TurnId,
+                ExecutionId: pendingRequest.Envelope.ExecutionId);
+            stream.AppendBatch(batch, DurabilityClass.Standard,
+                batch.Select(_ => (ExecutionScopeState?)requestScope).ToArray());
         }
         else
         {
@@ -527,9 +569,31 @@ public sealed class RunControlService
         switch (optionId)
         {
             case "approve_execute":
-                return resume is null
-                    ? new DomainEventPayload[] { new RunModeChanged(run, RunMode.Plan, RunMode.Act, "PlanApproved") }
-                    : new DomainEventPayload[] { resume, new RunModeChanged(run, RunMode.Plan, RunMode.Act, "PlanApproved") };
+                var currentAuthority = projection.ModeAuthority ?? RunModeAuthority.Legacy(
+                    events.Select(_codecs.Decode).OfType<RunCreated>().Single(created => created.RunId.Equals(run)));
+                var changedAuthority = currentAuthority with
+                {
+                    Revision = checked(currentAuthority.Revision + (currentAuthority.Authorization is null ? 1 : 2)),
+                    Mode = RunMode.Act,
+                    ProductEffort = ProductEffort.Standard,
+                    ModePinned = true,
+                    AutoModeSwitch = false,
+                    Authorization = null,
+                };
+                var commandId = CausationScope.Current is CommandCausation command
+                    ? command.CommandId.ToString() : "interaction-response";
+                var execute = new List<DomainEventPayload>();
+                if (resume is not null) execute.Add(resume);
+                if (currentAuthority.Authorization is { } previousAuthorization)
+                    execute.Add(new RunModeAuthorityRevoked(run, checked(currentAuthority.Revision + 1),
+                        previousAuthorization.AuthorizationId, "Plan approval selected a fixed execution mode",
+                        commandId, "User"));
+                execute.Add(new RunModeChanged(run, RunMode.Plan, RunMode.Act, "PlanApproved"));
+                execute.Add(new RunModeTransitionAuthorized(run, RunMode.Plan, RunMode.Act, "PlanApproved",
+                    "User", commandId, changedAuthority.Revision, changedAuthority.ObjectiveRevision,
+                    changedAuthority.ObjectiveDigest, changedAuthority.PolicyRevision, null));
+                execute.Add(new RunModeAuthoritySelected(changedAuthority, commandId, "PlanApproval"));
+                return execute;
             case "approve_only":
                 var close = new List<DomainEventPayload>();
                 if (resume is not null) close.Add(resume);

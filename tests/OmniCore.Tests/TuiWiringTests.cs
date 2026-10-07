@@ -720,7 +720,7 @@ public sealed class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == expected + " ", "Tab completa sin ejecutar");
         Assert.Null(fx.App.Overlay);
         Assert.DoesNotContain(fx.App.MainWindow.SubViews, view => view.Id == "omni-command-helper");
-        fx.Invoke(() => fx.App.Composer.Text = "/mod");
+        fx.Invoke(() => fx.App.Composer.Text = "/model");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/models ", "Enter completa prefijo sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
