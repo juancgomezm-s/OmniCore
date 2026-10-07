@@ -6,6 +6,37 @@ using OmniCore.Protocol;
 /// <summary>Reglas de presentación de ADR-0031 §3: nunca se inventa costo ni cuota.</summary>
 public sealed class UsagePresentationTests
 {
+    [Fact]
+    public void Legacy_snapshot_without_measurement_keeps_numeric_status_line_compatibility()
+    {
+        const string json = """{"SessionTokens":{"Input":600,"Output":400,"CacheRead":0,"CacheWrite":0},"SessionCost":{"Availability":4,"Value":null,"Source":null},"Remaining":{"Availability":4,"Value":null,"Source":null},"AsOf":"2026-10-07T10:00:00Z"}""";
+        var legacy = System.Text.Json.JsonSerializer.Deserialize<UsageSnapshot>(json)!;
+        Assert.Null(legacy.SessionTokenMeasurement);
+        Assert.Equal("session 1k tok · — · —", OmniCore.Cli.CliApp.StatusLineText(legacy));
+    }
+
+    [Theory]
+    [InlineData(MetricAvailability.Reported, "session 1k tok")]
+    [InlineData(MetricAvailability.Stale, "session 1k tok")]
+    [InlineData(MetricAvailability.Estimated, "≈session 1k tok")]
+    public void Available_measurements_preserve_their_presentation_kind(MetricAvailability availability, string expected) =>
+        Assert.Equal(expected, UsagePresentation.Tokens(new Metric<TokenTotals>(availability,
+            new TokenTotals(600, 400, 0, 0), "fixture", DateTimeOffset.Parse("2026-10-07T10:00:00Z"))));
+
+    [Theory]
+    [InlineData(MetricAvailability.Unknown)]
+    [InlineData(MetricAvailability.NotSupported)]
+    public void Unknown_tokens_never_render_a_legacy_zero_placeholder(MetricAvailability availability) =>
+        Assert.Equal("session — tok", UsagePresentation.Tokens(new Metric<TokenTotals>(availability,
+            new TokenTotals(0, 0, 0, 0), "fixture")));
+
+    [Theory]
+    [InlineData(-1L, 0L)]
+    [InlineData(0L, -1L)]
+    [InlineData(long.MaxValue, 1L)]
+    public void Invalid_or_overflowed_legacy_totals_do_not_render_negative_or_wrapped_counts(long input, long output) =>
+        Assert.Equal("session — tok", UsagePresentation.Tokens(new TokenTotals(input, output, 0, 0)));
+
     private static Metric<Money> Cost(MetricAvailability availability, decimal? amount = null) =>
         new(availability, amount is null ? null : new Money(amount.Value, "USD"), "test");
 

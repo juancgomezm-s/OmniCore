@@ -117,6 +117,10 @@ public sealed class OmniCliRuntime
     }
 
     /// <summary>Ejecuta un Run Act real bajo las políticas del modelo y del Permission Engine.</summary>
+    public Task<int> ActAsync(string objective, Action<string> writeLine, CancellationToken cancellationToken) =>
+        ActAsync(objective, writeLine, cancellationToken, null, null, null);
+
+    /// <summary>Host-only turn configuration; CLI callers use the provider-neutral three-argument overload.</summary>
     public Task<int> ActAsync(string objective, Action<string> writeLine, CancellationToken cancellationToken,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
     {
@@ -1510,11 +1514,13 @@ public sealed class OmniCliRuntime
     public UsageSnapshot? CurrentUsage()
     {
         if (_server is null || _usageContext is not { } context || _server.LastSessionId() is not { } session) return null;
-        var (tokens, cost, complete) = SessionUsageReporter.ReadSessionTotals(_server.AcquireStore(), _server.AcquireCodecs(),
+        var consumption = SessionUsageReporter.ReadConversation(_server.AcquireStore(), _server.AcquireCodecs(),
             context.Artifacts, session);
         var windows = context.Provider is IReportsRateLimits reporter ? reporter.LastRateLimits : [];
-        return SessionUsageReporter.Build(tokens, cost, complete, context.Pricing?.IsComplete == true,
-            OmniHost.IsPrivateHost(context.BaseUrl), windows, DateTimeOffset.UtcNow);
+        return SessionUsageReporter.Build(consumption.Tokens.Value ?? new TokenTotals(0, 0, 0, 0),
+            consumption.Cost.Value?.Amount ?? 0m, consumption.Cost.Availability == MetricAvailability.Estimated,
+            context.Pricing?.IsComplete == true, OmniHost.IsPrivateHost(context.BaseUrl), windows,
+            DateTimeOffset.UtcNow, consumption.Tokens);
     }
 
     /// <summary>Read-only account queries through official CLI login; no model prompt and no renderer credentials.</summary>

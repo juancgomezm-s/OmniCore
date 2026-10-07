@@ -28,9 +28,9 @@ public sealed class CliEndToEndTests
         await InIsolatedCli((workspace, _, _, _) =>
         {
             var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
-            Assert.Throws<ArgumentException>(() => host.SetNextTurnReasoningBoost(new ReasoningRequest("budget", null)));
-            Assert.Throws<ArgumentException>(() => host.SetNextTurnReasoningBoost(new ReasoningRequest("budget", 1023)));
-            Assert.True(host.SetNextTurnReasoningBoost(new ReasoningRequest("budget", 1024)));
+            Assert.Throws<ArgumentException>(() => host.SetNextTurnReasoningBoost("budget", null));
+            Assert.Throws<ArgumentException>(() => host.SetNextTurnReasoningBoost("budget", 1023));
+            Assert.True(host.SetNextTurnReasoningBoost("budget", 1024));
             return Task.CompletedTask;
         });
     }

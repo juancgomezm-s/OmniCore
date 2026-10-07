@@ -12,7 +12,7 @@ public interface ITuiTurnHost
     bool HasEscalationForInteraction(string interactionId) => false;
     Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
-    bool SetNextTurnReasoningBoost(ReasoningRequest request) => false;
+    bool SetNextTurnReasoningBoost(string kind, int? budgetTokens) => false;
 }
 
 public sealed class TuiTurnHost : ITuiTurnHost
@@ -58,6 +58,10 @@ public sealed class TuiTurnHost : ITuiTurnHost
     public Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         _runtime.ResumeQuotaAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
 
+    public bool SetNextTurnReasoningBoost(string kind, int? budgetTokens) =>
+        SetNextTurnReasoningBoost(new ReasoningRequest(kind, budgetTokens));
+
+    /// <summary>Host-internal compatibility overload; the renderer uses protocol-neutral scalar fields.</summary>
     public bool SetNextTurnReasoningBoost(ReasoningRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);

@@ -46,7 +46,7 @@ public sealed class TurnBoostTuiAdmissionTests
 
             var runtime = OmniCliRuntime.Create(Path.Combine(root, "workspace"));
             var host = new TuiTurnHost(runtime);
-            Assert.True(host.SetNextTurnReasoningBoost(new ReasoningRequest("high", null)));
+            Assert.True(host.SetNextTurnReasoningBoost("high", null));
 
             firstOperation = Task.Run(async () => await host.ExecuteActAsync("first admission",
                 firstDiagnostics.Enqueue, operationStop.Token));
@@ -146,7 +146,7 @@ public sealed class TurnBoostTuiAdmissionTests
             var server = Assert.IsType<OmniServer>(runtime.Connect(TestContext.Current.CancellationToken));
             journal = Assert.IsType<SqliteEventStore>(server.AcquireStore());
             var host = new TuiTurnHost(runtime);
-            Assert.True(host.SetNextTurnReasoningBoost(new ReasoningRequest("high", null)));
+            Assert.True(host.SetNextTurnReasoningBoost("high", null));
 
             firstOperation = Task.Run(async () => await host.ExecuteActAsync("first concurrent action", firstDiagnostics.Enqueue,
                 operationStop.Token));

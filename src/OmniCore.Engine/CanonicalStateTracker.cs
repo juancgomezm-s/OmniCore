@@ -78,11 +78,25 @@ public sealed class CanonicalStateTracker
         var tracker = new CanonicalStateTracker();
         foreach (var evt in events)
         {
-            tracker.Apply(codecs.Decode(evt));
+            var payload = codecs.Decode(evt);
+            if (RunModePayloadRunId(payload) is { } runId
+                && (evt.RunId != runId || evt.CorrelationId != runId))
+                throw new InvalidStateTransitionException("run mode authority", "event envelope scope mismatch",
+                    payload.Type().ToString());
+            tracker.Apply(payload);
         }
 
         return tracker;
     }
+
+    private static RunId? RunModePayloadRunId(DomainEventPayload payload) => payload switch
+    {
+        RunModeChanged changed => changed.RunId,
+        RunModeTransitionAuthorized transition => transition.RunId,
+        RunModeAuthoritySelected selected => selected.Authority.RunId,
+        RunModeAuthorityRevoked revoked => revoked.RunId,
+        _ => null,
+    };
 
     /// <summary>Copia independiente (para validar un lote sin tocar el estado si falla).</summary>
     public CanonicalStateTracker Clone() => new(new(_runs), new(_tasks), new(_lanes), new(_turns),
@@ -183,7 +197,7 @@ public sealed class CanonicalStateTracker
             case RunModeAuthoritySelected e:
                 e.Authority.Validate();
                 if (string.IsNullOrWhiteSpace(e.CommandId)
-                    || e.Origin is not ("RunCreated" or "User" or "PlanApproval"))
+                    || e.Origin is not ("RunCreated" or "User" or "PlanApproval" or "UltraCodePolicy"))
                     throw new InvalidStateTransitionException("run mode authority", "invalid selection provenance",
                         payload.Type().ToString());
                 RequireNonTerminalRun(e.Authority.RunId, payload);
@@ -193,7 +207,7 @@ public sealed class CanonicalStateTracker
                     || string.IsNullOrWhiteSpace(e.Reason) || e.AuthorityRevision <= 0
                     || e.ObjectiveRevision <= 0 || e.PolicyRevision <= 0
                     || string.IsNullOrWhiteSpace(e.ObjectiveDigest)
-                    || e.Origin != "User")
+                    || e.Origin is not ("User" or "UltraCodePolicy"))
                     throw new InvalidStateTransitionException("run mode authority", "incomplete transition metadata",
                         payload.Type().ToString());
                 RequireNonTerminalRun(e.RunId, payload);

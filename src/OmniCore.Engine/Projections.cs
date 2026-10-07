@@ -71,12 +71,29 @@ public sealed class RunProjection
         TaskId? rootTask = null;
         var hasPlan = false;
         RunModeTransitionAuthorized? pendingModeTransition = null;
-        (RunMode From, RunMode To)? lastExplicitModeChange = null;
+        (RunMode From, RunMode To, string Cause)? lastExplicitModeChange = null;
+        RunModeAuthority? authorityBeforeLastExplicitModeChange = null;
+        long? lastExplicitModeChangeSequence = null;
+        long? pendingModeTransitionSequence = null;
+        CausationId? lastExplicitModeChangeCausation = null;
+        CausationId? pendingModeTransitionCausation = null;
 
         var created = false;
         foreach (var evt in evts)
         {
             var payload = registry.Decode(evt);
+            var authorityEventRunId = payload switch
+            {
+                RunModeChanged changedAuthority => changedAuthority.RunId,
+                RunModeTransitionAuthorized authorizedAuthority => authorizedAuthority.RunId,
+                RunModeAuthoritySelected selectedAuthority => selectedAuthority.Authority.RunId,
+                RunModeAuthorityRevoked revokedAuthority => revokedAuthority.RunId,
+                _ => (RunId?)null,
+            };
+            if (authorityEventRunId is { } eventRunId
+                && (evt.SessionId != sessionId || evt.RunId != eventRunId || evt.CorrelationId != eventRunId))
+                throw new InvalidStateTransitionException("run mode authority", "event envelope scope mismatch",
+                    payload.Type().ToString());
             if (payload is RunCreated runCreated)
             {
                 if (!runCreated.RunId.Equals(id))
@@ -114,29 +131,81 @@ public sealed class RunProjection
             }
             else if (payload is RunModeChanged changed && changed.RunId.Equals(id))
             {
-                lastExplicitModeChange = (changed.From, changed.To);
+                if (mode is null || changed.From != mode || !Enum.IsDefined(changed.From)
+                    || !Enum.IsDefined(changed.To) || state is RunState.Completed or RunState.Failed or RunState.Cancelled)
+                    throw new InvalidStateTransitionException("run mode transition", "change does not match the current Run mode",
+                        payload.Type().ToString());
+                authorityBeforeLastExplicitModeChange = modeAuthority;
+                lastExplicitModeChange = (changed.From, changed.To, changed.Cause);
+                lastExplicitModeChangeSequence = evt.Sequence;
+                lastExplicitModeChangeCausation = evt.Causation;
                 mode = changed.To;
                 if (modeAuthority is not null) modeAuthority = modeAuthority with { Mode = changed.To };
             }
             else if (payload is RunModeTransitionAuthorized transition && transition.RunId.Equals(id))
             {
                 if (string.IsNullOrWhiteSpace(transition.CommandId)
-                    || transition.Origin != "User"
+                    || transition.Origin is not ("User" or "UltraCodePolicy")
                     || pendingModeTransition is not null || modeAuthority is null
                     || transition.To != mode || transition.AuthorityRevision != modeAuthority.Revision + 1
                     || (transition.From == transition.To && transition.From != modeAuthority.Mode)
                     || (transition.From != transition.To
-                        && lastExplicitModeChange != (transition.From, transition.To)))
+                        && (lastExplicitModeChange is not { } explicitChange
+                            || explicitChange.From != transition.From || explicitChange.To != transition.To)))
                     throw new InvalidStateTransitionException("run mode transition", "authorization does not match the effective mode/revision",
                         payload.Type().ToString());
+                if (transition.Origin == "UltraCodePolicy")
+                {
+                    var previous = authorityBeforeLastExplicitModeChange;
+                    var previousAuthorization = previous?.Authorization;
+                    var policyFailure = string.Join(", ", new string?[]
+                    {
+                        transition.From == transition.To ? "same-mode transition" : null,
+                        lastExplicitModeChange is not { } policyChange ? "missing preceding mode change" : null,
+                        lastExplicitModeChange is { } causeChange && causeChange.Cause != transition.Reason
+                            ? "reason mismatch" : null,
+                        lastExplicitModeChangeSequence is not { } changedSequence
+                            || evt.Sequence != changedSequence + 1 ? "non-adjacent transition" : null,
+                        previous is null ? "missing previous authority" : null,
+                        evt.Causation is not CommandCausation transitionCause
+                            || transitionCause.CommandId.ToString() != transition.CommandId ? "command mismatch" : null,
+                        !SameCommandCause(lastExplicitModeChangeCausation, evt.Causation) ? "causation mismatch" : null,
+                        previousAuthorization is null ? "missing previous authorization" : null,
+                        previous is { ProductEffort: not ProductEffort.UltraCode } ? "not UltraCode" : null,
+                        previous?.ModePinned == true ? "authority pinned" : null,
+                        previous?.AutoModeSwitch != true ? "auto-switch disabled" : null,
+                        previousAuthorization is not null && previous is not null
+                            && previousAuthorization.AuthorityRevision != previous.Revision ? "authority revision mismatch" : null,
+                        previousAuthorization is not null
+                            && previousAuthorization.AuthorizationId != transition.AuthorizationId ? "authorization id mismatch" : null,
+                        previousAuthorization is not null
+                            && previousAuthorization.ObjectiveRevision != transition.ObjectiveRevision ? "objective revision mismatch" : null,
+                        previousAuthorization is not null
+                            && previousAuthorization.ObjectiveDigest != transition.ObjectiveDigest ? "objective digest mismatch" : null,
+                        previousAuthorization is not null
+                            && previousAuthorization.PolicyRevision != transition.PolicyRevision ? "policy revision mismatch" : null,
+                        previousAuthorization is not null
+                            && !previousAuthorization.AllowedModes.Contains(transition.To) ? "target not allowlisted" : null,
+                        previousAuthorization is not null && previous is not null
+                            && transition.AuthorityRevision != previous.Revision + 1 ? "next revision mismatch" : null,
+                        previousAuthorization?.IsExpiredAt(evt.Timestamp) == true ? "grant expired at transition" : null,
+                    }.Where(reason => reason is not null));
+                    if (policyFailure.Length > 0)
+                        throw new InvalidStateTransitionException("run mode transition",
+                            "UltraCode policy transition lacks matching durable authority: " + policyFailure,
+                            payload.Type().ToString());
+                    pendingModeTransitionSequence = evt.Sequence;
+                    pendingModeTransitionCausation = evt.Causation;
+                }
                 pendingModeTransition = transition;
                 lastExplicitModeChange = null;
+                lastExplicitModeChangeSequence = null;
             }
             else if (payload is RunModeAuthoritySelected selected
                 && selected.Authority.RunId.Equals(id))
             {
                 if (string.IsNullOrWhiteSpace(selected.CommandId)
-                    || selected.Origin is not ("RunCreated" or "User" or "PlanApproval"))
+                    || selected.Origin is not ("RunCreated" or "User" or "PlanApproval" or "UltraCodePolicy"))
                     throw new InvalidStateTransitionException("run mode authority", "invalid selection provenance",
                         payload.Type().ToString());
                 selected.Authority.Validate();
@@ -152,7 +221,8 @@ public sealed class RunProjection
                             payload.Type().ToString());
                 }
                 else if (selected.Origin == "RunCreated"
-                    || selected.Origin is not ("User" or "PlanApproval")
+                    || selected.Origin is not ("User" or "PlanApproval" or "UltraCodePolicy")
+                    || (pendingModeTransition.Origin == "UltraCodePolicy") != (selected.Origin == "UltraCodePolicy")
                     || pendingModeTransition.CommandId != selected.CommandId
                     || pendingModeTransition.To != selected.Authority.Mode
                     || pendingModeTransition.AuthorityRevision != selected.Authority.Revision
@@ -162,10 +232,48 @@ public sealed class RunProjection
                     || pendingModeTransition.AuthorizationId != selected.Authority.Authorization?.AuthorizationId)
                     throw new InvalidStateTransitionException("run mode authority", "selection does not match its transition authorization",
                         payload.Type().ToString());
+                if (pendingModeTransition?.Origin == "UltraCodePolicy")
+                {
+                    var previous = authorityBeforeLastExplicitModeChange
+                        ?? throw new InvalidStateTransitionException("run mode authority", "missing prior UltraCode authority",
+                            payload.Type().ToString());
+                    var previousAuthorization = previous.Authorization
+                        ?? throw new InvalidStateTransitionException("run mode authority", "missing prior UltraCode authorization",
+                            payload.Type().ToString());
+                    var nextAuthorization = selected.Authority.Authorization;
+                    if (selected.Origin != "UltraCodePolicy"
+                        || pendingModeTransitionSequence is not { } transitionSequence
+                        || evt.Sequence != transitionSequence + 1
+                        || evt.Causation is not CommandCausation selectedCause
+                        || selectedCause.CommandId.ToString() != selected.CommandId
+                        || !SameCommandCause(pendingModeTransitionCausation, evt.Causation)
+                        || selected.Authority.ProductEffort != ProductEffort.UltraCode
+                        || !selected.Authority.AutoModeSwitch || selected.Authority.ModePinned
+                        || selected.Authority.Strategy != previous.Strategy
+                        || nextAuthorization is null
+                        || nextAuthorization.AuthorizationId != previousAuthorization.AuthorizationId
+                        || nextAuthorization.AuthorityRevision != selected.Authority.Revision
+                        || nextAuthorization.ObjectiveRevision != previousAuthorization.ObjectiveRevision
+                        || nextAuthorization.ObjectiveDigest != previousAuthorization.ObjectiveDigest
+                        || nextAuthorization.PolicyRevision != previousAuthorization.PolicyRevision
+                        || !nextAuthorization.AllowedModes.SequenceEqual(previousAuthorization.AllowedModes)
+                        || nextAuthorization.Limits != previousAuthorization.Limits
+                        || nextAuthorization.GrantedAtUtc != previousAuthorization.GrantedAtUtc
+                        || selected.Authority.Revision != previous.Revision + 1
+                        || selected.Authority.ObjectiveRevision != previous.ObjectiveRevision
+                        || selected.Authority.ObjectiveDigest != previous.ObjectiveDigest
+                        || selected.Authority.PolicyRevision != previous.PolicyRevision)
+                        throw new InvalidStateTransitionException("run mode authority", "UltraCode selection changed the retained grant",
+                            payload.Type().ToString());
+                }
                 modeAuthority = selected.Authority;
                 mode = selected.Authority.Mode;
                 strategy = selected.Authority.Strategy;
                 pendingModeTransition = null;
+                authorityBeforeLastExplicitModeChange = null;
+                pendingModeTransitionSequence = null;
+                pendingModeTransitionCausation = null;
+                lastExplicitModeChangeCausation = null;
             }
             else if (payload is RunModeAuthorityRevoked revoked && revoked.RunId.Equals(id))
             {
@@ -302,6 +410,10 @@ public sealed class RunProjection
             || (request.Kind == "budget" ? request.BudgetTokens is null or < 1024 : request.BudgetTokens is not null)))
             throw new InvalidStateTransitionException("run reasoning preference", "invalid request", "run.reasoning_preference_selected");
     }
+
+    private static bool SameCommandCause(CausationId? left, CausationId? right) =>
+        left is CommandCausation leftCommand && right is CommandCausation rightCommand
+        && leftCommand.CommandId == rightCommand.CommandId;
 }
 
 /// <summary>Proyección del TaskGraph (spec §9, ADR-0036 §2).</summary>

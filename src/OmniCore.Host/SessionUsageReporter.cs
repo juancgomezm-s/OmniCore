@@ -27,7 +27,7 @@ public static partial class SessionUsageReporter
     /// <c>Reported</c> solo si el provider envió una ventana con límite y restante.
     /// </summary>
     public static UsageSnapshot Build(TokenTotals tokens, decimal cost, bool costComplete, bool priceDeclared, bool localModel,
-        IReadOnlyList<RateLimitWindow> windows, DateTimeOffset now)
+        IReadOnlyList<RateLimitWindow> windows, DateTimeOffset now, Metric<TokenTotals>? tokenMeasurement = null)
     {
         Metric<Money> costMetric = priceDeclared && costComplete
             ? new(MetricAvailability.Estimated, new Money(cost, "USD"), "declared-price")
@@ -50,7 +50,7 @@ public static partial class SessionUsageReporter
             ? new(MetricAvailability.NotSupported, null, null)
             : new(MetricAvailability.Reported, new QuotaInfo(QuotaKind.RateLimitWindow, window.Remaining, window.Limit,
                 window.Kind == RateLimitWindowKind.Requests ? "requests" : "tokens", window.ResetsAt), "provider-rate-limit");
-        return new UsageSnapshot(tokens, costMetric, quota, now);
+        return new UsageSnapshot(tokens, costMetric, quota, now, tokenMeasurement);
     }
 
 }

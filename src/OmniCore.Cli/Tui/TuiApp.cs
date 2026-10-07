@@ -1453,19 +1453,20 @@ public sealed class TuiApp
         if (parts[0] == "boost")
         {
             if (_turnHost is null || parts.Length is < 2 or > 3
-                || !TryBuildReasoningRequest(parts[1], parts.Length == 3 ? parts[2] : null, out var boost)
-                || boost is null)
+                || !TryBuildReasoningRequest(parts[1], parts.Length == 3 ? parts[2] : null,
+                    out var boostKind, out var boostBudgetTokens)
+                || boostKind is null)
             {
                 ShowMessage(Ui("Impulso de un turno inválido o no disponible", "One-turn boost is invalid or unavailable"));
                 return;
             }
-            if (!_turnHost.SetNextTurnReasoningBoost(boost))
+            if (!_turnHost.SetNextTurnReasoningBoost(boostKind, boostBudgetTokens))
             {
                 ShowMessage(Ui("Ya hay un impulso pendiente", "A reasoning boost is already pending"));
                 return;
             }
             ShowMessage(Ui("Impulso aplicado al próximo turno nuevo: ", "Boost queued for the next fresh turn: ")
-                + boost.Kind + (boost.BudgetTokens is { } budget ? ":" + budget : ""));
+                + boostKind + (boostBudgetTokens is { } budget ? ":" + budget : ""));
             return;
         }
 
@@ -1496,13 +1497,14 @@ public sealed class TuiApp
             PollEvents();
             return;
         }
-        if (!TryBuildReasoningRequest(parts[1], parts.Length == 3 ? parts[2] : null, out var request))
+        if (!TryBuildReasoningRequest(parts[1], parts.Length == 3 ? parts[2] : null,
+                out var requestKind, out var requestBudgetTokens))
         {
             ShowMessage(Ui("Tipo o presupuesto de razonamiento inválido", "Invalid reasoning kind or budget"));
             return;
         }
-        var fields = JsonObj.Field("kind", request?.Kind ?? "off")
-            + (request?.BudgetTokens is { } tokenBudget
+        var fields = JsonObj.Field("kind", requestKind ?? "off")
+            + (requestBudgetTokens is { } tokenBudget
                 ? ",\"budgetTokens\":" + tokenBudget.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 : "")
             + ",\"expectedRevision\":" + revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -1511,9 +1513,10 @@ public sealed class TuiApp
     }
 
     private static bool TryBuildReasoningRequest(string kind, string? budgetText,
-        out OmniCore.Domain.ReasoningRequest? request)
+        out string? requestKind, out int? budgetTokens)
     {
-        request = null;
+        requestKind = null;
+        budgetTokens = null;
         if (kind == "off") return budgetText is null;
         if (string.IsNullOrWhiteSpace(kind)) return false;
         if (kind == "budget")
@@ -1521,11 +1524,12 @@ public sealed class TuiApp
             if (!int.TryParse(budgetText, System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out var budget) || budget < 1024)
                 return false;
-            request = new OmniCore.Domain.ReasoningRequest(kind, budget);
+            requestKind = kind;
+            budgetTokens = budget;
             return true;
         }
         if (budgetText is not null) return false;
-        request = new OmniCore.Domain.ReasoningRequest(kind, null);
+        requestKind = kind;
         return true;
     }
 
