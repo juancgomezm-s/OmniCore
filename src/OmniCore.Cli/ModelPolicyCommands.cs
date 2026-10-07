@@ -483,6 +483,7 @@ public sealed class ModelPolicyCommands
         var suite = "quick";
         var consentGiven = false;
         var maxCost = 1.00m;
+        TimeSpan? probeTimeout = null;
         for (var i = 2; i < args.Length; i++)
         {
             if (args[i] == "--suite" && i + 1 < args.Length)
@@ -503,6 +504,19 @@ public sealed class ModelPolicyCommands
                 }
 
                 maxCost = parsed;
+            }
+            else if (args[i] == "--probe-timeout" && i + 1 < args.Length)
+            {
+                // Segundos por probe: un modelo local grande con razonamiento puede necesitar más que el
+                // tope por defecto (60 s). Acotado para que un valor absurdo no deje la suite colgada.
+                if (!int.TryParse(args[++i], NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+                    || seconds is < 1 or > 3600)
+                {
+                    _output.WriteLine(_loc.Resolve("cli.model.qualify.invalid_timeout", "value", args[i]));
+                    return 1;
+                }
+
+                probeTimeout = TimeSpan.FromSeconds(seconds);
             }
             else if (modelId is null)
             {
@@ -571,6 +585,7 @@ public sealed class ModelPolicyCommands
                 Suite = suite,
                 ConsentGiven = true,
                 MaxTotalCostUsd = maxCost,
+                PerProbeTimeout = probeTimeout,
                 ConfirmLowQuota = (snapshot, token) => System.Threading.Tasks.Task.FromResult(
                     ConfirmQualificationQuota(snapshot, _loc, _input, _output, _interactive, token)),
             }, _cancellationToken).GetAwaiter().GetResult();
@@ -713,6 +728,6 @@ public sealed class ModelPolicyCommands
         _output.WriteLine("  omni model select <m>       selecciona y abre onboarding si no hay política");
         _output.WriteLine("  omni model policy set <m> --category <c> [--revision N] [--note \"t\"]");
         _output.WriteLine("  omni model policy delete <m> [--revision N]");
-        _output.WriteLine("  omni model qualify <m> [--suite quick] [--yes] [--max-cost USD]  ejecuta la suite y recomienda");
+        _output.WriteLine("  omni model qualify <m> [--suite quick] [--yes] [--max-cost USD] [--probe-timeout s]  ejecuta la suite y recomienda");
     }
 }
