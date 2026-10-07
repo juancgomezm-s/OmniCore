@@ -7,6 +7,16 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 02:13 UTC: None bloquea ProviderState y referencias opacas de
+ReasoningBlock en solicitudes salientes, sin borrar evidencia/uso. RED opaco
+2casos/1FAIL; focal68PASS0FAIL0SKIP5.898s/build0/0, fixtures offline + SQLite/CAS
+reales (`reasoning-none-expanded-final.log`). Unknown mantiene compatibilidad;
+cambio de política en resume conserva rechazo por fingerprint real.
+LoadConversation no reconstruye ReasoningBlock al reabrir: ensayo2FAIL
+`reasoning-none-expanded.log`, pendiente explícito, no round-trip acreditado.
+Storage opaco seguro/otras políticas/effort/frozenM6/TargetRef/quota qualification
+y auditoría completa siguen pendientes; no full verde nueva ni cierre global.
+
 Actualización 02:06 UTC: full sobre47cdf9c terminal:2449 casos = 2444PASS /
 1FAIL / 4SKIPsymlink,353.192s (`reasoning-and-gate-scope-full.log`). Único fallo
 InternalActCommandTests suponía que todo envelope conTurnId comparte el command
