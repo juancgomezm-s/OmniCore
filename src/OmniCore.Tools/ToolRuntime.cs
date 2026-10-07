@@ -11,6 +11,26 @@ using OmniCore.Domain;
 /// </summary>
 public sealed class ToolRuntime
 {
+    // Attribution only: never rewrite the claims used by authorization or execution.
+    private static string? RelativeTargetRef(IReadOnlyList<string> writes, string workspaceRoot)
+    {
+        if (writes.Count != 1 || string.IsNullOrWhiteSpace(writes[0])
+            || writes[0].Contains("://", StringComparison.Ordinal)) return null;
+        try
+        {
+            var root = Path.GetFullPath(workspaceRoot);
+            var target = Path.GetFullPath(writes[0], root);
+            var relative = Path.GetRelativePath(root, target);
+            if (Path.IsPathRooted(relative) || relative == ".."
+                || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)) return null;
+            return relative.Replace(Path.DirectorySeparatorChar, '/');
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
     private readonly FakeCatalog _catalog;
 
     private readonly IPermissionPolicy _policy;
@@ -373,7 +393,7 @@ public sealed class ToolRuntime
         _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, ReconciliationJsonFor(intent.Claims, reconciliation))
         {
             // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
-            TargetRef = intent.Claims.Writes.Count == 1 ? intent.Claims.Writes[0] : null,
+            TargetRef = RelativeTargetRef(intent.Claims.Writes, execContext.WorkspaceRoot),
             Reversibility = reconciliation?.Reversibility ?? Reversibility.Unknown,
             BeforeStateRef = reconciliation?.BeforeStateRef,
         });

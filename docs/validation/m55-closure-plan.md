@@ -7,6 +7,13 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 02:16 UTC: TargetRef normalizado al workspace de ejecución, raíz
+`.`/subdirectorios relativos; no modifica autorización/claims/cwd/reversibility.
+RED3=1PASS2FAIL; final93PASS0FAIL0SKIP7.735s/build0/0, targetref-relative-expanded.log.
+Luna fixture/root implementación+auditoría; filesystem privado y launcher fake.
+TargetRef absoluto corregido; no acredita round-trip reasoning pendiente ni
+storage opaco seguro/frozenM6/quotaqual ni full/cierre global.
+
 Actualización 02:13 UTC: None bloquea ProviderState y referencias opacas de
 ReasoningBlock en solicitudes salientes, sin borrar evidencia/uso. RED opaco
 2casos/1FAIL; focal68PASS0FAIL0SKIP5.898s/build0/0, fixtures offline + SQLite/CAS
