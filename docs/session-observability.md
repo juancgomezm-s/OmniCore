@@ -108,6 +108,33 @@ claves API; ese dato no se inventa.
 
 ## Actividad para animaciones
 
+### Validez del contexto y del razonamiento reportado
+
+La lectura en vivo y la recuperación del journal reutilizan
+`TokenUsageValidation`: slots negativos, caché reportado mayor que input o
+razonamiento reportado mayor que output no se presentan como mediciones válidas.
+El recibo original no se modifica. En vivo se conserva la estimación del pedido
+con disponibilidad `Estimated`; al recuperar sin ese pedido los tokens y el
+porcentaje quedan `Unknown`/null. El razonamiento inválido permanece desconocido;
+la capacidad declarada del modelo conserva su propia disponibilidad y fuente.
+
+Regresión reproducida: seis fallos en 27 casos antes de la corrección, en lectura
+en vivo y recuperación de journal en memoria/JSON (fixtures, no autenticación).
+Después: focal conjunta 71 PASS, arquitectura 56 PASS y FULL
+`context-validity-full-1117.log`: **2825 casos, 2821 PASS, 0 FAIL, 4 SKIP**,
+122.743 s. Build sin errores ni advertencias. Logs en
+`C:/Users/juanc/.codex/omni-m5-m55-workers-20261007-0649/`.
+
+```powershell
+dotnet build OmniCore.slnx --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor -class '*SessionObservabilityTests' -class '*ConversationUsageSafetyTests' -class '*UsagePresentationTests'
+```
+
+Los conteos se solapan. La primera ejecución focal de esta ronda arrancó antes
+del terminal de build y sólo descubrió los 21 casos anteriores: se conserva
+`context-validity-red-tests-1117.log`, pero no se acredita como prueba del cambio.
+El RED válido posterior es `context-validity-red-tests-1116.log`, 27 casos/6 FAIL.
+
 Cada transición contiene SessionId, TurnId, RunId/LaneId cuando existen,
 secuencia, fecha, fuente y `FirstAnswerTextReceived`; no transporta texto.
 WaitingForResponse nace del comienzo de turno/paso; Reasoning de deltas de

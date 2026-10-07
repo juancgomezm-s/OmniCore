@@ -101,13 +101,14 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
             {
                 state.ContextSubmittedAt = submitted.AsOf;
                 var date = DateTimeOffset.UtcNow;
-                var tokens = provider.Capabilities.ReportsUsage && response.ReportedUsageFields.HasFlag(TokenUsageFields.Input)
+                var validUsage = !TokenUsageValidation.IsInvalid(response.Usage, response.ReportedUsageFields);
+                var tokens = validUsage && provider.Capabilities.ReportsUsage && response.ReportedUsageFields.HasFlag(TokenUsageFields.Input)
                     ? new Metric<long?>(MetricAvailability.Reported, response.Usage.Input, "provider:submitted-request-input", date)
                     : submitted.Tokens;
                 state.Context = submitted with { Tokens = tokens,
                     UsedPercent = Percent(tokens, submitted.Capacity, date),
-                    ReportedReasoningTokens = new(response.ReportedUsageFields.HasFlag(TokenUsageFields.Reasoning) ? MetricAvailability.Reported : MetricAvailability.Unknown,
-                        response.ReportedUsageFields.HasFlag(TokenUsageFields.Reasoning) ? response.Usage.Reasoning : null, "provider:output-reasoning;not-context-occupancy", date), AsOf = date };
+                    ReportedReasoningTokens = new(validUsage && response.ReportedUsageFields.HasFlag(TokenUsageFields.Reasoning) ? MetricAvailability.Reported : MetricAvailability.Unknown,
+                        validUsage && response.ReportedUsageFields.HasFlag(TokenUsageFields.Reasoning) ? response.Usage.Reasoning : null, "provider:output-reasoning;not-context-occupancy", date), AsOf = date };
             }
             if (state.Pending?.TurnId == submitted.TurnId && state.Pending.StepIndex == submitted.StepIndex) state.Pending = null;
         }
@@ -194,12 +195,14 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
             }
             catch (Exception ex) when (ex is JsonException or IOException or ArgumentException) { }
         }
-        var inputReported = (step.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output)).HasFlag(TokenUsageFields.Input);
+        var reportedFields = step.ReportedUsageFields ?? (TokenUsageFields.Input | TokenUsageFields.Output);
+        var validUsage = !TokenUsageValidation.IsInvalid(step.Usage, reportedFields);
+        var inputReported = validUsage && reportedFields.HasFlag(TokenUsageFields.Input);
         var tokens = new Metric<long?>(inputReported ? MetricAvailability.Reported : MetricAvailability.Unknown,
             inputReported ? step.Usage.Input : null, "journal:model-step-input", date);
         var capacity = new Metric<long?>(start.ModelContextCapacity is > 0 ? MetricAvailability.Estimated : MetricAvailability.Unknown,
             start.ModelContextCapacity is > 0 ? start.ModelContextCapacity : null, "journal:declared-model-capacity;legacy-may-be-unavailable", date);
-        var reasoningReported = step.ReportedUsageFields?.HasFlag(TokenUsageFields.Reasoning) == true;
+        var reasoningReported = validUsage && reportedFields.HasFlag(TokenUsageFields.Reasoning);
         return new(session.ToString(), step.TurnId.ToString(), step.StepIndex, start.ModelId, tokens, capacity,
             new(MetricAvailability.Estimated, start.ContextBudget, "journal:effective-selection-budget", date), Percent(tokens, capacity, date), components,
             new(reasoningReported ? MetricAvailability.Reported : MetricAvailability.Unknown, reasoningReported ? step.Usage.Reasoning : null,

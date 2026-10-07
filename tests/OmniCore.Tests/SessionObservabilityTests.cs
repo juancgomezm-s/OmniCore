@@ -169,6 +169,60 @@ public sealed class SessionObservabilityTests
         Assert.Equal(MetricAvailability.Estimated, measurement.Components[0].Tokens.Availability);
     }
 
+    [Theory]
+    [InlineData(-1L, 0L, 0L)]
+    [InlineData(100L, 101L, 0L)]
+    [InlineData(100L, 0L, 21L)]
+    public void Invalid_recovered_usage_is_not_a_context_measurement(long input, long cacheRead, long reasoning)
+    {
+        Add(new ModelStepStarted(_turn, 0, "fixture", 8192, "Direct", null, null, null, 16000), _turn);
+        Add(Spend() with { Usage = new(input, 20, cacheRead, 0, reasoning) }, _turn);
+        var snapshot = Hub().Snapshot(_session);
+        Assert.Equal(MetricAvailability.Unknown, snapshot.Consumption.Tokens.Availability);
+        Assert.Equal(MetricAvailability.Unknown, snapshot.Context!.Tokens.Availability);
+        Assert.Null(snapshot.Context.Tokens.Value);
+        Assert.Null(snapshot.Context.UsedPercent.Value);
+        Assert.Equal(MetricAvailability.Unknown, snapshot.Context.ReportedReasoningTokens.Availability);
+        Assert.Null(snapshot.Context.ReportedReasoningTokens.Value);
+        Assert.Equal(16000, snapshot.Context.Capacity.Value);
+        Assert.Null(ObservabilityJson.Decode(ObservabilityJson.Encode(snapshot))!.Context!.Tokens.Value);
+    }
+
+    [Theory]
+    [InlineData(-1L, 0L, 0L)]
+    [InlineData(100L, 101L, 0L)]
+    [InlineData(100L, 0L, 21L)]
+    public void Invalid_live_usage_keeps_request_estimate_without_claiming_a_measurement(long input, long cacheRead, long reasoning)
+    {
+        Add(new ModelStepStarted(_turn, 0, "fixture", 8192, "Direct", null, null, null, 16000), _turn);
+        var hub = Hub();
+        var request = new ModelRequest(new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+            [new ModelMessage(MessageRole.User, [new TextBlock("hello")])],
+            null, [], ToolChoice.None(), null, null, null, null);
+        using var scope = ExecutionScope.Begin(new(_run, LaneId: _lane, TurnId: _turn));
+        var response = hub.Complete(_session, new UsageProvider(new(input, 20, cacheRead, 0, reasoning)),
+            request, 16000, TestContext.Current.CancellationToken);
+        Assert.Equal(input, response.Usage.Input); // Observation does not rewrite the provider receipt.
+        var context = hub.Snapshot(_session).Context!;
+        Assert.Equal(MetricAvailability.Estimated, context.Tokens.Availability);
+        Assert.Equal(2, context.Tokens.Value);
+        Assert.Equal(MetricAvailability.Unknown, context.ReportedReasoningTokens.Availability);
+        Assert.Null(context.ReportedReasoningTokens.Value);
+    }
+
+    private sealed class UsageProvider(TokenUsage usage) : IModelProvider
+    {
+        public ProviderCapabilities Capabilities => new(true, false, false);
+        public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
+            [EnumeratorCancellation] CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            await System.Threading.Tasks.Task.CompletedTask;
+            yield return new ResponseCompleted(new ModelResponse([new TextBlock("fixture")], StopReason.EndTurn,
+                usage, null, new ProviderMetadata("fixture-request", "fixture", null)));
+        }
+    }
+
     [Fact]
     public void Compaction_is_a_separate_invocation_and_counts_once_even_if_failure_follows_usage()
     {
