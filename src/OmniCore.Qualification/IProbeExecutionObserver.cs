@@ -16,10 +16,6 @@ public interface IProbeExecutionObserver
     ValueTask CompletedAsync(ProbeRequest request, ProbeExecutionObservation observation);
 }
 
-/// <summary>Stream termination, distinct from Passed/Failed scoring: a wrong but
-/// complete answer is Completed with ProbeStatus.Failed; a provider failure is Failed.</summary>
-public enum ProbeExecutionTermination { Completed, Cancelled, TimedOut, Failed }
-
 /// <summary>Per-probe observation; timestamps are UTC, usage/cost retain their existing
 /// reported/unknown semantics. This record alone is not a durable receipt.</summary>
 public sealed record ProbeExecutionObservation(ProbeResult Result,

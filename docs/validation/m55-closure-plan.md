@@ -7,6 +7,27 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 01:13 UTC: recibo User ahora contrasta cabecera canónica CAS con
+cada campo financiero/identidad/UTC, no solo hash y tamaño. Auditoría Luna:
+uso inválido con coste nulo y view sin marcador admitidos; corregidos y controles
+añadidos. Root añadió alteración SQLcost0 con CAS original válido y redacción del
+output manteniendo cabecera. Final81PASS/0FAIL/0SKIP4.624s,
+`qualification-receipt-header-final.log`; build0/0. Barrido328=327PASS/1FAIL13.029s,
+`qualification-receipt-header-all-with-daily-red.log`; único fallo diario Host
+sigue abierto. Fundamento listo, NO conexión diaria ni cierre M5.5 acreditados.
+
+Actualización 01:08 UTC: fundamento User de recibos por probe + raíces CAS/GC
+implementado, no wiring Host/diario todavía. Focal76PASS/0FAIL/0SKIP4.086s,
+`qualification-receipt-store-expanded.log`, build0/0. Reopen/idempotencia exacta,
+conflictos y uniques, transacción fallida, usage/cost unknown, decimal exacto y
+sobreconsumo, rollover UTC, schema legacy/missing installed y GC transitivo con
+perfil ausente/corrupción cubiertos con fixtures privados. Detalles en el documento
+de fundamento enlazado abajo. Primeros3FAIL eran fixture path CAS incompleto y
+artifact extra publicado por el fixture al sustituir Evidence, corregidos sin
+debilitar assertions; no RED producto atribuido. Barrido319=318PASS/1FAIL12.336s
+conserva fallo diario conocido. Últimos4controles tienen focal propia, no barrido
+nuevo completo. No afirmar consumo autenticado ni M5.5 cerrado.
+
 Actualización 00:59 UTC: frontera por probe preparada en `ProbeRunner`:
 admisión antes de entrar al provider, observación esperada antes del siguiente
 probe o de relanzar cancelación/timeout, coste/usage existentes preservados,

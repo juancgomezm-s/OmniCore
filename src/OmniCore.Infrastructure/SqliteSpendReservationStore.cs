@@ -124,7 +124,8 @@ public sealed class SqliteSpendReservationStore
     /// <summary>Only a known not-dispatched reservation can be released.</summary>
     public void ReleaseBeforeDispatch(string id) => Transition(id, "reserved", "released", null, null);
     /// <summary>Call only after the matching completed usage receipt is durable in the canonical
-    /// workspace journal. Settled amounts are audit data, never added to canonical consumption.</summary>
+    /// workspace journal or canonical User qualification receipt store. Settled amounts are
+    /// audit data, never added to canonical consumption; the caller verifies the receipt.</summary>
     public void Settle(string id, decimal actualUsd, string receipt)
     {
         if (actualUsd < 0m) throw new ArgumentOutOfRangeException(nameof(actualUsd));
