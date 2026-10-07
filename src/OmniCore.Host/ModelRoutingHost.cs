@@ -44,7 +44,8 @@ public static class ModelRoutingHost
         var endpoint = endpointOverride ?? Environment.GetEnvironmentVariable("OMNI_BASE_URL") ?? configured;
         var protocol = provider?.Family ?? ProviderFamily.OpenAiChatCompatible;
         return string.Equals(endpoint, configured, StringComparison.Ordinal)
-            ? ModelRoute.DefaultForModel(model.Id, model.ProviderId, endpoint, protocol, provider?.Profile)
+            ? ModelRoute.DefaultForModel(model.Id, model.ProviderId, endpoint, protocol, provider?.Profile,
+                model.ReasoningCapability)
             : new ModelRoute(model.ProviderId, endpoint, protocol, provider?.Profile, model.Id);
     }
 

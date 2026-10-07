@@ -51,6 +51,7 @@ public sealed class ModelProfileResolver
         if (provider?.SupportsGrammarPerRequest == true) formats.Add(ToolCallFormat.Grammar);
         if (formats.Count == 0) formats.Add(ToolCallFormat.PromptedJson);
         return new EffectiveModelProfile(model.Id, model.ContextWindow, model.RecommendedUsableContext,
-            model.MaxOutputTokens, new[] { "text" }, formats, false, traits, route?.Id);
+            model.MaxOutputTokens, new[] { "text" }, formats, false, traits, route?.Id,
+            route is null ? model.ReasoningCapability : route.ReasoningCapability);
     }
 }

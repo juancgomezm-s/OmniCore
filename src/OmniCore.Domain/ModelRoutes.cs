@@ -56,9 +56,10 @@ public sealed class ModelRoute : IEquatable<ModelRoute>
     public ProviderFamily Protocol { get; }
     public string? Profile { get; }
     public string ProviderModelName { get; }
+    public ReasoningCapability ReasoningCapability { get; }
 
     public ModelRoute(string providerId, string endpoint, ProviderFamily protocol, string? profile,
-        string providerModelName, RouteId? id = null)
+        string providerModelName, RouteId? id = null, ReasoningCapability? reasoningCapability = null)
     {
         ProviderId = Required(providerId, nameof(providerId));
         Endpoint = Required(endpoint, nameof(endpoint));
@@ -70,6 +71,7 @@ public sealed class ModelRoute : IEquatable<ModelRoute>
 
         Protocol = protocol;
         Profile = profile;
+        ReasoningCapability = reasoningCapability ?? OmniCore.Domain.ReasoningCapability.Unknown;
         Id = id ?? RouteId.ForRoute(ProviderId, Endpoint, Protocol, Profile, ProviderModelName);
     }
 
@@ -78,8 +80,8 @@ public sealed class ModelRoute : IEquatable<ModelRoute>
     /// model name both retain the legacy model id; endpoint/protocol/profile come from its provider.
     /// </summary>
     public static ModelRoute DefaultForModel(string modelId, string providerId, string endpoint,
-        ProviderFamily protocol, string? profile = null) =>
-        new(providerId, endpoint, protocol, profile, modelId, RouteId.ForDefaultModel(modelId));
+        ProviderFamily protocol, string? profile = null, ReasoningCapability? reasoningCapability = null) =>
+        new(providerId, endpoint, protocol, profile, modelId, RouteId.ForDefaultModel(modelId), reasoningCapability);
 
     /// <summary>Stable JSON representation of the route identity tuple.</summary>
     public string CanonicalJson() => IdentityJson(ProviderId, Endpoint, Protocol, Profile, ProviderModelName);

@@ -93,6 +93,22 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteString("tokenizerIdentity", tokenizerIdentity);
             })
         };
+        var reasoning = profile.ReasoningCapability;
+        if (reasoning.Supported is not null || reasoning.EffortLevels is not null || reasoning.ReplayPolicy is not null)
+            components.Add(ResolvedComponent("model.reasoning.declared", writer =>
+            {
+                writer.WriteString("routeId", profile.RouteId.Value);
+                if (reasoning.Supported is { } supported) writer.WriteBoolean("supported", supported);
+                else writer.WriteNull("supported");
+                if (reasoning.EffortLevels is null) writer.WriteNull("effortLevels");
+                else
+                {
+                    writer.WriteStartArray("effortLevels");
+                    foreach (var level in reasoning.EffortLevels) writer.WriteStringValue(level);
+                    writer.WriteEndArray();
+                }
+                writer.WriteString("replayPolicy", reasoning.ReplayPolicy?.ToString());
+            }));
         // The endpoint may contain private configuration. Only its digest enters the journal.
         if (selection.Route is { } route)
             components.Add(ProviderAdapterComponent(route, provider));

@@ -7,6 +7,21 @@ No se implementan scheduler/joins M6 ni restore físico M7 antes de cerrar sus f
 
 ### Estado vigente de reservas (00:34 UTC)
 
+Actualización 01:48 UTC: añadido `ReasoningCapability` como hechos declarados
+inmutables: `Supported` nullable, `EffortLevels` nullable (etiquetas opacas del
+provider, sin ranking universal) y `ReplayPolicy` nullable. Unknown no implica
+false/None; listas contradictorias o inválidas se rechazan. ModelDefinition y
+ModelRoute transportan la declaración; el perfil toma la de la ruta explícita,
+sin copiarla a un endpoint override. La ruta física conserva su identidad y
+autorización; `model.reasoning.declared` registra los hechos en el fingerprint.
+Legacy Unknown conserva los componentes anteriores. Pruebas programáticas y
+JSON sintéticas: 88 PASS / 0 FAIL / 0 SKIP, 4.158s,
+`reasoning-capability-contract.log`; build 0 warnings / 0 errors. Primer build
+falló por import de fixture y analyzer static local, corregidos sin suprimir
+analyzers; no se atribuye como RED de producto. Root implementó y verificó.
+No es aún carga YAML/catálogo ni aplicación wire de esfuerzo/replay; ambas,
+junto con almacenamiento opaco seguro y salida completa, siguen pendientes.
+
 Actualización 01:44 UTC: suite completa sobre `d285983` terminada:
 2422 casos = 2418 PASS / 0 FAIL / 4 SKIP por permisos symlink, 350.643s;
 `qualification-user-daily-full.log`, handle 69420 terminal. Estos resultados
