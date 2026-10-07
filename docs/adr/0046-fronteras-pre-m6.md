@@ -114,6 +114,10 @@ tener dos semánticas del mismo concepto, que es justo lo que el anexo prohíbe.
 
 - `Event ≠ Decision ≠ RuntimeCommand`. Las decisiones (policy de producto, supervisor) viven fuera de
   Core y se traducen a `RuntimeCommand`.
+- **Acotación de alcance (ADR-0047):** Core no exige planificación ni workers para toda intención.
+  PLAN/ACT/ORQ son elegidos por el usuario. El modelo solo propone cambios; la política solo puede
+  cambiarlos automáticamente con una autorización UltraCode explícita y vigente. Un nivel de
+  razonamiento alto no equivale a esa autorización.
 - `RuntimeCommand` es de primera clase solo en la frontera autoritativa, es decir, en operaciones que:
   - cruzan cliente/host/producto → Core;
   - cambian lifecycle o estado;
@@ -184,6 +188,10 @@ Se corrige el `ContextPolicyHash`, que hoy recibe el id del tokenizer.
 
 - **M5.5 fase A, bugs:** los nueve de [gap-pre-m6.md §4](../architecture/gap-pre-m6.md#4-bugs-que-no-dependen-del-anexo).
 - **M5.5 fase B, contratos:**
+  - modos vinculantes, ejecución directa, esfuerzo UltraCode y autoridad durable de cambio de modo
+    (ADR-0047); selección, sugerencia, revocación, commands/eventos/proyecciones y fingerprint;
+    reasoning efectivo por capacidad, esfuerzo de Turn/Run/preferencia y tests del request real,
+    según la [alineación con Claude Code](../architecture/ultracode-alineacion-claude-code.md);
   - §1 ModelStep + FollowUp/Steering;
   - §2 tipos y eventos de AgentExecution/lineage/registros;
   - §3 `ModelRoute` + perfil por ruta + reasoning + `SessionRoutingPolicy` + `BillingMode` + topes;
@@ -214,6 +222,8 @@ Deben quedar cubiertos por tests deterministas:
   Cada command devuelve un `CommandOutcome` correlacionable.
 - Los eventos congelados de M6 serializan y se reproducen, aunque no se emitan todavía.
 - Los deltas de streaming nunca llegan al `IEventStore`: lo verifica un test.
+- Los criterios de ADR-0047 impiden convertir consultas en planificación obligatoria, delegar desde
+  PLAN/ACT o cambiar modo sin autorización del usuario; UltraCode y su revocación sobreviven al replay.
 
 ## Consecuencias
 

@@ -456,6 +456,14 @@ public enum RunMode
 
 PLAN, ACT y ORQ deberán ser políticas de ejecución, no tres runtimes distintos.
 
+*v0.8 (ADR-0047):* el modo elegido por el usuario es vinculante. El modelo puede sugerir otro,
+pero el runtime solo puede cambiarlo automáticamente con autorización explícita y acotada del
+esfuerzo de producto **UltraCode**. UltraCode no es un cuarto modo ni un nivel de razonamiento del
+provider. PLAN y ACT no crean agentes hijos; ORQ permite coordinación sin exigirla para toda solicitud.
+UltraCode solicita razonamiento reforzado efectivo por capacidad, no `max` obligatorio ni una mera
+instrucción textual. Preferencia, selección de Run y refuerzo de Turn son distintos; el nivel aplicado
+se muestra y se valida contra el request real (ADR-0047 §4.1). Planificación y delegación son selectivas.
+
 ## FR-RUN-005
 
 Un Run deberá poder cancelarse.
@@ -488,6 +496,10 @@ Cómo se relacionan los mensajes del usuario con el Run y el paso PLAN → ACT e
 ## FR-RUN-007 (v0.2)
 
 Todo Run tendrá un Plan desde su creación. En estrategia Direct sin fase de planificación, el runtime crea `Plan rev.1` con un único item igual al objetivo del Run (ADR-0016 §11).
+
+*v0.8 (ADR-0047):* este Plan mínimo es seguimiento interno. No obliga a presentar un plan, invocar
+`plan.propose`, obtener aprobación o dividir una consulta en workers. Una intención puede terminar
+en un Turn directo, con cero herramientas y cero agentes hijos; los gates son proporcionales a sus efectos.
 
 ## 7.1 Plan (v0.2)
 

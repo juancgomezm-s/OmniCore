@@ -277,9 +277,10 @@ public sealed class SqliteEventStore : IEventStore
             Parts.ParseLaneId(_AsStringOrNull(row.GetValue(9))),
             Parts.ParseTurnId(_AsStringOrNull(row.GetValue(10))),
             Parts.ParsePlanItemId(_AsStringOrNull(row.GetValue(11))),
-            Parts.ParseToolCallId(_AsStringOrNull(row.GetValue(12))),
-            new ArtifactRef[0],
-            _AsString(row.GetValue(13)));
+            Parts.ParseToolCallId(_AsStringOrNull(row.GetValue(11))),
+            Parts.ParseToolCallId(_AsStringOrNull(row.GetValue(13))),
+            Parts.ParseArtifacts(_AsStringOrNull(row.GetValue(15))),
+            _AsString(row.GetValue(14)));
     }
 
     /// <summary>
@@ -359,16 +360,39 @@ public sealed class Parts
         return null;
     }
 
-    public static string Artifacts(IReadOnlyList<ArtifactRef> refs)
+    public static string Artifacts(IReadOnlyList<ArtifactRef> refs) => string.Join(";", refs.Select(r => r.Id.ToString() + "|" + r.Hash.Algorithm + "|" + r.Hash.Value));
+
+    /// <summary>
+    /// Invierte <see cref="Artifacts"/>. El formato persistido solo guarda id y hash de cada ref
+    /// (la columna artifacts del journal); el resto de campos de <see cref="ArtifactRef"/> no está
+    /// en la fila y se reconstruye con sus valores neutros.
+    /// </summary>
+    public static IReadOnlyList<ArtifactRef> ParseArtifacts(string? text)
     {
-        var parts = new string[refs.Count];
-        var i = 0;
-        foreach (var r in refs)
+        if (string.IsNullOrEmpty(text))
         {
-            parts[i++] = r.Id.ToString() + "|" + r.Hash.Algorithm + "|" + r.Hash.Value;
+            return Array.Empty<ArtifactRef>();
         }
 
-        return string.Join(";", parts);
+        var refs = new List<ArtifactRef>();
+        foreach (var part in text.Split(';'))
+        {
+            var fields = part.Split('|');
+            if (fields.Length != 3)
+            {
+                throw new FormatException("Formato inválido en la columna artifacts del journal: " + part);
+            }
+
+            refs.Add(new ArtifactRef(
+                ArtifactId.Parse(fields[0]),
+                new ContentHash(fields[1], fields[2]),
+                0,
+                string.Empty,
+                ArtifactKind.Other,
+                Sensitivity.Normal));
+        }
+
+        return refs;
     }
 
     public static SessionId? ParseSessionId(string? text) => Empty(text) ? null : SessionId.Parse(text!);

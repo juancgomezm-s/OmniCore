@@ -50,6 +50,7 @@ Paquetes: `dotnet add <proyecto> package <id>` (Central Package Management; la v
 30. La auditoría sobrevive a la purga de sesiones, y la telemetría es solo local (ADR-0043).
 31. Tener una credencial no autoriza a gastar: el routing y la escalación solo eligen rutas de la `SessionRoutingPolicy`, y `MeteredCurrency`/`Unknown` exigen consentimiento explícito (ADR-0046).
 32. `Event ≠ Decision ≠ RuntimeCommand`: solo el servidor escribe el journal, y todo cambio de estado desde fuera de Core llega como command con `CommandOutcome`. Un Turn contiene 1..N `ModelStep`; un modelo recomienda, la política determinista decide (ADR-0046).
+33. PLAN/ACT/ORQ son vinculantes y elegidos por el usuario. El modelo solo sugiere cambios; la única autorización adaptativa es UltraCode seleccionado explícitamente. UltraCode es esfuerzo del producto, no `reasoning_effort` del provider. PLAN/ACT no delegan workers; ORQ puede resolver directamente. El Plan interno no obliga a planificar toda consulta (ADR-0047; implementación pendiente M5.5/M6).
 
 ## Reglas de trabajo
 
@@ -68,7 +69,7 @@ Paquetes: `dotnet add <proyecto> package <id>` (Central Package Management; la v
 
 ## Estado
 
-- **Hecho:** esqueleto (14 proyectos + tests de arquitectura; multi-target y analizadores AOT) y revisión arquitectónica v0.2–v0.7 (ADRs 0001–0046).
+- **Hecho:** esqueleto (14 proyectos + tests de arquitectura; multi-target y analizadores AOT) y revisión arquitectónica v0.2–v0.8 (ADRs 0001–0047). ADR-0047 añade al plan modos vinculantes y UltraCode; su implementación queda pendiente en M5.5/M6.
 - **M1: cerrado en Windows** (2026-09-30); la verificación en Linux queda diferida. **M2, M3, M4 y M5: código completo** (2026-09-30). Falta solo la validación manual del usuario, descrita en `docs/validation/m1-m4.md`: criterios de M2 y M3 contra su modelo local (requiere su API key), providers cloud y login de ChatGPT de M5 y usabilidad de la TUI v0 en un terminal real. Diferidos: sandbox Strong en Linux y lease de escritura entre procesos (M9). El estado por epic está en `docs/architecture/arquitectura.md` §24.
 - **Seguridad P0 corregida** (2026-09-29): Explorer de solo lectura + capa de modo PLAN, combinación de permisos por mínimo, `AuthorizedToolIntent` infalsificable, SHA-256 estándar en el CAS, cadenas de enlaces y secretos sobre el destino físico, TLS relajado solo para literales IP privados y fijable por provider con `caCertificate`, configuración de providers solo desde el directorio del usuario, `WorkspaceId` hasheado con datos en `<data>/workspaces/<id>/`, y credenciales cifradas (DPAPI en Windows, AES-GCM provisional en Linux).
 - **Tests:** 1112 (1108 correctos, 4 omitidos por restricciones del entorno al crear symlinks). Los tests fijan `OMNICORE_DATA_DIR`/`OMNICORE_CONFIG_DIR` a un temporal: nunca tocan los datos del usuario.

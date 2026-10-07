@@ -11,6 +11,7 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
   - **v0.5, revisión integral y entrevista:** 0035–0043, con correcciones en ADRs anteriores.
   - **v0.6:** 0044–0045, política operativa por modelo y cuestionarios estructurados, con correcciones en ADRs anteriores.
   - **v0.7 (2026-09-30):** 0046, fronteras pre-M6 (anexo de OmniCoder contrastado con el código; ver `docs/architecture/gap-pre-m6.md`).
+  - **v0.8 (2026-10-01):** 0047, modos elegidos por el usuario, ejecución directa y esfuerzo UltraCode.
 
   Diagramas, tabla de cambios, preguntas abiertas y roadmap: [docs/architecture/arquitectura.md](../architecture/arquitectura.md).
 
@@ -62,3 +63,4 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0044](0044-politica-de-modelos-y-mutaciones.md) | Política de modelos, onboarding y seguridad de mutaciones | Aceptada |
 | [0045](0045-cuestionarios-estructurados.md) | Cuestionarios estructurados y respuestas humanas | Aceptada |
 | [0046](0046-fronteras-pre-m6.md) | Fronteras pre-M6: ejecución, routing autorizado, eventos y control | Aceptada (con ajustes al anexo, §8) |
+| [0047](0047-modos-explicitos-y-ultracode.md) | Modos explícitos, ejecución directa y esfuerzo UltraCode | Aceptada; implementación pendiente M5.5/M6 |

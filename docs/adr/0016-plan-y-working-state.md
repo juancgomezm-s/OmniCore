@@ -7,6 +7,9 @@
 > **Revisión integral (2026-09-24):**
 > - las transiciones completas de `PlanItem` (con un evento por transición, mutaciones `Unblock`, `Fail` y `Cancel`, jerarquía padre/hijo y defaults de `Required`) están en **ADR-0036 §4**, que prevalece sobre §2 y §4 de este ADR;
 > - la creación del plan, la fase de planificación por modo y el paso PLAN → ACT en el mismo Run con aprobación están en **ADR-0035 §3–§4**.
+> - **2026-10-01, ADR-0047:** el Plan mínimo por Run es seguimiento interno; no impone planificación
+>   visible, `plan.propose`, aprobación ni workers para una respuesta directa. Modo y delegación
+>   obedecen la selección del usuario y la excepción explícita de UltraCode.
 
 ## Contexto
 
@@ -148,6 +151,9 @@ Blockers: —   Siguiente: aplicar el fix en AuthenticationService.cs
   - resultado de una validación.
 - **Detección:** si un item lleva `N` Turns en `InProgress` sin ninguna señal, se emite `ProgressStalled { planItemId, turns, lastProgressAt }`. `N` sale de `HarnessPolicy.StallThresholdTurns`.
 - **Respuesta según `StallPolicy`:** `Replan`, `Diagnose`, `EscalateModel`, `SplitTask` o `AskUser`, en ese orden por defecto y con límites.
+- **Techo de modo (ADR-0047):** `SplitTask` no crea workers en PLAN/ACT. Una división lógica del Plan
+  no implica delegación; esta requiere ORQ efectivo, seleccionado por el usuario o por una autorización
+  UltraCode vigente. Stall, HarnessPolicy y RecoveryPolicy no cambian el modo ni el alcance por sí solos.
 - **Loops:** también se detectan loops por repetición (misma tool con los mismos argumentos, o el mismo error), portando los umbrales de `AgentExecutionGuard` de OmniCoder.
 
 ### 10. `PlanCompletionGate`
@@ -166,8 +172,12 @@ AcceptanceCriteriaGate → BuildGate → TestGate → PendingTaskGate → PlanCo
 ### 11. Creación del plan
 
 - **Direct** sin fase de planificación: el runtime crea `Plan rev.1` con un único item, el objetivo del Run, vinculado a la Task raíz. Así toda Run tiene plan desde el inicio.
-- **PLAN y ORQ:** el primer Turn o Lane de planificación propone items con `plan.propose`.
-- **ACT:** igual, si la `HarnessPolicy` lo permite. Si no, se mantiene el item único.
+- **PLAN:** propone items con `plan.propose` cuando la intención pide planificación; una consulta
+  directa mantiene el item interno y entrega la respuesta sin plan visible (ADR-0047).
+- **ORQ:** propone una descomposición cuando coordinar trabajo aporta valor; puede mantener una
+  ejecución directa para una intención sencilla, sin workers obligatorios.
+- **ACT:** puede ordenar pasos o revisar el Plan dentro de la Lane raíz, según `HarnessPolicy` y
+  alcance autorizado. Eso no cambia modo ni autoriza Tasks hijas; si no aporta valor, mantiene el item único.
 
 ### 12. CLI
 

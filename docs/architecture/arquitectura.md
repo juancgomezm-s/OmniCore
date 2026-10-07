@@ -735,6 +735,17 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 > - La spec §86–§95 y §99 solo lo resumen; ante cualquier diferencia, **prevalece esta tabla**.
 > - Principio: se implementa solo lo que el milestone usa; los contratos "Necesaria desde M1" (§22) se congelan en M1.
 
+> **Acotación v0.8 (2026-10-01, ADR-0047):** PLAN/ACT/ORQ son seleccionados por el usuario y
+> vinculantes. El Plan interno de un item y la Task/Lane raíz no obligan a mostrar un plan ni a crear
+> workers. PLAN responde/investiga sin efectos; ACT ejecuta directamente; ORQ permite coordinación
+> cuando aporta valor, sin exigirla para toda solicitud. El modelo puede sugerir un cambio, no aplicarlo.
+> **UltraCode** es esfuerzo del producto y la única autorización adaptativa explícita para cambiar modos
+> dentro de sus límites; no es un cuarto modo ni `reasoning_effort` del provider. Contratos y autoridad
+> se conectan en M5.5, scheduling/delegación en M6, con los criterios de ADR-0047 como gates de entrega.
+> La [revisión de Claude Code](ultracode-alineacion-claude-code.md) añade reasoning efectivo por capacidad,
+> refuerzo de esfuerzo acotado al Turn y delegación selectiva con aceptación del coordinador. UltraCode
+> no se confunde con `ultrathink` ni `ultraplan`; su autorización de modo es una decisión propia de OmniCore.
+
 | Milestone | Contenido | Criterio de salida |
 |---|---|---|
 | **M1 — Runtime sin IA + Planning** — ✅ **CERRADO EN WINDOWS** (2026-09-30; verificación en Linux diferida por decisión del usuario) | **Dominio:** ids tipados, `ScopeLevel`, `WorkspaceId`/`ProjectId` con rutas canónicas (ADR-0038 §4); Session, Run, Plan/PlanItem, Task/TaskGraph, Lane, Turn, ToolCall y sus máquinas de estado (ADR-0036); conversación ↔ Run, modos y cancelación (ADR-0035).<br>**Journal:** envelope, `EventType`, upcasters vacíos, `SqliteEventStore` + `InMemoryEventStore`, `IArtifactStore` simple (ADR-0041 §3), rutas de plataforma (ADR-0038/0039).<br>**Plan:** `PlanService`, `ProgressReconciler` R1–R7, watchdog, Completion Pipelines de Lane y de Run, `WorkingState`.<br>**Permisos:** tipos + `ScriptedPermissionPolicy` + `AuditSink` básico.<br>**Contratos congelados** (§22), incluidos `ITokenCounter` + `FakeTokenCounter`, `InteractionRequest` con eventos de dominio y `LocalizedText`.<br>**Cliente:** `OmniCore.Client` (`ClientProjection`), plain renderer interactivo (con pregunta en línea) y JSON renderer, recursos `es`/`en`.<br>**Simulación:** `omni sim` + escenarios YAML + golden rule.<br>**Tests de arquitectura:** IVT solo Security, referencias IL del CLI, multi-target | Los escenarios de `omni sim` (plan de varios items, TaskGraph N:M, `Ask`, crash + resume) se reconstruyen idénticos desde el journal, en **Windows y Linux** |
@@ -763,6 +774,10 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 - **2026-09-30 (ADR-0046):** nuevo hito M5.5 con las fronteras pre-M6 y los bugs encontrados en la auditoría
   ([gap-pre-m6.md](gap-pre-m6.md)). M6 incorpora joins, supervisión, mailbox/wake, presupuestos y capacidad.
   Nuevo track M6/M7 de validación adaptativa. Undo físico en M7. Reconexión y procedencia de historial en M9.
+- **2026-10-01 (ADR-0047):** M5.5 incorpora autoridad de modo, selección/sugerencia/revocación y
+  UltraCode durable; M6 respeta esos techos al delegar. Consultas directas sin planificación visible,
+  PLAN/ACT sin workers, ORQ optativo y gates proporcionales. El comportamiento nuevo está pendiente
+  de implementación; las capacidades M2–M5 existentes no prueban estos criterios.
 
 ### Estado real por epic
 
