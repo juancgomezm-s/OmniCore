@@ -1,5 +1,14 @@
 namespace OmniCore.Domain;
 
+/// <summary>A model recommendation, never a grant or an effective mode transition.</summary>
+public sealed record RunModeProposed(RunId RunId, TurnId TurnId, ToolCallId ToolCallId,
+    RunMode From, RunMode To, string Reason, long AuthorityRevision,
+    long ObjectiveRevision, string ObjectiveDigest, long PolicyRevision) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("run.mode_proposed");
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>Snapshots an explicit selection for the active Run or at Run creation.</summary>
 public sealed record RunModeAuthoritySelected(RunModeAuthority Authority, string CommandId, string Origin)
     : DomainEventPayload

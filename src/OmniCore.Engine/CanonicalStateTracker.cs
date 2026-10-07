@@ -92,6 +92,7 @@ public sealed class CanonicalStateTracker
     private static RunId? RunModePayloadRunId(DomainEventPayload payload) => payload switch
     {
         RunModeChanged changed => changed.RunId,
+        RunModeProposed proposed => proposed.RunId,
         RunModeTransitionAuthorized transition => transition.RunId,
         RunModeAuthoritySelected selected => selected.Authority.RunId,
         RunModeAuthorityRevoked revoked => revoked.RunId,
@@ -194,6 +195,19 @@ public sealed class CanonicalStateTracker
             case RunFailed e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
             case RunCancelled e: Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun); break;
             case RunModeChanged e: RequireNonTerminalRun(e.RunId, payload); break;
+            case RunModeProposed e:
+                ModeProposalProjection.Validate(e);
+                RequireNonTerminalRun(e.RunId, payload);
+                if (!_turnLanes.TryGetValue(e.TurnId, out var proposalLane)
+                    || !_turns.TryGetValue(e.TurnId, out var proposalTurnState)
+                    || proposalTurnState != TurnState.Started
+                    || !_laneTasks.TryGetValue(proposalLane, out var proposalTask)
+                    || !_taskRuns.TryGetValue(proposalTask, out var proposalRun) || proposalRun != e.RunId
+                    || !_toolCalls.TryGetValue(e.ToolCallId, out var proposalToolState)
+                    || proposalToolState != ToolCallState.Succeeded)
+                    throw new InvalidStateTransitionException("run mode proposal", "missing turn or successful tool",
+                        payload.Type().ToString());
+                break;
             case RunModeAuthoritySelected e:
                 e.Authority.Validate();
                 if (string.IsNullOrWhiteSpace(e.CommandId)

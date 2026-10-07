@@ -22,6 +22,43 @@ namespace OmniCore.Tests;
 [Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class CliEndToEndTests
 {
+    [Fact]
+    public async Task Normal_PLAN_chat_can_recommend_ORQ_without_granting_mode_or_creating_workers()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            using (var preferences = new RunModePreferenceStore(OmniHost.CreatePlatformPaths().UserDatabasePath))
+                preferences.Set(RunMode.Plan, 0);
+            string? request = null;
+            provider.RespondWith((index, body) =>
+            {
+                request ??= body;
+                return index == 0 ? ToolCallResponse("recommend-mode", "mode.propose",
+                    """{"mode":"orq","reason":"Independent review would help"}""")
+                    : TextResponse("Recomiendo ORQ; seguimos en PLAN hasta que lo autorices.");
+            });
+            var output = new List<string>();
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            Assert.Equal(0, await host.ExecuteAsync("¿Conviene otra forma de trabajo?", output.Add,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(2, provider.RequestCount);
+            Assert.Contains("mode.propose", request!);
+            var journal = ReadCurrentSessionJournalEvents(workspace);
+            var codecs = EventCodecs.Create();
+            var created = Assert.Single(journal.Select(codecs.Decode).OfType<RunCreated>());
+            var proposed = Assert.Single(ModeProposalProjection.Replay(created.SessionId, created.RunId, codecs, journal));
+            Assert.Equal(RunMode.Plan, proposed.From);
+            Assert.Equal(RunMode.Orchestrate, proposed.To);
+            var projection = RunProjection.Replay(created.SessionId, created.RunId, codecs, journal);
+            Assert.Equal(RunMode.Plan, projection.Mode);
+            Assert.False(projection.ModeAuthority!.AutoModeSwitch);
+            Assert.DoesNotContain(journal.Select(codecs.Decode), e => e is RunModeChanged
+                or RunModeTransitionAuthorized or AgentExecutionStarted);
+            Assert.Single(journal.Select(codecs.Decode).OfType<TaskCreated>());
+            Assert.Single(journal.Select(codecs.Decode).OfType<LaneCreated>());
+        });
+    }
+
     [Theory]
     [InlineData(RunMode.Plan, "PLAN")]
     [InlineData(RunMode.Act, "ACT")]

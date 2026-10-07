@@ -69,6 +69,16 @@ public sealed class ProtocolMapper
         RunFailed e => new() { ["cause"] = _redaction.Redact(e.Cause) },
         RunCancelled => new(),
         RunModeChanged e => new() { ["from"] = Mode(e.From), ["to"] = Mode(e.To) },
+        RunModeProposed e => new()
+        {
+            ["turnId"] = e.TurnId.ToString(), ["toolCallId"] = e.ToolCallId.ToString(),
+            ["from"] = Mode(e.From), ["to"] = Mode(e.To), ["reason"] = _redaction.Redact(e.Reason),
+            ["origin"] = "Model", ["advisory"] = "true",
+            ["authorityRevision"] = e.AuthorityRevision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["objectiveRevision"] = e.ObjectiveRevision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["objectiveDigest"] = e.ObjectiveDigest,
+            ["policyRevision"] = e.PolicyRevision.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        },
         RunModeAuthoritySelected e => new()
         {
             ["mode"] = Mode(e.Authority.Mode), ["strategy"] = e.Authority.Strategy.ToString(),

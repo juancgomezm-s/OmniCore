@@ -42,6 +42,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunFailed())
             .Plus(Typed.RunCancelled())
             .Plus(Typed.RunModeChanged())
+            .Plus(Typed.RunModeProposed())
             .Plus(Typed.RunModeAuthoritySelected())
             .Plus(Typed.RunModeTransitionAuthorized())
             .Plus(Typed.RunModeAuthorityRevoked())
@@ -215,8 +216,8 @@ public sealed class EventCodecs : IEventCodecRegistry
         }
 
         var payload = CodecFor(evt.Type).Decode(evt.Type, json);
-        if (payload is IPreM6ContractEvent && evt.SchemaVersion < 1)
-            throw new EventParseException(evt.Type.ToString(), "new pre-M6 contracts start at schema version 1");
+        if (payload is IPreM6ContractEvent or RunModeProposed && evt.SchemaVersion < 1)
+            throw new EventParseException(evt.Type.ToString(), "new contracts start at schema version 1");
         return payload;
     }
 
@@ -373,6 +374,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(RunFailed))]
 [JsonSerializable(typeof(RunCancelled))]
 [JsonSerializable(typeof(RunModeChanged))]
+[JsonSerializable(typeof(RunModeProposed))]
 [JsonSerializable(typeof(RunModeAuthoritySelected))]
 [JsonSerializable(typeof(RunModeTransitionAuthorized))]
 [JsonSerializable(typeof(RunModeAuthorityRevoked))]
@@ -567,6 +569,9 @@ public sealed class Typed
 
     public static CodecPair RunModeChanged() =>
         Of(EventType.Of("run.mode_changed"), EventJsonContext.Default.RunModeChanged);
+
+    public static CodecPair RunModeProposed() =>
+        Of(EventType.Of("run.mode_proposed"), EventJsonContext.Default.RunModeProposed);
 
     public static CodecPair RunModeAuthoritySelected() =>
         Of(EventType.Of("run.mode_authority_selected"), EventJsonContext.Default.RunModeAuthoritySelected);
