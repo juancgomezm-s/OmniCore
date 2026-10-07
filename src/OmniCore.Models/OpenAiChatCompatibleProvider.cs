@@ -266,6 +266,12 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
 
     private string BuildBody(ModelRequest request)
     {
+        var reasoning = request.Reasoning ?? request.Model.Reasoning;
+        request.Model.Route?.ReasoningCapability.ValidateRequest(reasoning);
+        // Response reasoning_content does not establish a request-side dialect for
+        // arbitrary compatible endpoints. Reject rather than invent an extension.
+        if (reasoning is not null)
+            throw new NotSupportedException("Selected reasoning has no representation in this adapter.");
         var messages = new List<ChatRequestMessage>();
         if (!string.IsNullOrEmpty(request.Instructions))
             messages.Add(new ChatRequestMessage { Role = "system", Content = request.Instructions });

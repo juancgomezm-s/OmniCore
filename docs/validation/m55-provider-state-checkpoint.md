@@ -1,5 +1,44 @@
 # Checkpoint de ProviderState por ModelStep
 
+## Otras familias: solicitud explícita sin omisión — 2026-10-07 03:34 UTC
+
+Anthropic representa la forma existente `ReasoningRequest("budget", n)` con
+presupuesto manual explícito >=1024; no deduce presupuestos a partir de etiquetas
+de esfuerzo ni ignora una etiqueta mezclada con un presupuesto. La ausencia de
+razonamiento mantiene el body y los límites existentes. El adaptador compatible
+no tiene un dialecto de solicitud declarado: rechaza razonamiento explícito sin
+inventar `reasoning_effort`, pero conserva la lectura de `reasoning_content` en
+las respuestas normales. Ambos validan contradicciones declaradas por ruta antes
+de consultar secretos o enviar HTTP, también con fallback desde ModelSelection.
+Los errores tienen texto constante, sin incluir secretos ni solicitudes.
+
+Luna: auditoría y propuesta offline. Root: lectura completa, corrección del fixture
+de header Anthropic, integración, expansión de fallback, presupuestos inválidos y
+contradicciones declaradas; implementación y ejecución. RED compilado: 7 casos,
+4 FAIL por omisión silenciosa / 3 PASS, 0.244s. Final: 162 PASS / 0 FAIL / 0 SKIP,
+4.983s; arquitectura 56 PASS. Logs `other-adapters-reasoning-red.log`,
+`other-adapters-reasoning-final.log`, `other-adapters-reasoning-architecture.log`
+en `C:\Users\juanc\.codex\omni-m55-workers-20261006-2103`.
+La primera expansión del fixture no compiló por usar `with` en ModelRequest;
+se corrigió con su constructor antes del RED válido. No cuenta como fallo del
+producto. Los fixtures usan handlers HTTP y secretos sintéticos; no acreditan
+autenticación, disponibilidad de modelos ni gasto real.
+
+Reproducción:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*OtherAdaptersReasoningBoundaryTests' -class '*Anthropic*' -class '*ModelProviderResilienceTests' -class '*Reasoning*' -class '*ProviderState*'
+```
+
+FULL sobre 0e83092 terminó con 2545 casos / 2541 PASS / 0 FAIL / 4 SKIP por
+symlink, 268.165s (`responses-reasoning-native-full.log`); antecede este bloque.
+La suite completa posterior todavía debe verificarse.
+La auditoría de replay distingue cobertura existente de None/PreserveAcrossSteps
+y la frontera universal misma ruta/modelo de las diferencias operativas no
+especificadas de ProviderManaged/RequiredWithTools y del valor null. No se
+congelan expectativas inventadas ni se acredita cierre M5.5 con esta suite focal.
+
 ## Wire nativo Responses — 2026-10-07 03:26 UTC
 
 OpenAIResponsesProvider ya no omite `none`, `xhigh` y `max`. El adapter representa
