@@ -1,5 +1,15 @@
 # Objetivo activo: llegar a M6
 
+Estado vigente 2026-10-07 03:26 UTC / 2026-10-06 21:26 local:
+FULL50020 TERMINALexit0 sobre2781b71:2513=2509PASS/0FAIL/4SKIPsymlink,
+265.703s, included-quota-receipt-full.log. Uso parcial IncludedQuota y lease GC
+incluidos, no consultas autenticadas. Freeze levantado sólo tras terminal.
+Después, Responses native effort7labels/budgetfailclosed corregido con RED12/20
+y final159PASS/0FAIL10.302s/build0/0, arquitectura56PASS. Contrato y reproducción
+en m55-provider-state-checkpoint.md; no amplía permisos ni cambia modelo/policy.
+Full posterior pendiente. Luna propuestas/root fuente oficial e implementación.
+M55ACTIVE: Anthropic/ChatCompatible wire, storage opaco/replay, frozenM6 y audit7.
+
 Estado vigente 2026-10-07 03:17 UTC / 2026-10-06 21:17 local:
 uso parcial IncludedQuota corregido mediante recibos User/SQLite/CAS por invocación,
 sin perfil parcial ni reservas/cargos USD ficticios. Publicación y root FULL bajo
