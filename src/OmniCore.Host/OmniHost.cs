@@ -248,10 +248,12 @@ public sealed class OmniHost
 
     public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot,
         ModelCapabilityBoundary? boundary, IReadOnlyDictionary<string, string>? projectRestrictions,
-        RunId? runId = null)
+        RunId? runId = null, AgentProfile? agentProfile = null)
     {
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions, workspaceRoot, runId);
-        return ScriptedToolExecutor.WithWorkspace(catalog, policy, workspaceRoot, boundary);
+        IPermissionPolicy effectivePolicy = agentProfile is null ? policy
+            : new AgentProfilePermissionPolicy(policy, agentProfile, new PathBoundaryValidator(), workspaceRoot);
+        return ScriptedToolExecutor.WithWorkspace(catalog, effectivePolicy, workspaceRoot, boundary);
     }
 
     public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,
@@ -289,11 +291,13 @@ public sealed class OmniHost
         ModelCapabilityBoundary boundary, IReadOnlyDictionary<string, string>? projectRestrictions = null,
         RunId? runId = null, IAuditSink? audit = null,
         Func<InteractionRequested, string?>? interactionResponder = null, bool isInteractive = false,
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null, AgentProfile? agentProfile = null)
     {
         ArgumentNullException.ThrowIfNull(boundary);
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
-        return new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary, audit,
+        IPermissionPolicy effectivePolicy = agentProfile is null ? policy
+            : new AgentProfilePermissionPolicy(policy, agentProfile, new PathBoundaryValidator(), workspaceRoot);
+        return new ScriptedToolExecutor(catalog, effectivePolicy, workspaceRoot, boundary, audit,
             interactionResponder, isInteractive, GetWeakSandboxConsentState(runId),
             artifacts ?? CreateArtifactStore(WorkspaceDataDirectory(CreatePlatformPaths(), workspaceRoot)));
     }

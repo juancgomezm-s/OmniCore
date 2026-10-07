@@ -1,5 +1,49 @@
 # M5.5 — perfil de lane en el fingerprint
 
+## Integración efectiva parcial verificada — 2026-10-07 07:12 UTC
+
+`AgentProfilePermissionPolicy` intersecta el perfil resuelto con la política
+existente: preferencias y aprobaciones no elevan el techo. Comprueba rutas
+físicas, globs relativos al workspace, argv completo, red, secretos y shell.
+Reglas de proceso/red coincidentes se intersectan; la categoría `build` requiere
+un proceso estructurado con efecto compatible. Un `Ask` del techo del perfil no
+se convierte en `Allow` mediante un grant de tool.
+
+Los factories Host aceptan el perfil explícito y lo aplican al executor real.
+ExplorerTurn obtiene la definición del techo efectivamente aplicado, comprueba
+su identidad contra LaneCreated antes de llamar al provider y registra su
+configuración completa. Las preferencias solo ordenan las herramientas visibles;
+no crean un allowlist. Los callsites sin perfil mantienen el comportamiento previo.
+
+Evidencia root sobre checkpoint coordinado con Luna, con respuestas de modelo
+fixture offline y CAS real privado; **no son consultas autenticadas**:
+
+- Build de tests: 0 errores / 0 advertencias, 33.68 s.
+- Focal conjunta perfil/fingerprint/autoridad: 34 casos, 33 PASS / 1 FAIL,
+  1.061 s. Fallo detectado en ProductEffort de cliente (`Standard` frente a
+  `standard`); queda en corrección de Luna, no se debilita la assertion.
+- Perfil/fingerprint + CanonicalWriterArchitectureTests: 32 PASS / 0 FAIL /
+  0 SKIP, 0.984 s. Esta ejecución no certifica el bloque de autoridad.
+- Segundo checkpoint tras corrección de Luna: build 0 errores / 0 advertencias,
+  14.51 s; los mismos grupos más ModeAuthorityContractTests: **39 PASS / 0 FAIL /
+  0 SKIP**, 1.126 s. El wire conserva `standard` y se rechaza origen automático
+  no implementado; estas focales no acreditan los once criterios completos.
+
+Reproducción de la segunda ejecución:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*Architecture*' -class '*EffectiveAgentProfileTests' -class '*ReusableAgentProfileTests' -class '*RuntimeTurnFingerprintFactoryTests' -class '*RuntimeFingerprintContentTests'
+```
+
+**El objetivo sigue completo y abierto:** falta resolver la configuración User
+en los callsites normales de Lane/AgentExecution y verificar reopen/resume del
+perfil efectivo, integrar autoridad en fingerprint y aceptar todos los criterios
+de ADR0046/0047. También falta suite integral posterior y evidencia real M5.
+No se declara cerrado el hito por estas pruebas. Los techos del scheduler están
+asignados a M6 por ADR0047 §4; M5.5 debe admitir transiciones solo con autoridad
+válida y rechazar/diferir capacidades no implementadas, sin simular enforcement.
+
 ## Configuración reutilizable implementada — 2026-10-07 06:55 UTC
 
 Root implementó `AgentProfile`/`AgentProfileRegistry` en Abstractions, donde vive

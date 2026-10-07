@@ -19,6 +19,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     private readonly IPermissionPolicy _policy;
 
+    /// <summary>Actual applied ceiling, not a requested label or the identity of an execution.</summary>
+    internal AgentProfile? AgentProfile => (_policy as AgentProfilePermissionPolicy)?.Profile;
+
     private readonly string _workspaceRoot;
 
     /// <summary>
@@ -40,7 +43,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     private readonly IArtifactStore? _artifacts;
 
-    public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy)
+    public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy)
     {
         _catalog = catalog;
         _policy = policy;
@@ -50,7 +53,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _weakSandboxConsent = new WeakSandboxConsentState();
     }
 
-    public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot)
+    public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy, string workspaceRoot)
     {
         _catalog = catalog;
         _policy = policy;
@@ -65,13 +68,13 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// tras Prepare (antes de permisos) y de nuevo antes de ejecutar. La frontera restringe;
     /// jamás autoriza. null conserva la semántica de M2 (sin frontera).
     /// </summary>
-    public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
+    public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy, string workspaceRoot,
         ModelCapabilityBoundary? boundary)
         : this(catalog, policy, workspaceRoot, boundary, null, null, false)
     {
     }
 
-    public ScriptedToolExecutor(FakeCatalog catalog, ScriptedPermissionPolicy policy, string workspaceRoot,
+    public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy, string workspaceRoot,
         ModelCapabilityBoundary? boundary, IAuditSink? audit,
         Func<InteractionRequested, string?>? interactionResponder, bool isInteractive,
         WeakSandboxConsentState? weakSandboxConsent = null, IArtifactStore? artifacts = null)
@@ -93,18 +96,18 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow));
 
     /// <summary>Executor con el catálogo completo (fake + tools Core) y política por modo.</summary>
-    public static ScriptedToolExecutor WithCoreTools(FakeCatalog catalog, ScriptedPermissionPolicy policy) =>
+    public static ScriptedToolExecutor WithCoreTools(FakeCatalog catalog, IPermissionPolicy policy) =>
         new ScriptedToolExecutor(catalog, policy);
 
     /// <summary>Executor con herramientas Core y la raíz real del workspace (para el Turn).</summary>
-    public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, ScriptedPermissionPolicy policy,
+    public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, IPermissionPolicy policy,
         string workspaceRoot) => new ScriptedToolExecutor(catalog, policy, workspaceRoot);
 
     /// <summary>
     /// Executor con herramientas Core, raíz real del workspace y la frontera de capacidad del
     /// modelo (ADR-0044 §5). null = sin frontera (semántica M2).
     /// </summary>
-    public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, ScriptedPermissionPolicy policy,
+    public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, IPermissionPolicy policy,
         string workspaceRoot, ModelCapabilityBoundary? boundary) =>
         new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary);
 
