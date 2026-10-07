@@ -144,12 +144,14 @@ public sealed class ReusableAgentProfileTests
     [Fact]
     public void Missing_unknown_or_duplicate_configuration_never_supplies_authority()
     {
+        // Git checkouts may use CRLF; mutations must actually remove the required field.
+        var yaml = Yaml.ReplaceLineEndings("\n");
         Assert.Throws<InvalidDataException>(() => AgentProfileConfiguration.Load(
-            Yaml.Replace("      writes: []\n", "", StringComparison.Ordinal), ScopeLevel.User));
+            yaml.Replace("      writes: []\n", "", StringComparison.Ordinal), ScopeLevel.User));
         Assert.Throws<InvalidDataException>(() => AgentProfileConfiguration.Load(
-            Yaml.Replace("      allowShell: false", "      allowShell: maybe", StringComparison.Ordinal), ScopeLevel.User));
+            yaml.Replace("      allowShell: false", "      allowShell: maybe", StringComparison.Ordinal), ScopeLevel.User));
         Assert.Throws<InvalidDataException>(() => AgentProfileConfiguration.Load(
-            Yaml.Replace("    revision: 1", "    revision: 1\n    inventedGrant: true", StringComparison.Ordinal), ScopeLevel.User));
+            yaml.Replace("    revision: 1", "    revision: 1\n    inventedGrant: true", StringComparison.Ordinal), ScopeLevel.User));
         Assert.Throws<ArgumentException>(() => new AgentProfileRegistry([Profile(), Profile(revision: 2)]));
         Assert.Throws<ArgumentOutOfRangeException>(() => Profile(revision: 0));
         Assert.Throws<ArgumentException>(() => Profile(tools: [new ToolId("filesystem.read"), new ToolId("filesystem.read")]));
