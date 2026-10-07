@@ -201,3 +201,25 @@ este bloque. Todos los precios, uso y cuotas de estos tests son fixtures, no
 facturación ni consultas autenticadas. No se implementó scheduler/joins M6.
 Root implementó producción, integración y pruebas; Luna auditó las fronteras y
 detectó el caso cancelpre-send y la brecha de cualificación, sin escribir código.
+
+## Lector canónico compartido — 2026-10-07 01:22 UTC
+
+Root extrajo la interpretación primary/meta de ExplorerTurn a CanonicalSpendReader,
+sin cambiar su validación de identidad, marcadores no enviados, uso reportado,
+CAS, deduplicación ni sumas comprobadas. Explorer conserva la recolección de su
+journal y usa el mismo intérprete. UserWorkspaceSpendReader permite omitir el
+workspace excluido: las operaciones User independientes pueden leer todos los
+journals sin fabricar Session/Run/Turn. ReadAllWorkspaceDaily suma solamente sus
+totales diarios y rechaza evidencia incompleta en lugar de sustituirla por cero.
+
+Build terminal: 0 advertencias / 0 errores. Regresión focal final: 82 PASS,
+0 FAIL, 0 SKIP, 26.925s; canonical-reader-extraction-final.log en el directorio
+de evidencia de workers. Incluye cuatro controles nuevos de journals SQLite
+privados primary/meta, con/sin marcador no enviado, lectura repetida sin modificar
+el journal y exclusión explícita del workspace. Se solapa con los 78 casos de
+canonical-reader-extraction-focal.log; no sumar. Son fixtures offline y HTTP
+loopback, no consumo ni autenticación reales.
+
+Esta extracción NO conecta todavía el observador de cualificación ni suma sus
+recibos User al gasto diario. QualificationDailyReservationTests sigue pendiente
+de integración y corrección; no se declara cierre ni suite completa verde.
