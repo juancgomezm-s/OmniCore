@@ -750,6 +750,11 @@ public sealed class ExplorerTurn
                     var stepCost = _pricing?.CostUsd(resolved.Usage, resolved.ReportedUsageFields);
                     var completedDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
                         System.Globalization.CultureInfo.InvariantCulture);
+                    // Publish both the sensitive continuation and its response root under
+                    // one GC boundary through the completed-step FULL commit. The remote
+                    // call has already incurred usage, so cancellation cannot skip rooting.
+                    using var stepPublication = (_artifacts as IArtifactPublicationLease)
+                        ?.AcquirePublicationLease(CancellationToken.None);
                     string? stateDescriptor = null;
                     InvalidDataException? checkpointFailure = null;
                     try
@@ -829,6 +834,9 @@ public sealed class ExplorerTurn
                         _spendReservations!.ReleaseBeforeDispatch(stepReservation);
                 }
 
+                // Cancellation arriving with a completed response must retain its durable
+                // usage/state, but cannot publish tool effects or a new approval request.
+                cancellationToken.ThrowIfCancellationRequested();
                 finalText = null;
                 var toolBlocks = new List<ToolCallBlock>();
                 foreach (ContentBlock block in resolved.Content)
