@@ -32,6 +32,50 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    // Recovered from the old contrast audit, but exercise the current production palette.
+    // This is driver-backed UI coverage, not a claim about a human terminal or provider login.
+    [Fact]
+    public void Current_theme_keeps_readable_contrast_and_uniform_composer_surface() => RunTuiTest(fx =>
+    {
+        fx.StartTui();
+        fx.Wait(() => fx.App.Composer!.GetScheme().Normal.Background ==
+            new Terminal.Gui.Drawing.Color("#293648"), "production theme applied");
+        fx.Invoke(() =>
+        {
+            var composer = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
+            var scheme = fx.App.Composer!.GetScheme();
+            Assert.Equal(new Terminal.Gui.Drawing.Color("#293648"), composer.GetScheme().Normal.Background);
+            Assert.Equal(composer.GetScheme().Normal.Background, scheme.Normal.Background);
+            Assert.Equal(scheme.Normal.Background, scheme.Focus.Background);
+            Assert.Equal(new Terminal.Gui.Drawing.Color("#F4F7FB"), scheme.Normal.Foreground);
+            Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, ((FrameView)composer).BorderStyle);
+        });
+        foreach (var (foreground, background) in new[]
+        {
+            ("#F4F7FB", "#061822"), ("#F4F7FB", "#293648"),
+            ("#F4F7FB", "#202C3B"), ("#F4F7FB", "#344559"),
+            ("#B9CBDF", "#061822"), ("#85E6DF", "#061822"),
+            ("#FFFFFF", "#3D5068"), ("#061822", "#67D4D0")
+        })
+        {
+            var a = ThemeLuminance(foreground);
+            var b = ThemeLuminance(background);
+            var contrast = (Math.Max(a, b) + .05) / (Math.Min(a, b) + .05);
+            Assert.True(contrast >= 4.5, $"{foreground} on {background}: {contrast:F2}:1");
+        }
+    }, noColor: false);
+
+    private static double ThemeLuminance(string hex)
+    {
+        var color = System.Drawing.ColorTranslator.FromHtml(hex);
+        static double Linear(byte channel)
+        {
+            var value = channel / 255d;
+            return value <= .04045 ? value / 12.92 : Math.Pow((value + .055) / 1.055, 2.4);
+        }
+        return .2126 * Linear(color.R) + .7152 * Linear(color.G) + .0722 * Linear(color.B);
+    }
+
     [Theory]
     [InlineData(80, 25, "conversation")]
     [InlineData(100, 30, "conversation")]
