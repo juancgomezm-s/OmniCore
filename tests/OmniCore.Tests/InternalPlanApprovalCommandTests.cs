@@ -75,7 +75,7 @@ public sealed class InternalPlanApprovalCommandTests
             Assert.Equal(ambient, CausationScope.Current);
 
             var second = setup.Server.RequestPlanApprovalCommand();
-            Assert.Null(second.InteractionId);
+            Assert.Equal(first.InteractionId, second.InteractionId);
             Assert.Equal(RuntimeCommandOutcomeKind.NoOp, second.Ack.Outcome?.Kind);
             Assert.Null(second.Ack.FirstSeq);
             Assert.Null(second.Ack.LastSeq);
@@ -103,13 +103,20 @@ public sealed class InternalPlanApprovalCommandTests
         using (CausationScope.Begin(parentCause))
         using (ExecutionScope.Begin(parentExecution))
         {
-            Assert.Throws<IOException>(() => setup.Server.RequestPlanApprovalCommand());
+            var failed = setup.Server.RequestPlanApprovalCommand();
+            Assert.IsType<IOException>(failed.Failure);
+            Assert.Null(failed.InteractionId);
+            Assert.Equal("error", failed.Ack.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Rejected, failed.Ack.Outcome?.Kind);
+            Assert.Null(failed.Ack.FirstSeq);
+            Assert.Null(failed.Ack.LastSeq);
             Assert.Equal(before, setup.Store.CurrentSequence(setup.Session));
             Assert.Empty(setup.Store.ReadFrom(setup.Session, before + 1));
             Assert.Equal(parentCause, CausationScope.Current);
             Assert.Equal(parentExecution, ExecutionScope.Current);
 
             var retry = setup.Server.RequestPlanApprovalCommand();
+            Assert.NotEqual(failed.Ack.CommandId, retry.Ack.CommandId);
             Assert.NotNull(retry.InteractionId);
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, retry.Ack.Outcome?.Kind);
             Assert.Equal(parentCause, CausationScope.Current);
