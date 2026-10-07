@@ -165,6 +165,15 @@ public sealed class ArtifactGc
     private void MarkUserQualificationEvidence(HashSet<string> live, Queue<string> references,
         CancellationToken cancellationToken)
     {
+        MarkUserQualificationRoots(live, references, cancellationToken,
+            "model_qualification_evidence", SqliteModelQualificationStore.EvidenceSchemaMarker);
+        MarkUserQualificationRoots(live, references, cancellationToken,
+            "qualification_probe_receipts", SqliteModelQualificationStore.ProbeReceiptSchemaMarker);
+    }
+
+    private void MarkUserQualificationRoots(HashSet<string> live, Queue<string> references,
+        CancellationToken cancellationToken, string tableName, string schemaMarker)
+    {
         var database = Path.Combine(_dataDirectory, "user.db");
         if (!File.Exists(database)) return;
         if ((File.GetAttributes(database) & FileAttributes.ReparsePoint) != 0)
@@ -181,7 +190,8 @@ public sealed class ArtifactGc
             connection.Open();
             using (var schema = connection.CreateCommand())
             {
-                schema.CommandText = "SELECT type FROM sqlite_master WHERE name = 'model_qualification_evidence' COLLATE NOCASE";
+                schema.CommandText = "SELECT type FROM sqlite_master WHERE name = $table COLLATE NOCASE";
+                schema.Parameters.AddWithValue("$table", tableName);
                 var type = schema.ExecuteScalar();
                 if (type is null)
                 {
@@ -190,7 +200,7 @@ public sealed class ArtifactGc
                     if (Convert.ToInt64(migrations.ExecuteScalar()) != 0)
                     {
                         migrations.CommandText = "SELECT COUNT(*) FROM model_profile_migrations WHERE name=$marker";
-                        migrations.Parameters.AddWithValue("$marker", SqliteModelQualificationStore.EvidenceSchemaMarker);
+                        migrations.Parameters.AddWithValue("$marker", schemaMarker);
                         if (Convert.ToInt64(migrations.ExecuteScalar()) != 0)
                             throw new InvalidDataException("GC: falta la tabla de evidencia User instalada.");
                     }
@@ -201,7 +211,8 @@ public sealed class ArtifactGc
             }
             using var command = connection.CreateCommand();
             // Historical revisions are roots too, not just the currently selected profile.
-            command.CommandText = "SELECT artifact_algorithm, artifact_hash, artifact_size FROM model_qualification_evidence";
+            // Table names are private constants above, never renderer/user input.
+            command.CommandText = "SELECT artifact_algorithm, artifact_hash, artifact_size FROM " + tableName;
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {

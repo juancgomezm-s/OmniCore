@@ -51,7 +51,7 @@ public sealed partial class SqliteModelQualificationStore : IModelQualificationS
             Pooling = false,
         }.ToString();
         _conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!.CreateDataSource(connString)!.OpenConnection()!;
-        try { InitializeSchema(); }
+        try { Exec("PRAGMA synchronous=FULL"); InitializeSchema(); }
         catch { _conn.Dispose(); throw; }
     }
 
@@ -421,6 +421,7 @@ public sealed partial class SqliteModelQualificationStore : IModelQualificationS
         RepairSuiteStaleTraitCopies(migrationTransaction);
         MigrateLegacyRouteProfiles(migrationTransaction);
         InitializeEvidenceSchema(migrationTransaction);
+        InitializeProbeReceiptSchema(migrationTransaction);
         migrationTransaction.Commit();
     }
 

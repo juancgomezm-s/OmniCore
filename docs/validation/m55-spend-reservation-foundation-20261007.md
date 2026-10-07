@@ -1,5 +1,76 @@
 # Reserva monetaria compartida: fundamento e integración
 
+## Recibos de cualificación User (fundamento, todavía sin wiring diario)
+
+`QualificationProbeReceipt` identifica una ejecución local de cualificación y un
+probe; **no** representa AgentExecution/Session/Run/Turn. Se almacena append-only
+en `user.db.qualification_probe_receipts`, independiente del perfil y sus copias
+Stale. Clave `(ExecutionId, ProbeId)`, reserva única y ordinal único por ejecución.
+Un duplicado exacto es idempotente; un conflicto no sobrescribe el original.
+
+Conserva key hash, suite/versión/task-set, inicio y fin UTC por probe, scoring y
+terminación independientes, BillingMode observado, máximo reservado, cota de
+intentos, envíos observados, usage/máscara y coste USD nullable. El coste de este
+contrato es el cálculo del Host a partir de usage y precios explícitos, **no** un
+débito de cuenta. Un importe mayor que la reserva se conserva para auditar el
+sobreconsumo. Decimal se guarda como texto invariante y se recupera exactamente.
+No se suma cache/razonamiento otra vez; los slots no reportados son SQL NULL, no
+mediciones cero. Un contador reportado ausente, máscara/bool/enum desconocido o
+coste sin usage válido aborta la lectura. El cero observado de sends no prueba
+que una operación fuera gratis ni autoriza liberar una reserva.
+
+Los textos/resultados/errores pertenecen al CAS redactado, no a columnas de texto
+del recibo. `RecordProbeReceipt` exige namespace User y referencia verificable,
+toma lease CAS y transacción SQLite inmediata con synchronous FULL; el recibo se
+confirma antes de cualquier liquidación. Un fallo deja la referencia sin commit
+para GC, no inventa un recibo exitoso. Este store no invoca providers ni liquida.
+El schema tiene marcador propio; si se instaló y falta la tabla, store y GC fallan
+cerrado. Una base legacy sin capacidad instalada recibe una tabla vacía, sin
+fabricar recibos a partir de perfiles históricos.
+
+GC incluye cada recibo como raíz, incluso sin perfil ni suite completa, y sigue
+sus refs transitivas. Un blob ausente/corrupto o metadata inválida aborta el mark
+antes de borrar cualquier huérfano. Los recibos no dependen de ProfileRevision ni
+`source_run_revision`: copiar un perfil no representa una ejecución nueva.
+
+Verificación offline: focal 76 PASS / 0 FAIL / 0 SKIP, 4.086s,
+`qualification-receipt-store-expanded.log`, build 0 warnings/errores. SQLite/CAS
+reales privados; no consultas autenticadas ni gasto real. Barrido anterior a los
+últimos cuatro controles: 319 = 318 PASS / 1 FAIL, 12.336s,
+`qualification-receipt-all-with-daily-red.log`; el FAIL sigue siendo la integración
+diaria de cualificación no conectada. No acredita cierre ni full verde.
+
+Endurecimiento final (01:13 UTC): cabecera CAS canónica obligatoria
+`schema=omnicore.qualification-probe-receipt.v1` y propiedad única `receipt`,
+generada con `CanonicalObservationJson()` sin la propia Evidence (no hay hash
+autorreferencial). Identidad/UTC/máscara/importe/procedencia se contrastan exactamente
+al escribir y leer. El writer de texto redacta output/error antes del hash; si la
+redacción cambia la cabecera, el recibo no se acepta. Un coste relacional alterado
+con blob todavía válido se rechaza. El JSON usa decimal invariante canónico.
+Uso inconsistente se rechaza incluso con coste nulo; un view no puede instalar el
+marcador ni hacerse pasar por la tabla. Auditoría Luna: RED33=31PASS/2FAIL1.988s,
+`qualification-receipt-audit-red.log`; fallo view inicialmente enmascarado por
+cleanup del fixture al dejar abierto el store inesperadamente admitido. El fixture
+ahora siempre lo cierra. No atribuir ese IOException a GC o proveedor.
+
+Final: 81 PASS / 0 FAIL / 0 SKIP, 4.624s,
+`qualification-receipt-header-final.log`, build0warnings/0errores. Barrido actual
+328 = 327 PASS / 1 FAIL, 13.029s,
+`qualification-receipt-header-all-with-daily-red.log`; solo el diario Host pendiente.
+Cifras anteriores solapadas, no sumar. No consultas autenticadas ni gasto real.
+
+Reproducción:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noLogo -parallelMode none -class '*QualificationProbeReceiptStoreTests' -class '*M5QualificationEvidenceStoreTests' -class '*M5UserQualificationGcRootTests' -class '*QualificationProbeExecutionBoundaryTests' -class '*CanonicalWriterArchitectureTests'
+```
+
+Pendiente inmediato: productor Host conectado al observer, CAS por probe,
+reconciliación recibo-antes-Settle previa al lock de admisión y lectura diaria
+compartida desde ASK/ACT/meta/cualificación. No sumar artifacts de perfiles además
+de los recibos, ni valores settled del ledger como segunda fuente de consumo.
+
 ADR-0011 §6 exige reservar el máximo antes de una llamada pagada y liquidar con el
 uso real; ADR-0037 §7/0046 §3 establecen los límites de Run, Session y User diario.
 
