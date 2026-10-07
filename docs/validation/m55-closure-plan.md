@@ -1,5 +1,21 @@
 # Objetivo activo: cerrar M5 y M5.5
 
+## Namespace User: aceptación ausente — 2026-10-07 12:48 UTC
+
+Lectura SQLite real, `mode=ro`/`query_only`, sin migraciones ni claves:
+`C:/Users/juanc/AppData/Local/OmniCore/user.db` contiene **0 model_profiles,
+0 model_traits** y no tiene tablas adicionales de evidencia/recibos de
+cualificación. No había overrides de datos/config en el proceso auditor.
+Esto acredita ausencia de aceptación persistida en el namespace activo,
+no ausencia de login ni ausencia histórica de inferencia en otros namespaces.
+[Inventario reproducible y límites](m5-user-acceptance-inventory-20261007.md).
+
+El recorrido de Claude se contrastó otra vez con
+`OmniCoder.Core/Providers/SubscriptionUsage.cs`: ambos usan `--ax-screen-reader`
+con `/usage` por stdin. El Unknown observado no se sustituye por una ventana
+inventada ni acredita que la cuenta esté desconectada. No se cambió su CLI,
+cuenta o configuración para obtener un dato artificialmente.
+
 ## Checkpoint de recuperación y cuota real — 2026-10-07 12:44 UTC
 
 Luna completó controles de route drift con listener separado y cero dispatch,
