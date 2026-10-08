@@ -21,6 +21,8 @@ using PersistedSpend = OmniCore.Host.CanonicalSpendReader.Snapshot;
 /// </summary>
 public sealed class ExplorerTurn
 {
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IEventStore,
+        System.Collections.Concurrent.ConcurrentDictionary<(SessionId, RunId), SemaphoreSlim>> RunExecutionGates = new();
     public static readonly int MaxSteps = 8;
 
     private readonly Func<ModelRequest, CancellationToken, ModelResponse> _complete;
@@ -322,6 +324,8 @@ public sealed class ExplorerTurn
 
     public sealed class TurnResult
     {
+        /// <summary>Exact durable Turn produced or resumed by this invocation; null before admission.</summary>
+        public TurnId? TurnId { get; init; }
         public string? FinalText { get; }
 
         public StopReason StopReason { get; }
@@ -384,6 +388,35 @@ public sealed class ExplorerTurn
     public TurnResult Ask(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null,
         TurnInstructionSnapshot? instructionSnapshot = null, Action<TurnStarted>? turnStarted = null)
+    {
+        // One in-process canonical writer per Run. Independent Explorer instances must not
+        // both admit against the same pre-dispatch counters. User commands remain unblocked.
+        var gate = RunExecutionGates.GetValue(_store, _ => new()).GetOrAdd((sessionId, runId), _ => new(1, 1));
+        gate.Wait(cancellationToken);
+        try
+        {
+            var stream = new EventStream(_store, _codecs, sessionId);
+            var exactTurn = FindOpenTurn(stream, runId, laneId);
+            var grant = RunProjection.Replay(sessionId, runId, _codecs, stream.EventsSince(1)).ModeAuthority?.Authorization;
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (grant is not null)
+            {
+                var remaining = grant.GrantedAtUtc!.Value.AddSeconds(grant.Limits.MaxElapsedSeconds) - DateTimeOffset.UtcNow;
+                // Expired admission is diagnosed by the durable guard, not a premature throw.
+                if (remaining.TotalMilliseconds is > 0 and <= 4294967294)
+                    deadline.CancelAfter(remaining);
+            }
+            var result = AskCore(question, instruction, sessionId, runId, laneId, workingStateText,
+                deadline.Token, origin, instructionSnapshot, start => { exactTurn = start.TurnId; turnStarted?.Invoke(start); });
+            return new TurnResult(result.FinalText, result.StopReason, result.Steps, result.Usage,
+                result.ToolCalls, result.ResponseArtifactId, result.PendingInteractionId) { TurnId = exactTurn };
+        }
+        finally { gate.Release(); }
+    }
+
+    private TurnResult AskCore(string question, string instruction, SessionId sessionId, RunId runId,
+        LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin,
+        TurnInstructionSnapshot? instructionSnapshot, Action<TurnStarted>? turnStarted)
     {
         try { _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning); }
         catch (InvalidOperationException)
@@ -549,6 +582,7 @@ public sealed class ExplorerTurn
 
         void ValidateBeforeInvocation()
         {
+            ValidateUltraCode(invocation: true);
             ValidateTokenBudget(includeNextInvocation: true);
             var spend = CurrentSpend();
             var capped = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
@@ -569,6 +603,12 @@ public sealed class ExplorerTurn
                 throw new BudgetExceededException("límite diario alcanzado ($" + dailyCap + ")",
                     new("daily", _dailyCapUsd, dailyCap, null, today));
         }
+
+        void ValidateUltraCode(bool invocation = false, ToolCallId? toolCall = null) =>
+            UltraCodeExecutionGuard.Validate(stream.EventsSince(1), _codecs, _artifacts,
+                sessionId, runId, turnId, newTurn: !isResume && !started, invocation,
+                ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity,
+                    _maximumGenerationRequestAttempts), toolCall);
 
         void ValidateTokenBudget(bool includeNextInvocation)
         {
@@ -678,6 +718,7 @@ public sealed class ExplorerTurn
         {
             try
             {
+                ValidateUltraCode(invocation: true);
                 // Preserve uncapped Turn lifecycle diagnostics; monetary caps must block
                 // before context materialization can itself issue a billable request.
                 if (budget.MaxTokens is not null || _metaModelProvider is not null
@@ -906,6 +947,7 @@ public sealed class ExplorerTurn
                         catch (OverflowException) { throw UnrepresentableSpend(budgeted); }
                     }
                     if (checkpointFailure is not null) throw checkpointFailure;
+                    ValidateUltraCode();
                     // This invocation is already durable, but unreported usage cannot
                     // authorize tools or another invocation within the same Ask. Checking
                     // only the history loaded at entry would defer this guard until resume.
@@ -967,6 +1009,7 @@ public sealed class ExplorerTurn
                 {
                     try
                     {
+                        ValidateUltraCode(toolCall: call.Id);
                         guard.RecordToolCall();
                     }
                     catch (BudgetExceededException budgetEx)

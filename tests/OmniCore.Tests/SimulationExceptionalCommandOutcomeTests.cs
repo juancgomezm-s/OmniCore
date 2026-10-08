@@ -22,6 +22,7 @@ public sealed class SimulationExceptionalCommandOutcomeTests
         Assert.Equal(commandId, ack.CommandId);
         Assert.Equal("error", ack.Status);
         Assert.False(string.IsNullOrWhiteSpace(ack.Error));
+        Assert.DoesNotContain("private-command-error-marker", ack.Error);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
 
         var session = Assert.IsType<SessionId>(server.LastSessionId());
@@ -131,7 +132,7 @@ public sealed class SimulationExceptionalCommandOutcomeTests
     private sealed class ThrowingAuditSink : IAuditSink
     {
         public void Record(AuditRecord record, CancellationToken cancellationToken) =>
-            throw new IOException("controlled audit sink failure after event persistence");
+            throw new IOException("controlled audit sink failure after event persistence; Bearer private-command-error-marker");
     }
 
     private sealed class FailOnceStore : IEventStore

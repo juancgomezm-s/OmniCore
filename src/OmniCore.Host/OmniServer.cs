@@ -396,10 +396,19 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken) =>
-        SendCore(command, cancellationToken, trustedUserAction: false);
+        SafeCommandAck(SendCore(command, cancellationToken, trustedUserAction: false));
 
     public CommandAck SendUserAction(WireEnvelope command, CancellationToken cancellationToken) =>
-        SendCore(command, cancellationToken, trustedUserAction: true);
+        SafeCommandAck(SendCore(command, cancellationToken, trustedUserAction: true));
+
+    private static string SafeCommandError(string error)
+    {
+        try { return new PiiRedactor().Redact(error); }
+        catch (Exception) { return "No se pudo completar el command."; }
+    }
+
+    private static CommandAck SafeCommandAck(CommandAck ack) => ack.Error is null ? ack
+        : new CommandAck(ack.CommandId, ack.Status, SafeCommandError(ack.Error), ack.Outcome, ack.FirstSeq, ack.LastSeq);
 
     private CommandAck SendCore(WireEnvelope command, CancellationToken cancellationToken, bool trustedUserAction)
     {
@@ -2201,6 +2210,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     private CommandAck CommandOutcomeAck(string commandMessageId, string status, string? error,
         RuntimeCommandOutcome outcome, SessionId? session, long sequenceBefore, CommandId commandId)
     {
+        if (error is not null) error = SafeCommandError(error);
         if (session is null)
         {
             return new CommandAck(commandMessageId, status, error, outcome);
@@ -2386,7 +2396,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
             var result = execute(cancellationToken);
             var policyTransition = result.StopReason == StopReason.EndTurn
-                ? EvaluateCompletedTurnModePolicy(sessionId, runId, sequenceBefore.Value, cancellationToken) : null;
+                ? EvaluateCompletedTurnModePolicy(sessionId, runId, result.TurnId, sequenceBefore.Value, commandId, cancellationToken) : null;
             var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                 sessionId, sequenceBefore.Value, commandId);
             return (result, ack, null, policyTransition);
@@ -2402,18 +2412,21 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private InternalCommandResult? EvaluateCompletedTurnModePolicy(SessionId session, RunId run,
-        long before, CancellationToken cancellationToken)
+        TurnId? exactTurn, long before, CommandId commandId, CancellationToken cancellationToken)
     {
+        if (exactTurn is null) return null;
         lock (_modeAuthorityMutationGate)
         {
             var all = _store.ReadFrom(session, 1);
             var own = EventsForRun(all, run);
             var authority = RunProjection.Replay(session, run, _codecs, own).ModeAuthority;
             if (authority is null || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow)) return null;
-            var completed = own.Where(evt => evt.Sequence > before)
-                .Select(_codecs.Decode).OfType<TurnCompleted>().LastOrDefault();
+            var causal = SelectCommandResultEvents(all, session, before, commandId)
+                .Where(evt => evt.RunId == run).ToArray();
+            var completed = causal.Select(_codecs.Decode).OfType<TurnCompleted>()
+                .SingleOrDefault(completed => completed.TurnId == exactTurn);
             if (completed is null) return null;
-            var source = own.LastOrDefault(evt => evt.Sequence > before
+            var source = causal.LastOrDefault(evt => evt.Sequence > before
                 && _codecs.Decode(evt) is RunModeProposed proposal && proposal.TurnId == completed.TurnId);
             if (source is null || _codecs.Decode(source) is not RunModeProposed proposed) return null;
             // Only the explicit covered-plan predicate is implemented here. A model's reason
@@ -2808,6 +2821,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     private CommandAck FailedDurableCommandAck(string commandMessageId, SessionId session,
         long sequenceBefore, string error, bool newSession = false, bool restoreRunIdentity = true)
     {
+        error = SafeCommandError(error);
         var commandId = new CommandId(Guid.Parse(commandMessageId));
         DomainEvent[] persisted;
         try

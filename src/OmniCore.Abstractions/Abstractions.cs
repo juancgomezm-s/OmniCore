@@ -45,6 +45,15 @@ public interface IArtifactStore
     bool Verify(ContentHash hash, long expectedSize);
 }
 
+/// <summary>Optional exact, authenticated encryption for sensitive opaque checkpoints.
+/// Ordinary artifact readers only see ciphertext. The purpose binds decryption to the
+/// owning turn, model step and physical destination; implementations must fail closed.</summary>
+public interface IProtectedArtifactStore
+{
+    ArtifactRef PutProtectedText(string content, string purpose, string mediaType, ArtifactKind kind);
+    string GetProtectedText(ArtifactRef reference, string purpose);
+}
+
 /// <summary>Optional synchronous publication boundary: excludes GC until the caller has
 /// committed its referencing event. Acquire/dispose and PutText run on the owning thread.</summary>
 public interface IArtifactPublicationLease

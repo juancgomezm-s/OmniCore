@@ -19,9 +19,12 @@ using OmniCore.Tools;
 /// </summary>
 public sealed partial class ExplorerTurnAnthropicContinuationTests
 {
-    [Fact]
-    public void Reopen_restores_signed_provider_state_and_visible_reasoning_block_separately()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Reopen_restores_signed_provider_state_and_visible_reasoning_block_separately(bool sensitiveSignature)
     {
+        var signature = sensitiveSignature ? "registered-private-signature" : "SIG-LOCAL-FIXTURE";
         var root = Path.Combine(Path.GetTempPath(), "omni-anthropic-reasoning-reopen-"
             + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -32,13 +35,16 @@ public sealed partial class ExplorerTurnAnthropicContinuationTests
             var schema = new QuestionnaireSchema("Choose", null, new QuestionField[] {
                 new("approach", "Which?", null, QuestionKind.SingleChoice,
                     new[] { new QuestionOption("safe", "Safe", null) }, null, true, null, null, null) });
-            var firstStream = ToolUseTurnStream.Replace("filesystem.read", "user.ask", StringComparison.Ordinal)
+            var firstStream = ToolUseTurnStream.Replace("SIG-LOCAL-FIXTURE", signature, StringComparison.Ordinal)
+                .Replace("filesystem.read", "user.ask", StringComparison.Ordinal)
                 .Replace("\"{\\\"path\\\":\\\"fixture.txt\\\"}\"",
                     JsonSerializer.Serialize(QuestionnaireCodec.EncodeSchema(schema)), StringComparison.Ordinal);
             using var handler = new TwoSseHandler(firstStream);
             var provider = CreateProvider(handler);
             var codecs = EventCodecs.Create();
-            var artifacts = new FileArtifactStore(root);
+            var redactor = new SecretRedactor();
+            if (sensitiveSignature) redactor.RegisterSecret(signature);
+            var artifacts = new FileArtifactStore(root, redactor);
             store = new SqliteEventStore(journal);
             var session = SessionId.New();
             var run = TestRun.Open(store, session, mode: RunMode.Plan);
@@ -94,7 +100,7 @@ public sealed partial class ExplorerTurnAnthropicContinuationTests
             using (var state = JsonDocument.Parse(continuation.PayloadJson))
             {
                 var thinking = Assert.Single(state.RootElement.GetProperty("thinking").EnumerateArray());
-                Assert.Equal("SIG-LOCAL-FIXTURE", thinking.GetProperty("signature").GetString());
+                Assert.Equal(signature, thinking.GetProperty("signature").GetString());
                 Assert.Equal("Voy a revisar fixture.txt", thinking.GetProperty("thinking").GetString());
             }
 
@@ -125,14 +131,16 @@ public sealed partial class ExplorerTurnAnthropicContinuationTests
                     .Any(block => block.GetProperty("type").GetString() == "tool_use"));
             var wireThinking = Assert.Single(assistant.GetProperty("content").EnumerateArray(),
                 block => block.GetProperty("type").GetString() == "thinking");
-            Assert.Equal("SIG-LOCAL-FIXTURE", wireThinking.GetProperty("signature").GetString());
+            Assert.Equal(signature, wireThinking.GetProperty("signature").GetString());
             Assert.Equal("Voy a revisar fixture.txt", wireThinking.GetProperty("thinking").GetString());
 
             var events = store.ReadFrom(session, 1);
             Assert.Single(events.Select(codecs.Decode).OfType<TurnStarted>());
             Assert.Equal(2, events.Select(codecs.Decode).OfType<ModelStepCompleted>().Count());
-            Assert.All(events, evt => Assert.DoesNotContain("SIG-LOCAL-FIXTURE", evt.PayloadJson,
+            Assert.All(events, evt => Assert.DoesNotContain(signature, evt.PayloadJson,
                 StringComparison.Ordinal));
+            foreach (var blob in Directory.EnumerateFiles(Path.Combine(root, "blobs"), "*", SearchOption.AllDirectories))
+                Assert.DoesNotContain(signature, File.ReadAllText(blob));
         }
         finally
         {

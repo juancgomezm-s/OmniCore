@@ -157,7 +157,8 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
             }, executor, catalog, materializer,
                 new ExecutionFingerprint("scripted", "h", "t", "c", "o", "M3"), selection,
                 store!, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-                questionnaires: questionnaireService, maximumGenerationRequestAttempts: 1);
+                questionnaires: questionnaireService, maximumGenerationRequestAttempts: 1,
+                modelContextCapacity: 8192, pricing: new ModelPricing(0m, 0m));
 
             var suspended = MakeTurn().Ask("ask", "system", session, run, lane, string.Empty,
                 TestContext.Current.CancellationToken);
@@ -471,6 +472,8 @@ public sealed class ModeAuthoritySuspensionIntegrationTests
                 context: 8192
                 recommendedUsableContext: 4096
                 maxOutput: {{maxOutput}}
+                inputPricePerMillionUsd: 0
+                outputPricePerMillionUsd: 0
                 reasoning:
                   supported: true
                   effortLevels: [high]
