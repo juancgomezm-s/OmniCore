@@ -5,12 +5,12 @@
   - **riesgo residual aceptado:** el proceso `claude` corre con sandbox `Basic` (control del árbol y límites, ADR-0038 §3) y red, así que **puede leer fuera del worktree**;
   - como mitigación, se neutralizan `.claude/` y `.mcp.json` del repo dentro del worktree;
   - la opción `--permission-prompt-tool` requiere MCP y queda para M8 o después.
-- **Relacionado:** ADR-0011 §3.3 (sin OAuth de Anthropic), ADR-0008 (aislamiento)
+- **Relacionado:** ADR-0011 §3.3 (conexión por cuenta en reevaluación desde rev. 4), ADR-0008 (aislamiento)
 - **Spec:** §10, §14 (Delegated), §16, INV-004, INV-005, INV-015
 
 ## Contexto
 
-La suscripción Claude Pro/Max no puede usarse desde OmniCore mediante tokens OAuth, y OmniCore tampoco puede hacerse pasar por Claude Code (ADR-0011 §3.3). Sí existe una vía permitida. La página [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) dice que la restricción no impide que un usuario final inicie sesión, con su propia suscripción, en el binario **sin modificar** de Claude Code, incluso cuando una plataforma lo aloja. Condiciones de esa página:
+Este ADR define la ejecución delegada al CLI, no decide el diseño de un provider OAuth nativo. La exclusión arquitectónica de ese flujo se retiró en ADR-0011 rev. 4 por petición del usuario. La página [Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) describe la integración del binario **sin modificar** de Claude Code, incluso cuando una plataforma lo aloja. Condiciones de esa modalidad:
 
 - El binario se ejecuta tal como lo publica Anthropic, sin quitar ni restringir sus métodos de autenticación.
 - Cada usuario se autentica con sus propias credenciales. No se intermedia ni se revende uso.
