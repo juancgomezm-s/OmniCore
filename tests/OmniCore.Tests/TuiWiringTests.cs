@@ -32,6 +32,32 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    [Fact]
+    public void Agent_command_dispatches_exact_identity_through_turn_host_without_submitting_root_conversation() => RunTuiTest(fx =>
+    {
+        var host = new DelegationTurnHostFixture();
+        var id = Guid.NewGuid().ToString();
+        fx.StartTui(turnHost: host);
+        Type(fx, "/agent run " + id);
+        KeyWithEffect(fx, KeyCode.Enter, () => host.DelegationId == id, "delegación recibida por Host");
+        Assert.Equal(0, host.RootCalls);
+        fx.Wait(() => fx.App.Composer!.Text == "", "composer limpiado");
+        Type(fx, "/join");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "ayuda del join");
+        Assert.Contains("ownerExecutionId", OverlayText(fx.App.Overlay!));
+        Assert.Contains("All", OverlayText(fx.App.Overlay!));
+    });
+
+    private sealed class DelegationTurnHostFixture : ITuiTurnHost
+    {
+        internal string? DelegationId;
+        internal int RootCalls;
+        public System.Threading.Tasks.Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken token)
+        { Interlocked.Increment(ref RootCalls); return System.Threading.Tasks.Task.FromResult(0); }
+        public System.Threading.Tasks.Task<int> ExecuteDelegationAsync(string id, Action<string> diagnostics, CancellationToken token)
+        { Volatile.Write(ref DelegationId, id); return System.Threading.Tasks.Task.FromResult(0); }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

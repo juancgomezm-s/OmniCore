@@ -611,11 +611,17 @@ public sealed class ExplorerTurn
                     new("daily", _dailyCapUsd, dailyCap, null, today));
         }
 
-        void ValidateUltraCode(bool invocation = false, ToolCallId? toolCall = null) =>
+        void ValidateUltraCode(bool invocation = false, ToolCallId? toolCall = null)
+        {
+            DelegationBudgetGuard.Validate(stream.EventsSince(1), _codecs, _artifacts,
+                sessionId, runId, laneId, turnId, !isResume && !started, invocation, toolCall,
+                ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity, _maximumGenerationRequestAttempts),
+                ModelInvocationCostBound.TokenCeiling(_selection, _modelContextCapacity, _maximumGenerationRequestAttempts));
             UltraCodeExecutionGuard.Validate(stream.EventsSince(1), _codecs, _artifacts,
                 sessionId, runId, turnId, newTurn: !isResume && !started, invocation,
                 ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity,
                     _maximumGenerationRequestAttempts), toolCall);
+        }
 
         void ValidateTokenBudget(bool includeNextInvocation)
         {

@@ -21,12 +21,13 @@ public sealed class HostTools
 
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
         bool includeMutationTools = false, bool includeProcessTools = false,
-        SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null)
+        SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null,
+        bool includeControlTools = true)
     {
         _planPropose = new PlanProposeTool(planService);
-        var catalog = (includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog())
-            .Add(new UserAskTool())
-            .Add(new ReadFileTool(boundary))
+        var catalog = includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog();
+        if (includeControlTools) catalog = catalog.Add(new UserAskTool());
+        catalog = catalog.Add(new ReadFileTool(boundary))
             .Add(new ListDirectoryTool(boundary))
             .Add(new SearchTextTool(boundary));
         if (includeMutationTools)
@@ -45,7 +46,7 @@ public sealed class HostTools
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
         if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);
-        _catalog = catalog.Add(_planPropose).Add(new ModeProposeTool());
+        _catalog = includeControlTools ? catalog.Add(_planPropose).Add(new ModeProposeTool()) : catalog;
     }
 
     public static HostTools Default()
@@ -54,6 +55,10 @@ public sealed class HostTools
         var planService = new PlanService();
         return new HostTools(boundary, planService, includeSimulationTools: true, includeMutationTools: true);
     }
+
+    public static HostTools DelegatedReader(ArtifactReadTool? artifactReadTool = null) =>
+        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            artifactReadTool: artifactReadTool, includeControlTools: false);
 
     public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,

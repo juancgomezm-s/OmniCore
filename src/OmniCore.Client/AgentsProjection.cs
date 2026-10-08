@@ -45,7 +45,8 @@ public static class AgentPresentation
         {
             var state = lane.LaneState switch {
                 "Queued" => L("en cola · sin worker", "queued · no worker"),
-                "Running" => L("lane activa", "active lane"), "Blocked" => L("bloqueada", "blocked"),
+                "Running" => lane.DelegationState == "Returned" ? L("resultado por evaluar", "result awaiting evaluation")
+                    : L("lane activa", "active lane"), "Blocked" => L("bloqueada", "blocked"),
                 "Completed" => L("completada", "completed"), "Cancelled" => L("cancelada", "cancelled"),
                 "Failed" => L("falló", "failed"), _ => lane.LaneState,
             };
@@ -54,6 +55,10 @@ public static class AgentPresentation
             rows.Add(new(lane.Objective, ThemeRole.Muted));
             if (lane.Model is { } model) rows.Add(new(model, ThemeRole.Info));
             if (lane.ExecutionAmbiguous) rows.Add(new(L("Identidad de ejecución ambigua", "Ambiguous execution identity"), ThemeRole.Error));
+            if (lane.CancellationRequested && lane.DelegationState == "Accepted")
+                rows.Add(new(L("Cancelación solicitada · checkpoint pendiente", "Cancellation requested · checkpoint pending"), ThemeRole.Attention));
+            if (lane.ResultId is { } result) rows.Add(new("Result " + result + " · " + (lane.ResultDisposition ?? L("sin aceptar", "not accepted")), ThemeRole.Attention));
+            if (lane.PendingJoinIds is { Count: > 0 } joins) rows.Add(new("Join · " + string.Join(", ", joins), ThemeRole.Attention));
             if (!details) continue;
             rows.Add(new("Lane " + lane.LaneId, ThemeRole.Muted));
             rows.Add(new("Task " + lane.TaskId + " · " + lane.TaskState, ThemeRole.Muted));
@@ -61,6 +66,7 @@ public static class AgentPresentation
             if (lane.ExecutionId is { } execution) rows.Add(new("Execution " + execution + " · " + lane.ExecutionState, ThemeRole.Muted));
             if (lane.ParentExecutionId is { } parent) rows.Add(new("Parent " + parent, ThemeRole.Muted));
             if (lane.DelegationId is { } delegation) rows.Add(new("Delegation " + delegation + " · " + lane.DelegationState, ThemeRole.Muted));
+            if (lane.ResultSummary is { } summary) rows.Add(new(summary, ThemeRole.Muted));
             if (lane.LastContextEventId is { } source) rows.Add(new("Context source " + source, ThemeRole.Muted));
             if (lane.SelectableContextItemIds is { Count: > 0 } items)
                 rows.Add(new(L("Selección disponible: ", "Available selection: ") + string.Join(", ", items), ThemeRole.Muted));

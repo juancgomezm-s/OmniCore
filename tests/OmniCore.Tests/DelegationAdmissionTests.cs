@@ -222,7 +222,7 @@ public sealed class DelegationAdmissionTests
         Assert.Empty(fx.Payloads.OfType<DelegationCreated>());
     }
 
-    private sealed class Fixture : IDisposable
+    internal sealed class Fixture : IDisposable
     {
         private string Root { get; } = Path.Combine(Path.GetTempPath(), "omni-admission-" + Guid.NewGuid().ToString("N"));
         private string Journal => Path.Combine(Root, "journal.db");

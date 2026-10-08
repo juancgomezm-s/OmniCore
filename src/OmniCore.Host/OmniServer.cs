@@ -436,6 +436,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
         if (commandName == "delegation.create") return CreateQueuedDelegation(command, trustedUserAction, cancellationToken);
+        if (commandName is "delegation.cancel" or "delegation.disposition" or "execution.join" or "execution.join.cancel")
+            return ControlDelegation(command, commandName, trustedUserAction, cancellationToken);
         if (commandName == "command.invoke")
         {
             try
@@ -2386,6 +2388,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(execute);
+        using var capacity = AgentCapacity.For(_store).TryAcquire(sessionId, runId, null, cancellationToken);
+        if (capacity is null)
+            return (null, new CommandAck(Ids.NewV7(), "ok", null,
+                RuntimeCommandOutcome.Deferred("WaitingForCapacity")), null, null);
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var messageId = commandId.Value.ToString();

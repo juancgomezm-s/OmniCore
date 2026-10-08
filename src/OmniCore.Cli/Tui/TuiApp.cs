@@ -373,7 +373,7 @@ public sealed class TuiApp
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
         var names = ReadStringArray(_client.Query("commands", CancellationToken.None)?.Json, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate" });
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join" });
         var suggestions = ComposerAutocomplete.Complete(draft,
             names, ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
         // Keep common entry points visible as the catalog grows. Typed prefixes retain
@@ -411,6 +411,8 @@ public sealed class TuiApp
     {
         "/agents" => Ui("Inspeccionar agentes y lanes del Run", "Inspect Run agents and lanes"),
         "/delegate" => Ui("Encolar trabajo de sólo lectura con límites", "Queue bounded read-only work"),
+        "/agent" => Ui("Ejecutar, cancelar o evaluar un delegado", "Run, cancel or evaluate a delegate"),
+        "/join" => Ui("Esperar resultados aceptados · All/Any/Quorum/Explicit", "Wait for accepted results · All/Any/Quorum/Explicit"),
         "/act" => Ui("Ejecutar cambios explícitos en archivos", "Execute explicit file changes"),
         "/mode" => Ui("Fijar el modo predeterminado del próximo Run", "Set the next Run's default mode"),
         "/runmode" => Ui("Cambiar el modo del Run activo", "Change the active Run's mode"),
@@ -560,6 +562,53 @@ public sealed class TuiApp
             ShowMessage(AgentPresentation.Describe(_agents.Snapshot, _locale));
             _composer.Text = ""; return;
         }
+        if (input == "/agent" || input.StartsWith("/agent ", StringComparison.Ordinal))
+        {
+            try
+            {
+                var parts = input.Split(' ', 5, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3 || !Guid.TryParse(parts[2], out _))
+                    throw new ArgumentException("/agent run|cancel <DelegationId> · /agent accept|reject|rework <DelegationId> <ResultId> <razón>");
+                if (parts[1] == "run")
+                { if (StartModelTurn("", delegationId: parts[2])) _composer.Text = ""; return; }
+                if (_client is not ITrustedUserActionClient trusted) throw new InvalidOperationException("Trusted user client required");
+                var fields = JsonObj.Field("delegationId", parts[2]);
+                var name = "delegation.cancel";
+                if (parts[1] != "cancel")
+                {
+                    if (parts.Length != 5 || !Guid.TryParse(parts[3], out _)) throw new ArgumentException("ResultId y razón requeridos");
+                    var outcome = parts[1] switch { "accept" => "Accepted", "reject" => "Rejected", "rework" => "ReworkRequested", _ => throw new ArgumentException("Acción desconocida") };
+                    fields += "," + JsonObj.Field("resultId", parts[3]) + "," + JsonObj.Field("outcome", outcome) + "," + JsonObj.Field("reason", parts[4]);
+                    name = "delegation.disposition";
+                }
+                var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", name) + "," + fields + "}"), CancellationToken.None);
+                ShowMessage(ack.Error ?? ack.Outcome?.Reason ?? Ui("Acción registrada", "Action recorded")); PollEvents();
+            }
+            catch (Exception failure) when (failure is ArgumentException or InvalidOperationException) { ShowMessage(failure.Message); }
+            _composer.Text = ""; return;
+        }
+        if (input == "/join" || input.StartsWith("/join ", StringComparison.Ordinal))
+        {
+            try
+            {
+                if (_client is not ITrustedUserActionClient trusted) throw new InvalidOperationException("Trusted user client required");
+                string payload;
+                if (input.StartsWith("/join cancel ", StringComparison.Ordinal))
+                    payload = "{" + JsonObj.Field("cmd", "execution.join.cancel") + "," + JsonObj.Field("joinId", input[13..].Trim()) + "}";
+                else
+                {
+                    if (input.Length <= 6) throw new ArgumentException("/join {\"ownerExecutionId\":\"UUID\",\"kind\":\"All\",\"members\":[\"UUID\"]} · /join cancel <JoinId>");
+                    using var document = System.Text.Json.JsonDocument.Parse(input[6..]);
+                    var fields = document.RootElement.EnumerateObject().ToArray();
+                    if (fields.Any(f => f.Name == "cmd")) throw new ArgumentException("cmd no permitido");
+                    payload = "{\"cmd\":\"execution.join\"," + string.Join(",", fields.Select(f => f.ToString())) + "}";
+                }
+                var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+                ShowMessage(ack.Error ?? ack.Outcome?.Reason ?? Ui("Join registrado", "Join recorded")); PollEvents();
+            }
+            catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or InvalidOperationException) { ShowMessage(failure.Message); }
+            _composer.Text = ""; return;
+        }
         if (input == "/delegate" || input.StartsWith("/delegate ", StringComparison.Ordinal))
         {
             try
@@ -573,8 +622,8 @@ public sealed class TuiApp
                 var ack = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()), CancellationToken.None);
                 ShowMessage(ack.Status != "ok" ? ack.Error ?? Ui("Delegación rechazada", "Delegation rejected")
                     : ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred ? "Deferred · " + ack.Outcome.Reason
-                    : Ui("Delegación en cola. El scheduler aún no está implementado; no se ha iniciado ningún worker.",
-                        "Delegation queued. Scheduler is not implemented yet; no worker has started."));
+                    : Ui("Delegación en cola. Usa /agents y /agent run <DelegationId> para ejecutarla respetando FIFO.",
+                        "Delegation queued. Use /agents and /agent run <DelegationId> to dispatch in FIFO order."));
                 PollEvents();
             }
             catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
@@ -624,7 +673,7 @@ public sealed class TuiApp
         PollEvents();
     }
 
-    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null)
+    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null, string? delegationId = null)
     {
         if (_turnHost is null) return false;
         if (_turnBusy) { ShowMessage(Ui("Ya hay un turno procesando. Espera o usa /cancel.", "A turn is already processing. Wait or use /cancel.")); return false; }
@@ -643,7 +692,8 @@ public sealed class TuiApp
                     if (messages.Count == 4) messages.RemoveAt(0);
                     messages.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await (resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
+                code = await (delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)
+                    : resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
                     : resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
                     : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
                     : _turnHost.ExecuteAsync(input, diagnostic, cancellation.Token)).ConfigureAwait(false);

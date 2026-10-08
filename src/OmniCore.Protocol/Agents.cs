@@ -8,7 +8,9 @@ public sealed record AgentLaneSnapshot(string LaneId, string TaskId, string? Par
     string LaneState, string TaskState, string ProfileId, long? ProfileRevision,
     string? ExecutionId, string? ParentExecutionId, string? ExecutionState,
     string? DelegationId, string? DelegationState, string? Model,
-    string? LastContextEventId, bool ExecutionAmbiguous, IReadOnlyList<string>? SelectableContextItemIds = null);
+    string? LastContextEventId, bool ExecutionAmbiguous, IReadOnlyList<string>? SelectableContextItemIds = null,
+    string? ResultId = null, string? ResultDisposition = null, string? ResultSummary = null,
+    IReadOnlyList<string>? PendingJoinIds = null, bool CancellationRequested = false);
 public sealed record AgentsSnapshot(string SessionId, string? RunId, long BasedOnJournalSequence,
     bool ProjectionUnavailable, IReadOnlyList<AgentLaneSnapshot> Lanes);
 

@@ -316,6 +316,66 @@ formularios de delegación/inspector de transcript. No se declara M6 completo, n
 se adelanta el aislamiento TaskPacket/worktrees de M7 o Memory de M8/M10.
 Evidencia: [admisión e inspección](../validation/agents-admission-20261008.txt).
 
+### Avance parcial de M6 — dispatch, cancelación, resultados y joins (2026-10-08)
+
+El bloque anterior de cola se conecta a un dispatcher explícito de lectura. `/agent run
+<DelegationId>` usa la composición real de `OmniCliRuntime`/`TuiTurnHost`, selección y
+adapter de provider; no ejecuta un callback del modelo con autoridad ampliada. Hay un
+único cupo real en proceso por store, compartido con el principal, y prioridad FIFO
+por secuencia de admisión. Cupo ocupado devuelve `Deferred(WaitingForCapacity)`;
+pedir un hijo posterior devuelve `Deferred(QueuePredecessor)`. No acredita todavía
+el scheduler concurrente general ni `RunBudgetPool` con reservas/releases.
+
+Antes del inicio revalida Run activo, ORQ/UltraCode vigente, perfil revisionado y
+subconjunto literal de lectura, fronteras sin invocaciones abiertas y ownership.
+Task Started, Lane Provisioning/Started, AgentExecution Started, binding Managed
+con handshake y Delegation Accepted se confirman en un batch Barrier atribuido.
+El hijo consume el packet SelectedProjection mediante el adapter existente. Su
+catálogo sólo ofrece lectura/referencias/artifacts propios: no escribe, ejecuta
+procesos, pregunta al usuario, propone plan ni cambia modo. El executor aplica el
+techo de perfil y la política de permisos real, no sólo un prompt de sólo lectura.
+
+Los guards del Run/sesión/ruta permanecen vigentes. Los hijos operativos añaden
+sus topes de Turns, tools, tokens y costo con replay propio antes de cada frontera;
+invocación de cota desconocida o consumo incompleto no equivale a presupuesto libre.
+No heredan consentimiento de una invocación de cuota del principal ni abren un
+resume de ruta atribuido al principal: ruta no autorizada o cuota baja difieren/
+detienen el trabajo. El deadline usa el tiempo restante del grant, no lo renueva.
+Los fixtures legacy de contexto que sólo congelan registros, sin handshake de
+dispatch operativo, conservan su semántica anterior; no se declaran workers reales.
+
+`delegation.cancel` cancela individualmente cola o Task con resultado aún sin aceptar.
+Para un worker propio registra `delegation.cancellation_requested` v1, con causación
+del command del usuario, antes de señalar su token. Eso no declara que haya parado:
+el checkpoint escribe lifecycle y Task/Lane al llegar a una frontera asentada. Una
+invocación abierta conserva evidencia para recuperación. No se mata ni adopta un
+proceso ajeno ni una ejecución de ownership desconocido tras reinicio.
+
+El resultado `core.explorer.v1` se publica íntegro e inmutable en CAS: versión,
+outcome declarado, summary, findings y remainingIssues; errores de tools quedan
+visibles. No importa capacidades arbitrarias ni mutations de plan del texto del
+modelo. AgentExecution Completed, AgentResult Produced y Delegation Returned se
+confirman juntos, pero no completan Task/Lane. La evaluación confiable exige el
+ResultId exacto y una razón; `Accepted` completa Task/Lane, `Rejected`/`ReworkRequested`
+las bloquean. La evaluación del usuario conserva EvaluatorExecutionId null y su
+CommandCausation; no se atribuye falsamente al modelo principal. Una nueva revisión
+de trabajo requiere nueva tarea/resultado, no reescribir una aceptación existente.
+
+`execution.join` admite hijos directos del principal del mismo Run. El evaluator
+determinista soporta All/Any/Quorum/Explicit sobre resultados explícitamente
+aceptados, en orden de miembros, no sólo ejecutores terminados. El padre queda
+Task/Lane Blocked hasta que todos sus joins pendientes se resuelven; la resolución
+lo desbloquea, sin declarar Task Completed ni inventar un nuevo Turn. Miembros
+fallidos/rechazados esperan conforme a Wait; `execution.join.cancel` abandona el
+join explícitamente. Identidades, resultados, dispositions, joins y cancelación
+solicitada se inspeccionan en `/agents` y el panel desde el journal reabierto.
+
+No se declara M6 cerrado: faltan scheduling paralelo/background y recursos generales,
+pool durable de Run, FanOut/FanIn agregado, supervisor externo operativo con
+mailbox/wake, recuperación de ejecuciones inciertas y formularios/transcript del
+inspector. Tampoco se adelantan escritura aislada M7 ni Memory M8/M10.
+Evidencia: [ciclo de delegación](../validation/delegation-lifecycle-20261008.txt).
+
 ## Criterios de salida de M5.5
 
 Deben quedar cubiertos por tests deterministas:

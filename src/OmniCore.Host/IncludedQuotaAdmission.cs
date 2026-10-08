@@ -94,7 +94,10 @@ internal static class IncludedQuotaAdmission
         var pending = requests.Keys.FirstOrDefault(id => !resolved.Contains(id));
         if (pending is not null) return pending;
         var interaction = InteractionId.New();
-        using var execution = ExecutionScope.Begin(new ExecutionScopeState(run, ExecutionScope.Current?.TaskId, lane, turn));
+        var owner = ExecutionScope.Current;
+        using var execution = ExecutionScope.Begin(new ExecutionScopeState(run,
+            owner?.RunId == run && owner.LaneId == lane ? owner.TaskId : null, lane, turn,
+            ExecutionId: owner?.RunId == run && owner.LaneId == lane ? owner.ExecutionId : null));
         new EventStream(server.AcquireStore(), server.AcquireCodecs(), session).Append(
             new InteractionRequested(interaction, InteractionKind.BudgetExceeded, subject,
                 "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_quota\",\"intent\":\"allow\"}]",

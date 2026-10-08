@@ -66,6 +66,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.DelegationAccepted())
             .Plus(Typed.DelegationReturned())
             .Plus(Typed.DelegationFailed())
+            .Plus(Typed.DelegationCancellationRequested())
             .Plus(Typed.ExecutionJoinCreated())
             .Plus(Typed.ExecutionJoinResolved())
             .Plus(Typed.ExecutionJoinFailed())
@@ -403,6 +404,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(DelegationAccepted))]
 [JsonSerializable(typeof(DelegationReturned))]
 [JsonSerializable(typeof(DelegationFailed))]
+[JsonSerializable(typeof(DelegationCancellationRequested))]
 [JsonSerializable(typeof(ExecutionJoinCreated))]
 [JsonSerializable(typeof(ExecutionJoinResolved))]
 [JsonSerializable(typeof(ExecutionJoinFailed))]
@@ -634,6 +636,9 @@ public sealed class Typed
 
     public static CodecPair DelegationFailed() =>
         Of(EventType.Of("delegation.failed"), EventJsonContext.Default.DelegationFailed);
+
+    public static CodecPair DelegationCancellationRequested() =>
+        Of(EventType.Of("delegation.cancellation_requested"), EventJsonContext.Default.DelegationCancellationRequested);
 
     public static CodecPair ExecutionJoinCreated() =>
         Of(EventType.Of("execution_join.created"), EventJsonContext.Default.ExecutionJoinCreated);
