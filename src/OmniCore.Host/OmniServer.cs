@@ -18,7 +18,7 @@ using System.Runtime.CompilerServices;
 /// (ADR-0019 §1). Traduce los comandos wire a llamadas del Engine y acumula los eventos wire.
 /// En M1 atiende <c>sim</c> y la query <c>state</c>.
 /// </summary>
-public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
+public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 {
     private static readonly ConditionalWeakTable<IEventStore, object> ModeAuthorityGates = new();
 
@@ -435,6 +435,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == "delegation.create") return CreateQueuedDelegation(command, trustedUserAction, cancellationToken);
         if (commandName == "command.invoke")
         {
             try
@@ -1667,6 +1668,9 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
         if (name == "sessionSidebar")
             return new SessionQueryResult(name, _lastSessionId is null ? "null"
                 : SidebarJson.Encode(SessionSidebarReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _recoveryProblem is not null)));
+        if (name == "agents")
+            return new SessionQueryResult(name, _lastSessionId is null ? "null"
+                : AgentsJson.Encode(AgentLaneReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _artifacts)));
         if (name == "sessionObservability" || name.StartsWith("sessionObservability:", StringComparison.Ordinal))
         {
             if (_lastSessionId is null) return new SessionQueryResult("sessionObservability", "null");
@@ -2399,6 +2403,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             sequenceBefore = _store.CurrentSequence(sessionId);
             using var internalCommand = ambientCommand is null
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+            using var agentInvocation = HostAgentInvocation.Begin(_store, sessionId, runId);
             var result = execute(cancellationToken);
             var policyTransition = result.StopReason == StopReason.EndTurn
                 ? EvaluateCompletedTurnModePolicy(sessionId, runId, result.TurnId, sequenceBefore.Value, commandId, cancellationToken) : null;

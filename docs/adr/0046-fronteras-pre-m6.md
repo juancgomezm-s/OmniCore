@@ -256,13 +256,65 @@ Los hechos siguen sometidos al presupuesto del hijo y no desplazan su intención
 actual. Los antiguos PacketRef genéricos no se reinterpretan como SelectedProjection.
 
 Las pruebas recorren un `ExplorerTurn` real de padre e hijo con provider scripted,
-SQLite reabierto, CAS y presupuesto. Este avance no acredita scheduler, joins,
-admisión por command desde TUI/CLI, selección efectiva de perfiles ni supervisión
-de M6. Los hechos de delegación en tests se publican explícitamente como fixtures;
-no representan un command operativo ni autorización de gasto/modo/permisos.
+SQLite reabierto, CAS y presupuesto. Ese bloque de contexto no acredita por sí solo
+scheduler, joins, admisión por command, selección efectiva de perfiles ni supervisión
+de M6. Sus hechos de aceptación se publican como fixtures, no workers operativos.
 Tampoco adelanta Session Memory (M8) o Memory multiscoped (M10).
 Evidencia: [validación de contexto](../validation/context-inheritance-20261008.txt).
 Conexión packet: [validación de delegación](../validation/delegation-context-20261008.txt).
+
+### Avance parcial de M6 — identidad, admisión a cola e inspección (2026-10-08)
+
+El command interno de Ask registra el `AgentExecutionStarted` del principal de forma
+lazy, dentro del primer Ask real, antes de su Turn/snapshot. Un callback sintético,
+una excepción sin efectos o una interacción todavía pendiente no crea ejecutores.
+La identidad se reutiliza entre Turns y tras reapertura; dos ejecutores posibles en
+una Lane se rechazan por ambigüedad, no por recencia. El scope de Turn conserva la
+identidad explícita que coincida con Task/Lane/Run y su inicio durable. Un inicio
+registrado no es una medición de liveness, resultado aceptado o completion del Run.
+
+`delegation.create` es una acción explícita del usuario a través de
+`ITrustedUserActionClient`, no una tool del modelo ni una decisión basada en `origin`.
+Este primer corte sólo admite un hijo directo del principal en **ORQ**, con límites
+UltraCode vigentes y perfiles configurados/revisionados. ORQ estándar sin límites de
+coordinación durables devuelve `Deferred(CoordinationLimitsUnavailable)`; no se
+fabrica una autorización ilimitada ni se activa UltraCode automáticamente.
+
+El perfil hijo debe ser de sólo lectura: sin escritura, procesos, shell, red o
+secretos; sus reglas de lectura deben ser un subconjunto literal de las del padre
+(no se infiere inclusión entre globs). El techo de perfil no concede permisos.
+Los límites de agentes/profundidad y presupuestos explícitos del hijo se comprueban
+contra los límites vigentes y los del Run. Se reutilizan los lectores canónicos de
+consumo principal/meta y tokens; consumo desconocido o invocación abierta bloquea la
+admisión. Los techos de todos los hijos admitidos se suman conservadoramente para
+las siguientes admisiones, sin liberar slots implícitamente. No constituye una
+reserva de `RunBudgetPool`: el principal mantiene sus guards actuales y el futuro
+dispatcher debe revalidar recursos restantes; la cola no garantiza presupuesto
+o capacidad de ejecución futuros.
+
+La fuente es un EventId exacto de `ModelStepStarted`, atribuido al principal del Run
+actual. La preparación valida la selección antes de crear la Task/Lane. El publisher
+publica el packet bajo lease y confirma **TaskCreated + TaskReady + LaneCreated +
+DelegationCreated** en un único batch Barrier con scopes padre/hijo separados.
+`Accepted` en el ACK significa admisión a cola; no se emite `DelegationAccepted`,
+no hay `AgentExecutionStarted` hijo y no se llama a ningún proveedor. Reutilizar un
+CommandId ya escrito se rechaza y remite a inspección; nunca crea otro hijo. Una
+excepción posterior al commit devuelve ACK `Accepted` con error y rango durable,
+no una falsa afirmación de rollback. Un blob publicado sin batch queda sin raíz
+canónica y sujeto al GC existente, no se borra en una compensación improvisada.
+
+`agents` proyecta Task/Lane/Profile/Execution/Delegation y modelo observado por Lane,
+con secuencia de journal, fuente de contexto e IDs elegibles, sin exportar contenido
+privado. El cliente descarta snapshots de otra Session/anteriores y los limpia al
+cambiar sesión. La TUI incorpora `core.agents`, `/agents` y `/delegate <JSON>`; la
+Lane hija muestra **en cola · sin worker**. El inspector no mezcla transcripts hijos
+con el chat principal ni deduce progreso de un PID/heartbeat.
+
+Pendientes: scheduler/capacidad y release de reservas, dispatch hijo con su routing
+y permisos efectivos, joins, binding/supervisión y aceptación de resultados,
+formularios de delegación/inspector de transcript. No se declara M6 completo, ni
+se adelanta el aislamiento TaskPacket/worktrees de M7 o Memory de M8/M10.
+Evidencia: [admisión e inspección](../validation/agents-admission-20261008.txt).
 
 ## Criterios de salida de M5.5
 

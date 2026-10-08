@@ -18,6 +18,7 @@ public sealed class TuiApp
     private readonly Localization _localization;
     private readonly ClientProjection _projection;
     private readonly SessionSidebarProjection _sidebarProjection = new();
+    private readonly AgentsProjection _agents = new();
     private readonly SessionObservabilityProjection _observability = new();
     private readonly ModelPolicyHost _policies;
     private ClientState _state = ClientState.Empty();
@@ -372,9 +373,13 @@ public sealed class TuiApp
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
         var names = ReadStringArray(_client.Query("commands", CancellationToken.None)?.Json, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente" });
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate" });
         var suggestions = ComposerAutocomplete.Complete(draft,
             names, ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
+        // Keep common entry points visible as the catalog grows. Typed prefixes retain
+        // alphabetical completion, and /act remains the default first action.
+        if (draft == "/") suggestions = suggestions.DistinctBy(suggestion => suggestion.Value)
+            .OrderBy(suggestion => suggestion.Value switch { "/act" => 0, "/models" => 1, _ => 2 }).ToArray();
         _completion.Text = string.Join("   ", suggestions.Take(5).Select(suggestion => suggestion.Value));
         HideCommandHelper();
         if (draft[0] != '/' || draft.Any(char.IsWhiteSpace) || _overlay is not null || _window is null) return;
@@ -404,6 +409,8 @@ public sealed class TuiApp
 
     private string CommandDescription(string command) => command switch
     {
+        "/agents" => Ui("Inspeccionar agentes y lanes del Run", "Inspect Run agents and lanes"),
+        "/delegate" => Ui("Encolar trabajo de sólo lectura con límites", "Queue bounded read-only work"),
         "/act" => Ui("Ejecutar cambios explícitos en archivos", "Execute explicit file changes"),
         "/mode" => Ui("Fijar el modo predeterminado del próximo Run", "Set the next Run's default mode"),
         "/runmode" => Ui("Cambiar el modo del Run activo", "Change the active Run's mode"),
@@ -547,6 +554,33 @@ public sealed class TuiApp
         if (input == "/login") { ShowAccount(); _composer.Text = ""; return; }
         if (input == "/models") { ShowModelPicker(); _composer.Text = ""; return; }
         if (input == "/sidebar") { ToggleSidebar(); _composer.Text = ""; return; }
+        if (input == "/agents")
+        {
+            _agents.Poll(_client);
+            ShowMessage(AgentPresentation.Describe(_agents.Snapshot, _locale));
+            _composer.Text = ""; return;
+        }
+        if (input == "/delegate" || input.StartsWith("/delegate ", StringComparison.Ordinal))
+        {
+            try
+            {
+                if (_client is not ITrustedUserActionClient trusted)
+                    throw new InvalidOperationException(Ui("El cliente no permite delegación local", "Client cannot admit local delegation"));
+                var request = input.Length > 10 ? AgentsJson.DecodeRequest(input[10..]) : null;
+                if (request is null) throw new ArgumentException(Ui("Uso: /delegate ", "Usage: /delegate ")
+                    + "{\"profileId\":\"UUID\",\"sourceEventId\":\"UUID de /agents\",\"objective\":\"Revisar\",\"selectedItemIds\":[],"
+                    + "\"maximumPacketBytes\":8192,\"maxTurns\":2,\"maxToolCalls\":4,\"maxTokens\":4096,\"maxCostUsd\":0}");
+                var ack = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()), CancellationToken.None);
+                ShowMessage(ack.Status != "ok" ? ack.Error ?? Ui("Delegación rechazada", "Delegation rejected")
+                    : ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred ? "Deferred · " + ack.Outcome.Reason
+                    : Ui("Delegación en cola. El scheduler aún no está implementado; no se ha iniciado ningún worker.",
+                        "Delegation queued. Scheduler is not implemented yet; no worker has started."));
+                PollEvents();
+            }
+            catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
+            { ShowMessage(failure.Message); }
+            _composer.Text = ""; return;
+        }
         if (input is "/context" or "/tools" or "/plan")
         {
             var query = input switch { "/plan" => "workingState", _ => input.Substring(1) };
@@ -696,9 +730,11 @@ public sealed class TuiApp
     private void RefreshSidebarData()
     {
         _sidebarProjection.Activate(_cursorSession);
+        _agents.Activate(_cursorSession);
         _observability.Activate(_cursorSession);
         if (_sidebarProjection.Snapshot is null || _sidebarProjection.Snapshot.BasedOnJournalSequence != _lastSequence)
             _sidebarProjection.Poll(_client);
+        if (_agents.Snapshot is null || _agents.Snapshot.BasedOnJournalSequence != _lastSequence) _agents.Poll(_client);
         // Only reads existing observations. No authentication, quota refresh or generation here.
         if (_sidebarOpen || _observability.Snapshot is null) _observability.Poll(_client);
     }
@@ -844,7 +880,9 @@ public sealed class TuiApp
         var widgets = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
             _observedModel ?? _selectedModel ?? Ui("Automático · sin turno", "Automatic · no turn"),
             _state.StatusLine.Mode, _locale, _sidebarExpanded);
-        _sidebarContent.Render(new SidebarHost(widgets).Build(_state, _sidebarExpanded ? WidgetSize.Expanded : WidgetSize.Normal));
+        var agentWidget = AgentPresentation.Build(_agents.Snapshot, _locale, _sidebarExpanded);
+        _sidebarContent.Render(new SidebarHost(widgets.Concat(new[] { agentWidget })).Build(_state,
+            _sidebarExpanded ? WidgetSize.Expanded : WidgetSize.Normal));
     }
 
     private void ShowCurrentInteraction()

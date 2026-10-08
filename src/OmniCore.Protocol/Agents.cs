@@ -1,0 +1,33 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace OmniCore.Protocol;
+
+/// <summary>Canonical Lane/Task/executor facts, never inferred worker liveness.</summary>
+public sealed record AgentLaneSnapshot(string LaneId, string TaskId, string? ParentTaskId, string Objective,
+    string LaneState, string TaskState, string ProfileId, long? ProfileRevision,
+    string? ExecutionId, string? ParentExecutionId, string? ExecutionState,
+    string? DelegationId, string? DelegationState, string? Model,
+    string? LastContextEventId, bool ExecutionAmbiguous, IReadOnlyList<string>? SelectableContextItemIds = null);
+public sealed record AgentsSnapshot(string SessionId, string? RunId, long BasedOnJournalSequence,
+    bool ProjectionUnavailable, IReadOnlyList<AgentLaneSnapshot> Lanes);
+
+/// <summary>Explicit user request. Empty selection means no inherited parent content.
+/// Budgets bound queued work; they do not grant tools, routing or worker capacity.</summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record DelegationCreateRequest(string ProfileId, string SourceEventId, string Objective,
+    IReadOnlyList<string> SelectedItemIds, int MaximumPacketBytes, int MaxTurns, int MaxToolCalls,
+    long MaxTokens, decimal MaxCostUsd);
+
+public static class AgentsJson
+{
+    public static string Encode(AgentsSnapshot snapshot) => JsonSerializer.Serialize(snapshot, AgentsJsonContext.Default.AgentsSnapshot);
+    public static AgentsSnapshot? Decode(string json) => JsonSerializer.Deserialize(json, AgentsJsonContext.Default.AgentsSnapshot);
+    public static string EncodeRequest(DelegationCreateRequest request) => JsonSerializer.Serialize(request, AgentsJsonContext.Default.DelegationCreateRequest);
+    public static DelegationCreateRequest? DecodeRequest(string json) => JsonSerializer.Deserialize(json, AgentsJsonContext.Default.DelegationCreateRequest);
+}
+
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
+[JsonSerializable(typeof(AgentsSnapshot))]
+[JsonSerializable(typeof(DelegationCreateRequest))]
+internal partial class AgentsJsonContext : JsonSerializerContext;

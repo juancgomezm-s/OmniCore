@@ -35,6 +35,16 @@ public sealed partial class ContextInheritanceService
     public IPreparedArtifact PrepareDelegationPacket(SessionId session, RunId run,
         DelegationContextTarget target, ArtifactRef sourceSnapshot, ContextInheritancePolicy policy,
         int maximumUtf8Bytes, CancellationToken cancellationToken)
+        => PreparePacket(session, run, target, sourceSnapshot, policy, maximumUtf8Bytes, cancellationToken, null, null);
+
+    internal IPreparedArtifact PrepareNewChildPacket(SessionId session, RunId run,
+        DelegationContextTarget target, ArtifactRef sourceSnapshot, ContextInheritancePolicy policy,
+        int maximumUtf8Bytes, CancellationToken cancellationToken, TaskCreated childTask, LaneCreated childLane)
+        => PreparePacket(session, run, target, sourceSnapshot, policy, maximumUtf8Bytes, cancellationToken, childTask, childLane);
+
+    private IPreparedArtifact PreparePacket(SessionId session, RunId run,
+        DelegationContextTarget target, ArtifactRef sourceSnapshot, ContextInheritancePolicy policy,
+        int maximumUtf8Bytes, CancellationToken cancellationToken, TaskCreated? pendingTask, LaneCreated? pendingLane)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(target);
@@ -51,12 +61,13 @@ public sealed partial class ContextInheritanceService
             && execution.ExecutionId == target.ParentExecutionId && evt.RunId == run)
             ?? throw new InvalidDataException("The packet owner has no canonical execution in this Run.");
         var parent = (AgentExecutionStarted)codecs.Decode(started);
-        var selection = ResolveSelection(session, run, parent.LaneId, target.ChildLaneId, sourceSnapshot, policy);
+        var selection = ResolveSelection(session, run, parent.LaneId, target.ChildLaneId, sourceSnapshot, policy,
+            pendingTask, pendingLane);
         if (selection.Receipt.Sequence < started.Sequence
             || selection.Receipt.ExecutionId is { } sourceOwner && sourceOwner != target.ParentExecutionId)
             throw new InvalidDataException("The context source predates or belongs to another parent execution.");
         ValidateSourceExecution(journal, selection.Receipt, target.ParentExecutionId, parent.LaneId);
-        var child = journal.Select(codecs.Decode).OfType<LaneCreated>().Single(lane => lane.LaneId == target.ChildLaneId);
+        var child = pendingLane ?? journal.Select(codecs.Decode).OfType<LaneCreated>().Single(lane => lane.LaneId == target.ChildLaneId);
         var packet = new DelegationContextPacket(1, session, run, target, selection.ParentTask,
             parent.LaneId, selection.ChildTask, child.AgentProfile, new(session, selection.Receipt.EventId),
             selection.Receipt.Sequence, selection.SnapshotId, maximumUtf8Bytes, selection.Facts);

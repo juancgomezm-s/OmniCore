@@ -53,7 +53,14 @@ public sealed class CliEndToEndTests
             Assert.Equal(RunMode.Plan, projection.Mode);
             Assert.False(projection.ModeAuthority!.AutoModeSwitch);
             Assert.DoesNotContain(journal.Select(codecs.Decode), e => e is RunModeChanged
-                or RunModeTransitionAuthorized or AgentExecutionStarted);
+                or RunModeTransitionAuthorized or DelegationCreated or DelegationAccepted);
+            var rootExecutor = Assert.Single(journal.Select(codecs.Decode).OfType<AgentExecutionStarted>());
+            Assert.Null(rootExecutor.ParentExecutionId);
+            var rootLane = Assert.Single(journal.Select(codecs.Decode).OfType<LaneCreated>());
+            Assert.Equal(created.RootTask, rootLane.TaskId);
+            Assert.Equal(rootLane.LaneId, rootExecutor.LaneId);
+            Assert.Equal(rootLane.AgentProfile, rootExecutor.ProfileId);
+            Assert.All(journal.Where(e => codecs.Decode(e) is ModelStepStarted), e => Assert.Equal(rootExecutor.ExecutionId, e.ExecutionId));
             Assert.Single(journal.Select(codecs.Decode).OfType<TaskCreated>());
             Assert.Single(journal.Select(codecs.Decode).OfType<LaneCreated>());
         });
@@ -86,8 +93,14 @@ public sealed class CliEndToEndTests
             Assert.Single(events.OfType<LaneCreated>());
             Assert.Single(events.OfType<TurnStarted>());
             Assert.Single(events.OfType<TurnCompleted>());
-            Assert.DoesNotContain(events, item => item is ToolCallRequested or ToolCallStarted or AgentExecutionStarted
-                or RunModeChanged or RunModeTransitionAuthorized);
+            Assert.DoesNotContain(events, item => item is ToolCallRequested or ToolCallStarted
+                or RunModeChanged or RunModeTransitionAuthorized or DelegationCreated or DelegationAccepted);
+            var rootExecutor = Assert.Single(events.OfType<AgentExecutionStarted>());
+            Assert.Null(rootExecutor.ParentExecutionId);
+            var rootLane = Assert.Single(events.OfType<LaneCreated>());
+            Assert.Equal(created.RootTask, rootLane.TaskId);
+            Assert.Equal(rootLane.LaneId, rootExecutor.LaneId);
+            Assert.Equal(rootLane.AgentProfile, rootExecutor.ProfileId);
             Assert.DoesNotContain(events.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.PlanApproval);
             Assert.Empty(Directory.GetFiles(workspace, "*", SearchOption.AllDirectories));
             var journal = ReadCurrentSessionJournalEvents(workspace);

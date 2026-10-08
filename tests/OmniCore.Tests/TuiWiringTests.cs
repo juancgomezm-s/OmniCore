@@ -343,6 +343,8 @@ public sealed class TuiWiringTests
                 else if (scene == "commands")
                 {
                     Assert.Contains("/models", text);
+                    Assert.Contains("/agents", text);
+                    Assert.Contains("/delegate", text);
                     Assert.Contains("Seleccionar modelo", text);
                     Assert.Contains("Tab completar", text);
                     Assert.True(fx.App.Composer!.HasFocus);

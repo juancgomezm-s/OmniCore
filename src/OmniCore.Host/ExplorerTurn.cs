@@ -497,10 +497,6 @@ public sealed class ExplorerTurn
         if (RunProjection.Replay(sessionId, runId, _codecs, runEvents).IsTerminal())
             return new TurnResult("Run is terminal; queued FollowUps remain inert.", StopReason.Error,
                 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
-        var turnId = resumedTurnId ?? TurnId.New();
-        using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
-            FindTaskForLane(runEvents, runId, laneId), laneId, turnId));
-        var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         if (FindPendingRunInteraction(runEvents, runId) is { } pendingInteraction)
         {
             var stop = pendingInteraction.Kind == InteractionKind.BudgetExceeded
@@ -509,6 +505,12 @@ public sealed class ExplorerTurn
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null,
                 pendingInteraction.InteractionId);
         }
+        var turnId = resumedTurnId ?? TurnId.New();
+        var turnTask = FindTaskForLane(runEvents, runId, laneId);
+        var executionId = HostAgentInvocation.Resolve(_store, _codecs, sessionId, runId, turnTask, laneId, stream);
+        using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
+            turnTask, laneId, turnId, ExecutionId: executionId));
+        var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
