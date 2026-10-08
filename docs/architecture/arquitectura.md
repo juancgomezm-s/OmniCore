@@ -751,6 +751,17 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 | **M9 — Protocol + Host** | `StdioTransport`, negociación de `ProtocolVersion`, Host separado, lease entre procesos, read models persistidos; integración de OmniCoder vía Protocol y Client en net8; **reconexión "after sequence N" por stream**; **procedencia y fidelidad de historial** (`Native`/`Imported`, `Complete`/`Partial`); supervisor de OmniCoder por el transporte real | El mismo CLI funciona in-process y por stdio; un cliente net8 se conecta; reconectar no duplica ni pierde eventos |
 | **M10 — CLI v1 + memoria + evaluación** | **Memoria Project, Workspace y Global** con promoción (toda la memoria en v1); keybindings configurables, Command Palette, `session.search`; suite `full` + calibración; regression suite; comparación con Pi; adapter de OmniCoder; **`/undo`**, inspección de `AgentExecution`, estado de supervisión, capacidad y `ValidationDebt` como proyecciones | Criterios de madurez de la spec §96 |
 
+### 24.1 Track TUI — Panel lateral funcional
+
+Trabajo de presentación posterior a TUI v0, usando los contratos aceptados de ADR-0031/0032 y las proyecciones disponibles. No reabre M4/M5.5 ni adelanta el scheduler de M6.
+
+| Bloque | Alcance | Salida verificable |
+|---|---|---|
+| **TUI-P1 — Sesión, Plan, contexto y consumo** | Sesión y modelo visibles; consulta read-only del Plan lógico del Run activo, jerarquía/estados/revisión y progreso por hojas. Contexto de la última solicitud y consumo acumulado independientes, detalle de tokens y diagnóstico básico de recuperación. | Reapertura desde journal sin nuevas escrituras; aislamiento entre sesiones/Runs intercalados; estimaciones y desconocidos explícitos; actualización por polling sin reiniciar scroll. Implementado en `sessionSidebar` + `sessionObservability`; evidencia en `docs/validation/sidebar-functional-p1.md`. |
+| **TUI-P2 — Archivos y diff** — pendiente | Proyección de efectos atribuibles a OmniCore en la sesión, preimagen exacta cuando existe y `diff.open`/DiffPreview; sin sustituirla por todos los cambios Git del usuario. | Cambios ajenos no atribuidos a OmniCore; Unknown/preimagen ausente explícitos; selección abre el diff correcto. Agrupación e integración de worktrees/Lanes se completan en **M7**. |
+| **TUI-P3 — Configuración y responsive** — pendiente | Visibilidad/expansión/prioridad por widget, scopes User/Workspace; pestañas reales en ancho medio; colapso por altura sin perder señales Attention. | Persistencia y precedencia de ADR-0039; navegación a widgets ocultos; resize conserva foco y selección. El desplazamiento de P1 evita recortes, pero no acredita todavía este bloque. |
+| **Integraciones por hito** | AgentsWidget/LaneInspector **M6**; Session Memory, diagnostics de commands/skills/extensions y widgets de extensiones **M8**; memorias Project/Workspace/Global y keybindings **M10**. | Cada widget se habilita con su servicio/read model real, no con estados ficticios; el transcript de subagentes permanece en el inspector. |
+
 **Cambios frente a los roadmaps anteriores:**
 
 - Planning y persistencia entran en M1.

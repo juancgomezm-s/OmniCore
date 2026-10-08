@@ -17,6 +17,8 @@ public sealed class TuiApp
     private readonly string _locale;
     private readonly Localization _localization;
     private readonly ClientProjection _projection;
+    private readonly SessionSidebarProjection _sidebarProjection = new();
+    private readonly SessionObservabilityProjection _observability = new();
     private readonly ModelPolicyHost _policies;
     private ClientState _state = ClientState.Empty();
     private long _lastSequence;
@@ -34,7 +36,9 @@ public sealed class TuiApp
     private Label? _header;
     private Label? _status;
     private FrameView? _sidebar;
-    private Label? _sidebarContent;
+    private SidebarView? _sidebarContent;
+    private Button? _sidebarDetails;
+    private bool _sidebarExpanded;
     private Label? _completion;
     private FrameView? _commandHelper;
     private ListView? _commandList;
@@ -74,6 +78,7 @@ public sealed class TuiApp
     internal ComposerView? Composer => _composer;
     internal ConversationView? Conversation => _conversation;
     internal FrameView? Sidebar => _sidebar;
+    internal SidebarView? SidebarContent => _sidebarContent;
     internal Label? Completion => _completion;
     internal Label? Status => _status;
     internal Label? Header => _header;
@@ -253,8 +258,15 @@ public sealed class TuiApp
         ApplyTheme(_conversation);
         conversationFrame.Add(_conversation);
         _sidebar = new FrameView { Id = "omni-panel", X = Pos.AnchorEnd(31), Y = 0, Width = 31, Height = Dim.Fill(), Title = " Workspace ", BorderStyle = LineStyle.None };
-        _sidebarContent = new Label { X = 2, Y = 3, Width = Dim.Fill(2), Height = Dim.Fill(1), Text = SidebarText() };
-        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "Workspace" }, _sidebarContent);
+        _sidebarContent = new SidebarView { X = 2, Y = 4, Width = Dim.Fill(1), Height = Dim.Fill(1) };
+        _sidebarDetails = new Button { X = 2, Y = 2, Text = Ui("Más detalle", "More detail") };
+        _sidebarDetails.Accepted += (_, _) =>
+        {
+            _sidebarExpanded = !_sidebarExpanded;
+            _sidebarDetails.Text = _sidebarExpanded ? Ui("Menos detalle", "Less detail") : Ui("Más detalle", "More detail");
+            RenderSidebar();
+        };
+        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "Workspace" }, _sidebarDetails, _sidebarContent);
         var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
         composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
         _composer = new ComposerView { X = 4, Y = 1, Width = Dim.Fill(2), Height = 1, Text = "", Multiline = true,
@@ -653,6 +665,7 @@ public sealed class TuiApp
         }
         if (_client.Query("workspaceStatus", CancellationToken.None) is { } statusQuery)
             _state = _projection.ApplyQuery(_state, statusQuery);
+        RefreshSidebarData();
         RenderState();
         ShowCurrentInteraction();
     }
@@ -676,7 +689,18 @@ public sealed class TuiApp
         }
         if (_client.Query("workspaceStatus", CancellationToken.None) is { } statusQuery)
             state = _projection.ApplyQuery(state, statusQuery);
+        RefreshSidebarData();
         return state;
+    }
+
+    private void RefreshSidebarData()
+    {
+        _sidebarProjection.Activate(_cursorSession);
+        _observability.Activate(_cursorSession);
+        if (_sidebarProjection.Snapshot is null || _sidebarProjection.Snapshot.BasedOnJournalSequence != _lastSequence)
+            _sidebarProjection.Poll(_client);
+        // Only reads existing observations. No authentication, quota refresh or generation here.
+        if (_sidebarOpen || _observability.Snapshot is null) _observability.Poll(_client);
     }
 
     private void ObserveModel(WireEnvelope envelope)
@@ -695,7 +719,7 @@ public sealed class TuiApp
         if (_header is not null) _header.Text = HeaderText();
         if (_help is not null) _help.Text = HelpText();
         if (_status is not null) _status.Text = StatusText();
-        if (_sidebarContent is not null) _sidebarContent.Text = SidebarText();
+        RenderSidebar();
     }
 
     private void RenderConversation()
@@ -750,7 +774,8 @@ public sealed class TuiApp
         var width = Math.Max(12, (_window?.Frame.Width ?? 80) - 4 - _mainColumnInset);
         var workspace = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
         if (string.IsNullOrWhiteSpace(workspace)) workspace = path;
-        var title = _state.Conversation.Blocks.FirstOrDefault(block => block.Role == ConversationRole.User)?.Text.Split('\n')[0]
+        var title = _sidebarProjection.Snapshot?.Title is { Length: > 0 } sessionTitle ? sessionTitle
+            : _state.Conversation.Blocks.FirstOrDefault(block => block.Role == ConversationRole.User)?.Text.Split('\n')[0]
             ?? Ui("Nueva sesión", "New session");
         return SessionHeading(workspace, title, _observedModel ?? _selectedModel ?? Ui("Automático · sin turno", "Automatic · no turn"), width);
     }
@@ -813,18 +838,13 @@ public sealed class TuiApp
         return "  " + FitText(right, width);
     }
 
-    private string SidebarText()
+    private void RenderSidebar()
     {
-        var widgets = new SidebarHost(new ISidebarWidget[]
-        {
-            new SessionSidebarWidget(new SessionWidgetData(_state.Header.WorkingDirectory.Length == 0 ? "Session" : Path.GetFileName(_state.Header.WorkingDirectory), _state.StatusLine.Mode)),
-            new PlanSidebarWidget(new PlanWidgetData("PLAN", _state.Sidebar.WidgetIds.Contains("core.plan")
-                ? new[] { new WidgetRowModel(_locale == "en" ? "No active plan" : "Sin plan activo", ThemeRole.Muted) } : Array.Empty<WidgetRowModel>())),
-            new ChangedFilesSidebarWidget(new ChangedFileWidgetData(_state.Sidebar.WidgetIds.Contains("core.files")
-                ? new[] { new WidgetRowModel(_locale == "en" ? "No changed files" : "Sin archivos modificados", ThemeRole.Muted) } : Array.Empty<WidgetRowModel>())),
-        });
-        return string.Join("\n\n", widgets.Build(_state, WidgetSize.Normal).Select(item => item.Model is ListWidgetModel model
-            ? model.Title + "\n" + string.Join("\n", model.Rows.Select(row => ThemeGlyphs.For(row.Role) + " " + row.Text)) : ""));
+        if (_sidebarContent is null) return;
+        var widgets = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
+            _observedModel ?? _selectedModel ?? Ui("Automático · sin turno", "Automatic · no turn"),
+            _state.StatusLine.Mode, _locale, _sidebarExpanded);
+        _sidebarContent.Render(new SidebarHost(widgets).Build(_state, _sidebarExpanded ? WidgetSize.Expanded : WidgetSize.Normal));
     }
 
     private void ShowCurrentInteraction()

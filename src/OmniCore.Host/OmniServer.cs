@@ -1664,6 +1664,9 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == "sessionSidebar")
+            return new SessionQueryResult(name, _lastSessionId is null ? "null"
+                : SidebarJson.Encode(SessionSidebarReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _recoveryProblem is not null)));
         if (name == "sessionObservability" || name.StartsWith("sessionObservability:", StringComparison.Ordinal))
         {
             if (_lastSessionId is null) return new SessionQueryResult("sessionObservability", "null");

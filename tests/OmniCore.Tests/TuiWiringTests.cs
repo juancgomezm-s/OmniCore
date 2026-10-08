@@ -32,6 +32,52 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Sidebar_renders_real_plan_context_usage_and_expands_without_losing_scroll(bool noColor) => RunTuiTest(fx =>
+    {
+        var session = fx.Server.LastSessionId()!;
+        var run = fx.Server.LastRunId()!;
+        var plan = fx.Decoded<PlanCreated>().Single();
+        var stream = new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), session);
+        var completed = PlanItemId.New(); var waiting = PlanItemId.New();
+        stream.Append(new PlanItemAdded(completed, plan.PlanId, "Revisar núcleo", 1, plan.RootItemId, [], true, []));
+        stream.Append(new PlanItemAdded(waiting, plan.PlanId, "Validar presentación", 2, plan.RootItemId, [], true, []));
+        stream.Append(new PlanItemStarted(completed)); stream.Append(new PlanItemCompleted(completed, "verified"));
+        stream.Append(new PlanItemStarted(waiting)); stream.Append(new PlanItemBlocked(waiting, "input"));
+        var turn = TurnId.New();
+        stream.Append(new ModelStepStarted(turn, 0, "fixture/sidebar-model", 8192, "Direct", null, null, null, 16000));
+        stream.Append(new ModelStepCompleted(turn, 0, new(100, 20, 30, 10, 5), StopReason.EndTurn, null, "2026-10-07", .01m, TokenUsageFields.All));
+        fx.StartTui(initialColumns: 120, initialRows: 40);
+        KeyWithEffect(fx, KeyCode.F2, () => fx.App.SidebarOpen, "panel visible");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("PLAN 1/2"), "plan durable dibujado");
+        var text = fx.App.SidebarContent!.Text.ToString();
+        Assert.Contains("semilla de prueba", text);
+        Assert.Contains("fixture/sidebar-model", text);
+        Assert.Contains("Tokens: 100", text); Assert.Contains("Tokens sesión: 120", text);
+        Assert.Contains("Capacidad: ≈16,000", text); Assert.Contains("Presupuesto: ≈8,192", text);
+        Assert.Contains("Ocupación: ≈0.6%", text); Assert.DoesNotContain("Sin plan activo", text);
+        Assert.DoesNotContain("Sin archivos modificados", text);
+        var frame = CaptureConversationFrame(fx, 120, 40, "PLAN 1/2");
+        if (!noColor) Assert.Contains(frame.Cast<Terminal.Gui.Drawing.Cell>(), cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#F1D58A"));
+        else Assert.All(frame.Cast<Terminal.Gui.Drawing.Cell>().Where(cell => cell.Grapheme == "◐"), cell => Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Foreground));
+        fx.Invoke(() => fx.App.Sidebar!.SubViews.OfType<Button>().Single().InvokeCommand(Command.Accept));
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Cache read: 30"), "detalle de consumo desplegable");
+        Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
+        Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 22));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Height == 22 && fx.App.SidebarContent.Viewport.Height < 20, "altura reducida obliga a desplazar detalle");
+        fx.Invoke(() => fx.App.SidebarContent.MoveEnd());
+        fx.Wait(() => fx.App.SidebarContent.Viewport.Y > 0, "detalle largo navega al final");
+        Assert.True(fx.App.SidebarContent.VerticalScrollBar.Visible);
+        var top = fx.App.SidebarContent.Viewport.Y;
+        Thread.Sleep(1100);
+        Assert.Equal(top, fx.App.SidebarContent.Viewport.Y); // unchanged polls do not reload
+        stream.Append(new PlanItemUnblocked(waiting)); stream.Append(new PlanItemCompleted(waiting, "verified"));
+        fx.Wait(() => fx.App.SidebarContent.Text.ToString().Contains("PLAN 2/2"), "cambio de plan llega por polling");
+    }, noColor);
+
     [Fact]
     public void Header_recovers_runtime_model_without_manual_selection_and_updates_from_events() => RunTuiTest(fx =>
     {
@@ -109,6 +155,7 @@ public sealed class TuiWiringTests
     [InlineData(100, 30, "conversation")]
     [InlineData(140, 40, "conversation")]
     [InlineData(100, 30, "sidebar")]
+    [InlineData(120, 35, "sidebar")]
     [InlineData(100, 30, "notice")]
     [InlineData(80, 25, "settings")]
     [InlineData(120, 35, "settings")]
@@ -151,6 +198,18 @@ public sealed class TuiWiringTests
             visualPolicies.RegisterChatGptModel("subscription-a", 8192, 2048);
             visualPolicies.Set(new ModelPolicyKeyDto("chatgpt", "subscription-a"), 0,
                 "ObserveOnly", null, CancellationToken.None);
+        }
+        if (scene == "sidebar")
+        {
+            var plan = fx.Decoded<PlanCreated>().Single();
+            var stream = new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!);
+            var review = PlanItemId.New(); var validation = PlanItemId.New(); var turn = TurnId.New();
+            stream.Append(new PlanItemAdded(review, plan.PlanId, "Revisar núcleo", 1, plan.RootItemId, [], true, []));
+            stream.Append(new PlanItemAdded(validation, plan.PlanId, "Validar presentación", 2, plan.RootItemId, [], true, []));
+            stream.Append(new PlanItemStarted(review)); stream.Append(new PlanItemCompleted(review, "verified"));
+            stream.Append(new PlanItemStarted(validation));
+            stream.Append(new ModelStepStarted(turn, 0, "local/fixture-model", 8192, "Direct", null, null, null, 16000));
+            stream.Append(new ModelStepCompleted(turn, 0, new(100, 20, 0, 0, 0), StopReason.EndTurn, null, "fixture", null));
         }
         var visualTurn = scene == "activity" ? new TestTurn(fx) : null;
         fx.StartTui(policies: visualPolicies, turnHost: visualTurn,

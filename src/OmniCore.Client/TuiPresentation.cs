@@ -88,7 +88,7 @@ public interface ISidebarWidget
     WidgetModel Build(ClientState state, WidgetSize size);
 }
 
-/// <summary>Container that orders declarative widgets by attention, then priority.</summary>
+/// <summary>Fixed session slot followed by declarative widgets ordered by attention, then priority.</summary>
 public sealed class SidebarHost
 {
     private readonly IReadOnlyList<ISidebarWidget> _widgets;
@@ -96,7 +96,8 @@ public sealed class SidebarHost
     public IReadOnlyList<(ISidebarWidget Widget, WidgetModel Model)> Build(ClientState state, WidgetSize size) =>
         _widgets.Select((widget, index) => (widget, index, relevance: widget.Evaluate(state)))
             .Where(item => item.relevance != WidgetRelevance.None)
-            .OrderByDescending(item => item.relevance == WidgetRelevance.Attention)
+            .OrderByDescending(item => item.widget.Id == "core.session")
+            .ThenByDescending(item => item.relevance == WidgetRelevance.Attention)
             .ThenByDescending(item => item.widget.DefaultPriority)
             .ThenBy(item => item.index)
             .Select(item => (item.widget, item.widget.Build(state, size))).ToArray();
@@ -123,7 +124,8 @@ public sealed class PlanSidebarWidget : ISidebarWidget
     public string Title => "PLAN";
     public ThemeRole Accent => ThemeRole.Active;
     public int DefaultPriority => 80;
-    public WidgetRelevance Evaluate(ClientState state) => _data.Items.Count == 0 ? WidgetRelevance.None : WidgetRelevance.Normal;
+    public WidgetRelevance Evaluate(ClientState state) => _data.Items.Count == 0 ? WidgetRelevance.None
+        : _data.Items.Any(row => row.Role is ThemeRole.Attention or ThemeRole.Error) ? WidgetRelevance.Attention : WidgetRelevance.Normal;
     public WidgetModel Build(ClientState state, WidgetSize size) => new ListWidgetModel(_data.Summary, _data.Items);
 }
 
