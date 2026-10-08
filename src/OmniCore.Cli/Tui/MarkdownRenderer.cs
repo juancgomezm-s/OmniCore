@@ -56,7 +56,8 @@ internal static class MarkdownRenderer
             var heading = line.TakeWhile(c => c == '#').Count();
             if (heading is > 0 and <= 6 && line.Length > heading && line[heading] == ' ')
             {
-                rows.Add(new[] { new ConversationSpan(line[(heading + 1)..], ConversationStyle.Heading) });
+                rows.Add(Inline(line[(heading + 1)..]).Select(span => span.Style == ConversationStyle.Text
+                    ? span with { Style = ConversationStyle.Heading } : span).ToArray());
                 continue;
             }
             var content = line.StartsWith("- ") || line.StartsWith("* ") ? "• " + line[2..] : raw;
@@ -81,21 +82,61 @@ internal static class MarkdownRenderer
     internal static IReadOnlyList<ConversationSpan> Inline(string text)
     {
         var result = new List<ConversationSpan>();
+        var plain = new System.Text.StringBuilder();
         var cursor = 0;
+        void Flush()
+        {
+            if (plain.Length == 0) return;
+            result.Add(new(plain.ToString(), ConversationStyle.Text));
+            plain.Clear();
+        }
         while (cursor < text.Length)
         {
-            var code = text.IndexOf('`', cursor);
-            var bold = text.IndexOf("**", cursor, StringComparison.Ordinal);
-            var start = code < 0 ? bold : bold < 0 ? code : Math.Min(code, bold);
-            if (start < 0) break;
-            var delimiter = start == code ? "`" : "**";
-            var end = text.IndexOf(delimiter, start + delimiter.Length, StringComparison.Ordinal);
-            if (end < 0) break; // Unsupported/unclosed markup stays literal, not lost.
-            if (start > cursor) result.Add(new(text[cursor..start], ConversationStyle.Text));
-            result.Add(new(text[(start + delimiter.Length)..end], delimiter == "`" ? ConversationStyle.InlineCode : ConversationStyle.Heading));
-            cursor = end + delimiter.Length;
+            if (text[cursor] == '\\' && cursor + 1 < text.Length && IsEscapable(text[cursor + 1]))
+            {
+                plain.Append(text[cursor + 1]); cursor += 2; continue;
+            }
+            var code = text[cursor] == '`';
+            var bold = text[cursor] == '*' && cursor + 1 < text.Length && text[cursor + 1] == '*';
+            if (!code && !bold) { plain.Append(text[cursor++]); continue; }
+            var length = 2;
+            if (code)
+            {
+                length = 1;
+                while (cursor + length < text.Length && text[cursor + length] == '`') length++;
+            }
+            var end = FindClosing(text, cursor + length, code ? '`' : '*', length, code);
+            if (end < 0)
+            {
+                // Keep incomplete streamed markup intact, including its delimiters.
+                plain.Append(text[cursor..]); cursor = text.Length; break;
+            }
+            Flush();
+            var content = text[(cursor + length)..end];
+            if (code && content.Length >= 2 && content.StartsWith(' ') && content.EndsWith(' ')
+                && content.Any(c => c != ' ')) content = content[1..^1];
+            result.Add(new(content, code ? ConversationStyle.InlineCode : ConversationStyle.Heading));
+            cursor = end + length;
         }
-        if (cursor < text.Length) result.Add(new(text[cursor..], ConversationStyle.Text));
+        Flush();
         return result;
     }
+
+    private static int FindClosing(string text, int start, char marker, int length, bool exactRun)
+    {
+        for (var index = start; index < text.Length; index++)
+        {
+            if (!exactRun && text[index] == '\\' && index + 1 < text.Length && IsEscapable(text[index + 1]))
+            { index++; continue; }
+            if (text[index] != marker) continue;
+            var end = index;
+            while (end < text.Length && text[end] == marker) end++;
+            if (exactRun ? end - index == length : end - index >= length) return index;
+            index = end - 1;
+        }
+        return -1;
+    }
+
+    private static bool IsEscapable(char value) => value is >= '!' and <= '/' or >= ':' and <= '@'
+        or >= '[' and <= '`' or >= '{' and <= '~';
 }
