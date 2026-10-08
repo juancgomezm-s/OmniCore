@@ -130,6 +130,9 @@ public sealed class ModelRegistry
         return this;
     }
 
+    /// <summary>Todos los providers registrados, en orden de declaración (solo lectura).</summary>
+    public IReadOnlyList<ProviderDescriptor> Providers() => _providers.ToArray();
+
     public ProviderDescriptor? Provider(string id)
     {
         foreach (var p in _providers)
