@@ -384,7 +384,8 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         context.ReadRegistry?.Ledger.RecordMutation(path!, deletedLines, insertedLines,
             intent.Intent.ToolCallId);
 
-        return new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied);
+        return new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied)
+        { AfterStateBytes = newBytes };
     }
 
     /// <summary>

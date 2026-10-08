@@ -1,0 +1,98 @@
+TUI-P2 / TUI-P3 — archivos, diffs y preferencias persistentes
+Fecha: 2026-10-08. Worktree codex/tui-markdown-polish, base bb664cb.
+
+ALCANCE IMPLEMENTADO
+- changedFiles: un efecto de journal por ToolCallId de la sesión, con ownership
+  de Run/Lane/Task/Turn/Execution. No consulta Git ni archivos actuales.
+- filesystem.write/patch publican evidencia opcional de postimagen exacta en CAS
+  Sensitive. ToolCallSucceeded v2 añade AfterStateRef; v1 mantiene null.
+  Bytes transitorios del executor no se serializan ni regresan al modelo.
+- Pre/postimágenes verificadas: hash, tamaño, tipo, contenido, encoding y hashes
+  esperados de reconciliación. Referencias raíces del journal conservadas por GC.
+  Secretos, tamaño excesivo o evidencia ausente/corrupta hacen el preview no
+  disponible, nunca preimagen vacía ni reversibilidad ficticia.
+- Captura opcional no convierte una escritura ya aplicada en fallo.
+- DiffPreview por Enter abre el efecto seleccionado, no cambios posteriores;
+  muestra contexto, altas/bajas, finales de línea y límite parcial explícito.
+  Contadores usan FileVersion.ChangedLines; no se anuncian como distancia LCS.
+  Compacto: último efecto por path/Lane. Expandido: efectos anteriores accesibles.
+- SidebarConfiguration: YAML User < Project confiable < Workspace local.
+  User: <config>/settings.yaml. Project: <repo>/.omnicore/settings.yaml.
+  Workspace: <data>/workspaces/<WorkspaceId>/settings.yaml.
+  Visibilidad del panel, modos/breakpoints y visible/expanded/priority por widget.
+  Errores con ubicación; no se guardan opciones inválidas. Revisión + lease,
+  temp único y publicación atómica, preservando otras claves de YAML.
+  Sólo comandos de usuario confiables escriben preferencias User/Workspace;
+  no modifica providers, budget, credenciales ni políticas de seguridad.
+- /sidebar settings: menú por widget y scope; reset, visibilidad, expansión,
+  prioridad y modo. /sidebar focus <widget>: inspección incluso si está oculto.
+  /sidebar user|workspace <key> <value|reset>: configuración explícita.
+- Sesión compacta fija: título/modelo/modo. Run/modelo completo y secuencia en
+  diagnóstico expandido. Tabs a ancho medio, stack a ancho amplio, overlay
+  estrecho. Colapso por altura preserva TODAS las filas Attention/Error;
+  si ni las señales caben, scroll sin inventar una vista vacía.
+  F2 persiste apertura; preferencias externas se releen cada dos segundos.
+
+DEFECTOS DETECTADOS Y CORREGIDOS DURANTE IMPLEMENTACIÓN
+- Codec de ToolCallSucceeded todavía v1 tras añadir propiedad v2: corregido
+  registro; pruebas reejecutadas, sin debilitar assertions.
+- Capturar CAS desde continuación async bloqueaba el lease ThreadLocal que
+  posee el caller síncrono de ToolRuntime. Captura movida a ese mismo hilo,
+  conservando la publicación CAS+journal bajo el lease original.
+- Resumen recortado usando Frame.Width=0 antes del primer layout: ahora usa
+  ancho responsive calculado. ID Run completo va al detalle desplazable.
+- Colapso inicialmente retenía sólo una alerta: ahora conserva todas las
+  filas Attention/Error, aunque el panel necesite desplazamiento.
+- Header de hunk incluye contexto final; diff conserva líneas vacías,
+  distingue cambio exclusivo de finales de línea y archivo nuevo (-0,0).
+- Suite general detectó ancho 19 en terminal de 23 columnas, cuyo contrato
+  previo exige 20. Corregido sin cambiar la assertion existente; terminales
+  menores de 20 siguen acotadas a su ancho real.
+- Decode de journal inválido produce snapshot no disponible y
+  JournalUnavailable, no un inventario vacío saludable ni mensaje crudo.
+- Ruta larga envuelta cambiaba índices visuales: Enter después de una ruta
+  envuelta no abría el diff. Reproducción 1 FAIL en
+  .tmp-sidebar-p23-wrapping-probe.log; corregido usando coordenadas originales
+  de TextView, no InsertionPoint visual. Navegación de headings usa el mismo
+  mapeo. La prueba conserva wrapping y exige el diff del último archivo.
+Se conservan intentos fallidos locales; no se acreditan como verificaciones verdes.
+El primer lote general final registró 3184 casos / 3179 PASS / 1 FAIL / 4 SKIP,
+201.122 s, .tmp-sidebar-p23-final-full.log. El fallo fue el ancho 19/20 descrito
+arriba; su assertion original se conserva. Los SKIP son permisos de symlink.
+
+VERIFICACIÓN
+- Focal de archivos/CAS/configuración/codecs: 66 PASS en el build release,
+  incluyendo UTF-8/UTF-16 BOM, español, reopen, edits ajenos y GC.
+- TUI completa: 76 PASS en .tmp/sidebar-p23-delivery/, 119.131 s.
+  24 escenas exportadas de las celdas REALES del driver Terminal.Gui.
+- Arquitectura: 56 PASS, 0.703 s.
+- Inspección visual: sidebar-120x35, sidebar-100x30 y sidebar-settings-80x25.
+  SVG/texto y PNGs finales derivados en .tmp/sidebar-p23-handoff-frames/.
+  No son capturas del escritorio ni validación de una terminal externa real.
+- Client/Protocol net8: compilación sin advertencias/errores (compatibilidad OmniCoder).
+- Recuperación M4 independiente: 1 PASS, 118.874 s, antes del último ajuste
+  de layout/read model; .tmp-sidebar-p23-final-m4.log.
+- Focal ampliado: 125 PASS, 2.823 s, .tmp-sidebar-p23-accepted-focused.log,
+  incluye journal inválido y regresión original de ancho 20/23.
+- Lote general corregido: 3184 casos / 3180 PASS / 0 FAIL / 4 SKIP,
+  223.526 s, .tmp-sidebar-p23-accepted-full.log (antes del último ajuste
+  de mapeo cursor/fila envuelta; verificación de entrega al cerrar).
+- Arquitectura del build corregido: 56 PASS, 0.713 s.
+- Entrega tras corregir filas envueltas: 5 focales TUI PASS, 15.877 s,
+  .tmp-sidebar-p23-handoff-tui-focused.log. Luego resto completo:
+  3184 casos / 3180 PASS / 0 FAIL / 4 SKIP, 188.388 s,
+  .tmp-sidebar-p23-handoff-full.log; binarios .tmp/sidebar-p23-handoff/.
+  Incluye 76 casos de wiring TUI, las 24 escenas del driver y los focales
+  de archivos/configuración. M4 se ejecutó separado como se indica arriba;
+  no se afirma un lote monolítico ni se suman los focales solapados.
+Los focales y TUI son ejecuciones solapadas con la suite, no se suman al total.
+No llamadas a proveedores ni gasto de cualificación real.
+
+LÍMITES / HITOS FUTUROS
+- Legacy/efectos reconciliados sin postimagen: no disponible, sin leer archivo vivo.
+- Borrados/restauración, topología y worktrees: M7; no se declara D a partir de Git.
+- Scheduling concurrente durable/FanOutFanIn y formularios M6 siguen pendientes.
+- Memory/widgets de extensiones M8, multiscoped/keybindings M10 no se adelantan.
+- Checkout principal y trabajo de GLM preservados. Sin merge/push en esta tarea.
+
+Commit local del bloque: feat(sidebar): add attributed diffs and scoped responsive preferences.

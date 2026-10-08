@@ -1,5 +1,6 @@
 using OmniCore.Client;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Drivers;
 using Terminal.Gui.Views;
 
 namespace OmniCore.Cli;
@@ -9,26 +10,55 @@ namespace OmniCore.Cli;
 internal sealed class SidebarView : TextView
 {
     private string? _signature;
+    private System.Drawing.Point _sourcePoint;
+    internal bool ShowRoleGlyphs { get; set; } = true;
+    private readonly Dictionary<int, WidgetRowModel> _actions = new();
+    private readonly Dictionary<string, int> _headings = new();
+    internal event Action<WidgetRowModel>? RowActivated;
+    internal void SelectWidget(string? id)
+    {
+        if (id is null || !_headings.TryGetValue(id, out var row)) return;
+        // Headings/actions use source rows; TextView.InsertionPoint uses wrapped screen rows.
+        for (var wrapped = 0; wrapped < Lines; wrapped++)
+        {
+            InsertionPoint = new(0, wrapped);
+            if ((WordWrap ? _sourcePoint.Y : wrapped) >= row) break;
+        }
+        SetFocus();
+    }
     public SidebarView()
     {
         ReadOnly = true; WordWrap = true; ScrollBars = true;
         ConversationScrollBarStyle.Attach(VerticalScrollBar, () => false, "#202C3B");
+        UnwrappedCursorPositionChanged += (_, point) => _sourcePoint = point;
+        KeyDown += (_, key) =>
+        {
+            if (key.KeyCode != KeyCode.Enter || !_actions.TryGetValue(WordWrap ? _sourcePoint.Y : InsertionPoint.Y, out var action)) return;
+            RowActivated?.Invoke(action); key.Handled = true;
+        };
     }
     internal void Render(IReadOnlyList<(ISidebarWidget Widget, WidgetModel Model)> widgets)
     {
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         var rows = new List<(string Text, ThemeRole Role, bool Heading)>();
-        foreach (var (_, widget) in widgets)
+        var actions = new Dictionary<int, WidgetRowModel>();
+        _headings.Clear();
+        foreach (var (source, widget) in widgets)
         {
             if (widget is not ListWidgetModel model) continue;
             if (rows.Count > 0) rows.Add(("", ThemeRole.Primary, false));
+            _headings[source.Id] = rows.Count;
             rows.Add((model.Title, ThemeRole.Info, true));
             foreach (var row in model.Rows)
-                rows.Add(((row.Role == ThemeRole.Primary ? "" : ThemeGlyphs.For(row.Role) + " ") + row.Text, row.Role, false));
+            {
+                if (row.Action is not null) actions[rows.Count] = row;
+                rows.Add(((!ShowRoleGlyphs || row.Role == ThemeRole.Primary ? "" : ThemeGlyphs.For(row.Role) + " ") + row.Text, row.Role, false));
+            }
         }
-        var signature = Viewport.Width + ":" + noColor + string.Join("\n", rows);
+        var signature = Viewport.Width + ":" + noColor + string.Join("\n", rows) + string.Join(";", actions.Select(a => a.Key + ":" + a.Value.Target));
         if (signature == _signature) return; // keep focus/selection/scroll on unchanged polls
         _signature = signature;
+        _actions.Clear(); foreach (var action in actions) _actions[action.Key] = action.Value;
         var oldViewport = Viewport;
         var oldPoint = InsertionPoint;
         var oldScroll = VerticalScrollBar.Value;

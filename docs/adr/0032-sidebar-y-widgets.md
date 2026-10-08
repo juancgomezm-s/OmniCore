@@ -77,6 +77,8 @@ TUI-P1 usa `Query("sessionSidebar")` para el Plan canónico del Run activo y `se
 
 El panel muestra capacidad declarada, presupuesto efectivo y ocupación de la última solicitud separados del consumo acumulado. `≈` identifica estimaciones y `—` datos no disponibles; cache/reasoning se muestran como desglose y no vuelven a sumarse. El detalle se despliega en una superficie desplazable sin llamadas a proveedores. Hasta TUI-P2 no se afirma «sin archivos modificados» sin una proyección que lo respalde.
 
+**Implementación TUI-P2/P3 (2026-10-08):** `changedFiles` y `diff.open:<effectId>` leen efectos de la sesión y pre/postimágenes verificadas del CAS. No atribuyen Git ni ediciones posteriores; evidencia ausente/corrupta conserva disponibilidad explícita. El resumen agrupa por path/Lane, sin afirmar integración de worktrees o restauración M7. `/sidebar settings` configura visibilidad, expansión, prioridad y modo/breakpoints YAML con precedencia User < Project confiable < Workspace local; sólo User/Workspace se editan desde acciones humanas confiables. Sesión fija, pestañas a ancho medio, colapso por altura que conserva Attention/Error y navegación a widgets ocultos. Evidencia y límites en `docs/validation/sidebar-files-settings-p23-20261008.txt`.
+
 - el manifest los declara en `provides.sidebarWidgets` (ADR-0023);
 - solo pueden devolver `WidgetModel`s declarativos, no dibujar;
 - solo ven datos **redactados** según su `TrustLevel`;

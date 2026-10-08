@@ -152,6 +152,11 @@ public sealed class ToolResult
 
     public bool IsError { get; }
 
+    /// <summary>Transient exact bytes returned by a filesystem executor, never serialized or model-visible.
+    /// The synchronous runtime publishes them under its existing CAS lease before the success event.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public byte[]? AfterStateBytes { get; init; }
+
     /// <summary>Código tipado del error (spec §71); null si el resultado es exitivo.</summary>
     public ToolErrorCode? ErrorCode { get; }
 

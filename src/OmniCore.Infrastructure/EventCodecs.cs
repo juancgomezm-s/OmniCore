@@ -815,7 +815,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 3);
 
     public static CodecPair ToolCallSucceeded() =>
-        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded);
+        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 2);
 
     public static CodecPair ToolCallFailed() =>
         Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 2);

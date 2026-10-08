@@ -63,6 +63,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
+    private IPlatformPaths? _sidebarPaths;
+    public void ConfigureSidebarPaths(IPlatformPaths paths) => _sidebarPaths = paths;
+    private SidebarConfiguration SidebarSettings() => new(_sidebarPaths ?? OmniHost.CreatePlatformPaths(), _workspaceRoot ?? Environment.CurrentDirectory);
     private readonly UserWorkspaceSpendReader? _userSpendReader;
     private readonly string? _userDatabasePath;
     public SessionObservationHub Observability { get; }
@@ -435,6 +438,19 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == "sidebar.configure")
+        {
+            if (!trustedUserAction) return new(command.MessageId, "error", "Trusted user action required", RuntimeCommandOutcome.Rejected());
+            try
+            {
+                SidebarSettings().Set(fields.GetValueOrDefault("scope") ?? "", fields.GetValueOrDefault("key") ?? "",
+                    fields.GetValueOrDefault("value") ?? "", fields.GetValueOrDefault("revision") ?? "");
+                return new(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException
+                or UnauthorizedAccessException or YamlDotNet.Core.YamlException)
+            { return new(command.MessageId, "error", exception is ConfigValidationException ? "Invalid sidebar settings" : exception.Message, RuntimeCommandOutcome.Rejected()); }
+        }
         if (commandName == "delegation.create") return CreateQueuedDelegation(command, trustedUserAction, cancellationToken);
         if (commandName is "delegation.cancel" or "delegation.disposition" or "execution.join" or "execution.join.cancel")
             return ControlDelegation(command, commandName, trustedUserAction, cancellationToken);
@@ -1667,9 +1683,16 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == "sidebarSettings") return new(name, SidebarPreferencesJson.Encode(SidebarSettings().Read()));
         if (name == "sessionSidebar")
             return new SessionQueryResult(name, _lastSessionId is null ? "null"
                 : SidebarJson.Encode(SessionSidebarReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _recoveryProblem is not null)));
+        if (name == "changedFiles")
+            return new SessionQueryResult(name, _lastSessionId is null ? "null"
+                : FilesJson.Encode(ChangedFilesReader.Read(_store, _codecs, _lastSessionId, _artifacts)));
+        if (name.StartsWith("diff.open:", StringComparison.Ordinal))
+            return new SessionQueryResult("diff.open", _lastSessionId is null ? "null"
+                : FilesJson.Encode(ChangedFilesReader.ReadDiff(_store, _codecs, _lastSessionId, name[10..], _artifacts)));
         if (name == "agents")
             return new SessionQueryResult(name, _lastSessionId is null ? "null"
                 : AgentsJson.Encode(AgentLaneReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _artifacts)));

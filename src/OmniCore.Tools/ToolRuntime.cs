@@ -443,7 +443,10 @@ public sealed class ToolRuntime
             return new Outcome(false, result.Summary, result.Preview, ToolCallState.Failed, effect);
         }
 
-        _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\"}"));
+        _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\"}")
+        { AfterStateRef = tool is FilesystemWriteTool or FilesystemPatchTool && result.AfterStateBytes is { } bytes
+            && reconciliation?.ExpectedPostHash == FileVersion.VersionToken(bytes)
+                ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null });
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
         return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect);
     }

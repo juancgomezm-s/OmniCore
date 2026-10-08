@@ -81,6 +81,22 @@ public sealed class FilesystemPreimageIntegrationTests
             Assert.Equal(1, barrierStore.BlockedSweeps);
             Assert.Equal(original, FilesystemPreimage.Read(artifacts, started.BeforeStateRef));
             Assert.Equal(FileVersion.Encode("updated α\r\nsecond\n", encoding), File.ReadAllBytes(file));
+            var terminal = Assert.Single(store.ReadFrom(session, 1), evt => codecs.Decode(evt) is ToolCallSucceeded s && s.ToolCallId == call);
+            var succeeded = Assert.IsType<ToolCallSucceeded>(codecs.Decode(terminal));
+            Assert.NotNull(succeeded.AfterStateRef);
+            Assert.Equal(succeeded.AfterStateRef, Assert.Single(terminal.ArtifactRefs));
+            var changed = ChangedFilesReader.Read(store, codecs, session, artifacts);
+            var changedRow = Assert.Single(changed.Files);
+            Assert.Equal("M", changedRow.Status); Assert.Equal("file.txt", changedRow.Path);
+            Assert.Equal(1, changedRow.Added); Assert.Equal(1, changedRow.Deleted);
+            var diff = ChangedFilesReader.ReadDiff(store, codecs, session, call.ToString(), artifacts);
+            Assert.True(diff.Available); Assert.Equal("original α\r\nsecond\n", diff.Before);
+            Assert.Equal("updated α\r\nsecond\n", diff.After);
+            // A later user edit and unrelated file do not change this immutable attributed effect.
+            File.WriteAllText(file, "user edit after OmniCore");
+            File.WriteAllText(Path.Combine(workspace, "unrelated.txt"), "not OmniCore");
+            Assert.Equal(diff, ChangedFilesReader.ReadDiff(store, codecs, session, call.ToString(), artifacts));
+            Assert.Single(ChangedFilesReader.Read(store, codecs, session, artifacts).Files);
             store.Close();
             store = new SqliteEventStore(database);
             var reopened = Assert.Single(store.ReadFrom(session, 1), evt => codecs.Decode(evt) is ToolCallStarted s && s.ToolCallId == call);
@@ -91,12 +107,15 @@ public sealed class FilesystemPreimageIntegrationTests
             Assert.Equal(turn, reopened.TurnId);
             var reopenedArtifacts = new FileArtifactStore(artifactDirectory);
             Assert.Equal(original, FilesystemPreimage.Read(reopenedArtifacts, started.BeforeStateRef));
+            Assert.Equal(diff, ChangedFilesReader.ReadDiff(store, codecs, session, call.ToString(), reopenedArtifacts));
+            Assert.False(ChangedFilesReader.ReadDiff(store, codecs, SessionId.New(), call.ToString(), reopenedArtifacts).Available);
             var orphan = reopenedArtifacts.PutText("unreferenced capture fixture", "text/plain", ArtifactKind.Other, Sensitivity.Normal);
             var gc = new ArtifactGc(artifactDirectory).Sweep(database, TimeSpan.Zero, false,
                 DateTimeOffset.UtcNow.AddDays(2), TestContext.Current.CancellationToken);
             Assert.Equal(1, gc.Deleted);
             Assert.False(reopenedArtifacts.Verify(orphan.Hash, orphan.Size));
             Assert.Equal(original, FilesystemPreimage.Read(reopenedArtifacts, started.BeforeStateRef));
+            Assert.True(reopenedArtifacts.Verify(succeeded.AfterStateRef.Hash, succeeded.AfterStateRef.Size));
         }
         finally
         {

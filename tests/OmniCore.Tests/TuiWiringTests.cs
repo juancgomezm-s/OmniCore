@@ -58,6 +58,81 @@ public sealed class TuiWiringTests
         { Volatile.Write(ref DelegationId, id); return System.Threading.Tasks.Task.FromResult(0); }
     }
 
+    [Fact]
+    public void Sidebar_file_row_opens_the_exact_immutable_diff_with_keyboard() => RunTuiTest(fx =>
+    {
+        var session = fx.Server.LastSessionId()!; var run = fx.Server.LastRunId()!;
+        var stream = new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), session);
+        var before = System.Text.Encoding.UTF8.GetBytes("anterior ñ\n");
+        var after = System.Text.Encoding.UTF8.GetBytes("nuevo ñ\n");
+        var reconciliation = OmniCore.Tools.FilesystemPreimage.Capture(new(OmniCore.Tools.FileVersion.VersionToken(before),
+            OmniCore.Tools.FileVersion.VersionToken(after), null), fx.Artifacts, before);
+        var id = ToolCallId.New();
+        using (ExecutionScope.Begin(new(run)))
+        {
+            stream.Append(new ToolCallRequested(id, "fixture", "filesystem.write", "{}"));
+            stream.Append(new ToolCallPrepared(id, "{}")); stream.Append(new ToolCallAuthorized(id));
+            stream.Append(new ToolCallStarted(id, EffectClass.NonIdempotent,
+                OmniCore.Tools.FilesystemReconciliationMetadata.Encode("file.txt", reconciliation.ExpectedPreHash, reconciliation.ExpectedPostHash))
+                { TargetRef = "file.txt", BeforeStateRef = reconciliation.BeforeStateRef });
+            stream.Append(new ToolCallSucceeded(id, "{}") { AfterStateRef = OmniCore.Tools.FilesystemPreimage.CaptureAfter(fx.Artifacts, after) });
+        }
+        fx.StartTui(initialColumns: 105, initialRows: 30);
+        Type(fx, "/sidebar focus core.files");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.SidebarComposition?.SelectedId == "core.files", "tab de archivos");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("M file.txt +1 -1"), "efecto visible");
+        fx.Invoke(() => { fx.App.SidebarContent!.InsertionPoint = new Point(0, 1); fx.App.SidebarContent.SetFocus(); });
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "DiffPreview abierto por Enter");
+        var diffText = fx.App.Overlay!.SubViews.OfType<OmniCore.Cli.SidebarView>().Single().Text.ToString();
+        Assert.Contains("- anterior ñ", diffText); Assert.Contains("+ nuevo ñ", diffText);
+        Assert.Contains("no incluye ediciones posteriores", OverlayText(fx.App.Overlay));
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cerrar primer diff");
+        foreach (var path in new[] { "carpeta-muy-larga/subcarpeta-muy-larga/documento-extenso.txt", "último.txt" })
+        {
+            var later = ToolCallId.New();
+            using (ExecutionScope.Begin(new(run)))
+            {
+                stream.Append(new ToolCallRequested(later, "fixture", "filesystem.write", "{}"));
+                stream.Append(new ToolCallPrepared(later, "{}")); stream.Append(new ToolCallAuthorized(later));
+                stream.Append(new ToolCallStarted(later, EffectClass.NonIdempotent,
+                    OmniCore.Tools.FilesystemReconciliationMetadata.Encode(path, reconciliation.ExpectedPreHash, reconciliation.ExpectedPostHash))
+                    { TargetRef = path, BeforeStateRef = reconciliation.BeforeStateRef });
+                stream.Append(new ToolCallSucceeded(later, "{}") { AfterStateRef = OmniCore.Tools.FilesystemPreimage.CaptureAfter(fx.Artifacts, after) });
+            }
+        }
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("último.txt"), "varias rutas con wrapping");
+        fx.Invoke(() => { fx.App.SidebarContent!.MoveEnd(); fx.App.SidebarContent.SetFocus(); });
+        Assert.True(fx.App.SidebarContent!.InsertionPoint.Y > 3); // preceding long path occupies several screen rows
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "diff correcto tras ruta envuelta");
+        Assert.Contains("Diff · último.txt", OverlayText(fx.App.Overlay!));
+    });
+
+    [Fact]
+    public void Sidebar_preferences_menu_tabs_and_resize_preserve_selection_and_focus() => RunTuiTest(fx =>
+    {
+        fx.StartTui(initialColumns: 105, initialRows: 32);
+        Type(fx, "/sidebar workspace widgets.core.context.visible false");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer!.Text == "", "preferencia guardada");
+        Assert.Null(fx.App.Overlay);
+        Type(fx, "/sidebar focus core.context");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.SidebarComposition?.SelectedId == "core.context", "widget oculto inspeccionable");
+        Assert.Equal("core.context", Assert.Single(fx.App.SidebarComposition!.Body).Widget.Id);
+        Assert.Equal("core.session", Assert.Single(fx.App.SidebarComposition.Pinned).Widget.Id);
+        fx.Invoke(() => fx.App.Composer!.SetFocus());
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 22));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Width == 120 && fx.App.SidebarComposition!.Body.Count > 1, "resize vuelve a stacked");
+        Assert.Equal("core.context", fx.App.SidebarComposition!.SelectedId); Assert.True(fx.App.Composer!.HasFocus);
+        Assert.True(fx.App.SidebarComposition.Collapsed > 0);
+        Type(fx, "/sidebar settings");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "ajustes del panel");
+        Assert.Contains("Scope: Workspace", OverlayText(fx.App.Overlay!));
+        Assert.Contains(fx.App.Overlay!.SubViews.OfType<Button>(), b => b.Text == "Visibilidad");
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cierra ajustes");
+        var preferences = SidebarPreferencesJson.Decode(fx.Server.Query("sidebarSettings", CancellationToken.None)!.Json)!;
+        Assert.Equal("false", preferences.Preferences.Widgets!["core.context"].Visible);
+        Assert.Equal("Workspace", preferences.Sources!["widgets.core.context.visible"]);
+    });
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -78,7 +153,7 @@ public sealed class TuiWiringTests
         fx.StartTui(initialColumns: 120, initialRows: 40);
         KeyWithEffect(fx, KeyCode.F2, () => fx.App.SidebarOpen, "panel visible");
         fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("PLAN 1/2"), "plan durable dibujado");
-        var text = fx.App.SidebarContent!.Text.ToString();
+        var text = fx.App.SidebarSession!.Text.ToString() + "\n" + fx.App.SidebarContent!.Text.ToString();
         Assert.Contains("semilla de prueba", text);
         Assert.Contains("fixture/sidebar-model", text);
         Assert.Contains("Tokens: 100", text); Assert.Contains("Tokens sesión: 120", text);
@@ -88,10 +163,12 @@ public sealed class TuiWiringTests
         var frame = CaptureConversationFrame(fx, 120, 40, "PLAN 1/2");
         if (!noColor) Assert.Contains(frame.Cast<Terminal.Gui.Drawing.Cell>(), cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#F1D58A"));
         else Assert.All(frame.Cast<Terminal.Gui.Drawing.Cell>().Where(cell => cell.Grapheme == "◐"), cell => Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Foreground));
-        fx.Invoke(() => fx.App.Sidebar!.SubViews.OfType<Button>().Single().InvokeCommand(Command.Accept));
+        fx.Invoke(() => fx.App.Sidebar!.SubViews.OfType<Button>().Single(b => b.Id == "sidebar-details").InvokeCommand(Command.Accept));
         fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Cache read: 30"), "detalle de consumo desplegable");
         Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
         Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
+        Assert.Contains("fixture/sidebar-model", fx.App.SidebarSession!.Text.ToString());
+        Assert.Equal(4, fx.App.SidebarSession.GetAllLines().Count); // title, session, model, mode remain pinned
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 22));
         fx.Wait(() => fx.App.MainWindow!.Frame.Height == 22 && fx.App.SidebarContent.Viewport.Height < 20, "altura reducida obliga a desplazar detalle");
         fx.Invoke(() => fx.App.SidebarContent.MoveEnd());
@@ -182,6 +259,8 @@ public sealed class TuiWiringTests
     [InlineData(140, 40, "conversation")]
     [InlineData(100, 30, "sidebar")]
     [InlineData(120, 35, "sidebar")]
+    [InlineData(80, 25, "sidebar-settings")]
+    [InlineData(120, 35, "sidebar-settings")]
     [InlineData(100, 30, "notice")]
     [InlineData(80, 25, "settings")]
     [InlineData(120, 35, "settings")]
@@ -252,6 +331,12 @@ public sealed class TuiWiringTests
             fx.Wait(() => fx.App.Activity!.Visible, "animación visible");
             fx.Invoke(() => { for (var tick = 0; tick < 7; tick++) fx.App.AnimateActivity(); });
         }
+        else if (scene == "sidebar-settings")
+        {
+            fx.Invoke(() => fx.App.Composer!.Text = "");
+            Type(fx, "/sidebar settings");
+            KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "ajustes de widgets visibles");
+        }
         else if (scene == "sidebar")
         {
             fx.InjectKey(new Key(KeyCode.F2));
@@ -302,7 +387,7 @@ public sealed class TuiWiringTests
                 string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
-            var marker = scene switch { "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            var marker = scene switch { "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
             if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
             try
@@ -312,7 +397,16 @@ public sealed class TuiWiringTests
                 Assert.DoesNotContain("╭", text);
                 // Dialogs stay frameless; table content deliberately has grid borders.
                 if (scene != "table") Assert.DoesNotContain("┌", text);
-                if (scene is "settings" or "account" or "login")
+                if (scene == "sidebar-settings")
+                {
+                    Assert.Contains("Scope: Workspace", text); Assert.Contains("core.context", text);
+                    Assert.Contains("Visibilidad", text); Assert.Contains("Prioridad", text);
+                    Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
+                    var buttons = fx.App.Overlay.SubViews.OfType<Button>().ToArray();
+                    foreach (var button in buttons) Assert.True(button.Frame.Right < fx.App.Overlay.Viewport.Width);
+                    Assert.False(fx.App.Composer!.HasFocus);
+                }
+                else if (scene is "settings" or "account" or "login")
                 {
                     Assert.Contains(scene == "settings" ? "Modelos y permisos" : scene == "account" ? "código de dispositivo" : "Cancelar", text);
                     Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
@@ -1841,6 +1935,7 @@ public sealed class TuiWiringTests
             fx.Server = OmniHost.OpenPersistentServer(Path.Combine(fx.JournalDirectory, "journal.db"),
                 Path.Combine(fx.Root, "audit"));
             fx.Server.ConfigureWorkspaceRoot(fx.Workspace);
+            fx.Server.ConfigureSidebarPaths(new OmniCore.Infrastructure.DefaultPlatformPaths(Path.Combine(fx.Root, "sidebar-settings")));
             fx.Artifacts = OmniHost.CreateArtifactStore(fx.JournalDirectory);
             // Sesión semilla: el primer input crea la sesión y el run en el journal real.
             var ack = fx.Server.Send(WireEnvelope.Command(Ids.NewV7(),

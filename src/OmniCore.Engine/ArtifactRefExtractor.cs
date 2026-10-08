@@ -70,6 +70,10 @@ internal static class ArtifactRefExtractor
                 refs.Add(t.BeforeStateRef);
                 break;
 
+            case ToolCallSucceeded t when t.AfterStateRef is not null:
+                refs.Add(t.AfterStateRef);
+                break;
+
             case UserInputReceived u when u.ContentRef is not null:
                 refs.Add(u.ContentRef!);
                 break;

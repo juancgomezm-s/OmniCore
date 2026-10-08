@@ -4,6 +4,8 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "sidebar": { "$ref": "#/$defs/sidebar" },
+    "widgets": { "type": "object", "propertyNames": { "pattern": "^[A-Za-z0-9._-]{1,100}$" }, "additionalProperties": { "$ref": "#/$defs/widget" } },
     "defaultModel": { "type": "string", "description": "Must name a user-defined model alias." },
     "permissionRestrictions": { "type": "object", "additionalProperties": { "enum": ["deny", "ask"] } },
     "gates": {
@@ -27,5 +29,16 @@
     "environmentAllowlist": false,
     "grants": false,
     "userPolicy": false
+  },
+  "$defs": {
+    "sidebar": { "type": "object", "additionalProperties": false, "properties": {
+      "visible": { "type": "boolean" }, "mode": { "enum": ["auto", "stacked", "tabbed", "overlay"] },
+      "stackedMinWidth": { "type": "integer", "minimum": 50, "maximum": 500 },
+      "tabbedMinWidth": { "type": "integer", "minimum": 50, "maximum": 500 }
+    } },
+    "widget": { "type": "object", "additionalProperties": false, "properties": {
+      "visible": { "enum": [true, false, "true", "false", "auto"] }, "expanded": { "type": "boolean" },
+      "priority": { "type": "integer", "minimum": -1000, "maximum": 1000 }
+    } }
   }
 }

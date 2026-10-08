@@ -41,7 +41,6 @@ public static class SessionSidebarPresentation
             new(L("Modelo: ", "Model: ") + model, ThemeRole.Agent),
             new((canonical?.Mode ?? mode) + (canonical?.RunState is { } state ? " · " + RunState(state, locale) : ""), ThemeRole.Muted),
         };
-        if (details && canonical?.RunId is { } run) sessionRows.Add(new("Run " + run, ThemeRole.Muted));
         widgets.Add(new DataSidebarWidget("core.session", "SESSION", 100, sessionRows));
         if (canonical?.Plan is { } plan && (plan.Items.Count > 1 || plan.Items.Any(i => i.State is "Blocked" or "Failed")))
         {
@@ -111,7 +110,12 @@ public static class SessionSidebarPresentation
             diagnostics.Add(new(canonical.RecoveryBlocked ? L("Recuperación bloqueada", "Recovery blocked")
                 : L("Sin bloqueo de recuperación", "No recovery block"), canonical.RecoveryBlocked ? ThemeRole.Error : ThemeRole.Muted));
             if (canonical.ProjectionUnavailable) diagnostics.Add(new(L("Plan no disponible", "Plan unavailable"), ThemeRole.Error));
-            if (details) diagnostics.Add(new("Journal · seq " + canonical.BasedOnJournalSequence, ThemeRole.Muted));
+            if (details)
+            {
+                if (canonical.RunId is { } run) diagnostics.Add(new("Run " + run, ThemeRole.Muted));
+                diagnostics.Add(new(L("Modelo: ", "Model: ") + model, ThemeRole.Agent));
+                diagnostics.Add(new("Journal · seq " + canonical.BasedOnJournalSequence, ThemeRole.Muted));
+            }
         }
         widgets.Add(new DataSidebarWidget("core.diagnostics", L("DIAGNÓSTICO", "DIAGNOSTICS"), 40, diagnostics));
         return widgets;
