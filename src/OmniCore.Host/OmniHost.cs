@@ -135,6 +135,11 @@ public sealed class OmniHost
     public static ChatGptSubscriptionAuthProvider CreateChatGptAuth(IPlatformPaths paths) =>
         new(CreateUserCredentialStore(paths), static () => new HttpClient { Timeout = System.TimeSpan.FromSeconds(60) });
 
+    /// <summary>Estado y apertura explícita del CLI oficial de Claude Code.
+    /// No acredita login ni conecta un provider OAuth nativo al chat.</summary>
+    public static ClaudeAccountService CreateClaudeAccountService() =>
+        new(SystemProcessRuntime.Instance());
+
     public static ICredentialStore CreateUserCredentialStore(IPlatformPaths paths) =>
         CreateCredentialStore(paths.DataDirectory);
 
