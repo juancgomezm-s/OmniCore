@@ -21,6 +21,7 @@ internal class StyledTextPresenter : TextView
         ReadOnly = true;
         WordWrap = true;
         ScrollBars = true;
+        ConversationScrollBarStyle.Attach(VerticalScrollBar, () => Dimmed);
         AddCommand(Command.Copy, () => CopySelection());
     }
 

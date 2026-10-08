@@ -125,6 +125,7 @@ public sealed class TuiWiringTests
     [InlineData(80, 25, "table")]
     [InlineData(140, 40, "table")]
     [InlineData(100, 36, "rich")]
+    [InlineData(100, 36, "scrollbar")]
     public void Visual_frames_export_the_real_driver_cells(int columns, int rows, string scene) => RunTuiTest(fx =>
     {
         var lane = fx.Decoded<LaneCreated>().Last().LaneId;
@@ -139,7 +140,9 @@ public sealed class TuiWiringTests
             : "## Conversación\nUn diseño limpio, con `código inline` y espacio para leer.\n\n"
             + "### Métodos principales\n- `AskAsync(ct)` — Explorar el proyecto\n- `ActAsync(ct)` — Ejecutar una tarea\n\n"
             + "```c#\npublic sealed class Scenarios\n{\n    // Una respuesta con estilos\n    public string Run() { return \"Listo\"; }\n    public int Count = 42;\n}\n```\n\n"
-            + "La conversación conserva el foco y el historial.", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+            + "La conversación conserva el foco y el historial."
+            + (scene == "scrollbar" ? "\n\n" + string.Join('\n', Enumerable.Range(1, 60).Select(i => $"Línea del historial {i}")) : ""),
+            "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
         new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
             .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), content));
         var visualPolicies = scene is "models" or "picker" ? ModelPolicyHost.Create(Path.Combine(fx.Root, "visual-catalog")) : null;
@@ -351,6 +354,54 @@ public sealed class TuiWiringTests
         if (captureError is not null) throw captureError;
         visualTurn?.Release.Set();
     }, noColor: false);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Conversation_scrollbar_is_a_quiet_rail_and_keeps_native_navigation(bool noColor) => RunTuiTest(fx =>
+    {
+        var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+        var artifact = fx.Artifacts.PutText(string.Join('\n', Enumerable.Range(0, 100).Select(i => $"Historia {i}")),
+            "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+        new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+            .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), artifact));
+        fx.StartTui();
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(80, 25));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Width == 80, "resize aplicado");
+        var bar = fx.App.Conversation!.VerticalScrollBar;
+        fx.Invoke(() => { fx.App.Conversation.SetFocus(); fx.App.Conversation.MoveHome(); });
+        fx.Wait(() => bar.Visible && bar.Value == 0, "scroll al inicio");
+
+        int ThumbRow()
+        {
+            var frame = CaptureConversationFrame(fx, 80, 25, "Enter enviar");
+            var origin = bar.ViewportToScreen(Point.Empty);
+            var rail = Enumerable.Range(origin.Y, bar.Viewport.Height).Select(y => frame[y, origin.X]).ToArray();
+            Assert.Equal("╷", rail[0].Grapheme);
+            Assert.Equal("╵", rail[^1].Grapheme);
+            Assert.Contains(rail, cell => cell.Grapheme == "│");
+            Assert.Contains(rail, cell => cell.Grapheme == "┃");
+            Assert.All(rail, cell => Assert.Contains(cell.Grapheme, new[] { "╷", "╵", "│", "┃" }));
+            foreach (var cell in rail)
+            {
+                Assert.Equal(noColor ? Terminal.Gui.Drawing.Color.None : new Terminal.Gui.Drawing.Color("#061822"), cell.Attribute?.Background);
+                Assert.Equal(noColor ? Terminal.Gui.Drawing.Color.None : new Terminal.Gui.Drawing.Color(
+                    cell.Grapheme == "┃" ? "#67D4D0" : "#365364"), cell.Attribute?.Foreground);
+            }
+            return Array.FindIndex(rail, cell => cell.Grapheme == "┃");
+        }
+
+        var top = ThumbRow();
+        fx.Invoke(() => bar.SubViews.OfType<ScrollButton>().Single(button => button.Direction == NavigationDirection.Forward)
+            .InvokeCommand(Command.Accept));
+        fx.Wait(() => bar.Value > 0, "el extremo conserva el clic nativo");
+        fx.Invoke(() => bar.Value = (bar.ScrollableContentSize - bar.VisibleContentSize) / 2);
+        var middle = ThumbRow();
+        Assert.True(middle > top, "indicador refleja scroll intermedio");
+        fx.Invoke(() => fx.App.Conversation.MoveEnd());
+        var bottom = ThumbRow();
+        Assert.True(bottom > middle, "indicador alcanza el final");
+    }, noColor);
 
     [Fact]
     public void Rich_conversation_is_read_only_and_polling_preserves_history_position() => RunTuiTest(fx =>
