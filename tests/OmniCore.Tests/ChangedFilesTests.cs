@@ -60,6 +60,14 @@ public sealed class ChangedFilesTests
         var row = Assert.Single(ChangedFilesReader.Read(store, codecs, session, null).Files);
         Assert.Equal("?", row.Status); Assert.Null(row.Added); Assert.False(row.DiffAvailable);
         stream.Append(new ToolCallSucceeded(id, "{}"));
+        var terminal = store.ReadFrom(session, 1).Last();
+        var legacyJson = System.Text.Json.Nodes.JsonNode.Parse(terminal.PayloadJson)!.AsObject();
+        legacyJson.Remove("afterStateRef"); legacyJson.Remove("AfterStateRef");
+        var legacy = DomainEvent.Create(session, terminal.Type, 1, terminal.Causation, terminal.CorrelationId,
+            terminal.RunId, terminal.TaskId, terminal.LaneId, terminal.TurnId, terminal.PlanItemId,
+            id, terminal.ArtifactRefs, legacyJson.ToJsonString(), terminal.ExecutionId, terminal.Source);
+        var reopenedLegacy = Assert.IsType<ToolCallSucceeded>(codecs.Decode(legacy));
+        Assert.Equal(id, reopenedLegacy.ToolCallId); Assert.Null(reopenedLegacy.AfterStateRef);
         Assert.Equal("MetadataUnavailable", ChangedFilesReader.ReadDiff(store, codecs, session, id.ToString(), null).Reason);
         var unreadable = ChangedFilesReader.Read(store, new UnreadableCodecs(codecs), session, null);
         Assert.True(unreadable.Unavailable); Assert.Empty(unreadable.Files);

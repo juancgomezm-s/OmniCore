@@ -36,6 +36,11 @@ ALCANCE IMPLEMENTADO
 DEFECTOS DETECTADOS Y CORREGIDOS DURANTE IMPLEMENTACIÓN
 - Codec de ToolCallSucceeded todavía v1 tras añadir propiedad v2: corregido
   registro; pruebas reejecutadas, sin debilitar assertions.
+- Comprobación adicional de payload histórico v1 detectó falta de upcaster
+  v1 -> v2 (4 casos / 1 FAIL, .tmp-sidebar-p23-legacy-probe.log).
+  Registrado IdentityUpcaster; propiedad ausente permanece null y no se
+  reescribe el journal. Esta prueba explícita no estaba cubierta por los
+  fixtures que escribían eventos con la versión vigente.
 - Capturar CAS desde continuación async bloqueaba el lease ThreadLocal que
   posee el caller síncrono de ToolRuntime. Captura movida a ese mismo hilo,
   conservando la publicación CAS+journal bajo el lease original.
@@ -85,6 +90,12 @@ VERIFICACIÓN
   Incluye 76 casos de wiring TUI, las 24 escenas del driver y los focales
   de archivos/configuración. M4 se ejecutó separado como se indica arriba;
   no se afirma un lote monolítico ni se suman los focales solapados.
+- Delta final de compatibilidad v1 -> v2: build 0 warnings/0 errors,
+  .tmp/sidebar-p23-legacy-final/. Focal ampliado con codecs, journal,
+  recuperación M3, contratos legacy, archivos y configuración: 230 PASS,
+  3.882 s, .tmp-sidebar-p23-legacy-final-focused-pass.log. El lote general
+  anterior antecede únicamente este upcaster y la assertion legacy nueva;
+  no se declara un segundo lote general sobre ese delta de una línea.
 Los focales y TUI son ejecuciones solapadas con la suite, no se suman al total.
 No llamadas a proveedores ni gasto de cualificación real.
 
@@ -96,3 +107,4 @@ LÍMITES / HITOS FUTUROS
 - Checkout principal y trabajo de GLM preservados. Sin merge/push en esta tarea.
 
 Commit local del bloque: feat(sidebar): add attributed diffs and scoped responsive preferences.
+Corrección local adicional: fix(journal): preserve legacy tool success decoding.
