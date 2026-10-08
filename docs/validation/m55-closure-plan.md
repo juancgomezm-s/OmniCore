@@ -1,4 +1,18 @@
-# Objetivo activo: cerrar M5 y M5.5
+# Historial de cierre de M5 y M5.5
+
+## Estado vigente — 2026-10-07 local / 2026-10-08 UTC
+
+**M5 y M5.5 cerrados en Windows.** Prevalecen las actas
+[M5 real](m5-closure-20261007.md) y [M5.5 integral](m55-closure-20261007.md)
+sobre las matrices y colas históricas de este archivo. Bloque final M5.5 por
+root, sin delegación: checkpoint opaco cifrado/exacto, cotas UltraCode en
+ejecución, admisión serial por Run, atribución exacta del disparador y errores
+de ack redactados. FULL final 2962/2958 PASS/0 FAIL/4 SKIP symlink;
+arquitectura 56 PASS; probe con componentes WPF reales de OmniCoder exit0.
+Evidencia nueva scripted/loopback, no nueva autenticación ni consumo real.
+Los siete criterios ADR0046 y once ADR0047 están indexados íntegramente en el
+acta; scheduling/delegación operativa de ADR0047 permanece explícitamente en M6.
+No se inició M6 ni se reanudó el monitor pausado.
 
 ## UltraCode productivo con cobertura explícita — 2026-10-07 15:02 UTC
 
@@ -304,7 +318,7 @@ permanecen abiertos el criterio 7 integral y los demás pendientes de la matriz.
 Toda esta ejecución usa providers scripted; no acredita consultas autenticadas,
 consumo real, nuevos workers de runtime ni aceptación real de Quick en Sol/Luna.
 
-## Matriz de aceptación íntegra — 2026-10-07 11:28 UTC
+## Matriz histórica de aceptación — 2026-10-07 11:28 UTC
 
 Checkpoint conjunto: build final 0 errores/advertencias, 14.60 s; focal de CLI,
 authority y policy 58 PASS, 0 FAIL, 8.845 s; arquitectura 56 PASS, 0 FAIL,
@@ -325,7 +339,8 @@ dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor -class
 dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -noColor
 ```
 
-Esta matriz prevalece como índice operativo sobre las colas históricas de abajo.
+Esta matriz fue el índice operativo de ese checkpoint; el acta final enlazada
+al inicio de este archivo la sustituye como estado vigente.
 No elimina requisitos ni convierte cobertura offline en aceptación autenticada.
 Una fila con evidencia parcial permanece abierta; los siete criterios de ADR0046
 y los once de ADR0047 se conservan expresamente.

@@ -75,7 +75,7 @@ Resumen documental al **7 de octubre de 2026**. La [arquitectura §24](docs/arch
 | **M3 · Mutaciones y procesos** | Código completo | Herramientas, fronteras y errores tipados; aceptación real local pendiente. Sandbox Strong en Linux diferido. |
 | **M4 · Contexto y TUI v0** | Cerrado en Windows | [200 turnos, recuperación en otro proceso y TUI en PTY](docs/validation/m4-closure-20261005.md). No acredita reinicio de Windows ni validación Linux. |
 | **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
-| **M5.5 · Fronteras pre-M6** | En curso | [Plan y matriz de aceptación](docs/validation/m55-closure-plan.md): autoridad, atribución, estado opaco, fingerprint y contratos. |
+| **M5.5 · Fronteras pre-M6** | Cerrado en Windows | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. 2.958 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS. |
 | **M6–M10** | Planificados | Multiagente, aislamiento, extensiones, Host separado y madurez v1. |
 
 La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.
@@ -154,7 +154,7 @@ La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `
 
 ## Camino hacia v1
 
-![Roadmap: base y modelos entregados, fronteras M5.5 en curso y próximas etapas de multiagente, aislamiento, extensiones, Host separado y v1.](docs/images/roadmap.png)
+![Roadmap: M5 y fronteras M5.5 cerrados en Windows; próximas etapas de multiagente, aislamiento, extensiones, Host separado y v1.](docs/images/roadmap.png)
 
 *Orden previsto, no calendario ni porcentaje de avance. Cada hito exige su propia evidencia.*
 

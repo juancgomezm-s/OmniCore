@@ -68,7 +68,7 @@ public sealed class ExplorerTurnDurableProviderStateTests
                     StopReason.ToolUse, new TokenUsage(10, 2, 0, 0, 0), scenario == "null" ? null : state,
                     new ProviderMetadata("scripted", "", null));
             }).Ask("ask", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
-            Assert.Equal(scenario == "redacted" ? StopReason.Error : StopReason.InputRequired, suspended.StopReason);
+            Assert.Equal(StopReason.InputRequired, suspended.StopReason);
             var completion = store.ReadFrom(session, 1).Select(codecs.Decode).OfType<ModelStepCompleted>().Single();
             var response = artifacts.GetText(completion.ResponseArtifact!.Hash)!;
             Assert.DoesNotContain("exact-provider-marker", response, StringComparison.Ordinal);
@@ -77,9 +77,8 @@ public sealed class ExplorerTurnDurableProviderStateTests
             {
                 Assert.Equal(10, completion.Usage.Input);
                 Assert.Equal(2, completion.Usage.Output);
-                Assert.Empty(service.Pending(session));
-                Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnAbandoned>());
-                return;
+                Assert.Single(service.Pending(session));
+                Assert.Empty(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnAbandoned>());
             }
             if (scenario == "same")
             {
@@ -89,7 +88,7 @@ public sealed class ExplorerTurnDurableProviderStateTests
                 var sweep = new ArtifactGc(root).Sweep(journal, TimeSpan.Zero, false,
                     DateTimeOffset.UtcNow.AddDays(2), CancellationToken.None);
                 Assert.True(sweep.LiveReferenced > 0);
-                Assert.Contains("exact-provider-marker", artifacts.GetText(ContentHash.Sha256(hash))!);
+                Assert.DoesNotContain("exact-provider-marker", artifacts.GetText(ContentHash.Sha256(hash))!);
             }
             if (scenario == "corrupt")
             {
@@ -125,7 +124,7 @@ public sealed class ExplorerTurnDurableProviderStateTests
             var result = MakeTurn((request, _) =>
             {
                 calls++;
-                if (scenario == "same") Assert.Equal(state, request.Continuation);
+                if (scenario is "same" or "redacted") Assert.Equal(state, request.Continuation);
                 else Assert.Null(request.Continuation);
                 return new ModelResponse(new ContentBlock[] { new TextBlock("done") }, StopReason.EndTurn,
                     new TokenUsage(4, 1, 0, 0, 0), null, new ProviderMetadata("scripted", "", null));

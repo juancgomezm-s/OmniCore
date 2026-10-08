@@ -78,7 +78,7 @@ public sealed class BlobProbe
 /// no tampering del store.
 /// </para>
 /// </summary>
-public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLease, IArtifactPreparationStore
+public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLease, IArtifactPreparationStore, IProtectedArtifactStore
 {
     private const string HashAlgorithm = "sha256";
     private const int HashHexLength = 64;
@@ -120,6 +120,27 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
 
     public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
         => PrepareText(content, mediaType, kind, sensitivity).Publish();
+
+    public ArtifactRef PutProtectedText(string content, string purpose, string mediaType, ArtifactKind kind)
+    {
+        using var publication = _publicationLease.Value is null ? AcquirePublicationLease(CancellationToken.None) : null;
+        var encrypted = new ProtectedArtifactCipher(_dataDirectory).Protect(content, purpose);
+        // The normal redaction, integrity and atomic publication boundary still applies to
+        // ciphertext. Never hide plaintext in an encoding to bypass that boundary.
+        var reference = PutText(encrypted, mediaType, kind, Sensitivity.Sensitive);
+        if (reference.Redacted || !string.Equals(GetText(reference.Hash), encrypted, StringComparison.Ordinal))
+            throw new InvalidDataException("Protected artifact is invalid.");
+        return reference;
+    }
+
+    public string GetProtectedText(ArtifactRef reference, string purpose)
+    {
+        if (reference.Sensitivity != Sensitivity.Sensitive || reference.Redacted
+            || !Verify(reference.Hash, reference.Size))
+            throw new InvalidDataException("Protected artifact is invalid.");
+        var encrypted = GetText(reference.Hash) ?? throw new InvalidDataException("Protected artifact is invalid.");
+        return new ProtectedArtifactCipher(_dataDirectory).Unprotect(encrypted, purpose);
+    }
 
     public IPreparedArtifact PrepareText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
     {

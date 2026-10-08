@@ -159,8 +159,9 @@ public sealed class ModeAuthorityFingerprintIntegrationTests
                 new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "", null));
         }, ScriptedToolExecutor.WithWorkspace(catalog, new ScriptedPermissionPolicy([]), root), catalog,
             new ContextMaterializer(new FakeTokenCounter(), []), Baseline,
-            new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null), store, codecs, artifacts,
-            new InMemoryAuditSink(), new RedactionPolicy(), recordEffectiveFingerprint: true);
+            new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 1024), store, codecs, artifacts,
+            new InMemoryAuditSink(), new RedactionPolicy(), recordEffectiveFingerprint: true,
+            pricing: new ModelPricing(0m, 0m), modelContextCapacity: 8192, maximumGenerationRequestAttempts: 1);
     }
 
     private static void WithDirectory(Action<string> action)

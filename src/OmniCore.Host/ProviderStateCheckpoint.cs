@@ -24,19 +24,24 @@ internal static class ProviderStateCheckpoint
         try
         {
             var stateJson = JsonSerializer.Serialize(state, ProviderStateCheckpointJsonContext.Default.ProviderState);
-            var stateRef = artifacts.PutText(stateJson, MediaType, ArtifactKind.ProviderOpaqueState, Sensitivity.Sensitive);
-            var utf8Size = Encoding.UTF8.GetByteCount(stateJson);
+            var protector = artifacts as IProtectedArtifactStore;
+            var purpose = Purpose(modelId, routeId, turnId, stepIndex, routeIdentityHash);
+            var stateRef = protector is null
+                ? artifacts.PutText(stateJson, MediaType, ArtifactKind.ProviderOpaqueState, Sensitivity.Sensitive)
+                : protector.PutProtectedText(stateJson, purpose, MediaType, ArtifactKind.ProviderOpaqueState);
             if (stateRef.Id is null || stateRef.Size < 0 || stateRef.MediaType != MediaType
                 || stateRef.Kind != ArtifactKind.ProviderOpaqueState
                 || stateRef.Sensitivity != Sensitivity.Sensitive
-                || stateRef.Redacted || stateRef.Size != utf8Size || !ValidSha256(stateRef.Hash)
+                || stateRef.Redacted || !ValidSha256(stateRef.Hash)
                 || !artifacts.Verify(stateRef.Hash, stateRef.Size)
-                || !string.Equals(artifacts.GetText(stateRef.Hash), stateJson, StringComparison.Ordinal))
+                || (protector is null && stateRef.Size != Encoding.UTF8.GetByteCount(stateJson))
+                || !string.Equals(protector is null ? artifacts.GetText(stateRef.Hash)
+                    : protector.GetProtectedText(stateRef, purpose), stateJson, StringComparison.Ordinal))
                 throw Invalid();
 
             var descriptor = new ProviderStateCheckpointDescriptor
             {
-                Version = 2,
+                Version = protector is null ? 2 : 3,
                 ModelId = modelId,
                 RouteId = routeId.Value,
                 RouteIdentityHash = routeIdentityHash,
@@ -74,7 +79,7 @@ internal static class ProviderStateCheckpoint
             throw Invalid();
         }
 
-        if (descriptor.Version is not (1 or 2)) throw Invalid();
+        if (descriptor.Version is not (1 or 2 or 3)) throw Invalid();
         if (string.IsNullOrWhiteSpace(descriptor.ModelId) || string.IsNullOrWhiteSpace(descriptor.RouteId)
             || string.IsNullOrWhiteSpace(descriptor.TurnId) || !Guid.TryParse(descriptor.TurnId, out _)
             || descriptor.StateRef is null)
@@ -87,7 +92,7 @@ internal static class ProviderStateCheckpoint
 
         // Version 1 and unqualified version 2 checkpoints have no proof that the current
         // endpoint/protocol/profile/provider model is the same physical route. Never replay them.
-        if (descriptor.Version != 2 || routeIdentityHash is null || descriptor.RouteIdentityHash is null
+        if (descriptor.Version == 1 || routeIdentityHash is null || descriptor.RouteIdentityHash is null
             || !ValidRouteIdentityHash(routeIdentityHash)
             || !ValidRouteIdentityHash(descriptor.RouteIdentityHash)
             || !string.Equals(descriptor.RouteIdentityHash, routeIdentityHash, StringComparison.Ordinal))
@@ -103,8 +108,11 @@ internal static class ProviderStateCheckpoint
         try
         {
             if (!artifacts.Verify(stateRef.Hash, stateRef.Size)) throw Invalid();
-            var content = artifacts.GetText(stateRef.Hash);
-            if (content is null || Encoding.UTF8.GetByteCount(content) != stateRef.Size) throw Invalid();
+            var content = descriptor.Version == 3
+                ? (artifacts as IProtectedArtifactStore ?? throw Invalid()).GetProtectedText(stateRef,
+                    Purpose(modelId, routeId, turnId, stepIndex, routeIdentityHash))
+                : artifacts.GetText(stateRef.Hash);
+            if (content is null || (descriptor.Version != 3 && Encoding.UTF8.GetByteCount(content) != stateRef.Size)) throw Invalid();
             var state = JsonSerializer.Deserialize(content, ProviderStateCheckpointJsonContext.Default.ProviderState);
             if (state is null || state.Kind is null || state.PayloadJson is null) throw Invalid();
             return state;
@@ -125,6 +133,11 @@ internal static class ProviderStateCheckpoint
         && value.All(static c => c is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static InvalidDataException Invalid() => new(SafeFailure);
+
+    private static string Purpose(string modelId, RouteId routeId, TurnId turnId, int stepIndex, string? identityHash)
+        => JsonSerializer.Serialize(new[] { "provider-state", modelId, routeId.Value, turnId.ToString(),
+            stepIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), identityHash ?? string.Empty },
+            ProviderStateCheckpointJsonContext.Default.StringArray);
 }
 
 internal sealed record ProviderStateCheckpointDescriptor
@@ -140,4 +153,5 @@ internal sealed record ProviderStateCheckpointDescriptor
 
 [JsonSerializable(typeof(ProviderState))]
 [JsonSerializable(typeof(ProviderStateCheckpointDescriptor))]
+[JsonSerializable(typeof(string[]))]
 internal partial class ProviderStateCheckpointJsonContext : JsonSerializerContext;
