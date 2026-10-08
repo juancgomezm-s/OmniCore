@@ -1,17 +1,19 @@
-param([switch]$InWindow, [string]$Workspace)
+param([switch]$InWindow, [string]$Workspace, [string]$BinaryDirectory)
 
 $ErrorActionPreference = 'Stop'
 $repoPath = Split-Path -Parent $PSScriptRoot
 if (-not $Workspace) { $Workspace = $repoPath }
 $Workspace = (Resolve-Path -LiteralPath $Workspace).Path
-$tuiPath = Join-Path $repoPath 'src\OmniCore.Cli\bin\Debug\net10.0\omni.dll'
+if (-not $BinaryDirectory) { $BinaryDirectory = Join-Path $repoPath 'src\OmniCore.Cli\bin\Debug\net10.0' }
+$BinaryDirectory = (Resolve-Path -LiteralPath $BinaryDirectory).Path
+$tuiPath = Join-Path $BinaryDirectory 'omni.dll'
 if (-not (Test-Path -LiteralPath $tuiPath)) {
     throw 'Compile primero: dotnet build src/OmniCore.Cli'
 }
 if (-not $InWindow) {
     $terminalPath = (Get-Command wt.exe -ErrorAction Stop).Source
     Start-Process -FilePath $terminalPath -ArgumentList (
-        '-w new new-tab --title "OmniCore - TUI" --startingDirectory "{0}" powershell.exe -NoProfile -NoExit -File "{1}" -InWindow -Workspace "{0}"' -f $Workspace, $PSCommandPath
+        '-w new new-tab --title "OmniCore - TUI" --startingDirectory "{0}" powershell.exe -NoProfile -NoExit -File "{1}" -InWindow -Workspace "{0}" -BinaryDirectory "{2}"' -f $Workspace, $PSCommandPath, $BinaryDirectory
     )
     return
 }

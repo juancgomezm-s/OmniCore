@@ -32,6 +32,34 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    [Fact]
+    public void Header_recovers_runtime_model_without_manual_selection_and_updates_from_events() => RunTuiTest(fx =>
+    {
+        var stream = new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!);
+        stream.Append(new ModelStepStarted(TurnId.New(), 0, "Llama.cpp/qwen38-27b", 8192, "Direct", null, null, null));
+        fx.StartTui();
+        fx.Wait(() => fx.App.Header!.Text.ToString().Contains("Llama.cpp/qwen38-27b"), "modelo recuperado del journal");
+        stream.Append(new ModelStepStarted(TurnId.New(), 1, "provider/next-model", 8192, "Direct", null, null, null));
+        fx.Wait(() => fx.App.Header!.Text.ToString().Contains("provider/next-model"), "modelo efectivo actualizado por polling");
+    });
+
+    [Fact]
+    public void Source_command_restores_folded_examples_without_changing_journal() => RunTuiTest(fx =>
+    {
+        var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+        const string markdown = "```markdown\n**Único**\n```\n**Único**";
+        var content = fx.Artifacts.PutText(markdown, "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+        new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+            .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), content));
+        fx.StartTui();
+        fx.Wait(() => fx.App.Conversation!.Text.Contains("Único"), "respuesta visible");
+        Assert.DoesNotContain("**Único**", fx.App.Conversation!.Text);
+        Type(fx, "/fuente");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Conversation!.Text.Contains("**Único**"), "fuente visible");
+        Assert.Equal(markdown, fx.App.ProjectionState.Conversation.Blocks.Last().Text);
+        Type(fx, "/fuente");
+        KeyWithEffect(fx, KeyCode.Enter, () => !fx.App.Conversation!.Text.Contains("**Único**"), "vista compacta restaurada");
+    });
     // Recovered from the old contrast audit, but exercise the current production palette.
     // This is driver-backed UI coverage, not a claim about a human terminal or provider login.
     [Fact]

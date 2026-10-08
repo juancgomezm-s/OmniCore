@@ -15,7 +15,8 @@ internal sealed record ConversationSpan(string Text, ConversationStyle Style,
 /// <summary>Small, deterministic Markdown subset for terminal conversations; never modifies journal content.</summary>
 internal static class ConversationPresentation
 {
-    internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> RenderCards(IReadOnlyList<ConversationBlock> blocks, string locale, int width)
+    internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> RenderCards(IReadOnlyList<ConversationBlock> blocks, string locale, int width,
+        bool compactExamples = false)
     {
         var result = new List<IReadOnlyList<ConversationSpan>>();
         foreach (var block in blocks)
@@ -29,7 +30,7 @@ internal static class ConversationPresentation
                 _ => ConversationStyle.NoticeAccent
             };
             var icon = block.Role switch { ConversationRole.User => "◉", ConversationRole.Assistant => "◈", ConversationRole.Tool => "⚙", _ => "·" };
-            var rows = Render(new[] { block }, locale, Math.Max(1, width - 3));
+            var rows = Render(new[] { block }, locale, Math.Max(1, width - 3), compactExamples);
             for (var index = 0; index < rows.Count; index++)
             {
                 var row = index == 0 ? new[] { new ConversationSpan(icon + "  " + string.Concat(rows[index].Select(span => span.Text)),
@@ -76,7 +77,8 @@ internal static class ConversationPresentation
         return result;
     }
 
-    internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> Render(IReadOnlyList<ConversationBlock> blocks, string locale, int width = 120)
+    internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> Render(IReadOnlyList<ConversationBlock> blocks, string locale, int width = 120,
+        bool compactExamples = false)
     {
         var rows = new List<IReadOnlyList<ConversationSpan>>();
         foreach (var block in blocks)
@@ -94,7 +96,7 @@ internal static class ConversationPresentation
                 ? ConversationStyle.Heading : ConversationStyle.Muted) });
             if (block.Role == ConversationRole.Assistant)
             {
-                rows.AddRange(MarkdownRenderer.Render(block.Text, width));
+                rows.AddRange(MarkdownRenderer.Render(compactExamples ? MarkdownExamples.Compact(block.Text) : block.Text, width));
                 continue;
             }
             foreach (var source in block.Text.Replace("\r\n", "\n").Split('\n'))

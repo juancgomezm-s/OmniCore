@@ -16,8 +16,9 @@ Behavior
   Code spans and escaped references stay literal. Spanish Unicode is preserved.
 - Nested bullets, ordered items, tasks, hanging wraps, links, image alt text,
   quotes and horizontal rules remain readable. Images are text fallbacks.
-- Explicit source/example plus rendered-example content is not deduplicated:
-  it is part of the assistant's response, not a second renderer emission.
+- Markdown demo fences followed by a matching rendered example are folded in
+  the default TUI view. /fuente toggles their original source back into view.
+  This affects presentation only; source text and journal records are unchanged.
 - The launcher sets UTF-8 and interactive color only in its child process.
   Terminal font size remains a terminal-wide preference.
 
@@ -42,3 +43,20 @@ Scope
 Presentation only. No journal rewriting or milestone/gate status changes.
 This remains a terminal Markdown renderer, not an HTML browser. Font glyphs
 and the terminal's support for text attributes determine final appearance.
+
+Follow-up: title/model and repeated Markdown demos
+- Title limited to 32 terminal columns, even on very wide screens; the model
+  gets space before the title and has an explicit Modelo: label.
+- The header reads model_step.started events during replay and live polling.
+  It can therefore show the actual runtime model without a manual F3 selection.
+  A changed explicit selection takes precedence until the next model step.
+- Folding is restricted to closed md/markdown fences whose first rendered line
+  matches the following preview. Link labels may match different example URLs;
+  the visible preview keeps the actual destination. Other languages, standalone
+  snippets, unmatched examples and incomplete streaming fences stay visible.
+- /fuente is a local display command, available through slash completion. It
+  restores the entire original example, including any additional source lines.
+- Build output uses .tmp/header-build to preserve the running previous window.
+- Follow-up validation: build 0 warnings/errors; 121 focused cases passed,
+  0 failures/skips (example compaction, rich Markdown, presentation/regression,
+  tables and the complete TUI wiring suite). Log: .tmp-header-tests.log.
