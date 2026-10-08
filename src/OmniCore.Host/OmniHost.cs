@@ -135,6 +135,23 @@ public sealed class OmniHost
     public static ChatGptSubscriptionAuthProvider CreateChatGptAuth(IPlatformPaths paths) =>
         new(CreateUserCredentialStore(paths), static () => new HttpClient { Timeout = System.TimeSpan.FromSeconds(60) });
 
+    /// <summary>
+    /// Backend de cuenta Claude (bloque de cuentas, ADR-0011 §3.3 + ADR-0012): mide el runtime
+    /// oficial y lanza sesiones interactivas reales del binario sin modificar. Sin OAuth, sin
+    /// credenciales de Claude en OmniCore y sin llamadas HTTP.
+    /// </summary>
+    public static ClaudeAccountService CreateClaudeAccountService() =>
+        new(SystemProcessRuntime.Instance());
+
+    /// <summary>
+    /// Delegación puntual al CLI oficial de Claude Code (rev. de reevaluación OAuth, ADR-0011
+    /// §10.7 + ADR-0012 §2): corre el binario sin modificar en modo no interactivo y devuelve la
+    /// respuesta real a OmniCore. La autenticación es siempre la sesión propia del usuario dentro
+    /// del CLI; sin OAuth propio, sin credenciales y sin fallback a la vía de API pagada.
+    /// </summary>
+    public static ClaudeAccountDelegationService CreateClaudeAccountDelegationService() =>
+        new(SystemProcessRuntime.Instance());
+
     public static ICredentialStore CreateUserCredentialStore(IPlatformPaths paths) =>
         CreateCredentialStore(paths.DataDirectory);
 

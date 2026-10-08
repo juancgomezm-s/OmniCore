@@ -1364,7 +1364,7 @@ public sealed class TuiWiringTests
         Assert.Equal(0, account.LoginCalls);
     });
 
-    private static void Click(TuiFixture fx, string text)
+    internal static void Click(TuiFixture fx, string text)
     {
         var button = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Text.ToString().Contains(text));
         fx.Invoke(() => button.InvokeCommand(Command.Accept));
@@ -1524,7 +1524,7 @@ public sealed class TuiWiringTests
     // ------------------------------------------------------------------ fixture
 
     /// <summary>Espera activa con tope: los cambios de estado llegan por el poll de producción (500 ms).</summary>
-    private static bool WaitUntil(Func<bool> condition, int timeoutMs = 20000)
+    internal static bool WaitUntil(Func<bool> condition, int timeoutMs = 20000)
     {
         var deadline = Environment.TickCount64 + timeoutMs;
         while (Environment.TickCount64 < deadline)
@@ -1561,12 +1561,12 @@ public sealed class TuiWiringTests
         finally { Environment.SetEnvironmentVariable("NO_COLOR", previous); }
     }
 
-    private static string OverlayText(View overlay) => string.Join(" ",
+    internal static string OverlayText(View overlay) => string.Join(" ",
         overlay.SubViews.Select(view => view.Text?.ToString() ?? ""));
 
     /// <summary>Teclea texto en el composer verificando que llega: bajo la carga de la suite completa
     /// el driver puede perder claves inyectadas, así que se reintentan las que falten.</summary>
-    private static void Type(TuiFixture fx, string text)
+    internal static void Type(TuiFixture fx, string text)
     {
         for (var tries = 0; ; tries++)
         {
@@ -1599,7 +1599,7 @@ public sealed class TuiWiringTests
     /// no se procese. Solo para teclas idempotentes (Enter sobre input ya procesado es un no-op,
     /// Esc sin overlay ni interacción es un no-op, F3 reabre el mismo listado); nunca para
     /// toggles como F2.</summary>
-    private static void KeyWithEffect(TuiFixture fx, KeyCode key, Func<bool> effect, string message)
+    internal static void KeyWithEffect(TuiFixture fx, KeyCode key, Func<bool> effect, string message)
     {
         for (var tries = 0; ; tries++)
         {
@@ -1699,7 +1699,8 @@ public sealed class TuiWiringTests
         }
 
         public void StartTui(ModelPolicyHost? policies = null, ITuiAccountHost? account = null,
-            ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null)
+            ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null,
+            ITuiProviderConnectionHost? connections = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -1715,7 +1716,7 @@ public sealed class TuiWiringTests
             for (var attempt = 1; ; attempt++)
             {
                 _loopError = null;
-                App = new TuiApp(Server, "es", _fixturePolicies, account, turnHost);
+                App = new TuiApp(Server, "es", _fixturePolicies, account, turnHost, connections);
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);

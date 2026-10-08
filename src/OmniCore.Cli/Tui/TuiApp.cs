@@ -11,7 +11,7 @@ using Terminal.Gui.Views;
 namespace OmniCore.Cli;
 
 /// <summary>Terminal.Gui renderer. All conversation state is reduced from IOmniClient wire events.</summary>
-public sealed class TuiApp
+public sealed partial class TuiApp
 {
     private readonly IOmniClient _client;
     private readonly string _locale;
@@ -79,7 +79,7 @@ public sealed class TuiApp
     internal bool SidebarOpen => _sidebarOpen;
     internal ModelPolicyHost Policies => _policies;
 
-    public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null)
+    public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? connections = null)
     {
         _client = client;
         _locale = locale == "en" ? "en" : "es";
@@ -89,6 +89,7 @@ public sealed class TuiApp
         _ownsPolicies = policies is null;
         _accountOverride = account;
         _turnHost = turnHost;
+        _connectionsOverride = connections;
         _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
         _state = RefreshState();
     }
@@ -147,6 +148,7 @@ public sealed class TuiApp
         {
             application.LayoutAndDrawComplete -= AfterDraw;
             try { _loginCancellation?.Cancel(); } catch (ObjectDisposedException) { }
+            try { _providerCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             try { _catalogCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             _catalogCancellation?.Dispose(); _catalogCancellation = null;
             _turnCancellation?.Cancel();
@@ -217,6 +219,7 @@ public sealed class TuiApp
         else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
         else if (code == "F4") { ShowPreferences(); key.Handled = true; }
         else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
+        else if (code == "Esc" && _providerCancellation is not null) { _providerCancellation.Cancel(); key.Handled = true; }
         else if (code == "Esc" && _overlay is not null) { CloseOverlay(); key.Handled = true; }
         else if (code == "Esc" && _commandHelper is not null) { HideCommandHelper(); key.Handled = true; }
     }
@@ -910,16 +913,22 @@ public sealed class TuiApp
         else if (view.Id == "omni-menu-title") surface = "#344559";
         else if (view.Id == "omni-model-list") surface = "#142636";
         else if (view.Id == "omni-menu-action") surface = "#293E51";
+        else if (view.Id == "omni-provider-list") surface = "#142636";
+        else if (view.Id == "omni-provider-title") surface = "#061822";
+        else if (view.Id is not null && view.Id.StartsWith("provider-", StringComparison.Ordinal)) surface = "#293E51";
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
         var background = noColor ? Color.None : new Color(surface);
         var foreground = view.Id == "omni-help" ? "#B9CBDF"
-            : view.Id == "omni-heading" ? "#85E6DF" : "#F4F7FB";
+            : view.Id == "omni-heading" ? "#85E6DF"
+            : view.Id == "omni-provider-title" ? "#C8A0F5" : "#F4F7FB";
         if (dimmed) foreground = "#405666";
         var primary = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(foreground), background);
         var accent = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(dimmed ? "#405666" : "#67D4D0"), background);
         var focus = view is Button or ListView && !noColor
             ? new Terminal.Gui.Drawing.Attribute(new Color("#FFFFFF"), new Color("#3D5068")) : primary;
         if (view.Id == "omni-model-list" && !noColor)
+            focus = new Terminal.Gui.Drawing.Attribute(new Color("#061822"), new Color("#67D4D0"));
+        if (view.Id == "omni-provider-list" && !noColor)
             focus = new Terminal.Gui.Drawing.Attribute(new Color("#061822"), new Color("#67D4D0"));
         if (view is Button button)
         {
@@ -977,15 +986,17 @@ public sealed class TuiApp
     private void ShowPreferences()
     {
         if (_window is null || _overlay is not null) return;
-        var frame = OverlayFrame(Ui("Configuración", "Settings"), 12);
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = Ui("Modelos, políticas y cuenta", "Models, policies and account") });
+        var frame = OverlayFrame(Ui("Configuración", "Settings"), 14);
+        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = Ui("Modelos, conexiones y cuenta", "Models, connections and account") });
         var models = new Button { X = 2, Y = 4, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Modelos y permisos", "Models and permissions") };
         models.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
-        var account = new Button { X = 2, Y = 6, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Cuenta ChatGPT · login", "ChatGPT account · login") };
+        var connections = new Button { X = 2, Y = 6, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Conexiones de providers", "Provider connections") };
+        connections.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(); };
+        var account = new Button { X = 2, Y = 8, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Cuenta ChatGPT · login", "ChatGPT account · login") };
         account.Accepted += (_, _) => { CloseOverlay(); ShowAccount(); };
         var close = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
         close.Accepted += (_, _) => CloseOverlay();
-        frame.Add(models, account, close); ApplyTheme(frame);
+        frame.Add(models, connections, account, close); ApplyTheme(frame);
         _overlay = frame; _window.Add(frame); models.SetFocus();
     }
 
@@ -1409,6 +1420,8 @@ public sealed class TuiApp
     private void CloseOverlay()
     {
         if (_overlay is null || _window is null) return;
+        var providerAction = _providerCancellation; _providerCancellation = null;
+        if (providerAction is not null) { try { providerAction.Cancel(); } catch (ObjectDisposedException) { } }
         var catalog = _catalogCancellation; _catalogCancellation = null;
         if (catalog is not null) { catalog.Cancel(); catalog.Dispose(); }
         var login = _loginCancellation;

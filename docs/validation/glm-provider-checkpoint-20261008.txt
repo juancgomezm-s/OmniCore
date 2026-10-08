@@ -1,0 +1,30 @@
+Checkpoint de recuperación GLM — 2026-10-08
+
+Rama: codex/provider-connections-claude-20261008. No aceptación de cierre.
+Se preservan entregas del menú, backend de cuenta y delegación al CLI oficial.
+API backend previamente versionado en 3247b30.
+
+OAuth nativo NO implementado. La última solicitud de explicación terminó con
+error upstream DeepInfra 520; no dejó informe final. Evidencias originales se
+conservan fuera del repo en:
+C:/Users/juanc/.codex/pi-provider-menu-glm-split-20261008/
+oauth-explanation.out.jsonl y oauth-explanation.err.log.
+
+Root reprodujo sobre el binario aislado entregado, sin reconstruir fuentes:
+dotnet <oauth-reevaluation-artifacts/build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll> -class OmniCore.Tests.ClaudeAccountDelegationTests
+24 total / 24 PASS / 0 FAIL / 0 SKIP (0.710s).
+dotnet <mismo binario> -class OmniCore.Tests.ClaudeAccountTests
+33 total / 33 PASS / 0 FAIL / 0 SKIP (0.777s).
+La ruta real del binario incluye el directorio de framework bajo debug;
+resolver con Get-ChildItem -Recurse -Filter OmniCore.Tests.dll bajo ese build/bin.
+Pruebas con runtime falso; no acreditan login, consumo ni respuesta autenticada.
+
+Worker reportó suite 3118 / 3103 PASS / 11 FAIL / 4 SKIP:
+10 fallos de ProviderConnectionMenuApiTests y uno de dependencias CLI/Domain.
+Root verificó el log de los 10 fallos del menú, no reprodujo suite integral.
+No afirmar que el menú esté aceptado ni que el chat consuma la nueva factory.
+
+Pendientes: auditoría de seguridad y cableado real, corregir menú/dependencias,
+reconstruir y validar suite estable; explicación OAuth con fuentes verificables.
+Se excluyen del checkpoint los ADR editados por root y tools/open-tui.ps1
+(helper parcial previo). Ningún push, merge ni modificación de main.
