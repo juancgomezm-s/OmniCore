@@ -2114,6 +2114,11 @@ public sealed class ExplorerTurn
     {
         var contextTask = FindTaskForLane(stream.EventsSince(1), runId, laneId);
         var contributors = new List<IContextContributor>();
+        // Only explicit, canonically accepted selected-context packets. No automatic parent
+        // transcript import, worker admission, scheduler decision or authority transfer.
+        var inherited = new ContextInheritanceService(_store, _codecs, _artifacts)
+            .FindDelegationProjection(sessionId, runId, laneId);
+        if (inherited is not null) contributors.Add(new RedactingContextContributor(inherited, _redaction));
         var hasWorkingState = false;
         foreach (var contributor in _materializer.Contributors())
         {

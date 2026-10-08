@@ -232,11 +232,37 @@ de atribución ambigua no se usan como capacidades de lectura. La consulta por S
 fuera de una ejecución conserva su frontera independiente. Esta corrección limita
 visibilidad; no amplía permisos, perfiles ni routing.
 
+La conexión durable usa `DelegationContextPacket` v1 en `Delegation.PacketRef`.
+Es el payload de SelectedProjection, no el TaskPacket de aislamiento de M7.
+La preparación aplica redacción, exige un límite explícito de bytes (máximo 1 MiB)
+y no escribe al CAS ni al journal. El publisher del command debe publicar el handle
+inmutable bajo su lease y journalizar la referencia exacta en `DelegationCreated`.
+El adapter no ofrece una vía alternativa de admisión ni emite ese evento.
+
+El consumidor exige `DelegationAccepted` canónico y valida el replay de lineage,
+identidades Session/Run/Task/Lane/Profile/Execution, relación y supervisión, versión,
+integridad CAS, límite y coincidencia de los hechos con el snapshot fuente. La fuente
+se resuelve por EventId/secuencia; el paquete no exporta el hash del snapshot padre.
+Un source sin ExecutionId sólo se vincula al owner si era la única ejecución iniciada
+en esa Lane hasta el recibo fuente; con varios candidatos se rechaza, sin elegir el
+último inicio. Si hay ExecutionId debe coincidir, y la fuente no puede anteceder al
+inicio del owner. No se fabrica una atribución ExecutionId que el recibo no tenga.
+
+`ExplorerTurn` incorpora automáticamente ese contributor sólo para la Lane hija de
+un paquete aceptado de este formato, también tras reinicio. Dos aceptaciones activas
+para la misma Lane son ambiguas y se rechazan; no se mezclan por recencia. Una
+proyección cached deja de aportar items después de `DelegationFailed`/`Returned`.
+Los hechos siguen sometidos al presupuesto del hijo y no desplazan su intención
+actual. Los antiguos PacketRef genéricos no se reinterpretan como SelectedProjection.
+
 Las pruebas recorren un `ExplorerTurn` real de padre e hijo con provider scripted,
 SQLite reabierto, CAS y presupuesto. Este avance no acredita scheduler, joins,
-admisión por command, `Delegation.PacketRef` operativo, perfiles de delegación ni
-supervisión de M6. Tampoco adelanta Session Memory (M8) o Memory multiscoped (M10).
+admisión por command desde TUI/CLI, selección efectiva de perfiles ni supervisión
+de M6. Los hechos de delegación en tests se publican explícitamente como fixtures;
+no representan un command operativo ni autorización de gasto/modo/permisos.
+Tampoco adelanta Session Memory (M8) o Memory multiscoped (M10).
 Evidencia: [validación de contexto](../validation/context-inheritance-20261008.txt).
+Conexión packet: [validación de delegación](../validation/delegation-context-20261008.txt).
 
 ## Criterios de salida de M5.5
 
