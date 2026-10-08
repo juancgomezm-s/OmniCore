@@ -1,0 +1,76 @@
+OmniCore — correcciones y reverificación de conversación/TUI
+2026-10-07 America/Mexico_City / 2026-10-08 UTC
+
+Alcance: solicitudes del usuario sobre Markdown, entrada multilínea creciente,
+cursor de bloque, contexto compartido, respuestas inline, seguimiento al final,
+acentos por rol y actividad debajo del campo. No se reabre M5/M5.5.
+Root implementa únicamente MarkdownRenderer.cs y su nueva suite de regresión.
+GLM conserva la propiedad del menú de proveedores/Claude; sus archivos y el
+helper tools/open-tui.ps1 no forman parte de este bloque ni se atribuyen a root.
+
+Correcciones nuevas comprobadas (seis regresiones fallaban antes del cambio):
+- Títulos con **negrita** y `código` muestran contenido/estilos, no delimitadores.
+- Código inline con runs de dos/tres backticks preserva los backticks internos;
+  el cierre debe tener el mismo largo. Normalización de un espacio envolvente
+  conforme al comportamiento de code spans, sin borrar un span de sólo espacios.
+- Escapes de puntuación quedan literales; backslashes de rutas no se pierden.
+- El contenido incompleto de streaming sigue visible; no se altera el journal,
+  los artifacts ni el texto literal del usuario.
+- Celdas reales del StyledTextPresenter verifican grilla, Unicode y estilos.
+
+Comportamientos existentes reverificados, no presentados como implementados hoy:
+- Composer_grows_wraps_and_sends_all_lines_with_a_block_cursor:
+  Shift+Enter inserta salto, Enter envía todas las líneas, crecimiento por wrap
+  y salto explícito, reducción al vaciar y SteadyBlock.
+- New_turn_follows_the_bottom_but_new_content_does_not_drag_a_reader:
+  envío/respuesta al final, relectura manual preservada mientras llega contenido.
+- Rich_conversation_is_read_only_and_polling_preserves_history_position.
+- Requested_languages_are_drawn_as_code_and_copied_without_markup_loss:
+  C#, HTML y Progress ABL, celdas/colores/copia.
+- Conversation_drawn_cells_cover_markdown_unicode_roles_and_plain_copy:
+  títulos, listas, emojis, tablas, Unicode ancho, roles, fondos de código y
+  copia sin escapes/decoraciones; con y sin color, tamaños distintos.
+- Conversation_accents_do_not_leak_into_copy_even_without_color.
+- Sidebar_and_conversation_respond_to_f2_and_real_screen_resizes:
+  panel completo y composer en columna principal, sin cambiar Git.
+- Composer_calls_turn_host_and_projects_its_durable_answer_without_blocking_keyboard:
+  teclado disponible durante inferencia y actividad termina al recibir resultado.
+- ExplorerVisibleResponseIntegrationTests (6 casos): respuesta completa durable
+  -> SQLite/CAS -> reopen -> respuesta previa en contexto del siguiente Turn;
+  razonamiento privado no se convierte en texto visible previo.
+- CliEndToEndTests.Direct_explanation_preserves_selected_mode_without_plan_tools_or_children:
+  tres modos, dispatcher/TuiTurnHost y adaptador HTTP loopback, explicación sin
+  escritura, plan innecesario ni hijos. La instrucción productiva existente pide
+  respuestas inline y prohíbe sustituirlas por archivos no solicitados. Esto NO
+  prueba que un proveedor real nunca incumpla instrucciones; no se hizo inferencia
+  externa ni se afirma que una instrucción textual sustituya permisos efectivos.
+
+Evidencia propia:
+1. RED: 6 casos / 6 FAIL / 0 errores / 0 omitidos, 0.240 s.
+   Log C:/Users/juanc/.codex/tui-polish-markdown-red-20261008.log.
+2. Build aislado final: 0 errores / 0 advertencias, 11.56 s.
+3. GREEN render/Markdown: 74 PASS / 0 FAIL / 0 omitidos, 0.469 s, exit0.
+   ConversationMarkdownRegressionTests: 11 casos, incluidos dos StyledTextPresenter.
+4. GREEN integración: 15 PASS / 0 FAIL / 0 omitidos, 16.476 s, exit0.
+   Log C:/Users/juanc/.codex/tui-polish-integration-green-20261008.log.
+5. GREEN framebuffer/copia/layout: 11 PASS / 0 FAIL / 0 omitidos, 8.035 s, exit0.
+   Log C:/Users/juanc/.codex/tui-polish-framebuffer-green-20261008.log.
+Baseline previo amplio: 148 PASS / 0 FAIL / 0 omitidos, 94.862 s; se solapa con
+las suites anteriores y no se suma. No acredita por sí solo el cambio nuevo.
+
+Reproducción (artifacts aislados para no pisar builds del worker GLM):
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj -p:UseArtifactsOutput=true -p:ArtifactsPath=C:/Users/juanc/.codex/tui-polish-20261008 -v quiet
+dotnet C:/Users/juanc/.codex/tui-polish-20261008/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -noColor -class '*ConversationMarkdownRegressionTests' -class '*MarkdownTableRendererTests' -class '*ConversationPresentationTests' -class '*ConversationSyntaxHighlighterTests'
+dotnet C:/Users/juanc/.codex/tui-polish-20261008/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -noColor -parallelMode none -method '*TuiWiringTests.Composer_grows*' -method '*TuiWiringTests.New_turn_follows*' -method '*TuiWiringTests.Rich_conversation*' -method '*TuiWiringTests.Requested_languages*' -method '*ExplorerVisibleResponseIntegrationTests.*' -method '*CliEndToEndTests.Direct_explanation*'
+dotnet C:/Users/juanc/.codex/tui-polish-20261008/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -noColor -parallelMode none -method '*TuiWiringTests.Conversation_drawn_cells*' -method '*TuiWiringTests.Conversation_accents_do_not_leak*' -method '*TuiWiringTests.Sidebar_and_conversation*' -method '*TuiWiringTests.Composer_calls_turn_host*'
+
+Límites explícitos:
+- UI real de Terminal.Gui, loop/teclado/framebuffer, pero no inspección visual de
+  Windows Terminal por automatización nativa: computer-use prohíbe automatizar
+  terminales. No se acredita esa inspección ni se elude la restricción.
+- Proveedores scripted/HTTP loopback y datos temporales; no autenticación,
+  consumo real ni prueba estética del terminal/fuente del usuario.
+- MarkdownRenderer conserva su subconjunto documentado; este bloque no lo
+  convierte en implementación completa CommonMark/GFM (links, HTML embebido,
+  notas al pie, listas anidadas u otras extensiones no están acreditadas).
+- Menú/login Claude permanece un encargo independiente de GLM.

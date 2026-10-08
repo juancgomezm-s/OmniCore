@@ -19,6 +19,7 @@
   <ItemGroup>
     <PackageReference Include="YamlDotNet" />
     <PackageReference Include="Terminal.Gui" />
+    <PackageReference Include="Markdig" />
   </ItemGroup>
 
 </Project>

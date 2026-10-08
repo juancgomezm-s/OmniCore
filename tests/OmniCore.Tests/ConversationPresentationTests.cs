@@ -49,7 +49,7 @@ public sealed class ConversationPresentationTests
         var rows = Render("## Key Methods\n- `AskAsync(ct)` — **Run Explorer**\n```c#\n    public void Run() { }\n```\nFinal.");
         Assert.Contains(rows.SelectMany(r => r), s => s.Text == "Key Methods" && s.Style == ConversationStyle.Heading);
         Assert.Contains(rows.SelectMany(r => r), s => s.Text == "AskAsync(ct)" && s.Style == ConversationStyle.InlineCode);
-        Assert.Contains(rows.SelectMany(r => r), s => s.Text == "Run Explorer" && s.Style == ConversationStyle.Heading);
+        Assert.Contains(rows.SelectMany(r => r), s => s.Text == "Run Explorer" && s.Decoration.HasFlag(Terminal.Gui.Drawing.TextStyle.Bold));
         Assert.Contains(rows, row => string.Concat(row.Select(s => s.Text)) == "      public void Run() { }");
         Assert.Contains(rows.SelectMany(r => r), s => s.Text == "public" && s.Style == ConversationStyle.SyntaxKeyword);
         Assert.Equal("Final.", rows.Last().Single().Text);

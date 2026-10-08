@@ -98,7 +98,7 @@ internal static class MarkdownTableRenderer
                     }
                     else { rows.Add(current); current = new(); used = 0; }
                 }
-                current.Add(new(value, span.Style)); used += size;
+                current.Add(span with { Text = value }); used += size;
             }
         }
         rows.Add(current); return rows;

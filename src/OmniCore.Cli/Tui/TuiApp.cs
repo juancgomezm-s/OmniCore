@@ -51,6 +51,8 @@ public sealed class TuiApp
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
     private string WorkspaceSelectionId => ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory);
     private string? _selectedModel;
+    private string? _observedModel;
+    private bool _showMarkdownExamples;
     private readonly List<View> _retiredOverlays = new();
     private readonly List<View> _overlaysReadyForDisposal = new();
     private readonly bool _ownsPolicies;
@@ -74,6 +76,7 @@ public sealed class TuiApp
     internal FrameView? Sidebar => _sidebar;
     internal Label? Completion => _completion;
     internal Label? Status => _status;
+    internal Label? Header => _header;
     internal View? Overlay => _overlay;
     internal ClientState ProjectionState => _state;
     internal bool SidebarOpen => _sidebarOpen;
@@ -253,6 +256,7 @@ public sealed class TuiApp
         _sidebarContent = new Label { X = 2, Y = 3, Width = Dim.Fill(2), Height = Dim.Fill(1), Text = SidebarText() };
         _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "Workspace" }, _sidebarContent);
         var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
+        composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
         _composer = new ComposerView { X = 4, Y = 1, Width = Dim.Fill(2), Height = 1, Text = "", Multiline = true,
             WordWrap = true, EnterKeyAddsLine = true };
         composerFrame.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "›" });
@@ -323,14 +327,7 @@ public sealed class TuiApp
         if (_help is not null)
         {
             _help.Width = Dim.Fill(_mainColumnInset + 2);
-            var compactHelp = _window.Frame.Width - _mainColumnInset < 76;
-            _help.Text = (_locale == "en", compactHelp) switch
-            {
-                (true, true) => "Enter send · Shift+Enter newline · F3 models · F4 settings",
-                (false, true) => "Enter enviar · Shift+Enter salto · F3 modelos · F4 ajustes",
-                (true, false) => "Enter send · Shift+Enter newline · / commands · F2 panel · F3 models · F4 settings",
-                _ => "Enter enviar · Shift+Enter salto · / comandos · F2 panel · F3 modelos · F4 ajustes"
-            };
+            _help.Text = HelpText();
         }
         if (_status is not null) _status.Width = Dim.Fill(_mainColumnInset);
         RenderState();
@@ -363,7 +360,7 @@ public sealed class TuiApp
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
         var names = ReadStringArray(_client.Query("commands", CancellationToken.None)?.Json, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar" });
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente" });
         var suggestions = ComposerAutocomplete.Complete(draft,
             names, ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
         _completion.Text = string.Join("   ", suggestions.Take(5).Select(suggestion => suggestion.Value));
@@ -404,6 +401,7 @@ public sealed class TuiApp
         "/preferences" => Ui("Abrir configuración", "Open settings"),
         "/login" => Ui("Cuenta y conexión ChatGPT", "ChatGPT account and connection"),
         "/sidebar" => Ui("Mostrar u ocultar panel lateral", "Toggle workspace panel"),
+        "/fuente" => Ui("Mostrar u ocultar ejemplos Markdown originales", "Show or hide original Markdown examples"),
         "/context" => Ui("Inspeccionar contexto del turno", "Inspect turn context"),
         "/tools" => Ui("Consultar herramientas disponibles", "Show available tools"),
         "/plan" => Ui("Consultar el plan actual", "Show current plan"),
@@ -434,6 +432,14 @@ public sealed class TuiApp
     {
         if (_composer is null) return;
         var input = _composer.Text?.ToString()?.Trim() ?? "";
+        if (input == "/fuente")
+        {
+            _showMarkdownExamples = !_showMarkdownExamples;
+            _renderedConversation = null;
+            _composer.Text = "";
+            RenderState();
+            return;
+        }
         if (input.Length == 0) return;
         if (_commandList?.SelectedItem is int index && index < _commandSuggestions.Length && input != _commandSuggestions[index])
         { CompleteCommand(); return; }
@@ -627,7 +633,7 @@ public sealed class TuiApp
         if (identity is not null && JsonObj.Parse(identity.Json).TryGetValue("sessionId", out var session)
             && session != _cursorSession)
         {
-            _cursorSession = session; _lastSequence = 0;
+            _cursorSession = session; _lastSequence = 0; _observedModel = null;
             var empty = ClientState.Empty();
             // Keep the visible transcript across fresh Runs; reset only session-local UI state.
             _state = new ClientState(_state.Header, _state.Conversation, empty.Sidebar,
@@ -635,6 +641,7 @@ public sealed class TuiApp
         }
         foreach (var envelope in _client.SubscribeSince(_lastSequence + 1))
         {
+            ObserveModel(envelope);
             _state = _projection.Apply(_state, envelope);
             try
             {
@@ -657,6 +664,7 @@ public sealed class TuiApp
         var state = ClientState.Empty();
         foreach (var envelope in _client.SubscribeSince(0))
         {
+            ObserveModel(envelope);
             state = _projection.Apply(state, envelope);
             try
             {
@@ -671,11 +679,21 @@ public sealed class TuiApp
         return state;
     }
 
+    private void ObserveModel(WireEnvelope envelope)
+    {
+        if (envelope.MessageType != MessageTypes.Event) return;
+        var fields = JsonObj.Parse(envelope.PayloadJson);
+        if (fields.GetValueOrDefault("type") == "model_step.started"
+            && fields.GetValueOrDefault("modelId") is { Length: > 0 } model)
+            _observedModel = model;
+    }
+
     private void RenderState()
     {
         RenderActivity();
         RenderConversation();
         if (_header is not null) _header.Text = HeaderText();
+        if (_help is not null) _help.Text = HelpText();
         if (_status is not null) _status.Text = StatusText();
         if (_sidebarContent is not null) _sidebarContent.Text = SidebarText();
     }
@@ -702,7 +720,8 @@ public sealed class TuiApp
         // TextView.Load consults the old insertion point while replacing its cell model.
         // Reflow may shorten a row; reset before replacement, then restore the reader below.
         _conversation.InsertionPoint = System.Drawing.Point.Empty;
-        _conversation.LoadStyled(ConversationPresentation.RenderCards(_state.Conversation.Blocks, _locale, codeWidth), codeWidth, noColor);
+        _conversation.LoadStyled(ConversationPresentation.RenderCards(_state.Conversation.Blocks, _locale, codeWidth,
+            compactExamples: !_showMarkdownExamples), codeWidth, noColor);
         if (follow) _conversation.MoveEnd();
         else
         {
@@ -728,12 +747,53 @@ public sealed class TuiApp
     private string HeaderText()
     {
         var path = _state.Header.WorkingDirectory.Length == 0 ? Environment.CurrentDirectory : _state.Header.WorkingDirectory;
-        var git = _state.Header.GitBranch is null ? "" : "   " + _state.Header.GitBranch + " " + (_state.Header.GitDirty ?? "");
         var width = Math.Max(12, (_window?.Frame.Width ?? 80) - 4 - _mainColumnInset);
-        if (git.Length > width / 3) git = "";
         var workspace = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
         if (string.IsNullOrWhiteSpace(workspace)) workspace = path;
-        return AbbreviatePath("OmniCore · " + workspace, width - git.Length) + git;
+        var title = _state.Conversation.Blocks.FirstOrDefault(block => block.Role == ConversationRole.User)?.Text.Split('\n')[0]
+            ?? Ui("Nueva sesión", "New session");
+        return SessionHeading(workspace, title, _observedModel ?? _selectedModel ?? Ui("Automático · sin turno", "Automatic · no turn"), width);
+    }
+
+    internal static string SessionHeading(string workspace, string title, string model, int width)
+    {
+        width = Math.Max(1, width);
+        var project = FitText(workspace, Math.Max(1, Math.Min(20, width / 5)));
+        var projectWidth = Terminal.Gui.Text.StringExtensions.GetColumns(project, false);
+        var modelText = FitText("Modelo: " + model, Math.Max(1, width - projectWidth - 6));
+        var modelWidth = Terminal.Gui.Text.StringExtensions.GetColumns(modelText, false);
+        var titleWidth = Math.Clamp(width - projectWidth - modelWidth - 6, 0, 32);
+        return FitText(project + " │ " + (titleWidth > 0 ? FitText(title, titleWidth) + " · " : "") + modelText, width);
+    }
+
+    private static string FitText(string text, int width)
+    {
+        if (width <= 0) return "";
+        if (Terminal.Gui.Text.StringExtensions.GetColumns(text, false) <= width) return text;
+        var result = new System.Text.StringBuilder();
+        var elements = System.Globalization.StringInfo.GetTextElementEnumerator(text);
+        var used = 0;
+        while (elements.MoveNext())
+        {
+            var value = elements.GetTextElement();
+            var size = Terminal.Gui.Text.StringExtensions.GetColumns(value, false);
+            if (used + size >= width) break;
+            result.Append(value); used += size;
+        }
+        return result + "…";
+    }
+
+    private string HelpText() => CompactHelp(_state.StatusLine.Mode, _locale,
+        Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4));
+
+    internal static string CompactHelp(string mode, string locale, int width)
+    {
+        var lead = mode + (locale == "en" ? " · Enter send" : " · Enter enviar");
+        var variants = locale == "en"
+            ? new[] { " · ⇧Enter newline · / help · F2 panel · F3 model · F4 settings", " · ⇧↵ · / help · F2 panel · F3 model · F4", " · / help · F3", " · /" }
+            : new[] { " · ⇧Enter salto · / ayuda · F2 panel · F3 modelo · F4 ajustes", " · ⇧↵ · / ayuda · F2 panel · F3 modelo · F4", " · / ayuda · F3", " · /" };
+        return variants.Select(tail => lead + tail).FirstOrDefault(value => Terminal.Gui.Text.StringExtensions.GetColumns(value, false) <= width)
+            ?? FitText(lead, width);
     }
 
     internal static string AbbreviatePath(string path, int width)
@@ -749,12 +809,8 @@ public sealed class TuiApp
     {
         var presentation = StatusLinePresentation.From(_state.StatusLine);
         var width = Math.Max(1, (_window?.Frame.Width ?? 80) - 4 - _mainColumnInset);
-        var left = presentation.Left + (_selectedModel is null ? "" : " · " + _selectedModel);
         var right = _turnBusy ? "" : _turnStatus ?? presentation.Right;
-        if (left.Length + right.Length + 2 > width && !_turnBusy) right = "—";
-        if (right.Length > width) right = right[..width];
-        if (left.Length + right.Length + 2 > width) left = left[..Math.Max(0, width - right.Length - 2)];
-        return "  " + left + new string(' ', Math.Max(1, width - left.Length - right.Length)) + right;
+        return "  " + FitText(right, width);
     }
 
     private string SidebarText()
@@ -906,6 +962,7 @@ public sealed class TuiApp
         // focus remains visible through the cursor and cyan hotkeys, never color alone.
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         if (view.Id == "omni-composer") surface = "#293648";
+        else if (view.Id == "omni-composer-accent") surface = "#B47CE7";
         else if (view.Id == "omni-panel") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = "#344559";
         else if (view.Id == "omni-model-list") surface = "#142636";
@@ -1378,7 +1435,10 @@ public sealed class TuiApp
 
     private void RefreshSelectedModel()
     {
-        _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
+        var selection = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
+        if (selection != _selectedModel) _observedModel = null;
+        _selectedModel = selection;
+        if (_header is not null) _header.Text = HeaderText();
         if (_status is not null) _status.Text = StatusText();
     }
 

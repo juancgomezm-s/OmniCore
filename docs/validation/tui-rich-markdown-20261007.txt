@@ -1,0 +1,62 @@
+TUI conversation polish - 2026-10-07 (America/Mexico_City)
+
+Ownership
+Dedicated branch codex/tui-markdown-polish and worktree tui-markdown-polish.
+No edits to the provider-connections checkout or its untracked ProviderConnections.cs.
+
+Behavior
+- Mode accompanies Enter/send in a width-aware single-line help bar.
+- Composer retains its background surface and adds a violet left accent.
+- Header separates workspace, first user message as session title, and selected model.
+- Markdig inline parsing supplies nested bold/italic/strikethrough attributes.
+  Attributes survive card/table wrapping and final Terminal.Gui painting.
+- Inline kbd/code, mark, abbr, strong/em/del/u and HTML entities have terminal
+  equivalents. Unknown tags remain visible. Fenced HTML remains literal code.
+- Footnote references and definitions use matching readable [id] labels.
+  Code spans and escaped references stay literal. Spanish Unicode is preserved.
+- Nested bullets, ordered items, tasks, hanging wraps, links, image alt text,
+  quotes and horizontal rules remain readable. Images are text fallbacks.
+- Markdown demo fences followed by a matching rendered example are folded in
+  the default TUI view. /fuente toggles their original source back into view.
+  This affects presentation only; source text and journal records are unchanged.
+- The launcher sets UTF-8 and interactive color only in its child process.
+  Terminal font size remains a terminal-wide preference.
+
+Validation
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore -v quiet
+PASS: 0 warnings, 0 errors.
+
+ConversationPresentationTests, ConversationSyntaxHighlighterTests,
+MarkdownRichPresentationTests, MarkdownTableRendererTests, TuiWiringTests,
+TuiPresentationPolishTests: 140 passed, 0 failed, 0 skipped.
+ConversationMarkdownRegressionTests: 11 passed, 0 failed, 0 skipped.
+Total distinct focused cases: 151. No provider validation calls.
+
+Visual QA
+Real Terminal.Gui driver cell exports at 80/100/120/140 columns, including
+rich-100x36 and sidebar-100x30, inspected as PNGs. These are deterministic
+fixture frames, not desktop screenshots. Exports preserve cell color and
+bold, italic, underline, strikethrough and reverse attributes.
+Local evidence: .tmp/tui-frames and .tmp-tui-tests-final.log (not committed).
+
+Scope
+Presentation only. No journal rewriting or milestone/gate status changes.
+This remains a terminal Markdown renderer, not an HTML browser. Font glyphs
+and the terminal's support for text attributes determine final appearance.
+
+Follow-up: title/model and repeated Markdown demos
+- Title limited to 32 terminal columns, even on very wide screens; the model
+  gets space before the title and has an explicit Modelo: label.
+- The header reads model_step.started events during replay and live polling.
+  It can therefore show the actual runtime model without a manual F3 selection.
+  A changed explicit selection takes precedence until the next model step.
+- Folding is restricted to closed md/markdown fences whose first rendered line
+  matches the following preview. Link labels may match different example URLs;
+  the visible preview keeps the actual destination. Other languages, standalone
+  snippets, unmatched examples and incomplete streaming fences stay visible.
+- /fuente is a local display command, available through slash completion. It
+  restores the entire original example, including any additional source lines.
+- Build output uses .tmp/header-build to preserve the running previous window.
+- Follow-up validation: build 0 warnings/errors; 121 focused cases passed,
+  0 failures/skips (example compaction, rich Markdown, presentation/regression,
+  tables and the complete TUI wiring suite). Log: .tmp-header-tests.log.

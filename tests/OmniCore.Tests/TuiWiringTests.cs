@@ -32,6 +32,34 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    [Fact]
+    public void Header_recovers_runtime_model_without_manual_selection_and_updates_from_events() => RunTuiTest(fx =>
+    {
+        var stream = new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!);
+        stream.Append(new ModelStepStarted(TurnId.New(), 0, "Llama.cpp/qwen38-27b", 8192, "Direct", null, null, null));
+        fx.StartTui();
+        fx.Wait(() => fx.App.Header!.Text.ToString().Contains("Llama.cpp/qwen38-27b"), "modelo recuperado del journal");
+        stream.Append(new ModelStepStarted(TurnId.New(), 1, "provider/next-model", 8192, "Direct", null, null, null));
+        fx.Wait(() => fx.App.Header!.Text.ToString().Contains("provider/next-model"), "modelo efectivo actualizado por polling");
+    });
+
+    [Fact]
+    public void Source_command_restores_folded_examples_without_changing_journal() => RunTuiTest(fx =>
+    {
+        var lane = fx.Decoded<LaneCreated>().Last().LaneId;
+        const string markdown = "```markdown\n**Único**\n```\n**Único**";
+        var content = fx.Artifacts.PutText(markdown, "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Normal);
+        new EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)
+            .Append(new AssistantMessageRecorded(fx.Server.LastRunId()!, lane, TurnId.New(), content));
+        fx.StartTui();
+        fx.Wait(() => fx.App.Conversation!.Text.Contains("Único"), "respuesta visible");
+        Assert.DoesNotContain("**Único**", fx.App.Conversation!.Text);
+        Type(fx, "/fuente");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Conversation!.Text.Contains("**Único**"), "fuente visible");
+        Assert.Equal(markdown, fx.App.ProjectionState.Conversation.Blocks.Last().Text);
+        Type(fx, "/fuente");
+        KeyWithEffect(fx, KeyCode.Enter, () => !fx.App.Conversation!.Text.Contains("**Único**"), "vista compacta restaurada");
+    });
     // Recovered from the old contrast audit, but exercise the current production palette.
     // This is driver-backed UI coverage, not a claim about a human terminal or provider login.
     [Fact]
@@ -96,10 +124,17 @@ public sealed class TuiWiringTests
     [InlineData(120, 35, "activity")]
     [InlineData(80, 25, "table")]
     [InlineData(140, 40, "table")]
+    [InlineData(100, 36, "rich")]
     public void Visual_frames_export_the_real_driver_cells(int columns, int rows, string scene) => RunTuiTest(fx =>
     {
         var lane = fx.Decoded<LaneCreated>().Last().LaneId;
-        var content = fx.Artifacts.PutText(scene == "table"
+        var content = fx.Artifacts.PutText(scene == "rich"
+            ? "## Conversación · Español\n**Negrita** · *Cursiva* · ***Ambas*** · ~~Tachado~~\n\n"
+                + "- Primer elemento\n  - Niño y pingüino\n    - Subnivel con acción\n- [x] Completada\n- [ ] Pendiente\n\n"
+                + "<kbd>Ctrl</kbd> + <kbd>C</kbd> · <mark>atención</mark>\n<abbr title=\"Lenguaje de marcado\">HTML</abbr>\n"
+                + "[Documentación](https://example.com)\n> Una cita breve en español.\nTexto con nota[^1].\n[^1]: Explicación: á é í ó ú ü ñ ¿¡\n\n"
+                + "```html\n<mark>Este código permanece literal</mark>\n```\n---\n`AskAsync(ct)` conserva su estilo."
+            : scene == "table"
             ? "## 📦 Dependencias\nUn ejemplo dentro de la conversación, sin crear archivos.\n\n| Paquete | Versión | Descripción | Estado |\n| :--- | ---: | :--- | :---: |\n| `react` | 18.2.0 | Librería UI | ✅ Activo |\n| `typescript` | 5.3.0 | Tipado estático | ✅ Activo |\n| `eslint` | 8.54.0 | Linter | ⚠ Pendiente |\n\n### Código de ejemplo\n```c#\npublic double Celsius(double value)\n{\n    return value * 9 / 5 + 32;\n}\n```"
             : "## Conversación\nUn diseño limpio, con `código inline` y espacio para leer.\n\n"
             + "### Métodos principales\n- `AskAsync(ct)` — Explorar el proyecto\n- `ActAsync(ct)` — Ejecutar una tarea\n\n"
@@ -211,6 +246,19 @@ public sealed class TuiWiringTests
                     Assert.DoesNotContain("ObserveOnly", text);
                     Assert.DoesNotContain("🗑", text);
                 }
+                else if (scene == "rich")
+                {
+                    Assert.Contains("Español", text);
+                    Assert.Contains("☑ Completada", text);
+                    Assert.Contains("[1]", text);
+                    Assert.DoesNotContain("**Negrita**", text);
+                    var drawn = cells.Cast<Terminal.Gui.Drawing.Cell>().ToArray();
+                    Assert.Contains(drawn, cell => cell.Attribute?.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Bold) == true);
+                    Assert.Contains(drawn, cell => cell.Attribute?.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Italic) == true);
+                    Assert.Contains(drawn, cell => cell.Attribute?.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Strikethrough) == true);
+                    Assert.Contains(drawn, cell => cell.Attribute?.Background == new Terminal.Gui.Drawing.Color("#B47CE7"));
+                    Assert.Contains("act · Enter enviar", text);
+                }
                 else if (scene == "table")
                 {
                     Assert.Contains("┌", text);
@@ -272,9 +320,18 @@ public sealed class TuiWiringTests
                     var cell = cells[y, x];
                     var attribute = cell.Attribute ?? fx.App.MainWindow!.GetScheme().Normal;
                     static string Hex(Terminal.Gui.Drawing.Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
-                    svg.Append($"<rect x=\"{x * 12}\" y=\"{y * 24}\" width=\"12\" height=\"24\" fill=\"{Hex(attribute.Background)}\"/>");
+                    var reverse = attribute.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Reverse);
+                    var foreground = reverse ? attribute.Background : attribute.Foreground;
+                    var background = reverse ? attribute.Foreground : attribute.Background;
+                    svg.Append($"<rect x=\"{x * 12}\" y=\"{y * 24}\" width=\"12\" height=\"24\" fill=\"{Hex(background)}\"/>");
                     if (!string.IsNullOrWhiteSpace(cell.Grapheme))
-                        svg.Append($"<text x=\"{x * 12}\" y=\"{y * 24 + 19}\" font-family=\"Consolas, monospace\" font-size=\"20\" fill=\"{Hex(attribute.Foreground)}\">{System.Security.SecurityElement.Escape(cell.Grapheme)}</text>");
+                    {
+                        var weight = attribute.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Bold) ? "bold" : "normal";
+                        var italic = attribute.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Italic) ? "italic" : "normal";
+                        var decoration = attribute.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Strikethrough) ? "line-through"
+                            : attribute.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Underline) ? "underline" : "none";
+                        svg.Append($"<text x=\"{x * 12}\" y=\"{y * 24 + 19}\" font-family=\"Consolas, monospace\" font-size=\"20\" font-weight=\"{weight}\" font-style=\"{italic}\" text-decoration=\"{decoration}\" fill=\"{Hex(foreground)}\">{System.Security.SecurityElement.Escape(cell.Grapheme)}</text>");
+                    }
                 }
                 svg.Append("</svg>");
                 File.WriteAllText(Path.Combine(destination, $"{scene}-{columns}x{rows}.svg"), svg.ToString());
@@ -293,7 +350,7 @@ public sealed class TuiWiringTests
         finally { fx.Application.LayoutAndDrawComplete -= capture; }
         if (captureError is not null) throw captureError;
         visualTurn?.Release.Set();
-    });
+    }, noColor: false);
 
     [Fact]
     public void Rich_conversation_is_read_only_and_polling_preserves_history_position() => RunTuiTest(fx =>
@@ -1313,7 +1370,7 @@ public sealed class TuiWiringTests
         fx.InjectKey(new Key(KeyCode.Enter));
         fx.Wait(() => fx.App.Overlay is null, "seleccionar cierra el selector sin abrir mantenimiento");
         Assert.DoesNotContain(fx.App.MainWindow!.SubViews.OfType<FrameView>(), v => v.Title?.Contains("Modelos") == true);
-        Assert.Contains("model29", fx.App.Status!.Text.ToString());
+        fx.Wait(() => fx.App.Header!.Text.ToString().Contains("model29"), "modelo seleccionado en encabezado");
         Assert.True(fx.App.Composer!.HasFocus);
     });
 
@@ -1331,7 +1388,7 @@ public sealed class TuiWiringTests
         ChoosePickerItem(fx, "Subscription Test");
         fx.Wait(() => fx.App.Overlay is null, "selección rápida sin formulario de política");
         Assert.True(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.ObserveOnly);
-        Assert.Contains("subscription-test-model", fx.App.Status!.Text.ToString());
+        fx.Wait(() => fx.App.Header!.Text.ToString().Contains("subscription-test-model"), "modelo seleccionado en encabezado");
         Assert.Equal("chatgpt", policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.Key.ProviderId);
         Assert.Equal(0, account.LoginCalls);
     });
@@ -1348,7 +1405,7 @@ public sealed class TuiWiringTests
             Catalog = new[] { new AvailableChatGptModel("available-test", "Available test") } };
         fx.StartTui(policies, account);
         OpenModelMaintenance(fx);
-        fx.Wait(() => fx.App.Status!.Text.ToString().Contains("available-test"), "modelo retirado sustituido");
+        fx.Wait(() => fx.App.Header!.Text.ToString().Contains("available-test"), "modelo retirado sustituido");
         Assert.Equal("available-test", policies.CurrentSelection(workspace, ct)!.ModelId);
         Assert.True(policies.CurrentSelection(workspace, ct)!.ObserveOnly);
         fx.Wait(() => fx.App.Overlay?.SubViews.OfType<Button>()
