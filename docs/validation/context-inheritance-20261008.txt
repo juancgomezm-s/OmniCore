@@ -1,0 +1,84 @@
+Lane isolation and explicit SelectedProjection context inheritance
+================================================================
+
+Ownership and scope
+-------------------
+Isolated checkout C:\Users\juanc\.codex\worktrees\tui-markdown-polish\OmniCore.
+Branch codex/tui-markdown-polish; starting commit 6bd80aa.
+Primary codex/provider-connections-claude-20261008 checkout and GLM edits preserved.
+No real provider request, credential change, provider/account setup, merge or push.
+No automatic delegation, scheduler, join, supervision, Memory store or new project.
+
+Reproduced defects before fixes
+------------------------------
+Six LaneContextIsolation cases FAIL against the original binary (1.127 seconds):
+root/child/sibling messages, tools and steering mixed within a Run; child received
+principal Session history; the latest checkpoint of another Lane replaced its own;
+legacy multi-Lane checkpoint indices/body were reused after lane-local filtering.
+Reproduction log using that same binary: .tmp-lane-context-red.log.
+
+Five artifact-read cases FAIL against the pre-CAS-fix binary (1.772 seconds):
+root/child read each other's content via Session-wide authority; externalized output
+crossed Lane boundaries; a hash mention was treated as a graph edge; legacy mixed
+checkpoint and incomplete execution scope could authorize reads.
+Reproduction log using that same binary: .tmp-lane-cas-red.log.
+Red runs are retained as evidence, not summed into successful totals.
+
+Delivered runtime boundaries
+----------------------------
+LaneConversationScope resolves canonical Lane/Turn/ToolCall identities. A child
+has its own Run-local transcript, not the principal's Session conversation.
+Legacy ownership is inferred only from exact receipts or an unambiguous one-Lane
+Run; no ambient/last-event cursor is used as read authority. Conflicts fail closed.
+Checkpoints select their own Lane and persist laneId/local compaction indices.
+Ambiguous old multi-Lane checkpoints are ignored and rebuilt from scoped history.
+Context materialization passes the actual Task identity to contributors.
+Snapshots add contextScopeVersion=1 and Session/Run/Task/Lane/Turn identities.
+
+ContextInheritancePolicy freezes explicit unique item IDs; default selects nothing.
+ContextInheritanceService is read-only. It validates a direct parent/child link and
+the parent's canonical ModelStepStarted snapshot receipt, CAS integrity and body
+scope. Allowed subset: non-sensitive shared Conversation/Task factual data in
+Session/Run scope, selected by ID. All other data is rejected, not silently copied.
+Parent System/WorkingState, tools, checkpoints, private Task/Lane data, file bodies,
+skills and Memory are excluded. Selected items are historical Summary data under
+the child's budget; they inherit neither pinning nor artifact re-read capabilities.
+Source event/snapshot/item provenance survives in the child's persisted snapshot.
+No journal mutation occurs when constructing the contributor; execution writes
+only through the existing canonical Turn boundary. Scope-mismatched requests
+receive no inherited items. Real child requests retain fresh state/current intent.
+
+During agent execution artifact.read uses only scoped canonical roots and explicit
+Core-authored output/summary references. Raw text hashes/stubs are not read grants.
+The unscoped Session reader retains its existing separate behavior.
+
+Verification
+------------
+Build tests: --no-restore -p:OutputPath=<checkout>\.tmp\context-inheritance-final\
+Zero warnings/errors.
+Final focused batch: 76 PASS / 0 FAIL / 0 SKIP, 2.696 seconds.
+Log .tmp-context-inheritance-focused.log. Includes 32 new cases (14 Lane isolation
+and CAS cases, 18 inheritance cases) plus existing history, summary, steering,
+reasoning, publication lease, checkpoint reopen and artifact-read regressions.
+Final broad suite: 3091 cases / 3087 PASS / 0 FAIL / 4 SKIP, 152.890 seconds.
+Command: dotnet .tmp/context-inheritance-final/OmniCore.Tests.dll
+  -class- '*M4ProcessRecoveryTests' -maxThreads 2 -noLogo
+Log .tmp-context-inheritance-full.log; process exit code 0.
+Final recovery, run separately with -class '*M4ProcessRecoveryTests' -maxThreads 1:
+1 PASS / 0 FAIL / 0 SKIP, 97.503 seconds. Log .tmp-context-inheritance-m4.log.
+This demonstrates process recovery, NOT a Windows OS reboot.
+Disjoint final behavioral total: 3092 cases / 3088 PASS / 0 FAIL / 4 SKIP.
+The four skips are existing symlink-permission cases.
+Architecture final source: 56 PASS / 0 FAIL / 0 SKIP, 0.511 seconds.
+Build .tmp/context-inheritance-architecture: zero warnings/errors.
+Verification completed 2026-10-08 12:19:48 UTC / 06:19:48 America/Mexico_City.
+Overlapping focused/full results must not be summed.
+
+Remaining work
+--------------
+M6: bind this adapter to authorized command admission and a durable delegation
+packet, selected profiles, scheduler/joins/supervision and background capacity.
+No TUI/CLI automatic delegation is exposed by this delivery. File/Knowledge/Memory
+inheritance needs its own visibility policy; this implementation does not invent it.
+M8 Session Memory and M10 Project/Workspace/Global Memory remain separate services.
+Specific user-provider qualification and branch integration/publication remain pending.

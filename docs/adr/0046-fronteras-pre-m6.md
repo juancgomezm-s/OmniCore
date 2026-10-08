@@ -199,6 +199,45 @@ Se corrige el `ContextPolicyHash`, que hoy recibe el id del tokenizer.
 - **M9:** procedencia/fidelidad de historial y reconexión por stream.
 - **M10:** `/undo` y proyecciones.
 
+### Avance parcial de M6 — frontera de contexto (2026-10-08)
+
+`ContextInheritancePolicy` implementa sólo `SelectedProjection`: IDs explícitos e
+inmutables, selección vacía por defecto. `ContextInheritanceService` es un adapter
+read-only del Host para una Task/Lane hija ya creada. Verifica Session/Run, lineage
+directo, el recibo `ModelStepStarted` del padre y su snapshot CAS íntegro y atribuido.
+No admite un snapshot arbitrario ni los antiguos snapshots multi-Lane que podían
+contener transcripts mezclados. El snapshot nuevo declara `contextScopeVersion=1`
+y sus IDs de Session/Run/Task/Lane/Turn como campos aditivos.
+
+La selección admite mensajes visibles y hechos (`Decision`, `Constraint`, `Summary`)
+de las categorías Conversation/Task y scopes compartidos Session/Run, no sensibles.
+No importa System, WorkingState, skills, Memory, cuerpos de archivos, tools,
+checkpoints o datos privados Task/Lane. Los items se materializan como datos
+históricos sujetos al presupuesto del hijo, sin conservar pinning del padre.
+La procedencia conserva evento/snapshot/item de origen, pero no copia las referencias
+CAS que permitirían releer el snapshot completo del padre. El destino debe coincidir
+exactamente con Session/Run/Task/Lane y no anteceder al recibo fuente.
+
+El replay ordinario usa sólo la Lane destinataria. La conversación de Runs anteriores
+pertenece al principal y no entra automáticamente a los hijos. La compactación genera
+checkpoints con índice local y `laneId`; los checkpoints multi-Lane anteriores sin esa
+marca se reconstruyen desde el journal, sin reescribirlo. Tools y respuestas legacy
+se atribuyen por sus recibos Turn/ToolCall o por una única Lane inequívoca, nunca por
+el último Turn observado.
+
+`artifact.read` dentro de una ejecución resuelve raíces canónicas de su propia Lane
+y edges de externalización/resumen escritos por Core. Texto de usuario/modelo/tool
+que menciona un hash no crea autoridad para leerlo. Los snapshots/checkpoints antiguos
+de atribución ambigua no se usan como capacidades de lectura. La consulta por Session
+fuera de una ejecución conserva su frontera independiente. Esta corrección limita
+visibilidad; no amplía permisos, perfiles ni routing.
+
+Las pruebas recorren un `ExplorerTurn` real de padre e hijo con provider scripted,
+SQLite reabierto, CAS y presupuesto. Este avance no acredita scheduler, joins,
+admisión por command, `Delegation.PacketRef` operativo, perfiles de delegación ni
+supervisión de M6. Tampoco adelanta Session Memory (M8) o Memory multiscoped (M10).
+Evidencia: [validación de contexto](../validation/context-inheritance-20261008.txt).
+
 ## Criterios de salida de M5.5
 
 Deben quedar cubiertos por tests deterministas:
