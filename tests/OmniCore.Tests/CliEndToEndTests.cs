@@ -507,6 +507,37 @@ public sealed class CliEndToEndTests
         });
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Normal_chat_followup_preserves_ordered_messages_once_after_runtime_reopen(bool reopen)
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            provider.RespondWith((_, _) => TextResponse("Usaremos PostgreSQL y el puerto 5432."));
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            Assert.Equal(0, await host.ExecuteAsync("Mi proyecto se llama Brújula; usa PostgreSQL.",
+                _ => { }, TestContext.Current.CancellationToken));
+            var original = ReadCurrentSessionEvents(workspace).OfType<RunCreated>().Single().SessionId;
+            if (reopen) host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            string? received = null;
+            provider.RespondWith((_, body) => { received = body; return TextResponse("Continuación."); });
+            Assert.Equal(0, await host.ExecuteAsync("¿Qué base y puerto acordamos?", _ => { },
+                TestContext.Current.CancellationToken));
+            Assert.Equal(2, provider.RequestCount);
+            using var request = JsonDocument.Parse(Assert.IsType<string>(received));
+            var messages = request.RootElement.GetProperty("messages").EnumerateArray()
+                .Where(message => message.GetProperty("role").GetString() != "system").ToArray();
+            Assert.Equal(new[] { "user", "assistant", "user" },
+                messages.Select(message => message.GetProperty("role").GetString()));
+            Assert.Equal(new[] { "Mi proyecto se llama Brújula; usa PostgreSQL.",
+                "Usaremos PostgreSQL y el puerto 5432.", "¿Qué base y puerto acordamos?" },
+                messages.Select(message => message.GetProperty("content").GetString()));
+            Assert.All(ReadCurrentSessionEvents(workspace).OfType<RunCreated>(),
+                run => Assert.Equal(original, run.SessionId));
+        });
+    }
+
     [Fact]
     public async Task Tui_turn_host_executes_real_runtime_http_and_journals_assistant_response()
     {

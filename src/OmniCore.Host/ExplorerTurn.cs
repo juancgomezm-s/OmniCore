@@ -1764,12 +1764,17 @@ public sealed class ExplorerTurn
         var canonicalCalls = new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal);
         var callsByStep = new Dictionary<int, Dictionary<string, ToolCallRequested>>();
         var restoredCalls = new HashSet<string>(StringComparer.Ordinal);
+        // Chat continuity follows the canonical visible message, not the optional usage summary.
+        // Old journals may contain only ModelCompleted; retain that fallback per Run/Turn.
+        var canonicalAssistantTurns = new HashSet<(RunId Run, TurnId Turn)>();
         int? activeStepIndex = null;
         int? completedStepIndex = null;
         var completedSteps = new HashSet<int>();
         foreach (var evt in stream.EventsSince(1))
         {
             var payload = _codecs.Decode(evt);
+            if (payload is AssistantMessageRecorded assistant && evt.RunId == assistant.RunId)
+                canonicalAssistantTurns.Add((assistant.RunId, assistant.TurnId));
             if (activeTurnId is not null && evt.RunId == runId && evt.LaneId == activeLaneId)
             {
                 if (payload is ModelStepStarted stepStart && stepStart.TurnId == activeTurnId)
@@ -1841,7 +1846,7 @@ public sealed class ExplorerTurn
             {
                 // The chat belongs to the session. Only plain user/assistant history crosses Runs;
                 // tool calls, results, plans and interactions retain their original Run boundary.
-                if (evt.RunId is null || type is not ("user_input.received" or "model.completed")) continue;
+                if (evt.RunId is null || type is not ("user_input.received" or "assistant_message.recorded" or "model.completed")) continue;
             }
             if (_codecs.Decode(evt) is TurnSteeringReceived steeringReceived)
             {
@@ -1941,10 +1946,20 @@ public sealed class ExplorerTurn
                             : payload is not ToolCallSucceeded)
                 }));
             }
+            else if (type == "assistant_message.recorded")
+            {
+                var assistant = _codecs.Decode(evt) as AssistantMessageRecorded;
+                if (assistant?.ContentRef is null || evt.RunId != assistant.RunId) continue;
+                var text = _artifacts.GetText(assistant.ContentRef.Hash);
+                if (!string.IsNullOrEmpty(text))
+                    history.Add(new ModelMessage(MessageRole.Assistant,
+                        new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+            }
             else if (type == "model.completed")
             {
                 var completed = _codecs.Decode(evt) as ModelCompleted;
                 if (completed?.ResponseArtifact is null) continue;
+                if (evt.RunId is { } owner && canonicalAssistantTurns.Contains((owner, completed.TurnId))) continue;
                 var text = DecodeUsageResponse(_artifacts.GetText(completed.ResponseArtifact.Hash));
                 if (!string.IsNullOrEmpty(text))
                     history.Add(new ModelMessage(MessageRole.Assistant,
