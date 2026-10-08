@@ -24,6 +24,14 @@ ADR-0007 §2 etiqueta nueve traits como “Mínimo v1”; §7, sin embargo, asig
 
 ## Estado de aceptación
 
+**Actualización de cierre, 2026-10-07:** M5 quedó cerrado en Windows después de
+la ejecución autenticada de Quick sobre ChatGPT y la ejecución real sobre Qwen
+local, ambos con diez probes aprobados y perfiles persistidos. La recomendación
+no cambió sus políticas operativas. La evidencia y los límites están en
+[cierre de M5](m5-closure-20261007.md). Esta aceptación no convierte Quick en
+full/calibración ni acredita los providers de API de pago que sólo tienen fixtures.
+La observación siguiente es histórica y anterior a ese cierre, no un bloqueo vigente.
+
 Las pruebas offline de Host/store/CLI acreditan los guards, la clasificación, los traits realmente medidos y la persistencia de evidencia. No acreditan que Quick se haya ejecutado contra un proveedor real. La lectura de namespace User fechada 2026-10-07 12:48 UTC encontró cero perfiles y traits; es una observación fechada, no una afirmación sobre estados posteriores. La configuración inspeccionada omitía `billingMode`, que por ADR-0046 §3/`ConfigLoader` conserva `Unknown`; se requiere una declaración de facturación autoritativa y consentimiento/presupuesto antes de una ejecución real. Ni una credencial ni `Qualified` sustituyen esa autorización.
 
 Referencias de implementación: [QuickProbeSuite](../../src/OmniCore.Qualification/QuickProbeSuite.cs), [ModelQualificationHost](../../src/OmniCore.Host/ModelQualificationHost.cs), [ModelProfileResolver](../../src/OmniCore.Host/ModelProfileResolver.cs), [ADR-0007](../adr/0007-model-qualification-framework.md), [inventario de aceptación User](m5-user-acceptance-inventory-20261007.md).
