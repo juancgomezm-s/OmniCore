@@ -1,0 +1,43 @@
+Rescate selectivo GLM hacia main — 2026-10-08
+
+Base main: a055bb4. Fuente preservada: c89625c.
+No merge integral de la rama antigua: revertiría mejoras visuales ya integradas.
+API backend 3247b30 ya era ancestro de main, no se duplica.
+
+Rescatado:
+- ClaudeAccountService/locator/estado y apertura explícita del CLI oficial.
+- Factory CreateClaudeAccountService del Host; no conecta al chat un provider OAuth.
+- Fachada TuiProviderConnectionHost de acciones API; sin renderer nuevo.
+- Recursos es/en del bloque, sin cambiar diseño ni selección de modelos.
+- 33 pruebas de cuenta del worker, dos regresiones de probe añadidas por root
+  y dos pruebas de fachada API añadidas por root.
+- Reevaluación documental ADR0011/0012 solicitada por el usuario, preservada
+  en la rama de origen en 5f30718; no implica autorización externa o login real.
+
+Corrección root: GetStatusAsync espera fuera del hilo llamador; una versión
+parcial no se publica cuando el probe falla o agota el timeout.
+
+Excluido y preservado en c89625c:
+- ProviderConnectionMenu.cs y su cableado TuiApp/TuiWiringTests.
+- ProviderConnectionMenuApiTests (10 fallos reportados).
+- ClaudeAccountDelegationService y su factory/pruebas: no consumidos por chat.
+- Informe de cuenta original con conclusiones luego corregidas por GLM.
+OAuth nativo no implementado. No aceptación de conexión por suscripción.
+Ningún login, consulta autenticada ni consumo real en esta validación.
+
+Validación root sobre fuentes reconstruidas, checkout de rescate basado en main:
+dotnet build OmniCore.slnx --no-restore --nologo -v quiet
+exit0; 0 warnings/0 errors, compilación final 3.73s.
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -class OmniCore.Tests.ClaudeAccountTests
+35/35 PASS (0.815s).
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -class OmniCore.Tests.ProviderConnectionFacadeTests
+2/2 PASS (0.242s).
+dotnet tests/OmniCore.ArchitectureTests/bin/Debug/net10.0/OmniCore.ArchitectureTests.dll
+56/56 PASS (0.534s).
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll
+3059 total / 3055 PASS / 0 FAIL / 4 SKIP symlink (149.445s).
+Las cifras focales se solapan con la suite; no sumarlas.
+Fixtures, no autenticación real. Sin modificaciones a la TUI/Git/renderer de main.
+
+Log integral preservado fuera del repo:
+C:/Users/juanc/.codex/pi-provider-menu-glm-split-20261008/results/rescue-main/full-tests.log
