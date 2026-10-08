@@ -441,6 +441,24 @@ public sealed class SessionConversationContributor : IContextContributor
 public sealed record ConversationContextEntry(string Id, ContextItemKind Kind, string Content,
     bool PreserveWhenTrimming = false);
 
+/// <summary>Historical conversation data, scoped to its Session and never the active Run.</summary>
+public sealed class RunSummaryContributor(RunSummary summary, ArtifactRef artifact, string text) : IContextContributor
+{
+    public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (summary.SessionId != request.SessionId || summary.RunId == request.RunId)
+            return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>(Array.Empty<ContextItem>());
+        var provenance = new ContextProvenance("core.run-summary", ContributionCategory.Conversation,
+            "engine", ScopeLevel.Session, false, new[] { "run=" + summary.RunId,
+                "through=" + summary.ThroughEventSequence, "artifact=" + artifact.Hash });
+        return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>(new[] {
+            new ContextItem("run-summary-" + summary.RunId, ContextItemKind.Summary,
+                text, 0, ContextPriority.High, RetentionPolicy.ConversationWindow, provenance) });
+    }
+}
+
 /// <summary>Regenera en cada materialización la proyección de un checkpoint persistido.</summary>
 public sealed class ContextCheckpointContributor : IContextContributor
 {

@@ -93,6 +93,34 @@ Fuera de este flujo, `/mode` solo cambia `Session.DefaultMode` para el **próxim
 
 Los comandos llevan un `CommandId` para la causalidad (ADR-0013).
 
+## Implementación del resumen entre Runs (2026-10-08)
+
+El Host publica `RunSummaryRecorded` v1 después de un cierre terminal real. Su
+`SummaryArtifact` contiene una proyección estructurada y redactada del objetivo,
+outcome, declaraciones del usuario, última respuesta de la Lane raíz, Plan y
+recibo del checkpoint disponible; los extractos y las omisiones se identifican explícitamente.
+El cuerpo del checkpoint permanece local al Run: puede contener resultados de
+tools o razonamiento y no se copia a la conversación de Runs posteriores.
+No modifica completion, autoridad, permisos ni WorkingState, y no provoca otra
+invocación al proveedor. La respuesta final del modelo ya publicada se reutiliza;
+la estructura restante es el fallback determinista incluso sin modelo disponible.
+
+El registro cubre la secuencia del evento terminal y su ArtifactRef se conserva
+tanto en payload como en el envelope. Si un journal anterior o una interrupción
+entre cierre y resumen dejó el registro ausente, el siguiente Turn lo recupera
+idempotentemente. La validación read-only comprueba sesión, Run, evento terminal,
+secuencia cubierta e integridad CAS. La v1 conserva el contrato de un escritor;
+no agrega coordinación multiwriter de M9.
+
+Mientras el historial previo cabe, se mantiene el texto original. Si la política
+de presupuesto lo omitiría o truncaría, se contribuye el resumen de ese Run como
+datos históricos con procedencia y se evita repetir su transcript completo.
+La conversación de Runs anteriores y el resumen excluyen Lanes hijas y resultados
+crudos de tools. El primer input y el input más reciente permanecen protegidos:
+si el contenido protegido no cabe, `ContextOverflow` impide enviar una petición
+sin la intención actual del usuario. Esto no acredita herencia operativa de M6
+ni el servicio Memory de ADR-0028.
+
 ## Clasificación
 
 | Elemento | Categoría |

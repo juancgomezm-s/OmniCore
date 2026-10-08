@@ -1,0 +1,93 @@
+Context continuity: structured Run summaries and protected current input
+======================================================================
+
+Ownership and scope
+-------------------
+Branch codex/tui-markdown-polish, isolated managed checkout:
+C:\Users\juanc\.codex\worktrees\tui-markdown-polish\OmniCore
+Starting commit: 4f9717f.
+Concurrent provider-connections checkout and all GLM edits remain untouched.
+No provider authentication, credentials, model configuration, server/TLS change,
+paid request, merge or push. No scheduler, joins or persistent Memory service.
+
+Delivered contracts and runtime wiring
+--------------------------------------
+RunSummary and run.summary_recorded v1 provide a structured, redacted CAS receipt
+with Session/Run identity and exact terminal-event coverage. The Host records it
+after real completion or terminal commands; a subsequent Ask backfills a missing
+receipt for older journals/crash recovery. Active/rejected completion is not
+converted into a terminal Run. Completion gates and authority are unchanged.
+Summary generation is an offline projection and does not call a provider.
+
+Only principal-lane user/assistant conversation is inherited from prior Runs.
+Child-lane input, assistant output and checkpoints are excluded; raw tool results
+remain Run-local. Legacy principal-lane ModelCompleted text is retained when a
+journal predates AssistantMessageRecorded. A principal checkpoint contributes
+only its verified receipt/hash: its body can contain tools/reasoning and is NOT
+copied into subsequent-Run conversation.
+
+When the existing budget policy would omit/truncate prior history, the affected
+Run contributes its summary as factual data with Run/event/CAS provenance. The
+original transcript is retained when it fits. Summaries cannot replace fresh
+WorkingState and are not instructions or authority. Artifact roots are explicit
+in both the event payload and envelope; GC retention and reopen are tested.
+v1 still assumes the existing single canonical writer; multiwriter coordination
+is not claimed. Read validation rejects mismatched identity/source sequence,
+missing/corrupt CAS and duplicate roots instead of silently trusting them.
+
+Additional real defect found and fixed
+-------------------------------------
+With enough historical summaries, budget selection evicted the NEW user message
+and submitted only the first historical goal. With an oversized new input it
+likewise submitted a request without that input instead of rejecting overflow.
+Two focused regressions reproduced this (both FAIL before the input guard).
+The most recent user input is now protected alongside the existing first input,
+System and WorkingState. If protected content cannot fit, ContextOverflow stops
+dispatch; the provider is not invoked with a silently missing current intent.
+
+Protecting the new input initially shifted checkpoint cadence. The first broad
+run recorded 3057 cases / 3 FAIL / 4 SKIP; failures were the existing checkpoint
+publication/failed-publication and reopen regressions. Their assertions were NOT
+weakened. Current input still occupies its configured recent-tail position and
+may inform a checkpoint, but its original message is never removed. A checkpoint
+is not generated repeatedly for protected input alone. The failed run is preserved
+as .tmp-run-summary-full.log for audit, not counted as successful validation.
+
+Verification (all commands use isolated output directories)
+-----------------------------------------------------------
+Build: dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore
+  -p:OutputPath=<checkout>\.tmp\run-summary-final\ -v quiet
+Zero warnings/errors.
+First focused integration batch: 187 PASS / 0 FAIL / 0 SKIP, 61.315 seconds
+(preceded the current-input guard and final receipt-only checkpoint boundary).
+Final summary/checkpoint/reopen batch: 16 PASS / 0 FAIL / 0 SKIP, 1.604 seconds.
+This includes the 12 new RunSummary cases; one additional CLI HTTP case proves
+completion records the summary with exactly one provider request, not two.
+Intermediate corrected broad batch: 3058 cases / 3054 PASS / 0 FAIL / 4 SKIP,
+174.437 seconds; preceded the final receipt-only checkpoint guard and its case.
+Final-source broad batch: 3059 cases / 3055 PASS / 0 FAIL / 4 SKIP,
+177.719 seconds. Command: dotnet .tmp/run-summary-final/OmniCore.Tests.dll
+  -class- '*M4ProcessRecoveryTests' -maxThreads 2 -noLogo
+Log: .tmp-run-summary-full-verified.log. Process exit code: 0.
+Final-source M4 process recovery, executed separately and serially:
+1 PASS / 0 FAIL / 0 SKIP, 91.659 seconds. Command:
+  dotnet .tmp/run-summary-final/OmniCore.Tests.dll
+  -class '*M4ProcessRecoveryTests' -maxThreads 1 -noLogo
+Log: .tmp-run-summary-m4.log. This is process recovery, NOT a Windows reboot.
+Disjoint final behavioral total: 3060 cases / 3056 PASS / 0 FAIL / 4 SKIP.
+Final-source architecture: 56 PASS / 0 FAIL / 0 SKIP, 0.738 seconds.
+Architecture build .tmp/run-summary-architecture-final: zero warnings/errors.
+Verification completed: 2026-10-08 07:05:48 UTC / 01:05:48 America/Mexico_City.
+Counts from overlapping focused/intermediate/full runs must not be summed.
+Four skips are the existing symlink-permission cases.
+
+Remaining queue
+---------------
+ContextInheritancePolicy integration with real delegation belongs to M6; selected
+context must never widen execution authority or expose child-private transcripts.
+Session Memory belongs to the separate service in M8; Project/Workspace/Global
+Memory belongs to M10 with promotion, privacy and Scope rules (ADR-0028).
+These are not implemented or marked complete by this delivery. The plan's section
+24.2 now distinguishes this block from those future services and from TUI P2/P3.
+Publication/integration of local commits remains pending; primary GLM work must
+be reconciled without overwriting it. No M4/M5.5 milestone was reopened.

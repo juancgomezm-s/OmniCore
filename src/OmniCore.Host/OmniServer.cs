@@ -2171,6 +2171,8 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             SaveLastSession();
             if (explicitOutcome)
             {
+                if (_artifacts is not null && outcomeSession is { } summarySession)
+                    new RunSummaryService(_store, _codecs, _artifacts, OmniCliRuntime.RedactSensitive).EnsureRecorded(summarySession);
                 return CommandOutcomeAck(command.MessageId, "ok", null,
                     RuntimeCommandOutcome.Accepted(), outcomeSession, outcomeSequenceBefore, commandId);
             }
@@ -2729,6 +2731,8 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
                 new ProgressReconciler(), _store, _codecs, sessionId, stream,
                 runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger);
+            if (_artifacts is not null)
+                new RunSummaryService(_store, _codecs, _artifacts, OmniCliRuntime.RedactSensitive).EnsureRecorded(sessionId);
             var ack = CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                 sessionId, sequenceBefore.Value, commandId);
             return (completed, ack, null);

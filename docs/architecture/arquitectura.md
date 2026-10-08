@@ -762,6 +762,18 @@ Trabajo de presentación posterior a TUI v0, usando los contratos aceptados de A
 | **TUI-P3 — Configuración y responsive** — pendiente | Visibilidad/expansión/prioridad por widget, scopes User/Workspace; pestañas reales en ancho medio; colapso por altura sin perder señales Attention. | Persistencia y precedencia de ADR-0039; navegación a widgets ocultos; resize conserva foco y selección. El desplazamiento de P1 evita recortes, pero no acredita todavía este bloque. |
 | **Integraciones por hito** | AgentsWidget/LaneInspector **M6**; Session Memory, diagnostics de commands/skills/extensions y widgets de extensiones **M8**; memorias Project/Workspace/Global y keybindings **M10**. | Cada widget se habilita con su servicio/read model real, no con estados ficticios; el transcript de subagentes permanece en el inspector. |
 
+### 24.2. Continuidad del contexto — avances posteriores al cierre
+
+| Bloque | Estado real | Pendiente |
+|---|---|---|
+| Historial canónico | `AssistantMessageRecorded` alimenta el contexto independientemente del resumen de uso; fallback para journals antiguos y pruebas HTTP de continuidad/reapertura. | Validación del caso específico con el proveedor del usuario, sin confundir fixtures con cualificación real. |
+| Presupuesto e intención actual | WorkingState, primer input e input más reciente protegidos. El contexto que no cabe detiene el dispatch con `ContextOverflow`, sin omitir silenciosamente el mensaje nuevo. | No se declaran nuevos proveedores cualificados. |
+| Resumen entre Runs (ADR-0035) | Resumen estructurado y redactado, raíz CAS `run.summary_recorded`, recuperación idempotente y uso al recortar historial; excluye transcripts de Lanes hijas. No cambia completion ni añade llamadas al proveedor. | Ranking semántico o generación lateral de resúmenes no son parte de este bloque. Evidencia: `docs/validation/run-summary-20261008.txt`. |
+| Herencia de contexto | Contratos pre-M6 existentes; aislamiento de historial entre Runs reforzado. | Integración operativa de `ContextInheritancePolicy` con delegación/scheduler en **M6**. |
+| Memory | Contrato y ubicación del servicio definidos en ADR-0028; no es WorkingState ni un checkpoint. | **Session Memory M8**; **Project/Workspace/Global M10**, con promoción, privacidad y scopes. |
+
+Estos avances no reabren M4/M5.5 ni acreditan M6/M8/M10 completos.
+
 **Cambios frente a los roadmaps anteriores:**
 
 - Planning y persistencia entran en M1.

@@ -507,6 +507,25 @@ public sealed class CliEndToEndTests
         });
     }
 
+    [Fact]
+    public async Task Act_completion_publishes_one_structured_summary_without_an_extra_provider_call()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            provider.RespondWith((_, _) => TextResponse("Resumen final para el usuario."));
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            Assert.Equal(0, await host.ExecuteActAsync("explica el ejemplo", _ => { }, TestContext.Current.CancellationToken));
+            Assert.Equal(1, provider.RequestCount);
+            var events = ReadCurrentSessionJournalEvents(workspace);
+            var codecs = EventCodecs.Create();
+            var completed = Assert.Single(events, evt => codecs.Decode(evt) is RunCompleted);
+            var root = Assert.Single(events.Select(codecs.Decode).OfType<RunSummaryRecorded>());
+            Assert.Equal(completed.RunId, root.RunId);
+            Assert.Equal(completed.Sequence, root.ThroughEventSequence);
+            Assert.True(events.Last().Sequence > completed.Sequence);
+        });
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

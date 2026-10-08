@@ -31,6 +31,9 @@ internal static class ArtifactRefExtractor
                 AddRange(refs, record.RecordArtifacts());
                 break;
             // Run/Task events
+            case RunSummaryRecorded summary:
+                refs.Add(summary.SummaryArtifact);
+                break;
             case RunValidationRejected r when r.OutputArtifacts is not null:
                 AddRange(refs, r.OutputArtifacts);
                 break;

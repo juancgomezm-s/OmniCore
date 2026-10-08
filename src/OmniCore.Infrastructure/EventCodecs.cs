@@ -39,6 +39,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.PostEditValidationPending())
             .Plus(Typed.PostEditValidationConsumed())
             .Plus(Typed.RunCompleted())
+            .Plus(Typed.RunSummaryRecorded())
             .Plus(Typed.RunFailed())
             .Plus(Typed.RunCancelled())
             .Plus(Typed.RunModeChanged())
@@ -371,6 +372,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(PostEditValidationPending))]
 [JsonSerializable(typeof(PostEditValidationConsumed))]
 [JsonSerializable(typeof(RunCompleted))]
+[JsonSerializable(typeof(RunSummaryRecorded))]
 [JsonSerializable(typeof(RunFailed))]
 [JsonSerializable(typeof(RunCancelled))]
 [JsonSerializable(typeof(RunModeChanged))]
@@ -560,6 +562,9 @@ public sealed class Typed
 
     public static CodecPair RunCompleted() =>
         Of(EventType.Of("run.completed"), EventJsonContext.Default.RunCompleted);
+
+    public static CodecPair RunSummaryRecorded() =>
+        Of(EventType.Of("run.summary_recorded"), EventJsonContext.Default.RunSummaryRecorded);
 
     public static CodecPair RunFailed() =>
         Of(EventType.Of("run.failed"), EventJsonContext.Default.RunFailed);
