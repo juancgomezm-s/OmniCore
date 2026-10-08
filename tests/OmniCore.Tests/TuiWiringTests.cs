@@ -350,7 +350,7 @@ public sealed class TuiWiringTests
         finally { fx.Application.LayoutAndDrawComplete -= capture; }
         if (captureError is not null) throw captureError;
         visualTurn?.Release.Set();
-    });
+    }, noColor: false);
 
     [Fact]
     public void Rich_conversation_is_read_only_and_polling_preserves_history_position() => RunTuiTest(fx =>
