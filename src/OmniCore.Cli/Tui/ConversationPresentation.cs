@@ -9,7 +9,8 @@ internal enum ConversationStyle
     SyntaxString, SyntaxNumber, SyntaxType, SyntaxPunctuation,
     UserAccent, AssistantAccent, ToolAccent, NoticeAccent,
 }
-internal sealed record ConversationSpan(string Text, ConversationStyle Style);
+internal sealed record ConversationSpan(string Text, ConversationStyle Style,
+    Terminal.Gui.Drawing.TextStyle Decoration = Terminal.Gui.Drawing.TextStyle.None);
 
 /// <summary>Small, deterministic Markdown subset for terminal conversations; never modifies journal content.</summary>
 internal static class ConversationPresentation
@@ -37,6 +38,9 @@ internal static class ConversationPresentation
                 var used = 0;
                 var contentWidth = Math.Max(1, width - 3);
                 var code = row.Any(span => span.Style is >= ConversationStyle.Code and <= ConversationStyle.SyntaxPunctuation);
+                var listPrefix = block.Role == ConversationRole.Assistant && !code
+                    ? System.Text.RegularExpressions.Regex.Match(string.Concat(row.Select(span => span.Text)), @"^\s*(?:•|☑|☐|\d+[.)])\s+").Length : 0;
+                var hanging = Math.Min(listPrefix, Math.Max(0, contentWidth - 4));
                 void AppendRow(IEnumerable<ConversationSpan> body) => result.Add(new[] { new ConversationSpan("┃  ", accent) }.Concat(body).ToArray());
                 foreach (var span in row)
                 {
@@ -48,6 +52,7 @@ internal static class ConversationPresentation
                         if (used > 0 && used + columns > contentWidth)
                         {
                             var split = code ? -1 : current.FindLastIndex(piece => piece.Text == " ");
+                            if (split < hanging) split = -1;
                             if (split >= 0 && split < current.Count - 1)
                             {
                                 AppendRow(current.Take(split + 1));
@@ -55,8 +60,13 @@ internal static class ConversationPresentation
                                 used = current.Sum(piece => Terminal.Gui.Text.StringExtensions.GetColumns(piece.Text, false));
                             }
                             else { AppendRow(current); current = new(); used = 0; }
+                            if (hanging > 0)
+                            {
+                                current.Insert(0, new ConversationSpan(new string(' ', hanging), ConversationStyle.Text));
+                                used += hanging;
+                            }
                         }
-                        current.Add(new(grapheme, span.Style));
+                        current.Add(span with { Text = grapheme });
                         used += columns;
                     }
                 }

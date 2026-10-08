@@ -31,7 +31,7 @@ public sealed class ConversationMarkdownRegressionTests
     {
         var spans = MarkdownRenderer.Inline(@"\*\*literal\*\* y **destacado**");
         Assert.Equal("**literal** y destacado", Plain(spans));
-        Assert.Contains(spans, span => span.Text == "destacado" && span.Style == ConversationStyle.Heading);
+        Assert.Contains(spans, span => span.Text == "destacado" && span.Decoration.HasFlag(Terminal.Gui.Drawing.TextStyle.Bold));
         Assert.All(spans.Where(span => span.Text.Contains("literal")), span => Assert.Equal(ConversationStyle.Text, span.Style));
     }
 

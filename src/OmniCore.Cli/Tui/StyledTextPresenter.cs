@@ -47,7 +47,8 @@ internal class StyledTextPresenter : TextView
             {
                 var attribute = new Terminal.Gui.Drawing.Attribute(
                     noColor ? Color.None : new Color(Foreground(span.Style)),
-                    IsAccent(span.Style) ? AccentMarker : noColor ? Color.None : new Color(IsCode(span.Style) ? "#0A2330" : "#061822"));
+                    IsAccent(span.Style) ? AccentMarker : noColor ? Color.None : new Color(IsCode(span.Style) ? "#0A2330" : "#061822"),
+                    span.Decoration);
                 var elements = System.Globalization.StringInfo.GetTextElementEnumerator(span.Text);
                 while (elements.MoveNext())
                 {
@@ -111,7 +112,8 @@ internal class StyledTextPresenter : TextView
     {
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         SetAttribute(new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : Dimmed ? new Color("#405666") : attribute.Foreground,
-            noColor ? Color.None : attribute.Background == AccentMarker ? new Color("#061822") : attribute.Background));
+            noColor ? Color.None : attribute.Background == AccentMarker ? new Color("#061822") : attribute.Background,
+            attribute.Style));
     }
 }
 #pragma warning restore CS0618

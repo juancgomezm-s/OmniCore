@@ -74,6 +74,7 @@ public sealed class TuiApp
     internal FrameView? Sidebar => _sidebar;
     internal Label? Completion => _completion;
     internal Label? Status => _status;
+    internal Label? Header => _header;
     internal View? Overlay => _overlay;
     internal ClientState ProjectionState => _state;
     internal bool SidebarOpen => _sidebarOpen;
@@ -253,6 +254,7 @@ public sealed class TuiApp
         _sidebarContent = new Label { X = 2, Y = 3, Width = Dim.Fill(2), Height = Dim.Fill(1), Text = SidebarText() };
         _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "Workspace" }, _sidebarContent);
         var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
+        composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
         _composer = new ComposerView { X = 4, Y = 1, Width = Dim.Fill(2), Height = 1, Text = "", Multiline = true,
             WordWrap = true, EnterKeyAddsLine = true };
         composerFrame.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "›" });
@@ -323,14 +325,7 @@ public sealed class TuiApp
         if (_help is not null)
         {
             _help.Width = Dim.Fill(_mainColumnInset + 2);
-            var compactHelp = _window.Frame.Width - _mainColumnInset < 76;
-            _help.Text = (_locale == "en", compactHelp) switch
-            {
-                (true, true) => "Enter send · Shift+Enter newline · F3 models · F4 settings",
-                (false, true) => "Enter enviar · Shift+Enter salto · F3 modelos · F4 ajustes",
-                (true, false) => "Enter send · Shift+Enter newline · / commands · F2 panel · F3 models · F4 settings",
-                _ => "Enter enviar · Shift+Enter salto · / comandos · F2 panel · F3 modelos · F4 ajustes"
-            };
+            _help.Text = HelpText();
         }
         if (_status is not null) _status.Width = Dim.Fill(_mainColumnInset);
         RenderState();
@@ -676,6 +671,7 @@ public sealed class TuiApp
         RenderActivity();
         RenderConversation();
         if (_header is not null) _header.Text = HeaderText();
+        if (_help is not null) _help.Text = HelpText();
         if (_status is not null) _status.Text = StatusText();
         if (_sidebarContent is not null) _sidebarContent.Text = SidebarText();
     }
@@ -728,12 +724,51 @@ public sealed class TuiApp
     private string HeaderText()
     {
         var path = _state.Header.WorkingDirectory.Length == 0 ? Environment.CurrentDirectory : _state.Header.WorkingDirectory;
-        var git = _state.Header.GitBranch is null ? "" : "   " + _state.Header.GitBranch + " " + (_state.Header.GitDirty ?? "");
         var width = Math.Max(12, (_window?.Frame.Width ?? 80) - 4 - _mainColumnInset);
-        if (git.Length > width / 3) git = "";
         var workspace = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
         if (string.IsNullOrWhiteSpace(workspace)) workspace = path;
-        return AbbreviatePath("OmniCore · " + workspace, width - git.Length) + git;
+        var title = _state.Conversation.Blocks.FirstOrDefault(block => block.Role == ConversationRole.User)?.Text.Split('\n')[0]
+            ?? Ui("Nueva sesión", "New session");
+        return SessionHeading(workspace, title, _selectedModel ?? Ui("Sin modelo", "No model"), width);
+    }
+
+    internal static string SessionHeading(string workspace, string title, string model, int width)
+    {
+        width = Math.Max(1, width);
+        var project = FitText(workspace, Math.Max(1, width / 4));
+        var modelText = FitText(model, Math.Max(1, width / 2));
+        var titleWidth = Math.Max(0, width - project.Length - modelText.Length - 6);
+        return FitText(project + " │ " + (titleWidth > 0 ? FitText(title, titleWidth) + " · " : "") + modelText, width);
+    }
+
+    private static string FitText(string text, int width)
+    {
+        if (width <= 0) return "";
+        if (Terminal.Gui.Text.StringExtensions.GetColumns(text, false) <= width) return text;
+        var result = new System.Text.StringBuilder();
+        var elements = System.Globalization.StringInfo.GetTextElementEnumerator(text);
+        var used = 0;
+        while (elements.MoveNext())
+        {
+            var value = elements.GetTextElement();
+            var size = Terminal.Gui.Text.StringExtensions.GetColumns(value, false);
+            if (used + size >= width) break;
+            result.Append(value); used += size;
+        }
+        return result + "…";
+    }
+
+    private string HelpText() => CompactHelp(_state.StatusLine.Mode, _locale,
+        Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4));
+
+    internal static string CompactHelp(string mode, string locale, int width)
+    {
+        var lead = mode + (locale == "en" ? " · Enter send" : " · Enter enviar");
+        var variants = locale == "en"
+            ? new[] { " · ⇧Enter newline · / help · F2 panel · F3 model · F4 settings", " · ⇧↵ · / help · F2 panel · F3 model · F4", " · / help · F3", " · /" }
+            : new[] { " · ⇧Enter salto · / ayuda · F2 panel · F3 modelo · F4 ajustes", " · ⇧↵ · / ayuda · F2 panel · F3 modelo · F4", " · / ayuda · F3", " · /" };
+        return variants.Select(tail => lead + tail).FirstOrDefault(value => Terminal.Gui.Text.StringExtensions.GetColumns(value, false) <= width)
+            ?? FitText(lead, width);
     }
 
     internal static string AbbreviatePath(string path, int width)
@@ -749,12 +784,8 @@ public sealed class TuiApp
     {
         var presentation = StatusLinePresentation.From(_state.StatusLine);
         var width = Math.Max(1, (_window?.Frame.Width ?? 80) - 4 - _mainColumnInset);
-        var left = presentation.Left + (_selectedModel is null ? "" : " · " + _selectedModel);
         var right = _turnBusy ? "" : _turnStatus ?? presentation.Right;
-        if (left.Length + right.Length + 2 > width && !_turnBusy) right = "—";
-        if (right.Length > width) right = right[..width];
-        if (left.Length + right.Length + 2 > width) left = left[..Math.Max(0, width - right.Length - 2)];
-        return "  " + left + new string(' ', Math.Max(1, width - left.Length - right.Length)) + right;
+        return "  " + FitText(right, width);
     }
 
     private string SidebarText()
@@ -906,6 +937,7 @@ public sealed class TuiApp
         // focus remains visible through the cursor and cyan hotkeys, never color alone.
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         if (view.Id == "omni-composer") surface = "#293648";
+        else if (view.Id == "omni-composer-accent") surface = "#B47CE7";
         else if (view.Id == "omni-panel") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = "#344559";
         else if (view.Id == "omni-model-list") surface = "#142636";
