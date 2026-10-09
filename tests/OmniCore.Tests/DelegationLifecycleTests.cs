@@ -373,6 +373,72 @@ public sealed class DelegationLifecycleTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Durable_receive_success_reconciles_failed_ack_batch_after_reopen_once()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture(authorizeMailboxRoute: true, failMailboxAckBatches: true);
+        fx.Ask();
+        var child = Queue(fx);
+        var providerCalls = 0;
+        using var receiveEntered = new ManualResetEventSlim();
+        var dispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(child.DelegationId,
+            (work, token) => fx.ExplorerWithMailbox((_, _) =>
+            {
+                Interlocked.Increment(ref providerCalls);
+                return new ModelResponse([new ToolCallBlock(ToolCallId.New(), "receive-success",
+                    "core.agents.mailbox.receive", "{}")], StopReason.ToolUse,
+                    new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
+            }, (toolCall, receiveToken) =>
+            {
+                receiveEntered.Set();
+                return fx.Server.ReceiveMailboxMessageAsync(fx.Session, fx.Run, fx.MailboxRoute,
+                    BillingMode.Local, toolCall, receiveToken);
+            }).Ask(work.Objective, "system", work.Session, work.Run, work.Delegation.ChildLaneId, "", token),
+            TestContext.Current.CancellationToken), TestContext.Current.CancellationToken);
+
+        Assert.True(receiveEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var childExecution = Assert.Single(fx.Payloads.OfType<DelegationAccepted>()).ChildExecutionId;
+        Assert.True(SpinWait.SpinUntil(() => fx.Server.HasActiveMailboxWaiter(fx.Session, fx.Run, childExecution),
+            TimeSpan.FromSeconds(10)));
+        var root = Assert.Single(fx.Payloads.OfType<AgentExecutionStarted>(), item => item.ParentExecutionId is null);
+        var source = fx.Source();
+        var supervisor = SupervisorClientFactory.Create(fx.Server, root.ExecutionId);
+        var sent = supervisor.Send(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"supervisor.mailbox.send\","
+            + "\"targetExecutionId\":\"" + childExecution + "\",\"sourceEventId\":\"" + source.EventId
+            + "\",\"content\":\"receipt durable\"}"), TestContext.Current.CancellationToken);
+        Assert.Equal("ok", sent.Status);
+        var failedAck = await dispatch.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        Assert.NotEqual("ok", failedAck.Status);
+        Assert.Equal(1, Volatile.Read(ref providerCalls));
+
+        var request = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is ToolCallRequested tool
+            && tool.ToolName == "core.agents.mailbox.receive");
+        var success = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => evt.ToolCallId == request.ToolCallId
+            && fx.Codecs.Decode(evt) is ToolCallSucceeded);
+        var message = Assert.Single(fx.Payloads.OfType<ExecutionMailboxMessageReceived>());
+        var wake = Assert.Single(fx.Payloads.OfType<WakeRequestCreated>());
+        Assert.Empty(fx.Payloads.OfType<ExecutionMailboxMessageAcknowledged>());
+        Assert.Empty(fx.Payloads.OfType<WakeRequestResolved>());
+
+        // Simulate process loss after ToolCallSucceeded but before the atomic ACK + WakeResolved batch.
+        // Recovery runs against a newly opened Host on the same SQLite only after the prior one is done.
+        fx.MailboxAckFault!.FailAcknowledgementBatches = false;
+        fx.Reopen();
+        var ackEvent = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is ExecutionMailboxMessageAcknowledged);
+        var resolvedEvent = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is WakeRequestResolved);
+        Assert.Equal(message.Message.MessageId, ((ExecutionMailboxMessageAcknowledged)fx.Codecs.Decode(ackEvent)).MessageId);
+        Assert.Equal(wake.Request.WakeRequestId, ((WakeRequestResolved)fx.Codecs.Decode(resolvedEvent)).WakeRequestId);
+        Assert.Equal(new EventCausation(success.EventId), ackEvent.Causation);
+        Assert.Equal(new EventCausation(success.EventId), resolvedEvent.Causation);
+        Assert.Equal(1, Volatile.Read(ref providerCalls));
+        var recoveredSequence = fx.Store.CurrentSequence(fx.Session);
+        fx.Reopen();
+        Assert.Equal(recoveredSequence, fx.Store.CurrentSequence(fx.Session));
+        Assert.Single(fx.Payloads.OfType<ExecutionMailboxMessageAcknowledged>());
+        Assert.Single(fx.Payloads.OfType<WakeRequestResolved>());
+        Assert.Equal(1, Volatile.Read(ref providerCalls));
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Orchestration_revoke_is_deferred_during_receive_then_cancel_closes_wait_fail_closed()
     {
         using var fx = new DelegationAdmissionTests.Fixture(authorizeMailboxRoute: true);
@@ -662,7 +728,7 @@ public sealed class DelegationLifecycleTests
     private static Delegation Queue(DelegationAdmissionTests.Fixture fx, long tokens = 16384)
     {
         var ack = fx.Server.SendUserAction(DelegationCommands.Create(fx.Request() with { MaxTokens = tokens }, Ids.NewV7()), CancellationToken.None);
-        Assert.Equal("ok", ack.Status); Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
+        Assert.True(ack.Status == "ok", ack.Error); Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
         return fx.Payloads.OfType<DelegationCreated>().Last().Delegation;
     }
     private static CommandAck Execute(DelegationAdmissionTests.Fixture fx, Delegation child) => fx.Server.ExecuteDelegation(child.DelegationId,

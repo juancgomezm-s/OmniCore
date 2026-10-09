@@ -97,6 +97,9 @@ public sealed class FakeCatalog
 
     public bool Contains(ToolId id) => _tools.TryGetValue(id, out var _) != false;
 
+    /// <summary>Registered tools for Host composition; callers cannot mutate the catalog through this view.</summary>
+    public IReadOnlyList<ITool> RegisteredTools() => _tools.Values.ToArray();
+
     /// <summary>Todas las tools del catálogo como ToolDefinition (para BuildBody del provider).</summary>
     public IReadOnlyList<ToolDefinition> Definitions()
     {

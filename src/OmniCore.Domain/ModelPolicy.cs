@@ -29,6 +29,8 @@ public enum ModelToolCapability
     GeneralProcess,
     Shell,
     Network,
+    /// <summary>Wait for one message from the execution's bound supervisor; no side effect.</summary>
+    AgentMailboxWait,
 }
 
 /// <summary>Modo de mutación de archivos permitido por la política (ADR-0044 §4).</summary>
@@ -518,6 +520,7 @@ public static class ModelPolicyPresets
         ModelToolCapability.Search,
         ModelToolCapability.ReferenceResolve,
         ModelToolCapability.PlanProposal,
+        ModelToolCapability.AgentMailboxWait,
     };
 
     private static readonly IReadOnlySet<ModelToolCapability> PatchCaps = new HashSet<ModelToolCapability>(ObserveCaps)

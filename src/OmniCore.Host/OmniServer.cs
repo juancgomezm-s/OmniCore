@@ -44,7 +44,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private PromptExpanded? _lastPromptExpanded;
 
+    private WorkflowRequested? _lastWorkflowRequested;
+
     private string? _pendingPromptOrigin;
+
+    private readonly CommandService _commandService = new();
 
     private FakeCatalog? _diagnosticCatalog;
 
@@ -470,13 +474,26 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     : Array.Empty<string>();
                 var origin = root.TryGetProperty("origin", out var originValue)
                     ? originValue.GetString() ?? "Typed" : "Typed";
-                _lastPromptExpanded = new CommandService().Expand(
-                    new CommandInvocation(name, args, origin));
-                _pendingPromptOrigin = _lastPromptExpanded.Origin;
+                var invoked = _commandService.InvokeAsync(new CommandInvocation(name, args, origin),
+                    CommandContextForCurrentRun(),
+                    cancellationToken).AsTask().GetAwaiter().GetResult();
+                if (invoked is PromptCommandRequested prompt)
+                {
+                    _lastPromptExpanded = new PromptExpanded(prompt.Text, prompt.Origin);
+                    _lastWorkflowRequested = null;
+                    _pendingPromptOrigin = prompt.Origin;
+                }
+                else if (invoked is WorkflowRequested workflow)
+                {
+                    _lastPromptExpanded = null;
+                    _lastWorkflowRequested = workflow;
+                    _pendingPromptOrigin = null;
+                }
+                else throw new InvalidOperationException("Command handler returned an unsupported outcome.");
                 return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
-                or KeyNotFoundException)
+                or KeyNotFoundException or ArgumentException)
             {
                 return new CommandAck(command.MessageId, "error", ex.Message, RuntimeCommandOutcome.Rejected());
             }
@@ -690,6 +707,21 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (_lastSessionId is null || _lastRunId is null) return null;
         var events = EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId);
         return RunProjection.Replay(_lastSessionId, _lastRunId, _codecs, events).ModeAuthority;
+    }
+
+    private CommandContext CommandContextForCurrentRun()
+    {
+        if (_lastSessionId is not { } session || _lastRunId is not { } run)
+            return new CommandContext(null, null, null, _workspaceRoot, false,
+                "Start a Run and authorize Orchestrate mode before requesting a workflow.");
+        var journal = _store.ReadFrom(session, 1);
+        var projection = RunProjection.Replay(session, run, _codecs, EventsForRun(journal, run));
+        var authority = projection.ModeAuthority;
+        var authorized = projection.State == RunState.Running && authority?.Mode == RunMode.Orchestrate
+            && authority.Authorization is not null
+            && authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow);
+        var reason = authorized ? null : "An active Orchestrate Run with current authorization is required.";
+        return new CommandContext(session, run, projection.Mode ?? CurrentRunMode(), _workspaceRoot, authorized, reason);
     }
 
     public RunReasoningSelectionState? CurrentRunReasoningSelection()
@@ -1713,7 +1745,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             return new SessionQueryResult("sessionObservability", ObservabilityJson.Encode(Observability.Snapshot(_lastSessionId, after)));
         }
         if (name == "commands")
-            return new SessionQueryResult("commands", "{\"commands\":[\"mode\",\"ultracode\",\"reasoning\",\"explain\"]}");
+        {
+            var catalog = _commandService.Catalog(CommandContextForCurrentRun());
+            var names = new[] { "mode", "ultracode", "reasoning" }.Concat(catalog.Commands.Select(command => command.Name));
+            var json = "{\"commands\":[" + string.Join(",", names.Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "],"
+                + "\"catalog\":" + CommandCatalogJson.Encode(catalog) + "}";
+            return new SessionQueryResult("commands", json);
+        }
         if (name == "modePreference")
         {
             var preference = ReadModePreference();
@@ -1808,10 +1846,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         if (name == "commandOutcome")
         {
-            if (_lastPromptExpanded is null) return new SessionQueryResult("commandOutcome", "{\"outcome\":null}");
-            return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
-                + JsonObj.Field("text", _lastPromptExpanded.Text) + ","
-                + JsonObj.Field("origin", _lastPromptExpanded.Origin) + "}}");
+            if (_lastPromptExpanded is { } prompt) return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
+                + JsonObj.Field("kind", "promptExpanded") + "," + JsonObj.Field("text", prompt.Text) + ","
+                + JsonObj.Field("origin", prompt.Origin) + "}}");
+            if (_lastWorkflowRequested is { } workflow) return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
+                + JsonObj.Field("kind", "workflowRequested") + "," + JsonObj.Field("workflowId", workflow.Workflow.Id) + ","
+                + JsonObj.Field("version", workflow.Workflow.Version) + ","
+                + JsonObj.FieldRaw("arguments", "[" + string.Join(",", workflow.Arguments.Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]") + "}}");
+            return new SessionQueryResult("commandOutcome", "{\"outcome\":null}");
         }
 
         if (name == "tools")

@@ -228,10 +228,12 @@ public sealed class DelegationAdmissionTests
         private string Journal => Path.Combine(Root, "journal.db");
         private string StateFile => Path.Combine(Root, "last.txt");
         internal SqliteEventStore Store { get; private set; }
+        internal IEventStore RuntimeStore { get; private set; }
         internal IEventCodecRegistry Codecs { get; } = EventCodecs.Create();
         internal FileArtifactStore Artifacts { get; }
         internal SqliteSpendReservationStore Reservations { get; }
         internal OmniServer Server { get; private set; }
+        internal MailboxAckFaultStore? MailboxAckFault { get; }
         internal AgentProfile Profile { get; } = new(ProfileId.New(), "reader", 1, PermissionScope.With(["**"], [], [], [], [], false), []);
         internal AgentProfile Writer { get; } = new(ProfileId.New(), "writer", 1, PermissionScope.With(["**"], ["**"], [], [], [], false), []);
         internal AgentProfile ForeignReader { get; } = new(ProfileId.New(), "outside", 1, PermissionScope.With(["outside/**"], [], [], [], [], false), []);
@@ -244,13 +246,19 @@ public sealed class DelegationAdmissionTests
         internal LaneId Lane { get; }
         internal int ProviderCalls;
         internal IEnumerable<DomainEventPayload> Payloads => Store.ReadFrom(Session, 1).Select(Codecs.Decode);
-        internal Fixture(bool authorizeMailboxRoute = false)
+        internal Fixture(bool authorizeMailboxRoute = false, bool failMailboxAckBatches = false)
         {
             _authorizeMailboxRoute = authorizeMailboxRoute;
             Directory.CreateDirectory(Root);
             Store = new SqliteEventStore(Journal); Artifacts = new FileArtifactStore(Root);
             Reservations = new SqliteSpendReservationStore(Path.Combine(Root, "reservations.db"));
-            Server = NewServer();
+            if (failMailboxAckBatches)
+            {
+                MailboxAckFault = new MailboxAckFaultStore(Store, Codecs);
+                RuntimeStore = MailboxAckFault;
+            }
+            else RuntimeStore = Store;
+            Server = NewServer(RuntimeStore);
             Assert.Equal("ok", Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(),
                 "{\"cmd\":\"session.input\",\"mode\":\"orq\",\"text\":\"Principal español\"}"), CancellationToken.None).Status);
             Session = Server.LastSessionId()!; Run = Server.LastRunId()!; Lane = Server.LastLaneId()!;
@@ -259,7 +267,7 @@ public sealed class DelegationAdmissionTests
         }
         private OmniServer NewServer(IEventStore? writeStore = null)
         {
-            var server = new OmniServer(writeStore ?? Store, Codecs, new InMemoryAuditSink(), StateFile, Artifacts);
+            var server = new OmniServer(writeStore ?? RuntimeStore, Codecs, new InMemoryAuditSink(), StateFile, Artifacts);
             server.ConfigureAgentProfiles(new(new AgentProfileRegistry([Profile, Writer, ForeignReader]), Profile));
             if (_authorizeMailboxRoute)
                 server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
@@ -283,7 +291,7 @@ public sealed class DelegationAdmissionTests
                 ProviderCalls++;
                 return new ModelResponse([new TextBlock("Respuesta española")], StopReason.EndTurn, new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
             }), executor, catalog, new ContextMaterializer(new FakeTokenCounter(), []), new("fixture", "h", "t", "c", "o", "fixture"),
-                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), Store, Codecs, Artifacts,
+                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), RuntimeStore, Codecs, Artifacts,
                 new InMemoryAuditSink(), new RedactionPolicy(), pricing: new ModelPricing(0m, 0m), modelContextCapacity: 8192,
                 spendReservations: Reservations, maximumGenerationRequestAttempts: 1);
         }
@@ -291,12 +299,21 @@ public sealed class DelegationAdmissionTests
             Func<ToolCallId, CancellationToken, Task<string?>> receiveMailbox)
         {
             var tools = HostTools.DelegatedReaderWithMailbox();
+            var policyKey = ModelPolicyKey.For("fixture", "fixture");
+            var effectivePolicy = EffectiveModelPolicy.Resolve(policyKey,
+                new StoredModelPolicy(policyKey, 1, ModelPolicyPresets.ObserveOnly(),
+                    DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch),
+                new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 16, GuidanceLevel.Full, 2,
+                    PlanControl.ModelDriven, 6));
+            var boundary = OmniCliRuntime.CreateBoundary(effectivePolicy, Root, tools.Catalog());
+            Assert.True(boundary.IsToolVisible("core.agents.mailbox.receive"),
+                "The effective read-only policy must classify mailbox waiting as a no-effect capability.");
             var executor = ScriptedToolExecutor.WithWorkspace(tools.Catalog(), new AgentProfilePermissionPolicy(
                 new ScriptedPermissionPolicy([]), Profile, new PathBoundaryValidator(), Root), Root,
-                boundary: null, receiveMailbox: receiveMailbox);
+                boundary: boundary, receiveMailbox: receiveMailbox);
             return new ExplorerTurn(complete, executor, tools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), []),
                 new("fixture", "h", "t", "c", "o", "fixture"),
-                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), Store, Codecs,
+                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), RuntimeStore, Codecs,
                 Artifacts, new InMemoryAuditSink(), new RedactionPolicy(), pricing: new ModelPricing(0m, 0m),
                 modelContextCapacity: 8192, spendReservations: Reservations, maximumGenerationRequestAttempts: 1,
                 mailboxDeliveryCompleted: Server.ResolveMailboxDelivery);
@@ -317,7 +334,7 @@ public sealed class DelegationAdmissionTests
             var id = json.RootElement.GetProperty("items").EnumerateArray().Last(i => i.GetProperty("kind").GetString() == "UserMessage").GetProperty("id").GetString()!;
             return new(Profile.Id.ToString(), source.EventId.ToString(), "Revisar sin modificar archivos", new[] { id }, 8192, 2, 4, 4096, 0m);
         }
-        internal void Reopen() { Close(); Store = new SqliteEventStore(Journal); Server = NewServer(); }
+        internal void Reopen() { Close(); Store = new SqliteEventStore(Journal); RuntimeStore = Store; Server = NewServer(); }
         internal (SqliteEventStore Store, OmniServer Server) OpenSnapshotServer()
         {
             var snapshotPath = Path.Combine(Root, "recovery-snapshot-" + Guid.NewGuid().ToString("N") + ".db");
@@ -358,6 +375,23 @@ public sealed class DelegationAdmissionTests
         {
             if (afterCommit) inner.AppendBatch(session, events, durability, cancellationToken);
             throw new IOException("fixture queue commit failure");
+        }
+        public long CurrentSequence(SessionId session) => inner.CurrentSequence(session);
+        public IReadOnlyList<DomainEvent> ReadFrom(SessionId session, long from) => inner.ReadFrom(session, from);
+    }
+
+    internal sealed class MailboxAckFaultStore(IEventStore inner, IEventCodecRegistry codecs) : IEventStore
+    {
+        internal bool FailAcknowledgementBatches { get; set; } = true;
+        public void Append(SessionId session, DomainEvent evt, DurabilityClass durability, CancellationToken cancellationToken)
+            => inner.Append(session, evt, durability, cancellationToken);
+        public void AppendBatch(SessionId session, IReadOnlyList<DomainEvent> events, DurabilityClass durability,
+            CancellationToken cancellationToken)
+        {
+            if (FailAcknowledgementBatches && events.Select(codecs.Decode)
+                .Any(payload => payload is ExecutionMailboxMessageAcknowledged))
+                throw new IOException("simulated process failure while committing mailbox ACK batch");
+            inner.AppendBatch(session, events, durability, cancellationToken);
         }
         public long CurrentSequence(SessionId session) => inner.CurrentSequence(session);
         public IReadOnlyList<DomainEvent> ReadFrom(SessionId session, long from) => inner.ReadFrom(session, from);

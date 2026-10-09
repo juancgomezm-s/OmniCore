@@ -220,8 +220,21 @@ public sealed class OmniCliRuntime
     }
 
     /// <summary>Boundary nuevo por Run; su registro de lecturas canoniza contra la raíz del workspace.</summary>
-    internal static ModelCapabilityBoundary CreateBoundary(EffectiveModelPolicy policy, string workspaceRoot) =>
-        new(policy, ModelCapabilityBoundary.CoreTools, new FileReadRegistry(workspaceRoot));
+    internal static ModelCapabilityBoundary CreateBoundary(EffectiveModelPolicy policy, string workspaceRoot,
+        FakeCatalog? catalog = null)
+    {
+        var capabilities = new Dictionary<string, ModelToolCapability>(ModelCapabilityBoundary.CoreTools,
+            StringComparer.Ordinal);
+        if (catalog is not null)
+        {
+            foreach (var (toolId, capability) in WorkflowToolFactory.Capabilities(catalog))
+            {
+                if (!capabilities.TryAdd(toolId, capability))
+                    throw new InvalidOperationException("Dynamic capability registration collides with a built-in tool id: " + toolId);
+            }
+        }
+        return new ModelCapabilityBoundary(policy, capabilities, new FileReadRegistry(workspaceRoot));
+    }
 
     public static string RedactSensitive(string value) =>
         SecretRedactor.Shared.Redact(new PiiRedactor().Redact(value));

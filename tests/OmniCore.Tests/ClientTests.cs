@@ -1,6 +1,7 @@
 using OmniCore.Client;
 using OmniCore.Cli;
 using OmniCore.Protocol;
+using System.Text.Json;
 
 namespace OmniCore.Tests;
 
@@ -202,6 +203,13 @@ public sealed class ClientTests
             server.ConfigureWorkspaceRoot(root);
             var commands = server.Query("commands", CancellationToken.None)!.Json;
             Assert.Contains("explain", commands);
+            using (var catalog = JsonDocument.Parse(commands))
+            {
+                var workflow = Assert.Single(catalog.RootElement.GetProperty("catalog").GetProperty("commands")
+                    .EnumerateArray(), command => command.GetProperty("id").GetString() == "core:orq-auth");
+                Assert.False(workflow.GetProperty("enabled").GetBoolean());
+                Assert.False(string.IsNullOrWhiteSpace(workflow.GetProperty("disabledReason").GetString()));
+            }
             var completion = server.Query("complete:src/Al", CancellationToken.None)!.Json;
             Assert.Contains("src/Alpha.cs", completion);
             Assert.DoesNotContain("Beta.cs", completion);
