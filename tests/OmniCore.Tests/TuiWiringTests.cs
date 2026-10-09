@@ -48,6 +48,35 @@ public sealed class TuiWiringTests
         Assert.Contains("All", OverlayText(fx.App.Overlay!));
     });
 
+    [Fact]
+    public void Delegation_workers_run_in_background_without_blocking_composer_and_cancel_independently() => RunTuiTest(fx =>
+    {
+        var host = new BackgroundDelegationTurnHostFixture();
+        var client = new BackgroundDelegationClientFixture(fx.Server, () => host.CancelCommandAccepted = true);
+        fx.StartTui(turnHost: host, client: client);
+        var first = Guid.NewGuid().ToString("D");
+        var second = Guid.NewGuid().ToString("D");
+        Type(fx, "/agent run " + first);
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.ContainsKey(first), "primera delegación activa");
+        Type(fx, "/agent run " + second);
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.ContainsKey(second), "segunda delegación activa");
+        Assert.True(host.Started.Count == 2);
+
+        Type(fx, "consulta principal mientras trabajan los delegados");
+        KeyWithEffect(fx, KeyCode.Enter, () => Volatile.Read(ref host.RootCalls) == 1,
+            "el composer acepta una consulta mientras corren delegados");
+        fx.Wait(() => fx.App.Composer!.Text == "", "consulta principal enviada");
+        Assert.Empty(host.Completed);
+
+        Type(fx, "/agent cancel " + first);
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Cancelled.ContainsKey(first), "cancelación de la primera delegación");
+        Assert.True(host.CancelObservedAcceptedCommand, "la cancelación local debe seguir al command aceptado por Host");
+        Assert.False(host.Cancelled.ContainsKey(second));
+        host.Release(second);
+        fx.Wait(() => host.Completed.ContainsKey(second), "la segunda delegación termina independientemente");
+        fx.Wait(() => !fx.App.Composer!.Text.Contains("/agent cancel", StringComparison.Ordinal), "composer libre");
+    });
+
     private sealed class DelegationTurnHostFixture : ITuiTurnHost
     {
         internal string? DelegationId;
@@ -56,6 +85,62 @@ public sealed class TuiWiringTests
         { Interlocked.Increment(ref RootCalls); return System.Threading.Tasks.Task.FromResult(0); }
         public System.Threading.Tasks.Task<int> ExecuteDelegationAsync(string id, Action<string> diagnostics, CancellationToken token)
         { Volatile.Write(ref DelegationId, id); return System.Threading.Tasks.Task.FromResult(0); }
+    }
+
+    private sealed class BackgroundDelegationTurnHostFixture : ITuiTurnHost
+    {
+        internal int RootCalls;
+        internal volatile bool CancelCommandAccepted;
+        internal volatile bool CancelObservedAcceptedCommand;
+        internal readonly System.Collections.Concurrent.ConcurrentDictionary<string,
+            System.Threading.Tasks.TaskCompletionSource<bool>> Started = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> Completed = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> Cancelled = new(StringComparer.OrdinalIgnoreCase);
+        public System.Threading.Tasks.Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken token)
+        {
+            Interlocked.Increment(ref RootCalls);
+            return System.Threading.Tasks.Task.FromResult(0);
+        }
+        public async System.Threading.Tasks.Task<int> ExecuteDelegationAsync(string id, Action<string> diagnostics,
+            CancellationToken token)
+        {
+            var gate = Started.GetOrAdd(id, _ => new(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously));
+            gate.TrySetResult(true);
+            try
+            {
+                await ReleaseFor(id).WaitAsync(token);
+                Completed.TryAdd(id, 0);
+                return 0;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                CancelObservedAcceptedCommand = CancelCommandAccepted;
+                Cancelled.TryAdd(id, 0);
+                throw;
+            }
+        }
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string,
+            System.Threading.Tasks.TaskCompletionSource<bool>> _release = new(StringComparer.OrdinalIgnoreCase);
+        private System.Threading.Tasks.Task ReleaseFor(string id) =>
+            _release.GetOrAdd(id, _ => new(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)).Task;
+        internal void Release(string id) => _release.GetOrAdd(id,
+            _ => new(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult(true);
+    }
+
+    private sealed class BackgroundDelegationClientFixture(OmniServer server, Action cancelCommandAccepted)
+        : IOmniClient, ITrustedUserActionClient
+    {
+        public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken) => server.Send(command, cancellationToken);
+        public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => server.SubscribeSince(fromSequence);
+        public SessionQueryResult? Query(string name, CancellationToken cancellationToken) => server.Query(name, cancellationToken);
+        public CommandAck SendUserAction(WireEnvelope command, CancellationToken cancellationToken)
+        {
+            var fields = JsonObj.Parse(command.PayloadJson);
+            if (fields.GetValueOrDefault("cmd") != "delegation.cancel")
+                return server.SendUserAction(command, cancellationToken);
+            cancelCommandAccepted();
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
     }
 
     [Fact]
@@ -148,8 +233,15 @@ public sealed class TuiWiringTests
         stream.Append(new PlanItemStarted(completed)); stream.Append(new PlanItemCompleted(completed, "verified"));
         stream.Append(new PlanItemStarted(waiting)); stream.Append(new PlanItemBlocked(waiting, "input"));
         var turn = TurnId.New();
-        stream.Append(new ModelStepStarted(turn, 0, "fixture/sidebar-model", 8192, "Direct", null, null, null, 16000));
-        stream.Append(new ModelStepCompleted(turn, 0, new(100, 20, 30, 10, 5), StopReason.EndTurn, null, "2026-10-07", .01m, TokenUsageFields.All));
+        var journal = fx.Server.AcquireStore().ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray();
+        var rootTask = RunProjection.Replay(session, run, fx.Server.AcquireCodecs(), journal).RootTask!;
+        var rootLane = fx.Server.LastLaneId()!;
+        using (ExecutionScope.Begin(new(run, rootTask, rootLane, TurnId: turn)))
+        {
+            stream.Append(new TurnStarted(turn, rootLane));
+            stream.Append(new ModelStepStarted(turn, 0, "fixture/sidebar-model", 8192, "Direct", null, null, null, 16000));
+            stream.Append(new ModelStepCompleted(turn, 0, new(100, 20, 30, 10, 5), StopReason.EndTurn, null, "2026-10-07", .01m, TokenUsageFields.All));
+        }
         fx.StartTui(initialColumns: 120, initialRows: 40);
         KeyWithEffect(fx, KeyCode.F2, () => fx.App.SidebarOpen, "panel visible");
         fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("PLAN 1/2"), "plan durable dibujado");
@@ -1989,7 +2081,8 @@ public sealed class TuiWiringTests
         }
 
         public void StartTui(ModelPolicyHost? policies = null, ITuiAccountHost? account = null,
-            ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null)
+            ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null,
+            IOmniClient? client = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -2005,7 +2098,7 @@ public sealed class TuiWiringTests
             for (var attempt = 1; ; attempt++)
             {
                 _loopError = null;
-                App = new TuiApp(Server, "es", _fixturePolicies, account, turnHost);
+                App = new TuiApp(client ?? Server, "es", _fixturePolicies, account, turnHost);
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);

@@ -74,6 +74,59 @@ public sealed class ProtocolMapperTests
     }
 
     [Fact]
+    public void Concurrent_child_conversation_is_lane_attributed_and_not_merged_into_the_root()
+    {
+        var (store, session, run, stream) = Journal();
+        var childTask = TaskId.New();
+        var childLane = LaneId.New();
+        var childExecution = ExecutionId.New();
+        stream.AppendBatch(new DomainEventPayload[] {
+            new TaskCreated(childTask, run.RunId, "child task", Array.Empty<TaskDependency>(),
+                new TaskBudget(null, null, null, null), run.RootTask),
+            new TaskReady(childTask),
+            new LaneCreated(childLane, childTask, ProfileId.New()),
+            new LaneStarted(childLane),
+            new TaskStarted(childTask, childLane),
+            new UserInputReceived(run.RunId, "[\"root prompt\"]", null),
+            new UserInputReceived(run.RunId, "[\"private child prompt\"]", null),
+            new UserInputReceived(run.RunId, "[\"unattributed legacy prompt\"]", null),
+            new InteractionRequested(InteractionId.New(), InteractionKind.Permission, "{}", "[\"allow\"]",
+                "allow", null, childLane, childTask, null, 0, 1),
+        }, DurabilityClass.Barrier, new ExecutionScopeState?[] {
+            new(run.RunId), new(run.RunId), new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+            new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+            new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+            new(run.RunId, run.RootTask, run.RootLane),
+            new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+            null,
+            new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+        });
+        var journal = store.ReadFrom(session, 1);
+        var mapped = new ProtocolMapper(Codecs).Map(journal, journal);
+        var rootInput = mapped.Single(item => JsonObj.Parse(item.PayloadJson).GetValueOrDefault("text") == "root prompt");
+        var childInput = mapped.Single(item => JsonObj.Parse(item.PayloadJson).GetValueOrDefault("text") == "private child prompt");
+        var rootFields = JsonObj.Parse(rootInput.PayloadJson);
+        var childFields = JsonObj.Parse(childInput.PayloadJson);
+        Assert.Equal("primary", rootFields["conversationScope"]);
+        Assert.Equal("child", childFields["conversationScope"]);
+        Assert.Equal(childTask.ToString(), childFields["taskId"]);
+        Assert.Equal(childLane.ToString(), childFields["laneId"]);
+        Assert.Equal(childExecution.ToString(), childFields["executionId"]);
+
+        var state = Reduce(mapped);
+        Assert.Contains(state.Conversation.Blocks, block => block.Text == "root prompt");
+        Assert.DoesNotContain(state.Conversation.Blocks, block => block.Text == "private child prompt");
+        Assert.DoesNotContain(state.Conversation.Blocks, block => block.Text == "unattributed legacy prompt");
+        var overlay = Assert.Single(state.Overlays);
+        Assert.Equal(run.RunId.ToString(), overlay.RunId);
+        Assert.Equal(childTask.ToString(), overlay.TaskId);
+        Assert.Equal(childLane.ToString(), overlay.LaneId);
+        Assert.Equal(childExecution.ToString(), overlay.ExecutionId);
+        Assert.All(mapped.Select(item => JsonObj.Parse(item.PayloadJson)), fields =>
+            Assert.Equal(fields.Keys.Count, fields.Keys.Distinct(StringComparer.Ordinal).Count()));
+    }
+
+    [Fact]
     public void Failure_events_carry_their_typed_error_code_to_the_wire()
     {
         var (store, session, run, stream) = Journal();

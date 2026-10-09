@@ -51,6 +51,32 @@ public sealed class WorkflowStageEvidenceTests
         Assert.Contains("stale", evidence.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Sibling_declared_verifier_request_after_the_receipt_is_potentially_mutating_even_before_start()
+    {
+        var fixture = new Fixture();
+        fixture.AppendVerification();
+        fixture.AppendSiblingVerifier(start: false);
+
+        var evidence = fixture.Evaluate();
+
+        Assert.False(evidence.Passed);
+        Assert.Contains("stale", evidence.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Sibling_declared_verifier_started_before_the_receipt_blocks_currentness_until_settled()
+    {
+        var fixture = new Fixture();
+        fixture.AppendSiblingVerifier(start: true);
+        fixture.AppendVerification();
+
+        var evidence = fixture.Evaluate();
+
+        Assert.False(evidence.Passed);
+        Assert.Contains("stale", evidence.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class Fixture
     {
         private readonly InMemoryEventStore _store = new();
@@ -96,6 +122,18 @@ public sealed class WorkflowStageEvidenceTests
             Append(_siblingTask, _siblingLane, _siblingExecution, new ToolCallAuthorized(call));
             Append(_siblingTask, _siblingLane, _siblingExecution,
                 new ToolCallStarted(call, EffectClass.NonIdempotent, "{}"));
+        }
+
+        internal void AppendSiblingVerifier(bool start)
+        {
+            var call = ToolCallId.New();
+            Append(_siblingTask, _siblingLane, _siblingExecution,
+                new ToolCallRequested(call, "sibling-verifier", "dyn.core.verify_integration", CheckArguments));
+            if (!start) return;
+            Append(_siblingTask, _siblingLane, _siblingExecution, new ToolCallPrepared(call, CheckArguments));
+            Append(_siblingTask, _siblingLane, _siblingExecution, new ToolCallAuthorized(call));
+            Append(_siblingTask, _siblingLane, _siblingExecution,
+                new ToolCallStarted(call, EffectClass.NonIdempotent, null));
         }
 
         internal WorkflowStageEvidence Evaluate() => WorkflowStageEvidenceEvaluator.Evaluate(_contract,

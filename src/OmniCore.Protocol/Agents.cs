@@ -16,14 +16,27 @@ public sealed record AgentLaneSnapshot(string LaneId, string TaskId, string? Par
     bool IntegrationVerified = false, bool IntegrationValidationPassed = false,
     int ToolBackedEvidenceCount = 0, string? WorkflowId = null, string? WorkflowStage = null,
     string? WorkflowInstance = null, bool? WorkflowGateSatisfied = null,
-    string? WorkflowGateReason = null, string? ResultOutcome = null);
+    string? WorkflowGateReason = null, string? ResultOutcome = null,
+    IReadOnlyList<AgentValidationDebtSnapshot>? ValidationDebts = null,
+    AgentLaneHeartbeatSnapshot? Heartbeat = null,
+    IReadOnlyList<AgentTranscriptEntry>? Transcript = null);
+public sealed record AgentValidationDebtSnapshot(string DebtId, string RequiredLevel,
+    IReadOnlyList<string> MissingChecks);
+public sealed record AgentLaneHeartbeatSnapshot(string State, string? TurnId,
+    DateTimeOffset? LastProgressAt, string Source);
+public sealed record AgentHeartbeatSnapshot(string State, int ObservedActiveLanes,
+    int WaitingForCapacity, int WaitingForJoin, int SupervisionWaitLanes,
+    DateTimeOffset? LastProgressAt, string Source);
+public sealed record AgentTranscriptEntry(long Sequence, string Kind, string Text, string? EventId = null,
+    string? RunId = null, string? TaskId = null, string? LaneId = null, string? TurnId = null,
+    string? ExecutionId = null, string? ToolCallId = null);
 public sealed record AgentBudgetSnapshot(decimal? MaxCostUsd, decimal? CostUsedUsd, long? MaxTokens,
     long? TokensUsed, int? MaxTurns, int TurnsUsed, int? MaxToolCalls, int ToolCallsUsed);
 public sealed record AgentCapacitySnapshot(int Active, int Waiting, int Maximum, bool WriterActive,
     IReadOnlyList<string> WaitingDelegationIds);
 public sealed record AgentsSnapshot(string SessionId, string? RunId, long BasedOnJournalSequence,
     bool ProjectionUnavailable, IReadOnlyList<AgentLaneSnapshot> Lanes, AgentCapacitySnapshot? Capacity = null,
-    IReadOnlyList<FanOutGroupSnapshot>? FanOutGroups = null);
+    IReadOnlyList<FanOutGroupSnapshot>? FanOutGroups = null, AgentHeartbeatSnapshot? Heartbeat = null);
 public sealed record FanOutGroupSnapshot(string GroupId, string OwnerExecutionId, string Policy,
     IReadOnlyList<string> DelegationIds, string State, IReadOnlyList<string> MemberResultIds, string? AggregateId);
 
@@ -47,5 +60,9 @@ public static class AgentsJson
 [JsonSerializable(typeof(DelegationCreateRequest))]
 [JsonSerializable(typeof(AgentCapacitySnapshot))]
 [JsonSerializable(typeof(AgentBudgetSnapshot))]
+[JsonSerializable(typeof(AgentValidationDebtSnapshot))]
+[JsonSerializable(typeof(AgentLaneHeartbeatSnapshot))]
+[JsonSerializable(typeof(AgentHeartbeatSnapshot))]
+[JsonSerializable(typeof(AgentTranscriptEntry))]
 [JsonSerializable(typeof(FanOutGroupSnapshot))]
 internal partial class AgentsJsonContext : JsonSerializerContext;

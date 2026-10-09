@@ -147,7 +147,10 @@ public sealed partial class OmniServer
                 var evidence = WorkflowStageEvidenceEvaluator.Evaluate(contract, authorization.Session,
                     authorization.Run, contract.Task, contract.Lane, execution, own, _codecs);
                 if (!evidence.Passed)
+                {
+                    RecordWorkflowGateEvidenceDebt(authorization, contract, execution);
                     throw new InvalidOperationException("Workflow gate remains open: " + evidence.Reason);
+                }
             }
 
             var tasks = TaskGraphProjection.Replay(_codecs, own);
@@ -176,6 +179,63 @@ public sealed partial class OmniServer
             var causes = Enumerable.Repeat<CausationId?>(new CommandCausation(authorization.InvocationCommand),
                 events.Count).ToArray();
             new EventStream(_store, _codecs, authorization.Session).AppendBatch(events,
+                DurabilityClass.Barrier, scopes, causes);
+        }
+    }
+
+    internal void RecordWorkflowGateEvidenceDebt(WorkflowRuntimeAuthorization authorization,
+        WorkflowStageContract contract, ExecutionId execution)
+    {
+        lock (_modeAuthorityMutationGate)
+        {
+            if (!WorkflowAuthorizationIsCurrent(authorization))
+                throw new InvalidOperationException("Workflow authorization is no longer current.");
+            var journal = _store.ReadFrom(authorization.Session, 1);
+            var own = journal.Where(evt => evt.RunId == authorization.Run).ToArray();
+            var item = PlanProjection.Replay(_codecs, own).Items()
+                .SingleOrDefault(candidate => candidate.LinkedTasks.Any(link => link.TaskId == contract.Task));
+            if (item is null || !WorkflowStageContract.TryFromPlanItem(item, out var currentContract)
+                || currentContract is null || currentContract.Task != contract.Task
+                || currentContract.Lane != contract.Lane || currentContract.Execution != execution
+                || currentContract.Workflow != authorization.Request.Workflow
+                || currentContract.Instance != authorization.Instance
+                || !WorkflowStageContract.IsCanonicalAdmission(currentContract, item, authorization.Session,
+                    authorization.Run, own, _codecs, _artifacts))
+                throw new InvalidDataException("Workflow evidence debt cannot be recorded for a non-canonical stage.");
+            var evidence = WorkflowStageEvidenceEvaluator.Evaluate(currentContract, authorization.Session,
+                authorization.Run, contract.Task, contract.Lane, execution, own, _codecs);
+            if (evidence.Passed) return;
+            var facts = own.Select(evt => _codecs.Decode(evt)).ToArray();
+            var resolved = facts.OfType<ValidationDebtResolved>().Select(item => item.DebtId).ToHashSet();
+            var unresolved = facts.OfType<ValidationDebtCreated>().Select(item => item.Debt)
+                .Where(debt => debt.SubjectExecutionId == execution && debt.Scope.SessionId == authorization.Session
+                    && debt.Scope.RunId == authorization.Run && debt.Scope.TaskId == contract.Task
+                    && debt.Scope.LaneId == contract.Lane && debt.RequiredLevel == ValidationLevel.Integration
+                    && !resolved.Contains(debt.DebtId)).ToArray();
+            var reason = string.IsNullOrWhiteSpace(evidence.Reason)
+                ? "Workflow completion gate rejected stale integration evidence." : evidence.Reason;
+            var hasRecordedFailure = facts.OfType<ValidationStateRecorded>().Any(item =>
+                item.ExecutionId == execution && item.State.Scope.SessionId == authorization.Session
+                && item.State.Scope.RunId == authorization.Run && item.State.Scope.TaskId == contract.Task
+                && item.State.Scope.LaneId == contract.Lane && item.State.Level == ValidationLevel.Integration
+                && item.State.Status == ValidationStatus.Failed
+                && item.State.RequiredChecks.SequenceEqual(new[] { reason }, StringComparer.Ordinal));
+            if (unresolved.Length > 0 && hasRecordedFailure) return;
+
+            var scope = new ValidationScope(authorization.Session, authorization.Run, contract.Task, contract.Lane);
+            var state = new ValidationState(scope, ValidationLevel.Integration, ValidationStatus.Failed,
+                new[] { reason }, evidence.Receipts);
+            var debt = new ValidationDebt(ValidationDebtId.New(), execution, scope,
+                ValidationLevel.Integration, new[] { reason }, evidence.Receipts);
+            var batch = new List<DomainEventPayload>();
+            if (!hasRecordedFailure) batch.Add(new ValidationStateRecorded(execution, state));
+            if (unresolved.Length == 0) batch.Add(new ValidationDebtCreated(execution, debt));
+            if (batch.Count == 0) return;
+            var scopes = Enumerable.Repeat<ExecutionScopeState?>(new ExecutionScopeState(authorization.Run,
+                contract.Task, contract.Lane, ExecutionId: execution), batch.Count).ToArray();
+            var causes = Enumerable.Repeat<CausationId?>(new CommandCausation(authorization.InvocationCommand),
+                batch.Count).ToArray();
+            new EventStream(_store, _codecs, authorization.Session).AppendBatch(batch,
                 DurabilityClass.Barrier, scopes, causes);
         }
     }

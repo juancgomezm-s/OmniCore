@@ -30,8 +30,9 @@ public sealed class SessionObservabilityProjection
         Snapshot = snapshot with { Context = context };
         foreach (var e in snapshot.Activities)
         {
-            if (e.SessionId != SessionId || e.Sequence <= ActivitySequence) continue;
-            if (!_activity.TryGetValue(e.TurnId, out var previous) || e.Sequence > previous.Sequence) _activity[e.TurnId] = e;
+            if (e.SessionId != SessionId || !e.ObservedInProcess) continue;
+            if (!_activity.TryGetValue(e.TurnId, out var previous) || e.Sequence > previous.Sequence
+                || e.Sequence == previous.Sequence && e.AsOf > previous.AsOf) _activity[e.TurnId] = e;
         }
         ActivitySequence = Math.Max(ActivitySequence, snapshot.ActivitySequence);
         return true;

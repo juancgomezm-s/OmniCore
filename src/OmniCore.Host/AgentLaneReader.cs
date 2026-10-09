@@ -8,7 +8,8 @@ namespace OmniCore.Host;
 
 internal static class AgentLaneReader
 {
-    internal static AgentsSnapshot Read(IEventStore store, IEventCodecRegistry codecs, SessionId session, RunId? run, IArtifactStore? artifacts = null)
+    internal static AgentsSnapshot Read(IEventStore store, IEventCodecRegistry codecs, SessionId session, RunId? run,
+        IArtifactStore? artifacts = null, IReadOnlyList<ChatActivityEvent>? activities = null)
     {
         var journal = store.ReadFrom(session, 1);
         var empty = new AgentsSnapshot(session.ToString(), run?.ToString(), journal.LastOrDefault()?.Sequence ?? 0,
@@ -153,9 +154,51 @@ internal static class AgentLaneReader
                 var validationEvidenceReady = validationEvidence.Any(HasScopedReceipt);
                 var gateEvidenceCount = integrationEvidence.Concat(validationEvidence).Where(HasScopedReceipt)
                     .Select(item => item.ReceiptRef!.EventId).Distinct().Count();
-                var integrationVerified = integration.Payload is IntegrationStatusRecorded latestIntegration
+                var resolvedDebtIds = payloads.OfType<ValidationDebtResolved>().Select(item => item.DebtId).ToHashSet();
+                var validationDebts = payloads.OfType<ValidationDebtCreated>()
+                    .Where(item => execution is not null && item.ExecutionId == execution.ExecutionId
+                        && item.Debt.SubjectExecutionId == execution.ExecutionId
+                        && item.Debt.Scope.SessionId == session && item.Debt.Scope.RunId == run
+                        && item.Debt.Scope.TaskId == lane.TaskId && item.Debt.Scope.LaneId == lane.LaneId
+                        && !resolvedDebtIds.Contains(item.Debt.DebtId))
+                    .Select(item => new AgentValidationDebtSnapshot(item.Debt.DebtId.ToString(),
+                        item.Debt.RequiredLevel.ToString(), item.Debt.MissingChecks.ToArray())).ToArray();
+                var heartbeatActivity = activities?.Where(item => item.ObservedInProcess
+                        && item.RunId == run.ToString()
+                        && item.LaneId == lane.LaneId.ToString())
+                    .OrderBy(item => item.Sequence).LastOrDefault();
+                var progressEvent = own.LastOrDefault(evt => evt.RunId == run && evt.LaneId == lane.LaneId
+                    && codecs.Decode(evt) is TurnStarted or ModelStepStarted or AssistantMessageRecorded
+                        or ToolCallRequested or ToolCallSucceeded or ToolCallFailed or InteractionRequested
+                        or InteractionResolved);
+                var waitingForCapacity = delegation is not null
+                    && capacity.WaitingDelegations.Contains(delegation.DelegationId);
+                var openMailboxReceive = execution is not null && scopedFacts
+                    .Where(item => item.Payload is ToolCallRequested requested
+                        && requested.ToolName == "core.agents.mailbox.receive")
+                    .Select(item => ((ToolCallRequested)item.Payload).ToolCallId)
+                    .Any(call => !scopedFacts.Any(item => item.Event.ToolCallId == call
+                        && item.Payload is ToolCallSucceeded or ToolCallFailed or ToolCallReconciled));
+                var waitingForJoin = joins.Length > 0 && task.State == TaskState.Blocked;
+                var supervisionWait = supervisionState?.Contains("Wait", StringComparison.Ordinal) == true;
+                var heartbeat = new AgentLaneHeartbeatSnapshot(waitingForCapacity ? "WaitingForCapacity"
+                    : openMailboxReceive ? "WaitingForMailbox" : waitingForJoin ? "WaitingForJoin"
+                    : supervisionWait ? "SupervisionWait" : heartbeatActivity?.Phase.ToString()
+                        ?? (state is "Completed" or "Failed" ? state : "Unknown"),
+                    heartbeatActivity?.TurnId ?? progressEvent?.TurnId?.ToString(),
+                    heartbeatActivity?.AsOf ?? progressEvent?.Timestamp,
+                    heartbeatActivity?.Source ?? (progressEvent is null ? "unknown after reopen (journal is not liveness)" : "journal progress (not liveness)"));
+                var transcript = starts.Length > 1 ? Array.Empty<AgentTranscriptEntry>()
+                    : BuildTranscript(own, codecs, artifacts, run, lane.TaskId, lane.LaneId, execution);
+                // Historical status/receipt facts remain in the journal, but a current
+                // workflow gate failure or unresolved debt means they cannot be presented
+                // as current verification for this lane.
+                var currentIntegrationEvidence = workflowEvidence?.Passed != false && validationDebts.Length == 0;
+                var integrationVerified = currentIntegrationEvidence
+                    && integration.Payload is IntegrationStatusRecorded latestIntegration
                     && latestIntegration.Status.Status == IntegrationStatus.Verified && integrationEvidenceReady;
-                var integrationValidationPassed = validation.Payload is ValidationStateRecorded latestValidation
+                var integrationValidationPassed = currentIntegrationEvidence
+                    && validation.Payload is ValidationStateRecorded latestValidation
                     && latestValidation.State.Status == ValidationStatus.Passed && validationEvidenceReady;
                 rows.Add(new(lane.LaneId.ToString(), lane.TaskId.ToString(), definition.ParentTaskId?.ToString(),
                     new PiiRedactor().Redact(task.Objective), lanes.StateOf(lane.LaneId)!.Value.ToString(), task.State.ToString(),
@@ -169,7 +212,8 @@ internal static class AgentLaneReader
                     supervisionState, pendingMessages, pendingWakes, resultIssueCount,
                     integrationVerified, integrationValidationPassed, gateEvidenceCount,
                     workflowStage?.Workflow.Id, workflowStage?.Definition.Name, workflowStage?.Instance,
-                    workflowEvidence?.Passed, workflowEvidence?.Reason, resultOutcome));
+                    workflowEvidence?.Passed, workflowEvidence?.Reason, resultOutcome, validationDebts,
+                    heartbeat, transcript));
             }
             var waiting = capacity.WaitingDelegations.Select(id => id.ToString()).Order(StringComparer.Ordinal).ToArray();
             var fanOutGroups = payloads.OfType<FanOutGroupCreated>().Select(created =>
@@ -191,8 +235,27 @@ internal static class AgentLaneReader
                     completed?.MemberResultRefs.Select(reference => reference.Id.ToString()).ToArray() ?? [],
                     completed?.AggregateRef?.Id.ToString());
             }).ToArray();
+            var runActivities = activities?.Where(item => item.ObservedInProcess
+                && item.RunId == run.ToString()).ToArray();
+            var activeObservedLanes = runActivities is null ? 0 : runActivities
+                .GroupBy(item => item.LaneId ?? "")
+                .Where(group => group.Key.Length > 0 && group.OrderBy(item => item.Sequence).Last().Phase
+                    is not (ChatActivityPhase.Completed or ChatActivityPhase.Cancelled or ChatActivityPhase.Failed))
+                .Select(group => group.Key).Distinct(StringComparer.Ordinal).Count();
+            var aggregateHeartbeat = runActivities is not { Length: > 0 }
+                ? new AgentHeartbeatSnapshot("Unknown", 0, rows.Count(row => row.Heartbeat?.State == "WaitingForCapacity"),
+                    rows.Count(row => row.Heartbeat?.State == "WaitingForJoin"),
+                    rows.Count(row => row.Heartbeat?.State == "SupervisionWait"), null,
+                    "no transient activity snapshot; journal state cannot establish liveness")
+                : new AgentHeartbeatSnapshot(activeObservedLanes > 0 ? "ObservedActive" : "ObservedNoActiveTurn",
+                    activeObservedLanes, rows.Count(row => row.Heartbeat?.State == "WaitingForCapacity"),
+                    rows.Count(row => row.Heartbeat?.State == "WaitingForJoin"),
+                    rows.Count(row => row.Heartbeat?.State == "SupervisionWait"),
+                    runActivities.OrderBy(item => item.Sequence).Last().AsOf,
+                    "transient in-process lane activity; not a worker lease");
             return empty with { Lanes = rows.ToArray(), Capacity = new AgentCapacitySnapshot(capacity.Active,
-                capacity.Waiting, maximumAgents, capacity.WriterActive, waiting), FanOutGroups = fanOutGroups };
+                capacity.Waiting, maximumAgents, capacity.WriterActive, waiting), FanOutGroups = fanOutGroups,
+                Heartbeat = aggregateHeartbeat };
         }
         catch (Exception failure) when (failure is InvalidDataException or InvalidStateTransitionException or InvalidOperationException or JsonException)
         {
@@ -222,5 +285,73 @@ internal static class AgentLaneReader
             _ => FanOutMemberStatus.Returned,
         };
         return new(id, status, status == FanOutMemberStatus.Accepted ? result!.ResultRef : null);
+    }
+
+    private static IReadOnlyList<AgentTranscriptEntry> BuildTranscript(IReadOnlyList<DomainEvent> journal,
+        IEventCodecRegistry codecs, IArtifactStore? artifacts, RunId run, TaskId task, LaneId lane,
+        AgentExecutionStarted? execution)
+    {
+        var messages = new List<AgentTranscriptEntry>();
+        var ownedTurns = execution is null ? new HashSet<TurnId>() : journal
+            .Where(item => item.RunId == run && item.TaskId == task && item.LaneId == lane
+                && item.ExecutionId == execution.ExecutionId && item.TurnId is not null)
+            .Select(item => item.TurnId!).ToHashSet();
+        foreach (var evt in journal.Where(item => item.RunId == run && item.TaskId == task && item.LaneId == lane
+                     && (execution is null
+                         ? item.ExecutionId is null
+                         : item.ExecutionId == execution.ExecutionId
+                            || item.ExecutionId is null && item.TurnId is { } turn && ownedTurns.Contains(turn))))
+        {
+            var payload = codecs.Decode(evt);
+            string? kind = null;
+            string? text = null;
+            switch (payload)
+            {
+                case UserInputReceived input when input.RunId == run:
+                    kind = "user"; text = TranscriptInput(input.InputPartsJson); break;
+                case AssistantMessageRecorded assistant when assistant.RunId == run && assistant.LaneId == lane:
+                    kind = "assistant";
+                    if (assistant.ContentRef is { } reference && artifacts is not null)
+                    {
+                        try
+                        {
+                            if (artifacts.Verify(reference.Hash, reference.Size))
+                                text = artifacts.GetText(reference.Hash);
+                        }
+                        catch (Exception error) when (error is InvalidDataException or IOException or ArgumentException)
+                        { text = null; }
+                    }
+                    break;
+                case ToolCallRequested request:
+                    kind = "tool"; text = request.ToolName; break;
+                case ToolCallSucceeded:
+                    kind = "tool receipt"; text = "succeeded"; break;
+                case ToolCallFailed failed:
+                    kind = "tool receipt"; text = failed.Cause; break;
+            }
+            if (kind is null || string.IsNullOrWhiteSpace(text)) continue;
+            text = new PiiRedactor().Redact(text);
+            if (text.Length > 1024) text = text[..1024] + "…";
+            messages.Add(new(evt.Sequence, kind, text, evt.EventId.ToString(), evt.RunId?.ToString(),
+                evt.TaskId?.ToString(), evt.LaneId?.ToString(), evt.TurnId?.ToString(),
+                evt.ExecutionId?.ToString(), evt.ToolCallId?.ToString()));
+        }
+        return messages.TakeLast(12).ToArray();
+    }
+
+    private static string TranscriptInput(string inputPartsJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(inputPartsJson);
+            return document.RootElement.ValueKind switch
+            {
+                JsonValueKind.String => document.RootElement.GetString() ?? "",
+                JsonValueKind.Array => string.Join(" ", document.RootElement.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.String).Select(item => item.GetString())),
+                _ => "",
+            };
+        }
+        catch (JsonException) { return ""; }
     }
 }

@@ -200,6 +200,14 @@ public sealed class InteractionOverlayModel
 
     public QuestionnaireOverlayModel? Questionnaire { get; }
 
+    public string? RunId { get; }
+
+    public string? TaskId { get; }
+
+    public string? LaneId { get; }
+
+    public string? ExecutionId { get; }
+
     public InteractionOverlayModel(string title, IReadOnlyList<string> options)
         : this(string.Empty, string.Empty, title, string.Empty, options, options)
     {
@@ -213,7 +221,8 @@ public sealed class InteractionOverlayModel
 
     public InteractionOverlayModel(string id, string kind, string title, string subject,
         IReadOnlyList<string> options, IReadOnlyList<string> optionIds,
-        QuestionnaireOverlayModel? questionnaire = null, string? defaultOptionId = null)
+        QuestionnaireOverlayModel? questionnaire = null, string? defaultOptionId = null,
+        string? runId = null, string? taskId = null, string? laneId = null, string? executionId = null)
     {
         Id = id;
         Kind = kind;
@@ -223,6 +232,10 @@ public sealed class InteractionOverlayModel
         OptionIds = optionIds;
         Questionnaire = questionnaire;
         DefaultOptionId = defaultOptionId ?? optionIds.FirstOrDefault() ?? string.Empty;
+        RunId = runId;
+        TaskId = taskId;
+        LaneId = laneId;
+        ExecutionId = executionId;
     }
 }
 
@@ -270,6 +283,11 @@ public sealed class ClientProjection
 
         var f = OmniCore.Protocol.JsonObj.Parse(evt.PayloadJson);
         var type = Get(f, "type");
+        if (Get(f, "conversationScope") is "child" or "ambiguous"
+            && type is "user_input.received" or "assistant_message.recorded" or "toolcall.requested"
+                or "toolcall.succeeded" or "toolcall.failed" or "toolcall.rejected"
+                or "toolcall.permission_denied" or "toolcall.cancelled" or "model_step.started")
+            return state;
         switch (type)
         {
             case "run.created":
@@ -367,7 +385,8 @@ public sealed class ClientProjection
         var title = kind == "BudgetExceeded" && ids.Contains("allow_quota", StringComparer.Ordinal)
             ? Label("interaction.included_quota.title", kind) : Label(prefix + "title", kind);
         return new InteractionOverlayModel(Get(f, "interactionId"), kind, title,
-            subject, labels, ids, questionnaire, Get(f, "defaultOption"));
+            subject, labels, ids, questionnaire, Get(f, "defaultOption"), Get(f, "runId"),
+            Get(f, "taskId"), Get(f, "laneId"), Get(f, "executionId"));
     }
 
     private string SubjectText(string json)

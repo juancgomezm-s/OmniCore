@@ -25,8 +25,13 @@ public sealed class ProtocolMapper
     }
 
     /// <summary>Eventos del protocolo para los eventos de dominio dados, en orden.</summary>
-    public IReadOnlyList<WireEnvelope> Map(IReadOnlyList<DomainEvent> events)
+    public IReadOnlyList<WireEnvelope> Map(IReadOnlyList<DomainEvent> events) => Map(events, null);
+
+    /// <summary>Maps events with canonical Run/Lane facts from the full journal for primary transcript attribution.</summary>
+    public IReadOnlyList<WireEnvelope> Map(IReadOnlyList<DomainEvent> events,
+        IReadOnlyList<DomainEvent>? attributionJournal)
     {
+        var conversationScopes = attributionJournal is null ? null : BuildConversationScopes(attributionJournal);
         var result = new List<WireEnvelope>();
         foreach (var evt in events)
         {
@@ -36,26 +41,81 @@ public sealed class ProtocolMapper
                 continue;
             }
 
-            var parts = new List<string>
+            var parts = new List<string>();
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            void Add(string key, string? value)
             {
-                JsonObj.Field("type", evt.Type.ToString()),
-                JsonObj.Field("seq", evt.Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture)),
-                JsonObj.Field("sessionId", evt.SessionId.ToString()),
-            };
-            if (evt.CorrelationId is not null)
-            {
-                parts.Add(JsonObj.Field("runId", evt.CorrelationId.ToString()));
+                if (value is not null && keys.Add(key)) parts.Add(JsonObj.Field(key, value));
             }
-
-            if (evt.Source is not null)
-            {
-                parts.Add(JsonObj.Field("source", _redaction.Redact(evt.Source)));
-            }
-
-            parts.AddRange(fields.Select(kv => JsonObj.Field(kv.Key, kv.Value)));
+            var legacyRun = evt.CorrelationId is { } correlation && conversationScopes?.ContainsKey(correlation) == true
+                ? correlation : null;
+            Add("type", evt.Type.ToString());
+            Add("seq", evt.Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            Add("sessionId", evt.SessionId.ToString());
+            Add("runId", (evt.RunId ?? legacyRun)?.ToString());
+            Add("source", evt.Source is null ? null : _redaction.Redact(evt.Source));
+            foreach (var field in fields) Add(field.Key, field.Value);
+            Add("taskId", evt.TaskId?.ToString());
+            Add("laneId", evt.LaneId?.ToString());
+            Add("turnId", evt.TurnId?.ToString());
+            Add("executionId", evt.ExecutionId?.ToString());
+            Add("toolCallId", evt.ToolCallId?.ToString());
+            if (evt.RunId is { } run && conversationScopes?.TryGetValue(run, out var scope) == true)
+                Add("conversationScope", scope.Classify(evt));
             result.Add(WireEnvelope.Event(evt.EventId.ToString(), "{" + string.Join(",", parts) + "}"));
         }
 
+        return result;
+    }
+
+    private sealed record RunConversationScope(TaskId? RootTask, LaneId? RootLane,
+        HashSet<TaskId> ChildTasks, HashSet<LaneId> ChildLanes, bool HasChildren)
+    {
+        internal string Classify(DomainEvent evt)
+        {
+            if (evt.LaneId is { } lane)
+            {
+                if (RootLane == lane) return "primary";
+                if (ChildLanes.Contains(lane)) return "child";
+                return "ambiguous";
+            }
+            if (evt.TaskId is { } task)
+            {
+                if (RootTask == task) return "primary";
+                if (ChildTasks.Contains(task)) return "child";
+                return "ambiguous";
+            }
+            return HasChildren ? "ambiguous" : "primary";
+        }
+    }
+
+    private Dictionary<RunId, RunConversationScope> BuildConversationScopes(IReadOnlyList<DomainEvent> journal)
+    {
+        var result = new Dictionary<RunId, RunConversationScope>();
+        var runs = journal.Where(evt => evt.RunId is not null).Select(evt => evt.RunId!)
+            .Distinct().ToArray();
+        foreach (var run in runs)
+        {
+            var own = journal.Where(evt => evt.RunId == run).ToArray();
+            var payloads = own.Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+            var tasks = payloads.Where(item => item.Payload is TaskCreated)
+                .Select(item => (item.Event, Task: (TaskCreated)item.Payload)).ToArray();
+            var rootTasks = tasks.Where(item => item.Task.ParentTaskId is null).ToArray();
+            TaskId? rootTask = rootTasks.Length == 1 ? rootTasks[0].Task.TaskId : null;
+            var lanes = payloads.Where(item => item.Payload is LaneCreated)
+                .Select(item => (item.Event, Lane: (LaneCreated)item.Payload)).ToArray();
+            var laneIds = lanes.Select(item => item.Lane.LaneId).ToHashSet();
+            var rootLanes = rootTask is null ? [] : lanes.Where(item => item.Lane.TaskId == rootTask).ToArray();
+            LaneId? rootLane = rootLanes.Length == 1 ? rootLanes[0].Lane.LaneId
+                : rootTask is null && laneIds.Count == 1 ? laneIds.Single() : null;
+            if (rootTask is null && rootLanes.Length == 1)
+                rootTask = rootLanes[0].Lane.TaskId;
+            var taskIds = tasks.Select(item => item.Task.TaskId).ToHashSet();
+            var childTasks = taskIds.Where(task => task != rootTask).ToHashSet();
+            var childLanes = laneIds.Where(lane => lane != rootLane).ToHashSet();
+            var hasChildren = childTasks.Count > 0 || childLanes.Count > 0;
+            result[run] = new(rootTask, rootLane, childTasks, childLanes, hasChildren);
+        }
         return result;
     }
 

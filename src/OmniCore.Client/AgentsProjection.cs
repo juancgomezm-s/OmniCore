@@ -51,6 +51,20 @@ public static class AgentPresentation
                 rows.Add(new(L("Delegaciones en espera: ", "Waiting delegations: ")
                     + string.Join(", ", capacity.WaitingDelegationIds), ThemeRole.Muted));
         }
+        if (snapshot.Heartbeat is { } aggregateHeartbeat)
+        {
+            rows.Add(new(L("Pulso agregado · ", "Aggregate heartbeat · ") + aggregateHeartbeat.State
+                + L(" · observados activos ", " · observed active ") + aggregateHeartbeat.ObservedActiveLanes
+                + L(" · espera capacidad ", " · capacity wait ") + aggregateHeartbeat.WaitingForCapacity
+                + L(" · join ", " · join ") + aggregateHeartbeat.WaitingForJoin
+                + L(" · supervisión ", " · supervision ") + aggregateHeartbeat.SupervisionWaitLanes,
+                aggregateHeartbeat.State == "Unknown" ? ThemeRole.Muted : ThemeRole.Info));
+            if (details)
+                rows.Add(new(L("Pulso fuente · ", "Heartbeat source · ") + aggregateHeartbeat.Source
+                    + (aggregateHeartbeat.LastProgressAt is { } progress
+                        ? " · " + progress.ToString("O", System.Globalization.CultureInfo.InvariantCulture)
+                        : L(" · hora desconocida", " · time unknown")), ThemeRole.Muted));
+        }
         foreach (var group in snapshot.FanOutGroups ?? Array.Empty<FanOutGroupSnapshot>())
         {
             rows.Add(new(L("Fan-out · ", "Fan-out · ") + group.Policy + " · " + group.State
@@ -68,7 +82,11 @@ public static class AgentPresentation
             var state = lane.LaneState switch {
                 "Queued" => L("en cola · sin worker", "queued · no worker"),
                 "Running" => lane.DelegationState == "Returned" ? L("resultado por evaluar", "result awaiting evaluation")
-                    : L("lane activa", "active lane"), "Blocked" => L("bloqueada", "blocked"),
+                    : lane.Heartbeat?.State is "ObservedActive" or "WaitingForCapacity" or "WaitingForMailbox"
+                        or "WaitingForJoin" or "SupervisionWait" or "WaitingForResponse" or "Reasoning" or "AnswerText" or "Tools" or "WaitingForApproval"
+                        ? L("lane observada activa", "lane observed active")
+                        : L("lane en curso · worker no observado", "lane in progress · worker not observed"),
+                "Blocked" => L("bloqueada", "blocked"),
                 "Completed" => L("completada", "completed"), "Cancelled" => L("cancelada", "cancelled"),
                 "Failed" => L("falló", "failed"), _ => lane.LaneState,
             };
@@ -92,12 +110,30 @@ public static class AgentPresentation
                     lane.WorkflowGateSatisfied == true ? ThemeRole.Success : ThemeRole.Attention));
             if (lane.WorkflowGateReason is { } workflowReason)
                 rows.Add(new(L("Workflow gate · ", "Workflow gate · ") + workflowReason, ThemeRole.Muted));
+            if (lane.Heartbeat is { } heartbeat && heartbeat.State is not ("Completed" or "Cancelled" or "Failed"))
+                rows.Add(new(L("Pulso · ", "Heartbeat · ") + heartbeat.State,
+                    heartbeat.State is "WaitingForCapacity" or "WaitingForResponse" or "Reasoning" or "Tools"
+                        ? ThemeRole.Attention : ThemeRole.Muted));
+            if (lane.ValidationDebts is { Count: > 0 } debts)
+            {
+                rows.Add(new(L("Deuda de validación · ", "Validation debt · ")
+                    + debts.Count + L(" pendiente(s)", " pending"), ThemeRole.Attention));
+                if (details)
+                    foreach (var debt in debts)
+                        foreach (var check in debt.MissingChecks)
+                            rows.Add(new("  " + debt.RequiredLevel + " · " + check, ThemeRole.Error));
+            }
             if (lane.PendingJoinIds is { Count: > 0 } joins) rows.Add(new("Join · " + string.Join(", ", joins), ThemeRole.Attention));
             if (!details) continue;
             rows.Add(new("Lane " + lane.LaneId, ThemeRole.Muted));
             rows.Add(new("Task " + lane.TaskId + " · " + lane.TaskState, ThemeRole.Muted));
             rows.Add(new("Profile " + lane.ProfileId + (lane.ProfileRevision is { } revision ? " · rev." + revision : " · legacy"), ThemeRole.Muted));
             if (lane.ExecutionId is { } execution) rows.Add(new("Execution " + execution + " · " + lane.ExecutionState, ThemeRole.Muted));
+            if (lane.Heartbeat is { } detailHeartbeat)
+                rows.Add(new("Heartbeat " + detailHeartbeat.State
+                    + (detailHeartbeat.TurnId is { } heartbeatTurn ? " · Turn " + heartbeatTurn : "")
+                    + (detailHeartbeat.LastProgressAt is { } progress ? " · " + progress.ToString("O", System.Globalization.CultureInfo.InvariantCulture) : " · unknown")
+                    + " · " + detailHeartbeat.Source, ThemeRole.Muted));
             if (lane.ParentExecutionId is { } parent) rows.Add(new("Parent " + parent, ThemeRole.Muted));
             if (lane.DelegationId is { } delegation) rows.Add(new("Delegation " + delegation + " · " + lane.DelegationState, ThemeRole.Muted));
             if (lane.Budget is { } budget)
@@ -123,6 +159,9 @@ public static class AgentPresentation
             if (lane.LastContextEventId is { } source) rows.Add(new("Context source " + source, ThemeRole.Muted));
             if (lane.SelectableContextItemIds is { Count: > 0 } items)
                 rows.Add(new(L("Selección disponible: ", "Available selection: ") + string.Join(", ", items), ThemeRole.Muted));
+            foreach (var transcript in lane.Transcript ?? Array.Empty<AgentTranscriptEntry>())
+                rows.Add(new(L("Transcripción · ", "Transcript · ") + transcript.Kind + " · " + transcript.Text,
+                    transcript.Kind == "tool receipt" ? ThemeRole.Info : ThemeRole.Muted));
         }
         if (rows.Count == 0) rows.Add(new(L("Sin lanes en este Run", "No lanes in this Run"), ThemeRole.Muted));
         return rows;

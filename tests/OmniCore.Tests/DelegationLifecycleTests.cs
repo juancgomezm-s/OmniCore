@@ -79,8 +79,21 @@ public sealed class DelegationLifecycleTests
             var root = fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run, _ => throw new InvalidOperationException("must not execute"), CancellationToken.None);
             Assert.Equal("WaitingForCapacity", root.Ack.Outcome?.Reason);
             Assert.Equal("WaitingForCapacity", Execute(fx, child).Outcome?.Reason);
+            using var rootWriterEntered = new ManualResetEventSlim();
+            var queuedRootWriter = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteExplorerTurn(fx.Session, fx.Run,
+                _ =>
+                {
+                    rootWriterEntered.Set();
+                    return new ExplorerTurn.TurnResult("writer after readers", StopReason.EndTurn, 0,
+                        new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ExplorerTurn.ToolUseTrace>(), null);
+                }, CancellationToken.None, readOnlyLane: false, waitForCapacity: true));
+            await System.Threading.Tasks.Task.Delay(150, TestContext.Current.CancellationToken);
+            Assert.False(rootWriterEntered.IsSet, "el root writer espera mientras la lane lectora conserva su lease");
             Assert.Equal("ok", Send(fx, "delegation.cancel", "\"delegationId\":\"" + child.DelegationId + "\"").Status);
             await dispatch.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            var rootWrite = await queuedRootWriter.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.True(rootWriterEntered.IsSet);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, rootWrite.Ack.Outcome?.Kind);
             Assert.Single(fx.Payloads.OfType<AgentExecutionFailed>());
             var intent = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), e => fx.Codecs.Decode(e) is DelegationCancellationRequested);
             Assert.IsType<CommandCausation>(intent.Causation);
@@ -607,6 +620,75 @@ public sealed class DelegationLifecycleTests
         Assert.Equal(2, Assert.Single(fx.Payloads.OfType<ExecutionJoinResolved>()).SatisfyingExecutionIds.Count);
         Assert.Equal(TaskState.Running, TaskGraphProjection.Replay(fx.Codecs,
             fx.Store.ReadFrom(fx.Session, 1)).Get(fx.RootTask)!.State);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Cancelling_a_child_without_an_open_step_finishes_it_while_sibling_step_stays_open()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        fx.Grant(maxAgents: 3);
+        var cancelled = Queue(fx);
+        var sibling = Queue(fx);
+        using var cancelledEntered = new ManualResetEventSlim();
+        using var siblingStepEntered = new ManualResetEventSlim();
+        var cancelledDispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(cancelled.DelegationId,
+            (_, token) =>
+            {
+                cancelledEntered.Set();
+                token.WaitHandle.WaitOne();
+                token.ThrowIfCancellationRequested();
+                throw new InvalidOperationException("Cancellation was expected.");
+            }, CancellationToken.None), TestContext.Current.CancellationToken);
+        Assert.True(cancelledEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+        using var releaseSibling = new ManualResetEventSlim();
+        var siblingDispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(sibling.DelegationId,
+            (work, token) =>
+            {
+                var turn = TurnId.New();
+                using var scope = ExecutionScope.Begin(work.Scope with { TurnId = turn });
+                var stream = new EventStream(fx.Store, fx.Codecs, work.Session);
+                stream.Append(new TurnStarted(turn, work.Scope.LaneId!), DurabilityClass.Barrier);
+                stream.Append(new ModelStepStarted(turn, 0, "fixture-model", 4096, "None", null, null, null),
+                    DurabilityClass.Barrier);
+                siblingStepEntered.Set();
+                releaseSibling.Wait(token);
+                token.ThrowIfCancellationRequested();
+                return new ExplorerTurn.TurnResult("unexpected", StopReason.EndTurn, 1,
+                    new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ExplorerTurn.ToolUseTrace>(), null);
+            }, CancellationToken.None), TestContext.Current.CancellationToken);
+        Assert.True(siblingStepEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+        try
+        {
+            var cancellation = Send(fx, "delegation.cancel", "\"delegationId\":\"" + cancelled.DelegationId + "\"");
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, cancellation.Outcome?.Kind);
+            await cancelledDispatch.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            var journal = fx.Store.ReadFrom(fx.Session, 1);
+            var payloads = journal.Select(fx.Codecs.Decode).ToArray();
+            Assert.Contains(payloads.OfType<AgentExecutionFailed>(), item => item.LaneId == cancelled.ChildLaneId);
+            Assert.Contains(payloads.OfType<TaskCancelled>(), item => item.TaskId == cancelled.ChildTaskId);
+            Assert.Contains(payloads.OfType<LaneCancelled>(), item => item.LaneId == cancelled.ChildLaneId);
+            Assert.Contains(payloads.OfType<DelegationFailed>(), item => item.DelegationId == cancelled.DelegationId);
+
+            Assert.DoesNotContain(payloads.OfType<AgentExecutionFailed>(), item => item.LaneId == sibling.ChildLaneId);
+            Assert.DoesNotContain(payloads.OfType<TaskCancelled>(), item => item.TaskId == sibling.ChildTaskId);
+            Assert.DoesNotContain(payloads.OfType<LaneCancelled>(), item => item.LaneId == sibling.ChildLaneId);
+            Assert.DoesNotContain(payloads.OfType<DelegationFailed>(), item => item.DelegationId == sibling.DelegationId);
+            Assert.Contains(journal, evt => evt.LaneId == sibling.ChildLaneId
+                && fx.Codecs.Decode(evt) is ModelStepStarted);
+            Assert.Equal(TaskState.Running, TaskGraphProjection.Replay(fx.Codecs, journal).Get(sibling.ChildTaskId)!.State);
+            Assert.Equal(LaneState.Running, LaneProjection.Replay(fx.Codecs, journal).StateOf(sibling.ChildLaneId));
+        }
+        finally
+        {
+            releaseSibling.Set();
+            Send(fx, "delegation.cancel", "\"delegationId\":\"" + sibling.DelegationId + "\"");
+            try { await siblingDispatch.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken); }
+            catch (Exception) { }
+        }
     }
 
     [Theory]

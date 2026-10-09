@@ -11,7 +11,8 @@ public enum ChatActivityPhase
 
 /// <summary>Content-free, non-canonical observation. Sequence is scoped to SessionId, not a journal sequence.</summary>
 public sealed record ChatActivityEvent(string SessionId, string TurnId, string? RunId, string? LaneId,
-    long Sequence, ChatActivityPhase Phase, bool FirstAnswerTextReceived, DateTimeOffset AsOf, string Source);
+    long Sequence, ChatActivityPhase Phase, bool FirstAnswerTextReceived, DateTimeOffset AsOf, string Source,
+    bool ObservedInProcess = false);
 
 public sealed record ContextComponent(string Kind, Metric<long?> Tokens);
 
@@ -19,6 +20,8 @@ public sealed record ContextComponent(string Kind, Metric<long?> Tokens);
 public sealed record SessionContextMeasurement(string SessionId, string TurnId, int StepIndex, string ModelId,
     Metric<long?> Tokens, Metric<long?> Capacity, Metric<long?> UsableBudget, Metric<double?> UsedPercent,
     IReadOnlyList<ContextComponent> Components, Metric<long?> ReportedReasoningTokens, DateTimeOffset AsOf);
+public sealed record LaneContextSnapshot(string TurnId, string? RunId, string? LaneId,
+    SessionContextMeasurement? Context, SessionContextMeasurement? PendingContext);
 
 /// <summary>Cache counters are breakdowns of Input, reasoning is a breakdown of Output; Total never adds them twice.</summary>
 public sealed record ConversationUsageMeasurement(string SessionId, Metric<TokenTotals> Tokens, Metric<long?> Total,
@@ -39,7 +42,8 @@ public sealed record ProviderQuotaSnapshot(string ProviderId, string? AccountId,
 public sealed record SessionObservabilitySnapshot(string SessionId, long BasedOnJournalSequence, DateTimeOffset AsOf,
     bool Updating, SessionContextMeasurement? Context, SessionContextMeasurement? PendingContext,
     ConversationUsageMeasurement Consumption, IReadOnlyList<ProviderQuotaSnapshot> Quotas,
-    IReadOnlyList<ChatActivityEvent> Activities, long ActivitySequence);
+    IReadOnlyList<ChatActivityEvent> Activities, long ActivitySequence,
+    IReadOnlyList<LaneContextSnapshot>? LaneContexts = null);
 
 public static class ObservabilityJson
 {
@@ -58,4 +62,5 @@ public static class ObservabilityJson
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, UseStringEnumConverter = true)]
 [JsonSerializable(typeof(SessionObservabilitySnapshot))]
+[JsonSerializable(typeof(LaneContextSnapshot))]
 internal partial class ObservabilityJsonContext : JsonSerializerContext;

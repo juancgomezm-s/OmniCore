@@ -106,10 +106,166 @@ public sealed class CliEndToEndTests
         });
     }
 
+    [Fact]
+    public async Task Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers()
+    {
+        await InIsolatedCli(async (workspace, config, _, provider) =>
+        {
+            const string profile = "0199a000-0000-7000-8000-000000000021";
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), """
+                defaultProfile: 0199a000-0000-7000-8000-000000000021
+                agentProfiles:
+                  reader:
+                    id: 0199a000-0000-7000-8000-000000000021
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: []
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read]
+                """);
+
+            var readersEntered = new CountdownEvent(2);
+            using var releaseFirstReader = new ManualResetEventSlim(false);
+            using var releaseSecondReader = new ManualResetEventSlim(false);
+            var bothReadersAtProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var firstReaderAtProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var principalReachedProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            static string WithUsage(string response) => response.Replace("data: [DONE]",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]", StringComparison.Ordinal);
+            provider.RespondWith((index, _) =>
+            {
+                if (index == 0) return WithUsage(TextResponse("stable root context"));
+                if (index > 2)
+                {
+                    principalReachedProvider.TrySetResult(true);
+                    return WithUsage(TextResponse("root writer reached provider"));
+                }
+                readersEntered.Signal();
+                if (index == 1) firstReaderAtProvider.TrySetResult(true);
+                if (readersEntered.CurrentCount == 0) bothReadersAtProvider.TrySetResult(true);
+                var release = index == 1 ? releaseFirstReader : releaseSecondReader;
+                if (!release.Wait(TimeSpan.FromSeconds(25)))
+                    return WithUsage(TextResponse("reader fixture timeout"));
+                return WithUsage(TextResponse("reader completed " + index));
+            });
+
+            var runtime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(runtime);
+            var diagnostics = new List<string>();
+            Assert.Equal(0, await host.ExecuteAsync("ROOT CONTEXT: stable", diagnostics.Add,
+                TestContext.Current.CancellationToken));
+            var client = runtime.Connect(TestContext.Current.CancellationToken);
+            var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+            Assert.Equal("ok", trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
+                "allowedModes":"plan,act,orq","maxAgents":3,"maxDepth":1,"maxTurns":20,
+                "maxToolCalls":20,"maxElapsedSeconds":3600,"maxSpendUsd":1}
+                """), TestContext.Current.CancellationToken).Status);
+            var before = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
+            var rootBefore = Assert.Single(before.Lanes);
+            var rootRun = before.RunId ?? throw new InvalidDataException("Root Run was not projected.");
+            var rootContext = rootBefore.LastContextEventId
+                ?? throw new InvalidDataException("Root context was not available for reader admission.");
+            var selectable = rootBefore.SelectableContextItemIds
+                ?? throw new InvalidDataException("Root selected context was not available.");
+
+            string CreateReader(string objective)
+            {
+                var request = new DelegationCreateRequest(profile, rootContext, objective, selectable,
+                    8192, 2, 4, 200_000, 0m);
+                var ack = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
+                    TestContext.Current.CancellationToken);
+                Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
+                return AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!
+                    .Lanes.Single(item => item.ParentTaskId is not null && item.DelegationId is not null
+                        && item.Objective == objective).DelegationId!;
+            }
+
+            var firstId = CreateReader("first live reader");
+            var secondId = CreateReader("second live reader");
+            using var firstCancellation = new CancellationTokenSource();
+            using var secondCancellation = new CancellationTokenSource();
+            var firstDiagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var secondDiagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            Task<int>? first = null;
+            Task<int>? second = null;
+
+            try
+            {
+                first = Task.Run(() => runtime.DelegationAsync(firstId, firstDiagnostics.Enqueue, firstCancellation.Token));
+                await firstReaderAtProvider.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+                second = Task.Run(() => runtime.DelegationAsync(secondId, secondDiagnostics.Enqueue, secondCancellation.Token));
+                await bothReadersAtProvider.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+                var live = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
+                Assert.Equal(2, live.Capacity!.Active);
+                Assert.Equal(3, live.Capacity.Maximum);
+                Assert.False(live.Capacity.WriterActive);
+                Assert.Equal(rootRun, live.RunId);
+                Assert.Equal(rootContext, Assert.Single(live.Lanes, lane => lane.ParentTaskId is null).LastContextEventId);
+
+                // The same Host refuses a principal writer without waiting or invoking its
+                // callback while both production DelegationAsync readers own their leases.
+                var server = Assert.IsType<OmniServer>(client);
+                var rootWriterCalls = 0;
+                var rootWrite = server.ExecuteExplorerTurn(server.LastSessionId()!, server.LastRunId()!,
+                    _ =>
+                    {
+                        Interlocked.Increment(ref rootWriterCalls);
+                        throw new InvalidOperationException("Root writer must remain deferred while readers live.");
+                    }, CancellationToken.None, readOnlyLane: false);
+                Assert.Equal("WaitingForCapacity", rootWrite.Ack.Outcome?.Reason);
+                Assert.Equal(0, rootWriterCalls);
+                Assert.False(principalReachedProvider.Task.IsCompleted);
+                Assert.Equal(3, provider.RequestCount); // root context + exactly two overlapping child requests
+
+                // Settle the sibling's known provider receipt before cancelling the first
+                // invocation. Its later cancellation must not poison the already-settled Lane.
+                releaseSecondReader.Set();
+                var secondResult = await second.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+                Assert.True(secondResult == 0, "Second reader failed before independent cancellation: "
+                    + string.Join(" | ", secondDiagnostics));
+                Assert.Equal(1, AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!
+                    .Capacity!.Active);
+
+                firstCancellation.Cancel();
+                releaseFirstReader.Set();
+                var firstResult = await first.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+                Assert.NotEqual(0, firstResult);
+                var afterReaders = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
+                Assert.Contains(afterReaders.Lanes, item => item.DelegationId == firstId
+                    && item.ExecutionState == "Started" && item.DelegationState == "Accepted"
+                    && item.Heartbeat?.State == "Cancelled");
+                Assert.False(principalReachedProvider.Task.IsCompleted);
+                Assert.Equal(3, provider.RequestCount);
+                var final = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
+                Assert.Equal(rootRun, final.RunId);
+                Assert.Equal(rootContext, Assert.Single(final.Lanes, lane => lane.ParentTaskId is null).LastContextEventId);
+            }
+            finally
+            {
+                firstCancellation.Cancel();
+                secondCancellation.Cancel();
+                releaseFirstReader.Set();
+                releaseSecondReader.Set();
+                var workers = new[] { first, second }.Where(task => task is not null).Cast<Task<int>>().ToArray();
+                try { await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(15)); }
+                catch (Exception) { }
+            }
+        });
+    }
+
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Typed_workflow_runs_real_filesystem_and_verifier_tools_and_reworks_unconnected_module(bool connectModule)
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task Typed_workflow_runs_real_filesystem_and_verifier_tools_and_reworks_unconnected_module(
+        bool connectModule, bool injectPostVerificationMutation)
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
@@ -246,6 +402,37 @@ public sealed class CliEndToEndTests
 
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.ProcessSandboxStrengthForTests = SandboxStrength.Weak;
+            var injectedMutation = 0;
+            if (injectPostVerificationMutation)
+            {
+                runtime.BeforeWorkflowCompletionGateForTests = (server, authorization) =>
+                {
+                    if (Interlocked.Exchange(ref injectedMutation, 1) != 0) return;
+                    var store = server.AcquireStore();
+                    var codecs = server.AcquireCodecs();
+                    var session = authorization.Session;
+                    var journal = store.ReadFrom(session, 1);
+                    var own = journal.Where(evt => evt.RunId == authorization.Run).ToArray();
+                    var rootTask = Assert.Single(own.Select(codecs.Decode).OfType<TaskCreated>(),
+                        task => task.ParentTaskId is null);
+                    var rootLane = Assert.Single(own.Select(codecs.Decode).OfType<LaneCreated>(),
+                        lane => lane.TaskId == rootTask.TaskId);
+                    var rootExecution = Assert.Single(own.Select(codecs.Decode).OfType<AgentExecutionStarted>(),
+                        execution => execution.LaneId == rootLane.LaneId);
+                    var scope = new ExecutionScopeState(authorization.Run, rootTask.TaskId, rootLane.LaneId,
+                        ExecutionId: rootExecution.ExecutionId);
+                    new EventStream(store, codecs, session).AppendBatch(
+                        [new ToolCallRequested(ToolCallId.New(), "late-sibling", "filesystem.patch", "{}")],
+                        DurabilityClass.Barrier, [scope]);
+
+                    var afterMutation = store.CurrentSequence(session);
+                    Assert.Throws<InvalidOperationException>(() => server.CompleteWorkflowCompletionGate(authorization));
+                    var afterFirstDebt = store.CurrentSequence(session);
+                    Assert.True(afterFirstDebt > afterMutation, "The rejected completion gate must persist validation debt.");
+                    Assert.Throws<InvalidOperationException>(() => server.CompleteWorkflowCompletionGate(authorization));
+                    Assert.Equal(afterFirstDebt, store.CurrentSequence(session));
+                };
+            }
             var processEnvironmentRoot = Path.Combine(workspace, ".workflow-process-env");
             var testAppData = Path.Combine(processEnvironmentRoot, "roaming");
             var testLocalAppData = Path.Combine(processEnvironmentRoot, "local");
@@ -307,7 +494,8 @@ public sealed class CliEndToEndTests
                     Environment.SetEnvironmentVariable("APPDATA", previousAppData);
                     Environment.SetEnvironmentVariable("LOCALAPPDATA", previousLocalAppData);
                 }
-                Assert.True(result.Code == (connectModule ? 0 : 1),
+                var expectedCode = connectModule && !injectPostVerificationMutation ? 0 : 1;
+                Assert.True(result.Code == expectedCode,
                     $"Workflow returned {result.Code}; output: {result.Output}\nDiagnostics: {string.Join(" | ", diagnostics)}"
                     + $"\nProvider requests={provider.RequestCount}; keys={string.Join(",", requests.Keys.Order())}"
                     + $"\nJournal tail={string.Join(" | ", ReadCurrentSessionEvents(workspace).TakeLast(12).Select(item => item.GetType().Name))}"
@@ -316,7 +504,9 @@ public sealed class CliEndToEndTests
                     + $"\nModule={(File.Exists(Path.Combine(projectDirectory, "FeatureModule.cs")) ? File.ReadAllText(Path.Combine(projectDirectory, "FeatureModule.cs")) : "<missing>")}"
                     + $"\nFinal provider request={requests.OrderBy(pair => pair.Key).LastOrDefault().Value}"
                     + $"\nEvent details={string.Join(" | ", ReadCurrentSessionJournalEvents(workspace).TakeLast(18).Select(evt => evt.Sequence + ":" + EventCodecs.Create().Decode(evt)))}");
-                Assert.Contains(connectModule ? "Workflow completed" : "ReworkRequested", result.Output,
+                var expectedOutput = connectModule && !injectPostVerificationMutation
+                    ? "Workflow completed" : !connectModule ? "ReworkRequested" : "Workflow gate remains open";
+                Assert.Contains(expectedOutput, result.Output,
                     StringComparison.OrdinalIgnoreCase);
                 Assert.Equal(connectModule, File.ReadAllText(Path.Combine(projectDirectory, "Program.cs"))
                     .Contains("FeatureModule.Initialize", StringComparison.Ordinal));
@@ -338,7 +528,7 @@ public sealed class CliEndToEndTests
                 Assert.Equal(connectModule ? PlanItemState.Completed : PlanItemState.Blocked, stageItems[^1].State);
                 var completionGate = Assert.Single(plan.Items(), item =>
                     item.Metadata.ContainsKey("workflow.gate.workflow"));
-                if (connectModule) Assert.Equal(PlanItemState.Completed, completionGate.State);
+                if (connectModule && !injectPostVerificationMutation) Assert.Equal(PlanItemState.Completed, completionGate.State);
                 else Assert.NotEqual(PlanItemState.Completed, completionGate.State);
                 var produced = events.OfType<AgentResultProduced>().ToArray();
                 Assert.Equal(3, produced.Length);
@@ -354,7 +544,7 @@ public sealed class CliEndToEndTests
                 Assert.Equal(!connectModule,
                     events.OfType<ToolCallFailed>().Any(item => item.ToolCallId == verifier.ToolCallId));
                 Assert.True(requests.Count >= (connectModule ? 10 : 9));
-                if (connectModule)
+                if (connectModule && !injectPostVerificationMutation)
                 {
                     var providerCalls = provider.RequestCount;
                     var modelSteps = events.OfType<ModelStepStarted>().Count();
@@ -366,6 +556,38 @@ public sealed class CliEndToEndTests
                     var retryEvents = ReadCurrentSessionEvents(workspace);
                     Assert.Equal(modelSteps, retryEvents.OfType<ModelStepStarted>().Count());
                     Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
+                }
+                if (injectPostVerificationMutation)
+                {
+                    var debts = events.OfType<ValidationDebtCreated>().Where(item =>
+                        item.Debt.Scope.RunId == rootRun.RunId
+                        && item.Debt.RequiredLevel == ValidationLevel.Integration).ToArray();
+                    var debt = Assert.Single(debts);
+                    Assert.Contains("stale", debt.Debt.MissingChecks.Single(), StringComparison.OrdinalIgnoreCase);
+                    Assert.Single(events.OfType<ValidationStateRecorded>(), item =>
+                        item.ExecutionId == debt.ExecutionId && item.State.Status == ValidationStatus.Failed
+                        && item.State.Level == ValidationLevel.Integration);
+                    var snapshot = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
+                    var verifyLane = Assert.Single(snapshot.Lanes, lane => lane.WorkflowStage == "Verify");
+                    Assert.Single(verifyLane.ValidationDebts!);
+                    Assert.Contains("stale", verifyLane.ValidationDebts![0].MissingChecks.Single(),
+                        StringComparison.OrdinalIgnoreCase);
+                    Assert.False(verifyLane.IntegrationVerified);
+                    Assert.False(verifyLane.IntegrationValidationPassed);
+                    Assert.Equal(1, injectedMutation);
+                    var providerCalls = provider.RequestCount;
+                    var modelSteps = events.OfType<ModelStepStarted>().Count();
+                    var toolCalls = events.OfType<ToolCallRequested>().Count();
+                    var retry = await Run(command);
+                    Assert.Equal(1, retry.Code);
+                    Assert.Equal(providerCalls, provider.RequestCount);
+                    var retryEvents = ReadCurrentSessionEvents(workspace);
+                    Assert.Equal(modelSteps, retryEvents.OfType<ModelStepStarted>().Count());
+                    Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
+                    Assert.Single(retryEvents.OfType<ValidationDebtCreated>());
+                    Assert.Single(retryEvents.OfType<ValidationStateRecorded>(), item =>
+                        item.State.Status == ValidationStatus.Failed
+                        && item.State.Level == ValidationLevel.Integration);
                 }
             }
             finally { CliApp.UseRuntimeForTests(previousRuntime); }

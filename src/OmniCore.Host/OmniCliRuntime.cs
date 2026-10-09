@@ -31,6 +31,7 @@ public sealed class OmniCliRuntime
     private bool _providerDeprecationShown;
     internal SandboxStrength ProcessSandboxStrengthForTests { get; set; } = SandboxStrength.Strong;
     internal Func<OmniCore.Abstractions.IProcessRuntime>? ProcessRuntimeFactoryForTests { get; set; }
+    internal Action<OmniServer, WorkflowRuntimeAuthorization>? BeforeWorkflowCompletionGateForTests { get; set; }
 
     private OmniCliRuntime(string workspaceRoot, Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota)
     {
@@ -395,6 +396,7 @@ public sealed class OmniCliRuntime
                     server.AcquireCodecs());
                 if (!evidence.Passed)
                 {
+                    server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
                     diagnostics($"Workflow stopped at {stage}: {evidence.Reason}");
                     return 1;
                 }
@@ -402,6 +404,7 @@ public sealed class OmniCliRuntime
                 previousCompletionSequence = own.Single(evt => evt.TaskId == contract.Task
                     && server.AcquireCodecs().Decode(evt) is TaskCompleted).Sequence;
             }
+            BeforeWorkflowCompletionGateForTests?.Invoke(server, authorization);
             server.CompleteWorkflowCompletionGate(authorization);
             diagnostics("Workflow completed: Explore, Implement, and Verify are accepted and reconciled in the Plan.");
             return 0;
@@ -1357,13 +1360,13 @@ public sealed class OmniCliRuntime
                     subsequentTurnFactory: reasoningResolution?.Source == ReasoningSelectionSource.TurnBoost
                         ? BuildSubsequentActTurn : null,
                     turnBoostId: turnBoostId ?? reasoningResolution?.TurnBoostId,
-                    turnBoostConsumed: turnBoostConsumed);
+                    turnBoostConsumed: turnBoostConsumed, delegationId: delegation?.DelegationId);
             }
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
                     promptOrigin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
-                cancellationToken, readOnlyLane: true);
+                cancellationToken, readOnlyLane: true, delegationId: delegationId);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
@@ -1440,7 +1443,7 @@ public sealed class OmniCliRuntime
                         approvedInstruction,
                         sessionId, runId, laneId, approvedState, workspaceConfig.Settings?.Gates, restrictions,
                         server, artifacts, audit, interactionResponder, interactive, locale, cancellationToken,
-                        instructionSnapshot: approvedSnapshot);
+                        instructionSnapshot: approvedSnapshot, delegationId: delegation?.DelegationId);
                 }
             }
 
@@ -1483,7 +1486,7 @@ public sealed class OmniCliRuntime
         string locale, CancellationToken cancellationToken, string? origin = null,
         Func<InteractionRequested, string?>? acceptanceResponder = null,
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
-        Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
+        Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null)
     {
         var hasExternalGates = gateConfiguration is { Build: not null } or { Test: not null };
         var hasAcceptance = gateConfiguration?.Acceptance == true;
@@ -1504,7 +1507,7 @@ public sealed class OmniCliRuntime
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => activeTurn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
                     token, origin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
-                cancellationToken, readOnlyLane: false);
+                cancellationToken, readOnlyLane: false, delegationId: delegationId, waitForCapacity: true);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null

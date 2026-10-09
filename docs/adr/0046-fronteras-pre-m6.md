@@ -376,6 +376,40 @@ mailbox/wake, recuperación de ejecuciones inciertas y formularios/transcript de
 inspector. Tampoco se adelantan escritura aislada M7 ni Memory M8/M10.
 Evidencia: [ciclo de delegación](../validation/delegation-lifecycle-20261008.txt).
 
+### Estado de implementación M6 — checkpoint previo a validación integral (2026-10-08)
+
+Este checkpoint actualiza los pendientes anteriores, que se conservan como estados
+históricos. La implementación ya incluye scheduler compartido con prioridad/FIFO y
+leases de lectura/escritura; límites durables de Run/Task con reservas SQLite para
+uso y contadores; grupos FanOut/FanIn agregado y reconciliación determinista tras
+reapertura; handshake, supervisor en proceso vía `IOmniClient`, política `Wait`,
+mailbox con ACK/Wake atribuibles a receipts; y consulta de capacidad, actividad,
+esperas y transcript filtrado por Lane. La actividad y sus heartbeats son
+observaciones transientes del Host; el replay de un Turn incompleto informa
+ownership/liveness desconocida y no adopta una ejecución ni reenvía al provider.
+
+El workflow tipado conecta el dispatcher CLI/TUI con las etapas Explore, Implement
+y Verify, el Plan durable, herramientas del pipeline normal, dispositions y el
+completion gate. Los checks declarados se ejecutan como procesos reales en el
+workspace temporal; una integración sin conexión observable solicita Rework. La
+evidencia de Verify se vuelve a validar frente al journal/workspace al cerrar; si
+está obsoleta conserva sus hechos históricos y deja deuda visible sin completar el
+Plan. Las capacidades de cada etapa limitan la boundary efectiva, y los grants,
+routing, presupuestos, perfiles y leases siguen revalidándose en sus fronteras.
+
+La evidencia operativa cubre un solo Host/store. No acredita leases entre Hosts o
+procesos (M9), ejecución incierta reiniciada, aislamiento de TaskPacket/worktrees
+(M7), Memory (M8/M10), políticas lingüísticas/riesgo (M7) ni despliegue. En la
+prueba de cancelación con otro hijo vivo, el receipt del lector que continúa se
+liquida antes de cancelar al primero. El primer hijo conserva `Started/Accepted`
+con `TurnInterrupted` cuando su propio `ModelStepStarted` carece de receipt; no se
+cuenta uso cero ni se publica una disposition terminal falsa.
+
+La implementación queda congelable para revisión, pero este ADR no declara cerrado
+M6 todavía. Falta la validación final del build, pruebas de arquitectura, suite
+integral y regresión M4 serial en el estado congelado. La evidencia focal y las
+limitaciones están en [el acta del checkpoint M6](../validation/m6-implementation-checkpoint-20261008.md).
+
 ## Criterios de salida de M5.5
 
 Deben quedar cubiertos por tests deterministas:

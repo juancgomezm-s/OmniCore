@@ -211,7 +211,10 @@ public sealed partial class OmniServer
             if (records.Records["delegation:" + work.Delegation.DelegationId].Phase != PreM6RecordPhase.Accepted) return;
             // Preserve an unsettled provider/tool receipt as recovery evidence; never falsely settle it.
             var own = journal.Where(e => e.RunId == work.Run).ToArray();
-            if (HasOpenModelStep(own) || HasOpenToolCall(own)) return;
+            // A sibling may still be inside its provider/tool boundary. Preserve uncertain
+            // receipts for this execution only; run-wide ownership would strand a cancelled
+            // child Accepted merely because another Lane remains active.
+            if (HasOpenModelStep(own, work.Scope.LaneId!) || HasOpenToolCall(own, work.Scope.LaneId!)) return;
             var facts = own.Select(_codecs.Decode).ToArray();
             var childId = work.Scope.ExecutionId!;
             var bindingHistory = records.Records.Values.Where(history => history.OwnerExecutionId == childId)

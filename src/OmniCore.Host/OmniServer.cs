@@ -567,7 +567,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var result = new List<WireEnvelope>();
         if (_lastSessionId is not null)
         {
-            result.AddRange(new ProtocolMapper(_codecs, _artifacts).Map(_store.ReadFrom(_lastSessionId, Math.Max(1, fromSequence))));
+            var journal = _store.ReadFrom(_lastSessionId, 1);
+            var events = journal.Where(evt => evt.Sequence >= Math.Max(1, fromSequence)).ToArray();
+            result.AddRange(new ProtocolMapper(_codecs, _artifacts).Map(events, journal));
         }
 
         result.AddRange(_events);
@@ -1746,7 +1748,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 : FilesJson.Encode(ChangedFilesReader.ReadDiff(_store, _codecs, _lastSessionId, name[10..], _artifacts)));
         if (name == "agents")
             return new SessionQueryResult(name, _lastSessionId is null ? "null"
-                : AgentsJson.Encode(AgentLaneReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _artifacts)));
+                : AgentsJson.Encode(AgentLaneReader.Read(_store, _codecs, _lastSessionId, _lastRunId,
+                    _artifacts, Observability.Activities(_lastSessionId))));
         if (name == "sessionObservability" || name.StartsWith("sessionObservability:", StringComparison.Ordinal))
         {
             if (_lastSessionId is null) return new SessionQueryResult("sessionObservability", "null");
@@ -2470,7 +2473,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     internal (ExplorerTurn.TurnResult? Result, CommandAck Ack, Exception? Failure,
         InternalCommandResult? PolicyTransition) ExecuteExplorerTurn(SessionId sessionId,
         RunId runId, Func<CancellationToken, ExplorerTurn.TurnResult> execute,
-        CancellationToken cancellationToken, bool readOnlyLane = false)
+        CancellationToken cancellationToken, bool readOnlyLane = false, DelegationId? delegationId = null,
+        bool waitForCapacity = false)
     {
         ArgumentNullException.ThrowIfNull(execute);
         var ambientCommand = CausationScope.Current as CommandCausation;
@@ -2478,13 +2482,21 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var messageId = commandId.Value.ToString();
         long? sequenceBefore = null;
         AgentCapacity.Lease? capacity = null;
+        var ownsDelegationLease = delegationId is { } owned
+            && AgentCapacity.For(_store).IsActive(sessionId, runId, owned);
         try
         {
             sequenceBefore = _store.CurrentSequence(sessionId);
-            capacity = AgentCapacity.For(_store).TryAcquire(sessionId, runId, null,
-                MaxAgentsFor(sessionId, runId), readOnlyLane ? 0 : 1000, readOnlyLane,
-                cancellationToken);
-            if (capacity is null)
+            if (!ownsDelegationLease)
+            {
+                var scheduler = AgentCapacity.For(_store);
+                capacity = waitForCapacity
+                    ? scheduler.Acquire(sessionId, runId, null, MaxAgentsFor(sessionId, runId), 0,
+                        readOnlyLane, cancellationToken)
+                    : scheduler.TryAcquire(sessionId, runId, null, MaxAgentsFor(sessionId, runId), 0,
+                        readOnlyLane, cancellationToken);
+            }
+            if (!ownsDelegationLease && capacity is null)
                 return (null, CommandOutcomeAck(messageId, "ok", null,
                     RuntimeCommandOutcome.Deferred("WaitingForCapacity"), sessionId,
                     sequenceBefore.Value, commandId), null, null);

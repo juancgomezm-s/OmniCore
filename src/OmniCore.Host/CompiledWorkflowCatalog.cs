@@ -492,7 +492,7 @@ public static class WorkflowStageEvidenceEvaluator
     private static bool IsPotentiallyMutatingTool(string toolName) => toolName switch
     {
         "filesystem.read" or "filesystem.search" or "filesystem.list" or "reference.resolve"
-            or "core.agents.mailbox.receive" or "dyn.core.verify_integration" => false,
+            or "core.agents.mailbox.receive" => false,
         _ => true,
     };
 

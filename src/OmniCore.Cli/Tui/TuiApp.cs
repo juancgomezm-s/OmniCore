@@ -19,6 +19,7 @@ public sealed class TuiApp
     private readonly ClientProjection _projection;
     private readonly SessionSidebarProjection _sidebarProjection = new();
     private readonly AgentsProjection _agents = new();
+    private DateTimeOffset _agentsPolledAt;
     private readonly ChangedFilesProjection _files = new();
     private SidebarPreferencesSnapshot _sidebarSettings = new("", new(), []);
     private DateTimeOffset _sidebarSettingsPolledAt;
@@ -73,6 +74,8 @@ public sealed class TuiApp
     private readonly ITuiTurnHost? _turnHost;
     private CancellationTokenSource? _turnCancellation;
     private Task? _turnTask;
+    private readonly Dictionary<string, (CancellationTokenSource Cancellation, Task Task)> _delegationTasks =
+        new(StringComparer.OrdinalIgnoreCase);
     private bool _turnBusy;
     private string? _pendingEscalationResume;
     private string? _pendingQuotaResume;
@@ -183,6 +186,26 @@ public sealed class TuiApp
                 var pendingCancellation = _turnCancellation;
                 _ = _turnTask!.ContinueWith(_ => pendingCancellation?.Dispose(), TaskScheduler.Default);
             }
+            var delegations = _delegationTasks.Values.ToArray();
+            foreach (var delegation in delegations)
+                try { delegation.Cancellation.Cancel(); } catch (ObjectDisposedException) { }
+            var delegationsStopped = delegations.Length == 0;
+            if (delegations.Length > 0)
+            {
+                try { delegationsStopped = Task.WhenAll(delegations.Select(item => item.Task))
+                    .Wait(TimeSpan.FromSeconds(10)); }
+                catch (AggregateException) { delegationsStopped = true; }
+            }
+            foreach (var delegation in delegations)
+            {
+                if (delegationsStopped) delegation.Cancellation.Dispose();
+                else
+                {
+                    var pendingCancellation = delegation.Cancellation;
+                    _ = delegation.Task.ContinueWith(_ => pendingCancellation.Dispose(), TaskScheduler.Default);
+                }
+            }
+            _delegationTasks.Clear();
             DisposeRetiredOverlays();
             if (_ownsPolicies) _policies.Dispose();
         }
@@ -199,7 +222,7 @@ public sealed class TuiApp
 
     internal bool AnimateActivity()
     {
-        if (!_turnBusy) return true;
+        if (!HasActiveModelWork) return true;
         _activityPhase = (_activityPhase + 1) % 24;
         RenderActivity();
         return true;
@@ -208,7 +231,7 @@ public sealed class TuiApp
     private void RenderActivity()
     {
         if (_activity is null) return;
-        _activity.Visible = _turnBusy && (_window?.Frame.Width ?? 80) - _mainColumnInset >= 30;
+        _activity.Visible = HasActiveModelWork && (_window?.Frame.Width ?? 80) - _mainColumnInset >= 30;
         if (_activityLabel is not null) _activityLabel.Visible = _activity.Visible;
         if (_completion is not null) _completion.Visible = !_activity.Visible;
         if (!_activity.Visible) return;
@@ -632,6 +655,19 @@ public sealed class TuiApp
             { ShowMessage(failure.Message); }
             _composer.Text = ""; return;
         }
+        if (input.StartsWith("/agent inspect ", StringComparison.Ordinal))
+        {
+            var laneId = input[15..].Trim();
+            var selected = Guid.TryParse(laneId, out _)
+                ? _agents.Snapshot?.Lanes.SingleOrDefault(lane => lane.LaneId.Equals(laneId, StringComparison.OrdinalIgnoreCase))
+                : null;
+            if (selected is null)
+                ShowMessage(Ui("Uso: /agent inspect <LaneId> · Lane desconocida", "Usage: /agent inspect <LaneId> · unknown lane"));
+            else
+                ShowMessage(AgentPresentation.Describe(_agents.Snapshot! with { Lanes = [selected] }, _locale));
+            _composer.Text = "";
+            return;
+        }
         if (input == "/agent" || input.StartsWith("/agent ", StringComparison.Ordinal))
         {
             try
@@ -644,6 +680,10 @@ public sealed class TuiApp
                 if (_client is not ITrustedUserActionClient trusted) throw new InvalidOperationException("Trusted user client required");
                 var fields = JsonObj.Field("delegationId", parts[2]);
                 var name = "delegation.cancel";
+                (CancellationTokenSource Cancellation, Task Task)? background = null;
+                if (parts[1] == "cancel" && Guid.TryParse(parts[2], out var cancellingId)
+                    && _delegationTasks.TryGetValue(cancellingId.ToString("D"), out var activeBackground))
+                    background = activeBackground;
                 if (parts[1] != "cancel")
                 {
                     if (parts.Length != 5 || !Guid.TryParse(parts[3], out _)) throw new ArgumentException("ResultId y razón requeridos");
@@ -652,6 +692,9 @@ public sealed class TuiApp
                     name = "delegation.disposition";
                 }
                 var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", name) + "," + fields + "}"), CancellationToken.None);
+                if (parts[1] == "cancel" && ack.Status == "ok"
+                    && ack.Outcome?.Kind is RuntimeCommandOutcomeKind.Accepted or RuntimeCommandOutcomeKind.NoOp)
+                    background?.Cancellation.Cancel();
                 ShowMessage(ack.Error ?? ack.Outcome?.Reason ?? Ui("Acción registrada", "Action recorded")); PollEvents();
             }
             catch (Exception failure) when (failure is ArgumentException or InvalidOperationException) { ShowMessage(failure.Message); }
@@ -757,6 +800,7 @@ public sealed class TuiApp
         string? delegationId = null, WorkflowRequestDto? workflow = null, string? workflowCommandId = null)
     {
         if (_turnHost is null) return false;
+        if (delegationId is not null) return StartDelegationTurn(delegationId);
         if (_turnBusy) { ShowMessage(Ui("Ya hay un turno procesando. Espera o usa /cancel.", "A turn is already processing. Wait or use /cancel.")); return false; }
         _turnCancellation?.Dispose();
         var cancellation = _turnCancellation = new CancellationTokenSource();
@@ -806,6 +850,51 @@ public sealed class TuiApp
         });
         return true;
     }
+
+    private bool StartDelegationTurn(string delegationId)
+    {
+        if (_turnHost is null || !Guid.TryParse(delegationId, out var parsed)) return false;
+        var id = parsed.ToString("D");
+        if (_delegationTasks.ContainsKey(id))
+        {
+            ShowMessage(Ui("Esa delegación ya está ejecutándose en segundo plano.",
+                "That delegation is already running in the background."));
+            return false;
+        }
+        var cancellation = new CancellationTokenSource();
+        var task = Task.Run(async () =>
+        {
+            var messages = new List<string>();
+            var code = 1;
+            try
+            {
+                code = await _turnHost.ExecuteDelegationAsync(id, line =>
+                {
+                    if (messages.Count == 4) messages.RemoveAt(0);
+                    messages.Add(OmniCliRuntime.RedactSensitive(line));
+                }, cancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { code = 2; }
+            catch (Exception) { messages.Add(Ui("La delegación falló. Revisa /agents.", "Delegation failed. Check /agents.")); }
+            _uiActions.Enqueue(() =>
+            {
+                if (_delegationTasks.TryGetValue(id, out var active)
+                    && ReferenceEquals(active.Cancellation, cancellation))
+                {
+                    _delegationTasks.Remove(id);
+                    cancellation.Dispose();
+                }
+                if (code != 0 && code != 2 && messages.Count > 0)
+                    ShowMessage(string.Join("\n", messages));
+                RenderState();
+            });
+        });
+        _delegationTasks.Add(id, (cancellation, task));
+        RenderState();
+        return true;
+    }
+
+    private bool HasActiveModelWork => _turnBusy || _delegationTasks.Count > 0;
 
     private void PollEvents()
     {
@@ -878,7 +967,13 @@ public sealed class TuiApp
         _observability.Activate(_cursorSession);
         if (_sidebarProjection.Snapshot is null || _sidebarProjection.Snapshot.BasedOnJournalSequence != _lastSequence)
             _sidebarProjection.Poll(_client);
-        if (_agents.Snapshot is null || _agents.Snapshot.BasedOnJournalSequence != _lastSequence) _agents.Poll(_client);
+        var agentsPollDue = DateTimeOffset.UtcNow - _agentsPolledAt >= TimeSpan.FromMilliseconds(500);
+        if (_agents.Snapshot is null || _agents.Snapshot.BasedOnJournalSequence != _lastSequence
+            || HasActiveModelWork && agentsPollDue)
+        {
+            _agents.Poll(_client);
+            _agentsPolledAt = DateTimeOffset.UtcNow;
+        }
         if (_files.Snapshot is null || _files.Snapshot.BasedOnJournalSequence != _lastSequence) _files.Poll(_client);
         // Only reads existing observations. No authentication, quota refresh or generation here.
         if (_sidebarOpen || _observability.Snapshot is null) _observability.Poll(_client);
@@ -888,7 +983,8 @@ public sealed class TuiApp
     {
         if (envelope.MessageType != MessageTypes.Event) return;
         var fields = JsonObj.Parse(envelope.PayloadJson);
-        if (fields.GetValueOrDefault("type") == "model_step.started"
+        if (fields.GetValueOrDefault("conversationScope") is not ("child" or "ambiguous")
+            && fields.GetValueOrDefault("type") == "model_step.started"
             && fields.GetValueOrDefault("modelId") is { Length: > 0 } model)
             _observedModel = model;
     }
@@ -1015,7 +1111,9 @@ public sealed class TuiApp
     {
         var presentation = StatusLinePresentation.From(_state.StatusLine);
         var width = Math.Max(1, (_window?.Frame.Width ?? 80) - 4 - _mainColumnInset);
-        var right = _turnBusy ? "" : _turnStatus ?? presentation.Right;
+        var right = _turnBusy ? "" : _delegationTasks.Count > 0
+            ? Ui($"{_delegationTasks.Count} delegación(es) en segundo plano", $"{_delegationTasks.Count} background delegation(s)")
+            : _turnStatus ?? presentation.Right;
         return "  " + FitText(right, width);
     }
 

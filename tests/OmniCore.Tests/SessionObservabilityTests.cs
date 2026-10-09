@@ -68,8 +68,9 @@ public sealed class SessionObservabilityTests
     [Fact]
     public void Reasoning_is_not_first_answer_and_terminal_blocks_late_streams()
     {
+        var hub = Hub(); hub.Snapshot(_session); // establish this Host's journal cursor before the Turn begins
         Add(new TurnStarted(_turn, _lane), _turn);
-        var hub = Hub(); var projection = new SessionObservabilityProjection(); projection.Activate(_session.ToString());
+        var projection = new SessionObservabilityProjection(); projection.Activate(_session.ToString());
         projection.Apply(hub.Snapshot(_session)); Assert.True(projection.WaitingForFirstAnswer);
         Signal(hub, TelemetrySignal.ReasoningDeltaCharacters);
         projection.Apply(hub.Snapshot(_session)); Assert.True(projection.Reasoning); Assert.False(projection.AnswerText);
@@ -93,7 +94,8 @@ public sealed class SessionObservabilityTests
     [Fact]
     public void Run_cancellation_stops_its_activity_without_a_turn_envelope()
     {
-        Add(new TurnStarted(_turn, _lane), _turn); var hub = Hub(); hub.Snapshot(_session);
+        var hub = Hub(); hub.Snapshot(_session); // only progress observed after this point is live in this process
+        Add(new TurnStarted(_turn, _lane), _turn); hub.Snapshot(_session);
         Add(new RunCancelled(_run));
         Assert.Equal(ChatActivityPhase.Cancelled, hub.Snapshot(_session).Activities.Last().Phase);
     }
@@ -167,6 +169,52 @@ public sealed class SessionObservabilityTests
         Assert.Equal(8192, measurement.UsableBudget.Value); Assert.Equal(.625, measurement.UsedPercent.Value);
         Assert.Equal(2, Assert.Single(measurement.Components).Tokens.Value);
         Assert.Equal(MetricAvailability.Estimated, measurement.Components[0].Tokens.Availability);
+    }
+
+    [Fact]
+    public void Restart_recovers_the_last_primary_lane_context_when_a_child_completed_later()
+    {
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var stream = new EventStream(store, codecs, session);
+        var run = TestRun.Open(stream, session, "parallel lanes", RunMode.Orchestrate);
+        var childTask = TaskId.New();
+        var childLane = LaneId.New();
+        var childExecution = ExecutionId.New();
+        stream.AppendBatch(new DomainEventPayload[] {
+            new TaskCreated(childTask, run.RunId, "reader child", [], new TaskBudget(null, null, null, null), run.RootTask),
+            new TaskReady(childTask),
+            new LaneCreated(childLane, childTask, ProfileId.New()),
+            new LaneStarted(childLane),
+            new TaskStarted(childTask, childLane),
+        }, DurabilityClass.Barrier, new ExecutionScopeState?[] {
+            new(run.RunId), new(run.RunId), new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+            new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+            new(run.RunId, childTask, childLane, ExecutionId: childExecution),
+        });
+        var rootTurn = TurnId.New();
+        stream.AppendBatch(new DomainEventPayload[] {
+            new TurnStarted(rootTurn, run.RootLane),
+            new ModelStepStarted(rootTurn, 0, "root-model", 8000, "Direct", null, null, null, 16000),
+            new ModelStepCompleted(rootTurn, 0, new TokenUsage(210, 20, 0, 0, 0), StopReason.EndTurn,
+                null, "2026-10-08", .01m),
+        }, DurabilityClass.Barrier, Enumerable.Repeat<ExecutionScopeState?>(
+            new(run.RunId, run.RootTask, run.RootLane, TurnId: rootTurn), 3).ToArray());
+        var childTurn = TurnId.New();
+        stream.AppendBatch(new DomainEventPayload[] {
+            new TurnStarted(childTurn, childLane),
+            new ModelStepStarted(childTurn, 0, "child-model", 8000, "Direct", null, null, null, 16000),
+            new ModelStepCompleted(childTurn, 0, new TokenUsage(999, 20, 0, 0, 0), StopReason.EndTurn,
+                null, "2026-10-08", .02m),
+        }, DurabilityClass.Barrier, Enumerable.Repeat<ExecutionScopeState?>(
+            new(run.RunId, childTask, childLane, TurnId: childTurn, ExecutionId: childExecution), 3).ToArray());
+
+        var recovered = new SessionObservationHub(store, codecs, _artifacts).Snapshot(session).Context;
+
+        Assert.NotNull(recovered);
+        Assert.Equal(rootTurn.ToString(), recovered.TurnId);
+        Assert.Equal(210, recovered.Tokens.Value);
     }
 
     [Theory]
