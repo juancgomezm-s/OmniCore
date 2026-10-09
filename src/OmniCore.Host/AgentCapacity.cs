@@ -142,11 +142,11 @@ internal sealed class AgentCapacity
         var active = _active.Where(item => item.Session == waiter.Session && item.Run == waiter.Run).ToArray();
         // The root agent owns one logical slot even between turns. Delegated readers may use
         // only the remaining MaxAgents-1 slots; an active root turn consumes its same slot.
-        var occupied = active.Length + (waiter.Delegation is not null ? 1 : 0);
+        var rootLeaseActive = active.Any(item => item.Delegation is null);
+        var occupied = active.Length + (waiter.Delegation is not null && !rootLeaseActive ? 1 : 0);
         if (occupied >= waiter.MaxAgents) return false;
         if (!waiter.ReadOnly) return _active.Count == 0;
-        return _active.All(item => item.ReadOnly)
-            && !_waiting.Any(item => !item.ReadOnly && item.Session == waiter.Session && item.Run == waiter.Run);
+        return _active.All(item => item.ReadOnly);
     }
 
     private void Release(Lease lease)

@@ -123,6 +123,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         LoadLastSession();
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         RecoverPendingEffects();
+        RecoverPendingAgentOrchestration();
     }
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
@@ -142,6 +143,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         LoadLastSession();
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         RecoverPendingEffects();
+        RecoverPendingAgentOrchestration();
     }
 
     /// <summary>Composición común: tools Core + defaults por modo (modo Act del sim).</summary>
@@ -452,6 +454,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             { return new(command.MessageId, "error", exception is ConfigValidationException ? "Invalid sidebar settings" : exception.Message, RuntimeCommandOutcome.Rejected()); }
         }
         if (commandName == "delegation.create") return CreateQueuedDelegation(command, trustedUserAction, cancellationToken);
+        if (commandName == "fanout.create") return CreateFanOutGroup(command, trustedUserAction, cancellationToken);
+        if (commandName == "fanout.replace_member") return ReplaceFanOutMember(command, trustedUserAction, cancellationToken);
         if (commandName is "delegation.cancel" or "delegation.disposition" or "execution.join" or "execution.join.cancel")
             return ControlDelegation(command, commandName, trustedUserAction, cancellationToken);
         if (commandName == "command.invoke")

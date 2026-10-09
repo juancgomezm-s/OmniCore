@@ -20,7 +20,10 @@ public sealed record AgentBudgetSnapshot(decimal? MaxCostUsd, decimal? CostUsedU
 public sealed record AgentCapacitySnapshot(int Active, int Waiting, int Maximum, bool WriterActive,
     IReadOnlyList<string> WaitingDelegationIds);
 public sealed record AgentsSnapshot(string SessionId, string? RunId, long BasedOnJournalSequence,
-    bool ProjectionUnavailable, IReadOnlyList<AgentLaneSnapshot> Lanes, AgentCapacitySnapshot? Capacity = null);
+    bool ProjectionUnavailable, IReadOnlyList<AgentLaneSnapshot> Lanes, AgentCapacitySnapshot? Capacity = null,
+    IReadOnlyList<FanOutGroupSnapshot>? FanOutGroups = null);
+public sealed record FanOutGroupSnapshot(string GroupId, string OwnerExecutionId, string Policy,
+    IReadOnlyList<string> DelegationIds, string State, IReadOnlyList<string> MemberResultIds, string? AggregateId);
 
 /// <summary>Explicit user request. Empty selection means no inherited parent content.
 /// Budgets bound queued work; they do not grant tools, routing or worker capacity.</summary>
@@ -42,4 +45,5 @@ public static class AgentsJson
 [JsonSerializable(typeof(DelegationCreateRequest))]
 [JsonSerializable(typeof(AgentCapacitySnapshot))]
 [JsonSerializable(typeof(AgentBudgetSnapshot))]
+[JsonSerializable(typeof(FanOutGroupSnapshot))]
 internal partial class AgentsJsonContext : JsonSerializerContext;

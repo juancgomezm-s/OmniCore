@@ -86,6 +86,8 @@ public sealed class CanonicalStateTracker
             tracker.Apply(payload);
         }
 
+        FanOutGroupProjection.Replay(codecs, events);
+
         return tracker;
     }
 

@@ -233,7 +233,8 @@ public sealed class EventStream
 
     private void ValidatePreM6Records(IReadOnlyList<DomainEvent> envelopes, IReadOnlyList<DomainEventPayload> payloads)
     {
-        if (!payloads.Any(payload => payload is IPreM6ContractEvent or AgentExecutionStarted or AgentExecutionCompleted or AgentExecutionFailed)) return;
+        if (!payloads.Any(payload => payload is IPreM6ContractEvent or IValidatedDomainEventPayload
+            or AgentExecutionStarted or AgentExecutionCompleted or AgentExecutionFailed)) return;
         // Validate the candidate batch before persisting. No mutable projection survives a failed write.
         PreM6RecordProjection.Replay(_sessionId, _codecs, _store.ReadFrom(_sessionId, 1).Concat(envelopes),
             session => _store.ReadFrom(session, 1));

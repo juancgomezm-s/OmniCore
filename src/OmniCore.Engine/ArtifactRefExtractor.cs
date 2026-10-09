@@ -30,6 +30,10 @@ internal static class ArtifactRefExtractor
             case IPreM6ContractEvent record:
                 AddRange(refs, record.RecordArtifacts());
                 break;
+            case FanOutGroupResolved resolved:
+                AddRange(refs, resolved.MemberResultRefs);
+                if (resolved.AggregateRef is { } aggregate) refs.Add(aggregate);
+                break;
             // Run/Task events
             case RunSummaryRecorded summary:
                 refs.Add(summary.SummaryArtifact);

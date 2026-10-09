@@ -51,6 +51,18 @@ public static class AgentPresentation
                 rows.Add(new(L("Delegaciones en espera: ", "Waiting delegations: ")
                     + string.Join(", ", capacity.WaitingDelegationIds), ThemeRole.Muted));
         }
+        foreach (var group in snapshot.FanOutGroups ?? Array.Empty<FanOutGroupSnapshot>())
+        {
+            rows.Add(new(L("Fan-out · ", "Fan-out · ") + group.Policy + " · " + group.State
+                + " · " + group.DelegationIds.Count + L(" lanes", " lanes"),
+                group.State == "Resolved" ? ThemeRole.Success : ThemeRole.Attention));
+            if (details)
+            {
+                rows.Add(new("Fan-out " + group.GroupId + " · owner " + group.OwnerExecutionId, ThemeRole.Muted));
+                rows.Add(new(L("Delegaciones · ", "Delegations · ") + string.Join(", ", group.DelegationIds), ThemeRole.Muted));
+                if (group.AggregateId is { } aggregate) rows.Add(new("Aggregate " + aggregate, ThemeRole.Info));
+            }
+        }
         foreach (var lane in snapshot.Lanes)
         {
             var state = lane.LaneState switch {

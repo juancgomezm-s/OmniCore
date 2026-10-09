@@ -30,7 +30,10 @@ public sealed partial class OmniServer
                 var own = journal.Where(e => e.RunId == run).ToArray();
                 var facts = own.Select(_codecs.Decode).ToArray();
                 if (journal.Any(e => e.Causation is CommandCausation c && c.CommandId == commandId))
+                {
+                    ResolveReadyJoins(session, run);
                     return Ack(RuntimeCommandOutcome.NoOp());
+                }
                 if (RunProjection.Replay(session, run, _codecs, own).IsTerminal())
                     throw new InvalidOperationException("Run is terminal.");
                 var stream = new EventStream(_store, _codecs, session);
@@ -142,7 +145,11 @@ public sealed partial class OmniServer
                         var prior = facts.OfType<ResultDispositionRecorded>().LastOrDefault(e => e.Disposition.ResultRef == produced.ResultRef);
                         if (prior is not null)
                         {
-                            if (prior.Disposition.Outcome == outcome) return Ack(RuntimeCommandOutcome.NoOp());
+                            if (prior.Disposition.Outcome == outcome)
+                            {
+                                ResolveReadyJoins(session, run);
+                                return Ack(RuntimeCommandOutcome.NoOp());
+                            }
                             throw new InvalidOperationException("This immutable result was already evaluated; new work requires a new result.");
                         }
                         if (StateMachines.IsTaskTerminal(TaskGraphProjection.Replay(_codecs, own).Get(delegation.ChildTaskId)!.State))
@@ -194,29 +201,82 @@ public sealed partial class OmniServer
 
     private void ResolveReadyJoins(SessionId session, RunId run)
     {
+        ResolveReadyFanOutGroups(session, run);
         var journal = _store.ReadFrom(session, 1);
         var records = PreM6RecordProjection.Replay(session, _codecs, journal);
         var own = journal.Where(e => e.RunId == run).ToArray();
         var facts = own.Select(_codecs.Decode).ToArray();
         var accepted = AcceptedExecutions(facts);
+        var acceptedEventByExecution = new Dictionary<ExecutionId, DomainEvent>();
+        foreach (var result in facts.OfType<AgentResultProduced>().GroupBy(item => item.ExecutionId)
+            .Select(group => group.OrderBy(item => item.ResultRevision).Last()))
+        {
+            if (!facts.OfType<AgentExecutionCompleted>().Any(item => item.ExecutionId == result.ExecutionId)) continue;
+            var dispositionEvent = own.LastOrDefault(evt => _codecs.Decode(evt) is ResultDispositionRecorded disposition
+                && disposition.Disposition.ExecutionId == result.ExecutionId
+                && disposition.Disposition.ResultRef == result.ResultRef);
+            if (dispositionEvent is not null && _codecs.Decode(dispositionEvent) is ResultDispositionRecorded acceptedDisposition
+                && acceptedDisposition.Disposition.Outcome == ResultDispositionOutcome.Accepted)
+                acceptedEventByExecution[result.ExecutionId] = dispositionEvent;
+        }
+        accepted.IntersectWith(acceptedEventByExecution.Keys);
         foreach (var owner in facts.OfType<ExecutionJoinCreated>().Select(e => e.ExecutionId).Distinct())
         {
             var pending = PendingJoins(records, owner).ToArray();
             var batch = new List<DomainEventPayload>();
+            var causes = new List<CausationId?>();
+            var resolutionCauses = new List<DomainEvent>();
             var unresolved = false;
             foreach (var join in pending)
             {
                 var satisfying = ExecutionJoinEvaluator.SatisfyingMembers(join, accepted);
                 if (satisfying.Count == 0) unresolved = true;
-                else batch.Add(new ExecutionJoinResolved(owner, join.JoinId, satisfying));
+                else
+                {
+                    var trigger = satisfying.Select(id => acceptedEventByExecution[id])
+                        .OrderBy(evt => evt.Sequence).Last();
+                    batch.Add(new ExecutionJoinResolved(owner, join.JoinId, satisfying));
+                    causes.Add(new EventCausation(trigger.EventId));
+                    resolutionCauses.Add(trigger);
+                }
             }
             var scope = AgentScope(run, facts, owner);
-            if (!unresolved && TaskGraphProjection.Replay(_codecs, own).Get(scope.TaskId!)?.State == TaskState.Blocked
+            if (!unresolved && !IsExecutionTerminal(facts, owner)
+                && TaskGraphProjection.Replay(_codecs, own).Get(scope.TaskId!)?.State == TaskState.Blocked
                 && facts.OfType<TaskBlocked>().LastOrDefault(e => e.TaskId == scope.TaskId)?.Reason == "ExecutionJoin")
-            { batch.Add(new TaskUnblocked(scope.TaskId!, false)); batch.Add(new LaneUnblocked(scope.LaneId!)); }
+            {
+                var trigger = resolutionCauses.OrderBy(evt => evt.Sequence).LastOrDefault()
+                    ?? own.LastOrDefault(evt => _codecs.Decode(evt) is ExecutionJoinResolved resolved && resolved.ExecutionId == owner
+                        || _codecs.Decode(evt) is ExecutionJoinFailed failed && failed.ExecutionId == owner);
+                if (trigger is null) continue;
+                var cause = new EventCausation(trigger.EventId);
+                batch.Add(new TaskUnblocked(scope.TaskId!, false)); causes.Add(cause);
+                batch.Add(new LaneUnblocked(scope.LaneId!)); causes.Add(cause);
+            }
             if (batch.Count == 0) continue;
             using var execution = ExecutionScope.Begin(scope);
-            new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier);
+            var scopes = Enumerable.Repeat<ExecutionScopeState?>(scope, batch.Count).ToArray();
+            new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier, scopes, causes);
+        }
+    }
+
+    private void RecoverPendingAgentOrchestration()
+    {
+        if (_lastSessionId is not { } session || _lastRunId is not { } run) return;
+        try
+        {
+            lock (_modeAuthorityMutationGate)
+            {
+                var journal = _store.ReadFrom(session, 1);
+                if (RunProjection.Replay(session, run, _codecs, journal.Where(item => item.RunId == run).ToArray()).IsTerminal())
+                    return;
+                ReconcileTerminatedSupervisors(session, run);
+                ResolveReadyJoins(session, run);
+            }
+        }
+        catch (Exception failure)
+        {
+            _recoveryProblem = "agent orchestration reconciliation is blocked: " + failure.Message;
         }
     }
 

@@ -434,6 +434,7 @@ public sealed class TuiApp
     {
         "/agents" => Ui("Inspeccionar agentes y lanes del Run", "Inspect Run agents and lanes"),
         "/delegate" => Ui("Encolar trabajo de sólo lectura con límites", "Queue bounded read-only work"),
+        "/fanout" => Ui("Agrupar delegaciones en espera con fan-in Direct o Aggregate", "Group queued delegations with Direct or Aggregate fan-in"),
         "/agent" => Ui("Ejecutar, cancelar o evaluar un delegado", "Run, cancel or evaluate a delegate"),
         "/join" => Ui("Esperar resultados aceptados · All/Any/Quorum/Explicit", "Wait for accepted results · All/Any/Quorum/Explicit"),
         "/act" => Ui("Ejecutar cambios explícitos en archivos", "Execute explicit file changes"),
@@ -594,6 +595,41 @@ public sealed class TuiApp
         {
             _agents.Poll(_client);
             ShowMessage(AgentPresentation.Describe(_agents.Snapshot, _locale));
+            _composer.Text = ""; return;
+        }
+        if (input == "/fanout" || input.StartsWith("/fanout ", StringComparison.Ordinal))
+        {
+            try
+            {
+                if (_client is not ITrustedUserActionClient trusted)
+                    throw new InvalidOperationException("Trusted user client required");
+                if (input.Length <= 8) throw new ArgumentException("/fanout {\"ownerExecutionId\":\"UUID\",\"delegationIds\":[\"UUID\",\"UUID\"],\"policy\":\"Direct|Aggregate\"} · /fanout {\"action\":\"replace\",\"groupId\":\"UUID\",\"previousDelegationId\":\"UUID\",\"replacementDelegationId\":\"UUID\"}");
+                using var document = System.Text.Json.JsonDocument.Parse(input[8..]);
+                var root = document.RootElement;
+                var properties = root.ValueKind == System.Text.Json.JsonValueKind.Object
+                    ? root.EnumerateObject().ToArray() : Array.Empty<System.Text.Json.JsonProperty>();
+                var replacing = root.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && root.TryGetProperty("action", out var action) && action.GetString() == "replace";
+                var allowed = replacing
+                    ? new HashSet<string>(["action", "groupId", "previousDelegationId", "replacementDelegationId"], StringComparer.Ordinal)
+                    : new HashSet<string>(["ownerExecutionId", "delegationIds", "policy"], StringComparer.Ordinal);
+                if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                    || properties.Any(property => !allowed.Contains(property.Name)))
+                    throw new ArgumentException("Propiedades de Fan-out inválidas.");
+                if (properties.Select(property => property.Name).Distinct(StringComparer.Ordinal).Count() != properties.Length
+                    || !allowed.SetEquals(properties.Select(property => property.Name)))
+                    throw new ArgumentException("Se requieren los tres campos, cada uno una vez.");
+                var payload = replacing
+                    ? "{\"cmd\":\"fanout.replace_member\",\"groupId\":" + root.GetProperty("groupId").GetRawText()
+                        + ",\"previousDelegationId\":" + root.GetProperty("previousDelegationId").GetRawText()
+                        + ",\"replacementDelegationId\":" + root.GetProperty("replacementDelegationId").GetRawText() + "}"
+                    : "{\"cmd\":\"fanout.create\"," + root.GetRawText()[1..^1] + "}";
+                var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+                ShowMessage(ack.Error ?? ack.Outcome?.Reason ?? Ui("Fan-out registrado", "Fan-out recorded"));
+                PollEvents();
+            }
+            catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
+            { ShowMessage(failure.Message); }
             _composer.Text = ""; return;
         }
         if (input == "/agent" || input.StartsWith("/agent ", StringComparison.Ordinal))

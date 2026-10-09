@@ -11,6 +11,12 @@ public interface DomainEventPayload
     int SchemaVersion();
 }
 
+/// <summary>Payloads outside a frozen record family can still opt in to codec shape validation.</summary>
+public interface IValidatedDomainEventPayload : DomainEventPayload
+{
+    void Validate();
+}
+
 /// <summary>Identidad del evento durable: string estable en minúsculas con puntos (ADR-0013 §3).</summary>
 public sealed class EventType
 {

@@ -298,6 +298,7 @@ public sealed class DelegationAdmissionTests
         }
         internal void Reopen() { Close(); Store = new SqliteEventStore(Journal); Server = NewServer(); }
         internal void UseFaultStore(bool afterCommit) => Server = NewServer(new FaultStore(Store, afterCommit));
+        internal void UseServerStore(IEventStore writeStore) => Server = NewServer(writeStore);
         private void Close() { var connection = (SqliteConnection)Store.Connection; Store.Close(); SqliteConnection.ClearPool(connection); connection.Dispose(); }
         public void Dispose() { Close(); Directory.Delete(Root, true); }
     }

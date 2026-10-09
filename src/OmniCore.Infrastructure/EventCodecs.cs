@@ -70,6 +70,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.ExecutionJoinCreated())
             .Plus(Typed.ExecutionJoinResolved())
             .Plus(Typed.ExecutionJoinFailed())
+            .Plus(Typed.FanOutGroupCreated())
+            .Plus(Typed.FanOutGroupMemberReplaced())
+            .Plus(Typed.FanOutGroupResolved())
             .Plus(Typed.SupervisionBindingCreated())
             .Plus(Typed.SupervisionBindingAccepted())
             .Plus(Typed.SupervisionBindingFailed())
@@ -219,6 +222,8 @@ public sealed class EventCodecs : IEventCodecRegistry
         }
 
         var payload = CodecFor(evt.Type).Decode(evt.Type, json);
+        if (payload is IValidatedDomainEventPayload && evt.SchemaVersion != current)
+            throw new EventParseException(evt.Type.ToString(), "M6 validated records require their exact declared schema version");
         if (payload is IPreM6ContractEvent or RunModeProposed && evt.SchemaVersion < 1)
             throw new EventParseException(evt.Type.ToString(), "new contracts start at schema version 1");
         return payload;
@@ -296,7 +301,8 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
         try
         {
             var payload = JsonSerializer.Deserialize(payloadJson, _info) ?? throw new FormatException("payload null");
-            if (payload is IPreM6ContractEvent record) record.Validate();
+            if (payload is IValidatedDomainEventPayload validated) validated.Validate();
+            else if (payload is IPreM6ContractEvent record) record.Validate();
             return payload;
         }
         catch (Exception ex) when (ex is JsonException or FormatException or NotSupportedException or ArgumentException)
@@ -311,7 +317,8 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
     /// </summary>
     public string Encode(DomainEventPayload payload)
     {
-        if (payload is IPreM6ContractEvent record) record.Validate();
+        if (payload is IValidatedDomainEventPayload validated) validated.Validate();
+        else if (payload is IPreM6ContractEvent record) record.Validate();
         var json = JsonSerializer.Serialize((T) payload, _info);
         var redactor = OmniCore.Abstractions.SecretRedactorRegistry.Current;
         // Por valor y respetando ids: sustituir sobre el JSON crudo podía corromper un GUID que
@@ -409,6 +416,9 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(ExecutionJoinCreated))]
 [JsonSerializable(typeof(ExecutionJoinResolved))]
 [JsonSerializable(typeof(ExecutionJoinFailed))]
+[JsonSerializable(typeof(FanOutGroupCreated))]
+[JsonSerializable(typeof(FanOutGroupMemberReplaced))]
+[JsonSerializable(typeof(FanOutGroupResolved))]
 [JsonSerializable(typeof(SupervisionBindingCreated))]
 [JsonSerializable(typeof(SupervisionBindingAccepted))]
 [JsonSerializable(typeof(SupervisionBindingFailed))]
@@ -649,6 +659,15 @@ public sealed class Typed
 
     public static CodecPair ExecutionJoinFailed() =>
         Of(EventType.Of("execution_join.failed"), EventJsonContext.Default.ExecutionJoinFailed);
+
+    public static CodecPair FanOutGroupCreated() =>
+        Of(EventType.Of("fanout_group.created"), EventJsonContext.Default.FanOutGroupCreated);
+
+    public static CodecPair FanOutGroupMemberReplaced() =>
+        Of(EventType.Of("fanout_group.member_replaced"), EventJsonContext.Default.FanOutGroupMemberReplaced);
+
+    public static CodecPair FanOutGroupResolved() =>
+        Of(EventType.Of("fanout_group.resolved"), EventJsonContext.Default.FanOutGroupResolved);
 
     public static CodecPair SupervisionBindingCreated() =>
         Of(EventType.Of("supervision_binding.created"), EventJsonContext.Default.SupervisionBindingCreated);

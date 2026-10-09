@@ -143,6 +143,16 @@ public record ToolCallId(Guid Value)
     public override string ToString() => Value.ToString();
 }
 
+/// <summary>Identifica un grupo durable de delegaciones (M6 FanOut/FanIn).</summary>
+public record FanOutGroupId(Guid Value)
+{
+    public static FanOutGroupId New() => new(Guid.CreateVersion7());
+
+    public static FanOutGroupId Parse(string text) => new(EventId.ParseGuidText(text));
+
+    public override string ToString() => Value.ToString();
+}
+
 /// <summary>Identifica un grant de permisos persistido (ADR-0037).</summary>
 public record GrantId(Guid Value)
 {

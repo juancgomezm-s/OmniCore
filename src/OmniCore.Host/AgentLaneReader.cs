@@ -155,12 +155,55 @@ internal static class AgentLaneReader
                     integrationVerified, integrationValidationPassed, gateEvidenceCount));
             }
             var waiting = capacity.WaitingDelegations.Select(id => id.ToString()).Order(StringComparer.Ordinal).ToArray();
+            var fanOutGroups = payloads.OfType<FanOutGroupCreated>().Select(created =>
+            {
+                var completed = payloads.OfType<FanOutGroupResolved>().SingleOrDefault(item => item.GroupId == created.Group.GroupId);
+                var members = created.Group.MemberDelegationIds.ToList();
+                foreach (var replacement in payloads.OfType<FanOutGroupMemberReplaced>()
+                    .Where(item => item.GroupId == created.Group.GroupId))
+                {
+                    var slot = members.IndexOf(replacement.PreviousDelegationId);
+                    if (slot >= 0) members[slot] = replacement.ReplacementDelegationId;
+                }
+                var currentGroup = created.Group with { MemberDelegationIds = members };
+                var statuses = members.Select(id => FanOutMemberState(id, records, payloads)).ToArray();
+                var fanIn = FanInPolicyEvaluator.Evaluate(currentGroup, statuses);
+                return new FanOutGroupSnapshot(created.Group.GroupId.ToString(), created.Group.OwnerExecutionId.ToString(),
+                    created.Group.FanInPolicy.ToString(), members.Select(id => id.ToString()).ToArray(),
+                    completed is null ? fanIn.WaitingReason : "Resolved",
+                    completed?.MemberResultRefs.Select(reference => reference.Id.ToString()).ToArray() ?? [],
+                    completed?.AggregateRef?.Id.ToString());
+            }).ToArray();
             return empty with { Lanes = rows.ToArray(), Capacity = new AgentCapacitySnapshot(capacity.Active,
-                capacity.Waiting, maximumAgents, capacity.WriterActive, waiting) };
+                capacity.Waiting, maximumAgents, capacity.WriterActive, waiting), FanOutGroups = fanOutGroups };
         }
         catch (Exception failure) when (failure is InvalidDataException or InvalidStateTransitionException or InvalidOperationException or JsonException)
         {
             return empty with { ProjectionUnavailable = true };
         }
+    }
+
+    private static FanOutMemberEvaluation FanOutMemberState(DelegationId id, PreM6RecordProjection records,
+        IReadOnlyList<DomainEventPayload> payloads)
+    {
+        if (!records.Records.TryGetValue("delegation:" + id, out var history))
+            throw new InvalidDataException("Fan-out member history is missing.");
+        if (history.Phase == PreM6RecordPhase.Failed) return new(id, FanOutMemberStatus.Failed);
+        var acceptance = history.Facts.OfType<DelegationAccepted>().SingleOrDefault();
+        if (history.Phase != PreM6RecordPhase.Returned || acceptance is null)
+            return new(id, acceptance is null ? FanOutMemberStatus.Queued : FanOutMemberStatus.Running);
+        var result = payloads.OfType<AgentResultProduced>().Where(item => item.ExecutionId == acceptance.ChildExecutionId)
+            .OrderBy(item => item.ResultRevision).LastOrDefault();
+        var disposition = result is null ? null : payloads.OfType<ResultDispositionRecorded>()
+            .LastOrDefault(item => item.Disposition.ExecutionId == acceptance.ChildExecutionId
+                && item.Disposition.ResultRef == result.ResultRef)?.Disposition.Outcome;
+        var status = disposition switch
+        {
+            ResultDispositionOutcome.Accepted => FanOutMemberStatus.Accepted,
+            ResultDispositionOutcome.Rejected => FanOutMemberStatus.Rejected,
+            ResultDispositionOutcome.ReworkRequested => FanOutMemberStatus.ReworkRequested,
+            _ => FanOutMemberStatus.Returned,
+        };
+        return new(id, status, status == FanOutMemberStatus.Accepted ? result!.ResultRef : null);
     }
 }
