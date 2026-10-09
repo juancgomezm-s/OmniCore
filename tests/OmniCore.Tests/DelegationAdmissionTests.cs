@@ -18,6 +18,28 @@ namespace OmniCore.Tests;
 public sealed class DelegationAdmissionTests
 {
     [Fact]
+    public void Child_permission_ceiling_preserves_restrictive_process_and_network_rules()
+    {
+        var process = new ProcessRule("tool.exe", ["*"] , PermissionDecision.Allow);
+        var processDeny = new ProcessRule("tool.exe", ["secret"] , PermissionDecision.Deny);
+        var processAsk = new ProcessRule("ask.exe", ["*"] , PermissionDecision.Ask);
+        var network = new NetworkRule("*.example.test", PermissionDecision.Allow);
+        var networkDeny = new NetworkRule("secret.example.test", PermissionDecision.Deny);
+        var networkAsk = new NetworkRule("review.example.test", PermissionDecision.Ask);
+        var parent = PermissionScope.With([], [], [process, processDeny, processAsk],
+            [network, networkDeny, networkAsk], [], false);
+        var emptyChild = PermissionScope.Autonomous();
+        var broadenedChild = PermissionScope.With([], [], [process], [network], [], false);
+        var preservedChild = PermissionScope.With([], [], [process, processDeny,
+            processAsk with { Decision = PermissionDecision.Deny }], [network, networkDeny,
+            networkAsk with { Decision = PermissionDecision.Deny }], [], false);
+
+        Assert.True(AgentPermissionScopeSubset.IsSubset(emptyChild, parent));
+        Assert.False(AgentPermissionScopeSubset.IsSubset(broadenedChild, parent));
+        Assert.True(AgentPermissionScopeSubset.IsSubset(preservedChild, parent));
+    }
+
+    [Fact]
     public void Root_identity_and_queued_child_packet_survive_reopen_without_fabricating_worker_progress()
     {
         using var fx = new Fixture();
@@ -101,8 +123,8 @@ public sealed class DelegationAdmissionTests
     [InlineData("turns", "CoordinationBudgetLimit")]
     [InlineData("tools", "CoordinationBudgetLimit")]
     [InlineData("cost", "CoordinationBudgetLimit")]
-    [InlineData("writes", "ReadOnlyChildCeilingRequired")]
-    [InlineData("reads", "ReadOnlyChildCeilingRequired")]
+    [InlineData("writes", "ChildPermissionCeilingExceedsParent")]
+    [InlineData("reads", "ChildPermissionCeilingExceedsParent")]
     public void Admission_fails_closed_without_writing_or_launching(string gate, string reason)
     {
         using var fx = new Fixture(); fx.Ask();
@@ -225,6 +247,7 @@ public sealed class DelegationAdmissionTests
     internal sealed class Fixture : IDisposable
     {
         private string Root { get; } = Path.Combine(Path.GetTempPath(), "omni-admission-" + Guid.NewGuid().ToString("N"));
+        internal string WorkspaceRoot => Root;
         private string Journal => Path.Combine(Root, "journal.db");
         private string StateFile => Path.Combine(Root, "last.txt");
         internal SqliteEventStore Store { get; private set; }
@@ -237,6 +260,7 @@ public sealed class DelegationAdmissionTests
         internal AgentProfile Profile { get; } = new(ProfileId.New(), "reader", 1, PermissionScope.With(["**"], [], [], [], [], false), []);
         internal AgentProfile Writer { get; } = new(ProfileId.New(), "writer", 1, PermissionScope.With(["**"], ["**"], [], [], [], false), []);
         internal AgentProfile ForeignReader { get; } = new(ProfileId.New(), "outside", 1, PermissionScope.With(["outside/**"], [], [], [], [], false), []);
+        internal AgentProfile RootProfile { get; }
         internal ModelRoute MailboxRoute { get; } = new("fixture", "http://fixture", ProviderFamily.OpenAiChatCompatible,
             null, "fixture");
         private readonly bool _authorizeMailboxRoute;
@@ -246,9 +270,11 @@ public sealed class DelegationAdmissionTests
         internal LaneId Lane { get; }
         internal int ProviderCalls;
         internal IEnumerable<DomainEventPayload> Payloads => Store.ReadFrom(Session, 1).Select(Codecs.Decode);
-        internal Fixture(bool authorizeMailboxRoute = false, bool failMailboxAckBatches = false)
+        internal Fixture(bool authorizeMailboxRoute = false, bool failMailboxAckBatches = false,
+            bool rootProfileIsWriter = false)
         {
             _authorizeMailboxRoute = authorizeMailboxRoute;
+            RootProfile = rootProfileIsWriter ? Writer : Profile;
             Directory.CreateDirectory(Root);
             Store = new SqliteEventStore(Journal); Artifacts = new FileArtifactStore(Root);
             Reservations = new SqliteSpendReservationStore(Path.Combine(Root, "reservations.db"));
@@ -268,7 +294,7 @@ public sealed class DelegationAdmissionTests
         private OmniServer NewServer(IEventStore? writeStore = null)
         {
             var server = new OmniServer(writeStore ?? RuntimeStore, Codecs, new InMemoryAuditSink(), StateFile, Artifacts);
-            server.ConfigureAgentProfiles(new(new AgentProfileRegistry([Profile, Writer, ForeignReader]), Profile));
+            server.ConfigureAgentProfiles(new(new AgentProfileRegistry([Profile, Writer, ForeignReader]), RootProfile));
             if (_authorizeMailboxRoute)
                 server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
                     [AuthorizedModelRoute.From(MailboxRoute, BillingMode.Local)], [BillingMode.Local], false, null, "fixture"));
@@ -286,7 +312,7 @@ public sealed class DelegationAdmissionTests
         {
             var catalog = new FakeCatalog();
             var executor = ScriptedToolExecutor.WithWorkspace(catalog, new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
-                Profile, new PathBoundaryValidator(), Root), Root);
+                RootProfile, new PathBoundaryValidator(), Root), Root);
             return new ExplorerTurn(complete ?? ((_, _) => {
                 ProviderCalls++;
                 return new ModelResponse([new TextBlock("Respuesta española")], StopReason.EndTurn, new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
@@ -378,6 +404,82 @@ public sealed class DelegationAdmissionTests
         }
         public long CurrentSequence(SessionId session) => inner.CurrentSequence(session);
         public IReadOnlyList<DomainEvent> ReadFrom(SessionId session, long from) => inner.ReadFrom(session, from);
+    }
+
+    [Fact]
+    public void A_child_within_the_parent_writer_ceiling_uses_the_exclusive_writer_lease_and_real_tool_pipeline()
+    {
+        using var fx = new Fixture(rootProfileIsWriter: true);
+        fx.Ask("Implementa la integración solicitada en el workspace.");
+        var request = fx.Request() with { ProfileId = fx.Writer.Id.ToString(), MaxTokens = 16384 };
+        var queued = fx.Server.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, queued.Outcome?.Kind);
+        var delegation = fx.Payloads.OfType<DelegationCreated>().Single().Delegation;
+        var modelSteps = 0;
+        ExplorerTurn.TurnResult? childTurn = null;
+        var writerLeaseObserved = false;
+        var filePath = Path.Combine(fx.WorkspaceRoot, "workflow-child.txt");
+        var executed = fx.Server.ExecuteDelegation(delegation.DelegationId, (work, token) =>
+        {
+            Assert.False(AgentPermissionScopeSubset.IsReadOnly(work.Profile.PermissionCeiling));
+            writerLeaseObserved = AgentCapacity.For(fx.Store).ReadSnapshot(work.Session, work.Run).WriterActive;
+            var tools = HostTools.DelegatedAgent(work.Profile);
+            var key = ModelPolicyKey.For("fixture", "fixture");
+            var effective = EffectiveModelPolicy.Resolve(key,
+                new StoredModelPolicy(key, 1, ModelPolicyPresets.FullAgent(), DateTimeOffset.UnixEpoch,
+                    DateTimeOffset.UnixEpoch),
+                new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 16, GuidanceLevel.Full, 2,
+                    PlanControl.ModelDriven, 6));
+            var boundary = OmniCliRuntime.CreateBoundary(effective, fx.WorkspaceRoot, tools.Catalog());
+            var executor = ScriptedToolExecutor.WithWorkspace(tools.Catalog(),
+                new AgentProfilePermissionPolicy(
+                    ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow),
+                    work.Profile, new PathBoundaryValidator(), fx.WorkspaceRoot), fx.WorkspaceRoot, boundary,
+                (toolCall, receiveToken) => fx.Server.ReceiveMailboxMessageAsync(fx.Session, fx.Run,
+                    fx.MailboxRoute, BillingMode.Local, toolCall, receiveToken));
+            var turn = new ExplorerTurn((_, _) => Interlocked.Increment(ref modelSteps) == 1
+                    ? new ModelResponse([new ToolCallBlock(ToolCallId.New(), "write-integration",
+                        "filesystem.write", "{\"path\":\"workflow-child.txt\",\"content\":\"connected\"}")],
+                        StopReason.ToolUse, new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null))
+                    : new ModelResponse([new TextBlock("Integration written.")], StopReason.EndTurn,
+                        new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null)),
+                executor, tools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), []),
+                new("fixture", "h", "t", "c", "o", "fixture"),
+                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256),
+                fx.RuntimeStore, fx.Codecs, fx.Artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                pricing: new ModelPricing(0m, 0m), modelContextCapacity: 8192, spendReservations: fx.Reservations,
+                maximumGenerationRequestAttempts: 1);
+            childTurn = turn.Ask(work.Objective, "system", work.Session, work.Run,
+                work.Delegation.ChildLaneId, "", token);
+            return childTurn;
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, executed.Outcome?.Kind);
+        Assert.True(writerLeaseObserved, "The child must hold the exclusive writer lease during dispatch.");
+        Assert.False(AgentCapacity.For(fx.Store).ReadSnapshot(fx.Session, fx.Run).WriterActive,
+            "The exclusive writer lease must be released after the child turn settles.");
+        Assert.True(File.Exists(filePath), "write receipt missing; child failures: "
+            + string.Join(" | ", fx.Store.ReadFrom(fx.Session, 1).Select(fx.Codecs.Decode)
+                .OfType<ToolCallFailed>().Select(item => item.Cause + ":" + item.ErrorCode))
+            + "; turn=" + childTurn?.StopReason + "; tools=" + string.Join(" | ",
+                childTurn?.ToolCalls.Select(call => call.ToolName + ":" + call.Succeeded + ":" + call.Summary) ?? [])
+            + "; final=" + childTurn?.FinalText
+            + "; events=" + string.Join(",", fx.Store.ReadFrom(fx.Session, 1)
+                .Where(evt => evt.LaneId == delegation.ChildLaneId).Select(fx.Codecs.Decode)
+                .Select(payload => payload.GetType().Name)));
+        Assert.Equal("connected", File.ReadAllText(filePath));
+        var childLane = Assert.Single(AgentsJson.Decode(fx.Server.Query("agents", CancellationToken.None)!.Json)!.Lanes,
+            lane => lane.DelegationId == delegation.DelegationId.ToString());
+        Assert.Equal("Completed", childLane.ExecutionState);
+        Assert.Null(childLane.ResultDisposition);
+        Assert.Equal(TaskState.Running, TaskGraphProjection.Replay(fx.Codecs,
+            fx.Store.ReadFrom(fx.Session, 1)).StateOf(delegation.ChildTaskId));
+        var writeEvents = fx.Store.ReadFrom(fx.Session, 1).Where(evt => evt.LaneId == delegation.ChildLaneId)
+            .Select(fx.Codecs.Decode).ToArray();
+        Assert.Contains(writeEvents, evt => evt is ToolCallSucceeded succeeded
+            && succeeded.ToolCallId == Assert.Single(writeEvents.OfType<ToolCallRequested>()).ToolCallId);
+        Assert.Null(ExecutionScope.Current);
     }
 
     internal sealed class MailboxAckFaultStore(IEventStore inner, IEventCodecRegistry codecs) : IEventStore

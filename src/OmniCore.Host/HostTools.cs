@@ -65,6 +65,16 @@ public sealed class HostTools
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             artifactReadTool: artifactReadTool, includeControlTools: false, includeMailboxReceive: true);
 
+    /// <summary>Child workspace tools are composed from its durable profile; Security still intersects
+    /// each request with the parent mode, grants, project restrictions and that exact profile ceiling.</summary>
+    public static HostTools DelegatedAgent(AgentProfile profile, ArtifactReadTool? artifactReadTool = null,
+        SandboxStrength processSandboxStrength = SandboxStrength.Strong) =>
+        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            includeMutationTools: profile.PermissionCeiling.Writes.Count > 0,
+            includeProcessTools: profile.PermissionCeiling.Process.Count > 0 || profile.PermissionCeiling.AllowShell,
+            processSandboxStrength: processSandboxStrength, artifactReadTool: artifactReadTool,
+            includeControlTools: false, includeMailboxReceive: true);
+
     public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: false, includeProcessTools: false, artifactReadTool: artifactReadTool);

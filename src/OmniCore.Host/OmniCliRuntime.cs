@@ -958,10 +958,21 @@ public sealed class OmniCliRuntime
             }
 
             var effectiveMode = server.CurrentRunMode();
-            var executingAct = delegation is null && (act || effectiveMode is RunMode.Act or RunMode.Orchestrate);
+            var agentProfile = server.ResolveLaneAgentProfile(sessionId, runId,
+                delegation?.ChildLaneId ?? laneId);
+            var childRequiresActTools = delegation is not null && agentProfile is not null
+                && !AgentPermissionScopeSubset.IsReadOnly(agentProfile.PermissionCeiling);
+            var executingAct = childRequiresActTools
+                || delegation is null && (act || effectiveMode is RunMode.Act or RunMode.Orchestrate);
             _usageContext = (sessionId, route.ProviderId, provider, loaded.Pricing(model), baseUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
-            var hostTools = delegation is not null ? HostTools.DelegatedReaderWithMailbox(artifactReadTool) : executingAct
+            var receiveMailbox = delegation is null ? null
+                : (Func<ToolCallId, CancellationToken, Task<string?>>)((toolCallId, token) =>
+                    server.ReceiveMailboxMessageAsync(sessionId, runId, route,
+                        providerDescription?.BillingMode ?? BillingMode.Unknown, toolCallId, token));
+            var hostTools = delegation is not null
+                ? childRequiresActTools ? HostTools.DelegatedAgent(agentProfile!, artifactReadTool) : HostTools.DelegatedReaderWithMailbox(artifactReadTool)
+                : executingAct
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
             server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary, effectiveMode);
@@ -970,14 +981,9 @@ public sealed class OmniCliRuntime
             var audit = new FileAuditSink(paths.DataDirectory);
             var interactive = UseConsoleInput && !Console.IsInputRedirected;
             var interactionResponder = CreateInteractionResponder(writeLine, locale);
-            var agentProfile = server.ResolveLaneAgentProfile(sessionId, runId,
-                delegation?.ChildLaneId ?? laneId);
-            Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = delegation is null ? null
-                : (toolCallId, token) => server.ReceiveMailboxMessageAsync(sessionId, runId, route,
-                    providerDescription?.BillingMode ?? BillingMode.Unknown, toolCallId, token);
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    audit, interactionResponder, interactive, artifacts, agentProfile)
+                    audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     agentProfile, receiveMailbox);
             var contributors = executingAct

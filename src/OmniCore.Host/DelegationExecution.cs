@@ -47,15 +47,18 @@ public sealed partial class OmniServer
             if (initialDelegation is null) return Ack(RuntimeCommandOutcome.Deferred("DelegationUnavailable"));
             if (initialAuthorization.Limits.MaxAgents < 2)
                 return Ack(RuntimeCommandOutcome.Deferred("AgentOrDepthLimit"));
+            var admittedProfile = ResolveLaneAgentProfile(session, run, initialDelegation.ChildLaneId);
+            if (admittedProfile is null) return Ack(RuntimeCommandOutcome.Deferred("ChildProfileUnavailable"));
+            var readOnly = AgentPermissionScopeSubset.IsReadOnly(admittedProfile.PermissionCeiling);
             var durableSequence = initial.Where(evt => evt.RunId == run)
                 .Single(evt => _codecs.Decode(evt) is DelegationCreated created
                     && created.Delegation.DelegationId == id).Sequence;
             var scheduler = AgentCapacity.For(_store);
             capacity = waitForCapacity
                 ? scheduler.Acquire(session, run, id, initialAuthorization.Limits.MaxAgents,
-                    initialDelegation.Priority, readOnly: true, token, durableSequence)
+                    initialDelegation.Priority, readOnly, token, durableSequence)
                 : scheduler.TryAcquire(session, run, id, initialAuthorization.Limits.MaxAgents,
-                    initialDelegation.Priority, readOnly: true, token, durableSequence);
+                    initialDelegation.Priority, readOnly, token, durableSequence);
             if (capacity is null) return Ack(RuntimeCommandOutcome.Deferred("WaitingForCapacity"));
             lock (_modeAuthorityMutationGate)
             {
@@ -112,11 +115,8 @@ public sealed partial class OmniServer
                 var parentScope = AgentScope(run, facts, delegation.ParentExecutionId);
                 var parentProfile = ResolveLaneAgentProfile(session, run, parentScope.LaneId!)
                     ?? throw new InvalidOperationException("Parent profile unavailable.");
-                var ceiling = profile.PermissionCeiling;
-                if (ceiling.Writes.Count != 0 || ceiling.Process.Count != 0 || ceiling.Network.Count != 0
-                    || ceiling.Secrets.Count != 0 || ceiling.AllowShell
-                    || ceiling.Reads.Any(rule => !parentProfile.PermissionCeiling.Reads.Contains(rule, StringComparer.Ordinal)))
-                    return Ack(RuntimeCommandOutcome.Deferred("ReadOnlyChildCeilingRequired"));
+                if (!AgentPermissionScopeSubset.IsSubset(profile.PermissionCeiling, parentProfile.PermissionCeiling))
+                    return Ack(RuntimeCommandOutcome.Deferred("ChildPermissionCeilingExceedsParent"));
                 var task = facts.OfType<TaskCreated>().Single(e => e.TaskId == delegation.ChildTaskId);
                 var executionId = history.Phase == PreM6RecordPhase.Created ? ExecutionId.New()
                     : history.Facts.OfType<DelegationAccepted>().Single().ChildExecutionId;

@@ -297,7 +297,8 @@ public sealed class OmniHost
         ModelCapabilityBoundary boundary, IReadOnlyDictionary<string, string>? projectRestrictions = null,
         RunId? runId = null, IAuditSink? audit = null,
         Func<InteractionRequested, string?>? interactionResponder = null, bool isInteractive = false,
-        IArtifactStore? artifacts = null, AgentProfile? agentProfile = null)
+        IArtifactStore? artifacts = null, AgentProfile? agentProfile = null,
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null)
     {
         ArgumentNullException.ThrowIfNull(boundary);
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
@@ -305,7 +306,8 @@ public sealed class OmniHost
             : new AgentProfilePermissionPolicy(policy, agentProfile, new PathBoundaryValidator(), workspaceRoot);
         return new ScriptedToolExecutor(catalog, effectivePolicy, workspaceRoot, boundary, audit,
             interactionResponder, isInteractive, GetWeakSandboxConsentState(runId),
-            artifacts ?? CreateArtifactStore(WorkspaceDataDirectory(CreatePlatformPaths(), workspaceRoot)));
+            artifacts ?? CreateArtifactStore(WorkspaceDataDirectory(CreatePlatformPaths(), workspaceRoot)),
+            receiveMailbox: receiveMailbox);
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>

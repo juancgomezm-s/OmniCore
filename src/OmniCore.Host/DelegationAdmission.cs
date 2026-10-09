@@ -76,12 +76,8 @@ public sealed partial class OmniServer
                 var parentProfile = ResolveLaneAgentProfile(session, run, parentLane);
                 var profile = _agentProfiles.Registry.Find(new ProfileId(profileId));
                 if (parentProfile is null || profile is null) return Deferred("ConfiguredAgentProfileRequired");
-                var ceiling = profile.PermissionCeiling;
-                // Exact read rules are a conservative subset check. Never invent glob inclusion.
-                if (ceiling.Writes.Count != 0 || ceiling.Process.Count != 0 || ceiling.Network.Count != 0
-                    || ceiling.Secrets.Count != 0 || ceiling.AllowShell
-                    || ceiling.Reads.Any(rule => !parentProfile.PermissionCeiling.Reads.Contains(rule, StringComparer.Ordinal)))
-                    return Deferred("ReadOnlyChildCeilingRequired");
+                if (!AgentPermissionScopeSubset.IsSubset(profile.PermissionCeiling, parentProfile.PermissionCeiling))
+                    return Deferred("ChildPermissionCeilingExceedsParent");
                 var payloads = own.Select(_codecs.Decode).ToArray();
                 var children = payloads.OfType<TaskCreated>().Where(t => t.ParentTaskId is not null).ToArray();
                 var limits = authorization.Limits;
