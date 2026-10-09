@@ -149,3 +149,30 @@ FanOut 10 PASS (5.186 s), Capacity 2 PASS (0.699 s), y focos de contratos,
 proyección y escritor canónico sin fallos. Sigue siendo evidencia intermedia;
 mailbox/wake operativo, workflow/triada, background/heartbeat/transcript y
 validación integral final permanecen pendientes.
+
+## Continuación en curso: mailbox y wake en el pipeline de tools
+
+Checkpoint `8add0da`: `core.agents.mailbox.receive` entra por el catálogo y el
+pipeline normal de Prepare, autorización, ejecución y journal. Confirma su
+Started con Barrier antes de esperar una señal en proceso; no usa polling con
+LLM. El wake exige el ToolCall vivo exacto, binding aceptado, supervisor vivo,
+autoridad ORQ, presupuesto y ruta autorizada. Un mensaje no desbloquea una
+espera por join, interacción humana o pérdida de supervisor.
+
+La confirmación del mensaje y WakeResolved se escriben juntos después del
+ToolCallSucceeded durable, con su EventId como causa. Una entrega fallida
+cierra el wake sin ACK y una nueva llamada explícita puede consumir el mismo
+mensaje. La recuperación de un Started sin outcome conserva la semántica
+existente de las tools sin efectos: ToolCallFailed(CANCELLATION), wake Failed y
+mensaje pendiente, sin repetir tools ni llamadas al proveedor. La prueba usa
+una copia SQLite aislada; no acredita dos Hosts activos sobre el mismo journal.
+La concurrencia de M6 ocurre dentro de un mismo Host/store compartido; el lease
+entre procesos corresponde a M9.
+
+El scoped client creado antes de revocar autoridad pierde su capacidad efectiva:
+la revocación se difiere durante el ToolCall, la cancelación retira el waiter y,
+una vez asentada la revocación, se rechaza el envío sin MessageReceived/Wake/ACK.
+Logs revisados: `%TEMP%/m6-mailbox-lifecycle-20261008.log`, 21 PASS en 8.169 s;
+`%TEMP%/m6-mailbox-admission-20261008.log`, 18 PASS en 2.802 s, sin FAIL/SKIP.
+Son focos intermedios; queda comprobar el fallo posterior a Succeeded y anterior
+a ACK, además de workflow/triada, background/inspector y la suite final.
