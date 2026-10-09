@@ -106,9 +106,29 @@ public sealed class ToolRuntime
     public Outcome Run(ValidatedToolCall validated, ToolPreparationContext prepContext,
         ToolExecutionContext execContext, bool userApprovesAsk, CancellationToken cancellationToken,
         GrantLifetime approvalLifetime = GrantLifetime.Once)
+        => RunCore(validated, prepContext, execContext, userApprovesAsk, cancellationToken,
+            approvalLifetime, requestReceipt: null);
+
+    /// <summary>Consumes only a receipt for this exact attributed call; a prior request event
+    /// with another id, arguments, or execution scope cannot authorize omission of the request.</summary>
+    public Outcome Run(ValidatedToolCall validated, ToolPreparationContext prepContext,
+        ToolExecutionContext execContext, bool userApprovesAsk, CancellationToken cancellationToken,
+        ToolCallRequestReceipt requestReceipt, GrantLifetime approvalLifetime = GrantLifetime.Once)
     {
-        _emit(new ToolCallRequested(validated.ToolCallId, validated.ProviderCallId,
-            validated.ToolId.ToString(), validated.NormalizedArgumentsJson));
+        ArgumentNullException.ThrowIfNull(requestReceipt);
+        if (!requestReceipt.MatchesCall(validated))
+            throw new InvalidOperationException("Tool request receipt does not match this call.");
+        return RunCore(validated, prepContext, execContext, userApprovesAsk, cancellationToken,
+            approvalLifetime, requestReceipt);
+    }
+
+    private Outcome RunCore(ValidatedToolCall validated, ToolPreparationContext prepContext,
+        ToolExecutionContext execContext, bool userApprovesAsk, CancellationToken cancellationToken,
+        GrantLifetime approvalLifetime, ToolCallRequestReceipt? requestReceipt)
+    {
+        if (requestReceipt is null)
+            _emit(new ToolCallRequested(validated.ToolCallId, validated.ProviderCallId,
+                validated.ToolId.ToString(), validated.NormalizedArgumentsJson));
         var tool = _catalog.Find(validated.ToolId);
         if (tool is null)
         {

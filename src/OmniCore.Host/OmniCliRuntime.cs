@@ -1038,7 +1038,8 @@ public sealed class OmniCliRuntime
                 var ack = server.ExecuteDelegation(delegationId, (work, token) => turn.Ask(
                     openTurn is null ? work.Objective : "", childInstruction, work.Session, work.Run,
                     work.Delegation.ChildLaneId, "", token, "TrustedDelegation",
-                    openTurn?.Started.InstructionSnapshot ?? new TurnInstructionSnapshot(true, childInstruction)), cancellationToken);
+                    openTurn?.Started.InstructionSnapshot ?? new TurnInstructionSnapshot(true, childInstruction)),
+                    cancellationToken, waitForCapacity: true);
                 if (ack.Error is not null) writeLine(ack.Error);
                 if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred) writeLine("Deferred · " + ack.Outcome.Reason);
                 return ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Deferred ? 0 : 1;
@@ -1092,7 +1093,7 @@ public sealed class OmniCliRuntime
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
                     promptOrigin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
-                cancellationToken);
+                cancellationToken, readOnlyLane: true);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
@@ -1233,7 +1234,7 @@ public sealed class OmniCliRuntime
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => activeTurn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
                     token, origin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
-                cancellationToken);
+                cancellationToken, readOnlyLane: false);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null

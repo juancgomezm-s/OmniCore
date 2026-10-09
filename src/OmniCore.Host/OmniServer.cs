@@ -1364,6 +1364,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         return starts.Count > 0;
     }
 
+    private bool HasOpenModelStep(IReadOnlyList<DomainEvent> events, LaneId lane) =>
+        HasOpenModelStep(events.Where(evt => evt.LaneId == lane).ToArray());
+
     /// <summary>
     /// A completed model step does not mean its tool loop is finished: ToolCallStarted is
     /// deliberately journaled after ModelStepCompleted. Do not apply a mode downgrade/revocation
@@ -1408,6 +1411,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         return calls.Values.Any(state => state is not (ToolCallState.Succeeded or ToolCallState.Failed
             or ToolCallState.Rejected or ToolCallState.Cancelled or ToolCallState.Reconciled));
     }
+
+    private bool HasOpenToolCall(IReadOnlyList<DomainEvent> events, LaneId lane) =>
+        HasOpenToolCall(events.Where(evt => evt.LaneId == lane).ToArray());
 
     public SessionId? LastSessionId() => _lastSessionId;
 
@@ -2408,19 +2414,24 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     internal (ExplorerTurn.TurnResult? Result, CommandAck Ack, Exception? Failure,
         InternalCommandResult? PolicyTransition) ExecuteExplorerTurn(SessionId sessionId,
         RunId runId, Func<CancellationToken, ExplorerTurn.TurnResult> execute,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool readOnlyLane = false)
     {
         ArgumentNullException.ThrowIfNull(execute);
-        using var capacity = AgentCapacity.For(_store).TryAcquire(sessionId, runId, null, cancellationToken);
-        if (capacity is null)
-            return (null, new CommandAck(Ids.NewV7(), "ok", null,
-                RuntimeCommandOutcome.Deferred("WaitingForCapacity")), null, null);
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var messageId = commandId.Value.ToString();
         long? sequenceBefore = null;
+        AgentCapacity.Lease? capacity = null;
         try
         {
+            sequenceBefore = _store.CurrentSequence(sessionId);
+            capacity = AgentCapacity.For(_store).TryAcquire(sessionId, runId, null,
+                MaxAgentsFor(sessionId, runId), readOnlyLane ? 0 : 1000, readOnlyLane,
+                cancellationToken);
+            if (capacity is null)
+                return (null, CommandOutcomeAck(messageId, "ok", null,
+                    RuntimeCommandOutcome.Deferred("WaitingForCapacity"), sessionId,
+                    sequenceBefore.Value, commandId), null, null);
             if (_lastSessionId != sessionId || _lastRunId != runId
                 || new RunControlService(_store, _codecs).ActiveRun(sessionId) != runId)
             {
@@ -2448,6 +2459,18 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     failure.Message, restoreRunIdentity: false);
             return (null, ack, failure, null);
         }
+        finally { capacity?.Dispose(); }
+    }
+
+    private int MaxAgentsFor(SessionId session, RunId run)
+    {
+        var journal = _store.ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray();
+        if (journal.Length == 0) return 1;
+        var authority = RunProjection.Replay(session, run, _codecs, journal).ModeAuthority;
+        return authority?.Mode == RunMode.Orchestrate
+            && authority.Authorization is { } authorization
+            && authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow)
+            ? Math.Max(1, authorization.Limits.MaxAgents) : 1;
     }
 
     private InternalCommandResult? EvaluateCompletedTurnModePolicy(SessionId session, RunId run,

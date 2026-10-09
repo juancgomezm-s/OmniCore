@@ -41,7 +41,7 @@ public sealed record JoinPolicy(JoinKind Kind, int? RequiredCount = null,
 
 public sealed record Delegation(DelegationId DelegationId, ExecutionId ParentExecutionId,
     TaskId ChildTaskId, LaneId ChildLaneId, ProfileId ProfileId, ArtifactRef PacketRef,
-    ExecutionRelation Relation, ExecutionSupervision Supervision);
+    ExecutionRelation Relation, ExecutionSupervision Supervision, int Priority = 0);
 
 public sealed record ExecutionJoin(JoinId JoinId, ExecutionId OwnerExecutionId,
     IReadOnlyList<ExecutionId> MemberExecutionIds, JoinPolicy Policy)

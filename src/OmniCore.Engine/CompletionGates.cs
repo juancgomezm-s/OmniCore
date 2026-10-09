@@ -130,10 +130,9 @@ public sealed class PendingTaskGate
 /// <item><b>Task</b>: la Task de la Lane está en vuelo (<c>Running</c> o <c>Blocked</c>), nunca
 /// terminal ni sin empezar: el cierre de la Lane tiene que ser coherente con su Task.</item>
 /// </list>
-/// <para>Los eventos de ToolCall no llevan Lane ni Turn, así que la pertenencia se atribuye por el
-/// journal: una ToolCall pertenece a la Lane si se pidió con un Turn de esa Lane abierto (pipeline
-/// real) o si se pidió sin ningún Turn abierto y el Turn que la envuelve llega después (el journal
-/// de la simulación escribe la cadena antes del <c>TurnStarted</c>).</para>
+/// <para>Los eventos modernos heredan Lane y Turn en el envelope. Los journals legacy solo se
+/// atribuyen por defecto cuando el Run contiene una única Lane; un ToolCall ambiguo en un Run
+/// multi-Lane no se carga al worker equivocado.</para>
 /// <para>Si un gate falla, la Lane NO se completa y se queda <c>Running</c>. ADR-0016 §10 y
 /// ADR-0036 §3 no definen ningún evento de rechazo a nivel de Lane (la actividad
 /// <c>Validating</c> de una Lane es derivada y no se persiste, INV-027): el rechazo se expresa con
@@ -156,46 +155,24 @@ public sealed class LaneCompletionPipeline
         var laneTask = (TaskId?)null;
         var turns = new HashSet<TurnId>();                       // Turns de esta Lane
         var calls = new HashSet<ToolCallId>();                  // ToolCalls de esta Lane
-        var unattributed = new HashSet<ToolCallId>();            // pedidas sin Turn abierto
-        var openTurnLane = new Dictionary<TurnId, LaneId>();     // Turns abiertos y su Lane
+        var ownership = new CanonicalEventOwnership(codecs, events);
+        RunId? laneRun = null;
         foreach (var evt in events)
         {
             switch (codecs.Decode(evt))
             {
                 case LaneCreated created when created.LaneId.Equals(lane):
                     laneTask = created.TaskId;
+                    laneRun = evt.RunId ?? evt.CorrelationId;
                     break;
                 case TurnStarted started:
-                    openTurnLane[started.TurnId] = started.LaneId;
                     if (started.LaneId.Equals(lane))
                     {
                         turns.Add(started.TurnId);
-
-                        // La cadena escrita antes del Turn pertenece al Turn que la envuelve.
-                        calls.UnionWith(unattributed);
                     }
-
-                    unattributed.Clear();
-                    break;
-                case TurnCompleted completed:
-                    openTurnLane.Remove(completed.TurnId);
-                    break;
-                case TurnInterrupted interrupted:
-                    openTurnLane.Remove(interrupted.TurnId);
-                    break;
-                case TurnAbandoned abandoned:
-                    openTurnLane.Remove(abandoned.TurnId);
                     break;
                 case ToolCallRequested requested:
-                    if (openTurnLane.Values.Any(owner => owner.Equals(lane)))
-                    {
-                        calls.Add(requested.ToolCallId); // pedida con un Turn de esta Lane abierto
-                    }
-                    else if (openTurnLane.Count == 0)
-                    {
-                        unattributed.Add(requested.ToolCallId); // espera al Turn que la envuelve
-                    }
-
+                    if (ownership.LaneOf(evt) == lane) calls.Add(requested.ToolCallId);
                     break;
             }
         }
@@ -221,6 +198,17 @@ public sealed class LaneCompletionPipeline
             if (!IsToolCallTerminal(state))
             {
                 missing.Add("ToolCall " + call + " de la Lane en " + state);
+            }
+        }
+
+        if (laneRun is { } runId)
+        {
+            foreach (var evt in events.Where(item => (item.RunId ?? item.CorrelationId) == runId
+                && ownership.IsAmbiguousToolCall(item) && codecs.Decode(item) is ToolCallRequested))
+            {
+                var call = (ToolCallRequested)codecs.Decode(evt);
+                if (!IsToolCallTerminal(tracker.ToolCall(call.ToolCallId) ?? ToolCallState.Requested))
+                    missing.Add("ToolCall " + call.ToolCallId + " tiene Lane ambigua en este Run");
             }
         }
 
@@ -287,6 +275,7 @@ public sealed class ProgressWatchdog
         var effects = new Dictionary<ToolCallId, EffectClass>();
         var resourceOf = new Dictionary<ToolCallId, string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        var ownership = new CanonicalEventOwnership(codecs, events);
         foreach (var evt in events)
         {
             var payload = codecs.Decode(evt);
@@ -296,10 +285,11 @@ public sealed class ProgressWatchdog
                     turns += 1;
                     break;
                 case ToolCallRequested requested:
-                    resourceOf[requested.ToolCallId] = requested.ToolName + "|" + requested.ArgumentsJson;
+                    if (ownership.LaneOf(evt) is { } requestedLane && lanes.Contains(requestedLane))
+                        resourceOf[requested.ToolCallId] = requested.ToolName + "|" + requested.ArgumentsJson;
                     break;
                 case ToolCallStarted started:
-                    effects[started.ToolCallId] = started.EffectClass;
+                    if (resourceOf.ContainsKey(started.ToolCallId)) effects[started.ToolCallId] = started.EffectClass;
                     break;
                 case ToolCallSucceeded succeeded:
                     var applied = effects.TryGetValue(succeeded.ToolCallId, out var effect) && effect != EffectClass.None;
@@ -310,12 +300,16 @@ public sealed class ProgressWatchdog
                     }
 
                     break;
-                case ToolCallReconciled { Outcome: ReconciliationOutcome.Applied }:
                 case RunValidationRejected or RunValidationStarted:
                     turns = 0;
                     break;
+                case ToolCallReconciled { Outcome: ReconciliationOutcome.Applied }
+                    when ownership.LaneOf(evt) is { } reconciledLane && lanes.Contains(reconciledLane):
+                    turns = 0;
+                    break;
                 default:
-                    if (IsTransition(payload))
+                    if (IsPlanTransition(payload)
+                        || IsLaneOrTaskTransition(payload) && ownership.LaneOf(evt) is { } transitionLane && lanes.Contains(transitionLane))
                     {
                         turns = 0;
                     }
@@ -327,9 +321,11 @@ public sealed class ProgressWatchdog
         return turns;
     }
 
-    private static bool IsTransition(DomainEventPayload payload) => payload is
+    private static bool IsPlanTransition(DomainEventPayload payload) => payload is
+        PlanItemReady or PlanItemStarted or PlanItemBlocked or PlanItemUnblocked or PlanItemCompleted
+        or PlanItemFailed or PlanItemSkipped or PlanItemCancelled or PlanItemReopened;
+
+    private static bool IsLaneOrTaskTransition(DomainEventPayload payload) => payload is
         TaskReady or TaskStarted or TaskBlocked or TaskUnblocked or TaskCompleted or TaskFailed or TaskSkipped
-        or TaskCancelled or LaneStarted or LaneBlocked or LaneUnblocked or LaneCompleted or LaneFailed
-        or LaneCancelled or PlanItemReady or PlanItemStarted or PlanItemBlocked or PlanItemUnblocked
-        or PlanItemCompleted or PlanItemFailed or PlanItemSkipped or PlanItemCancelled or PlanItemReopened;
+        or TaskCancelled or LaneStarted or LaneBlocked or LaneUnblocked or LaneCompleted or LaneFailed or LaneCancelled;
 }

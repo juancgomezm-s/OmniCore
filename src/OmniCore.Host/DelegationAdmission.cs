@@ -31,11 +31,15 @@ public sealed partial class OmniServer
                 || string.IsNullOrWhiteSpace(request.Objective) || request.Objective.Length > 4096
                 || request.SelectedItemIds is null || request.MaxTurns <= 0 || request.MaxToolCalls <= 0
                 || request.MaxTokens <= 0 || request.MaxCostUsd < 0
+                || request.Priority is < -1000 or > 1000
                 || request.MaximumPacketBytes is <= 0 or > ContextInheritanceService.MaximumDelegationPacketBytes)
                 throw new ArgumentException("Explicit profile, source, objective and finite budgets are required.");
             var selection = new ContextInheritancePolicy(request.SelectedItemIds);
             lock (_modeAuthorityMutationGate)
             {
+                // Lock order: mode authority -> run budget admission -> EventStream writer.
+                // Explorer holds only the latter two for its short reservation/start boundary.
+                using var budgetAdmission = RunBudgetPool.For(_store).EnterAdmission(session, run);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (_lastSessionId != session || _lastRunId != run
                     || new RunControlService(_store, _codecs).ActiveRun(session) != run)
@@ -51,7 +55,6 @@ public sealed partial class OmniServer
                 if (authority.Authorization is not { } authorization
                     || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
                     return Deferred("CoordinationLimitsUnavailable");
-                if (HasOpenModelStep(own) || HasOpenToolCall(own)) return Deferred("ExecutionBoundaryRequired");
                 if (projection.State != RunState.Running) return Deferred("RunNotRunning");
                 if (_artifacts is not IArtifactPublicationLease publications) return Deferred("PacketPublicationUnavailable");
                 var source = own.SingleOrDefault(e => e.EventId.Value == sourceId)
@@ -64,6 +67,10 @@ public sealed partial class OmniServer
                     .FirstOrDefault(e => e.ExecutionId == parentId);
                 if (parent is null || parent.ParentExecutionId is not null || parent.LaneId != parentLane)
                     throw new ArgumentException("Source parent is not the root executor.");
+                // A child may be admitted while reader siblings are active, but the supervisor's
+                // own provider/tool boundary must be settled before it forks more work.
+                if (HasOpenModelStep(own, parentLane) || HasOpenToolCall(own, parentLane))
+                    return Deferred("ExecutionBoundaryRequired");
                 if (own.Select(_codecs.Decode).Any(e => e is AgentExecutionCompleted c && c.ExecutionId == parentId
                     || e is AgentExecutionFailed f && f.ExecutionId == parentId)) return Deferred("ParentExecutionTerminal");
                 var parentProfile = ResolveLaneAgentProfile(session, run, parentLane);
@@ -78,14 +85,15 @@ public sealed partial class OmniServer
                 var payloads = own.Select(_codecs.Decode).ToArray();
                 var children = payloads.OfType<TaskCreated>().Where(t => t.ParentTaskId is not null).ToArray();
                 var limits = authorization.Limits;
-                // Count all admitted child ceilings conservatively for further admissions.
-                // This is not a RunBudgetPool reservation: a future dispatcher must revalidate
-                // remaining resources, and root execution still uses its existing Run guards.
-                var executors = payloads.OfType<AgentExecutionStarted>().DistinctBy(e => e.ExecutionId).ToArray();
-                var executingLanes = executors.Select(e => e.LaneId).ToHashSet();
-                var occupiedAgentSlots = executors.LongLength + payloads.OfType<LaneCreated>()
-                    .LongCount(lane => !executingLanes.Contains(lane.LaneId));
-                if (limits.MaxDepth < 1 || 1L + occupiedAgentSlots > limits.MaxAgents)
+                var allocations = RunBudgetPool.For(_store).ReadChildAllocations(journal, _codecs,
+                    _artifacts, _store, null, session, run);
+                // Existing children hold only their unspent ceilings. Completed/cancelled
+                // executions release the unused balance on replay; their actual receipts remain
+                // in the canonical totals above.
+                // Capacity is scheduler state, not an admission rejection. Bounded work may
+                // queue durably and will wait for an actual slot; only impossible root+child
+                // capacity and depth are rejected here.
+                if (limits.MaxDepth < 1 || limits.MaxAgents < 2)
                     return Deferred("AgentOrDepthLimit");
                 if (children.Any(t => t.Budget.MaxTurns is null || t.Budget.MaxToolCalls is null || t.Budget.MaxCostUsd is null))
                     return Deferred("ChildBudgetAccountingUnavailable");
@@ -96,11 +104,11 @@ public sealed partial class OmniServer
                 if (primary.Incomplete || meta.Incomplete || primary.RunUsd is null || meta.RunUsd is null)
                     return Deferred("SpendAccountingUnavailable");
                 var spent = primary.RunUsd.Value + meta.RunUsd.Value;
-                if ((long)request.MaxTurns + children.Sum(t => (long)t.Budget.MaxTurns!.Value)
+                if ((long)request.MaxTurns + allocations.Turns
                         + payloads.OfType<TurnStarted>().LongCount() > limits.MaxTurns
-                    || (long)request.MaxToolCalls + children.Sum(t => (long)t.Budget.MaxToolCalls!.Value)
+                    || (long)request.MaxToolCalls + allocations.ToolCalls
                         + payloads.OfType<ToolCallRequested>().LongCount() > limits.MaxToolCalls
-                    || request.MaxCostUsd + children.Sum(t => t.Budget.MaxCostUsd!.Value)
+                    || request.MaxCostUsd + allocations.CostUsd
                         + spent > limits.MaxSpendUsd)
                     return Deferred("CoordinationBudgetLimit");
                 var rootBudget = payloads.OfType<RunCreated>().Single().Budget;
@@ -109,14 +117,14 @@ public sealed partial class OmniServer
                     var tokenBudget = RunTokenBudgetReader.Read(own, _codecs, run, tokens);
                     if (tokenBudget.Remaining is null || children.Any(t => t.Budget.MaxTokens is null))
                         return Deferred("TokenAccountingUnavailable");
-                    if (checked(request.MaxTokens + children.Sum(t => t.Budget.MaxTokens!.Value)) > tokenBudget.Remaining)
+                    if (checked(request.MaxTokens + allocations.Tokens) > tokenBudget.Remaining)
                         return Deferred("ParentTokenBudgetLimit");
                 }
-                if (rootBudget.MaxCostUsd is { } cost && request.MaxCostUsd + children.Sum(t => t.Budget.MaxCostUsd!.Value)
+                if (rootBudget.MaxCostUsd is { } cost && request.MaxCostUsd + allocations.CostUsd
                     + spent > cost) return Deferred("ParentCostBudgetLimit");
-                if (rootBudget.MaxTurns is { } turns && (long)request.MaxTurns + children.Sum(t => (long)t.Budget.MaxTurns!.Value)
+                if (rootBudget.MaxTurns is { } turns && (long)request.MaxTurns + allocations.Turns
                     + payloads.OfType<TurnStarted>().LongCount() > turns) return Deferred("ParentTurnBudgetLimit");
-                if (rootBudget.MaxToolCalls is { } calls && (long)request.MaxToolCalls + children.Sum(t => (long)t.Budget.MaxToolCalls!.Value)
+                if (rootBudget.MaxToolCalls is { } calls && (long)request.MaxToolCalls + allocations.ToolCalls
                     + payloads.OfType<ToolCallRequested>().LongCount() > calls) return Deferred("ParentToolBudgetLimit");
                 var childTask = new TaskCreated(TaskId.New(), run, request.Objective, Array.Empty<TaskDependency>(),
                     new TaskBudget(request.MaxCostUsd, request.MaxTokens, request.MaxTurns, request.MaxToolCalls), projection.RootTask);
@@ -133,7 +141,7 @@ public sealed partial class OmniServer
                 using var lease = publications.AcquirePublicationLease(cancellationToken);
                 if (prepared.Publish() != prepared.Reference) throw new InvalidDataException("Packet publication changed its reference.");
                 var delegation = new Delegation(target.DelegationId, parentId, childTask.TaskId, childLane.LaneId,
-                    profile.Id, prepared.Reference, target.Relation, target.Supervision);
+                    profile.Id, prepared.Reference, target.Relation, target.Supervision, request.Priority);
                 var childScope = new ExecutionScopeState(run, childTask.TaskId, childLane.LaneId);
                 var parentScope = new ExecutionScopeState(run, projection.RootTask, parentLane, ExecutionId: parentId);
                 new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {

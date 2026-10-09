@@ -64,7 +64,8 @@ public sealed partial class OmniServer
                         if (TaskGraphProjection.Replay(_codecs, own).Get(scope.TaskId!)?.State != TaskState.Running
                             || LaneProjection.Replay(_codecs, own).StateOf(scope.LaneId!) != LaneState.Running)
                             throw new InvalidOperationException("Principal is not at a join boundary.");
-                        if (HasOpenModelStep(own) || HasOpenToolCall(own)) throw new InvalidOperationException("Execution boundary required.");
+                        if (HasOpenModelStep(own, start.LaneId) || HasOpenToolCall(own, start.LaneId))
+                            throw new InvalidOperationException("Execution boundary required.");
                         batch.Add(new TaskBlocked(scope.TaskId!, "ExecutionJoin"));
                         batch.Add(new LaneBlocked(scope.LaneId!, "ExecutionJoin"));
                     }
@@ -118,6 +119,7 @@ public sealed partial class OmniServer
                             // Cancellation is acknowledged only as a request. Terminal facts are written at the safe boundary.
                             return Ack(RuntimeCommandOutcome.Accepted());
                         }
+                        _ = AgentCapacity.For(_store).CancelWaiting(session, run, id);
                         var parent = AgentScope(run, facts, delegation.ParentExecutionId);
                         var child = new ExecutionScopeState(run, delegation.ChildTaskId, delegation.ChildLaneId);
                         stream.AppendBatch(new DomainEventPayload[] { new TaskCancelled(delegation.ChildTaskId),

@@ -67,7 +67,9 @@ public sealed class CanonicalWriterArchitectureTests
         foreach (var call in CallsIn(assembly))
         {
             if (call.Target.DeclaringType != typeof(EventStream)
-                || call.Target.Name is not (".ctor" or nameof(EventStream.Append) or nameof(EventStream.AppendBatch)))
+                || call.Target.Name is not (".ctor" or nameof(EventStream.Append) or nameof(EventStream.AppendBatch)
+                    or nameof(EventStream.AppendAdmitted) or nameof(EventStream.AppendBatchAdmitted)
+                    or nameof(EventStream.AppendToolCallRequestAdmitted)))
                 continue;
 
             var callerAssembly = call.Caller.Module.Assembly.GetName().Name ?? "";
@@ -101,6 +103,8 @@ public sealed class CanonicalWriterArchitectureTests
             BindingFlags.Public | BindingFlags.Static)!;
         var directStreamMethod = typeof(ForbiddenCallFixtures).GetMethod(nameof(ForbiddenCallFixtures.DirectEventStreamAppend),
             BindingFlags.Public | BindingFlags.Static)!;
+        var admittedStreamMethod = typeof(ForbiddenCallFixtures).GetMethod(nameof(ForbiddenCallFixtures.DirectEventStreamAppendAdmitted),
+            BindingFlags.Public | BindingFlags.Static)!;
 
         Assert.Contains(CallsIn(directStoreMethod), call => call.Target.DeclaringType == typeof(IEventStore)
             && call.Target.Name == nameof(IEventStore.Append));
@@ -109,6 +113,8 @@ public sealed class CanonicalWriterArchitectureTests
             && call.Target.Name == ".ctor");
         Assert.Contains(streamCalls, call => call.Target.DeclaringType == typeof(EventStream)
             && call.Target.Name == nameof(EventStream.Append));
+        Assert.Contains(CallsIn(admittedStreamMethod), call => call.Target.DeclaringType == typeof(EventStream)
+            && call.Target.Name == nameof(EventStream.AppendAdmitted));
 
         var asyncMethod = typeof(ForbiddenCallFixtures).GetMethod(nameof(ForbiddenCallFixtures.DirectStoreAppendAfterAwait))!;
         var stateMachine = asyncMethod.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>();
@@ -274,5 +280,9 @@ public sealed class CanonicalWriterArchitectureTests
             var stream = new EventStream(store, codecs, session);
             stream.Append(payload, DurabilityClass.Standard);
         }
+
+        public static void DirectEventStreamAppendAdmitted(EventStream stream) =>
+            stream.AppendAdmitted(new ToolCallRequested(ToolCallId.New(), "provider", "fake.read", "{}"),
+                DurabilityClass.Standard, _ => { });
     }
 }

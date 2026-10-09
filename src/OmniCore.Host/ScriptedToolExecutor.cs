@@ -134,11 +134,25 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         CancellationToken cancellationToken, EventStream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        return Run(validated, userApprovesAsk, cancellationToken, stream);
+        return Run(validated, userApprovesAsk, cancellationToken, stream, null);
+    }
+
+    internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream, ToolCallRequestReceipt requestReceipt)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(requestReceipt);
+        var scope = ExecutionScope.Current;
+        if (!requestReceipt.MatchesCall(validated)
+            || !requestReceipt.MatchesScope(scope?.RunId, scope?.TaskId, scope?.LaneId,
+                scope?.TurnId, scope?.ExecutionId)
+            || !stream.IsCurrentToolCallRequestReceipt(requestReceipt, validated))
+            throw new InvalidOperationException("Tool request receipt is not present in this session journal.");
+        return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt);
     }
 
     private ToolOutcome Run(ValidatedToolCall validated, bool userApprovesAsk,
-        CancellationToken cancellationToken, EventStream? stream)
+        CancellationToken cancellationToken, EventStream? stream, ToolCallRequestReceipt? requestReceipt = null)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -202,7 +216,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 // Buffered before Started: its Barrier confirms this debt before ExecuteAsync.
                 emit(new PostEditValidationPending(runId, intent.ToolCallId, intent.Claims.Writes.ToArray()));
             }, artifacts: _artifacts);
-        var outcome = runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken);
+        var outcome = requestReceipt is null
+            ? runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken)
+            : runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken, requestReceipt);
         var events = buffered.ToArray();
 
         return outcome.Succeeded

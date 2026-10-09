@@ -154,8 +154,8 @@ public sealed class ReconcilerWatchdogTests
         var transition = WatchFixture.Create();
         transition.AppendTurn(transition.RootLane);
         transition.AppendTurn(transition.RootLane);
-        var newTask = transition.CreateTask(TaskState.Pending);
-        transition.Stream.Append(new TaskReady(newTask));
+        transition.Stream.Append(new TaskBlocked(transition.RootTask, "same-lane progress"));
+        transition.Stream.Append(new TaskUnblocked(transition.RootTask, false));
         transition.AppendTurn(transition.RootLane);
         Assert.Equal(1, transition.TurnsWithoutProgress(new[] { transition.RootLane }));
 
@@ -187,6 +187,21 @@ public sealed class ReconcilerWatchdogTests
         resource.AppendToolSuccess("read", "{\"path\":\"first\"}", EffectClass.None);
         resource.AppendTurn(resource.RootLane);
         Assert.Equal(1, resource.TurnsWithoutProgress(new[] { resource.RootLane }));
+    }
+
+    [Fact]
+    public void Watchdog_does_not_reset_for_a_sibling_lanes_task_or_lane_transition()
+    {
+        var fixture = WatchFixture.Create();
+        fixture.AppendTurn(fixture.RootLane);
+        fixture.AppendTurn(fixture.RootLane);
+        fixture.Stream.Append(new TaskBlocked(fixture.OtherTask, "sibling progress"));
+        fixture.Stream.Append(new LaneBlocked(fixture.OtherLane, "sibling progress"));
+        fixture.Stream.Append(new LaneUnblocked(fixture.OtherLane));
+        fixture.Stream.Append(new TaskUnblocked(fixture.OtherTask, false));
+        fixture.AppendTurn(fixture.RootLane);
+
+        Assert.Equal(3, fixture.TurnsWithoutProgress(new[] { fixture.RootLane }));
     }
 
     [Fact]
@@ -306,11 +321,14 @@ public sealed class ReconcilerWatchdogTests
         public EventStream Stream { get; }
         public LaneId RootLane { get; }
         public LaneId OtherLane { get; }
+        public TaskId RootTask { get; }
+        public TaskId OtherTask { get; }
         public PlanItemId RootItem { get; }
         public IReadOnlyList<DomainEvent> Events => _store.ReadFrom(_session, 1);
 
         private WatchFixture(InMemoryEventStore store, EventCodecs codecs, SessionId session, RunId run,
-            PlanId plan, EventStream stream, LaneId rootLane, LaneId otherLane, PlanItemId rootItem)
+            PlanId plan, EventStream stream, TaskId rootTask, TaskId otherTask,
+            LaneId rootLane, LaneId otherLane, PlanItemId rootItem)
         {
             _store = store;
             _codecs = codecs;
@@ -318,6 +336,8 @@ public sealed class ReconcilerWatchdogTests
             _run = run;
             _plan = plan;
             Stream = stream;
+            RootTask = rootTask;
+            OtherTask = otherTask;
             RootLane = rootLane;
             OtherLane = otherLane;
             RootItem = rootItem;
@@ -342,7 +362,8 @@ public sealed class ReconcilerWatchdogTests
             stream.Append(new LaneCreated(otherLane, otherTask, ProfileId.New()));
             stream.Append(new LaneStarted(otherLane));
             stream.Append(new TaskStarted(otherTask, otherLane));
-            return new WatchFixture(store, codecs, session, opened.RunId, plan, stream, opened.RootLane, otherLane, item);
+            return new WatchFixture(store, codecs, session, opened.RunId, plan, stream, opened.RootTask, otherTask,
+                opened.RootLane, otherLane, item);
         }
 
         public void AppendTurn(LaneId lane)
@@ -376,6 +397,7 @@ public sealed class ReconcilerWatchdogTests
         public void AppendToolSuccess(string toolName, string args, EffectClass effect)
         {
             var call = ToolCallId.New();
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(_run, RootTask, RootLane));
             Stream.Append(new ToolCallRequested(call, "provider-call", toolName, args));
             Stream.Append(new ToolCallPrepared(call, "{}"));
             Stream.Append(new PermissionEvaluated(call, PermissionDecision.Allow, "[]", null));

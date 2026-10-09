@@ -88,7 +88,6 @@ public sealed class DelegationAdmissionTests
     [InlineData("mode", "DelegationRequiresOrq")]
     [InlineData("limits", "CoordinationLimitsUnavailable")]
     [InlineData("agents", "AgentOrDepthLimit")]
-    [InlineData("executions", "AgentOrDepthLimit")]
     [InlineData("depth", "AgentOrDepthLimit")]
     [InlineData("turns", "CoordinationBudgetLimit")]
     [InlineData("tools", "CoordinationBudgetLimit")]
@@ -105,14 +104,6 @@ public sealed class DelegationAdmissionTests
                 "{\"cmd\":\"run.mode.select\",\"mode\":\"" + mode + "\"}"), CancellationToken.None).Status);
         }
         if (gate is "agents" or "depth") fx.Grant(gate == "agents" ? 1 : 3, gate == "depth" ? 0 : 1);
-        if (gate == "executions")
-        {
-            var second = ExecutionId.New();
-            using (ExecutionScope.Begin(new(fx.Run, fx.RootTask, fx.Lane, ExecutionId: second)))
-                new EventStream(fx.Store, fx.Codecs, fx.Session).Append(new AgentExecutionStarted(second,
-                    fx.Lane, fx.Profile.Id, null, ExecutionRelation.Awaited, ExecutionSupervision.Managed));
-            fx.Grant(2);
-        }
         var request = fx.Request();
         request = gate switch {
             "turns" => request with { MaxTurns = 40 }, "tools" => request with { MaxToolCalls = 40 },
@@ -230,6 +221,7 @@ public sealed class DelegationAdmissionTests
         internal SqliteEventStore Store { get; private set; }
         internal IEventCodecRegistry Codecs { get; } = EventCodecs.Create();
         internal FileArtifactStore Artifacts { get; }
+        internal SqliteSpendReservationStore Reservations { get; }
         internal OmniServer Server { get; private set; }
         internal AgentProfile Profile { get; } = new(ProfileId.New(), "reader", 1, PermissionScope.With(["**"], [], [], [], [], false), []);
         internal AgentProfile Writer { get; } = new(ProfileId.New(), "writer", 1, PermissionScope.With(["**"], ["**"], [], [], [], false), []);
@@ -244,6 +236,7 @@ public sealed class DelegationAdmissionTests
         {
             Directory.CreateDirectory(Root);
             Store = new SqliteEventStore(Journal); Artifacts = new FileArtifactStore(Root);
+            Reservations = new SqliteSpendReservationStore(Path.Combine(Root, "reservations.db"));
             Server = NewServer();
             Assert.Equal("ok", Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(),
                 "{\"cmd\":\"session.input\",\"mode\":\"orq\",\"text\":\"Principal español\"}"), CancellationToken.None).Status);
@@ -265,18 +258,18 @@ public sealed class DelegationAdmissionTests
             var ack = Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
             Assert.Equal("ok", ack.Status);
         }
-        internal ExplorerTurn Explorer()
+        internal ExplorerTurn Explorer(Func<ModelRequest, CancellationToken, ModelResponse>? complete = null)
         {
             var catalog = new FakeCatalog();
             var executor = ScriptedToolExecutor.WithWorkspace(catalog, new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
                 Profile, new PathBoundaryValidator(), Root), Root);
-            return new ExplorerTurn((_, _) => {
+            return new ExplorerTurn(complete ?? ((_, _) => {
                 ProviderCalls++;
                 return new ModelResponse([new TextBlock("Respuesta española")], StopReason.EndTurn, new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
-            }, executor, catalog, new ContextMaterializer(new FakeTokenCounter(), []), new("fixture", "h", "t", "c", "o", "fixture"),
+            }), executor, catalog, new ContextMaterializer(new FakeTokenCounter(), []), new("fixture", "h", "t", "c", "o", "fixture"),
                 new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), Store, Codecs, Artifacts,
                 new InMemoryAuditSink(), new RedactionPolicy(), pricing: new ModelPricing(0m, 0m), modelContextCapacity: 8192,
-                maximumGenerationRequestAttempts: 1);
+                spendReservations: Reservations, maximumGenerationRequestAttempts: 1);
         }
         internal void Ask(string question = "Información española: acción, niño, pingüino.")
         {

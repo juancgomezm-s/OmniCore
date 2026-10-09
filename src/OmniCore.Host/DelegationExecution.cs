@@ -21,7 +21,8 @@ public sealed partial class OmniServer
     /// <summary>Trusted Host composition only. FIFO, one actual slot; every provider/tool boundary
     /// still passes Explorer's routing, profile and hierarchical budget guards.</summary>
     internal CommandAck ExecuteDelegation(DelegationId id,
-        Func<DelegationWork, CancellationToken, ExplorerTurn.TurnResult> execute, CancellationToken token)
+        Func<DelegationWork, CancellationToken, ExplorerTurn.TurnResult> execute, CancellationToken token,
+        bool waitForCapacity = false)
     {
         var session = _lastSessionId ?? throw new InvalidOperationException("No Session.");
         var run = _lastRunId ?? throw new InvalidOperationException("No Run.");
@@ -29,11 +30,33 @@ public sealed partial class OmniServer
         var messageId = commandId.ToString();
         var before = _store.CurrentSequence(session);
         using var cause = CausationScope.Begin(new CommandCausation(commandId));
-        using var capacity = AgentCapacity.For(_store).TryAcquire(session, run, id, token);
-        if (capacity is null) return Ack(RuntimeCommandOutcome.Deferred("WaitingForCapacity"));
+        AgentCapacity.Lease? capacity = null;
         DelegationWork? work = null;
         try
         {
+            var initial = _store.ReadFrom(session, 1);
+            var initialRun = initial.Where(evt => evt.RunId == run).ToArray();
+            var initialProjection = RunProjection.Replay(session, run, _codecs, initialRun);
+            var initialAuthority = initialProjection.ModeAuthority;
+            var initialDelegation = initial.Select(_codecs.Decode).OfType<DelegationCreated>()
+                .SingleOrDefault(evt => evt.Delegation.DelegationId == id)?.Delegation;
+            if (initialProjection.State != RunState.Running || initialAuthority?.Mode != RunMode.Orchestrate
+                || initialAuthority.Authorization is not { } initialAuthorization
+                || !initialAuthority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
+                return Ack(RuntimeCommandOutcome.Deferred("CoordinationLimitsUnavailable"));
+            if (initialDelegation is null) return Ack(RuntimeCommandOutcome.Deferred("DelegationUnavailable"));
+            if (initialAuthorization.Limits.MaxAgents < 2)
+                return Ack(RuntimeCommandOutcome.Deferred("AgentOrDepthLimit"));
+            var durableSequence = initial.Where(evt => evt.RunId == run)
+                .Single(evt => _codecs.Decode(evt) is DelegationCreated created
+                    && created.Delegation.DelegationId == id).Sequence;
+            var scheduler = AgentCapacity.For(_store);
+            capacity = waitForCapacity
+                ? scheduler.Acquire(session, run, id, initialAuthorization.Limits.MaxAgents,
+                    initialDelegation.Priority, readOnly: true, token, durableSequence)
+                : scheduler.TryAcquire(session, run, id, initialAuthorization.Limits.MaxAgents,
+                    initialDelegation.Priority, readOnly: true, token, durableSequence);
+            if (capacity is null) return Ack(RuntimeCommandOutcome.Deferred("WaitingForCapacity"));
             lock (_modeAuthorityMutationGate)
             {
                 var journal = _store.ReadFrom(session, 1);
@@ -51,15 +74,25 @@ public sealed partial class OmniServer
                 if (authority?.Mode != RunMode.Orchestrate || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
                     return Ack(RuntimeCommandOutcome.Deferred("CoordinationLimitsUnavailable"));
                 if (IsExecutionTerminal(facts, delegation.ParentExecutionId)) return Ack(RuntimeCommandOutcome.Deferred("SupervisorUnavailable"));
-                if (HasOpenModelStep(own) || HasOpenToolCall(own)) return Ack(RuntimeCommandOutcome.Deferred("ExecutionBoundaryRequired"));
+                var supervisor = facts.OfType<AgentExecutionStarted>()
+                    .SingleOrDefault(e => e.ExecutionId == delegation.ParentExecutionId);
+                if (supervisor is null) return Ack(RuntimeCommandOutcome.Deferred("SupervisorUnavailable"));
+                if (HasOpenModelStep(own, supervisor.LaneId) || HasOpenToolCall(own, supervisor.LaneId)
+                    || HasOpenModelStep(own, delegation.ChildLaneId) || HasOpenToolCall(own, delegation.ChildLaneId))
+                    return Ack(RuntimeCommandOutcome.Deferred("ExecutionBoundaryRequired"));
                 if (history.Phase == PreM6RecordPhase.Created)
                 {
-                    // Journal sequence is the FIFO priority; no invisible priority override.
-                    var first = own.Select(_codecs.Decode).OfType<DelegationCreated>().First(e =>
-                        records.Records["delegation:" + e.Delegation.DelegationId].Phase == PreM6RecordPhase.Created);
+                    // Durable explicit priority, then creation sequence for stable FIFO.
+                    var first = own.Select((evt, index) => (Event: evt, Index: index, Payload: _codecs.Decode(evt)))
+                        .Where(item => item.Payload is DelegationCreated created
+                            && records.Records["delegation:" + created.Delegation.DelegationId].Phase == PreM6RecordPhase.Created)
+                        .OrderByDescending(item => ((DelegationCreated)item.Payload).Delegation.Priority)
+                        .ThenBy(item => item.Event.Sequence).Select(item => (DelegationCreated)item.Payload).First();
                     if (first.Delegation.DelegationId != id) return Ack(RuntimeCommandOutcome.Deferred("QueuePredecessor"));
-                    if (records.Records.Values.Any(h => h.Phase == PreM6RecordPhase.Accepted
-                        && h.Facts.OfType<DelegationCreated>().Any(d => facts.OfType<DelegationCreated>().Any(e => e == d))))
+                    if (records.Records.Values.Where(h => h.Phase == PreM6RecordPhase.Accepted)
+                        .SelectMany(h => h.Facts.OfType<DelegationCreated>())
+                        .Any(created => !AgentCapacity.For(_store).IsActive(session, run,
+                            created.Delegation.DelegationId)))
                         return Ack(RuntimeCommandOutcome.Deferred("ExecutionOwnershipUnavailable"));
                 }
                 else
@@ -135,16 +168,21 @@ public sealed partial class OmniServer
             }
             return Ack(RuntimeCommandOutcome.Accepted());
         }
+        catch (OperationCanceledException) when (capacity is null)
+        {
+            return Ack(RuntimeCommandOutcome.Deferred("WaitingForCapacityCancelled"));
+        }
         catch (Exception failure)
         {
             if (work is not null)
             {
-                try { FailOwnedDelegation(work, capacity.Cancellation.IsCancellationRequested); }
+                try { FailOwnedDelegation(work, capacity?.Cancellation.IsCancellationRequested == true || token.IsCancellationRequested); }
                 catch (Exception checkpointFailure)
                 { return FailedDurableCommandAck(messageId, session, before, failure.Message + "; checkpoint: " + checkpointFailure.Message, false); }
             }
             return FailedDurableCommandAck(messageId, session, before, failure.Message, false);
         }
+        finally { capacity?.Dispose(); }
         CommandAck Ack(RuntimeCommandOutcome outcome) => CommandOutcomeAck(messageId, "ok", null, outcome, session, before, commandId);
     }
 

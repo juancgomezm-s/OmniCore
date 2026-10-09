@@ -28,6 +28,12 @@ using System.Text.Json;
 /// </summary>
 public sealed class EventStream
 {
+    // One authoritative writer per store/session, including validation. SQLite serializes the
+    // physical connection, but without this gate two EventStream instances could both validate
+    // against the same pre-append journal and then append conflicting transitions.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IEventStore,
+        System.Collections.Concurrent.ConcurrentDictionary<SessionId, object>> WriteGates = new();
+
     private readonly IEventStore _store;
 
     private readonly IEventCodecRegistry _codecs;
@@ -46,6 +52,8 @@ public sealed class EventStream
 
     private RunId? _runId;
 
+    public SessionId SessionId => _sessionId;
+
     public EventStream(IEventStore store, IEventCodecRegistry codecs, SessionId sessionId)
     {
         _store = store;
@@ -63,18 +71,87 @@ public sealed class EventStream
     /// </summary>
     public void Append(DomainEventPayload payload, DurabilityClass durability)
     {
-        ValidateModeAuthorityBatch(new[] { payload }, null);
-        CatchUp();
-        _tracker.Clone().Apply(payload);
-        var pendingRunId = _runId;
-        var envelope = BuildEnvelope(payload, ref pendingRunId, null, CausationScope.Current);
-        ValidatePreM6Records(new[] { envelope }, new[] { payload });
-        ValidateModeProposals(new[] { envelope }, new[] { payload });
-        _store.Append(_sessionId, envelope, durability, CancellationToken.None);
-        _runId = pendingRunId;
-        _tracker.Apply(payload);
-        _appliedLocally.Add(envelope.EventId);
-        _written.Add(payload);
+        lock (WriterGate())
+        {
+            ValidateModeAuthorityBatch(new[] { payload }, null);
+            CatchUp();
+            _tracker.Clone().Apply(payload);
+            var pendingRunId = _runId;
+            var envelope = BuildEnvelope(payload, ref pendingRunId, null, CausationScope.Current);
+            ValidatePreM6Records(new[] { envelope }, new[] { payload });
+            ValidateModeProposals(new[] { envelope }, new[] { payload });
+            _store.Append(_sessionId, envelope, durability, CancellationToken.None);
+            _runId = pendingRunId;
+            _tracker.Apply(payload);
+            _appliedLocally.Add(envelope.EventId);
+            _written.Add(payload);
+        }
+    }
+
+    /// <summary>Evaluates a bounded admission check against the latest journal and appends the
+    /// boundary event while retaining the store/session writer gate. The callback must be
+    /// synchronous and must not call providers, tools, or wait for user input.</summary>
+    public DomainEvent AppendAdmitted(DomainEventPayload payload, DurabilityClass durability,
+        Action<IReadOnlyList<DomainEvent>> admit)
+    {
+        ArgumentNullException.ThrowIfNull(admit);
+        lock (WriterGate())
+        {
+            CatchUp();
+            admit(_store.ReadFrom(_sessionId, 1));
+            Append(payload, durability);
+            return _store.ReadFrom(_sessionId, 1).Last();
+        }
+    }
+
+    /// <summary>Durably admits one exact tool request and returns a process-local capability
+    /// for the matching ToolRuntime call.</summary>
+    public ToolCallRequestReceipt AppendToolCallRequestAdmitted(ToolCallRequested request,
+        Action<IReadOnlyList<DomainEvent>> admit)
+    {
+        var persisted = AppendAdmitted(request, DurabilityClass.Standard, admit);
+        if (_codecs.Decode(persisted) is not ToolCallRequested decoded || decoded != request)
+            throw new InvalidDataException("Tool request receipt does not match its canonical event.");
+        return new ToolCallRequestReceipt(persisted, request);
+    }
+
+    public bool IsCurrentToolCallRequestReceipt(ToolCallRequestReceipt receipt, ValidatedToolCall call)
+    {
+        ArgumentNullException.ThrowIfNull(receipt);
+        ArgumentNullException.ThrowIfNull(call);
+        if (!receipt.MatchesCall(call) || receipt.SessionId != _sessionId) return false;
+        lock (WriterGate())
+        {
+            CatchUp();
+            var journal = _store.ReadFrom(_sessionId, 1);
+            var persisted = journal.SingleOrDefault(evt => evt.Sequence == receipt.Sequence
+                && evt.EventId == receipt.EventId);
+            var scope = ExecutionScope.Current;
+            if (persisted is null || scope is null
+                || !receipt.MatchesScope(scope.RunId, scope.TaskId, scope.LaneId, scope.TurnId, scope.ExecutionId)
+                || persisted.SessionId != receipt.SessionId || persisted.RunId != receipt.RunId
+                || persisted.TaskId != receipt.TaskId || persisted.LaneId != receipt.LaneId
+                || persisted.TurnId != receipt.TurnId || persisted.ExecutionId != receipt.ExecutionId
+                || _codecs.Decode(persisted) is not ToolCallRequested request || request != receipt.Request
+                || _tracker.ToolCall(call.ToolCallId) != ToolCallState.Requested)
+                return false;
+            return !journal.Any(evt => evt.Sequence > receipt.Sequence && evt.ToolCallId == call.ToolCallId);
+        }
+    }
+
+    /// <summary>Atomic batch variant of <see cref="AppendAdmitted"/>.</summary>
+    public void AppendBatchAdmitted(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability,
+        Action<IReadOnlyList<DomainEvent>> admit,
+        IReadOnlyList<ExecutionScopeState?>? executionScopes = null,
+        IReadOnlyList<CausationId?>? causations = null)
+    {
+        ArgumentNullException.ThrowIfNull(admit);
+        lock (WriterGate())
+        {
+            CatchUp();
+            admit(_store.ReadFrom(_sessionId, 1));
+            AppendBatch(payloads, durability, executionScopes, causations);
+        }
     }
 
     /// <summary>
@@ -107,6 +184,8 @@ public sealed class EventStream
     public void AppendBatch(IReadOnlyList<DomainEventPayload> payloads, DurabilityClass durability,
         IReadOnlyList<ExecutionScopeState?>? executionScopes, IReadOnlyList<CausationId?>? causations)
     {
+        lock (WriterGate())
+        {
         ArgumentNullException.ThrowIfNull(payloads);
         if (executionScopes is not null && executionScopes.Count != payloads.Count)
             throw new ArgumentException("Each batch payload requires a corresponding execution scope.", nameof(executionScopes));
@@ -145,7 +224,12 @@ public sealed class EventStream
             _appliedLocally.Add(envelopes[i].EventId);
             _written.Add(payloads[i]);
         }
+        }
     }
+
+    private object WriterGate() => WriteGates.GetValue(_store,
+        _ => new System.Collections.Concurrent.ConcurrentDictionary<SessionId, object>())
+        .GetOrAdd(_sessionId, static _ => new object());
 
     private void ValidatePreM6Records(IReadOnlyList<DomainEvent> envelopes, IReadOnlyList<DomainEventPayload> payloads)
     {

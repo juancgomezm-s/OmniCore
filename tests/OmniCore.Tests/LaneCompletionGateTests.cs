@@ -296,24 +296,75 @@ public sealed class LaneCompletionGateTests
     [Fact]
     public void The_pipeline_attributes_toolcalls_written_before_their_turn()
     {
-        // El journal de la simulación escribe la cadena de la ToolCall antes del TurnStarted que
-        // la envuelve: la ToolCall pertenece igualmente a la Lane de ese Turn.
+        // A legacy, single-Lane Run has an unambiguous owner for simulation events written first.
         var store = new InMemoryEventStore();
         var session = SessionId.New();
         var run = TestRun.Open(store, session);
         var stream = new EventStream(store, Codecs, session);
-        var work = OpenWorkTask(stream, run);
         var call = ToolCallId.New();
         ToolCallChain(stream, call, ToolCallState.Started); // antes del Turn, estilo sim
         var turn = TurnId.New();
-        stream.Append(new TurnStarted(turn, work.Lane));
+        stream.Append(new TurnStarted(turn, run.RootLane));
         stream.Append(new TurnCompleted(turn));
 
-        var result = new LaneCompletionPipeline().Check(Codecs, Journal(store, session), work.Lane);
+        var result = new LaneCompletionPipeline().Check(Codecs, Journal(store, session), run.RootLane);
 
         Assert.False(result.Passed); // la ToolCall sin resolver es de esta Lane
         Assert.Contains(result.Missing, m => m.Contains(call.ToString()) && m.Contains("Started"));
         Assert.DoesNotContain(result.Missing, m => m.Contains("abierto")); // el Turn sí está cerrado
+    }
+
+    [Fact]
+    public void Open_tool_call_in_a_sibling_lane_does_not_block_completion_or_activity_of_this_lane()
+    {
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        var run = TestRun.Open(store, session);
+        var stream = new EventStream(store, Codecs, session);
+        var laneA = OpenWorkTask(stream, run);
+        var laneB = OpenWorkTask(stream, run);
+        var turnA = TurnId.New();
+        var turnB = TurnId.New();
+        stream.Append(new TurnStarted(turnA, laneA.Lane));
+        stream.Append(new TurnCompleted(turnA));
+        stream.Append(new TurnStarted(turnB, laneB.Lane));
+        var callB = ToolCallId.New();
+        using (ExecutionScope.Begin(new ExecutionScopeState(run.RunId, laneB.Task, laneB.Lane, turnB)))
+            ToolCallChain(stream, callB, ToolCallState.Started);
+
+        var journal = Journal(store, session);
+        var gateA = new LaneCompletionPipeline().Check(Codecs, journal, laneA.Lane);
+        var activityA = LaneActivityProjection.Derive(Codecs, journal, laneA.Lane);
+
+        Assert.True(gateA.Passed, string.Join(", ", gateA.Missing));
+        Assert.Equal(LaneActivity.None, activityA);
+        Assert.False(new LaneCompletionPipeline().Check(Codecs, journal, laneB.Lane).Passed);
+    }
+
+    [Fact]
+    public void Unattributed_open_tool_call_in_a_multi_lane_run_blocks_completion_as_ambiguous()
+    {
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        var run = TestRun.Open(store, session);
+        var stream = new EventStream(store, Codecs, session);
+        var laneA = OpenWorkTask(stream, run);
+        var laneB = OpenWorkTask(stream, run);
+        var turnA = TurnId.New();
+        var turnB = TurnId.New();
+        stream.Append(new TurnStarted(turnA, laneA.Lane));
+        stream.Append(new TurnStarted(turnB, laneB.Lane));
+        var call = ToolCallId.New();
+        ToolCallChain(stream, call, ToolCallState.Started); // legacy receipt while two Lanes are active
+        stream.Append(new TurnCompleted(turnA));
+
+        var journal = Journal(store, session);
+        var gateA = new LaneCompletionPipeline().Check(Codecs, journal, laneA.Lane);
+        var activityA = LaneActivityProjection.Derive(Codecs, journal, laneA.Lane);
+
+        Assert.False(gateA.Passed);
+        Assert.Contains(gateA.Missing, item => item.Contains(call.ToString()) && item.Contains("ambigua"));
+        Assert.Equal(LaneActivity.Stalled, activityA);
     }
 
     [Fact]

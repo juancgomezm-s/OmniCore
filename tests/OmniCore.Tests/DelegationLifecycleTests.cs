@@ -93,6 +93,128 @@ public sealed class DelegationLifecycleTests
         finally { Send(fx, "delegation.cancel", "\"delegationId\":\"" + child.DelegationId + "\""); }
     }
 
+    [Fact]
+    public async System.Threading.Tasks.Task Full_capacity_keeps_child_queued_and_cancellation_prevents_later_dispatch()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        fx.Grant(maxAgents: 2);
+        var running = Queue(fx);
+        var waiting = Queue(fx);
+        using var entered = new ManualResetEventSlim();
+        using var waitStarted = new ManualResetEventSlim();
+        var waitingProviderCalls = 0;
+        var dispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(running.DelegationId,
+            (_, token) => {
+                entered.Set();
+                token.WaitHandle.WaitOne();
+                token.ThrowIfCancellationRequested();
+                throw new InvalidOperationException("cancellation expected");
+            }, CancellationToken.None), TestContext.Current.CancellationToken);
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var waitingDispatch = System.Threading.Tasks.Task.Run(() => {
+            waitStarted.Set();
+            return fx.Server.ExecuteDelegation(waiting.DelegationId, (work, token) => {
+                Interlocked.Increment(ref waitingProviderCalls);
+                return fx.Explorer((_, _) => new ModelResponse([new TextBlock("should not run")],
+                    StopReason.EndTurn, new TokenUsage(1, 1, 0, 0, 0), null,
+                    new ProviderMetadata("fixture", "fixture", null))).Ask(work.Objective, "system",
+                    work.Session, work.Run, work.Delegation.ChildLaneId, "", token);
+            }, CancellationToken.None, waitForCapacity: true);
+        }, TestContext.Current.CancellationToken);
+        Assert.True(waitStarted.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        try
+        {
+            Assert.True(SpinWait.SpinUntil(() => AgentCapacity.For(fx.Store)
+                .ReadSnapshot(fx.Session, fx.Run).Waiting == 1, TimeSpan.FromSeconds(10)));
+            var deferred = Execute(fx, waiting);
+            Assert.Equal("WaitingForCapacity", deferred.Outcome?.Reason);
+            Assert.DoesNotContain(fx.Payloads.OfType<DelegationAccepted>(), item => item.DelegationId == waiting.DelegationId);
+            Assert.Equal(LaneState.Queued, LaneProjection.Replay(fx.Codecs,
+                fx.Store.ReadFrom(fx.Session, 1)).StateOf(waiting.ChildLaneId));
+            Assert.Equal("ok", Send(fx, "delegation.cancel", "\"delegationId\":\"" + waiting.DelegationId + "\"").Status);
+            var cancelledWait = await waitingDispatch.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Equal("WaitingForCapacityCancelled", cancelledWait.Outcome?.Reason);
+            Assert.Equal(0, waitingProviderCalls);
+            Assert.Equal("ok", Send(fx, "delegation.cancel", "\"delegationId\":\"" + running.DelegationId + "\"").Status);
+            await dispatch.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.DoesNotContain(fx.Payloads.OfType<DelegationAccepted>(), item => item.DelegationId == waiting.DelegationId);
+            Assert.DoesNotContain(fx.Store.ReadFrom(fx.Session, 1).Where(e => e.LaneId == waiting.ChildLaneId),
+                evt => fx.Codecs.Decode(evt) is ModelStepStarted);
+            Assert.Equal(TaskState.Cancelled, TaskGraphProjection.Replay(fx.Codecs,
+                fx.Store.ReadFrom(fx.Session, 1)).Get(waiting.ChildTaskId)!.State);
+        }
+        finally
+        {
+            Send(fx, "delegation.cancel", "\"delegationId\":\"" + running.DelegationId + "\"");
+            await System.Threading.Tasks.Task.WhenAll(dispatch, waitingDispatch)
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Distinct_children_hold_parallel_leases_at_real_provider_boundaries()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        fx.Grant(maxAgents: 3);
+        var first = Queue(fx, tokens: 16_384);
+        var second = Queue(fx, tokens: 16_384);
+        using var firstEntered = new ManualResetEventSlim();
+        using var secondEntered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        ExecutionId[] members = [];
+        var usage = new TokenUsage(2, 1, 0, 0, 0);
+        ModelResponse Response() => new([new TextBlock("respuesta paralela")], StopReason.EndTurn,
+            usage, null, new ProviderMetadata("fixture", "fixture", null));
+        var firstDispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(first.DelegationId,
+            (work, token) => fx.Explorer((_, providerToken) => {
+                firstEntered.Set();
+                release.Wait(providerToken);
+                return Response();
+            }).Ask(work.Objective, "system", work.Session, work.Run, work.Delegation.ChildLaneId, "", token),
+            CancellationToken.None), TestContext.Current.CancellationToken);
+        Assert.True(firstEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var secondDispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(second.DelegationId,
+            (work, token) => fx.Explorer((_, providerToken) => {
+                secondEntered.Set();
+                release.Wait(providerToken);
+                return Response();
+            }).Ask(work.Objective, "system", work.Session, work.Run, work.Delegation.ChildLaneId, "", token),
+            CancellationToken.None), TestContext.Current.CancellationToken);
+        try
+        {
+            Assert.True(secondEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            Assert.Equal(2, fx.Payloads.OfType<DelegationAccepted>().Count());
+            Assert.Equal(2, fx.Store.ReadFrom(fx.Session, 1).Count(evt =>
+                (evt.LaneId == first.ChildLaneId || evt.LaneId == second.ChildLaneId)
+                && fx.Codecs.Decode(evt) is ModelStepStarted));
+            var owner = fx.Payloads.OfType<AgentExecutionStarted>().Single(e => e.ParentExecutionId is null);
+            members = fx.Payloads.OfType<DelegationAccepted>().Select(e => e.ChildExecutionId).ToArray();
+            var join = Send(fx, "execution.join", "\"ownerExecutionId\":\"" + owner.ExecutionId
+                + "\",\"kind\":\"All\",\"members\":[\"" + members[0] + "\",\"" + members[1] + "\"]");
+            Assert.Equal("ok", join.Status);
+            Assert.Equal(TaskState.Blocked, TaskGraphProjection.Replay(fx.Codecs,
+                fx.Store.ReadFrom(fx.Session, 1)).Get(fx.RootTask)!.State);
+        }
+        finally { release.Set(); }
+        var completed = await System.Threading.Tasks.Task.WhenAll(firstDispatch, secondDispatch)
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.All(completed, ack => Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind));
+        Assert.Equal(2, fx.Payloads.OfType<AgentExecutionCompleted>().Count());
+        Assert.Equal(2, fx.Payloads.OfType<AgentResultProduced>().Count());
+        Assert.Empty(fx.Payloads.OfType<ExecutionJoinResolved>());
+        fx.Reopen();
+        var firstResult = fx.Payloads.OfType<AgentResultProduced>().Single(e => e.ExecutionId == members[0]);
+        var secondResult = fx.Payloads.OfType<AgentResultProduced>().Single(e => e.ExecutionId == members[1]);
+        Assert.Equal("ok", Disposition(fx, first, firstResult).Status);
+        Assert.Empty(fx.Payloads.OfType<ExecutionJoinResolved>());
+        Assert.Equal("ok", Disposition(fx, second, secondResult).Status);
+        Assert.Equal(2, Assert.Single(fx.Payloads.OfType<ExecutionJoinResolved>()).SatisfyingExecutionIds.Count);
+        Assert.Equal(TaskState.Running, TaskGraphProjection.Replay(fx.Codecs,
+            fx.Store.ReadFrom(fx.Session, 1)).Get(fx.RootTask)!.State);
+    }
+
     [Theory]
     [InlineData("All", 2)]
     [InlineData("Any", 1)]

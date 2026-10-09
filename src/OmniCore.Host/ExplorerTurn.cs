@@ -22,7 +22,7 @@ using PersistedSpend = OmniCore.Host.CanonicalSpendReader.Snapshot;
 public sealed class ExplorerTurn
 {
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IEventStore,
-        System.Collections.Concurrent.ConcurrentDictionary<(SessionId, RunId), SemaphoreSlim>> RunExecutionGates = new();
+        System.Collections.Concurrent.ConcurrentDictionary<(SessionId, RunId, LaneId?), SemaphoreSlim>> RunExecutionGates = new();
     public static readonly int MaxSteps = 8;
 
     private readonly Func<ModelRequest, CancellationToken, ModelResponse> _complete;
@@ -250,7 +250,7 @@ public sealed class ExplorerTurn
         _codecs = codecs;
         _artifacts = artifacts;
         _userSpendReader = userSpendReader;
-        _spendReservations = spendReservations ?? (enforceDefaultSpendCaps && userSpendReader is not null
+        _spendReservations = spendReservations ?? (userSpendReader is not null
             ? new SqliteSpendReservationStore(Path.Combine(userSpendReader.UserDataDirectory, "spend-reservations.db")) : null);
         _maximumGenerationRequestAttempts = maximumGenerationRequestAttempts;
         _audit = audit;
@@ -389,9 +389,14 @@ public sealed class ExplorerTurn
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null,
         TurnInstructionSnapshot? instructionSnapshot = null, Action<TurnStarted>? turnStarted = null)
     {
-        // One in-process canonical writer per Run. Independent Explorer instances must not
-        // both admit against the same pre-dispatch counters. User commands remain unblocked.
-        var gate = RunExecutionGates.GetValue(_store, _ => new()).GetOrAdd((sessionId, runId), _ => new(1, 1));
+        // Without a durable shared reservation ledger, keep finite-budget work serialized for
+        // compatibility and fail-safe behavior. Production Host installs that ledger for the
+        // User profile, which lets independent read-only Lanes execute provider waits in parallel.
+        // The ledger transactions now own admission across turns; this semaphore only prevents
+        // two workers from re-entering the same Lane concurrently.
+        var laneGateKey = _spendReservations is null ? (LaneId?)null : laneId;
+        var gate = RunExecutionGates.GetValue(_store, _ => new())
+            .GetOrAdd((sessionId, runId, laneGateKey), _ => new(1, 1));
         gate.Wait(cancellationToken);
         try
         {
@@ -519,9 +524,14 @@ public sealed class ExplorerTurn
         // unpriced session with no historical monetary evidence can omit monetary replay.
         var replayMonetarySpend = _enforceDefaultSpendCaps || budget.MaxCostUsd is not null
             || _pricing is not null || HasHistoricalMonetaryEvidence(runEvents);
-        var persistedSpend = replayMonetarySpend
-            ? ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)
-            : new PersistedSpend(0m, 0m, 0m, false);
+        if (replayMonetarySpend)
+        {
+            var openingSpend = CombineSpend(ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps),
+                ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps));
+            if ((_enforceDefaultSpendCaps || budget.MaxCostUsd is not null) && openingSpend.Incomplete)
+                return new TurnResult("uso histórico incompleto: no se puede hacer cumplir el tope",
+                    StopReason.Cancelled, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+        }
 
         List<ModelMessage> messages;
         var messageOwners = new Dictionary<ModelMessage, RunId>(ReferenceEqualityComparer.Instance);
@@ -583,9 +593,9 @@ public sealed class ExplorerTurn
 
         PersistedSpend CurrentSpend() => !replayMonetarySpend
             ? new PersistedSpend(0m, 0m, 0m, false)
-            : CombineSpend(CombineSpend(persistedSpend,
-            ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)),
-            ReadOtherWorkspaceSpend(stream, sessionId, runId, today));
+            : CombineSpend(CombineSpend(ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps),
+                ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps)),
+                ReadOtherWorkspaceSpend(stream, sessionId, runId, today));
 
         void ValidateBeforeInvocation()
         {
@@ -597,9 +607,9 @@ public sealed class ExplorerTurn
                 throw new BudgetExceededException("precio desconocido: no se puede hacer cumplir el tope");
             if (capped && spend.Incomplete)
                 throw new BudgetExceededException("uso histórico incompleto: no se puede hacer cumplir el tope");
-            var runCost = AccumulatedSpend(spend.RunUsd, guard.CostUsd(), capped);
-            var sessionCost = AccumulatedSpend(spend.SessionUsd, guard.CostUsd(), capped);
-            var dailyCost = AccumulatedSpend(spend.DailyUsd, guard.CostUsd(), capped);
+            var runCost = AccumulatedSpend(spend.RunUsd, 0m, capped);
+            var sessionCost = AccumulatedSpend(spend.SessionUsd, 0m, capped);
+            var dailyCost = AccumulatedSpend(spend.DailyUsd, 0m, capped);
             if (budget.MaxCostUsd is not null && runCost >= budget.MaxCostUsd.Value)
                 throw new BudgetExceededException("límite de costo de Run alcanzado ($" + budget.MaxCostUsd.Value + ")",
                     new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
@@ -614,30 +624,107 @@ public sealed class ExplorerTurn
         void ValidateUltraCode(bool invocation = false, ToolCallId? toolCall = null)
         {
             DelegationBudgetGuard.Validate(stream.EventsSince(1), _codecs, _artifacts,
-                sessionId, runId, laneId, turnId, !isResume && !started, invocation, toolCall,
+                _store, _spendReservations, sessionId, runId, laneId, turnId,
+                !isResume && !started, invocation, toolCall,
                 ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity, _maximumGenerationRequestAttempts),
                 ModelInvocationCostBound.TokenCeiling(_selection, _modelContextCapacity, _maximumGenerationRequestAttempts));
-            UltraCodeExecutionGuard.Validate(stream.EventsSince(1), _codecs, _artifacts,
+            UltraCodeExecutionGuard.Validate(stream.EventsSince(1), _codecs, _artifacts, _store, _spendReservations,
                 sessionId, runId, turnId, newTurn: !isResume && !started, invocation,
                 ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity,
                     _maximumGenerationRequestAttempts), toolCall);
         }
 
+        void ValidateCounterBudget(IReadOnlyList<DomainEvent> journal, bool newTurn, ToolCallId? newToolCall)
+        {
+            var events = journal.Where(evt => evt.RunId == runId || evt.CorrelationId == runId).ToArray();
+            var payloads = events.Select(_codecs.Decode).ToArray();
+            var runBudget = payloads.OfType<RunCreated>().SingleOrDefault()?.Budget;
+            if (runBudget is null) return;
+            var turns = payloads.OfType<TurnStarted>().Select(item => item.TurnId).Distinct().ToArray();
+            var tools = payloads.OfType<ToolCallRequested>().Select(item => item.ToolCallId).Distinct().ToArray();
+            var allocations = RunBudgetPool.For(_store).ReadChildAllocations(journal, _codecs,
+                _artifacts, _store, _spendReservations, sessionId, runId, laneId);
+            var addingTurn = newTurn && !turns.Contains(turnId) ? 1L : 0L;
+            var addingTool = newToolCall is { } id && !tools.Contains(id) ? 1L : 0L;
+            if (runBudget.MaxTurns is { } maxTurns
+                && checked(turns.LongLength + allocations.Turns + addingTurn) > maxTurns)
+                throw new BudgetExceededException("límite de turnos del Run alcanzado");
+            if (runBudget.MaxToolCalls is { } maxTools
+                && checked(tools.LongLength + allocations.ToolCalls + addingTool) > maxTools)
+                throw new BudgetExceededException("límite de herramientas del Run alcanzado");
+        }
+
         void ValidateTokenBudget(bool includeNextInvocation)
         {
             if (budget.MaxTokens is null) return;
-            var tokens = RunTokenBudgetReader.Read(stream.EventsSince(1), _codecs, runId, budget.MaxTokens);
+            var pool = RunBudgetPool.For(_store);
+            var tokens = RunTokenBudgetReader.Read(stream.EventsSince(1), _codecs, runId, budget.MaxTokens,
+                (evt, step) => pool.OwnsPendingPrimary(evt, step, _spendReservations));
             if (tokens.Remaining is not { } remaining)
                 throw new BudgetExceededException("uso de tokens histórico desconocido: " + tokens.Limitation);
             if (remaining < 0)
                 throw new BudgetExceededException("límite de tokens del Run excedido: " + tokens.Limit);
             if (!includeNextInvocation) return;
+            // When a durable pool is configured, its SQLite write transaction accounts for every
+            // sibling ceiling atomically, including pending requests. The replay value alone is
+            // only settled usage and must not be mistaken for unreserved availability.
+            if (_spendReservations is not null) return;
             var maximum = ModelInvocationCostBound.TokenCeiling(_selection, _modelContextCapacity,
                 _maximumGenerationRequestAttempts);
             if (maximum is null)
                 throw new BudgetExceededException("cota de tokens de invocación desconocida");
             if (maximum.Value > remaining)
                 throw new BudgetExceededException("límite de tokens del Run insuficiente para la siguiente invocación");
+        }
+
+        string? ReserveTokenInvocation(string primaryIdentity)
+        {
+            if (_spendReservations is null) return null;
+            var currentTask = stream.EventsSince(1).Select(_codecs.Decode).OfType<TaskCreated>()
+                .SingleOrDefault(task => task.TaskId == turnTask);
+            var taskTokenLimit = currentTask?.ParentTaskId is not null ? currentTask.Budget.MaxTokens : null;
+            if (budget.MaxTokens is null && taskTokenLimit is null) return null;
+            var maximum = ModelInvocationCostBound.TokenCeiling(_selection, _modelContextCapacity,
+                _maximumGenerationRequestAttempts);
+            if (maximum is null || maximum <= 0)
+                throw new BudgetExceededException("cota de tokens de invocación desconocida");
+            var pool = RunBudgetPool.For(_store);
+            var identity = RunBudgetPool.TokenReservationIdentity(primaryIdentity);
+            var admission = _spendReservations.TryReserve(identity, maximum.Value,
+                () =>
+                {
+                    // Re-read canonical usage while the SQLite reservation write transaction is
+                    // held. A sibling may have completed and settled since the outer guard ran;
+                    // stale settled totals plus a now-released pending row would over-admit.
+                    var events = stream.EventsSince(1);
+                    var limits = new List<SqliteSpendReservationStore.Limit>();
+                    if (budget.MaxTokens is { } limit)
+                    {
+                        var state = RunTokenBudgetReader.Read(events, _codecs, runId, limit,
+                            (evt, step) => pool.OwnsPendingPrimary(evt, step, _spendReservations));
+                        if (state.Remaining is not { } remaining || remaining < 0)
+                            throw new BudgetExceededException("uso de tokens histórico desconocido: " + state.Limitation);
+                        var allocations = pool.ReadChildAllocations(events, _codecs, _artifacts, _store,
+                            _spendReservations, sessionId, runId, laneId);
+                        var held = checked(limit - remaining + allocations.Tokens);
+                        limits.Add(new("run_tokens", runId.ToString(), limit, held));
+                    }
+                    if (taskTokenLimit is { } taskLimit && currentTask is not null)
+                    {
+                        var own = events.Where(evt => evt.RunId == runId && evt.LaneId == laneId).ToArray();
+                        var state = RunTokenBudgetReader.Read(own, _codecs, runId, taskLimit,
+                            (evt, step) => pool.OwnsPendingPrimary(evt, step, _spendReservations));
+                        if (state.Remaining is not { } remaining || remaining < 0)
+                            throw new BudgetExceededException("uso de tokens del Task histórico desconocido: " + state.Limitation);
+                        limits.Add(new("task_tokens", laneId.ToString(), taskLimit, taskLimit - remaining));
+                    }
+                    return limits;
+                }, out var blocked);
+            if (admission == SqliteSpendReservationStore.Admission.AlreadyExists)
+                throw new BudgetExceededException("invocación ya reservada: no se permite repetir el envío");
+            if (admission == SqliteSpendReservationStore.Admission.Insufficient)
+                throw new BudgetExceededException("límite de tokens del Run insuficiente para la siguiente invocación (" + blocked + ")");
+            return identity;
         }
 
         bool CanInvokeMeta()
@@ -650,7 +737,16 @@ public sealed class ExplorerTurn
 
         string? ReserveInvocation(string id)
         {
-            if (_spendReservations is null || (budget.MaxCostUsd is null && !_enforceDefaultSpendCaps)) return null;
+            if (_spendReservations is null) return null;
+            var admissionEvents = stream.EventsSince(1);
+            var currentTask = admissionEvents.Select(_codecs.Decode).OfType<TaskCreated>()
+                .SingleOrDefault(task => task.TaskId == turnTask);
+            var childCostLimit = currentTask?.ParentTaskId is not null ? currentTask.Budget.MaxCostUsd : null;
+            var modeAuthorization = RunProjection.Replay(sessionId, runId, _codecs, admissionEvents)
+                .ModeAuthority?.Authorization;
+            var hasCappedAdmission = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps
+                || childCostLimit is not null || modeAuthorization is not null;
+            if (!hasCappedAdmission) return null;
             if (_enforceDefaultSpendCaps && _userSpendReader is not null)
                 QualificationSpendAccounting.Reconcile(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(
                     _userSpendReader.UserDataDirectory, CancellationToken.None), _spendReservations);
@@ -669,8 +765,28 @@ public sealed class ExplorerTurn
                     ReadOtherWorkspaceSpend(stream, sessionId, runId, day));
                 if (fresh.Incomplete || fresh.RunUsd is null || fresh.SessionUsd is null || fresh.DailyUsd is null)
                     throw new BudgetExceededException("uso histórico incompleto para reserva");
+                var allocations = RunBudgetPool.For(_store).ReadChildAllocations(stream.EventsSince(1), _codecs,
+                    _artifacts, _store, _spendReservations, sessionId, runId, laneId);
                 var limits = new List<SqliteSpendReservationStore.Limit>();
-                if (budget.MaxCostUsd is { } runLimit) limits.Add(new("run", runId.ToString(), runLimit, fresh.RunUsd.Value));
+                var allocatedRunSpend = checked(fresh.RunUsd.Value + allocations.CostUsd);
+                if (budget.MaxCostUsd is { } runLimit)
+                    limits.Add(new("run", runId.ToString(), runLimit, allocatedRunSpend));
+                if (modeAuthorization is { } authorization)
+                    limits.Add(new("ultra_run", runId.ToString(), authorization.Limits.MaxSpendUsd,
+                        allocatedRunSpend));
+                if (childCostLimit is { } taskLimit && currentTask is not null)
+                {
+                    var ownEvents = stream.EventsSince(1).Where(evt => evt.RunId == runId && evt.LaneId == laneId).ToArray();
+                    var reader = new CanonicalSpendReader(_codecs, _artifacts);
+                    var pool = RunBudgetPool.For(_store);
+                    var ownPrimary = reader.ReadPrimary(ownEvents, sessionId, runId, day,
+                        (evt, step) => pool.OwnsPendingPrimary(evt, step, _spendReservations));
+                    var ownMeta = reader.ReadMeta(ownEvents, sessionId, runId, day);
+                    if (ownPrimary.Incomplete || ownMeta.Incomplete || ownPrimary.RunUsd is null || ownMeta.RunUsd is null)
+                        throw new BudgetExceededException("uso histórico del Task incompleto para reserva");
+                    limits.Add(new("task_usd", laneId.ToString(), taskLimit,
+                        checked(ownPrimary.RunUsd.Value + ownMeta.RunUsd.Value)));
+                }
                 if (_enforceDefaultSpendCaps)
                 {
                     var effectiveDaily = _dailyCapUsd;
@@ -681,8 +797,10 @@ public sealed class ExplorerTurn
                             sessionId, runId, day, "daily", _dailyCapUsd);
                     effectiveDaily = Math.Max(effectiveDaily, UserDailyBudgetContinuation.Limit(_userSpendReader, _codecs, day, _dailyCapUsd));
                     reservationDailyCap = effectiveDaily;
-                    limits.Add(new("session", sessionId.ToString(), sessionCap, fresh.SessionUsd.Value));
-                    limits.Add(new("daily", "user", effectiveDaily, fresh.DailyUsd.Value));
+                    limits.Add(new("session", sessionId.ToString(), sessionCap,
+                        checked(fresh.SessionUsd.Value + allocations.CostUsd)));
+                    limits.Add(new("daily", "user", effectiveDaily,
+                        checked(fresh.DailyUsd.Value + allocations.CostUsd)));
                 }
                 return limits;
             }
@@ -769,7 +887,12 @@ public sealed class ExplorerTurn
                     overflowStart.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact,
                         instructionSnapshot, reasoningResolution));
                 }
-                stream.AppendBatch(overflowStart, DurabilityClass.Barrier);
+                if (isResume) stream.AppendBatch(overflowStart, DurabilityClass.Barrier);
+                else stream.AppendBatchAdmitted(overflowStart, DurabilityClass.Barrier, journal =>
+                {
+                    ValidateCounterBudget(journal, newTurn: true, newToolCall: null);
+                    ValidateUltraCode();
+                });
                 started = true;
                 if (!isResume)
                     turnStarted?.Invoke(overflowStart.OfType<TurnStarted>().Single());
@@ -803,7 +926,11 @@ public sealed class ExplorerTurn
                     startEvents.Add(new UserInputReceived(runId, "\"" + encodedInput + "\"", null, origin));
                 startEvents.Add(new TurnStarted(turnId, laneId, fingerprint, snapshotArtifact,
                     instructionSnapshot, reasoningResolution));
-                stream.AppendBatch(startEvents, DurabilityClass.Barrier);
+                stream.AppendBatchAdmitted(startEvents, DurabilityClass.Barrier, journal =>
+                {
+                    ValidateCounterBudget(journal, newTurn: true, newToolCall: null);
+                    ValidateUltraCode();
+                });
                 started = true;
                 turnStarted?.Invoke(startEvents.OfType<TurnStarted>().Single());
                 // Límites de mutación por Turn (ADR-0044 §5): un Turn nuevo reinicia el contador del
@@ -866,37 +993,50 @@ public sealed class ExplorerTurn
 
                 ModelResponse resolved;
                 string? stepReservation = null;
+                string? tokenReservation = null;
                 var reservationDispatched = false;
+                var tokenReservationDispatched = false;
+                IDisposable? ownedPrimary = null;
                 int? durableStepIndex = null;
                 var providerEntered = false;
                 try
                 {
                     var budgeted = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
-                    ValidateBeforeInvocation();
-
-                    stepReservation = ReserveInvocation($"primary/{sessionId}/{runId}/{laneId}/{turnId}/{nextModelStepIndex}");
-
                     var stepIndex = nextModelStepIndex++;
-                    cancellationToken.ThrowIfCancellationRequested();
-                    using (var contextPublication = (_artifacts as IArtifactPublicationLease)
-                        ?.AcquirePublicationLease(CancellationToken.None))
+                    var primaryIdentity = RunBudgetPool.PrimaryIdentity(sessionId, runId, laneId, turnId, stepIndex);
+                    using (RunBudgetPool.For(_store).EnterAdmission(sessionId, runId))
                     {
-                        preparedContext.PublishArtifacts();
-                        var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
-                            _selection.ContextBudget, _selection.ToolMode.ToString(),
-                            _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
-                            PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
-                            _selection.RouteId, reasoningResolution);
-                        var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
-                        stepEvents.Add(stepStart);
-                        stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
-                    }
-                    durableStepIndex = stepIndex;
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (stepReservation is not null)
-                    {
-                        _spendReservations!.MarkDispatched(stepReservation);
-                        reservationDispatched = true;
+                        ValidateBeforeInvocation();
+                        tokenReservation = ReserveTokenInvocation(primaryIdentity);
+                        stepReservation = ReserveInvocation(primaryIdentity);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        using (var contextPublication = (_artifacts as IArtifactPublicationLease)
+                            ?.AcquirePublicationLease(CancellationToken.None))
+                        {
+                            preparedContext.PublishArtifacts();
+                            var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
+                                _selection.ContextBudget, _selection.ToolMode.ToString(),
+                                _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
+                                PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
+                                _selection.RouteId, reasoningResolution);
+                            var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
+                            stepEvents.Add(stepStart);
+                            stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
+                        }
+                        durableStepIndex = stepIndex;
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (stepReservation is not null)
+                        {
+                            _spendReservations!.MarkDispatched(stepReservation);
+                            reservationDispatched = true;
+                        }
+                        if (tokenReservation is not null)
+                        {
+                            _spendReservations!.MarkDispatched(tokenReservation);
+                            tokenReservationDispatched = true;
+                        }
+                        if (stepReservation is not null || tokenReservation is not null)
+                            ownedPrimary = RunBudgetPool.For(_store).TrackOwnedPrimary(primaryIdentity);
                     }
                     using var generationAttempts = GenerationRequestAttemptScope.Enter();
                     providerEntered = true;
@@ -929,7 +1069,8 @@ public sealed class ExplorerTurn
                             stateDescriptor, EncodeVisibleContent(resolved.Content)),
                         "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse,
                         Sensitivity.Sensitive);
-                    var completionAfter = stepReservation is not null ? _store.CurrentSequence(sessionId) : 0;
+                    var completionAfter = stepReservation is not null || tokenReservation is not null
+                        ? _store.CurrentSequence(sessionId) : 0;
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
                         resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields,
                         new GenerationRequestAttemptEvidence(generationAttempts.ObservedSends,
@@ -948,6 +1089,29 @@ public sealed class ExplorerTurn
                                 && completed.StepIndex == stepIndex);
                         FinishReservation(stepReservation, stepCost, completionEvent.EventId.ToString(), generationAttempts.ObservedSends);
                     }
+                    var tokenUsage = resolved.Usage;
+                    var tokenFields = resolved.ReportedUsageFields;
+                    var tokenReservationStore = _spendReservations;
+                    if (tokenReservation is not null && tokenReservationStore is not null
+                        && tokenUsage is not null && !TokenUsageValidation.IsInvalid(tokenUsage, tokenFields)
+                        && tokenFields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output)
+                        && new GenerationRequestAttemptEvidence(generationAttempts.ObservedSends,
+                            _maximumGenerationRequestAttempts).HasCompleteUsageCoverage)
+                    {
+                        var completionEvent = stream.EventsSince(completionAfter + 1).Single(evt =>
+                            _codecs.Decode(evt) is ModelStepCompleted completed && completed.TurnId == turnId
+                                && completed.StepIndex == stepIndex);
+                        var usedTokens = checked(tokenUsage.Input + tokenUsage.Output);
+                        var maximumTokens = ModelInvocationCostBound.TokenCeiling(_selection,
+                            _modelContextCapacity, _maximumGenerationRequestAttempts);
+                        if (maximumTokens is { } ceiling && usedTokens <= ceiling)
+                            tokenReservationStore.Settle(tokenReservation, usedTokens, completionEvent.EventId.ToString());
+                        else
+                            tokenReservationStore.RecordUncertainCompletion(tokenReservation, usedTokens,
+                                completionEvent.EventId.ToString());
+                    }
+                    ownedPrimary?.Dispose();
+                    ownedPrimary = null;
                     // Preserve the individual invocation before attempting aggregate arithmetic.
                     // An unrepresentable total cannot become a wrapped summary or authorize tools.
                     usage = CombineUsage(usage, resolved.Usage);
@@ -967,9 +1131,9 @@ public sealed class ExplorerTurn
                     if (budgeted && stepCost is null)
                         throw new BudgetExceededException("uso del paso incompleto: no se puede hacer cumplir el tope");
                     var spend = CurrentSpend();
-                    var runCost = AccumulatedSpend(spend.RunUsd, guard.CostUsd(), budgeted);
-                    var sessionCost = AccumulatedSpend(spend.SessionUsd, guard.CostUsd(), budgeted);
-                    var dailyCost = AccumulatedSpend(spend.DailyUsd, guard.CostUsd(), budgeted);
+                    var runCost = AccumulatedSpend(spend.RunUsd, 0m, budgeted);
+                    var sessionCost = AccumulatedSpend(spend.SessionUsd, 0m, budgeted);
+                    var dailyCost = AccumulatedSpend(spend.DailyUsd, 0m, budgeted);
                     if (budget.MaxCostUsd is not null
                         && runCost > budget.MaxCostUsd.Value)
                         throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
@@ -992,6 +1156,9 @@ public sealed class ExplorerTurn
                         stream.Append(new ModelStepNotDispatched(turnId, unsentIndex), DurabilityClass.Barrier);
                     if (stepReservation is not null && !reservationDispatched)
                         _spendReservations!.ReleaseBeforeDispatch(stepReservation);
+                    if (tokenReservation is not null && !tokenReservationDispatched)
+                        _spendReservations!.ReleaseBeforeDispatch(tokenReservation);
+                    ownedPrimary?.Dispose();
                 }
 
                 // Cancellation arriving with a completed response must retain its durable
@@ -1036,12 +1203,30 @@ public sealed class ExplorerTurn
                     var validated = new ValidatedToolCall(call.Id, new ToolId(call.ToolName),
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
                     var exposed = VisibleTools().Any(tool => tool.Name == call.ToolName);
+                    ToolCallRequestReceipt? requestReceipt = null;
+                    // user.ask has no external effect. Keep its schema in CAS and append its
+                    // sanitized request + tool outcome + InteractionRequested atomically only
+                    // after the Host has prepared the redacted schema artifact.
+                    var deferQuestionRequest = exposed && call.ToolName == "user.ask"
+                        && _tools is ScriptedToolExecutor;
+                    if (!deferQuestionRequest && (!exposed || _tools is ScriptedToolExecutor))
+                    {
+                        var persistedArguments = call.ToolName == "user.ask"
+                            ? QuestionnaireArgumentDigest(call.ArgumentsJson) : call.ArgumentsJson;
+                        var requested = new ToolCallRequested(call.Id, validated.ProviderCallId,
+                            call.ToolName, persistedArguments);
+                        requestReceipt = stream.AppendToolCallRequestAdmitted(requested, journal =>
+                        {
+                            ValidateCounterBudget(journal, newTurn: false, newToolCall: call.Id);
+                            ValidateUltraCode(toolCall: call.Id);
+                        });
+                    }
                     var outcome = exposed
-                        ? _tools.ExecuteTool(validated, false, cancellationToken, stream)
+                        ? requestReceipt is not null && _tools is ScriptedToolExecutor scripted
+                            ? scripted.ExecuteTool(validated, false, cancellationToken, stream, requestReceipt)
+                            : _tools.ExecuteTool(validated, false, cancellationToken, stream)
                         : ToolOutcome.Failed("tool no disponible para este modelo", null,
                             ToolCallState.Rejected, new DomainEventPayload[] {
-                                new ToolCallRequested(call.Id, validated.ProviderCallId, call.ToolName,
-                                    call.ArgumentsJson),
                                 // Para el modelo la tool no existe: la frontera de capacidad no
                                 // la expone, así que el rechazo se tipa UNKNOWN_TOOL (spec §71).
                                 new ToolCallRejected(call.Id, "tool no disponible para este modelo",
@@ -1127,7 +1312,14 @@ public sealed class ExplorerTurn
                         && RunProjection.Replay(sessionId, runId, _codecs,
                             _store.ReadFrom(sessionId, 1)).State == RunState.Running)
                         toPersist.Add(new RunAwaitingInput(runId, laneId));
-                    stream.AppendBatch(toPersist, DurabilityClass.Standard);
+                    if (deferQuestionRequest)
+                        stream.AppendBatchAdmitted(toPersist, DurabilityClass.Standard, journal =>
+                        {
+                            ValidateCounterBudget(journal, newTurn: false, newToolCall: call.Id);
+                            ValidateUltraCode(toolCall: call.Id);
+                        });
+                    else
+                        stream.AppendBatch(toPersist, DurabilityClass.Standard);
 
                     if (pendingPermission is { } permissionInteractionId)
                     {
@@ -1434,7 +1626,10 @@ public sealed class ExplorerTurn
 
         var snapshot = new CanonicalSpendReader(_codecs, artifacts).ReadPrimary(
             (stepStarts ?? []).Concat(stepCompletions ?? []).Concat(unsentSteps ?? []).Concat(completions),
-            sessionId, runId, today);
+            sessionId, runId, today,
+            _spendReservations is not null
+                ? (evt, step) => RunBudgetPool.For(_store).OwnsPendingPrimary(evt, step, _spendReservations)
+                : null);
         return snapshot with { Incomplete = snapshot.Incomplete || incomplete };
     }
 
@@ -1497,6 +1692,13 @@ public sealed class ExplorerTurn
     {
         var blocks = content.OfType<TextBlock>().ToArray();
         return blocks.Length == 0 ? null : _redaction.Redact(string.Concat(blocks.Select(block => block.Text)));
+    }
+
+    private static string QuestionnaireArgumentDigest(string argumentsJson)
+    {
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(argumentsJson)));
+        return "{\"argumentsHash\":\"" + digest + "\"}";
     }
 
     private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,

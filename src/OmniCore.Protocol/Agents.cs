@@ -19,7 +19,7 @@ public sealed record AgentsSnapshot(string SessionId, string? RunId, long BasedO
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record DelegationCreateRequest(string ProfileId, string SourceEventId, string Objective,
     IReadOnlyList<string> SelectedItemIds, int MaximumPacketBytes, int MaxTurns, int MaxToolCalls,
-    long MaxTokens, decimal MaxCostUsd);
+    long MaxTokens, decimal MaxCostUsd, int Priority = 0);
 
 public static class AgentsJson
 {

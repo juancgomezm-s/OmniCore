@@ -123,7 +123,8 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
     internal sealed record UsageEnvelope(string Response, string RunId, string Day, decimal? CostUsd,
         TokenUsage? Usage);
 
-    internal Snapshot ReadPrimary(IEnumerable<DomainEvent> events, SessionId? sessionId, RunId? runId, string today)
+    internal Snapshot ReadPrimary(IEnumerable<DomainEvent> events, SessionId? sessionId, RunId? runId, string today,
+        Func<DomainEvent, ModelStepStarted, bool>? ownedPendingPrimary = null)
     {
         var artifacts = _artifacts;
         decimal? session = 0m, daily = 0m, run = 0m;
@@ -137,6 +138,7 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
         var startedKeys = new HashSet<(string Session, string Turn, int Index)>();
         var startedRuns = new Dictionary<(string Session, string Turn, int Index), string>();
         var startedEvents = new Dictionary<(string Session, string Turn, int Index), DomainEvent>();
+        var startedPayloads = new Dictionary<(string Session, string Turn, int Index), ModelStepStarted>();
         foreach (var evt in stepStarts)
         {
             try
@@ -154,6 +156,7 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
                 }
                 startedRuns[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = evt.RunId!.ToString();
                 startedEvents[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = evt;
+                startedPayloads[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = started;
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
                 or FormatException or ArgumentException)
@@ -239,7 +242,9 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
                 or FormatException or ArgumentException) { incomplete = true; }
         }
-        if (startedKeys.Any(key => !completedKeys.Contains(key) && !unsentKeys.Contains(key))) incomplete = true;
+        if (startedKeys.Any(key => !completedKeys.Contains(key) && !unsentKeys.Contains(key)
+            && (!startedEvents.TryGetValue(key, out var origin) || !startedPayloads.TryGetValue(key, out var start)
+                || ownedPendingPrimary?.Invoke(origin, start) != true))) incomplete = true;
         foreach (var group in startedKeys.GroupBy(key => (key.Session, key.Turn)))
         {
             var indexes = group.Select(key => key.Index).OrderBy(index => index).ToArray();

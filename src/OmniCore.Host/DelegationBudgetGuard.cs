@@ -1,6 +1,7 @@
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Infrastructure;
 
 namespace OmniCore.Host;
 
@@ -9,7 +10,8 @@ namespace OmniCore.Host;
 internal static class DelegationBudgetGuard
 {
     internal static void Validate(IReadOnlyList<DomainEvent> journal, IEventCodecRegistry codecs,
-        IArtifactStore artifacts, SessionId session, RunId run, LaneId lane, TurnId turn,
+        IArtifactStore artifacts, IEventStore store, SqliteSpendReservationStore? reservations,
+        SessionId session, RunId run, LaneId lane, TurnId turn,
         bool newTurn, bool invocation, ToolCallId? tool, decimal? maximumCost, long? maximumTokens)
     {
         var task = journal.Where(e => e.RunId == run).Select(codecs.Decode).OfType<LaneCreated>()
@@ -44,12 +46,15 @@ internal static class DelegationBudgetGuard
         var tools = facts.OfType<ToolCallRequested>().Count();
         if (tools + (tool is not null && !facts.OfType<ToolCallRequested>().Any(t => t.ToolCallId == tool) ? 1 : 0) > budget.MaxToolCalls)
             throw new InvalidOperationException("Child tool budget exhausted.");
-        var tokens = RunTokenBudgetReader.Read(own, codecs, run, budget.MaxTokens);
+        var pool = RunBudgetPool.For(store);
+        var tokens = RunTokenBudgetReader.Read(own, codecs, run, budget.MaxTokens,
+            (evt, step) => pool.OwnsPendingPrimary(evt, step, reservations));
         if (tokens.Remaining is not { } remaining || remaining < 0 || invocation && (maximumTokens is null || maximumTokens > remaining))
             throw new InvalidOperationException("Child token budget insufficient or unknown.");
         var reader = new CanonicalSpendReader(codecs, artifacts);
         var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-        var primary = reader.ReadPrimary(own, session, run, day);
+        var primary = reader.ReadPrimary(own, session, run, day,
+            (evt, step) => pool.OwnsPendingPrimary(evt, step, reservations));
         var meta = reader.ReadMeta(own, session, run, day);
         if (primary.Incomplete || meta.Incomplete || primary.RunUsd is null || meta.RunUsd is null)
             throw new InvalidOperationException("Child spend accounting unknown.");

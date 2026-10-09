@@ -170,6 +170,35 @@ public sealed class SqliteSpendReservationStore
             && reader.IsDBNull(3) && reader.IsDBNull(4);
     }
 
+    /// <summary>Whether this identity still holds its entire dispatched bound with no canonical
+    /// receipt. The ledger is also used for integral token reservations; callers supply the
+    /// unit-specific scope and amount when reserving, while this proof intentionally stays
+    /// dimension-agnostic.</summary>
+    public bool HasFullDispatchedBound(string id)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT state,maximum_usd,pending_usd,actual_usd,receipt FROM spend_reservations WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return false;
+        var maximum = Parse(reader.GetString(1));
+        return reader.GetString(0) == "dispatched" && Parse(reader.GetString(2)) == maximum
+            && reader.IsDBNull(3) && reader.IsDBNull(4);
+    }
+
+    /// <summary>Pending portion of a numeric resource reservation. Missing identities contribute
+    /// nothing; malformed values continue to fail closed through Parse.</summary>
+    public decimal ReadPendingAmount(string id)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT pending_usd FROM spend_reservations WHERE id=$id";
+        command.Parameters.AddWithValue("$id", id);
+        return command.ExecuteScalar() is string amount ? Parse(amount) : 0m;
+    }
+
     private bool Transition(string id, string from, string to, decimal? actual, string? receipt,
         decimal? expectedMaximum = null, bool allowMissing = false)
     {
