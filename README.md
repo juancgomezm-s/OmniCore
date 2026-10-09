@@ -66,7 +66,7 @@ Se distinguen rutas locales, cuota incluida, facturación monetaria y condicione
 
 ## Estado actual
 
-Resumen documental al **8 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
+Resumen documental al **9 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
 
 | Hito | Estado | Evidencia y alcance |
 |---|---|---|
@@ -76,7 +76,7 @@ Resumen documental al **8 de octubre de 2026**. La [arquitectura §24](docs/arch
 | **M4 · Contexto y TUI v0** | Cerrado en Windows | [200 turnos, recuperación en otro proceso y TUI en PTY](docs/validation/m4-closure-20261005.md). No acredita reinicio de Windows ni validación Linux. |
 | **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
 | **M5.5 · Fronteras pre-M6** | Cerrado en Windows | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. 2.958 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS. |
-| **M6 · Multiagente** | Cerrado en Windows | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify con Plan reconciliado, scheduler, budgets, joins/FanOut, supervisión/mailbox, background e inspector. 3.275 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS y recuperación M4 serial verde. Un Host compartido. |
+| **M6 · Multiagente** | Cerrado en Windows | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify con Plan reconciliado, scheduler, budgets, joins/FanOut, supervisión/mailbox, background e inspector. [Revisión de cableado del 09-10](docs/validation/m6-wiring-audit-20261009.md): 3.292 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS y recuperación M4 serial verde. Un Host compartido. |
 | **M7–M10** | Planificados | Aislamiento, extensiones, Host separado y madurez v1. |
 
 La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.
@@ -120,6 +120,8 @@ dotnet run --project src/OmniCore.Cli -- tui --sim
 ### Conectar y trabajar
 
 Configura providers y modelos en el directorio **del usuario**, tomando [docs/examples](docs/examples) como referencia. No pegues credenciales en el repositorio. Las reglas de conexión y almacenamiento están en [los ADR](docs/adr/README.md), especialmente ADR-0011.
+
+En la TUI, **F4 → Conexiones API de providers** permite guardar la API key de Anthropic, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; guardar sin verificar muestra estado desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. La cuenta ChatGPT conserva su acceso en el mismo menú de configuración.
 
 ```powershell
 dotnet run --project src/OmniCore.Cli -- doctor
