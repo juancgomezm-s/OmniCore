@@ -790,8 +790,10 @@ Estos avances no reabren M4/M5.5 ni acreditan M6/M8/M10 completos.
 ### Estado real por epic
 
 > **Estado contrastado con código y tests:** la tabla distingue lo implementado de los criterios de salida
-> que aún requieren validación real. Última ejecución de `dotnet test --solution OmniCore.slnx`: 1112 tests
-> (1108 correctos, 4 omitidos por las restricciones del entorno para crear symlinks).
+> que aún requieren validación real. El conteo histórico de esta tabla fue 1112 tests
+> (1108 correctos, 4 omitidos por symlinks); no es el total vigente. Los resultados fechados
+> posteriores están en las actas de validación. La integración recuperada del 2026-10-08
+> y la continuación de M6 están documentadas en [el inventario](../validation/m6-integration-20261008.md).
 
 | Epic | Estado | Lo principal que falta |
 |---|---|---|
