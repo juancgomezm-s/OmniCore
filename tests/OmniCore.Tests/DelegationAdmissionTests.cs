@@ -50,7 +50,12 @@ public sealed class DelegationAdmissionTests
         fx.Reopen();
         var count = fx.Store.CurrentSequence(fx.Session);
         var snapshot = AgentsJson.Decode(fx.Server.Query("agents", CancellationToken.None)!.Json)!;
+        Assert.NotNull(snapshot.Capacity);
+        Assert.Equal(0, snapshot.Capacity.Active); // process-local leases are never adopted after reopen
+        Assert.Equal(0, snapshot.Capacity.Waiting);
         var principal = Assert.Single(snapshot.Lanes, lane => lane.ParentTaskId is null);
+        Assert.NotNull(principal.Budget);
+        Assert.True(principal.Budget.TurnsUsed >= 1);
         Assert.NotNull(principal.SelectableContextItemIds);
         Assert.Contains(request.SelectedItemIds[0], principal.SelectableContextItemIds);
         Assert.DoesNotContain("system", principal.SelectableContextItemIds);
@@ -60,6 +65,10 @@ public sealed class DelegationAdmissionTests
         Assert.Equal("Created", queued.DelegationState);
         Assert.Null(queued.ExecutionId);
         Assert.Null(queued.Model);
+        Assert.NotNull(queued.Budget);
+        Assert.Equal(request.MaxTokens, queued.Budget.MaxTokens);
+        Assert.Equal(0, queued.PendingMailboxMessages);
+        Assert.Equal(0, queued.PendingWakeRequests);
         Assert.Contains("en cola · sin worker", AgentPresentation.Describe(snapshot, "es"));
         Assert.Equal(count, fx.Store.CurrentSequence(fx.Session));
         fx.Ask("Continúa sólo el principal");

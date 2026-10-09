@@ -148,7 +148,8 @@ public sealed partial class OmniServer
                         if (StateMachines.IsTaskTerminal(TaskGraphProjection.Replay(_codecs, own).Get(delegation.ChildTaskId)!.State))
                             throw new InvalidOperationException("Child Task is terminal.");
                         if (!facts.OfType<AgentExecutionCompleted>().Any(e => e.ExecutionId == executionId)
-                            || result.Outcome != AgentOutcome.Succeeded && outcome == ResultDispositionOutcome.Accepted)
+                            || outcome == ResultDispositionOutcome.Accepted
+                                && (result.Outcome != AgentOutcome.Succeeded || result.RemainingIssues.Count != 0))
                             throw new InvalidOperationException("A failed/nonterminal execution cannot be accepted.");
                         using var execution = ExecutionScope.Begin(AgentScope(run, facts, executionId));
                         var disposition = new ResultDisposition(DispositionId.New(), executionId, produced.ResultRef,

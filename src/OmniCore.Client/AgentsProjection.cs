@@ -41,6 +41,16 @@ public static class AgentPresentation
             rows.Add(new(snapshot is null ? L("Sin sesión", "No session") : L("Proyección no disponible", "Projection unavailable"), ThemeRole.Muted));
             return rows;
         }
+        if (snapshot.Capacity is { } capacity)
+        {
+            rows.Add(new(L("Capacidad · activos ", "Capacity · active ") + capacity.Active + "/" + capacity.Maximum
+                + L(" · espera ", " · waiting ") + capacity.Waiting
+                + (capacity.WriterActive ? L(" · escritora activa", " · writer active") : L(" · lectura", " · readers only")),
+                capacity.Waiting > 0 ? ThemeRole.Attention : ThemeRole.Info));
+            if (details && capacity.WaitingDelegationIds.Count > 0)
+                rows.Add(new(L("Delegaciones en espera: ", "Waiting delegations: ")
+                    + string.Join(", ", capacity.WaitingDelegationIds), ThemeRole.Muted));
+        }
         foreach (var lane in snapshot.Lanes)
         {
             var state = lane.LaneState switch {
@@ -58,6 +68,8 @@ public static class AgentPresentation
             if (lane.CancellationRequested && lane.DelegationState == "Accepted")
                 rows.Add(new(L("Cancelación solicitada · checkpoint pendiente", "Cancellation requested · checkpoint pending"), ThemeRole.Attention));
             if (lane.ResultId is { } result) rows.Add(new("Result " + result + " · " + (lane.ResultDisposition ?? L("sin aceptar", "not accepted")), ThemeRole.Attention));
+            if (lane.ResultIssueCount is { } issueCount && issueCount > 0)
+                rows.Add(new(L("Problemas pendientes · ", "Remaining issues · ") + issueCount, ThemeRole.Error));
             if (lane.PendingJoinIds is { Count: > 0 } joins) rows.Add(new("Join · " + string.Join(", ", joins), ThemeRole.Attention));
             if (!details) continue;
             rows.Add(new("Lane " + lane.LaneId, ThemeRole.Muted));
@@ -66,6 +78,25 @@ public static class AgentPresentation
             if (lane.ExecutionId is { } execution) rows.Add(new("Execution " + execution + " · " + lane.ExecutionState, ThemeRole.Muted));
             if (lane.ParentExecutionId is { } parent) rows.Add(new("Parent " + parent, ThemeRole.Muted));
             if (lane.DelegationId is { } delegation) rows.Add(new("Delegation " + delegation + " · " + lane.DelegationState, ThemeRole.Muted));
+            if (lane.Budget is { } budget)
+                rows.Add(new(L("Presupuesto · ", "Budget · ")
+                    + (budget.MaxTokens is { } maxTokens ? $"tokens {budget.TokensUsed?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "?"}/{maxTokens}" : L("tokens sin tope", "tokens unbounded"))
+                    + (budget.MaxTurns is { } maxTurns ? $" · turns {budget.TurnsUsed}/{maxTurns}" : "")
+                    + (budget.MaxToolCalls is { } maxTools ? $" · tools {budget.ToolCallsUsed}/{maxTools}" : "")
+                    + (budget.MaxCostUsd is { } maxCost ? $" · USD {(budget.CostUsedUsd?.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture) ?? "? ")}/{maxCost.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}" : ""), ThemeRole.Muted));
+            if (lane.SupervisionState is { } supervision)
+                rows.Add(new(L("Supervisión · ", "Supervision · ") + supervision,
+                    supervision.Contains("Failed", StringComparison.Ordinal) || supervision.Contains("Terminal", StringComparison.Ordinal)
+                        ? ThemeRole.Error : ThemeRole.Muted));
+            if (lane.ParentTaskId is not null)
+                rows.Add(new(L("Integración · ", "Integration · ")
+                    + (lane.IntegrationVerified ? L("verificada", "verified") : L("pendiente", "pending"))
+                    + " · " + (lane.IntegrationValidationPassed ? L("validación pasada", "validation passed") : L("validación pendiente", "validation pending"))
+                    + " · " + L("recibos tool-backed ", "tool-backed receipts ") + lane.ToolBackedEvidenceCount,
+                    lane.IntegrationVerified && lane.IntegrationValidationPassed && lane.ToolBackedEvidenceCount > 0
+                        ? ThemeRole.Success : ThemeRole.Attention));
+            if (lane.PendingMailboxMessages > 0 || lane.PendingWakeRequests > 0)
+                rows.Add(new($"Mailbox {lane.PendingMailboxMessages} · wake {lane.PendingWakeRequests}", ThemeRole.Attention));
             if (lane.ResultSummary is { } summary) rows.Add(new(summary, ThemeRole.Muted));
             if (lane.LastContextEventId is { } source) rows.Add(new("Context source " + source, ThemeRole.Muted));
             if (lane.SelectableContextItemIds is { Count: > 0 } items)

@@ -10,9 +10,17 @@ public sealed record AgentLaneSnapshot(string LaneId, string TaskId, string? Par
     string? DelegationId, string? DelegationState, string? Model,
     string? LastContextEventId, bool ExecutionAmbiguous, IReadOnlyList<string>? SelectableContextItemIds = null,
     string? ResultId = null, string? ResultDisposition = null, string? ResultSummary = null,
-    IReadOnlyList<string>? PendingJoinIds = null, bool CancellationRequested = false);
+    IReadOnlyList<string>? PendingJoinIds = null, bool CancellationRequested = false,
+    AgentBudgetSnapshot? Budget = null, string? SupervisionState = null,
+    int PendingMailboxMessages = 0, int PendingWakeRequests = 0, int? ResultIssueCount = null,
+    bool IntegrationVerified = false, bool IntegrationValidationPassed = false,
+    int ToolBackedEvidenceCount = 0);
+public sealed record AgentBudgetSnapshot(decimal? MaxCostUsd, decimal? CostUsedUsd, long? MaxTokens,
+    long? TokensUsed, int? MaxTurns, int TurnsUsed, int? MaxToolCalls, int ToolCallsUsed);
+public sealed record AgentCapacitySnapshot(int Active, int Waiting, int Maximum, bool WriterActive,
+    IReadOnlyList<string> WaitingDelegationIds);
 public sealed record AgentsSnapshot(string SessionId, string? RunId, long BasedOnJournalSequence,
-    bool ProjectionUnavailable, IReadOnlyList<AgentLaneSnapshot> Lanes);
+    bool ProjectionUnavailable, IReadOnlyList<AgentLaneSnapshot> Lanes, AgentCapacitySnapshot? Capacity = null);
 
 /// <summary>Explicit user request. Empty selection means no inherited parent content.
 /// Budgets bound queued work; they do not grant tools, routing or worker capacity.</summary>
@@ -32,4 +40,6 @@ public static class AgentsJson
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(AgentsSnapshot))]
 [JsonSerializable(typeof(DelegationCreateRequest))]
+[JsonSerializable(typeof(AgentCapacitySnapshot))]
+[JsonSerializable(typeof(AgentBudgetSnapshot))]
 internal partial class AgentsJsonContext : JsonSerializerContext;

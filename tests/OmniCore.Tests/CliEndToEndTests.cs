@@ -92,11 +92,15 @@ public sealed class CliEndToEndTests
             var returned = snapshot.Lanes.Single(e => e.DelegationId == child.DelegationId);
             Assert.Equal(produced.ResultRef.Id.ToString(), returned.ResultId);
             Assert.Contains("Resultado de lectura", returned.ResultSummary!);
+            Assert.Equal(1, returned.ResultIssueCount);
             Assert.Null(returned.ResultDisposition);
             var accept = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"delegation.disposition\",\"delegationId\":\""
                 + child.DelegationId + "\",\"resultId\":\"" + returned.ResultId + "\",\"outcome\":\"Accepted\",\"reason\":\"Leído y aceptado\"}"), TestContext.Current.CancellationToken);
-            Assert.Equal("ok", accept.Status);
-            Assert.Equal("Completed", AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes.Single(e => e.DelegationId == child.DelegationId).TaskState);
+            Assert.Equal("error", accept.Status);
+            var rework = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"delegation.disposition\",\"delegationId\":\""
+                + child.DelegationId + "\",\"resultId\":\"" + returned.ResultId + "\",\"outcome\":\"ReworkRequested\",\"reason\":\"Tool scope lacked read-only compatibility\"}"), TestContext.Current.CancellationToken);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, rework.Outcome?.Kind);
+            Assert.Equal("Blocked", AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes.Single(e => e.DelegationId == child.DelegationId).TaskState);
         });
     }
 

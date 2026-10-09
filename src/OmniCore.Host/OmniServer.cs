@@ -2445,6 +2445,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
             using var agentInvocation = HostAgentInvocation.Begin(_store, sessionId, runId);
             var result = execute(cancellationToken);
+            ReconcileTerminatedSupervisors(sessionId, runId);
             var policyTransition = result.StopReason == StopReason.EndTurn
                 ? EvaluateCompletedTurnModePolicy(sessionId, runId, result.TurnId, sequenceBefore.Value, commandId, cancellationToken) : null;
             var ack = CommandOutcomeAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(),

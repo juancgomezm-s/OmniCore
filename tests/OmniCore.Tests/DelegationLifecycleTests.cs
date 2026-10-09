@@ -94,6 +94,99 @@ public sealed class DelegationLifecycleTests
     }
 
     [Fact]
+    public void Scoped_supervisor_uses_only_IOmniClient_handshake_and_cannot_be_forged_by_wire_origin()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        var child = Queue(fx);
+        Assert.Equal("ok", Execute(fx, child).Status);
+        var root = Assert.Single(fx.Payloads.OfType<AgentExecutionStarted>(), e => e.ParentExecutionId is null);
+        var produced = Assert.Single(fx.Payloads.OfType<AgentResultProduced>());
+        var forged = fx.Server.Send(Command("supervisor.result.disposition",
+            "\"executionId\":\"" + produced.ExecutionId + "\",\"resultId\":\"" + produced.ResultRef.Id
+            + "\",\"outcome\":\"Accepted\",\"reason\":\"forged\",\"origin\":\"Supervisor\""), CancellationToken.None);
+        Assert.Equal(RuntimeCommandOutcomeKind.Rejected, forged.Outcome?.Kind);
+        Assert.Empty(fx.Payloads.OfType<ResultDispositionRecorded>());
+
+        var client = SupervisorClientFactory.Create(fx.Server, root.ExecutionId);
+        Assert.IsAssignableFrom<IOmniClient>(client);
+        Assert.False(client is ITrustedUserActionClient);
+        var reviewed = new InProcessSupervisor(client, root.ExecutionId).ReviewReturnedResults(CancellationToken.None);
+        Assert.Equal(1, reviewed);
+        var disposition = Assert.Single(fx.Payloads.OfType<ResultDispositionRecorded>()).Disposition;
+        Assert.Equal(root.ExecutionId, disposition.EvaluatorExecutionId);
+        Assert.Equal(ResultDispositionOutcome.ReworkRequested, disposition.Outcome);
+        Assert.Contains("faltan integración verificada", disposition.Reason);
+        Assert.Equal(TaskState.Blocked, TaskGraphProjection.Replay(fx.Codecs, fx.Store.ReadFrom(fx.Session, 1))
+            .Get(child.ChildTaskId)!.State);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Lost_supervisor_after_handshake_waits_for_live_child_and_preserves_pending_join_across_reopen()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        var providerCallsBeforeChild = fx.ProviderCalls;
+        var child = Queue(fx);
+        using var providerEntered = new ManualResetEventSlim();
+        using var releaseProvider = new ManualResetEventSlim();
+        var dispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(child.DelegationId,
+            (work, token) => fx.Explorer((_, providerToken) => {
+                Interlocked.Increment(ref fx.ProviderCalls);
+                providerEntered.Set();
+                releaseProvider.Wait(providerToken);
+                return new ModelResponse([new TextBlock("Respuesta española")], StopReason.EndTurn,
+                    new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
+            }).Ask(work.Objective, "system", work.Session, work.Run, work.Delegation.ChildLaneId, "", token),
+            TestContext.Current.CancellationToken), TestContext.Current.CancellationToken);
+        Assert.True(providerEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        try
+        {
+            var root = Assert.Single(fx.Payloads.OfType<AgentExecutionStarted>(), e => e.ParentExecutionId is null);
+            var childExecution = Assert.Single(fx.Payloads.OfType<DelegationAccepted>()).ChildExecutionId;
+            Assert.Equal("ok", Send(fx, "execution.join", "\"ownerExecutionId\":\"" + root.ExecutionId
+                + "\",\"kind\":\"All\",\"members\":[\"" + childExecution + "\"]").Status);
+            var terminal = new AgentExecutionFailed(root.ExecutionId, root.LaneId, root.ProfileId,
+                root.ParentExecutionId, root.Relation, root.Supervision);
+            using (ExecutionScope.Begin(new ExecutionScopeState(fx.Run, fx.RootTask, fx.Lane,
+                ExecutionId: root.ExecutionId)))
+                new EventStream(fx.Store, fx.Codecs, fx.Session).Append(terminal, DurabilityClass.Barrier);
+            var terminalEvent = fx.Store.ReadFrom(fx.Session, 1).Last(e => fx.Codecs.Decode(e) is AgentExecutionFailed failed && failed == terminal);
+
+            releaseProvider.Set();
+            var ack = await dispatch.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+            Assert.Equal("error", ack.Status);
+            Assert.Equal(providerCallsBeforeChild + 1, fx.ProviderCalls);
+            var bindingFailure = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), e => fx.Codecs.Decode(e) is SupervisionBindingFailed);
+            Assert.Equal(new EventCausation(terminalEvent.EventId), bindingFailure.Causation);
+            Assert.DoesNotContain(fx.Payloads.OfType<AgentExecutionFailed>(), e => e.ExecutionId == childExecution);
+            Assert.Empty(fx.Payloads.OfType<DelegationFailed>());
+            Assert.Empty(fx.Payloads.OfType<DelegationReturned>());
+            Assert.Single(fx.Payloads.OfType<ExecutionJoinCreated>());
+            Assert.Empty(fx.Payloads.OfType<ExecutionJoinResolved>());
+            Assert.Empty(fx.Payloads.OfType<ExecutionJoinFailed>());
+            Assert.Equal(PreM6RecordPhase.Accepted, PreM6RecordProjection.Replay(fx.Session, fx.Codecs,
+                fx.Store.ReadFrom(fx.Session, 1)).Records["delegation:" + child.DelegationId].Phase);
+            Assert.Equal(TaskState.Blocked, TaskGraphProjection.Replay(fx.Codecs, fx.Store.ReadFrom(fx.Session, 1))
+                .Get(child.ChildTaskId)!.State);
+            Assert.Equal(LaneState.Blocked, LaneProjection.Replay(fx.Codecs, fx.Store.ReadFrom(fx.Session, 1))
+                .StateOf(child.ChildLaneId));
+
+            fx.Reopen();
+            Assert.Throws<InvalidOperationException>(() => SupervisorClientFactory.Create(fx.Server, root.ExecutionId));
+            Assert.Single(fx.Payloads.OfType<SupervisionBindingFailed>());
+            Assert.Empty(fx.Payloads.OfType<DelegationFailed>());
+            Assert.Empty(fx.Payloads.OfType<ExecutionJoinResolved>());
+            Assert.Equal(providerCallsBeforeChild + 1, fx.ProviderCalls);
+        }
+        finally
+        {
+            releaseProvider.Set();
+            if (!dispatch.IsCompleted) await dispatch.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Full_capacity_keeps_child_queued_and_cancellation_prevents_later_dispatch()
     {
         using var fx = new DelegationAdmissionTests.Fixture();

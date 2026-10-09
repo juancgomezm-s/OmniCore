@@ -73,7 +73,11 @@ public sealed partial class OmniServer
                     return Ack(RuntimeCommandOutcome.Deferred("RunNotRunning"));
                 if (authority?.Mode != RunMode.Orchestrate || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
                     return Ack(RuntimeCommandOutcome.Deferred("CoordinationLimitsUnavailable"));
-                if (IsExecutionTerminal(facts, delegation.ParentExecutionId)) return Ack(RuntimeCommandOutcome.Deferred("SupervisorUnavailable"));
+                if (IsExecutionTerminal(facts, delegation.ParentExecutionId))
+                {
+                    ReconcileTerminatedSupervisors(session, run);
+                    return Ack(RuntimeCommandOutcome.Deferred("SupervisorUnavailable"));
+                }
                 var supervisor = facts.OfType<AgentExecutionStarted>()
                     .SingleOrDefault(e => e.ExecutionId == delegation.ParentExecutionId);
                 if (supervisor is null) return Ack(RuntimeCommandOutcome.Deferred("SupervisorUnavailable"));
@@ -131,11 +135,16 @@ public sealed partial class OmniServer
                     var started = new AgentExecutionStarted(executionId, delegation.ChildLaneId, delegation.ProfileId,
                         delegation.ParentExecutionId, delegation.Relation, delegation.Supervision);
                     var binding = new SupervisionBinding(BindingId.New(), executionId, delegation.ParentExecutionId, 1);
+                    var mailbox = new ExecutionMailbox(MailboxId.New(), executionId);
                     new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {
                         new TaskStarted(task.TaskId, delegation.ChildLaneId), new LaneProvisioning(delegation.ChildLaneId), new LaneStarted(delegation.ChildLaneId), started,
-                        new SupervisionBindingCreated(executionId, binding), new SupervisionBindingAccepted(executionId, binding.BindingId),
+                        new SupervisionBindingCreated(executionId, binding),
+                        new ExecutionMailboxCreated(executionId, mailbox),
                         new DelegationAccepted(delegation.ParentExecutionId, id, executionId),
                     }, DurabilityClass.Barrier, new ExecutionScopeState?[] { scope, scope, scope, scope, scope, scope, parentScope });
+                    var scopedSupervisor = SupervisorClientFactory.Create(this, delegation.ParentExecutionId);
+                    new InProcessSupervisor(scopedSupervisor, delegation.ParentExecutionId)
+                        .AcknowledgeBinding(executionId, binding.BindingId, capacity.Cancellation.Token);
                 }
             }
             using var execution = ExecutionScope.Begin(work.Scope);
@@ -198,6 +207,24 @@ public sealed partial class OmniServer
             if (HasOpenModelStep(own) || HasOpenToolCall(own)) return;
             var facts = own.Select(_codecs.Decode).ToArray();
             var childId = work.Scope.ExecutionId!;
+            var bindingHistory = records.Records.Values.Where(history => history.OwnerExecutionId == childId)
+                .SelectMany(history => history.Facts.OfType<SupervisionBindingCreated>()).SingleOrDefault();
+            if (bindingHistory is not null)
+            {
+                var binding = bindingHistory.Binding;
+                var phase = records.Records["binding:" + binding.BindingId].Phase;
+                if (phase == PreM6RecordPhase.Failed) return;
+                if (binding.FailurePolicy == SupervisionFailurePolicy.Wait
+                    && (phase == PreM6RecordPhase.Created
+                        || IsExecutionTerminal(facts, work.Delegation.ParentExecutionId)))
+                {
+                    if (IsExecutionTerminal(facts, work.Delegation.ParentExecutionId))
+                        ReconcileTerminatedSupervisors(work.Session, work.Run);
+                    else RecordWaitBindingFailure(work.Session, work.Run, binding,
+                        "Supervisor handshake failed; Wait policy keeps the join unresolved.", cause: null);
+                    return;
+                }
+            }
             var taskState = TaskGraphProjection.Replay(_codecs, own).Get(work.Scope.TaskId!)!.State;
             var laneState = LaneProjection.Replay(_codecs, own).StateOf(work.Scope.LaneId!)!.Value;
             var childEvents = new List<DomainEventPayload>();
@@ -205,8 +232,9 @@ public sealed partial class OmniServer
                 ? new TaskCancelled(work.Scope.TaskId!) : new TaskFailed(work.Scope.TaskId!, "Child execution failed"));
             if (!StateMachines.IsLaneTerminal(laneState)) childEvents.Add(cancelled
                 ? new LaneCancelled(work.Scope.LaneId!) : new LaneFailed(work.Scope.LaneId!, "Child execution failed"));
-            var batch = new List<DomainEventPayload> { new AgentExecutionFailed(childId, work.Scope.LaneId!, work.Profile.Id,
-                work.Delegation.ParentExecutionId, work.Delegation.Relation, work.Delegation.Supervision) };
+            var batch = new List<DomainEventPayload>();
+            batch.Add(new AgentExecutionFailed(childId, work.Scope.LaneId!, work.Profile.Id,
+                work.Delegation.ParentExecutionId, work.Delegation.Relation, work.Delegation.Supervision));
             batch.AddRange(childEvents);
             batch.Add(new DelegationFailed(work.Delegation.ParentExecutionId, work.Delegation.DelegationId,
                 cancelled ? "Explicit cancellation or elapsed limit" : "Child execution failed"));
