@@ -5,6 +5,11 @@ integral. **No declara cerrado el hito.** Quedan pendientes el build final y la
 suite completa con pruebas de arquitectura, además de la regresión M4 serial, que
 ejecutará la revisión raíz sobre el estado congelado.
 
+**Cierre posterior:** la revisión raíz completó y reconoció el cierre de M6
+sobre `0279677` después de corregir regresiones integrales. Este documento
+conserva el checkpoint anterior; el resultado vigente, hashes, logs y límites
+están en [el acta integral](m6-integration-20261008.md#cierre-de-m6-en-windows).
+
 La integración cubre scheduling paralelo de lectores y lease exclusivo de
 escritoras dentro de un Host y un store compartido; admisión durable de presupuesto
 Run/Task con reservas y accounting de recibos; FanOut/FanIn con evaluación

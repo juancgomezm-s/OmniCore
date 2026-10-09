@@ -410,6 +410,19 @@ M6 todavía. Falta la validación final del build, pruebas de arquitectura, suit
 integral y regresión M4 serial en el estado congelado. La evidencia focal y las
 limitaciones están en [el acta del checkpoint M6](../validation/m6-implementation-checkpoint-20261008.md).
 
+### Cierre integral M6 reconocido (2026-10-08)
+
+El estado anterior corresponde al checkpoint histórico. Tras corregir las
+regresiones de la primera pasada, la revisión raíz cerró M6 en Windows sobre
+`0279677`: solución completa sin advertencias/errores, arquitectura 56 PASS,
+suite 3279 casos con 3275 PASS/0 FAIL/4 SKIP symlink y recuperación M4 serial
+1 PASS. La triada real, scheduling/background, supervisión/mailbox y deuda
+observable satisfacen §24 dentro de un Host/store compartido. Fuente, hashes,
+logs y límites de los fixtures en [el acta integral](../validation/m6-integration-20261008.md#cierre-de-m6-en-windows).
+La coordinación multiproceso sigue en M9; la detección de wiring por lenguaje y
+el aislamiento de TaskPacket/worktrees, en M7. La evidencia scripted no amplía
+cualificación de proveedores ni acredita el sandbox Strong del verificador.
+
 ## Criterios de salida de M5.5
 
 Deben quedar cubiertos por tests deterministas:

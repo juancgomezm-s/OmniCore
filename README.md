@@ -49,7 +49,7 @@ Una solicitud se convierte en un **Turn** dentro de una Session y un **Run**. El
 |---|---|
 | **Session / Run** | La sesión identifica la conversación; el Run conserva el trabajo activo hasta superar sus gates. |
 | **Turn / ModelStep** | Una intención lógica puede necesitar varias llamadas al modelo. Suspender por una aprobación no debe perder pasos, contexto ni consumo. |
-| **Task / Lane / AgentExecution** | Trabajo, camino de ejecución e instancia concreta. Contratos pre-M6 no equivalen a un scheduler multiagente terminado. |
+| **Task / Lane / AgentExecution** | Trabajo, camino de ejecución e instancia concreta. Scheduler M6 con lectores paralelos y escritoras serializadas en un Host compartido. |
 | **ModelRoute / AgentProfile** | Cómo acceder al modelo y qué capacidades/política efectiva aplicar, sin permisos inventados por el modelo. |
 | **Journal / Artifacts** | Eventos canónicos append-only para el estado; contenido inmutable identificado por hash para respuestas, contexto y evidencias. |
 | **Completion Gates** | Condiciones verificables: «el modelo terminó» y «el trabajo está validado» son cosas diferentes. |
@@ -76,7 +76,7 @@ Resumen documental al **8 de octubre de 2026**. La [arquitectura §24](docs/arch
 | **M4 · Contexto y TUI v0** | Cerrado en Windows | [200 turnos, recuperación en otro proceso y TUI en PTY](docs/validation/m4-closure-20261005.md). No acredita reinicio de Windows ni validación Linux. |
 | **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
 | **M5.5 · Fronteras pre-M6** | Cerrado en Windows | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. 2.958 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS. |
-| **M6 · Multiagente** | En curso | [Avance y checkpoints](docs/validation/m6-integration-20261008.md): lectores concurrentes en Host, pool de presupuesto, escritoras serializadas, resultados/joins, FanOut/FanIn, supervisión y mailbox/wake. Pendientes workflow completo, background/inspector y verificación integral. |
+| **M6 · Multiagente** | Cerrado en Windows | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify con Plan reconciliado, scheduler, budgets, joins/FanOut, supervisión/mailbox, background e inspector. 3.275 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS y recuperación M4 serial verde. Un Host compartido. |
 | **M7–M10** | Planificados | Aislamiento, extensiones, Host separado y madurez v1. |
 
 La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.
@@ -155,7 +155,7 @@ La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `
 
 ## Camino hacia v1
 
-![Roadmap: M5 y fronteras M5.5 cerrados en Windows; próximas etapas de multiagente, aislamiento, extensiones, Host separado y v1.](docs/images/roadmap.png)
+![Roadmap: M5, M5.5 y M6 cerrados en Windows; próximas etapas de aislamiento, extensiones, Host separado y v1.](docs/images/roadmap.svg)
 
 *Orden previsto, no calendario ni porcentaje de avance. Cada hito exige su propia evidencia.*
 
