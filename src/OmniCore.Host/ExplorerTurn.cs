@@ -536,8 +536,12 @@ public sealed class ExplorerTurn
             var openingSpend = CombineSpend(ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps),
                 ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps));
             if ((_enforceDefaultSpendCaps || budget.MaxCostUsd is not null) && openingSpend.Incomplete)
-                return new TurnResult("uso histórico incompleto: no se puede hacer cumplir el tope",
-                    StopReason.Cancelled, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+            {
+                const string detail = "uso histórico incompleto: no se puede hacer cumplir el tope";
+                var interactionId = EmitBudgetExceeded(stream, turnId, detail);
+                return new TurnResult(detail, StopReason.Cancelled, 0,
+                    new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null, interactionId);
+            }
         }
 
         List<ModelMessage> messages;
@@ -1933,7 +1937,7 @@ public sealed class ExplorerTurn
     /// con las opciones canónicas: deny = Detener, allow_plus = Continuar hasta +N.
     /// Se emite UNA sola vez por exceso (el listener del turno corta; no se re-emite).
     /// </summary>
-    private void EmitBudgetExceeded(EventStream stream, TurnId turnId, string detail,
+    private InteractionId EmitBudgetExceeded(EventStream stream, TurnId turnId, string detail,
         BudgetContinuationOffer? offer = null)
     {
         var interactionId = InteractionId.New();
@@ -1942,6 +1946,7 @@ public sealed class ExplorerTurn
             offer is null ? "[{\"id\":\"deny\",\"intent\":\"deny\"}]"
                 : "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_plus\",\"intent\":\"allow_plus\",\"value\":10}]",
             "deny", null, null, null, null, 0, 1));
+        return interactionId;
     }
 
     /// <summary>

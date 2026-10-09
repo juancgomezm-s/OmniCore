@@ -224,7 +224,8 @@ public sealed class UnknownStepUsageBudgetRegressionTests
         fixture.Store, fixture.Codecs,
         new FileArtifactStore(Path.Combine(fixture.TempRoot, "artifacts")), new InMemoryAuditSink(),
         new RedactionPolicy(), pricing: new ModelPricing(1m, 1m),
-        enforceDefaultSpendCaps: enforceDefaultCaps, sessionCapUsd: 5m, dailyCapUsd: 20m);
+        enforceDefaultSpendCaps: enforceDefaultCaps, sessionCapUsd: 5m, dailyCapUsd: 20m,
+        maximumGenerationRequestAttempts: 1); // one scripted response per model request
 
     private static ModelResponse ToolUseResponse(TokenUsageFields reportedFields) => new(
         new ContentBlock[]

@@ -95,7 +95,8 @@ public sealed class CrossSessionDailyCapRegressionTests
                 new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
                 store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
                 pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: enforceCaps,
-                sessionCapUsd: 100m, dailyCapUsd: 20m);
+                sessionCapUsd: 100m, dailyCapUsd: 20m,
+                maximumGenerationRequestAttempts: 1); // the scripted callback produces one response per request
 
             var result = turn.Ask("question", "system", session, run.RunId, run.RootLane, "",
                 CancellationToken.None);

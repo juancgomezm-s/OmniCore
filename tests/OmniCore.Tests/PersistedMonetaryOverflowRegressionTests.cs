@@ -295,7 +295,8 @@ public sealed class PersistedMonetaryOverflowRegressionTests
             new ModelSelection(new ModelIdValue("synthetic-model"), 8192, ToolMode.Direct, null),
             store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
             pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: enforceDefaultCaps,
-            sessionCapUsd: cap, dailyCapUsd: cap);
+            sessionCapUsd: cap, dailyCapUsd: cap,
+            maximumGenerationRequestAttempts: 1); // scripted provider callback is a single response
     }
 
     private static (string Root, string Journal, SessionId Session, FileArtifactStore Artifacts) OpenFixture()

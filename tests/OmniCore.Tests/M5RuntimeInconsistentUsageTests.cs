@@ -214,7 +214,8 @@ public sealed class M5RuntimeInconsistentUsageTests
         fixture.Store, fixture.Codecs,
         new FileArtifactStore(Path.Combine(fixture.TempRoot, "artifacts")), fixture.Audit,
         new RedactionPolicy(), pricing: new ModelPricing(1m, 1m),
-        enforceDefaultSpendCaps: enforceDefaultCaps, sessionCapUsd: 5m, dailyCapUsd: 20m);
+        enforceDefaultSpendCaps: enforceDefaultCaps, sessionCapUsd: 5m, dailyCapUsd: 20m,
+        maximumGenerationRequestAttempts: 1); // one scripted response per model request
 
     private static ModelResponse ToolUseResponse(TokenUsage usage, TokenUsageFields fields) => new(
         new ContentBlock[] { new ToolCallBlock(ToolCallId.New(), "fixture-provider-call", "fake.read", "{}") },

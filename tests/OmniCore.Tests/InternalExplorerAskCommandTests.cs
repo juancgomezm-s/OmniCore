@@ -223,7 +223,6 @@ public sealed class InternalExplorerAskCommandTests
         using var fx = new Fixture();
         var before = fx.Store.CurrentSequence(fx.Session);
         using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
 
         var parentCause = new CommandCausation(new CommandId(Guid.NewGuid()));
         using (CausationScope.Begin(parentCause))
@@ -233,6 +232,7 @@ public sealed class InternalExplorerAskCommandTests
                 Assert.Equal(cancellation.Token, token);
                 new EventStream(fx.Store, fx.Codecs, fx.Session).Append(
                     new UserInputReceived(fx.Run, "[\"before failure\"]", null));
+                cancellation.Cancel();
                 throw new OperationCanceledException(token);
                 }, cancellation.Token);
 

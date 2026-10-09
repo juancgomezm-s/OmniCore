@@ -2482,6 +2482,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var messageId = commandId.Value.ToString();
         long? sequenceBefore = null;
         AgentCapacity.Lease? capacity = null;
+        var callbackInvoked = false;
         var ownsDelegationLease = delegationId is { } owned
             && AgentCapacity.For(_store).IsActive(sessionId, runId, owned);
         try
@@ -2512,6 +2513,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             using var internalCommand = ambientCommand is null
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
             using var agentInvocation = HostAgentInvocation.Begin(_store, sessionId, runId);
+            callbackInvoked = true;
             var result = execute(cancellationToken);
             ReconcileTerminatedSupervisors(sessionId, runId);
             var policyTransition = result.StopReason == StopReason.EndTurn
@@ -2524,8 +2526,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             var ack = sequenceBefore is null
                 ? UnavailableCommandOutcome(messageId)
-                : FailedDurableCommandAck(messageId, sessionId, sequenceBefore.Value,
-                    failure.Message, restoreRunIdentity: false);
+                : !callbackInvoked && failure is IOException
+                    ? new CommandAck(messageId, "error", SafeCommandError(failure.Message),
+                        RuntimeCommandOutcome.Deferred("AdmissionUnavailable"))
+                    : FailedDurableCommandAck(messageId, sessionId, sequenceBefore.Value,
+                        failure.Message, restoreRunIdentity: false);
             return (null, ack, failure, null);
         }
         finally { capacity?.Dispose(); }

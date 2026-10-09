@@ -34,7 +34,8 @@ public sealed class SameSessionDailyCapControlTests
                 new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
                 store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
                 pricing: new ModelPricing(1m, 1m), enforceDefaultSpendCaps: enforceCaps,
-                sessionCapUsd: 100m, dailyCapUsd: 20m);
+                sessionCapUsd: 100m, dailyCapUsd: 20m,
+                maximumGenerationRequestAttempts: 1); // these fixtures never retry the callback
             static ModelResponse Response(long input) => new(new ContentBlock[] { new TextBlock("done") },
                 StopReason.EndTurn, new TokenUsage(input, 0, 0, 0, 0), null, new ProviderMetadata("scripted", "", null));
             var sessionA = SessionId.New();

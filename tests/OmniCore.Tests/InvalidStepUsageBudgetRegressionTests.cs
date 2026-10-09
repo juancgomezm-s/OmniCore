@@ -392,7 +392,8 @@ public sealed class InvalidStepUsageBudgetRegressionTests
         fixture.Store, fixture.Codecs,
         new FileArtifactStore(Path.Combine(fixture.TempRoot, "artifacts")), fixture.Audit,
         new RedactionPolicy(), pricing: new ModelPricing(1m, 1m),
-        enforceDefaultSpendCaps: enforceDefaultCaps, sessionCapUsd: 5m, dailyCapUsd: 20m);
+        enforceDefaultSpendCaps: enforceDefaultCaps, sessionCapUsd: 5m, dailyCapUsd: 20m,
+        maximumGenerationRequestAttempts: 1); // this delegate returns one response per model request
 
     private static TokenUsage NegativeUsage(UsageCounter counter) => counter switch
     {

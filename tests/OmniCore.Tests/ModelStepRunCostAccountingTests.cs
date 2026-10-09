@@ -175,7 +175,8 @@ public sealed class ModelStepRunCostAccountingTests
             new ExecutionFingerprint("test", "h", "t", "c", "o", "M5.5"),
             new ModelSelection(new ModelIdValue("test"), 8192, ToolMode.Direct, null),
             store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-            pricing: pricing, questionnaires: questionnaires);
+            pricing: pricing, questionnaires: questionnaires,
+            maximumGenerationRequestAttempts: 1); // each scripted delegate returns one response per request
 
     private static ModelResponse ToolUseResponse(string name, TokenUsage usage) => new(
         new ContentBlock[] { new ToolCallBlock(ToolCallId.New(), "provider-call", name,

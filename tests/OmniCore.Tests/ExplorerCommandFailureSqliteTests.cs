@@ -36,7 +36,6 @@ public sealed class ExplorerCommandFailureSqliteTests
             var run = Assert.IsType<RunId>(server.LastRunId());
             var before = store.CurrentSequence(session);
             using var cancellation = new CancellationTokenSource();
-            if (cancelled) cancellation.Cancel();
             Exception failure = cancelled ? new OperationCanceledException(cancellation.Token)
                 : new IOException("callback failure");
             var execution = server.ExecuteExplorerTurn(session, run, token =>
@@ -44,6 +43,7 @@ public sealed class ExplorerCommandFailureSqliteTests
                 Assert.Equal(cancellation.Token, token);
                 new EventStream(store, codecs, session).Append(
                     new UserInputReceived(run, "[\"retained input\"]", null), DurabilityClass.Barrier);
+                if (cancelled) cancellation.Cancel();
                 store.FailReads = unreadable;
                 throw failure;
             }, cancellation.Token);
@@ -70,6 +70,52 @@ public sealed class ExplorerCommandFailureSqliteTests
             Assert.Equal("[\"retained input\"]", Assert.IsType<UserInputReceived>(codecs.Decode(retained)).InputPartsJson);
             Assert.Equal(RunState.Running, RunProjection.Replay(session, run, codecs, sqlite.ReadFrom(session, 1)).State);
             CanonicalStateTracker.Replay(codecs, sqlite.ReadFrom(session, 1));
+        }
+        finally
+        {
+            Close(sqlite);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Pre_cancelled_admission_does_not_invoke_callback_or_write_partial_effects()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-explorer-command-cancel-admission-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "journal.db");
+        var sqlite = new SqliteEventStore(path);
+        try
+        {
+            var store = new ReadFaultStore(sqlite);
+            var codecs = EventCodecs.Create();
+            var server = new OmniServer(store, codecs, new InMemoryAuditSink());
+            var started = server.Send(WireEnvelope.Command(Ids.NewV7(),
+                "{\"cmd\":\"act\",\"objective\":\"cancel admission fixture\",\"workspace\":"
+                + System.Text.Json.JsonSerializer.Serialize(root) + "}"), TestContext.Current.CancellationToken);
+            Assert.Equal("ok", started.Status);
+            var session = Assert.IsType<SessionId>(server.LastSessionId());
+            var run = Assert.IsType<RunId>(server.LastRunId());
+            var before = store.CurrentSequence(session);
+            using var cancellation = new CancellationTokenSource();
+            cancellation.Cancel();
+            var calls = 0;
+
+            var execution = server.ExecuteExplorerTurn(session, run, _ =>
+            {
+                calls++;
+                new EventStream(store, codecs, session).Append(
+                    new UserInputReceived(run, "[\"must not be written\"]", null), DurabilityClass.Barrier);
+                return new ExplorerTurn.TurnResult("should not run", StopReason.EndTurn, 0,
+                    new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ExplorerTurn.ToolUseTrace>(), null);
+            }, cancellation.Token);
+
+            Assert.Null(execution.Result);
+            Assert.IsType<OperationCanceledException>(execution.Failure);
+            Assert.Equal(RuntimeCommandOutcomeKind.Rejected, execution.Ack.Outcome?.Kind);
+            Assert.Equal(0, calls);
+            Assert.Equal(before, store.CurrentSequence(session));
+            Assert.Empty(store.ReadFrom(session, before + 1));
         }
         finally
         {
