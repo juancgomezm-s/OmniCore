@@ -176,3 +176,48 @@ Logs revisados: `%TEMP%/m6-mailbox-lifecycle-20261008.log`, 21 PASS en 8.169 s;
 `%TEMP%/m6-mailbox-admission-20261008.log`, 18 PASS en 2.802 s, sin FAIL/SKIP.
 Son focos intermedios; queda comprobar el fallo posterior a Succeeded y anterior
 a ACK, además de workflow/triada, background/inspector y la suite final.
+
+## Continuación en curso: catálogo y capacidad efectiva de tools
+
+Checkpoint `2788606`: el catálogo Host expone descriptores Prompt/Workflow y
+disponibilidad según el Run ORQ y su autorización vigente. `/orq-auth` devuelve
+una intención tipada WorkflowRequested; este checkpoint todavía no conecta su
+runner ni acredita la triada. El registro valida nombres y aliases reservados
+antes de mutar; la query real `commands` publica JSON válido para los clientes.
+
+WorkflowToolFactory registra SourceKind.Dynamic con owner/version del workflow
+compilado, rechaza colisiones y mantiene identidad, efecto y riesgo del intent.
+La composición sólo clasifica los ids dinámicos efectivamente registrados y los
+intersecta con la política del modelo: no habilita un prefijo `dyn.*` genérico.
+El buzón tiene la capacidad específica AgentMailboxWait, incluida en los presets
+actuales de lectura; una política anterior con allowlist explícita que no la
+incluya conserva su rechazo. No se migran permisos ni se amplía autoridad.
+
+Los focos del buzón ahora ejecutan ExplorerTurn y ToolRuntime con una frontera
+efectiva de modelo. También cubren fallo de append del ACK tras Succeeded
+durable: la primera reapertura confirma ACK/WakeResolved con la causa exacta y
+la segunda no añade eventos ni repite llamadas. Logs revisados en
+`C:/Users/juanc/.codex/`: `m6-mailbox-boundary-20261008.log`, 22 PASS (8.285 s);
+`m6-workflow-factory-20261008.log`, 3 PASS (0.523 s);
+`m6-command-registry-20261008.log`, 2 PASS (0.145 s);
+`m6-client-commands-20261008.log`, 16 PASS (0.620 s), sin FAIL/SKIP.
+Son resultados focales, con solapamiento; no sustituyen la suite integral.
+
+## Continuación en curso: escritoras serializadas y permisos heredados
+
+Checkpoint `b7c7adb`: la admisión acepta perfiles escritores sólo si su techo es
+subconjunto del padre. El chequeo conserva los matchers Ask/Deny de procesos y
+red para listas no vacías; una lista hija vacía niega esa capacidad completa.
+No se infiere inclusión entre globs distintos ni se levantan restricciones.
+El dispatch elige lease lector o escritor a partir del perfil durable y revalida
+el perfil antes de ejecutar. Las escritoras usan el catálogo y executor normal
+de mutación, con frontera de modelo y política del perfil.
+
+La prueba vertical escribe un archivo en workspace temporal y observa
+WriterActive dentro del callback y su liberación al terminar. El resultado queda
+Returned/Execution Completed, con Task aún Running y sin disposition implícita.
+El presupuesto del fixture positivo es explícito; una reserva que no cabe se
+rechaza antes de invocar, sin aumentar el budget del producto.
+Log revisado `C:/Users/juanc/.codex/m6-writer-permission-20261008.log`:
+20 PASS, 0 FAIL/SKIP, 3.136 s. Runner/triada, background/heartbeat/transcript y
+validación integral continúan pendientes.
