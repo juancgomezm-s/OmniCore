@@ -68,3 +68,58 @@ Pendientes de cierre M6 identificados en el código y actas recuperadas:
 Esta evidencia corresponde a la base del merge, antes de los cambios pendientes
 de M6. No acredita su cierre, llamadas autenticadas nuevas ni ejecución Linux.
 La aceptación integral posterior debe identificar los binarios y pruebas finales.
+
+## Continuación en curso: concurrencia y presupuestos
+
+El worker implementó serialización de validación y append por journal/Session,
+atribución exacta de herramientas por Lane/Turn y bloqueo visible de registros
+históricos ambiguos. Pasaron 44 casos focales de completion, proyecciones,
+watchdog y escritura concurrente; la build terminó sin advertencias ni errores.
+
+El pool incorpora reservas SQLite de tokens y dinero antes del despacho,
+consumo canónico antes de settlement y ownership temporal de invocaciones vivas.
+La admisión relee consumo dentro de la transacción de reserva: no usa un saldo
+anterior a la finalización de un hermano. Pasaron 56 casos focales de admisión,
+ceiling y ciclo de delegación. Una ejecución adicional de 12 casos incluyó
+`ParallelRunBudgetPoolIntegrationTests`: dos proveedores scripted bloqueados
+simultáneamente en lanes distintas, reservas finitas compartidas de 18 432 tokens,
+consumo total de 200 y saldo de 18 232 tras cerrar y reabrir SQLite.
+
+Son resultados intermedios, comunicados por el worker y revisados en el código;
+los conteos se solapan y no deben sumarse. El cierre exige aún el dispatcher
+integrado, capacidad, supervisión/workflow y la verificación del estado final.
+La revisión también identificó la necesidad de admisión atómica para turnos y
+herramientas cuando dos lanes compiten por el último cupo compartido.
+
+El siguiente bloque pasó build 0/0 y 57 casos focales integrados en 8.514 s:
+`AgentProfileSuspensionIntegrationTests`, `DelegationAdmissionTests`,
+`DelegationLifecycleTests`, `CanonicalWriterArchitectureTests`,
+`ParallelRunBudgetPoolIntegrationTests` y `QuestionnaireVerticalTests`.
+Incluye dos delegaciones reales con proveedores bloqueados simultáneamente,
+leases de capacidad y ledger SQLite compartido; el padre queda bloqueado por
+join All y, tras reapertura, sólo se desbloquea al aceptar ambos resultados.
+También verifica capacity llena, respuesta inmediata `WaitingForCapacity`,
+waiter de background cancelado antes de obtener lease y ninguna invocación
+posterior. Se preservaron la suspensión con atribución nullable exacta, schema
+de cuestionarios en CAS y acceso exclusivo de Security a los internos de
+Abstractions. FanOut, supervisión/workflow y validación integral siguen pendientes.
+
+Los bloques anteriores quedaron guardados en `25434a9` (admisión paralela y
+pool de presupuesto) y `d845169` (supervisión en proceso, Wait e inspector).
+El segundo checkpoint pasó compilación sin advertencias ni errores y 86 casos
+focales en 15.326 s, incluidos los de CLI end-to-end. Log:
+`%TEMP%/m6-supervisor-wait-focal-20261008.log`; los conteos se solapan con los
+anteriores y no representan una suite completa.
+
+La supervisión usa una capacidad interna de `IOmniClient` ligada a Session,
+Run y Execution: handshake por command, consultas y suscripción acotadas,
+dispositions explícitas y mailbox con publicación CAS. Un `origin` enviado en
+JSON no concede esa capacidad. La pérdida del supervisor después de Accepted,
+con el proveedor hijo activo, registra fallo del binding y bloquea Task/Lane
+por Wait. Al liquidar la respuesta no se publica un resultado aceptable ni se
+resuelve el join. La prueba verifica causation desde el evento terminal del
+supervisor y reapertura SQLite sin repetir la llamada ni adoptar ownership.
+
+M6 sigue abierto: FanOut/FanIn, consumo y resolución operativa de mailbox/wake,
+WorkflowCommand, Dynamic tools, la triada Explore/Implement/Verify y la
+validación integral de los binarios finales continúan en el worker Luna.
