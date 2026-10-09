@@ -13,6 +13,7 @@ using OmniCore.Engine;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
+using OmniCore.Protocol;
 using OmniCore.Security;
 using Task = System.Threading.Tasks.Task;
 
@@ -22,6 +23,83 @@ namespace OmniCore.Tests;
 [Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class CliEndToEndTests
 {
+    [Fact]
+    public async Task Tui_dispatches_managed_read_only_child_through_actual_HTTP_context_profile_and_result_boundaries()
+    {
+        await InIsolatedCli(async (workspace, config, _, provider) =>
+        {
+            const string profile = "0199a000-0000-7000-8000-000000000001";
+            File.AppendAllText(Path.Combine(config, "models.yaml"), "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), """
+                defaultProfile: 0199a000-0000-7000-8000-000000000001
+                agentProfiles:
+                  reader:
+                    id: 0199a000-0000-7000-8000-000000000001
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: []
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read]
+                """);
+            string? childRequest = null;
+            static string WithUsage(string response) => response.Replace("data: [DONE]",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]", StringComparison.Ordinal);
+            provider.RespondWith((index, body) => {
+                if (index == 0) return WithUsage(TextResponse("Contexto visible del principal"));
+                childRequest ??= body;
+                return WithUsage(index == 1 ? ToolCallResponse("denied-write", "filesystem.write", """{"path":"forbidden.txt","content":"no"}""")
+                    : TextResponse("Resultado de lectura; no modifiqué archivos."));
+            });
+            var runtime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(runtime);
+            var diagnostics = new List<string>();
+            Assert.Equal(0, await host.ExecuteAsync("CONTEXTO SELECCIONADO: acción española", diagnostics.Add, TestContext.Current.CancellationToken));
+            var client = runtime.Connect(TestContext.Current.CancellationToken);
+            var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+            var grant = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,"allowedModes":"plan,act,orq",
+                "maxAgents":2,"maxDepth":1,"maxTurns":20,"maxToolCalls":20,"maxElapsedSeconds":3600,"maxSpendUsd":1}
+                """), TestContext.Current.CancellationToken);
+            Assert.Equal("ok", grant.Status);
+            var root = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
+            var request = new DelegationCreateRequest(profile, root.LastContextEventId!, "Inspeccionar sin escribir",
+                root.SelectableContextItemIds!, 8192, 2, 4, 200000, 0m);
+            var queue = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()), TestContext.Current.CancellationToken);
+            Assert.True(queue.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted, queue.Error ?? queue.Outcome?.Reason);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, queue.Outcome?.Kind);
+            var child = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes.Single(e => e.ParentTaskId is not null);
+            diagnostics.Clear();
+            Assert.Equal(0, await host.ExecuteDelegationAsync(child.DelegationId!, diagnostics.Add, TestContext.Current.CancellationToken));
+            Assert.Equal(3, provider.RequestCount);
+            Assert.Contains("CONTEXTO SELECCIONADO", childRequest!);
+            Assert.DoesNotContain("filesystem.write\"", childRequest!);
+            Assert.DoesNotContain("plan.propose", childRequest!);
+            Assert.DoesNotContain("mode.propose", childRequest!);
+            Assert.DoesNotContain("user.ask", childRequest!);
+            Assert.False(File.Exists(Path.Combine(workspace, "forbidden.txt")));
+            var events = ReadCurrentSessionEvents(workspace);
+            var started = Assert.Single(events.OfType<AgentExecutionStarted>(), e => e.ParentExecutionId is not null);
+            var produced = Assert.Single(events.OfType<AgentResultProduced>());
+            Assert.Equal(started.ExecutionId, produced.ExecutionId);
+            Assert.Single(events.OfType<DelegationReturned>());
+            Assert.Empty(events.OfType<ResultDispositionRecorded>());
+            Assert.DoesNotContain(events.OfType<TaskCompleted>(), e => e.TaskId.ToString() == child.TaskId);
+            var snapshot = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
+            var returned = snapshot.Lanes.Single(e => e.DelegationId == child.DelegationId);
+            Assert.Equal(produced.ResultRef.Id.ToString(), returned.ResultId);
+            Assert.Contains("Resultado de lectura", returned.ResultSummary!);
+            Assert.Null(returned.ResultDisposition);
+            var accept = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"delegation.disposition\",\"delegationId\":\""
+                + child.DelegationId + "\",\"resultId\":\"" + returned.ResultId + "\",\"outcome\":\"Accepted\",\"reason\":\"Leído y aceptado\"}"), TestContext.Current.CancellationToken);
+            Assert.Equal("ok", accept.Status);
+            Assert.Equal("Completed", AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes.Single(e => e.DelegationId == child.DelegationId).TaskState);
+        });
+    }
+
     [Fact]
     public async Task Normal_PLAN_chat_can_recommend_ORQ_without_granting_mode_or_creating_workers()
     {
@@ -53,7 +131,14 @@ public sealed class CliEndToEndTests
             Assert.Equal(RunMode.Plan, projection.Mode);
             Assert.False(projection.ModeAuthority!.AutoModeSwitch);
             Assert.DoesNotContain(journal.Select(codecs.Decode), e => e is RunModeChanged
-                or RunModeTransitionAuthorized or AgentExecutionStarted);
+                or RunModeTransitionAuthorized or DelegationCreated or DelegationAccepted);
+            var rootExecutor = Assert.Single(journal.Select(codecs.Decode).OfType<AgentExecutionStarted>());
+            Assert.Null(rootExecutor.ParentExecutionId);
+            var rootLane = Assert.Single(journal.Select(codecs.Decode).OfType<LaneCreated>());
+            Assert.Equal(created.RootTask, rootLane.TaskId);
+            Assert.Equal(rootLane.LaneId, rootExecutor.LaneId);
+            Assert.Equal(rootLane.AgentProfile, rootExecutor.ProfileId);
+            Assert.All(journal.Where(e => codecs.Decode(e) is ModelStepStarted), e => Assert.Equal(rootExecutor.ExecutionId, e.ExecutionId));
             Assert.Single(journal.Select(codecs.Decode).OfType<TaskCreated>());
             Assert.Single(journal.Select(codecs.Decode).OfType<LaneCreated>());
         });
@@ -86,8 +171,14 @@ public sealed class CliEndToEndTests
             Assert.Single(events.OfType<LaneCreated>());
             Assert.Single(events.OfType<TurnStarted>());
             Assert.Single(events.OfType<TurnCompleted>());
-            Assert.DoesNotContain(events, item => item is ToolCallRequested or ToolCallStarted or AgentExecutionStarted
-                or RunModeChanged or RunModeTransitionAuthorized);
+            Assert.DoesNotContain(events, item => item is ToolCallRequested or ToolCallStarted
+                or RunModeChanged or RunModeTransitionAuthorized or DelegationCreated or DelegationAccepted);
+            var rootExecutor = Assert.Single(events.OfType<AgentExecutionStarted>());
+            Assert.Null(rootExecutor.ParentExecutionId);
+            var rootLane = Assert.Single(events.OfType<LaneCreated>());
+            Assert.Equal(created.RootTask, rootLane.TaskId);
+            Assert.Equal(rootLane.LaneId, rootExecutor.LaneId);
+            Assert.Equal(rootLane.AgentProfile, rootExecutor.ProfileId);
             Assert.DoesNotContain(events.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.PlanApproval);
             Assert.Empty(Directory.GetFiles(workspace, "*", SearchOption.AllDirectories));
             var journal = ReadCurrentSessionJournalEvents(workspace);
@@ -504,6 +595,56 @@ public sealed class CliEndToEndTests
             Assert.Contains("pregunta anterior", decoded);
             Assert.Contains("respuesta anterior", decoded);
             Assert.Contains("continúa el ejemplo anterior", decoded);
+        });
+    }
+
+    [Fact]
+    public async Task Act_completion_publishes_one_structured_summary_without_an_extra_provider_call()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            provider.RespondWith((_, _) => TextResponse("Resumen final para el usuario."));
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            Assert.Equal(0, await host.ExecuteActAsync("explica el ejemplo", _ => { }, TestContext.Current.CancellationToken));
+            Assert.Equal(1, provider.RequestCount);
+            var events = ReadCurrentSessionJournalEvents(workspace);
+            var codecs = EventCodecs.Create();
+            var completed = Assert.Single(events, evt => codecs.Decode(evt) is RunCompleted);
+            var root = Assert.Single(events.Select(codecs.Decode).OfType<RunSummaryRecorded>());
+            Assert.Equal(completed.RunId, root.RunId);
+            Assert.Equal(completed.Sequence, root.ThroughEventSequence);
+            Assert.True(events.Last().Sequence > completed.Sequence);
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Normal_chat_followup_preserves_ordered_messages_once_after_runtime_reopen(bool reopen)
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            provider.RespondWith((_, _) => TextResponse("Usaremos PostgreSQL y el puerto 5432."));
+            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            Assert.Equal(0, await host.ExecuteAsync("Mi proyecto se llama Brújula; usa PostgreSQL.",
+                _ => { }, TestContext.Current.CancellationToken));
+            var original = ReadCurrentSessionEvents(workspace).OfType<RunCreated>().Single().SessionId;
+            if (reopen) host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            string? received = null;
+            provider.RespondWith((_, body) => { received = body; return TextResponse("Continuación."); });
+            Assert.Equal(0, await host.ExecuteAsync("¿Qué base y puerto acordamos?", _ => { },
+                TestContext.Current.CancellationToken));
+            Assert.Equal(2, provider.RequestCount);
+            using var request = JsonDocument.Parse(Assert.IsType<string>(received));
+            var messages = request.RootElement.GetProperty("messages").EnumerateArray()
+                .Where(message => message.GetProperty("role").GetString() != "system").ToArray();
+            Assert.Equal(new[] { "user", "assistant", "user" },
+                messages.Select(message => message.GetProperty("role").GetString()));
+            Assert.Equal(new[] { "Mi proyecto se llama Brújula; usa PostgreSQL.",
+                "Usaremos PostgreSQL y el puerto 5432.", "¿Qué base y puerto acordamos?" },
+                messages.Select(message => message.GetProperty("content").GetString()));
+            Assert.All(ReadCurrentSessionEvents(workspace).OfType<RunCreated>(),
+                run => Assert.Equal(original, run.SessionId));
         });
     }
 

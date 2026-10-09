@@ -1,0 +1,79 @@
+Conversation context continuity — 2026-10-08
+
+Scope and ownership
+-------------------
+Isolated checkout: C:\Users\juanc\.codex\worktrees\tui-markdown-polish\OmniCore
+Branch: codex/tui-markdown-polish; starting HEAD aa3ee67.
+The primary provider-connections checkout and its concurrent, uncommitted files
+were inspected read-only and left untouched. No authenticated provider call,
+credential/configuration change, merge or push was made.
+
+Diagnosis
+---------
+The broad claim "ordinary chat does not send history" was NOT reproduced on this
+revision. The existing previous-Run HTTP regression passed before any changes.
+Two new loopback HTTP cases also passed before the fix: ordinary chat followed by
+another message, with and without reconstructing OmniCliRuntime. Both capture
+the actual OpenAI-compatible request and assert exact user/assistant/user roles,
+content, ordering, no duplicates and persistent session identity.
+
+A narrower loss was reproduced: ExplorerTurn.LoadConversation consumed
+ModelCompleted (the optional usage summary), ignoring AssistantMessageRecorded
+(the canonical visible chat message from ADR-0035). The real invalid-usage budget
+guard deliberately publishes its visible diagnostic without ModelCompleted;
+after reopen, that diagnostic disappeared from conversation context.
+
+Before the production change: six new canonical-history cases, five FAILED and
+one PASS (legacy-only compatibility). Failures covered canonical-only history
+in the actual next ModelRequest, reopen, cross-Run history, canonical precedence
+and a diagnostic produced by the real invalid-usage guard. Fixture state
+transitions were validated with TurnStarted/TurnCompleted before recording this
+red result; fixture-construction errors are not counted as product defects.
+
+Correction
+----------
+LoadConversation now projects AssistantMessageRecorded into assistant text.
+ModelCompleted remains a fallback only for journals without a canonical message
+for that Run/Turn. Canonical and usage records no longer duplicate a final answer.
+Deduplication is by Run/Turn, not text; identical answers in separate Turns remain
+distinct. Existing redaction and conversation budget/compaction boundaries remain.
+Only plain chat crosses Runs; this patch does not broaden tool/result replay.
+
+Plan audit (not a declaration that every context feature is finished)
+-----------------------------------------------------------------
+Implemented: WorkingState regeneration, session history, system/contributor
+materialization, ContextSnapshot diagnostics/fingerprint, token counting and
+budget protection, prune/externalize/compress/compact, durable checkpoints.
+Sources: architecture section 24, ADR-0042, ContextMaterializer and ExplorerTurn.
+Memory is a separate service: Session Memory remains M8; Project/Workspace/Global
+remain M10 (ADR-0028). Delegated context inheritance remains in operational M6.
+ADR-0035 also describes per-Run RunSummary generation and its contribution across
+Runs. No explicit RunSummary implementation was found in src; current history
+uses raw visible messages and the general checkpoint mechanism. Do not equate
+that mechanism with complete implementation of every ADR-0035 summary contract.
+No milestone was reopened or marked complete by this correction.
+
+Verification
+------------
+Build: dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore
+  -p:OutputPath=<isolated checkout>\.tmp\context-continuity-build\ -v quiet
+Zero warnings/errors.
+Canonical-history suite after fix: initially 6 PASS; seventh case added to ensure
+equal text in distinct Turns is not deduplicated.
+New ordinary-chat/reopen HTTP cases: 2 PASS before and after the production fix.
+Focused suite (Explorer, Context, CLI end-to-end, reasoning replay, visible-step
+boundaries, canonical history): 142 PASS / 0 FAIL / 0 SKIP, 54.408 seconds;
+this run preceded the seventh canonical-history case.
+Full suite on the final build (M4ProcessRecoveryTests excluded):
+  3046 cases / 3042 PASS / 0 FAIL / 4 SKIP / 0 errors, 216.169 seconds.
+  The four skips are existing symlink-permission cases. This includes all seven
+  new canonical-history cases and both new HTTP/reopen cases.
+Log: <isolated checkout>\.tmp-context-full.log (preserved, not committed).
+Focused log: <isolated checkout>\.tmp-context-focused.log.
+Test counts overlap;
+focused, individual and full totals must not be added together.
+Architecture suite rebuilt against this change: 56 PASS / 0 FAIL / 0 SKIP.
+M4ProcessRecoveryTests is excluded from the full run below: its isolated serial
+PASS was already recorded for the unchanged process-recovery implementation in
+sidebar-functional-p1.md. No new terminal/OS restart claim is made here.
+Verification completed: 2026-10-08 06:13 UTC / 2026-10-08 00:13 America/Mexico_City.

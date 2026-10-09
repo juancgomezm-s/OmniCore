@@ -9,12 +9,26 @@ using OmniCore.Domain;
 
 /// <summary>Lossless representation of the text encodings already supported by filesystem tools.
 /// Uses the ordinary redacted text CAS: neither raw storage nor base64 conceals source secrets.</summary>
-internal static class FilesystemPreimage
+public static class FilesystemPreimage
 {
-    internal const string MediaType = "application/vnd.omnicore.filesystem-preimage+json";
+    public const string MediaType = "application/vnd.omnicore.filesystem-preimage+json";
+    public const string PostMediaType = "application/vnd.omnicore.filesystem-postimage+json";
+
+    /// <summary>Optional evidence, never turns an already applied write into a failure.
+    /// Secrets or a corrupt/unavailable CAS leave the preview explicitly unavailable.</summary>
+    internal static ArtifactRef? CaptureAfter(IArtifactStore? artifacts, byte[] bytes)
+    {
+        if (artifacts is null || bytes.Length > 2 * 1024 * 1024) return null;
+        try { return CaptureCore(new(null, null, null), artifacts, bytes, PostMediaType).BeforeStateRef; }
+        catch (FilesystemPreimageException) { return null; }
+    }
 
     internal static ReconciliationSpec Capture(ReconciliationSpec reconciliation, IArtifactStore? artifacts,
         byte[]? original)
+        => CaptureCore(reconciliation, artifacts, original, MediaType);
+
+    private static ReconciliationSpec CaptureCore(ReconciliationSpec reconciliation, IArtifactStore? artifacts,
+        byte[]? original, string mediaType)
     {
         if (artifacts is null) return reconciliation; // Primitive/legacy executor, not normal Act composition.
         try
@@ -31,10 +45,10 @@ internal static class FilesystemPreimage
             var document = new FilesystemPreimageDocument(1, original is not null, decoded?.Encoding,
                 decoded?.Text, original is null ? null : FileVersion.VersionToken(original), original?.LongLength ?? 0);
             var json = JsonSerializer.Serialize(document, FilesystemPreimageJsonContext.Default.FilesystemPreimageDocument);
-            var reference = artifacts.PutText(json, MediaType, ArtifactKind.Other, Sensitivity.Sensitive);
+            var reference = artifacts.PutText(json, mediaType, ArtifactKind.Other, Sensitivity.Sensitive);
             var expectedHash = ContentHash.Sha256(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json))));
             if (reference.Redacted || reference.Kind != ArtifactKind.Other || reference.Sensitivity != Sensitivity.Sensitive
-                || reference.MediaType != MediaType || reference.Hash != expectedHash
+                || reference.MediaType != mediaType || reference.Hash != expectedHash
                 || reference.Size != Encoding.UTF8.GetByteCount(json)
                 || !artifacts.Verify(reference.Hash, reference.Size)
                 || !string.Equals(artifacts.GetText(reference.Hash), json, StringComparison.Ordinal)) throw Invalid();
@@ -48,11 +62,11 @@ internal static class FilesystemPreimage
     }
 
     /// <summary>Reads/verifies the pre-image without restoring any filesystem effect (restore is M7).</summary>
-    internal static byte[]? Read(IArtifactStore artifacts, ArtifactRef reference)
+    public static byte[]? Read(IArtifactStore artifacts, ArtifactRef reference)
     {
         try
         {
-            if (reference.Redacted || reference.MediaType != MediaType || reference.Kind != ArtifactKind.Other
+            if (reference.Redacted || reference.MediaType is not (MediaType or PostMediaType) || reference.Kind != ArtifactKind.Other
                 || reference.Sensitivity != Sensitivity.Sensitive || !artifacts.Verify(reference.Hash, reference.Size))
                 throw Invalid();
             var json = artifacts.GetText(reference.Hash) ?? throw Invalid();

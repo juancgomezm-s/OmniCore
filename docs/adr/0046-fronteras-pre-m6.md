@@ -199,6 +199,183 @@ Se corrige el `ContextPolicyHash`, que hoy recibe el id del tokenizer.
 - **M9:** procedencia/fidelidad de historial y reconexión por stream.
 - **M10:** `/undo` y proyecciones.
 
+### Avance parcial de M6 — frontera de contexto (2026-10-08)
+
+`ContextInheritancePolicy` implementa sólo `SelectedProjection`: IDs explícitos e
+inmutables, selección vacía por defecto. `ContextInheritanceService` es un adapter
+read-only del Host para una Task/Lane hija ya creada. Verifica Session/Run, lineage
+directo, el recibo `ModelStepStarted` del padre y su snapshot CAS íntegro y atribuido.
+No admite un snapshot arbitrario ni los antiguos snapshots multi-Lane que podían
+contener transcripts mezclados. El snapshot nuevo declara `contextScopeVersion=1`
+y sus IDs de Session/Run/Task/Lane/Turn como campos aditivos.
+
+La selección admite mensajes visibles y hechos (`Decision`, `Constraint`, `Summary`)
+de las categorías Conversation/Task y scopes compartidos Session/Run, no sensibles.
+No importa System, WorkingState, skills, Memory, cuerpos de archivos, tools,
+checkpoints o datos privados Task/Lane. Los items se materializan como datos
+históricos sujetos al presupuesto del hijo, sin conservar pinning del padre.
+La procedencia conserva evento/snapshot/item de origen, pero no copia las referencias
+CAS que permitirían releer el snapshot completo del padre. El destino debe coincidir
+exactamente con Session/Run/Task/Lane y no anteceder al recibo fuente.
+
+El replay ordinario usa sólo la Lane destinataria. La conversación de Runs anteriores
+pertenece al principal y no entra automáticamente a los hijos. La compactación genera
+checkpoints con índice local y `laneId`; los checkpoints multi-Lane anteriores sin esa
+marca se reconstruyen desde el journal, sin reescribirlo. Tools y respuestas legacy
+se atribuyen por sus recibos Turn/ToolCall o por una única Lane inequívoca, nunca por
+el último Turn observado.
+
+`artifact.read` dentro de una ejecución resuelve raíces canónicas de su propia Lane
+y edges de externalización/resumen escritos por Core. Texto de usuario/modelo/tool
+que menciona un hash no crea autoridad para leerlo. Los snapshots/checkpoints antiguos
+de atribución ambigua no se usan como capacidades de lectura. La consulta por Session
+fuera de una ejecución conserva su frontera independiente. Esta corrección limita
+visibilidad; no amplía permisos, perfiles ni routing.
+
+La conexión durable usa `DelegationContextPacket` v1 en `Delegation.PacketRef`.
+Es el payload de SelectedProjection, no el TaskPacket de aislamiento de M7.
+La preparación aplica redacción, exige un límite explícito de bytes (máximo 1 MiB)
+y no escribe al CAS ni al journal. El publisher del command debe publicar el handle
+inmutable bajo su lease y journalizar la referencia exacta en `DelegationCreated`.
+El adapter no ofrece una vía alternativa de admisión ni emite ese evento.
+
+El consumidor exige `DelegationAccepted` canónico y valida el replay de lineage,
+identidades Session/Run/Task/Lane/Profile/Execution, relación y supervisión, versión,
+integridad CAS, límite y coincidencia de los hechos con el snapshot fuente. La fuente
+se resuelve por EventId/secuencia; el paquete no exporta el hash del snapshot padre.
+Un source sin ExecutionId sólo se vincula al owner si era la única ejecución iniciada
+en esa Lane hasta el recibo fuente; con varios candidatos se rechaza, sin elegir el
+último inicio. Si hay ExecutionId debe coincidir, y la fuente no puede anteceder al
+inicio del owner. No se fabrica una atribución ExecutionId que el recibo no tenga.
+
+`ExplorerTurn` incorpora automáticamente ese contributor sólo para la Lane hija de
+un paquete aceptado de este formato, también tras reinicio. Dos aceptaciones activas
+para la misma Lane son ambiguas y se rechazan; no se mezclan por recencia. Una
+proyección cached deja de aportar items después de `DelegationFailed`/`Returned`.
+Los hechos siguen sometidos al presupuesto del hijo y no desplazan su intención
+actual. Los antiguos PacketRef genéricos no se reinterpretan como SelectedProjection.
+
+Las pruebas recorren un `ExplorerTurn` real de padre e hijo con provider scripted,
+SQLite reabierto, CAS y presupuesto. Ese bloque de contexto no acredita por sí solo
+scheduler, joins, admisión por command, selección efectiva de perfiles ni supervisión
+de M6. Sus hechos de aceptación se publican como fixtures, no workers operativos.
+Tampoco adelanta Session Memory (M8) o Memory multiscoped (M10).
+Evidencia: [validación de contexto](../validation/context-inheritance-20261008.txt).
+Conexión packet: [validación de delegación](../validation/delegation-context-20261008.txt).
+
+### Avance parcial de M6 — identidad, admisión a cola e inspección (2026-10-08)
+
+El command interno de Ask registra el `AgentExecutionStarted` del principal de forma
+lazy, dentro del primer Ask real, antes de su Turn/snapshot. Un callback sintético,
+una excepción sin efectos o una interacción todavía pendiente no crea ejecutores.
+La identidad se reutiliza entre Turns y tras reapertura; dos ejecutores posibles en
+una Lane se rechazan por ambigüedad, no por recencia. El scope de Turn conserva la
+identidad explícita que coincida con Task/Lane/Run y su inicio durable. Un inicio
+registrado no es una medición de liveness, resultado aceptado o completion del Run.
+
+`delegation.create` es una acción explícita del usuario a través de
+`ITrustedUserActionClient`, no una tool del modelo ni una decisión basada en `origin`.
+Este primer corte sólo admite un hijo directo del principal en **ORQ**, con límites
+UltraCode vigentes y perfiles configurados/revisionados. ORQ estándar sin límites de
+coordinación durables devuelve `Deferred(CoordinationLimitsUnavailable)`; no se
+fabrica una autorización ilimitada ni se activa UltraCode automáticamente.
+
+El perfil hijo debe ser de sólo lectura: sin escritura, procesos, shell, red o
+secretos; sus reglas de lectura deben ser un subconjunto literal de las del padre
+(no se infiere inclusión entre globs). El techo de perfil no concede permisos.
+Los límites de agentes/profundidad y presupuestos explícitos del hijo se comprueban
+contra los límites vigentes y los del Run. Se reutilizan los lectores canónicos de
+consumo principal/meta y tokens; consumo desconocido o invocación abierta bloquea la
+admisión. Los techos de todos los hijos admitidos se suman conservadoramente para
+las siguientes admisiones, sin liberar slots implícitamente. No constituye una
+reserva de `RunBudgetPool`: el principal mantiene sus guards actuales y el futuro
+dispatcher debe revalidar recursos restantes; la cola no garantiza presupuesto
+o capacidad de ejecución futuros.
+
+La fuente es un EventId exacto de `ModelStepStarted`, atribuido al principal del Run
+actual. La preparación valida la selección antes de crear la Task/Lane. El publisher
+publica el packet bajo lease y confirma **TaskCreated + TaskReady + LaneCreated +
+DelegationCreated** en un único batch Barrier con scopes padre/hijo separados.
+`Accepted` en el ACK significa admisión a cola; no se emite `DelegationAccepted`,
+no hay `AgentExecutionStarted` hijo y no se llama a ningún proveedor. Reutilizar un
+CommandId ya escrito se rechaza y remite a inspección; nunca crea otro hijo. Una
+excepción posterior al commit devuelve ACK `Accepted` con error y rango durable,
+no una falsa afirmación de rollback. Un blob publicado sin batch queda sin raíz
+canónica y sujeto al GC existente, no se borra en una compensación improvisada.
+
+`agents` proyecta Task/Lane/Profile/Execution/Delegation y modelo observado por Lane,
+con secuencia de journal, fuente de contexto e IDs elegibles, sin exportar contenido
+privado. El cliente descarta snapshots de otra Session/anteriores y los limpia al
+cambiar sesión. La TUI incorpora `core.agents`, `/agents` y `/delegate <JSON>`; la
+Lane hija muestra **en cola · sin worker**. El inspector no mezcla transcripts hijos
+con el chat principal ni deduce progreso de un PID/heartbeat.
+
+Pendientes: scheduler/capacidad y release de reservas, dispatch hijo con su routing
+y permisos efectivos, joins, binding/supervisión y aceptación de resultados,
+formularios de delegación/inspector de transcript. No se declara M6 completo, ni
+se adelanta el aislamiento TaskPacket/worktrees de M7 o Memory de M8/M10.
+Evidencia: [admisión e inspección](../validation/agents-admission-20261008.txt).
+
+### Avance parcial de M6 — dispatch, cancelación, resultados y joins (2026-10-08)
+
+El bloque anterior de cola se conecta a un dispatcher explícito de lectura. `/agent run
+<DelegationId>` usa la composición real de `OmniCliRuntime`/`TuiTurnHost`, selección y
+adapter de provider; no ejecuta un callback del modelo con autoridad ampliada. Hay un
+único cupo real en proceso por store, compartido con el principal, y prioridad FIFO
+por secuencia de admisión. Cupo ocupado devuelve `Deferred(WaitingForCapacity)`;
+pedir un hijo posterior devuelve `Deferred(QueuePredecessor)`. No acredita todavía
+el scheduler concurrente general ni `RunBudgetPool` con reservas/releases.
+
+Antes del inicio revalida Run activo, ORQ/UltraCode vigente, perfil revisionado y
+subconjunto literal de lectura, fronteras sin invocaciones abiertas y ownership.
+Task Started, Lane Provisioning/Started, AgentExecution Started, binding Managed
+con handshake y Delegation Accepted se confirman en un batch Barrier atribuido.
+El hijo consume el packet SelectedProjection mediante el adapter existente. Su
+catálogo sólo ofrece lectura/referencias/artifacts propios: no escribe, ejecuta
+procesos, pregunta al usuario, propone plan ni cambia modo. El executor aplica el
+techo de perfil y la política de permisos real, no sólo un prompt de sólo lectura.
+
+Los guards del Run/sesión/ruta permanecen vigentes. Los hijos operativos añaden
+sus topes de Turns, tools, tokens y costo con replay propio antes de cada frontera;
+invocación de cota desconocida o consumo incompleto no equivale a presupuesto libre.
+No heredan consentimiento de una invocación de cuota del principal ni abren un
+resume de ruta atribuido al principal: ruta no autorizada o cuota baja difieren/
+detienen el trabajo. El deadline usa el tiempo restante del grant, no lo renueva.
+Los fixtures legacy de contexto que sólo congelan registros, sin handshake de
+dispatch operativo, conservan su semántica anterior; no se declaran workers reales.
+
+`delegation.cancel` cancela individualmente cola o Task con resultado aún sin aceptar.
+Para un worker propio registra `delegation.cancellation_requested` v1, con causación
+del command del usuario, antes de señalar su token. Eso no declara que haya parado:
+el checkpoint escribe lifecycle y Task/Lane al llegar a una frontera asentada. Una
+invocación abierta conserva evidencia para recuperación. No se mata ni adopta un
+proceso ajeno ni una ejecución de ownership desconocido tras reinicio.
+
+El resultado `core.explorer.v1` se publica íntegro e inmutable en CAS: versión,
+outcome declarado, summary, findings y remainingIssues; errores de tools quedan
+visibles. No importa capacidades arbitrarias ni mutations de plan del texto del
+modelo. AgentExecution Completed, AgentResult Produced y Delegation Returned se
+confirman juntos, pero no completan Task/Lane. La evaluación confiable exige el
+ResultId exacto y una razón; `Accepted` completa Task/Lane, `Rejected`/`ReworkRequested`
+las bloquean. La evaluación del usuario conserva EvaluatorExecutionId null y su
+CommandCausation; no se atribuye falsamente al modelo principal. Una nueva revisión
+de trabajo requiere nueva tarea/resultado, no reescribir una aceptación existente.
+
+`execution.join` admite hijos directos del principal del mismo Run. El evaluator
+determinista soporta All/Any/Quorum/Explicit sobre resultados explícitamente
+aceptados, en orden de miembros, no sólo ejecutores terminados. El padre queda
+Task/Lane Blocked hasta que todos sus joins pendientes se resuelven; la resolución
+lo desbloquea, sin declarar Task Completed ni inventar un nuevo Turn. Miembros
+fallidos/rechazados esperan conforme a Wait; `execution.join.cancel` abandona el
+join explícitamente. Identidades, resultados, dispositions, joins y cancelación
+solicitada se inspeccionan en `/agents` y el panel desde el journal reabierto.
+
+No se declara M6 cerrado: faltan scheduling paralelo/background y recursos generales,
+pool durable de Run, FanOut/FanIn agregado, supervisor externo operativo con
+mailbox/wake, recuperación de ejecuciones inciertas y formularios/transcript del
+inspector. Tampoco se adelantan escritura aislada M7 ni Memory M8/M10.
+Evidencia: [ciclo de delegación](../validation/delegation-lifecycle-20261008.txt).
+
 ## Criterios de salida de M5.5
 
 Deben quedar cubiertos por tests deterministas:

@@ -38,9 +38,9 @@ widgets.<id>.priority = <int>
 ```
 
 - **Orden de los widgets:**
-  1. los que están en `Attention` suben temporalmente arriba;
-  2. el resto se ordena por `priority` configurada o `DefaultPriority`;
-  3. los empates se resuelven por orden de registro.
+  1. `core.session` conserva su slot fijo arriba;
+  2. entre los demás, los que están en `Attention` suben temporalmente;
+  3. el resto se ordena por `priority` configurada o `DefaultPriority`; los empates se resuelven por orden de registro.
 
 ### 2. Widgets iniciales
 
@@ -60,6 +60,24 @@ widgets.<id>.priority = <int>
 ### 3. Widgets futuros
 
 `ContextWidget` (desglose de ADR-0029), `MemoryWidget` (ADR-0028), `DiagnosticsWidget` y **widgets de extensiones**:
+
+La presentación tiene ubicación explícita en el [track Panel lateral funcional](../architecture/arquitectura.md#241-track-tui--panel-lateral-funcional):
+
+| Presentación | Ubicación y dependencia |
+|---|---|
+| Contexto, consumo y diagnóstico básico de recuperación | TUI-P1, sobre las proyecciones ya construidas en M4/M5.5; no reabre esos hitos |
+| Archivos atribuibles a la sesión y DiffPreview | TUI-P2; aislamiento y agrupación por worktree/Lane dependen de M7 |
+| Configuración por widget, pestañas y adaptación a altura | TUI-P3, ADR-0031/0039 |
+| AgentsWidget e inspector operativo | M6; no basta el contrato pre-M6 para representar un scheduler funcionando |
+| MemoryWidget de sesión | M8, junto al servicio Session Memory de ADR-0028 |
+| DiagnosticsWidget de commands/skills/extensions y widgets de extensiones | M8, ADR-0023/0029 |
+| Memoria Project/Workspace/Global y diagnóstico de keybindings | M10, ADR-0028/0029 |
+
+TUI-P1 usa `Query("sessionSidebar")` para el Plan canónico del Run activo y `sessionObservability` para mediciones separadas. La consulta del Plan selecciona los eventos por `SessionId`/`RunId` del envelope, no por su posición entre dos `run.created`. Al cambiar de sesión se invalidan ambos snapshots; al reabrir se reconstruyen del journal. El título usa el objetivo del primer Run como fallback estable mientras no exista un título canónico. Los contenedores se derivan con `PlanProjection`; el denominador de progreso cuenta hojas, no también sus contenedores. Un replay inválido aparece como **no disponible**, no como un Plan vacío saludable.
+
+El panel muestra capacidad declarada, presupuesto efectivo y ocupación de la última solicitud separados del consumo acumulado. `≈` identifica estimaciones y `—` datos no disponibles; cache/reasoning se muestran como desglose y no vuelven a sumarse. El detalle se despliega en una superficie desplazable sin llamadas a proveedores. Hasta TUI-P2 no se afirma «sin archivos modificados» sin una proyección que lo respalde.
+
+**Implementación TUI-P2/P3 (2026-10-08):** `changedFiles` y `diff.open:<effectId>` leen efectos de la sesión y pre/postimágenes verificadas del CAS. No atribuyen Git ni ediciones posteriores; evidencia ausente/corrupta conserva disponibilidad explícita. El resumen agrupa por path/Lane, sin afirmar integración de worktrees o restauración M7. `/sidebar settings` configura visibilidad, expansión, prioridad y modo/breakpoints YAML con precedencia User < Project confiable < Workspace local; sólo User/Workspace se editan desde acciones humanas confiables. Sesión fija, pestañas a ancho medio, colapso por altura que conserva Attention/Error y navegación a widgets ocultos. Evidencia y límites en `docs/validation/sidebar-files-settings-p23-20261008.txt`.
 
 - el manifest los declara en `provides.sidebarWidgets` (ADR-0023);
 - solo pueden devolver `WidgetModel`s declarativos, no dibujar;

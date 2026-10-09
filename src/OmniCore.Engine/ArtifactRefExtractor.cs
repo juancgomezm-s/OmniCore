@@ -31,6 +31,9 @@ internal static class ArtifactRefExtractor
                 AddRange(refs, record.RecordArtifacts());
                 break;
             // Run/Task events
+            case RunSummaryRecorded summary:
+                refs.Add(summary.SummaryArtifact);
+                break;
             case RunValidationRejected r when r.OutputArtifacts is not null:
                 AddRange(refs, r.OutputArtifacts);
                 break;
@@ -65,6 +68,10 @@ internal static class ArtifactRefExtractor
             // Global interaction events
             case ToolCallStarted t when t.BeforeStateRef is not null:
                 refs.Add(t.BeforeStateRef);
+                break;
+
+            case ToolCallSucceeded t when t.AfterStateRef is not null:
+                refs.Add(t.AfterStateRef);
                 break;
 
             case UserInputReceived u when u.ContentRef is not null:

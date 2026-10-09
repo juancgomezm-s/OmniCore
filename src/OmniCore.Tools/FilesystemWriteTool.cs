@@ -502,7 +502,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
         var newVersion = FileVersion.VersionToken(newBytes);
         var summary = summaryPrefix + " [version:" + newVersion + "]";
-        return new ToolResult(summary, null, null, newBytes.Length, false, EffectOutcome.Applied);
+        return new ToolResult(summary, null, null, newBytes.Length, false, EffectOutcome.Applied)
+        { AfterStateBytes = newBytes };
     }
 
     /// <summary>

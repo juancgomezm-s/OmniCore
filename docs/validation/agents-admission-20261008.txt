@@ -1,0 +1,93 @@
+OmniCore — identidad, cola autorizada e inspección de agentes
+Fecha: 2026-10-08, UTC / America/Mexico_City (UTC-6).
+Ownership: worktree tui-markdown-polish, rama codex/tui-markdown-polish.
+Base de este bloque: 71ae308. Checkout principal de GLM no modificado.
+
+Entrega funcional
+- Primer Ask real del Host registra identidad principal antes de Turn/snapshot.
+  Reutilización entre Turns/reapertura; atribución explícita no ambigua.
+  Callback sintético o fallo antes de ejecutar Ask no crea identidad durable.
+- delegation.create sólo vía ITrustedUserActionClient; modo ORQ y autorización
+  UltraCode vigente con límites explícitos. ORQ ordinario sin caps -> Deferred.
+- Perfil hijo configurado/revisionado, sin escritura/proceso/red/shell/secretos,
+  reglas de lectura subconjunto literal del perfil padre. Techo != concesión.
+- Hijo directo con presupuesto explícito; techos admitidos agregados y
+  contabilidad canónica principal/meta/tokens. Desconocido != consumo gratuito.
+  Sólo acotan futuras admisiones, no son reservas de RunBudgetPool ni garantía
+  de recursos futuros. El principal conserva sus guards; dispatch debe revalidar.
+- Fuente exacta del principal y selección explícita; CAS bajo lease y batch
+  Barrier TaskCreated/TaskReady/LaneCreated/DelegationCreated. Scopes separados.
+- Query agents, core.agents, /agents y /delegate <JSON>. IDs y estado reales,
+  fuente/IDs elegibles sin exportar contenido privado. Queued -> sin worker.
+
+Uso (sin llamadas pagadas ni cambios a cuentas)
+1. Perfil de usuario existente, versionado y de sólo lectura para principal/hijo.
+2. ORQ/UltraCode seleccionado explícitamente, allowedModes y TODOS los límites;
+  maxAgents cuenta IDs de ejecución + Lanes en cola; maxDepth >= 1.
+  No se activa automáticamente.
+3. Ejecutar un Turn principal con ruta autorizada y contabilidad de uso completa.
+4. /agents muestra Profile, Context source e IDs disponibles de selección.
+5. /delegate {"profileId":"UUID","sourceEventId":"UUID","objective":"Revisar",
+   "selectedItemIds":[],"maximumPacketBytes":8192,"maxTurns":2,"maxToolCalls":4,
+   "maxTokens":4096,"maxCostUsd":0}
+   La petición JSON se introduce en una línea. [] no hereda transcript del padre.
+6. /agents y el panel muestran cola; aún no existe scheduler que arranque al hijo.
+   No usar la cola como evidencia de trabajo realizado ni M6 cerrado.
+
+Verificación
+- Pruebas offline con provider scripted y SQLite/CAS privados.
+- Flujo de selección española, packet durable, reapertura, mismos IDs, query
+  sin escrituras, continuidad del principal, ausencia de aceptación/worker hijo.
+- Rechazo de origen no confiable, CommandId repetido, selección privada,
+  ambigüedad de identidad; gates de modo/caps/perfil y techos acumulados.
+- Coste meta incluido y consumo desconocido bloqueante.
+- Inyección antes/después de commit: 0 o 4 eventos; ACK Rejected o Accepted
+  con error, respectivamente. Ningún lanzamiento de provider en admisión.
+- Fixture UltraCode declara 1 intento máximo de generación; no se relajaron gates.
+- Una selección de prueba inicialmente elegía el primer mensaje (objetivo),
+  se corrigió para elegir el último mensaje realmente solicitado. Assertions intactas.
+- RED reproducido: dos AgentExecutions distintos en una Lane y maxAgents=2
+  admitían un tercer slot por contar sólo Lanes. Se cuentan IDs de ejecución
+  distintos + Lanes sin ejecutor (cola), sin release implícito por terminalidad.
+  .tmp-agents-capacity-red.log: 10 casos, 9 PASS / 1 FAIL antes de la corrección.
+- Build/focales finales: 0 warnings, 0 errores; 93 PASS/0 FAIL/0 SKIP (7.208 s).
+  Log inicial: .tmp-agents-admission-focused.log.
+- Tras corrección de slots: 94 PASS/0 FAIL/0 SKIP, 10.898 s, maxThreads=2.
+  Log: .tmp-agents-admission-final-focused-serial.log.
+- Suite amplia inicial: 6 FAIL: 4 assertions antiguas confundían identidad del
+  principal con creación de hijos; ahora exigen exactamente un principal y
+  verifican Lane/Profile/atribución, sin Delegation ni cambios de modo implícitos.
+  2 capturas de comandos expusieron /models fuera del viewport tras crecer el
+  catálogo; se mantiene /act primero y /models visible, con /agents y /delegate.
+  Assertions de captura se conservan y amplían; los prefijos siguen alfabéticos.
+- Una ejecución focal simultánea con compilación/suite amplia agotó el grant
+  de 2 s antes de entrar al provider (expected calls=1, actual=0). Reproducción
+  aislada maxThreads=2 pasó sin alterar ni fixture ni timeout/assertions.
+- Recuperación M4 serial: 1 PASS/0 FAIL/0 SKIP, 78.058 s.
+- Arquitectura: 56 PASS/0 FAIL/0 SKIP, 0.475 s; build 0 warnings/errores.
+- Client y Protocol net8.0: build 0 warnings/errores.
+- TUI/CLI finales: 97 PASS/0 FAIL/0 SKIP, 111.613 s.
+  .tmp-agents-ui-final.log; capturas de celdas reales del renderer en 80/120 columnas.
+- Amplia estable: 3152 casos / 3148 PASS / 0 FAIL / 4 SKIP, 220.571 s,
+  maxThreads=2; .tmp-agents-admission-final-full.log (assembly agents-ui-final).
+  Amplia excluye M4ProcessRecoveryTests: con M4 serial disjunto, 3153 casos /
+  3149 PASS / 0 FAIL / 4 SKIP. Focales/TUI se solapan: no sumarlos a este total.
+  SKIP existentes por permisos symlink; no se declara reboot real de Windows.
+- Último ajuste aditivo: snapshots agents ignoran campos futuros; requests de
+  mutación rechazan campos desconocidos. Build agents-admission-release sin
+  warnings/errores y 19/19 casos nuevos PASS, 3.165 s, maxThreads=1.
+  .tmp-agents-admission-release-focused.log; Client/Protocol net8.0 también
+  recompilados sin warnings/errores. Este ajuste posterior a la suite amplia
+  se verificó focalmente; no se repitió toda la suite por una opción de JSON.
+- git diff --check limpio. Checkout GLM c89625c y sus tres cambios ajenos intactos.
+
+Pendiente concreto
+- Scheduler/capacidad, RunBudgetPool, cancelación individual de la cola y dispatch hijo con su
+  presupuesto, tool policy y SessionRoutingPolicy efectivos.
+- Joins, resultados tipados/disposición, binding y supervisión.
+- Formularios de delegación e inspector de transcript; modelo hijo sin ejecutar
+  permanece desconocido. Started no es heartbeat ni prueba de worker vivo.
+- TUI-P2 efectos/diff; TUI-P3 responsive/configuración; Memory M8/M10.
+- Integración de ramas ajenas fuera de este bloque; sin merge/push.
+- No cualificación real de proveedores, pruebas de OS reboot ni validación visual
+  nativa declaradas. M4 y M6 completos no se acreditan por estas fixtures.

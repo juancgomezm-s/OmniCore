@@ -108,9 +108,12 @@ public enum Reversibility
 /// <summary>ToolCallSucceeded: outcome con resultado.</summary>
 public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : DomainEventPayload
 {
+    /// <summary>Exact post-image captured after successful publication. Missing in legacy journals.</summary>
+    public ArtifactRef? AfterStateRef { get; init; }
+
     public EventType Type() => EventType.Of("toolcall.succeeded");
 
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }
 
 /// <summary>ToolCallFailed: falló con efecto (posiblemente parcial; ADR-0004 §2).

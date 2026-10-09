@@ -497,10 +497,6 @@ public sealed class ExplorerTurn
         if (RunProjection.Replay(sessionId, runId, _codecs, runEvents).IsTerminal())
             return new TurnResult("Run is terminal; queued FollowUps remain inert.", StopReason.Error,
                 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
-        var turnId = resumedTurnId ?? TurnId.New();
-        using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
-            FindTaskForLane(runEvents, runId, laneId), laneId, turnId));
-        var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         if (FindPendingRunInteraction(runEvents, runId) is { } pendingInteraction)
         {
             var stop = pendingInteraction.Kind == InteractionKind.BudgetExceeded
@@ -509,6 +505,12 @@ public sealed class ExplorerTurn
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null,
                 pendingInteraction.InteractionId);
         }
+        var turnId = resumedTurnId ?? TurnId.New();
+        var turnTask = FindTaskForLane(runEvents, runId, laneId);
+        var executionId = HostAgentInvocation.Resolve(_store, _codecs, sessionId, runId, turnTask, laneId, stream);
+        using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
+            turnTask, laneId, turnId, ExecutionId: executionId));
+        var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
@@ -522,7 +524,12 @@ public sealed class ExplorerTurn
             : new PersistedSpend(0m, 0m, 0m, false);
 
         List<ModelMessage> messages;
-        try { messages = LoadConversation(stream, runId, isResume ? turnId : null, laneId); }
+        var messageOwners = new Dictionary<ModelMessage, RunId>(ReferenceEqualityComparer.Instance);
+        try
+        {
+            new RunSummaryService(_store, _codecs, _artifacts, _redaction.Redact).EnsureRecorded(sessionId);
+            messages = LoadConversation(stream, runId, isResume ? turnId : null, laneId, messageOwners);
+        }
         catch (InvalidDataException)
         {
             return new TurnResult("Persisted visible reasoning is invalid.", StopReason.Error, 0,
@@ -604,11 +611,17 @@ public sealed class ExplorerTurn
                     new("daily", _dailyCapUsd, dailyCap, null, today));
         }
 
-        void ValidateUltraCode(bool invocation = false, ToolCallId? toolCall = null) =>
+        void ValidateUltraCode(bool invocation = false, ToolCallId? toolCall = null)
+        {
+            DelegationBudgetGuard.Validate(stream.EventsSince(1), _codecs, _artifacts,
+                sessionId, runId, laneId, turnId, !isResume && !started, invocation, toolCall,
+                ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity, _maximumGenerationRequestAttempts),
+                ModelInvocationCostBound.TokenCeiling(_selection, _modelContextCapacity, _maximumGenerationRequestAttempts));
             UltraCodeExecutionGuard.Validate(stream.EventsSince(1), _codecs, _artifacts,
                 sessionId, runId, turnId, newTurn: !isResume && !started, invocation,
                 ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity,
                     _maximumGenerationRequestAttempts), toolCall);
+        }
 
         void ValidateTokenBudget(bool includeNextInvocation)
         {
@@ -731,7 +744,7 @@ public sealed class ExplorerTurn
                     usage, allToolCalls.ToArray(), null);
             }
             var preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta,
+                workingStateText, instruction, messages, messageOwners, fingerprint, cancellationToken, CanInvokeMeta,
                 hasReservationBoundary ? ReserveMeta : null,
                 hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
                 hasReservationBoundary ? FinishMeta : null,
@@ -821,7 +834,7 @@ public sealed class ExplorerTurn
                 if (step > 0 || steering.Count > 0)
                 {
                     preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                        workingStateText, instruction, messages, fingerprint, cancellationToken, CanInvokeMeta,
+                        workingStateText, instruction, messages, messageOwners, fingerprint, cancellationToken, CanInvokeMeta,
                         hasReservationBoundary ? ReserveMeta : null,
                         hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
                         hasReservationBoundary ? FinishMeta : null,
@@ -1752,9 +1765,18 @@ public sealed class ExplorerTurn
     }
 
     internal List<ModelMessage> LoadConversation(EventStream stream, RunId runId,
-        TurnId? activeTurnId = null, LaneId? activeLaneId = null)
+        TurnId? activeTurnId = null, LaneId? activeLaneId = null,
+        IDictionary<ModelMessage, RunId>? messageOwners = null)
     {
         var history = new List<ModelMessage>();
+        var journal = stream.EventsSince(1);
+        var conversationScope = new LaneConversationScope(journal, _codecs, runId, activeLaneId);
+        var currentHistoryRun = runId;
+        void AppendHistory(ModelMessage message)
+        {
+            history.Add(message);
+            messageOwners?.Add(message, currentHistoryRun);
+        }
         var steeringInputs = new Dictionary<SteeringId, TurnSteeringReceived>();
         var questionnaireCalls = new HashSet<string>(StringComparer.Ordinal);
         var questionnaireResults = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1764,12 +1786,18 @@ public sealed class ExplorerTurn
         var canonicalCalls = new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal);
         var callsByStep = new Dictionary<int, Dictionary<string, ToolCallRequested>>();
         var restoredCalls = new HashSet<string>(StringComparer.Ordinal);
+        // Chat continuity follows the canonical visible message, not the optional usage summary.
+        // Old journals may contain only ModelCompleted; retain that fallback per Run/Turn.
+        var canonicalAssistantTurns = new HashSet<(RunId Run, TurnId Turn)>();
         int? activeStepIndex = null;
         int? completedStepIndex = null;
         var completedSteps = new HashSet<int>();
-        foreach (var evt in stream.EventsSince(1))
+        foreach (var evt in journal)
         {
+            if (!conversationScope.CanRead(evt)) continue;
             var payload = _codecs.Decode(evt);
+            if (payload is AssistantMessageRecorded assistant && evt.RunId == assistant.RunId)
+                canonicalAssistantTurns.Add((assistant.RunId, assistant.TurnId));
             if (activeTurnId is not null && evt.RunId == runId && evt.LaneId == activeLaneId)
             {
                 if (payload is ModelStepStarted stepStart && stepStart.TurnId == activeTurnId)
@@ -1834,15 +1862,11 @@ public sealed class ExplorerTurn
             }
         }
 
-        foreach (var evt in stream.EventsSince(1))
+        foreach (var evt in journal)
         {
+            if (!conversationScope.CanRead(evt)) continue;
             var type = evt.Type.ToString();
-            if (evt.RunId is null || !evt.RunId.ToString().Equals(runId.ToString(), StringComparison.Ordinal))
-            {
-                // The chat belongs to the session. Only plain user/assistant history crosses Runs;
-                // tool calls, results, plans and interactions retain their original Run boundary.
-                if (evt.RunId is null || type is not ("user_input.received" or "model.completed")) continue;
-            }
+            currentHistoryRun = evt.RunId ?? runId;
             if (_codecs.Decode(evt) is TurnSteeringReceived steeringReceived)
             {
                 steeringInputs.Add(steeringReceived.SteeringId, steeringReceived);
@@ -1853,7 +1877,7 @@ public sealed class ExplorerTurn
                     || received.RunId != steeringApplied.RunId || received.LaneId != steeringApplied.LaneId
                     || received.TurnId != steeringApplied.TurnId)
                     throw new InvalidDataException("Steering application has no matching input.");
-                history.Add(SteeringMessage(received.InputPartsJson));
+                AppendHistory(SteeringMessage(received.InputPartsJson));
             }
             if (type == "user_input.received")
             {
@@ -1872,7 +1896,7 @@ public sealed class ExplorerTurn
                             : Array.Empty<string>();
                     var text = string.Join("\n", parts.Where(static part => part.Length > 0));
                     if (text.Length > 0)
-                        history.Add(new ModelMessage(MessageRole.User,
+                        AppendHistory(new ModelMessage(MessageRole.User,
                             new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
                 }
                 catch (System.Text.Json.JsonException) { }
@@ -1892,7 +1916,7 @@ public sealed class ExplorerTurn
                     foreach (var call in visible.OfType<ToolCallBlock>())
                         if (!restoredCalls.Add(call.Id.ToString()))
                             throw new InvalidDataException("Persisted visible reasoning is invalid.");
-                    if (visible.Count > 0) history.Add(new ModelMessage(MessageRole.Assistant, visible));
+                    if (visible.Count > 0) AppendHistory(new ModelMessage(MessageRole.Assistant, visible));
                 }
             }
             else if (type == "toolcall.requested")
@@ -1903,7 +1927,7 @@ public sealed class ExplorerTurn
                     if (restoredCalls.Contains(call.ToolCallId.ToString())) continue;
                     var arguments = questionnaireArguments.TryGetValue(call.ToolCallId.ToString(), out var schemaJson)
                         ? schemaJson : call.ArgumentsJson;
-                    history.Add(new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
+                    AppendHistory(new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
                         new ToolCallBlock(call.ToolCallId, call.ProviderCallId, call.ToolName,
                             _redaction.Redact(arguments))
                     }));
@@ -1935,19 +1959,29 @@ public sealed class ExplorerTurn
                         ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
                         _ => "error",
                     };
-                history.Add(new ModelMessage(MessageRole.Tool, new ContentBlock[] {
+                AppendHistory(new ModelMessage(MessageRole.Tool, new ContentBlock[] {
                     new ToolResultBlock(callId!, new ContentBlock[] { new TextBlock(content) },
                         isQuestionnaireCall ? content.Contains("\"status\":\"invalid\"", StringComparison.Ordinal)
                             : payload is not ToolCallSucceeded)
                 }));
             }
+            else if (type == "assistant_message.recorded")
+            {
+                var assistant = _codecs.Decode(evt) as AssistantMessageRecorded;
+                if (assistant?.ContentRef is null || evt.RunId != assistant.RunId) continue;
+                var text = _artifacts.GetText(assistant.ContentRef.Hash);
+                if (!string.IsNullOrEmpty(text))
+                    AppendHistory(new ModelMessage(MessageRole.Assistant,
+                        new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+            }
             else if (type == "model.completed")
             {
                 var completed = _codecs.Decode(evt) as ModelCompleted;
                 if (completed?.ResponseArtifact is null) continue;
+                if (evt.RunId is { } owner && canonicalAssistantTurns.Contains((owner, completed.TurnId))) continue;
                 var text = DecodeUsageResponse(_artifacts.GetText(completed.ResponseArtifact.Hash));
                 if (!string.IsNullOrEmpty(text))
-                    history.Add(new ModelMessage(MessageRole.Assistant,
+                    AppendHistory(new ModelMessage(MessageRole.Assistant,
                         new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
             }
         }
@@ -2080,12 +2114,19 @@ public sealed class ExplorerTurn
 
     private PreparedTurnContext MaterializeTurnContext(EventStream stream, SessionId sessionId, RunId runId,
         LaneId laneId, TurnId turnId, string workingStateText, string instruction,
-        IReadOnlyList<ModelMessage> messages, ExecutionFingerprint fingerprint, CancellationToken cancellationToken,
+        IReadOnlyList<ModelMessage> messages, IReadOnlyDictionary<ModelMessage, RunId> messageOwners,
+        ExecutionFingerprint fingerprint, CancellationToken cancellationToken,
         Func<bool>? canInvokeMeta = null, Func<string, bool>? reserveMeta = null,
         Action<string>? dispatchMeta = null, Action<string, decimal?, long>? finishMeta = null,
         Action<string>? releaseMeta = null)
     {
+        var contextTask = FindTaskForLane(stream.EventsSince(1), runId, laneId);
         var contributors = new List<IContextContributor>();
+        // Only explicit, canonically accepted selected-context packets. No automatic parent
+        // transcript import, worker admission, scheduler decision or authority transfer.
+        var inherited = new ContextInheritanceService(_store, _codecs, _artifacts)
+            .FindDelegationProjection(sessionId, runId, laneId);
+        if (inherited is not null) contributors.Add(new RedactingContextContributor(inherited, _redaction));
         var hasWorkingState = false;
         foreach (var contributor in _materializer.Contributors())
         {
@@ -2104,7 +2145,15 @@ public sealed class ExplorerTurn
         contributors.Add(new RedactingContextContributor(new SystemPromptContributor(prompt), _redaction));
         var entries = new List<ConversationContextEntry>();
         var messageById = new Dictionary<string, ModelMessage>(StringComparer.Ordinal);
+        var runById = new Dictionary<string, RunId>(StringComparer.Ordinal);
         var firstUser = true;
+        var latestUserIndex = -1;
+        for (var i = messages.Count - 1; i >= 0; i--)
+        {
+            if (messages[i].Role != MessageRole.User) continue;
+            latestUserIndex = i;
+            break;
+        }
         for (var i = 0; i < messages.Count; i++)
         {
             var safe = RedactMessage(messages[i]);
@@ -2115,7 +2164,9 @@ public sealed class ExplorerTurn
                 MessageRole.Assistant => ContextItemKind.AssistantMessage,
                 _ => ContextItemKind.ToolResult,
             };
-            var preserve = safe.Role == MessageRole.User && firstUser;
+            // Historical context must never silently evict the user's current intent.
+            // If protected input itself cannot fit, the existing overflow barrier stops dispatch.
+            var preserve = safe.Role == MessageRole.User && (firstUser || i == latestUserIndex);
             if (safe.Role == MessageRole.User)
             {
                 firstUser = false;
@@ -2123,19 +2174,48 @@ public sealed class ExplorerTurn
 
             entries.Add(new ConversationContextEntry(id, kind, RenderMessage(safe), preserve));
             messageById.Add(id, safe);
+            runById.Add(id, messageOwners.TryGetValue(messages[i], out var owner) ? owner : runId);
         }
 
         var policy = _harness?.ContextManagement ?? ContextManagementPolicy.Default;
-        var priorCheckpoint = ReadLatestCheckpoint(stream, runId);
+        var summarizedIds = new HashSet<string>(StringComparer.Ordinal);
+        var summaryService = new RunSummaryService(_store, _codecs, _artifacts, _redaction.Redact);
+        var summaries = summaryService.Read(sessionId, runId);
+        if (summaries.Count > 0)
+        {
+            // Probe the existing budget policy, not a new percentage/character heuristic.
+            // Prepared artifacts are not published by this probe.
+            var probe = new ContextMaterializer(_materializer.Counter(),
+                contributors.Append(new SessionConversationContributor(entries)).ToArray(), _artifacts, policy)
+                .PrepareWithinBudget(new MaterializeRequest(sessionId, runId, contextTask, laneId, turnId,
+                    _store.CurrentSequence(sessionId), fingerprint), cancellationToken, (int)_selection.ContextBudget).Snapshot;
+            var affectedRuns = probe.Diagnostics.Where(diagnostic => diagnostic.Decision is ContextDecision.OmittedByBudget or ContextDecision.TruncatedByBudget)
+                .Where(diagnostic => runById.TryGetValue(diagnostic.ItemId, out var owner) && owner != runId)
+                .Select(diagnostic => runById[diagnostic.ItemId]).ToHashSet();
+            foreach (var (summary, artifact) in summaries.Where(item => affectedRuns.Contains(item.Summary.RunId)))
+            {
+                foreach (var entry in entries.Where(entry => !entry.PreserveWhenTrimming && runById[entry.Id] == summary.RunId))
+                    summarizedIds.Add(entry.Id);
+                contributors.Add(new RunSummaryContributor(summary, artifact, summaryService.Render(summary)));
+            }
+        }
+        var priorCheckpoint = ReadLatestCheckpoint(stream, runId, laneId);
         var compactedThroughIndex = priorCheckpoint?.CompactedThroughItemIndex ?? -1;
         var compactedIds = new HashSet<string>(entries.Where(e => !e.PreserveWhenTrimming
                 && ConversationIndex(e.Id) is var index && index >= 0 && index <= compactedThroughIndex)
             .Select(e => e.Id), StringComparer.Ordinal);
-        var candidates = entries.Where(e => IsConversationKind(e.Kind) && !e.PreserveWhenTrimming).ToArray();
+        var firstInput = entries.FirstOrDefault(entry => entry.Kind == ContextItemKind.UserMessage);
+        var currentInput = entries.LastOrDefault(entry => entry.Kind == ContextItemKind.UserMessage);
+        // Current input keeps its recent-tail position and may inform a checkpoint, but
+        // its original user message cannot be removed. Preserve the configured cadence.
+        var candidates = entries.Where(e => IsConversationKind(e.Kind)
+            && (!e.PreserveWhenTrimming || e.Id == currentInput?.Id && e.Id != firstInput?.Id)
+            && !summarizedIds.Contains(e.Id)).ToArray();
         var oldCount = Math.Max(0, candidates.Length - Math.Max(0, policy.RecentTailItems));
         var oldItems = candidates.Take(oldCount).ToArray();
         var newOldItems = oldItems.Where(e => !compactedIds.Contains(e.Id)).ToArray();
-        if (ContextCompaction.ShouldCompact(newOldItems.Length, policy))
+        if (newOldItems.Any(entry => !entry.PreserveWhenTrimming)
+            && ContextCompaction.ShouldCompact(newOldItems.Length, policy))
         {
             var material = (priorCheckpoint?.Summary is { Length: > 0 } oldSummary
                     ? "Previous checkpoint:\n" + oldSummary + "\n\nNew older history:\n" : "")
@@ -2162,7 +2242,7 @@ public sealed class ExplorerTurn
             }
             else summary = DeterministicFallbackSummary(material, policy.MaxCheckpointCharacters);
 
-            foreach (var entry in oldItems) compactedIds.Add(entry.Id);
+            foreach (var entry in oldItems.Where(entry => !entry.PreserveWhenTrimming)) compactedIds.Add(entry.Id);
             var checkpointId = Guid.NewGuid().ToString("N");
             compactedThroughIndex = compactedIds.Select(ConversationIndex).DefaultIfEmpty(-1).Max();
             var throughSequence = _store.CurrentSequence(sessionId);
@@ -2172,7 +2252,7 @@ public sealed class ExplorerTurn
             using (var checkpointPublication = (_artifacts as IArtifactPublicationLease)
                 ?.AcquirePublicationLease(CancellationToken.None))
             {
-                checkpointArtifact = PersistCheckpointArtifact(checkpointId, runId, throughSequence,
+                checkpointArtifact = PersistCheckpointArtifact(checkpointId, runId, laneId, throughSequence,
                     compactedThroughIndex, summary, metaFingerprint);
                 stream.Append(new ContextCheckpointRecorded(checkpointId, runId, throughSequence,
                     checkpointArtifact, metaFingerprint));
@@ -2184,19 +2264,19 @@ public sealed class ExplorerTurn
                 checkpointContext, checkpointArtifact);
         }
 
-        var filteredEntries = entries.Where(e => !compactedIds.Contains(e.Id)).ToArray();
+        var filteredEntries = entries.Where(e => !compactedIds.Contains(e.Id) && !summarizedIds.Contains(e.Id)).ToArray();
         contributors.Add(new SessionConversationContributor(filteredEntries));
         if (priorCheckpoint is not null)
         {
             contributors.Add(new ContextCheckpointContributor(priorCheckpoint.Id,
                 priorCheckpoint.ThroughSequence, priorCheckpoint.Summary, priorCheckpoint.Artifact));
         }
-        var priorDiagnostics = entries.Where(e => compactedIds.Contains(e.Id)).Select(e => new ContextDiagnostic(e.Id,
+        var priorDiagnostics = entries.Where(e => compactedIds.Contains(e.Id) || summarizedIds.Contains(e.Id)).Select(e => new ContextDiagnostic(e.Id,
             new ContextProvenance("session-conversation", ContributionCategory.Conversation, "engine",
                 ScopeLevel.Session, false), ContextDecision.Compacted, e.Content.Length)).ToArray();
         var materializer = new ContextMaterializer(_materializer.Counter(), contributors, _artifacts, policy);
         var prepared = materializer.PrepareWithinBudget(
-            new MaterializeRequest(sessionId, runId, null, laneId, turnId, _store.CurrentSequence(sessionId),
+            new MaterializeRequest(sessionId, runId, contextTask, laneId, turnId, _store.CurrentSequence(sessionId),
                 fingerprint, priorDiagnostics), cancellationToken, (int)_selection.ContextBudget);
         var snapshot = prepared.Snapshot;
         var selectedMessages = new List<ModelMessage>();
@@ -2274,27 +2354,34 @@ public sealed class ExplorerTurn
     private sealed record LoadedCheckpoint(string Id, long ThroughSequence, int CompactedThroughItemIndex,
         string Summary, ArtifactRef Artifact);
 
-    private LoadedCheckpoint? ReadLatestCheckpoint(EventStream stream, RunId runId)
+    private LoadedCheckpoint? ReadLatestCheckpoint(EventStream stream, RunId runId, LaneId laneId)
     {
-        ContextCheckpointRecorded? latest = null;
-        foreach (var evt in stream.EventsSince(1))
+        var journal = stream.EventsSince(1);
+        var scope = new LaneConversationScope(journal, _codecs, runId, laneId);
+        foreach (var evt in journal.Reverse())
         {
-            if (_codecs.Decode(evt) is ContextCheckpointRecorded checkpoint && checkpoint.RunId.Equals(runId))
-                latest = checkpoint;
+            if (evt.RunId != runId || _codecs.Decode(evt) is not ContextCheckpointRecorded latest
+                || latest.RunId != runId || !scope.CanRead(evt)) continue;
+            if (_artifacts.GetText(latest.CheckpointArtifact.Hash) is not { } json) return null;
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(json);
+                var root = document.RootElement;
+                if (root.TryGetProperty("laneId", out var owner))
+                {
+                    if (owner.GetString() != laneId.ToString())
+                        throw new InvalidDataException("Checkpoint body has conflicting Lane ownership.");
+                }
+                // Older multi-Lane checkpoints used a mixed transcript and global indices.
+                // Rebuild from scoped canonical history instead of inheriting that body/index.
+                else if (scope.HasMultipleLanes) continue;
+                var compactedThrough = root.GetProperty("compactedThroughItemIndex").GetInt32();
+                return new LoadedCheckpoint(latest.CheckpointId, latest.ThroughEventSequence, compactedThrough,
+                    RenderCheckpointContext(root), latest.CheckpointArtifact);
+            }
+            catch (System.Text.Json.JsonException) { return null; }
         }
-        if (latest is null || _artifacts.GetText(latest.CheckpointArtifact.Hash) is not { } json) return null;
-        try
-        {
-            using var document = System.Text.Json.JsonDocument.Parse(json);
-            var root = document.RootElement;
-            var compactedThrough = root.GetProperty("compactedThroughItemIndex").GetInt32();
-            return new LoadedCheckpoint(latest.CheckpointId, latest.ThroughEventSequence, compactedThrough,
-                RenderCheckpointContext(root), latest.CheckpointArtifact);
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            return null;
-        }
+        return null;
     }
 
     private static string RenderCheckpointContext(System.Text.Json.JsonElement checkpoint)
@@ -2320,7 +2407,7 @@ public sealed class ExplorerTurn
         return string.Join("\n", parts.Where(part => part.Length > 0));
     }
 
-    private ArtifactRef PersistCheckpointArtifact(string checkpointId, RunId runId, long throughSequence,
+    private ArtifactRef PersistCheckpointArtifact(string checkpointId, RunId runId, LaneId laneId, long throughSequence,
         int compactedThroughItemIndex, string summary, string metaModelFingerprint)
     {
         var lines = summary.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
@@ -2341,6 +2428,7 @@ public sealed class ExplorerTurn
             writer.WriteStartObject();
             writer.WriteString("checkpointId", checkpointId);
             writer.WriteString("runId", runId.ToString());
+            writer.WriteString("laneId", laneId.ToString());
             writer.WriteNumber("throughEventSequence", throughSequence);
             writer.WriteString("metaModelFingerprint", metaModelFingerprint);
             writer.WriteString("summary", _redaction.Redact(summary));
@@ -2532,6 +2620,12 @@ public sealed class ExplorerTurn
         {
             writer.WriteStartObject();
             writer.WriteString("snapshotId", snapshot.SnapshotId);
+            writer.WriteNumber("contextScopeVersion", 1);
+            writer.WriteString("sessionId", snapshot.SessionId.ToString());
+            writer.WriteString("runId", snapshot.RunId.ToString());
+            writer.WriteString("taskId", snapshot.TaskId?.ToString());
+            writer.WriteString("laneId", snapshot.LaneId?.ToString());
+            writer.WriteString("turnId", snapshot.TurnId?.ToString());
             writer.WriteString("fingerprint", snapshot.Fingerprint.Hash());
             writer.WriteString("snapshotFingerprint", snapshot.SnapshotFingerprint);
             writer.WriteNumber("tokenCount", snapshot.TokenCount);

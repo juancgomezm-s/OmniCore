@@ -60,6 +60,17 @@ public sealed record DelegationFailed(ExecutionId ExecutionId, DelegationId Dele
     }
 }
 
+/// <summary>Durable cancellation intent, not a claim that the executor has stopped.</summary>
+public sealed record DelegationCancellationRequested(ExecutionId ExecutionId, DelegationId DelegationId,
+    ExecutionId ChildExecutionId) : IPreM6ContractEvent
+{
+    public EventType Type() => EventType.Of("delegation.cancellation_requested");
+    public int SchemaVersion() => 1;
+    public IReadOnlyList<ArtifactRef> RecordArtifacts() => [];
+    public void Validate()
+    { ContractCopies.Id(ExecutionId?.Value); ContractCopies.Id(DelegationId?.Value); ContractCopies.Id(ChildExecutionId?.Value); }
+}
+
 public sealed record ExecutionJoinCreated(ExecutionId ExecutionId, ExecutionJoin Join) : IPreM6ContractEvent
 {
     public EventType Type() => EventType.Of("execution_join.created");

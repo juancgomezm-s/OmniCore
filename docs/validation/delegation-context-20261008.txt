@@ -1,0 +1,104 @@
+SelectedProjection durable delegation packet — 2026-10-08
+=========================================================
+
+Ownership / scope
+-----------------
+Checkout: C:\Users\juanc\.codex\worktrees\tui-markdown-polish\OmniCore
+Branch: codex/tui-markdown-polish. Parent: 70ed29c.
+Primary checkout remains read-only; GLM checkpoint c89625c and its dirty ADR-0011,
+ADR-0012 and tools/open-tui.ps1 remain untouched. No merge, push or provider launch.
+
+Delivered
+---------
+DelegationContextPacket v1 is the selected-context payload of Delegation.PacketRef,
+NOT the M7 TaskPacket. Immutable copied facts contain item IDs, original kinds and
+historical text. Identity and source provenance are typed. No source CAS reference,
+parent transcript, System/WorkingState/tools/files/skills/Memory, parent pinning,
+permission grant, mode authorization, routing or TaskBudget is transferred.
+
+PrepareDelegationPacket uses the actual canonical parent execution and child Lane,
+direct Task lineage and a canonical lane-local source snapshot. An explicit byte
+limit is mandatory, capped at 1 MiB; oversized selections are rejected, not silently
+truncated. IArtifactPreparationStore applies redaction and returns immutable bytes
+without CAS or journal writes; stores without preparation support fail closed.
+Cancellation and rejected preflight do not create durable effects. Repreparation
+has the same content hash; a recorded delegation packet cannot be replaced.
+
+The command publisher must Publish under IArtifactPublicationLease and append the
+exact reference in DelegationCreated. This delivery does not add a new publisher,
+command admission path or worker launcher. Tests publish explicit canonical facts
+through EventStream under a publication lease; these are record-only fixtures.
+
+CreateDelegationProjection reads only the actual accepted journal record. It
+verifies replay, packet format/version/size/integrity/identity, direct parent-child
+link, source event/sequence/snapshot and exact selected facts. Unknown JSON fields,
+invented content, sensitive/private selection and foreign scope fail closed.
+The source cannot predate the parent's canonical start. If its receipt declares
+ExecutionId it must match. With a null identity the parent must be the unique
+execution ever started in that Lane through the source receipt. Multiple possible
+owners are rejected, never inferred from a latest-start cursor. Exact duplicate
+start facts do not create another candidate. No execution identity is fabricated.
+
+ExplorerTurn resolves the accepted packet contributor automatically for its child
+Lane during context materialization. No manual injection is used in the integration
+test. Reopened SQLite/CAS reproduces the selected facts in the actual ModelRequest.
+Only the child receives them, and only after acceptance. Cached contributors stop
+after canonical failure/return. Multiple active accepted packets for one Lane are
+ambiguous and rejected, never merged or chosen by recency. Generic legacy PacketRef
+formats are not interpreted as selected-context packets. Ordinary child budget
+trimming protects the current child intent/working state.
+
+Confirmed defect / RED-GREEN
+----------------------------
+The initial packet implementation accepted a null-ExecutionId snapshot after two
+distinct executions had started in the parent Lane. The focused regression failed
+because no exception was thrown: 1 FAIL / 0 PASS, 0.772 seconds.
+Log .tmp-delegation-ambiguity-red.log; retained binary .tmp/delegation-ambiguity-red.
+Both preparation and packet reading now enforce unique legacy ownership. A second
+regression bypasses preparation and records such a packet as canonical fixture data;
+the reader independently rejects it. No assertions were weakened.
+
+Final verification
+------------------
+Build tests: --no-restore -p:OutputPath=<checkout>\.tmp\delegation-context-verified\
+Zero warnings/errors.
+Final focused: 104 PASS / 0 FAIL / 0 SKIP, 5.938 seconds.
+42 new packet cases, 32 prior Lane/context cases and 30 lineage/frozen contract
+cases; overlaps broad suite. Log: .tmp-delegation-context-verified-focused.log.
+Command: dotnet .tmp/delegation-context-verified/OmniCore.Tests.dll
+  -class '*DelegationContextPacketTests' -class '*ContextInheritanceTests'
+  -class '*LaneContextIsolationTests' -class '*PreM6RecordProjectionTests'
+  -class '*PreM6ExecutionIntegrityTests' -class '*PreM6FrozenContractTests'
+  -class '*AgentExecutionContractTests' -noLogo
+
+Preliminary full suite before the legacy-owner fix: 3131 cases / 3127 PASS /
+0 FAIL / 4 SKIP, 207.513 seconds. Log .tmp-delegation-context-full.log.
+Preliminary recovery: 1 PASS / 0 FAIL / 0 SKIP, 85.822 seconds.
+These preliminary totals are not added to final totals or claimed as final source.
+
+Final recovery, run serially before the final broad suite:
+1 PASS / 0 FAIL / 0 SKIP, 79.273 seconds.
+Command: dotnet .tmp/delegation-context-verified/OmniCore.Tests.dll
+  -class '*M4ProcessRecoveryTests' -maxThreads 1 -noLogo
+Log .tmp-delegation-context-verified-m4.log. This is process recovery, NOT an OS reboot.
+Final architecture: 56 PASS / 0 FAIL / 0 SKIP, 0.458 seconds.
+Build .tmp/delegation-context-verified-architecture: zero warnings/errors.
+Log .tmp-delegation-context-verified-architecture.log; process exit code 0.
+
+Final broad suite: 3133 cases / 3129 PASS / 0 FAIL / 4 SKIP, 155.308 seconds.
+Command: dotnet .tmp/delegation-context-verified/OmniCore.Tests.dll
+  -class- '*M4ProcessRecoveryTests' -maxThreads 2 -noLogo
+Log .tmp-delegation-context-verified-full.log; process exit code 0.
+Disjoint broad + serial recovery: 3134 cases / 3130 PASS / 0 FAIL / 4 SKIP.
+The four skips are existing symlink-permission cases. Focused/broad, preliminary
+and RED totals overlap or belong to prior source and must not be summed.
+Verification completed 2026-10-08 16:34:54 UTC / 10:34:54 America/Mexico_City.
+
+Remaining queue
+---------------
+M6: authorized command admission/publication from TUI/CLI, profile choice under
+permission/mode/routing/budget ceilings, scheduler, joins/results/supervision,
+background capacity and visibility policies for files/knowledge.
+M8 Session Memory; M10 Project/Workspace/Global Memory remain separate services.
+No real provider qualification, provider calls, credential changes, worktree/OS
+restart integration or branch publication is claimed by this packet delivery.

@@ -115,7 +115,8 @@ public sealed class ConfigLoader
                 return null;
             }
 
-            CheckKeys(root, "settings.yaml", "$", ["budget"], diagnostics);
+            CheckKeys(root, "settings.yaml", "$", ["budget", "sidebar", "widgets"], diagnostics);
+            SidebarConfiguration.ValidateRoot(root, diagnostics);
             if (!root.Children.TryGetValue(new YamlScalarNode("budget"), out var budgetNode)) return root;
             if (budgetNode is not YamlMappingNode budget)
             {

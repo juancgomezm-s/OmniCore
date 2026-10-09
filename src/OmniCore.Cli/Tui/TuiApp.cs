@@ -17,6 +17,18 @@ public sealed class TuiApp
     private readonly string _locale;
     private readonly Localization _localization;
     private readonly ClientProjection _projection;
+    private readonly SessionSidebarProjection _sidebarProjection = new();
+    private readonly AgentsProjection _agents = new();
+    private readonly ChangedFilesProjection _files = new();
+    private SidebarPreferencesSnapshot _sidebarSettings = new("", new(), []);
+    private DateTimeOffset _sidebarSettingsPolledAt;
+    private string? _sidebarSelection;
+    private SidebarView? _sidebarSession;
+    private Label? _sidebarNavigation;
+    private Label? _sidebarAttention;
+    private ISidebarWidget[] _sidebarWidgets = [];
+    private SidebarComposition? _sidebarComposition;
+    private readonly SessionObservabilityProjection _observability = new();
     private readonly ModelPolicyHost _policies;
     private ClientState _state = ClientState.Empty();
     private long _lastSequence;
@@ -34,7 +46,9 @@ public sealed class TuiApp
     private Label? _header;
     private Label? _status;
     private FrameView? _sidebar;
-    private Label? _sidebarContent;
+    private SidebarView? _sidebarContent;
+    private Button? _sidebarDetails;
+    private bool _sidebarExpanded;
     private Label? _completion;
     private FrameView? _commandHelper;
     private ListView? _commandList;
@@ -74,6 +88,9 @@ public sealed class TuiApp
     internal ComposerView? Composer => _composer;
     internal ConversationView? Conversation => _conversation;
     internal FrameView? Sidebar => _sidebar;
+    internal SidebarView? SidebarContent => _sidebarContent;
+    internal SidebarView? SidebarSession => _sidebarSession;
+    internal SidebarComposition? SidebarComposition => _sidebarComposition;
     internal Label? Completion => _completion;
     internal Label? Status => _status;
     internal Label? Header => _header;
@@ -92,6 +109,7 @@ public sealed class TuiApp
         _ownsPolicies = policies is null;
         _accountOverride = account;
         _turnHost = turnHost;
+        RefreshSidebarPreferences();
         _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
         _state = RefreshState();
     }
@@ -253,8 +271,25 @@ public sealed class TuiApp
         ApplyTheme(_conversation);
         conversationFrame.Add(_conversation);
         _sidebar = new FrameView { Id = "omni-panel", X = Pos.AnchorEnd(31), Y = 0, Width = 31, Height = Dim.Fill(), Title = " Workspace ", BorderStyle = LineStyle.None };
-        _sidebarContent = new Label { X = 2, Y = 3, Width = Dim.Fill(2), Height = Dim.Fill(1), Text = SidebarText() };
-        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "Workspace" }, _sidebarContent);
+        _sidebarContent = new SidebarView { X = 2, Y = 11, Width = Dim.Fill(1), Height = Dim.Fill(1) };
+        _sidebarContent.RowActivated += row => { if (row.Action == "diff.open" && row.Target is { } id) ShowFileDiff(id); };
+        _sidebarSession = new SidebarView { X = 2, Y = 3, Width = Dim.Fill(1), Height = 5, CanFocus = false, ScrollBars = false };
+        _sidebarDetails = new Button { Id = "sidebar-details", X = 2, Y = 1, Text = Ui("Más detalle", "More detail") };
+        _sidebarDetails.Accepted += (_, _) =>
+        {
+            _sidebarExpanded = !_sidebarExpanded;
+            _sidebarDetails.Text = _sidebarExpanded ? Ui("Menos detalle", "Less detail") : Ui("Más detalle", "More detail");
+            RenderSidebar();
+        };
+        var settings = new Button { Id = "sidebar-settings", X = Pos.AnchorEnd(9), Y = 1, Text = Ui("Ajustes", "Settings") };
+        settings.Accepted += (_, _) => ShowSidebarSettings();
+        var previous = new Button { Id = "sidebar-prev", X = 1, Y = 8, Text = "‹" };
+        var next = new Button { Id = "sidebar-next", X = Pos.AnchorEnd(3), Y = 8, Text = "›" };
+        previous.Accepted += (_, _) => NavigateSidebar(-1); next.Accepted += (_, _) => NavigateSidebar(1);
+        _sidebarNavigation = new Label { Id = "omni-heading", X = 5, Y = 8, Width = Dim.Fill(5), Height = 1 };
+        _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 9, Width = Dim.Fill(1), Height = 1 };
+        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = "Workspace" }, _sidebarDetails, settings,
+            _sidebarSession, previous, next, _sidebarNavigation, _sidebarAttention, _sidebarContent);
         var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
         composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
         _composer = new ComposerView { X = 4, Y = 1, Width = Dim.Fill(2), Height = 1, Text = "", Multiline = true,
@@ -294,7 +329,7 @@ public sealed class TuiApp
         var initialWidth = 80;
         try { initialWidth = Console.WindowWidth; }
         catch (IOException) { /* consola redirigida o sin TTY: arranque en modo estrecho, el layout se corrige con el primer frame real. */ }
-        _sidebarOpen = initialWidth >= 90;
+        _sidebarOpen = _sidebarSettings.Preferences.Visible ?? initialWidth >= _sidebarSettings.Preferences.TabbedMinWidth;
         _window.FrameChanged += (_, _) => ApplyResponsiveLayout();
         ApplyResponsiveLayout();
         RenderState();
@@ -306,7 +341,7 @@ public sealed class TuiApp
     private void ApplyResponsiveLayout()
     {
         if (_window is null || _sidebar is null) return;
-        var layout = TuiLayoutModel.ForWidth(_window.Frame.Width, _sidebarOpen);
+        var layout = TuiLayoutModel.ForWidth(_window.Frame.Width, _sidebarOpen, _sidebarSettings.Preferences);
         _sidebar.Visible = layout.SidebarVisible;
         _sidebar.Width = layout.SidebarWidth;
         _sidebar.X = layout.Mode == TuiLayoutMode.Overlay && layout.SidebarVisible
@@ -336,6 +371,7 @@ public sealed class TuiApp
     private void ToggleSidebar()
     {
         _sidebarOpen = !_sidebarOpen;
+        SaveSidebarSetting("Workspace", "sidebar.visible", _sidebarOpen ? "true" : "false", false);
         ApplyResponsiveLayout();
     }
 
@@ -360,9 +396,13 @@ public sealed class TuiApp
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
         var names = ReadStringArray(_client.Query("commands", CancellationToken.None)?.Json, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente" });
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join" });
         var suggestions = ComposerAutocomplete.Complete(draft,
             names, ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
+        // Keep common entry points visible as the catalog grows. Typed prefixes retain
+        // alphabetical completion, and /act remains the default first action.
+        if (draft == "/") suggestions = suggestions.DistinctBy(suggestion => suggestion.Value)
+            .OrderBy(suggestion => suggestion.Value switch { "/act" => 0, "/models" => 1, _ => 2 }).ToArray();
         _completion.Text = string.Join("   ", suggestions.Take(5).Select(suggestion => suggestion.Value));
         HideCommandHelper();
         if (draft[0] != '/' || draft.Any(char.IsWhiteSpace) || _overlay is not null || _window is null) return;
@@ -392,6 +432,10 @@ public sealed class TuiApp
 
     private string CommandDescription(string command) => command switch
     {
+        "/agents" => Ui("Inspeccionar agentes y lanes del Run", "Inspect Run agents and lanes"),
+        "/delegate" => Ui("Encolar trabajo de sólo lectura con límites", "Queue bounded read-only work"),
+        "/agent" => Ui("Ejecutar, cancelar o evaluar un delegado", "Run, cancel or evaluate a delegate"),
+        "/join" => Ui("Esperar resultados aceptados · All/Any/Quorum/Explicit", "Wait for accepted results · All/Any/Quorum/Explicit"),
         "/act" => Ui("Ejecutar cambios explícitos en archivos", "Execute explicit file changes"),
         "/mode" => Ui("Fijar el modo predeterminado del próximo Run", "Set the next Run's default mode"),
         "/runmode" => Ui("Cambiar el modo del Run activo", "Change the active Run's mode"),
@@ -535,6 +579,91 @@ public sealed class TuiApp
         if (input == "/login") { ShowAccount(); _composer.Text = ""; return; }
         if (input == "/models") { ShowModelPicker(); _composer.Text = ""; return; }
         if (input == "/sidebar") { ToggleSidebar(); _composer.Text = ""; return; }
+        if (input.StartsWith("/sidebar ", StringComparison.Ordinal))
+        {
+            var args = input.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (args.Length == 2 && args[1] == "settings") ShowSidebarSettings();
+            else if (args.Length == 3 && args[1] == "focus")
+            { _sidebarSelection = args[2]; _sidebarOpen = true; ApplyResponsiveLayout(); }
+            else if (args.Length == 4 && args[1] is "user" or "workspace")
+                SaveSidebarSetting(args[1] == "user" ? "User" : "Workspace", args[2], args[3], true);
+            else ShowMessage("/sidebar settings · /sidebar focus <widget> · /sidebar user|workspace <key> <value|reset>");
+            _composer.Text = ""; return;
+        }
+        if (input == "/agents")
+        {
+            _agents.Poll(_client);
+            ShowMessage(AgentPresentation.Describe(_agents.Snapshot, _locale));
+            _composer.Text = ""; return;
+        }
+        if (input == "/agent" || input.StartsWith("/agent ", StringComparison.Ordinal))
+        {
+            try
+            {
+                var parts = input.Split(' ', 5, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length < 3 || !Guid.TryParse(parts[2], out _))
+                    throw new ArgumentException("/agent run|cancel <DelegationId> · /agent accept|reject|rework <DelegationId> <ResultId> <razón>");
+                if (parts[1] == "run")
+                { if (StartModelTurn("", delegationId: parts[2])) _composer.Text = ""; return; }
+                if (_client is not ITrustedUserActionClient trusted) throw new InvalidOperationException("Trusted user client required");
+                var fields = JsonObj.Field("delegationId", parts[2]);
+                var name = "delegation.cancel";
+                if (parts[1] != "cancel")
+                {
+                    if (parts.Length != 5 || !Guid.TryParse(parts[3], out _)) throw new ArgumentException("ResultId y razón requeridos");
+                    var outcome = parts[1] switch { "accept" => "Accepted", "reject" => "Rejected", "rework" => "ReworkRequested", _ => throw new ArgumentException("Acción desconocida") };
+                    fields += "," + JsonObj.Field("resultId", parts[3]) + "," + JsonObj.Field("outcome", outcome) + "," + JsonObj.Field("reason", parts[4]);
+                    name = "delegation.disposition";
+                }
+                var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", name) + "," + fields + "}"), CancellationToken.None);
+                ShowMessage(ack.Error ?? ack.Outcome?.Reason ?? Ui("Acción registrada", "Action recorded")); PollEvents();
+            }
+            catch (Exception failure) when (failure is ArgumentException or InvalidOperationException) { ShowMessage(failure.Message); }
+            _composer.Text = ""; return;
+        }
+        if (input == "/join" || input.StartsWith("/join ", StringComparison.Ordinal))
+        {
+            try
+            {
+                if (_client is not ITrustedUserActionClient trusted) throw new InvalidOperationException("Trusted user client required");
+                string payload;
+                if (input.StartsWith("/join cancel ", StringComparison.Ordinal))
+                    payload = "{" + JsonObj.Field("cmd", "execution.join.cancel") + "," + JsonObj.Field("joinId", input[13..].Trim()) + "}";
+                else
+                {
+                    if (input.Length <= 6) throw new ArgumentException("/join {\"ownerExecutionId\":\"UUID\",\"kind\":\"All\",\"members\":[\"UUID\"]} · /join cancel <JoinId>");
+                    using var document = System.Text.Json.JsonDocument.Parse(input[6..]);
+                    var fields = document.RootElement.EnumerateObject().ToArray();
+                    if (fields.Any(f => f.Name == "cmd")) throw new ArgumentException("cmd no permitido");
+                    payload = "{\"cmd\":\"execution.join\"," + string.Join(",", fields.Select(f => f.ToString())) + "}";
+                }
+                var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+                ShowMessage(ack.Error ?? ack.Outcome?.Reason ?? Ui("Join registrado", "Join recorded")); PollEvents();
+            }
+            catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or InvalidOperationException) { ShowMessage(failure.Message); }
+            _composer.Text = ""; return;
+        }
+        if (input == "/delegate" || input.StartsWith("/delegate ", StringComparison.Ordinal))
+        {
+            try
+            {
+                if (_client is not ITrustedUserActionClient trusted)
+                    throw new InvalidOperationException(Ui("El cliente no permite delegación local", "Client cannot admit local delegation"));
+                var request = input.Length > 10 ? AgentsJson.DecodeRequest(input[10..]) : null;
+                if (request is null) throw new ArgumentException(Ui("Uso: /delegate ", "Usage: /delegate ")
+                    + "{\"profileId\":\"UUID\",\"sourceEventId\":\"UUID de /agents\",\"objective\":\"Revisar\",\"selectedItemIds\":[],"
+                    + "\"maximumPacketBytes\":8192,\"maxTurns\":2,\"maxToolCalls\":4,\"maxTokens\":4096,\"maxCostUsd\":0}");
+                var ack = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()), CancellationToken.None);
+                ShowMessage(ack.Status != "ok" ? ack.Error ?? Ui("Delegación rechazada", "Delegation rejected")
+                    : ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred ? "Deferred · " + ack.Outcome.Reason
+                    : Ui("Delegación en cola. Usa /agents y /agent run <DelegationId> para ejecutarla respetando FIFO.",
+                        "Delegation queued. Use /agents and /agent run <DelegationId> to dispatch in FIFO order."));
+                PollEvents();
+            }
+            catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or InvalidOperationException)
+            { ShowMessage(failure.Message); }
+            _composer.Text = ""; return;
+        }
         if (input is "/context" or "/tools" or "/plan")
         {
             var query = input switch { "/plan" => "workingState", _ => input.Substring(1) };
@@ -578,7 +707,7 @@ public sealed class TuiApp
         PollEvents();
     }
 
-    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null)
+    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null, string? delegationId = null)
     {
         if (_turnHost is null) return false;
         if (_turnBusy) { ShowMessage(Ui("Ya hay un turno procesando. Espera o usa /cancel.", "A turn is already processing. Wait or use /cancel.")); return false; }
@@ -597,7 +726,8 @@ public sealed class TuiApp
                     if (messages.Count == 4) messages.RemoveAt(0);
                     messages.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await (resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
+                code = await (delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)
+                    : resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
                     : resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
                     : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
                     : _turnHost.ExecuteAsync(input, diagnostic, cancellation.Token)).ConfigureAwait(false);
@@ -653,6 +783,7 @@ public sealed class TuiApp
         }
         if (_client.Query("workspaceStatus", CancellationToken.None) is { } statusQuery)
             _state = _projection.ApplyQuery(_state, statusQuery);
+        RefreshSidebarData();
         RenderState();
         ShowCurrentInteraction();
     }
@@ -676,7 +807,31 @@ public sealed class TuiApp
         }
         if (_client.Query("workspaceStatus", CancellationToken.None) is { } statusQuery)
             state = _projection.ApplyQuery(state, statusQuery);
+        RefreshSidebarData();
         return state;
+    }
+
+    private void RefreshSidebarData()
+    {
+        if (DateTimeOffset.UtcNow - _sidebarSettingsPolledAt > TimeSpan.FromSeconds(2))
+        {
+            var revision = _sidebarSettings.Revision; RefreshSidebarPreferences();
+            if (_sidebarSettings.Revision != revision)
+            {
+                _sidebarOpen = _sidebarSettings.Preferences.Visible ?? _sidebarOpen;
+                ApplyResponsiveLayout();
+            }
+        }
+        _sidebarProjection.Activate(_cursorSession);
+        _agents.Activate(_cursorSession);
+        _files.Activate(_cursorSession);
+        _observability.Activate(_cursorSession);
+        if (_sidebarProjection.Snapshot is null || _sidebarProjection.Snapshot.BasedOnJournalSequence != _lastSequence)
+            _sidebarProjection.Poll(_client);
+        if (_agents.Snapshot is null || _agents.Snapshot.BasedOnJournalSequence != _lastSequence) _agents.Poll(_client);
+        if (_files.Snapshot is null || _files.Snapshot.BasedOnJournalSequence != _lastSequence) _files.Poll(_client);
+        // Only reads existing observations. No authentication, quota refresh or generation here.
+        if (_sidebarOpen || _observability.Snapshot is null) _observability.Poll(_client);
     }
 
     private void ObserveModel(WireEnvelope envelope)
@@ -695,7 +850,7 @@ public sealed class TuiApp
         if (_header is not null) _header.Text = HeaderText();
         if (_help is not null) _help.Text = HelpText();
         if (_status is not null) _status.Text = StatusText();
-        if (_sidebarContent is not null) _sidebarContent.Text = SidebarText();
+        RenderSidebar();
     }
 
     private void RenderConversation()
@@ -750,7 +905,8 @@ public sealed class TuiApp
         var width = Math.Max(12, (_window?.Frame.Width ?? 80) - 4 - _mainColumnInset);
         var workspace = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
         if (string.IsNullOrWhiteSpace(workspace)) workspace = path;
-        var title = _state.Conversation.Blocks.FirstOrDefault(block => block.Role == ConversationRole.User)?.Text.Split('\n')[0]
+        var title = _sidebarProjection.Snapshot?.Title is { Length: > 0 } sessionTitle ? sessionTitle
+            : _state.Conversation.Blocks.FirstOrDefault(block => block.Role == ConversationRole.User)?.Text.Split('\n')[0]
             ?? Ui("Nueva sesión", "New session");
         return SessionHeading(workspace, title, _observedModel ?? _selectedModel ?? Ui("Automático · sin turno", "Automatic · no turn"), width);
     }
@@ -813,18 +969,137 @@ public sealed class TuiApp
         return "  " + FitText(right, width);
     }
 
-    private string SidebarText()
+    private void RenderSidebar()
     {
-        var widgets = new SidebarHost(new ISidebarWidget[]
+        if (_sidebarContent is null) return;
+        var widgets = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
+            _observedModel ?? _selectedModel ?? Ui("Automático · sin turno", "Automatic · no turn"),
+            _state.StatusLine.Mode, _locale, _sidebarExpanded).ToList();
+        if (!_sidebarExpanded && _sidebarSettings.Preferences.Widgets?.Any(p => p.Value.Expanded) == true)
         {
-            new SessionSidebarWidget(new SessionWidgetData(_state.Header.WorkingDirectory.Length == 0 ? "Session" : Path.GetFileName(_state.Header.WorkingDirectory), _state.StatusLine.Mode)),
-            new PlanSidebarWidget(new PlanWidgetData("PLAN", _state.Sidebar.WidgetIds.Contains("core.plan")
-                ? new[] { new WidgetRowModel(_locale == "en" ? "No active plan" : "Sin plan activo", ThemeRole.Muted) } : Array.Empty<WidgetRowModel>())),
-            new ChangedFilesSidebarWidget(new ChangedFileWidgetData(_state.Sidebar.WidgetIds.Contains("core.files")
-                ? new[] { new WidgetRowModel(_locale == "en" ? "No changed files" : "Sin archivos modificados", ThemeRole.Muted) } : Array.Empty<WidgetRowModel>())),
-        });
-        return string.Join("\n\n", widgets.Build(_state, WidgetSize.Normal).Select(item => item.Model is ListWidgetModel model
-            ? model.Title + "\n" + string.Join("\n", model.Rows.Select(row => ThemeGlyphs.For(row.Role) + " " + row.Text)) : ""));
+            var expanded = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
+                _observedModel ?? _selectedModel ?? Ui("Automático · sin turno", "Automatic · no turn"), _state.StatusLine.Mode, _locale, true);
+            for (var index = 0; index < widgets.Count; index++)
+                if (_sidebarSettings.Preferences.Widgets.GetValueOrDefault(widgets[index].Id)?.Expanded == true)
+                    widgets[index] = expanded.First(w => w.Id == widgets[index].Id);
+        }
+        var agentWidget = AgentPresentation.Build(_agents.Snapshot, _locale, _sidebarExpanded
+            || _sidebarSettings.Preferences.Widgets?.GetValueOrDefault("core.agents")?.Expanded == true);
+        _sidebarWidgets = widgets.Concat(new[] { agentWidget, _files.Widget(_locale) }).ToArray();
+        var layout = TuiLayoutModel.ForWidth(_window?.Frame.Width ?? 80, _sidebarOpen, _sidebarSettings.Preferences);
+        _sidebarComposition = OmniCore.Client.SidebarComposition.Build(_sidebarWidgets, _state, _sidebarSettings.Preferences,
+            layout.Mode, Math.Max(1, (_window?.Frame.Height ?? 25) - 12), _sidebarSelection, _sidebarExpanded);
+        _sidebarSelection = _sidebarComposition.SelectedId;
+        var pinned = _sidebarComposition.Pinned.Select(item => (item.Widget, item.Model is ListWidgetModel list
+            ? (WidgetModel)(list with { Rows = list.Rows.Select(row => row with
+                { Text = FitText(row.Text, Math.Max(1, layout.SidebarWidth - 6)) }).ToArray() }) : item.Model)).ToArray();
+        _sidebarSession?.Render(pinned);
+        _sidebarContent.Render(_sidebarComposition.Body);
+        if (_sidebarNavigation is not null) _sidebarNavigation.Text = (_sidebarComposition.Navigation.FirstOrDefault(w => w.Id == _sidebarSelection)?.Title ?? "")
+            + (layout.Mode == TuiLayoutMode.Tabbed ? " · tab" : "");
+        if (_sidebarAttention is not null) _sidebarAttention.Text = _sidebarSettings.Diagnostics.Count > 0 ? Ui("! Configuración inválida", "! Invalid settings")
+            : _sidebarComposition.AttentionIds.Count > 0 ? "! " + string.Join(" · ", _sidebarComposition.AttentionIds.Select(id => id.Replace("core.", "")))
+            : _sidebarComposition.Collapsed > 0 ? Ui("Detalles colapsados · ‹ › inspeccionar", "Details collapsed · ‹ › inspect") : "";
+    }
+
+    private void NavigateSidebar(int delta)
+    {
+        var navigation = _sidebarComposition?.Navigation;
+        if (navigation is null || navigation.Count == 0) return;
+        var index = navigation.ToList().FindIndex(w => w.Id == _sidebarSelection);
+        _sidebarSelection = navigation[(index + delta + navigation.Count) % navigation.Count].Id;
+        // Navigation is an explicit inspection request, including widgets hidden by configuration.
+        RenderSidebar(); _sidebarContent?.SelectWidget(_sidebarSelection);
+    }
+
+    private void RefreshSidebarPreferences()
+    {
+        _sidebarSettingsPolledAt = DateTimeOffset.UtcNow;
+        var query = _client.Query("sidebarSettings", CancellationToken.None);
+        if (query is not null && SidebarPreferencesJson.Decode(query.Json) is { } preferences) _sidebarSettings = preferences;
+    }
+
+    private bool SaveSidebarSetting(string scope, string key, string value, bool notice)
+    {
+        if (_client is not ITrustedUserActionClient trusted) { if (notice) ShowMessage("Trusted user client required"); return false; }
+        var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"sidebar.configure\","
+            + JsonObj.Field("scope", scope) + "," + JsonObj.Field("key", key) + "," + JsonObj.Field("value", value)
+            + "," + JsonObj.Field("revision", _sidebarSettings.Revision) + "}"), CancellationToken.None);
+        RefreshSidebarPreferences();
+        if (ack.Status != "ok") { if (notice) ShowMessage(ack.Error ?? "Settings rejected"); return false; }
+        if (key == "sidebar.visible") _sidebarOpen = _sidebarSettings.Preferences.Visible ?? _sidebarOpen;
+        ApplyResponsiveLayout(); return true;
+    }
+
+    private void ShowSidebarSettings()
+    {
+        if (_window is null) return;
+        CloseOverlay(); RefreshSidebarPreferences();
+        var frame = OverlayFrame(Ui("Panel · ajustes", "Sidebar · settings"), 19);
+        var scope = "Workspace";
+        var scopeButton = new Button { X = 2, Y = 2, Text = "Scope: Workspace" };
+        var mode = new Button { X = Pos.Right(scopeButton) + 1, Y = 2, Text = "Mode: " + _sidebarSettings.Preferences.Mode };
+        var list = new ListView { Id = "omni-model-list", X = 2, Y = 4, Width = Dim.Fill(2), Height = Dim.Fill(6) };
+        var notice = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1 };
+        var ids = _sidebarWidgets.Select(w => w.Id).ToArray();
+        void Update()
+        {
+            var selected = list.SelectedItem;
+            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(ids.Select(id =>
+            {
+                var setting = _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id) ?? new();
+                return id + " · " + setting.Visible + " · " + (setting.Expanded ? "expanded" : "compact") + " · "
+                    + (setting.Priority?.ToString() ?? "default");
+            })));
+            if (ids.Length > 0) list.SelectedItem = Math.Clamp(selected ?? 0, 0, ids.Length - 1);
+            notice.Text = _sidebarSettings.Diagnostics.Count > 0 ? string.Join(" · ", _sidebarSettings.Diagnostics)
+                : Ui("User < Project confiable < Workspace · sesión fija arriba", "User < trusted Project < Workspace · session pinned");
+            mode.Text = "Mode: " + _sidebarSettings.Preferences.Mode;
+        }
+        string? Selected() => list.SelectedItem is { } index && index >= 0 && index < ids.Length ? ids[index] : null;
+        void Save(string key, string value)
+        {
+            if (!SaveSidebarSetting(scope, key, value, false)) notice.Text = Ui("No se guardó · revisa YAML o recarga", "Not saved · check YAML or reload");
+            else Update();
+        }
+        scopeButton.Accepted += (_, _) => { scope = scope == "Workspace" ? "User" : "Workspace"; scopeButton.Text = "Scope: " + scope; };
+        mode.Accepted += (_, _) =>
+        {
+            var values = new[] { "auto", "stacked", "tabbed", "overlay" };
+            Save("sidebar.mode", values[(Array.IndexOf(values, _sidebarSettings.Preferences.Mode) + 1) % values.Length]);
+        };
+        var visible = new Button { X = 2, Y = Pos.AnchorEnd(5), Text = Ui("Visibilidad", "Visibility") };
+        var expand = new Button { X = Pos.Right(visible) + 1, Y = Pos.AnchorEnd(5), Text = Ui("Expandir", "Expand") };
+        var reset = new Button { X = Pos.Right(expand) + 1, Y = Pos.AnchorEnd(5), Text = "Reset" };
+        visible.Accepted += (_, _) =>
+        {
+            if (Selected() is not { } id || id == "core.session") return;
+            var value = _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id)?.Visible ?? "auto";
+            Save("widgets." + id + ".visible", value == "auto" ? "true" : value == "true" ? "false" : "auto");
+        };
+        expand.Accepted += (_, _) => { if (Selected() is { } id) Save("widgets." + id + ".expanded", _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id)?.Expanded == true ? "false" : "true"); };
+        reset.Accepted += (_, _) => { if (Selected() is { } id) foreach (var key in new[] { "visible", "expanded", "priority" }) Save("widgets." + id + "." + key, "reset"); };
+        var up = new Button { X = 2, Y = Pos.AnchorEnd(4), Text = Ui("Prioridad +", "Priority +") };
+        var down = new Button { X = Pos.Right(up) + 1, Y = Pos.AnchorEnd(4), Text = Ui("Prioridad −", "Priority −") };
+        void Priority(int delta) { if (Selected() is { } id) Save("widgets." + id + ".priority", Math.Clamp((_sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id)?.Priority ?? _sidebarWidgets.First(w => w.Id == id).DefaultPriority) + delta, -1000, 1000).ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+        up.Accepted += (_, _) => Priority(10); down.Accepted += (_, _) => Priority(-10);
+        frame.Add(scopeButton, mode, list, visible, expand, reset, up, down, notice);
+        Update(); ApplyTheme(frame); _overlay = frame; _window.Add(frame); list.SetFocus();
+    }
+
+    private void ShowFileDiff(string id)
+    {
+        if (_window is null) return;
+        var query = _client.Query("diff.open:" + id, CancellationToken.None);
+        var diff = query is null ? null : FilesJson.DecodeDiff(query.Json);
+        if (diff is null || diff.SessionId != _cursorSession || diff.EffectId != id) { ShowMessage(Ui("Diff no disponible", "Diff unavailable")); return; }
+        CloseOverlay();
+        var frame = OverlayFrame("Diff · " + diff.Path, _window.Frame.Height - 5);
+        var content = new SidebarView { X = 1, Y = 2, Width = Dim.Fill(1), Height = Dim.Fill(2), WordWrap = false, ShowRoleGlyphs = false };
+        var model = FileDiffPresentation.Build(diff);
+        content.Render([(new ChangedFilesSidebarWidget(new([])), model)]);
+        frame.Add(content, new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(1), Text = Ui("Efecto registrado · no incluye ediciones posteriores · Esc cerrar", "Recorded effect · excludes later edits · Esc close") });
+        _overlay = frame; _window.Add(frame); ApplyTheme(frame); content.SetFocus();
     }
 
     private void ShowCurrentInteraction()

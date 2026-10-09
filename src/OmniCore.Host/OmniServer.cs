@@ -18,7 +18,7 @@ using System.Runtime.CompilerServices;
 /// (ADR-0019 §1). Traduce los comandos wire a llamadas del Engine y acumula los eventos wire.
 /// En M1 atiende <c>sim</c> y la query <c>state</c>.
 /// </summary>
-public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
+public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 {
     private static readonly ConditionalWeakTable<IEventStore, object> ModeAuthorityGates = new();
 
@@ -63,6 +63,9 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
+    private IPlatformPaths? _sidebarPaths;
+    public void ConfigureSidebarPaths(IPlatformPaths paths) => _sidebarPaths = paths;
+    private SidebarConfiguration SidebarSettings() => new(_sidebarPaths ?? OmniHost.CreatePlatformPaths(), _workspaceRoot ?? Environment.CurrentDirectory);
     private readonly UserWorkspaceSpendReader? _userSpendReader;
     private readonly string? _userDatabasePath;
     public SessionObservationHub Observability { get; }
@@ -435,6 +438,22 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == "sidebar.configure")
+        {
+            if (!trustedUserAction) return new(command.MessageId, "error", "Trusted user action required", RuntimeCommandOutcome.Rejected());
+            try
+            {
+                SidebarSettings().Set(fields.GetValueOrDefault("scope") ?? "", fields.GetValueOrDefault("key") ?? "",
+                    fields.GetValueOrDefault("value") ?? "", fields.GetValueOrDefault("revision") ?? "");
+                return new(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException
+                or UnauthorizedAccessException or YamlDotNet.Core.YamlException)
+            { return new(command.MessageId, "error", exception is ConfigValidationException ? "Invalid sidebar settings" : exception.Message, RuntimeCommandOutcome.Rejected()); }
+        }
+        if (commandName == "delegation.create") return CreateQueuedDelegation(command, trustedUserAction, cancellationToken);
+        if (commandName is "delegation.cancel" or "delegation.disposition" or "execution.join" or "execution.join.cancel")
+            return ControlDelegation(command, commandName, trustedUserAction, cancellationToken);
         if (commandName == "command.invoke")
         {
             try
@@ -1664,6 +1683,19 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == "sidebarSettings") return new(name, SidebarPreferencesJson.Encode(SidebarSettings().Read()));
+        if (name == "sessionSidebar")
+            return new SessionQueryResult(name, _lastSessionId is null ? "null"
+                : SidebarJson.Encode(SessionSidebarReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _recoveryProblem is not null)));
+        if (name == "changedFiles")
+            return new SessionQueryResult(name, _lastSessionId is null ? "null"
+                : FilesJson.Encode(ChangedFilesReader.Read(_store, _codecs, _lastSessionId, _artifacts)));
+        if (name.StartsWith("diff.open:", StringComparison.Ordinal))
+            return new SessionQueryResult("diff.open", _lastSessionId is null ? "null"
+                : FilesJson.Encode(ChangedFilesReader.ReadDiff(_store, _codecs, _lastSessionId, name[10..], _artifacts)));
+        if (name == "agents")
+            return new SessionQueryResult(name, _lastSessionId is null ? "null"
+                : AgentsJson.Encode(AgentLaneReader.Read(_store, _codecs, _lastSessionId, _lastRunId, _artifacts)));
         if (name == "sessionObservability" || name.StartsWith("sessionObservability:", StringComparison.Ordinal))
         {
             if (_lastSessionId is null) return new SessionQueryResult("sessionObservability", "null");
@@ -2168,6 +2200,8 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             SaveLastSession();
             if (explicitOutcome)
             {
+                if (_artifacts is not null && outcomeSession is { } summarySession)
+                    new RunSummaryService(_store, _codecs, _artifacts, OmniCliRuntime.RedactSensitive).EnsureRecorded(summarySession);
                 return CommandOutcomeAck(command.MessageId, "ok", null,
                     RuntimeCommandOutcome.Accepted(), outcomeSession, outcomeSequenceBefore, commandId);
             }
@@ -2377,6 +2411,10 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(execute);
+        using var capacity = AgentCapacity.For(_store).TryAcquire(sessionId, runId, null, cancellationToken);
+        if (capacity is null)
+            return (null, new CommandAck(Ids.NewV7(), "ok", null,
+                RuntimeCommandOutcome.Deferred("WaitingForCapacity")), null, null);
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
         var messageId = commandId.Value.ToString();
@@ -2394,6 +2432,7 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             sequenceBefore = _store.CurrentSequence(sessionId);
             using var internalCommand = ambientCommand is null
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+            using var agentInvocation = HostAgentInvocation.Begin(_store, sessionId, runId);
             var result = execute(cancellationToken);
             var policyTransition = result.StopReason == StopReason.EndTurn
                 ? EvaluateCompletedTurnModePolicy(sessionId, runId, result.TurnId, sequenceBefore.Value, commandId, cancellationToken) : null;
@@ -2726,6 +2765,8 @@ public sealed class OmniServer : IOmniClient, ITrustedUserActionClient
             var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
                 new ProgressReconciler(), _store, _codecs, sessionId, stream,
                 runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger);
+            if (_artifacts is not null)
+                new RunSummaryService(_store, _codecs, _artifacts, OmniCliRuntime.RedactSensitive).EnsureRecorded(sessionId);
             var ack = CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                 sessionId, sequenceBefore.Value, commandId);
             return (completed, ack, null);

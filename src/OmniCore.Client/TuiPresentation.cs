@@ -23,12 +23,18 @@ public static class ThemeGlyphs
 
 public sealed record TuiLayoutModel(TuiLayoutMode Mode, bool SidebarVisible, int SidebarWidth)
 {
-    public static TuiLayoutModel ForWidth(int width, bool sidebarRequested = true)
+    public static TuiLayoutModel ForWidth(int width, bool sidebarRequested = true, OmniCore.Protocol.SidebarPreferences? preferences = null)
     {
-        if (width >= 120) return new(TuiLayoutMode.Stacked, sidebarRequested, sidebarRequested ? Math.Clamp(width / 3, 32, 40) : 0);
-        if (width >= 90) return new(TuiLayoutMode.Tabbed, sidebarRequested, sidebarRequested ? 26 : 0);
+        preferences ??= new();
+        // Narrow terminals always use overlay to preserve a usable conversation, even under an explicit mode.
+        if (width >= preferences.TabbedMinWidth && preferences.Mode != "overlay")
+        {
+            var mode = preferences.Mode == "tabbed" ? TuiLayoutMode.Tabbed
+                : preferences.Mode == "stacked" || width >= preferences.StackedMinWidth ? TuiLayoutMode.Stacked : TuiLayoutMode.Tabbed;
+            return new(mode, sidebarRequested, sidebarRequested ? mode == TuiLayoutMode.Stacked ? Math.Clamp(width / 3, 32, 40) : 26 : 0);
+        }
         return new(TuiLayoutMode.Overlay, sidebarRequested,
-            sidebarRequested ? Math.Max(20, Math.Min(44, width - 4)) : 0);
+            sidebarRequested ? Math.Min(Math.Max(1, width), Math.Clamp(width - 4, 20, 44)) : 0);
     }
 }
 
@@ -72,7 +78,8 @@ public static class ComposerAutocomplete
 
 /// <summary>Declarative rows rendered generically by Cli; no framework types cross into Client.</summary>
 public abstract record WidgetModel;
-public sealed record WidgetRowModel(string Text, ThemeRole Role = ThemeRole.Primary);
+public sealed record WidgetRowModel(string Text, ThemeRole Role = ThemeRole.Primary,
+    string? Action = null, string? Target = null);
 public sealed record ListWidgetModel(string Title, IReadOnlyList<WidgetRowModel> Rows) : WidgetModel;
 public sealed record SessionWidgetData(string Title, string Mode, string? Elapsed = null);
 public sealed record PlanWidgetData(string Summary, IReadOnlyList<WidgetRowModel> Items);
@@ -88,7 +95,7 @@ public interface ISidebarWidget
     WidgetModel Build(ClientState state, WidgetSize size);
 }
 
-/// <summary>Container that orders declarative widgets by attention, then priority.</summary>
+/// <summary>Fixed session slot followed by declarative widgets ordered by attention, then priority.</summary>
 public sealed class SidebarHost
 {
     private readonly IReadOnlyList<ISidebarWidget> _widgets;
@@ -96,7 +103,8 @@ public sealed class SidebarHost
     public IReadOnlyList<(ISidebarWidget Widget, WidgetModel Model)> Build(ClientState state, WidgetSize size) =>
         _widgets.Select((widget, index) => (widget, index, relevance: widget.Evaluate(state)))
             .Where(item => item.relevance != WidgetRelevance.None)
-            .OrderByDescending(item => item.relevance == WidgetRelevance.Attention)
+            .OrderByDescending(item => item.widget.Id == "core.session")
+            .ThenByDescending(item => item.relevance == WidgetRelevance.Attention)
             .ThenByDescending(item => item.widget.DefaultPriority)
             .ThenBy(item => item.index)
             .Select(item => (item.widget, item.widget.Build(state, size))).ToArray();
@@ -123,7 +131,8 @@ public sealed class PlanSidebarWidget : ISidebarWidget
     public string Title => "PLAN";
     public ThemeRole Accent => ThemeRole.Active;
     public int DefaultPriority => 80;
-    public WidgetRelevance Evaluate(ClientState state) => _data.Items.Count == 0 ? WidgetRelevance.None : WidgetRelevance.Normal;
+    public WidgetRelevance Evaluate(ClientState state) => _data.Items.Count == 0 ? WidgetRelevance.None
+        : _data.Items.Any(row => row.Role is ThemeRole.Attention or ThemeRole.Error) ? WidgetRelevance.Attention : WidgetRelevance.Normal;
     public WidgetModel Build(ClientState state, WidgetSize size) => new ListWidgetModel(_data.Summary, _data.Items);
 }
 

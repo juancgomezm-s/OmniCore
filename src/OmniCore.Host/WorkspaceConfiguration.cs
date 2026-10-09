@@ -66,7 +66,7 @@ public static class WorkspaceConfigurationLoader
 {
     private static readonly IDeserializer Deserializer = new StaticDeserializerBuilder(new OmniYamlStaticContext())
         .WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
-    private static readonly string[] Allowed = ["defaultModel", "permissionRestrictions", "gates"];
+    private static readonly string[] Allowed = ["defaultModel", "permissionRestrictions", "gates", "sidebar", "widgets"];
     private static readonly string[] Forbidden = ["providers", "credentials", "permissions", "sandbox", "baseUrl",
         "auth", "authRef", "projectId", "network", "environmentAllowlist", "grants", "userPolicy"];
 
@@ -101,6 +101,7 @@ public static class WorkspaceConfigurationLoader
                 ConfigLoader.Add(diagnostics, "settings.yaml", "$", "config.expectedMapping");
             else
             {
+                SidebarConfiguration.ValidateRoot(root, diagnostics);
                 foreach (var pair in root.Children)
                 {
                     var key = (pair.Key as YamlScalarNode)?.Value ?? "?";
@@ -126,7 +127,7 @@ public static class WorkspaceConfigurationLoader
                     {
                         ValidateGates(pair.Value, diagnostics);
                     }
-                    else if (key != "permissionRestrictions" && key != "gates" && !ConfigLoader.IsYamlString(pair.Value))
+                    else if (key is not ("permissionRestrictions" or "gates" or "sidebar" or "widgets") && !ConfigLoader.IsYamlString(pair.Value))
                         ConfigLoader.AddAtNode(diagnostics, "settings.yaml", path, "config.wrongType", pair.Value);
                 }
             }

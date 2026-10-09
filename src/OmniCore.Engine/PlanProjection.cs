@@ -200,6 +200,13 @@ public sealed class PlanProjection
             items[plan.Items.Count] = newItem;
             _revisions[plan.Id] = new Plan(plan.Id, plan.RunId, plan.Revision, items);
         }
+        else if (payload is PlanItemUpdated updated)
+        {
+            // Text/metadata updates must not freeze a container's derived state into its stored item.
+            var item = Latest()?.Items.FirstOrDefault(candidate => candidate.Id == updated.PlanItemId)
+                ?? throw new InvalidStateTransitionException("plan_item", "inexistente", payload.Type().ToString());
+            ReplaceItem(item with { Description = updated.Description ?? item.Description, Metadata = updated.Metadata ?? item.Metadata });
+        }
         else if (payload is PlanItemLinked linked)
         {
             ApplyLink(linked.PlanItemId, linked.Link);

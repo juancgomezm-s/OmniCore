@@ -1,0 +1,90 @@
+OmniCore — ciclo de delegación de lectura, corte 2026-10-08
+
+Ownership
+- Rama codex/tui-markdown-polish, worktree tui-markdown-polish/OmniCore.
+- Base de este bloque bf746f0. Sólo modificaciones propias en este checkout.
+- Primary/GLM leído sin editar, cambiar rama, stash/reset, merge ni push.
+  Evolucionó concurrentemente de c89625c a 1e30c79; no se atribuyen esos cambios.
+- Sin agentes externos/nativos nuevos, sin cuentas/configuración real ni gastos.
+- Providers: scripted en memoria y HTTP loopback con configuración privada temporal.
+
+Funciones verificadas
+- Dispatch de hijo con cupo real compartido con root, FIFO por journal y gates ORQ.
+- Perfil ligado a revisión/hash, executor de lectura y catálogo sin control/mutadores.
+- Contexto seleccionado pasa por la composición TuiTurnHost -> OmniCliRuntime ->
+  provider HTTP -> ModelStep atribuido al hijo -> resultado CAS, no sólo un fake de UI.
+- Presupuesto hijo suplementa Run/sesión; usage/quotes desconocidos bloquean.
+- Binding Managed y handshake; ningún fallo transforma el hijo a Unmanaged.
+- Cancelar cola, worker propio o resultado devuelto sin aceptar, sin cancelar root.
+  Intento de cancelación activo durable; estados terminales sólo en frontera asentada.
+- AgentExecution Completed separado de resultado, disposition y Task Completed.
+  core.explorer.v1 declara claims; no acredita verificación de integración.
+- Evaluación humana con ResultId exacto y razón, EvaluatorExecutionId null.
+- All/Any/Quorum/Explicit por aceptación explícita; parent bloqueado/unbloqueado,
+  nunca completado implícitamente. Rejected/rework esperan o cancelación de join.
+- Reopen, FIFO, unknown owner, perfil cambiado/revocación, IDs ajenos/stale,
+  metadata terminal del ejecutor y scopes de quota sin perder ExecutionId.
+- TUI /agent y /join, sidebar/inspector de resultados y cancelación solicitada.
+
+Uso
+1. Configurar perfiles User read-only; principal y child con revisión/hash.
+2. Run ORQ con UltraCode/adaptive y límites finitos vigentes (no se activa solo).
+3. /agents muestra source EventId y selectedItemIds elegibles del principal.
+4. /delegate <JSON> publica la cola. Los tokens deben cubrir la cota conservadora
+   de la invocación (context capacity + output cap + intentos), no sólo una media.
+5. /agent run <DelegationId> ejecuta el primero en cola; /agent cancel <id> cancela.
+6. /agents muestra ResultId y summary. /agent accept|reject|rework <id> <ResultId>
+   <razón> evalúa; no se aceptan resultados por terminar un worker.
+7. /join {"ownerExecutionId":"UUID","kind":"All","members":["UUID"]}
+   Quorum requiere requiredCount; Explicit requiere requiredExecutionIds.
+   /join cancel <JoinId> abandona la espera explícitamente.
+
+Evidencia y reparaciones
+- .tmp-delegation-lifecycle-first.log: nuevo assert buscaba Unicode en JSON raw
+  escapado; se verifican ahora contenidos decodificados, sin quitar la assertion.
+- .tmp-delegation-lifecycle-second.log: el guard operativo afectaba fixtures legacy
+  de contexto sin handshake. Se exige el handshake durable de dispatch para activar
+  la nueva ejecución; los contratos congelados siguen siendo registros, no workers.
+- .tmp-delegation-runtime-http.log: fixture sin pricing/usage difirió correctamente.
+  Se declararon precio cero y conteos completos del fixture, sin debilitar guards.
+- .tmp-delegation-runtime-http-priced.log: recorrido HTTP 1 PASS.
+- .tmp-delegation-lifecycle-verified.log: 128 PASS de contexto/cola/lifecycle/CLI,
+  contratos y replay pre-M6 (solapan las suites siguientes).
+- .tmp-delegation-tui-command.log: 1 PASS de teclas de producción sobre driver real.
+  No es captura/validación visual nativa ni cualificación externa.
+- .tmp-delegation-lifecycle-final-v2-focused.log: 14 PASS de lifecycle.
+- .tmp-delegation-lifecycle-final-v4-focused.log: 83 PASS, antes de añadir
+  remainingIssues de tools rechazadas (última mejora; suite final abajo).
+- .tmp-delegation-lifecycle-final-v3-incorrect-filter.log: 0 casos por filtro
+  class+method intersectado; no cuenta como validación.
+
+Validación final
+- Build tests final: .tmp/delegation-lifecycle-validation/, 0 warnings/0 errors.
+  Incluye la última mejora de remainingIssues; no hubo cambios de código posteriores.
+- .tmp-delegation-lifecycle-m4.log: M4ProcessRecoveryTests serial,
+  1 PASS/0 FAIL/0 SKIP, 79.955 s. No se mezcló con suite amplia/builds en paralelo.
+- .tmp-delegation-lifecycle-full.log: suite excluyendo únicamente M4 ya separado,
+  maxThreads 2: 3168 casos/3164 PASS/0 FAIL/4 SKIP, 211.329 s.
+- Total funcional disjunto: 3169 casos/3165 PASS/0 FAIL/4 SKIP symlink existentes.
+  Incremento sobre baseline anterior 3153: 16 casos nuevos (14 lifecycle, 1 HTTP,
+  1 teclado TUI). Los recuentos focales anteriores solapan esta suite; no sumarlos.
+- Arquitectura: .tmp/delegation-lifecycle-architecture/,
+  build 0 warnings/0 errors y 56 PASS/0 FAIL/0 SKIP, 0.579 s.
+- Client/Protocol net8: .tmp/delegation-lifecycle-net8/,
+  build 0 warnings/0 errors. Host y tests del build final son net10.
+- git diff --check limpio. Driver TUI y HTTP loopback, sin UI nativa ni proveedor real.
+
+Pendiente real / límites
+- Un único cupo en proceso por store; no general CapacityScheduler paralelo,
+  prioridades configurables/recursos OS ni lanes background/supervisor remoto.
+- No RunBudgetPool con reservas/releases; admisión conservadora y guards reales.
+- No FanOutGroup/FanIn agregado, mailbox/wake, rework automático ni formularios.
+- Worker suspendido sólo se retoma con Turn asentado; invocación/ownership incierto
+  se difiere para recuperación. Ningún PID ajeno se mata o adopta.
+- Ruta hija requiere autorización existente; cuota baja no toma consentimiento
+  prestado ni se autoaprueba. Interacciones autónomas de hijos quedan pendientes.
+- M6 sigue parcial. No M7 escritura/worktrees nuevos ni Memory M8/M10.
+
+Validación final cerrada a 2026-10-08 20:36:17 UTC / 14:36:17 America/Mexico_City.
+Commit local del bloque identificado por: feat(agents): execute bounded delegations and resolve accepted joins.
+No push/merge solicitado en este bloque.

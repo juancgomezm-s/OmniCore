@@ -39,6 +39,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.PostEditValidationPending())
             .Plus(Typed.PostEditValidationConsumed())
             .Plus(Typed.RunCompleted())
+            .Plus(Typed.RunSummaryRecorded())
             .Plus(Typed.RunFailed())
             .Plus(Typed.RunCancelled())
             .Plus(Typed.RunModeChanged())
@@ -65,6 +66,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.DelegationAccepted())
             .Plus(Typed.DelegationReturned())
             .Plus(Typed.DelegationFailed())
+            .Plus(Typed.DelegationCancellationRequested())
             .Plus(Typed.ExecutionJoinCreated())
             .Plus(Typed.ExecutionJoinResolved())
             .Plus(Typed.ExecutionJoinFailed())
@@ -154,6 +156,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("lane.created"), 1))
@@ -371,6 +374,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(PostEditValidationPending))]
 [JsonSerializable(typeof(PostEditValidationConsumed))]
 [JsonSerializable(typeof(RunCompleted))]
+[JsonSerializable(typeof(RunSummaryRecorded))]
 [JsonSerializable(typeof(RunFailed))]
 [JsonSerializable(typeof(RunCancelled))]
 [JsonSerializable(typeof(RunModeChanged))]
@@ -401,6 +405,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(DelegationAccepted))]
 [JsonSerializable(typeof(DelegationReturned))]
 [JsonSerializable(typeof(DelegationFailed))]
+[JsonSerializable(typeof(DelegationCancellationRequested))]
 [JsonSerializable(typeof(ExecutionJoinCreated))]
 [JsonSerializable(typeof(ExecutionJoinResolved))]
 [JsonSerializable(typeof(ExecutionJoinFailed))]
@@ -561,6 +566,9 @@ public sealed class Typed
     public static CodecPair RunCompleted() =>
         Of(EventType.Of("run.completed"), EventJsonContext.Default.RunCompleted);
 
+    public static CodecPair RunSummaryRecorded() =>
+        Of(EventType.Of("run.summary_recorded"), EventJsonContext.Default.RunSummaryRecorded);
+
     public static CodecPair RunFailed() =>
         Of(EventType.Of("run.failed"), EventJsonContext.Default.RunFailed);
 
@@ -629,6 +637,9 @@ public sealed class Typed
 
     public static CodecPair DelegationFailed() =>
         Of(EventType.Of("delegation.failed"), EventJsonContext.Default.DelegationFailed);
+
+    public static CodecPair DelegationCancellationRequested() =>
+        Of(EventType.Of("delegation.cancellation_requested"), EventJsonContext.Default.DelegationCancellationRequested);
 
     public static CodecPair ExecutionJoinCreated() =>
         Of(EventType.Of("execution_join.created"), EventJsonContext.Default.ExecutionJoinCreated);
@@ -805,7 +816,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 3);
 
     public static CodecPair ToolCallSucceeded() =>
-        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded);
+        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 2);
 
     public static CodecPair ToolCallFailed() =>
         Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 2);

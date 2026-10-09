@@ -81,6 +81,8 @@ public sealed class ReasoningCapabilityYaml
 
 public sealed class WorkspaceSettingsYaml
 {
+    public SidebarSettingsYaml? Sidebar { get; set; }
+    public Dictionary<string, WidgetSettingsYaml>? Widgets { get; set; }
     public string? DefaultModel { get; set; }
     public Dictionary<string, string>? PermissionRestrictions { get; set; }
     public WorkspaceGatesYaml? Gates { get; set; }
@@ -89,7 +91,23 @@ public sealed class WorkspaceSettingsYaml
 /// <summary>User-scope settings from <c>&lt;config&gt;/settings.yaml</c> (ADR-0039).</summary>
 public sealed class UserSettingsYaml
 {
+    public SidebarSettingsYaml? Sidebar { get; set; }
+    public Dictionary<string, WidgetSettingsYaml>? Widgets { get; set; }
     public BudgetSettingsYaml? Budget { get; set; }
+}
+
+public sealed class SidebarSettingsYaml
+{
+    public bool? Visible { get; set; }
+    public string? Mode { get; set; }
+    public int? StackedMinWidth { get; set; }
+    public int? TabbedMinWidth { get; set; }
+}
+public sealed class WidgetSettingsYaml
+{
+    public string? Visible { get; set; }
+    public bool? Expanded { get; set; }
+    public int? Priority { get; set; }
 }
 
 /// <summary>USD spend caps configured by the user (ADR-0037 §7).</summary>
@@ -129,6 +147,8 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(EscalationYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
 [YamlSerializable(typeof(UserSettingsYaml))]
+[YamlSerializable(typeof(SidebarSettingsYaml))]
+[YamlSerializable(typeof(WidgetSettingsYaml))]
 [YamlSerializable(typeof(BudgetSettingsYaml))]
 [YamlSerializable(typeof(WorkspaceGatesYaml))]
 [YamlSerializable(typeof(TrustFileYaml))]

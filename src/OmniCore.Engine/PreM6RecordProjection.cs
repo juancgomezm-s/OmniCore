@@ -20,6 +20,7 @@ public sealed class PreM6RecordProjection
     private readonly Dictionary<TaskId, TaskCreated> _tasks = new();
     private readonly Dictionary<LaneId, LaneCreated> _lanes = new();
     private readonly Dictionary<ExecutionId, AgentExecutionStarted> _executions = new();
+    private readonly Dictionary<ExecutionId, DomainEventPayload> _terminals = new();
     private readonly Dictionary<EventId, DomainEvent> _events = new();
     private readonly Dictionary<SessionId, IReadOnlyDictionary<EventId, DomainEvent>> _externalJournals = new();
     private readonly Dictionary<ExecutionId, AgentResultProduced> _latestResults = new();
@@ -63,6 +64,12 @@ public sealed class PreM6RecordProjection
                     throw Invalid("Execution identity cannot be rebound to different start metadata.");
                 _executions[execution.ExecutionId] = execution;
                 return;
+            case AgentExecutionCompleted completed:
+                ValidateTerminal(evt, completed.ExecutionId, completed.LaneId, completed.ProfileId,
+                    completed.ParentExecutionId, completed.Relation, completed.Supervision, completed); return;
+            case AgentExecutionFailed failed:
+                ValidateTerminal(evt, failed.ExecutionId, failed.LaneId, failed.ProfileId,
+                    failed.ParentExecutionId, failed.Relation, failed.Supervision, failed); return;
         }
         if (payload is not IPreM6ContractEvent fact) return;
         fact.Validate();
@@ -99,6 +106,10 @@ public sealed class PreM6RecordProjection
                 Record(Key("delegation", e.DelegationId), owner, fact, PreM6RecordPhase.Returned, PreM6RecordPhase.Accepted); break;
             case DelegationFailed e:
                 Record(Key("delegation", e.DelegationId), owner, fact, PreM6RecordPhase.Failed, PreM6RecordPhase.Created, PreM6RecordPhase.Accepted); break;
+            case DelegationCancellationRequested e:
+                var cancellationOwner = History(Key("delegation", e.DelegationId), owner).Facts.OfType<DelegationAccepted>().SingleOrDefault();
+                if (cancellationOwner?.ChildExecutionId != e.ChildExecutionId) throw Invalid("Cancellation child identity mismatch.");
+                Record(Key("delegation", e.DelegationId), owner, fact, PreM6RecordPhase.Accepted, PreM6RecordPhase.Accepted); break;
             case ExecutionJoinCreated e:
                 foreach (var member in e.Join.MemberExecutionIds)
                     if (_tasks[_lanes[RequireExecution(member).LaneId].TaskId].RunId != taskOwner.RunId)
@@ -181,6 +192,21 @@ public sealed class PreM6RecordProjection
             || execution.ParentExecutionId is {} parent && !_executions.ContainsKey(parent))
             throw Invalid("Execution has no matching durable Task/Lane/Profile.");
         return execution;
+    }
+
+    private void ValidateTerminal(DomainEvent evt, ExecutionId id, LaneId lane, ProfileId profile,
+        ExecutionId? parent, ExecutionRelation relation, ExecutionSupervision supervision, DomainEventPayload payload)
+    {
+        var started = RequireExecution(id);
+        var task = _tasks[_lanes[started.LaneId].TaskId];
+        if (started.LaneId != lane || started.ProfileId != profile || started.ParentExecutionId != parent
+            || started.Relation != relation || started.Supervision != supervision || evt.ExecutionId != id
+            || evt.LaneId != lane || evt.RunId != task.RunId || evt.CorrelationId != task.RunId
+            || evt.TaskId is { } attributedTask && attributedTask != task.TaskId)
+            throw Invalid("Execution terminal metadata does not match its durable owner.");
+        if (_terminals.TryGetValue(id, out var prior) && prior != payload)
+            throw Invalid("Execution already has a conflicting terminal fact.");
+        _terminals[id] = payload;
     }
 
     private void ValidateExecutionStart(DomainEvent evt, AgentExecutionStarted execution)
@@ -282,6 +308,7 @@ public sealed class PreM6RecordProjection
     private static ExecutionId Owner(IPreM6ContractEvent fact) => fact switch
     {
         DelegationCreated e => e.ExecutionId, DelegationAccepted e => e.ExecutionId,
+        DelegationCancellationRequested e => e.ExecutionId,
         DelegationReturned e => e.ExecutionId, DelegationFailed e => e.ExecutionId,
         ExecutionJoinCreated e => e.ExecutionId, ExecutionJoinResolved e => e.ExecutionId,
         ExecutionJoinFailed e => e.ExecutionId, SupervisionBindingCreated e => e.ExecutionId,
