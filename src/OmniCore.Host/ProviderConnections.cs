@@ -559,6 +559,11 @@ public sealed class ProviderConnectionService
 
     private static DateTimeOffset DefaultNow() => DateTimeOffset.UtcNow;
 
+    internal static bool IsAnthropicApiKeyProvider(ProviderDescriptor provider) =>
+        provider.Family == ProviderFamily.AnthropicMessages
+        && provider.Auth.Kind == AuthKind.ApiKey
+        && !string.IsNullOrWhiteSpace(provider.Auth.SecretRef);
+
     /// <summary>Instancia de producción: rutas de plataforma reales del usuario.</summary>
     public static ProviderConnectionService Create() => new(paths: OmniHost.CreatePlatformPaths());
 
@@ -573,8 +578,9 @@ public sealed class ProviderConnectionService
         var loaded = OmniHost.LoadUserConfiguration(_paths);
         var metadata = ProviderConnectionMetadataStore.ReadAll(_paths.DataDirectory, cancellationToken);
         var result = new List<ProviderConnectionStatus>();
-        var anthropicConfigured = false;
-        foreach (var provider in loaded.Registry.Providers())
+        var providers = loaded.Registry.Providers();
+        var anthropicConfigured = providers.Any(IsAnthropicApiKeyProvider);
+        foreach (var provider in providers)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (string.Equals(provider.Profile, "codex", StringComparison.Ordinal))
@@ -616,8 +622,7 @@ public sealed class ProviderConnectionService
                         notice = LocalizedText.Of("providers.notice.missingKey", "ref", provider.Auth.SecretRef!);
                     }
 
-                    var anthropic = provider.Family == ProviderFamily.AnthropicMessages;
-                    anthropicConfigured |= anthropic;
+                    var anthropic = IsAnthropicApiKeyProvider(provider);
                     result.Add(new(provider.Id, ProviderConnectionMethod.ApiKey, state, provider.BillingMode,
                         detail, notice,
                         CanConnect: anthropic,
@@ -637,7 +642,9 @@ public sealed class ProviderConnectionService
 
         if (!anthropicConfigured)
         {
-            result.Add(new(DefaultAnthropicProviderId, ProviderConnectionMethod.ApiKey,
+            var syntheticId = ProviderConnectionRegistration.FreeAnthropicProviderId(
+                providers.Select(provider => provider.Id));
+            result.Add(new(syntheticId, ProviderConnectionMethod.ApiKey,
                 ProviderConnectionState.NotConfigured, BillingMode.Unknown, null, null,
                 CanConnect: true, CanTest: false, CanDisconnect: false, CanDiscoverModels: false));
         }
@@ -667,6 +674,24 @@ public sealed class ProviderConnectionService
     public async Task<ProviderConnectResult> ConnectAnthropicAsync(string apiKey, bool validate,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        var loaded = OmniHost.LoadUserConfiguration(_paths);
+        var provider = loaded.Registry.Providers().FirstOrDefault(IsAnthropicApiKeyProvider);
+        var providerId = provider?.Id ?? ProviderConnectionRegistration.FreeAnthropicProviderId(
+            loaded.Registry.Providers().Select(candidate => candidate.Id));
+        return await ConnectAnthropicAsync(providerId, apiKey, validate, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Guarda la credencial en la referencia declarada por el provider Anthropic seleccionado.
+    /// El id se resuelve y valida antes de cualquier escritura; una fila sintética solo puede
+    /// materializarse si sigue siendo el id libre anunciado por <see cref="List"/>.
+    /// </summary>
+    public async Task<ProviderConnectResult> ConnectAnthropicAsync(string providerId, string apiKey,
+        bool validate, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var trimmed = apiKey?.Trim() ?? "";
         if (trimmed.Length == 0)
         {
@@ -679,11 +704,11 @@ public sealed class ProviderConnectionService
                 "La API key es demasiado corta (mínimo " + Secret.MinimumLength + " caracteres).");
         }
 
+        var target = ResolveAnthropicTarget(providerId, cancellationToken);
         SecretRedactorRegistry.Register(trimmed);
-        var (providerId, baseUrl) = ProviderConnectionRegistration.EnsureAnthropicProvider(_paths.ConfigDirectory);
         if (validate)
         {
-            var result = await _validator.ValidateAsync(trimmed, baseUrl, cancellationToken).ConfigureAwait(false);
+            var result = await _validator.ValidateAsync(trimmed, target.BaseUrl, cancellationToken).ConfigureAwait(false);
             if (result.State == ProviderConnectionState.Invalid)
             {
                 throw new ProviderConnectionException("invalid",
@@ -691,22 +716,82 @@ public sealed class ProviderConnectionService
                     + "). Nada se guardó.");
             }
 
-            SaveCredential(providerId, trimmed, result.State, cancellationToken);
-            return new(result.State, Mask(trimmed),
-                result.State == ProviderConnectionState.Connected
-                    ? LocalizedText.Of("providers.notice.connectedValidated")
-                    : LocalizedText.Of("providers.notice.savedUnverified"));
+            target = RevalidateAnthropicTarget(target, cancellationToken);
+            SaveCredential(providerId, target.SecretRef, trimmed, result.State, cancellationToken);
+            return new(result.State, Mask(trimmed), result.State == ProviderConnectionState.Connected
+                ? LocalizedText.Of("providers.notice.connectedValidated")
+                : LocalizedText.Of("providers.notice.savedUnverified"));
         }
 
-        SaveCredential(providerId, trimmed, null, cancellationToken);
+        target = RevalidateAnthropicTarget(target, cancellationToken);
+        SaveCredential(providerId, target.SecretRef, trimmed, null, cancellationToken);
         return new(ProviderConnectionState.Unknown, Mask(trimmed),
             LocalizedText.Of("providers.notice.savedUnverified"));
     }
 
-    private void SaveCredential(string providerId, string apiKey, ProviderConnectionState? state,
+    private sealed record AnthropicConnectTarget(string ProviderId, string BaseUrl, string SecretRef,
+        bool RequiresRegistration);
+
+    private AnthropicConnectTarget ResolveAnthropicTarget(string providerId,
         CancellationToken cancellationToken)
     {
-        _store.Save(AnthropicAuthRef, apiKey, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(providerId))
+            throw new ProviderConnectionException("unknownProvider", "Provider desconocido.");
+
+        var loaded = OmniHost.LoadUserConfiguration(_paths);
+        var provider = loaded.Registry.Provider(providerId);
+        if (provider is not null)
+        {
+            if (!IsAnthropicApiKeyProvider(provider))
+            {
+                throw new ProviderConnectionException("unsupported",
+                    "El provider seleccionado no admite conexión Anthropic por API key.");
+            }
+
+            return new(provider.Id, provider.BaseUrl, provider.Auth.SecretRef!, RequiresRegistration: false);
+        }
+
+        var providers = loaded.Registry.Providers();
+        if (providers.Any(IsAnthropicApiKeyProvider))
+            throw new ProviderConnectionException("unknownProvider", "Provider desconocido: " + providerId);
+
+        var syntheticId = ProviderConnectionRegistration.FreeAnthropicProviderId(
+            providers.Select(candidate => candidate.Id));
+        if (!string.Equals(providerId, syntheticId, StringComparison.Ordinal))
+            throw new ProviderConnectionException("unknownProvider", "Provider desconocido: " + providerId);
+
+        return new(providerId, AnthropicConnectionValidator.DefaultBaseUrl,
+            ProviderConnectionRegistration.FreeAnthropicAuthRef(
+                providers.Select(candidate => candidate.Auth.SecretRef)), RequiresRegistration: true);
+    }
+
+    private AnthropicConnectTarget RevalidateAnthropicTarget(AnthropicConnectTarget previous,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (previous.RequiresRegistration)
+            ProviderConnectionRegistration.EnsureAnthropicProvider(_paths.ConfigDirectory,
+                previous.ProviderId, previous.SecretRef);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var current = ResolveAnthropicTarget(previous.ProviderId, cancellationToken);
+        if (!string.Equals(previous.BaseUrl, current.BaseUrl, StringComparison.Ordinal)
+            || !string.Equals(previous.SecretRef, current.SecretRef, StringComparison.Ordinal))
+        {
+            throw new ProviderConnectionException("configurationChanged",
+                "La configuración del provider cambió durante la conexión; no se guardó la credencial.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return current;
+    }
+
+    private void SaveCredential(string providerId, string secretRef, string apiKey,
+        ProviderConnectionState? state, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _store.Save(secretRef, apiKey, cancellationToken);
         var previous = ProviderConnectionMetadataStore.Read(_paths.DataDirectory, providerId, cancellationToken);
         ProviderConnectionMetadataStore.Write(_paths.DataDirectory, providerId,
             new ProviderConnectionMetadata(Mask(apiKey), ProviderConnectionMetadataStore.Normalize(
@@ -841,7 +926,8 @@ internal static class ProviderConnectionRegistration
     /// Garantiza que exista un provider AnthropicMessages en providers.yaml y devuelve
     /// (providerId, baseUrl). Si el usuario ya registró uno, se respeta su baseUrl y authRef.
     /// </summary>
-    internal static (string ProviderId, string BaseUrl) EnsureAnthropicProvider(string directory)
+    internal static (string ProviderId, string BaseUrl) EnsureAnthropicProvider(string directory,
+        string? expectedProviderId = null, string? expectedSecretRef = null)
     {
         Directory.CreateDirectory(directory);
         var providersPath = Path.Combine(directory, "providers.yaml");
@@ -849,21 +935,53 @@ internal static class ProviderConnectionRegistration
         var oldProviders = File.Exists(providersPath) ? File.ReadAllText(providersPath) : null;
         var oldModels = File.Exists(modelsPath) ? File.ReadAllText(modelsPath) : null;
         var loaded = new ConfigLoader().Load(oldProviders, oldModels);
-        var existing = loaded.Providers?.Providers?.FirstOrDefault(pair =>
-            pair.Value.Family == "AnthropicMessages").Key;
+        var existing = loaded.Registry.Providers()
+            .FirstOrDefault(ProviderConnectionService.IsAnthropicApiKeyProvider)?.Id;
         if (existing is not null)
         {
-            return (existing, loaded.Registry.Provider(existing)!.BaseUrl);
+            if (expectedProviderId is not null
+                && !string.Equals(existing, expectedProviderId, StringComparison.Ordinal))
+            {
+                throw new ProviderConnectionException("configurationChanged",
+                    "El provider Anthropic seleccionado cambió; no se guardó la credencial.");
+            }
+
+            var existingProvider = loaded.Registry.Provider(existing)!;
+            if (expectedSecretRef is not null
+                && !string.Equals(existingProvider.Auth.SecretRef, expectedSecretRef, StringComparison.Ordinal))
+            {
+                throw new ProviderConnectionException("configurationChanged",
+                    "La referencia de credencial del provider Anthropic cambió; no se guardó la clave.");
+            }
+
+            return (existing, existingProvider.BaseUrl);
         }
 
         var providers = Parse(oldProviders ?? "providers:\n  local: { baseUrl: http://127.0.0.1:8080, auth: none }\n");
         var providerMap = (YamlMappingNode)providers.Children[new YamlScalarNode("providers")];
-        var providerId = DefaultProviderId(providerMap);
+        var providerId = FreeAnthropicProviderId(providerMap.Children.Keys
+            .OfType<YamlScalarNode>().Select(key => key.Value ?? ""));
+        if (expectedProviderId is not null
+            && !string.Equals(providerId, expectedProviderId, StringComparison.Ordinal))
+        {
+            throw new ProviderConnectionException("configurationChanged",
+                "El id disponible para Anthropic cambió; no se guardó la credencial.");
+        }
+
+        var secretRef = FreeAnthropicAuthRef(loaded.Registry.Providers()
+            .Select(provider => provider.Auth.SecretRef));
+        if (expectedSecretRef is not null
+            && !string.Equals(secretRef, expectedSecretRef, StringComparison.Ordinal))
+        {
+            throw new ProviderConnectionException("configurationChanged",
+                "La referencia libre para Anthropic cambió; no se guardó la credencial.");
+        }
+
         providerMap.Add(providerId, new YamlMappingNode
         {
             { "family", "AnthropicMessages" },
             { "baseUrl", AnthropicConnectionValidator.DefaultBaseUrl },
-            { "authRef", ProviderConnectionService.AnthropicAuthRef },
+            { "authRef", secretRef },
             { "billingMode", "MeteredCurrency" },
         });
         var newProviders = Save(providers);
@@ -885,14 +1003,26 @@ internal static class ProviderConnectionRegistration
     }
 
     /// <summary>Id libre para el provider Anthropic (respeta los ya declarados).</summary>
-    private static string DefaultProviderId(YamlMappingNode providerMap)
+    internal static string FreeAnthropicProviderId(IEnumerable<string> existingProviderIds)
     {
+        var existing = existingProviderIds.ToHashSet(StringComparer.Ordinal);
         var candidate = ProviderConnectionService.DefaultAnthropicProviderId;
-        for (var suffix = 2; providerMap.Children.ContainsKey(new YamlScalarNode(candidate)); suffix++)
+        for (var suffix = 2; existing.Contains(candidate); suffix++)
         {
             candidate = ProviderConnectionService.DefaultAnthropicProviderId + "-" + suffix;
         }
 
+        return candidate;
+    }
+
+    /// <summary>authRef libre para una nueva credencial; existentes nunca se reasignan.</summary>
+    internal static string FreeAnthropicAuthRef(IEnumerable<string?> existingSecretRefs)
+    {
+        var existing = existingSecretRefs.Where(reference => !string.IsNullOrWhiteSpace(reference))
+            .ToHashSet(StringComparer.Ordinal);
+        var candidate = ProviderConnectionService.AnthropicAuthRef;
+        for (var suffix = 2; existing.Contains(candidate); suffix++)
+            candidate = ProviderConnectionService.AnthropicAuthRef + "-" + suffix;
         return candidate;
     }
 

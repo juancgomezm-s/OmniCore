@@ -10,6 +10,50 @@ namespace OmniCore.Tests;
 public sealed class ClientTests
 {
     [Fact]
+    public void Process_slash_arguments_are_not_joined_and_reparsed()
+    {
+        var arguments = new[]
+        {
+            "/orq-auth", "connect a module to the application's real entry point",
+            "--verify-executable", "C:\\Program Files\\dotnet.exe",
+            "--verify-argv-json", "[\"test\", \"tests/Connected Module.csproj\"]",
+        };
+
+        Assert.True(CommandLineParser.TryParseArguments(arguments, out var invocation));
+        Assert.Equal("orq-auth", invocation!.Name);
+        Assert.Equal(arguments[1..], invocation.Arguments);
+    }
+
+    [Fact]
+    public void Process_parser_preserves_empty_arguments_quotes_and_windows_backslashes()
+    {
+        var arguments = new[] { "/core:explain", "", "C:\\tools\\a\"b.exe", "[\"literal\\\\path\"]" };
+
+        Assert.True(CommandLineParser.TryParseArguments(arguments, out var invocation));
+        Assert.Equal("core:explain", invocation!.Name);
+        Assert.Equal(arguments[1..], invocation.Arguments);
+
+        Assert.False(CommandLineParser.TryParseArguments(["/core:orq-auth \"unfinished"], out var malformed));
+        Assert.Null(malformed);
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidProcessSlashArguments))]
+    public void Process_slash_argument_parser_rejects_invalid_prefixes(string[] arguments)
+    {
+        Assert.False(CommandLineParser.TryParseArguments(arguments, out var invocation));
+        Assert.Null(invocation);
+    }
+
+    public static IEnumerable<object[]> InvalidProcessSlashArguments() => new object[][]
+    {
+        new object[] { Array.Empty<string>() },
+        new object[] { new[] { "ask", "question" } },
+        new object[] { new[] { "/", "question" } },
+        new object[] { new[] { "/orq-auth objective", "--verify-executable", "dotnet" } },
+    };
+
+    [Fact]
     public async Task Projection_turns_sim_event_into_system_block()
     {
         var projection = new ClientProjection();

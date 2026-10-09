@@ -6,6 +6,7 @@ using OmniCore.Cli;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Host;
+using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 using Terminal.Gui.App;
 using Terminal.Gui.Drivers;
@@ -32,6 +33,296 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class TuiWiringTests
 {
+    // Test-only fallback: production construction always uses the real Host facade.
+    private sealed class EmptyTuiProviderConnectionHost : ITuiProviderConnectionHost
+    {
+        internal static readonly EmptyTuiProviderConnectionHost Instance = new();
+        public IReadOnlyList<ProviderConnectionMenuRow> List(CancellationToken cancellationToken) => [];
+        public Task<ProviderConnectionMenuResult> ConnectAsync(string apiKey, bool validate, CancellationToken cancellationToken) =>
+            System.Threading.Tasks.Task.FromException<ProviderConnectionMenuResult>(new InvalidOperationException("Unexpected connection operation."));
+        public Task<ProviderConnectionMenuResult> TestAsync(string providerId, CancellationToken cancellationToken) =>
+            System.Threading.Tasks.Task.FromException<ProviderConnectionMenuResult>(new InvalidOperationException("Unexpected connection operation."));
+        public Task<ProviderConnectionMenuResult> DiscoverAsync(string providerId, CancellationToken cancellationToken) =>
+            System.Threading.Tasks.Task.FromException<ProviderConnectionMenuResult>(new InvalidOperationException("Unexpected connection operation."));
+        public void Disconnect(string providerId, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Unexpected connection operation.");
+    }
+
+    [Fact]
+    public void Command_autocomplete_explains_disabled_workflow_commands_from_the_host_catalog() => RunTuiTest(fx =>
+    {
+        fx.StartTui();
+        Type(fx, "/orq-auth");
+        fx.Wait(() => fx.App.MainWindow!.SubViews.Any(view => view.Id == "omni-command-helper"),
+            "helper de comandos visible");
+        string[] rows = [];
+        fx.Invoke(() => rows = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper")
+            .SubViews.OfType<ListView>().Single().Source!.ToList().Cast<object>()
+            .Select(item => item.ToString() ?? "").ToArray());
+        Assert.Contains(rows, row => row.Contains("orq-auth", StringComparison.Ordinal)
+            && row.Contains("Deshabilitado", StringComparison.Ordinal)
+            && row.Contains("Orchestrate", StringComparison.Ordinal));
+    });
+
+    [Fact]
+    public void Provider_connection_menu_renders_host_status_timestamps_and_capability_flags() => RunTuiTest(fx =>
+    {
+        var validated = new DateTimeOffset(2026, 10, 1, 10, 30, 0, TimeSpan.Zero);
+        var discovered = new DateTimeOffset(2026, 10, 2, 11, 45, 0, TimeSpan.Zero);
+        var host = new TuiProviderConnectionsFixture
+        {
+            Rows =
+            [
+                new("anthropic", ProviderConnectionMethod.ApiKey, ProviderConnectionState.NotConfigured,
+                    BillingMode.MeteredCurrency, null, null, true, false, false, false, null, null),
+                new("custom", ProviderConnectionMethod.ApiKey, ProviderConnectionState.Connected,
+                    BillingMode.Unknown, null, null, false, true, true, true, validated, discovered),
+            ],
+        };
+        fx.StartTui(providerConnections: host);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        Click(fx, "Conexiones API");
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Conexiones API") == true,
+            "conexiones API visibles");
+
+        ListView list = null!;
+        string[] rows = [];
+        fx.Invoke(() =>
+        {
+            list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+            rows = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
+        });
+        Assert.Contains(rows, row => row.Contains("anthropic", StringComparison.Ordinal)
+            && row.Contains("Sin configurar", StringComparison.Ordinal));
+        Assert.Contains(rows, row => row.Contains("custom", StringComparison.Ordinal)
+            && row.Contains("Conectado", StringComparison.Ordinal)
+            && row.Contains("verificada 2026-10-01 10:30 UTC", StringComparison.Ordinal)
+            && row.Contains("modelos 2026-10-02 11:45 UTC", StringComparison.Ordinal));
+        Assert.DoesNotContain(rows, row => row.Contains("quota", StringComparison.OrdinalIgnoreCase)
+            || row.Contains("cuota", StringComparison.OrdinalIgnoreCase));
+        Assert.True(fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-connect").Enabled);
+        Assert.False(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-test").Enabled);
+
+        fx.Invoke(() => list.SelectedItem = 1);
+        fx.Wait(() => fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-test").Enabled,
+            "acciones del provider seleccionado actualizadas");
+        Assert.False(fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-connect").Enabled);
+        Assert.True(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-disconnect").Enabled);
+        Assert.True(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-discover").Enabled);
+
+        Click(fx, "Descubrir modelos");
+        fx.Wait(() => fx.App.Overlay is { } overlay
+            && OverlayText(overlay).Contains("Ventanas de cuota reportadas: 1")
+            && OverlayText(overlay).Contains("Modelos registrados: 2"),
+            "solo muestra cuota y modelos devueltos por el Host");
+    });
+
+    [Fact]
+    public void Provider_api_key_is_masked_cleared_before_save_and_passed_only_to_the_injected_host() => RunTuiTest(fx =>
+    {
+        var host = new TuiProviderConnectionsFixture
+        {
+            Rows =
+            [new("anthropic", ProviderConnectionMethod.ApiKey, ProviderConnectionState.NotConfigured,
+                BillingMode.MeteredCurrency, null, null, true, false, false, false, null, null)],
+            ConnectGate = new(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        fx.StartTui(providerConnections: host);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        Click(fx, "Conexiones API");
+        fx.Invoke(() =>
+        {
+            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+            var items = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
+            var anthropic = Array.FindIndex(items, item => item.StartsWith("anthropic", StringComparison.Ordinal));
+            Assert.True(anthropic >= 0, "la fila Anthropic del Host debe estar disponible");
+            list.SelectedItem = anthropic;
+        });
+        Click(fx, "Conectar");
+        var secret = "test-key-never-sent-over-network";
+        TextField key = null!;
+        fx.Invoke(() =>
+        {
+            key = fx.App.Overlay!.SubViews.OfType<TextField>().Single(field => field.Id == "provider-api-key");
+            Assert.True(key.Secret);
+            key.Text = secret;
+        });
+        Click(fx, "Guardar");
+        fx.Wait(() => host.ReceivedApiKey == secret, "clave entregada al Host fixture");
+        Assert.Equal("anthropic", host.ReceivedProviderId);
+        Assert.False(host.ReceivedValidate);
+        fx.Invoke(() => Assert.Equal("", key.Text?.ToString()));
+        Assert.DoesNotContain(secret, OverlayText(fx.App.Overlay!));
+
+        host.ConnectGate!.TrySetResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected,
+            null, null, new DateTimeOffset(2026, 10, 3, 12, 0, 0, TimeSpan.Zero)));
+        fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Estado: Conectado"),
+            "resultado de conexión vuelve al menú");
+        Assert.DoesNotContain(secret, OverlayText(fx.App.Overlay!));
+    });
+
+    [Fact]
+    public void Closing_provider_key_entry_cancels_and_discards_a_late_host_result() => RunTuiTest(fx =>
+    {
+        var host = new TuiProviderConnectionsFixture
+        {
+            Rows =
+            [new("anthropic", ProviderConnectionMethod.ApiKey, ProviderConnectionState.NotConfigured,
+                BillingMode.MeteredCurrency, null, null, true, false, false, false, null, null)],
+            ConnectGate = new(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        fx.StartTui(providerConnections: host);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        Click(fx, "Conexiones API");
+        Click(fx, "Conectar");
+        fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>()
+            .Single(field => field.Id == "provider-api-key").Text = "fixture-cancelled-key-12345");
+        Click(fx, "Guardar");
+        fx.Wait(() => host.ReceivedApiKey is not null, "operación de Host en espera");
+        var operation = fx.App.ProviderConnectionTask!;
+
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.Wait(() => fx.App.Overlay is null, "cerrar el formulario cancela el overlay");
+        fx.Wait(() => host.ConnectCancellationObserved.Task.IsCompleted, "token del Host cancelado al cerrar");
+        host.ConnectGate!.TrySetResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected, null, null));
+        operation.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+        fx.Invoke(() => fx.App.PollOnce());
+        Assert.Null(fx.App.Overlay);
+    });
+
+    [Fact]
+    public void Provider_menu_runs_all_five_actions_through_the_real_host_with_isolated_paths_and_http_fixture() => RunTuiTest(fx =>
+    {
+        var paths = new DefaultPlatformPaths(Path.Combine(fx.Root, "provider-data"),
+            Path.Combine(fx.Root, "provider-config"));
+        var store = new FileCredentialStore(Path.Combine(fx.Root, "provider-credentials.ini"));
+        var handler = new ProviderConnectionUiHandler();
+        var measuredAt = new DateTimeOffset(2026, 10, 8, 12, 0, 0, TimeSpan.Zero);
+        Directory.CreateDirectory(paths.ConfigDirectory);
+        File.WriteAllText(Path.Combine(paths.ConfigDirectory, "providers.yaml"), """
+            providers:
+              anthropic-a: { family: AnthropicMessages, baseUrl: https://api-a.example.test, authRef: credentials/anthropic-a, billingMode: MeteredCurrency }
+              anthropic-b: { family: AnthropicMessages, baseUrl: https://api-b.example.test, authRef: credentials/anthropic-b, billingMode: MeteredCurrency }
+            """);
+        var service = new ProviderConnectionService(store, paths,
+            httpFactory: () => new HttpClient(handler, disposeHandler: false), now: () => measuredAt);
+        var host = new TuiProviderConnectionHost(service, paths);
+        const string apiKey = "fixture-only-ui-provider-key-12345";
+
+        fx.StartTui(providerConnections: host);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        Click(fx, "Conexiones API");
+        fx.Invoke(() =>
+        {
+            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+            var items = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
+            var anthropicB = Array.FindIndex(items, item => item.StartsWith("anthropic-b", StringComparison.Ordinal));
+            Assert.True(anthropicB >= 0, "el provider Anthropic seleccionado debe estar disponible");
+            list.SelectedItem = anthropicB;
+        });
+        Click(fx, "Conectar");
+        fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>()
+            .Single(field => field.Id == "provider-api-key").Text = apiKey);
+        Click(fx, "Guardar");
+        fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Estado: Desconocido"),
+            "credencial guardada sin verificación de red");
+        Assert.Empty(handler.Requests);
+        Assert.Equal(apiKey, store.Load("credentials/anthropic-b", TestContext.Current.CancellationToken));
+        Assert.Null(store.Load("credentials/anthropic-a", TestContext.Current.CancellationToken));
+        Assert.Null(store.Load(ProviderConnectionService.AnthropicAuthRef, TestContext.Current.CancellationToken));
+
+        Click(fx, "Probar");
+        fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Estado: Conectado"),
+            "test de conexión real contra handler aislado");
+        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
+            && row.Contains("verificada 2026-10-08 12:00 UTC", StringComparison.Ordinal));
+
+        Click(fx, "Descubrir modelos");
+        fx.Wait(() => fx.App.Overlay is { } overlay
+            && OverlayText(overlay).Contains("Modelos registrados: 1")
+            && OverlayText(overlay).Contains("Ventanas de cuota reportadas: 1"),
+            "discovery real registra catálogo y la única ventana reportada");
+        Assert.Contains("claude-ui-test:", File.ReadAllText(Path.Combine(paths.ConfigDirectory, "models.yaml")),
+            StringComparison.Ordinal);
+        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
+            && row.Contains("modelos 2026-10-08 12:00 UTC", StringComparison.Ordinal));
+
+        Click(fx, "Desconectar");
+        fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Conexión eliminada"),
+            "disconnect vuelve al listado");
+        Assert.Null(store.Load("credentials/anthropic-b", TestContext.Current.CancellationToken));
+        Assert.Null(store.Load("credentials/anthropic-a", TestContext.Current.CancellationToken));
+        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
+            && row.Contains("Sin configurar", StringComparison.Ordinal));
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.All(handler.Requests, request =>
+        {
+            Assert.Equal("GET", request.Method);
+            Assert.StartsWith("https://api-b.example.test/v1/models", request.Url, StringComparison.Ordinal);
+            Assert.Equal(apiKey, request.ApiKey);
+        });
+    });
+
+    private sealed record ProviderConnectionUiRequest(string Method, string Url, string? ApiKey);
+
+    private sealed class ProviderConnectionUiHandler : HttpMessageHandler
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<ProviderConnectionUiRequest> _requests = new();
+        internal IReadOnlyList<ProviderConnectionUiRequest> Requests => _requests.ToArray();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            _requests.Enqueue(new ProviderConnectionUiRequest(request.Method.Method, request.RequestUri!.ToString(),
+                request.Headers.TryGetValues("x-api-key", out var values) ? string.Join(",", values) : null));
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"data\":[{\"id\":\"claude-ui-test\",\"type\":\"model\","
+                    + "\"display_name\":\"UI Test Model\",\"created_at\":\"2025-09-29T00:00:00Z\"}],\"has_more\":false}"),
+            };
+            response.Headers.TryAddWithoutValidation("anthropic-ratelimit-requests-remaining", "17");
+            return System.Threading.Tasks.Task.FromResult(response);
+        }
+    }
+
+    private sealed class TuiProviderConnectionsFixture : ITuiProviderConnectionHost
+    {
+        private string? _receivedApiKey;
+        private string? _receivedProviderId;
+        private int _receivedValidate;
+        internal IReadOnlyList<ProviderConnectionMenuRow> Rows { get; init; } = [];
+        internal TaskCompletionSource<ProviderConnectionMenuResult>? ConnectGate { get; init; }
+        internal TaskCompletionSource<bool> ConnectCancellationObserved { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal string? ReceivedApiKey => Volatile.Read(ref _receivedApiKey);
+        internal string? ReceivedProviderId => Volatile.Read(ref _receivedProviderId);
+        internal bool ReceivedValidate => Volatile.Read(ref _receivedValidate) != 0;
+
+        public IReadOnlyList<ProviderConnectionMenuRow> List(CancellationToken cancellationToken) => Rows;
+
+        public Task<ProviderConnectionMenuResult> ConnectAsync(string apiKey, bool validate, CancellationToken cancellationToken)
+            => ConnectAsync("anthropic", apiKey, validate, cancellationToken);
+
+        public Task<ProviderConnectionMenuResult> ConnectAsync(string providerId, string apiKey, bool validate,
+            CancellationToken cancellationToken)
+        {
+            Volatile.Write(ref _receivedProviderId, providerId);
+            Volatile.Write(ref _receivedApiKey, apiKey);
+            Volatile.Write(ref _receivedValidate, validate ? 1 : 0);
+            _ = cancellationToken.Register(() => ConnectCancellationObserved.TrySetResult(true));
+            return ConnectGate?.Task ?? System.Threading.Tasks.Task.FromResult(new ProviderConnectionMenuResult(
+                ProviderConnectionState.Unknown, null, null));
+        }
+
+        public Task<ProviderConnectionMenuResult> TestAsync(string providerId, CancellationToken cancellationToken) =>
+            System.Threading.Tasks.Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected, null, null));
+
+        public Task<ProviderConnectionMenuResult> DiscoverAsync(string providerId, CancellationToken cancellationToken) =>
+            System.Threading.Tasks.Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected, null, null,
+                RegisteredModels: 2, QuotaWindows: 1));
+
+        public void Disconnect(string providerId, CancellationToken cancellationToken) { }
+    }
+
     [Fact]
     public void Agent_command_dispatches_exact_identity_through_turn_host_without_submitting_root_conversation() => RunTuiTest(fx =>
     {
@@ -2082,7 +2373,7 @@ public sealed class TuiWiringTests
 
         public void StartTui(ModelPolicyHost? policies = null, ITuiAccountHost? account = null,
             ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null,
-            IOmniClient? client = null)
+            IOmniClient? client = null, ITuiProviderConnectionHost? providerConnections = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -2098,7 +2389,8 @@ public sealed class TuiWiringTests
             for (var attempt = 1; ; attempt++)
             {
                 _loopError = null;
-                App = new TuiApp(client ?? Server, "es", _fixturePolicies, account, turnHost);
+                App = new TuiApp(client ?? Server, "es", _fixturePolicies, account, turnHost,
+                    providerConnections ?? EmptyTuiProviderConnectionHost.Instance);
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);

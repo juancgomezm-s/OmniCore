@@ -18,6 +18,11 @@ public interface ITuiProviderConnectionHost
     /// <summary>Guarda (y opcionalmente valida contra la Models API) la API key de Anthropic.</summary>
     Task<ProviderConnectionMenuResult> ConnectAsync(string apiKey, bool validate, CancellationToken cancellationToken);
 
+    /// <summary>Guarda la API key en el provider exacto seleccionado por el usuario.</summary>
+    Task<ProviderConnectionMenuResult> ConnectAsync(string providerId, string apiKey, bool validate,
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This provider connection host does not support exact provider selection.");
+
     /// <summary>Mide la conexión guardada del provider contra su API pública (sin inferencia).</summary>
     Task<ProviderConnectionMenuResult> TestAsync(string providerId, CancellationToken cancellationToken);
 
@@ -94,9 +99,20 @@ public sealed class TuiProviderConnectionHost : ITuiProviderConnectionHost
     public async Task<ProviderConnectionMenuResult> ConnectAsync(string apiKey, bool validate,
         CancellationToken cancellationToken)
     {
-        var result = await _connections.ConnectAnthropicAsync(apiKey, validate, cancellationToken)
+        cancellationToken.ThrowIfCancellationRequested();
+        var providerId = _connections.List(cancellationToken).FirstOrDefault(row => row.CanConnect)?.ProviderId
+            ?? ProviderConnectionService.DefaultAnthropicProviderId;
+        var result = await _connections.ConnectAnthropicAsync(providerId, apiKey, validate, cancellationToken)
             .ConfigureAwait(false);
-        return WithTimestamps(result.State, result.Detail, result.Notice, providerId: null, cancellationToken);
+        return WithTimestamps(result.State, result.Detail, result.Notice, providerId, cancellationToken);
+    }
+
+    public async Task<ProviderConnectionMenuResult> ConnectAsync(string providerId, string apiKey, bool validate,
+        CancellationToken cancellationToken)
+    {
+        var result = await _connections.ConnectAnthropicAsync(providerId, apiKey, validate, cancellationToken)
+            .ConfigureAwait(false);
+        return WithTimestamps(result.State, result.Detail, result.Notice, providerId, cancellationToken);
     }
 
     public async Task<ProviderConnectionMenuResult> TestAsync(string providerId, CancellationToken cancellationToken)

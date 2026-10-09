@@ -479,9 +479,13 @@ public sealed class CliEndToEndTests
                 _ = permissionPolicy.RecordApprovedGrant(verifyIntent, GrantLifetime.Run, CancellationToken.None);
                 OmniHost.GetWeakSandboxConsentState(rootRun.RunId).GrantForRun();
 
-                var command = "/orq-auth \"connect FeatureModule to the application entry point\" --verify-executable \""
-                    + executable + "\" --verify-argv-json '[\"run\",\"--project\",\"src/FeatureApp/FeatureApp.csproj\","
-                    + "\"--configuration\",\"Release\",\"--no-restore\"]'";
+                var command = new[]
+                {
+                    "/orq-auth", "connect FeatureModule to the application entry point",
+                    "--verify-executable", executable,
+                    "--verify-argv-json", "[\"run\", \"--project\", \"src/FeatureApp/FeatureApp.csproj\", "
+                        + "\"--configuration\", \"Release\", \"--no-restore\"]",
+                };
                 (int Code, string Output) result;
                 try
                 {

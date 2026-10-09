@@ -122,7 +122,7 @@ public sealed class CliApp
 
     private static Task<int> RunTypedCommand(string[] args)
     {
-        if (!CommandLineParser.TryParse(string.Join(" ", args), out var parsed) || parsed is null)
+        if (!CommandLineParser.TryParseArguments(args, out var parsed) || parsed is null)
         {
             Console.WriteLine(Loc().Resolve("cli.invalid_command"));
             return Task.FromResult(2);
@@ -456,6 +456,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.context.help"));
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
+        Console.WriteLine(Loc().Resolve("commands.workflow.help"));
         Console.WriteLine(Loc().Resolve("cli.usage.model"));
         Console.WriteLine(Loc().Resolve("cli.usage.verify_journal"));
         Console.WriteLine(Loc().Resolve("cli.usage.session_purge"));

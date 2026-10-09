@@ -167,6 +167,102 @@ data: {"type":"message_stop"}
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Connecting_selected_anthropic_provider_uses_its_exact_auth_reference()
+    {
+        var harness = new Harness();
+        var ct = TestContext.Current.CancellationToken;
+        harness.WriteConfigFile("providers.yaml", """
+            providers:
+              anthropic-a: { family: AnthropicMessages, baseUrl: https://api-a.example.test, authRef: credentials/anthropic-a }
+              anthropic-b: { family: AnthropicMessages, baseUrl: https://api-b.example.test, authRef: credentials/anthropic-b }
+            """);
+        harness.Store.Save("credentials/anthropic-a", "sk-ant-existing-a-0123456789", ct);
+        harness.Store.Save("credentials/anthropic-b", "sk-ant-existing-b-0123456789", ct);
+
+        await harness.Service.ConnectAnthropicAsync("anthropic-b", ApiKey, validate: false, ct);
+
+        Assert.Equal("sk-ant-existing-a-0123456789", harness.Store.Load("credentials/anthropic-a", ct));
+        Assert.Equal(ApiKey, harness.Store.Load("credentials/anthropic-b", ct));
+        Assert.Null(harness.Store.Load(ProviderConnectionService.AnthropicAuthRef, ct));
+        Assert.Equal(ProviderConnectionState.Unknown, harness.Row("anthropic-b", ct).State);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Synthetic_anthropic_api_key_row_uses_free_id_when_only_anthropic_provider_has_no_auth()
+    {
+        var harness = new Harness();
+        var ct = TestContext.Current.CancellationToken;
+        harness.WriteConfigFile("providers.yaml", """
+            providers:
+              anthropic: { family: OpenAiChatCompatible, baseUrl: https://other.example.test, authRef: anthropic }
+              anthropic-no-key: { family: AnthropicMessages, baseUrl: https://api-no-key.example.test, auth: none }
+            """);
+        const string existingCredential = "sk-openai-existing-123456789012";
+        harness.Store.Save(ProviderConnectionService.AnthropicAuthRef, existingCredential, ct);
+
+        var synthetic = Assert.Single(harness.Service.List(ct), row => row.CanConnect);
+        Assert.Equal("anthropic-2", synthetic.ProviderId);
+        var noKey = Assert.Single(harness.Service.List(ct), row => row.ProviderId == "anthropic-no-key");
+        Assert.Equal(ProviderConnectionMethod.None, noKey.Method);
+        Assert.False(noKey.CanConnect);
+        await harness.Service.ConnectAnthropicAsync(synthetic.ProviderId, ApiKey, validate: false, ct);
+
+        var loaded = OmniHost.LoadUserConfiguration(harness.Paths);
+        Assert.Equal(ProviderFamily.OpenAiChatCompatible, loaded.Registry.Provider("anthropic")!.Family);
+        Assert.Equal(ProviderFamily.AnthropicMessages, loaded.Registry.Provider("anthropic-no-key")!.Family);
+        Assert.Equal(AuthKind.None, loaded.Registry.Provider("anthropic-no-key")!.Auth.Kind);
+        Assert.Equal(ProviderFamily.AnthropicMessages, loaded.Registry.Provider("anthropic-2")!.Family);
+        Assert.Equal("anthropic-2", loaded.Registry.Provider("anthropic-2")!.Auth.SecretRef);
+        Assert.Equal(existingCredential, harness.Store.Load(ProviderConnectionService.AnthropicAuthRef, ct));
+        Assert.Equal(ApiKey, harness.Store.Load("anthropic-2", ct));
+        Assert.Equal(3, harness.Service.List(ct).Count);
+        Assert.False(Assert.Single(harness.Service.List(ct), row => row.ProviderId == "anthropic-no-key").CanConnect);
+    }
+
+    [Theory]
+    [InlineData("other-provider", "unsupported")]
+    [InlineData("anthropic-no-key", "unsupported")]
+    [InlineData("unknown-provider", "unknownProvider")]
+    public async System.Threading.Tasks.Task Invalid_selected_provider_does_not_mutate_config_or_credentials(
+        string providerId, string expectedKind)
+    {
+        var harness = new Harness();
+        var ct = TestContext.Current.CancellationToken;
+        harness.WriteConfigFile("providers.yaml", """
+            providers:
+              other-provider: { family: OpenAiChatCompatible, baseUrl: https://other.example.test, authRef: other/key }
+              anthropic-b: { family: AnthropicMessages, baseUrl: https://api-b.example.test, authRef: credentials/anthropic-b }
+              anthropic-no-key: { family: AnthropicMessages, baseUrl: https://api-no-key.example.test, auth: none }
+            """);
+        var originalConfig = harness.ReadConfigFile("providers.yaml");
+
+        var error = await Assert.ThrowsAsync<ProviderConnectionException>(() =>
+            harness.Service.ConnectAnthropicAsync(providerId, ApiKey, validate: false, ct));
+
+        Assert.Equal(expectedKind, error.Kind);
+        Assert.Equal(originalConfig, harness.ReadConfigFile("providers.yaml"));
+        Assert.Null(harness.Store.Load("other/key", ct));
+        Assert.Null(harness.Store.Load("credentials/anthropic-b", ct));
+        Assert.Null(harness.Store.Load(ProviderConnectionService.AnthropicAuthRef, ct));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Precancelled_synthetic_connect_does_not_create_provider_or_credentials()
+    {
+        var harness = new Harness();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            harness.Service.ConnectAnthropicAsync(ProviderConnectionService.DefaultAnthropicProviderId,
+                ApiKey, validate: false, cancellation.Token));
+
+        Assert.False(File.Exists(Path.Combine(harness.Config, "providers.yaml")));
+        Assert.False(File.Exists(harness.Store.PathValue()));
+        Assert.False(File.Exists(Path.Combine(harness.Root, "credentials.key")));
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Status_distinguishes_unverified_invalid_unreachable_and_connected_from_metadata()
     {
         var harness = new Harness();

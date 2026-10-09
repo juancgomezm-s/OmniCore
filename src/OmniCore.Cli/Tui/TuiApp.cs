@@ -11,7 +11,7 @@ using Terminal.Gui.Views;
 namespace OmniCore.Cli;
 
 /// <summary>Terminal.Gui renderer. All conversation state is reduced from IOmniClient wire events.</summary>
-public sealed class TuiApp
+public sealed partial class TuiApp
 {
     private readonly IOmniClient _client;
     private readonly string _locale;
@@ -54,6 +54,8 @@ public sealed class TuiApp
     private FrameView? _commandHelper;
     private ListView? _commandList;
     private string[] _commandSuggestions = Array.Empty<string>();
+    private IReadOnlyDictionary<string, string> _disabledCommandReasons =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private View? _overlay;
     private InteractionOverlayModel? _activeInteraction;
     private bool _sidebarOpen;
@@ -102,7 +104,7 @@ public sealed class TuiApp
     internal bool SidebarOpen => _sidebarOpen;
     internal ModelPolicyHost Policies => _policies;
 
-    public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null)
+    public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? providerConnections = null)
     {
         _client = client;
         _locale = locale == "en" ? "en" : "es";
@@ -112,6 +114,7 @@ public sealed class TuiApp
         _ownsPolicies = policies is null;
         _accountOverride = account;
         _turnHost = turnHost;
+        _providerConnectionHost = providerConnections ?? TuiProviderConnectionHost.Create();
         RefreshSidebarPreferences();
         _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
         _state = RefreshState();
@@ -172,6 +175,8 @@ public sealed class TuiApp
             application.LayoutAndDrawComplete -= AfterDraw;
             try { _loginCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             try { _catalogCancellation?.Cancel(); } catch (ObjectDisposedException) { }
+            ClearProviderApiKey();
+            CancelProviderConnectionOperation();
             _catalogCancellation?.Dispose(); _catalogCancellation = null;
             _turnCancellation?.Cancel();
             var turnStopped = _turnTask is null;
@@ -417,9 +422,11 @@ public sealed class TuiApp
         if (_composer is null || _completion is null) return;
         var draft = _composer.Text?.ToString() ?? "";
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
-        var names = ReadStringArray(_client.Query("commands", CancellationToken.None)?.Json, "commands")
+        var commandCatalogJson = _client.Query("commands", CancellationToken.None)?.Json;
+        _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
+        var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join" });
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout" });
         var suggestions = ComposerAutocomplete.Complete(draft,
             names, ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
         // Keep common entry points visible as the catalog grows. Typed prefixes retain
@@ -475,8 +482,46 @@ public sealed class TuiApp
         "/plan" => Ui("Consultar el plan actual", "Show current plan"),
         "/cancel" => Ui("Cancelar el turno activo", "Cancel active turn"),
         "/interrupt" => Ui("Interrumpir el turno activo", "Interrupt active turn"),
+        _ when command.StartsWith('/') && _disabledCommandReasons.TryGetValue(command[1..], out var reason) =>
+            Ui("Deshabilitado · ", "Disabled · ") + DescribeDisabledCommand(reason),
         _ => Ui("Comando del workspace", "Workspace command")
     };
+
+    private string DescribeDisabledCommand(string reason) => reason.Contains("Orchestrate", StringComparison.OrdinalIgnoreCase)
+        && reason.Contains("authorization", StringComparison.OrdinalIgnoreCase)
+            ? Ui("requiere Run Orchestrate activo y autorización vigente",
+                "requires an active Orchestrate Run and current authorization")
+            : _localization.ResolveWire(reason);
+
+    private static IReadOnlyDictionary<string, string> ReadDisabledCommandReasons(string? json)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(json)) return result;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("catalog", out var catalog)
+                || !catalog.TryGetProperty("commands", out var commands)
+                || commands.ValueKind != System.Text.Json.JsonValueKind.Array) return result;
+            foreach (var command in commands.EnumerateArray())
+            {
+                if (!command.TryGetProperty("enabled", out var enabled) || enabled.ValueKind != System.Text.Json.JsonValueKind.False
+                    || !command.TryGetProperty("disabledReason", out var disabledReason)
+                    || disabledReason.ValueKind != System.Text.Json.JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(disabledReason.GetString())
+                    || !command.TryGetProperty("name", out var name)
+                    || name.ValueKind != System.Text.Json.JsonValueKind.String) continue;
+                var reason = disabledReason.GetString()!;
+                result[name.GetString()!] = reason;
+                if (command.TryGetProperty("aliases", out var aliases) && aliases.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    foreach (var alias in aliases.EnumerateArray())
+                        if (alias.ValueKind == System.Text.Json.JsonValueKind.String)
+                            result[alias.GetString()!] = reason;
+            }
+        }
+        catch (System.Text.Json.JsonException) { }
+        return result;
+    }
 
     private void HideCommandHelper()
     {
@@ -1457,15 +1502,17 @@ public sealed class TuiApp
     private void ShowPreferences()
     {
         if (_window is null || _overlay is not null) return;
-        var frame = OverlayFrame(Ui("Configuración", "Settings"), 12);
+        var frame = OverlayFrame(Ui("Configuración", "Settings"), 14);
         frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = Ui("Modelos, políticas y cuenta", "Models, policies and account") });
-        var models = new Button { X = 2, Y = 4, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Modelos y permisos", "Models and permissions") };
+        var models = new Button { Id = "settings-models", X = 2, Y = 4, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Modelos y permisos", "Models and permissions") };
         models.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
-        var account = new Button { X = 2, Y = 6, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Cuenta ChatGPT · login", "ChatGPT account · login") };
+        var account = new Button { Id = "settings-account", X = 2, Y = 6, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Cuenta ChatGPT · login", "ChatGPT account · login") };
         account.Accepted += (_, _) => { CloseOverlay(); ShowAccount(); };
-        var close = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
+        var providers = new Button { Id = "settings-provider-connections", X = 2, Y = 8, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Conexiones API de providers", "Provider API connections") };
+        providers.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(); };
+        var close = new Button { Id = "settings-close", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
         close.Accepted += (_, _) => CloseOverlay();
-        frame.Add(models, account, close); ApplyTheme(frame);
+        frame.Add(models, account, providers, close); ApplyTheme(frame);
         _overlay = frame; _window.Add(frame); models.SetFocus();
     }
 
@@ -1892,6 +1939,8 @@ public sealed class TuiApp
     private void CloseOverlay()
     {
         if (_overlay is null || _window is null) return;
+        ClearProviderApiKey();
+        CancelProviderConnectionOperation();
         var catalog = _catalogCancellation; _catalogCancellation = null;
         if (catalog is not null) { catalog.Cancel(); catalog.Dispose(); }
         var login = _loginCancellation;
