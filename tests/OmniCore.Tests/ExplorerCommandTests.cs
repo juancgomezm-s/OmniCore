@@ -24,6 +24,27 @@ public sealed class ExplorerCommandTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Quoted_workflow_command_preserves_windows_executable_and_literal_argv()
+    {
+        const string input = "/orq-auth \"connect middleware\" --verify-executable \"C:\\Program Files\\dotnet.exe\" "
+            + "--verify-argv-json '[\"test\",\"tests/Connected Module.csproj\"]'";
+        Assert.True(CommandLineParser.TryParse(input, out var invocation));
+        Assert.Equal("orq-auth", invocation!.Name);
+        Assert.Equal(new[] { "connect middleware", "--verify-executable", "C:\\Program Files\\dotnet.exe",
+            "--verify-argv-json", "[\"test\",\"tests/Connected Module.csproj\"]" }, invocation.Arguments);
+
+        var outcome = await new CommandService().InvokeAsync(invocation,
+            new CommandContext(SessionId.New(), RunId.New(), RunMode.Orchestrate, "C:\\workspace", true),
+            CancellationToken.None);
+        var workflow = Assert.IsType<WorkflowRequested>(outcome);
+        Assert.Equal(new WorkflowRef("core:explore-implement-verify", "1"), workflow.Workflow);
+        var specification = WorkflowRequestSpecification.Parse(workflow.Arguments, "C:\\workspace");
+        Assert.Equal("connect middleware", specification.Objective);
+        Assert.Equal("C:\\Program Files\\dotnet.exe", specification.Executable);
+        Assert.Equal(new[] { "test", "tests/Connected Module.csproj" }, specification.Argv);
+    }
+
+    [Fact]
     public void Prompt_command_is_expanded_by_host_and_engine_input_contains_no_slash_command()
     {
         var server = OmniHost.CreateInMemoryServer();

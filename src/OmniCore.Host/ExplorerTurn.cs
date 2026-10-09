@@ -330,6 +330,8 @@ public sealed class ExplorerTurn
     {
         /// <summary>Exact durable Turn produced or resumed by this invocation; null before admission.</summary>
         public TurnId? TurnId { get; init; }
+        /// <summary>Redacted local diagnostic when execution fails before producing a result.</summary>
+        public string? FailureDiagnostic { get; init; }
         public string? FinalText { get; }
 
         public StopReason StopReason { get; }
@@ -418,7 +420,8 @@ public sealed class ExplorerTurn
             var result = AskCore(question, instruction, sessionId, runId, laneId, workingStateText,
                 deadline.Token, origin, instructionSnapshot, start => { exactTurn = start.TurnId; turnStarted?.Invoke(start); });
             return new TurnResult(result.FinalText, result.StopReason, result.Steps, result.Usage,
-                result.ToolCalls, result.ResponseArtifactId, result.PendingInteractionId) { TurnId = exactTurn };
+                result.ToolCalls, result.ResponseArtifactId, result.PendingInteractionId)
+            { TurnId = exactTurn, FailureDiagnostic = result.FailureDiagnostic };
         }
         finally { gate.Release(); }
     }
@@ -1472,7 +1475,11 @@ public sealed class ExplorerTurn
             {
             }
 
-            return new TurnResult(null, ex is OperationCanceledException ? StopReason.Cancelled : StopReason.Error, steps, usage, allToolCalls.ToArray(), null);
+            return new TurnResult(null, ex is OperationCanceledException ? StopReason.Cancelled : StopReason.Error,
+                steps, usage, allToolCalls.ToArray(), null)
+            {
+                FailureDiagnostic = _redaction.Redact(ex.GetType().Name + ": " + (ex.Message ?? "turn failed")),
+            };
         }
     }
 

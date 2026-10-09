@@ -41,11 +41,13 @@ public sealed class CommandRegistryTests
         Assert.True(enabled.Enabled);
         Assert.Null(enabled.DisabledReason);
 
-        var result = await service.InvokeAsync(new CommandInvocation("orq-auth", ["check", "integration"], "Typed"),
+        var arguments = new[] { "check", "integration", "--verify-executable", "dotnet",
+            "--verify-argv-json", "[\"test\",\"tests/Connected.csproj\"]" };
+        var result = await service.InvokeAsync(new CommandInvocation("orq-auth", arguments, "Typed"),
             context, CancellationToken.None);
         var request = Assert.IsType<WorkflowRequested>(result);
         Assert.Equal("core:explore-implement-verify", request.Workflow.Id);
-        Assert.Equal(new[] { "check", "integration" }, request.Arguments);
+        Assert.Equal(arguments, request.Arguments);
 
         using var json = JsonDocument.Parse(CommandCatalogJson.Encode(service.Catalog(context)));
         Assert.Contains(json.RootElement.GetProperty("commands").EnumerateArray(), item =>

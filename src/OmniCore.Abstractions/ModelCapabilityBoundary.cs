@@ -179,7 +179,8 @@ public sealed class ModelCapabilityBoundary
         }
 
         // 2/6. Mutación: cualquier claim de escritura exige mutación permitida por el techo.
-        if (intent.Claims.Writes.Count > 0 && !MutationAllowed(capability))
+        if (intent.Claims.Writes.Count > 0 && !MutationAllowed(capability)
+            && !IsBoundValidationProcess(capability, intent))
         {
             return ModelCapabilityDecision.Reject(
                 "mutación de archivos no permitida por la categoría " + _policy.Category
@@ -208,6 +209,22 @@ public sealed class ModelCapabilityBoundary
         }
 
         return ModelCapabilityDecision.Allow();
+    }
+
+    private bool IsBoundValidationProcess(ModelToolCapability capability, ToolIntent intent)
+    {
+        // A host-classified ValidationProcess may write generated output beneath its own exact
+        // cwd (e.g. build/test artifacts). Its executable/argv/cwd binding and grant remain the
+        // responsibility of the registering Host tool; this does not grant filesystem tools or
+        // arbitrary dynamic ids any mutation capability.
+        if (capability != ModelToolCapability.ValidationProcess
+            || _policy.MutationPolicy.Mode != FileMutationMode.Full
+            || intent.Effect != EffectClass.NonIdempotent || intent.Risk != ToolRisk.High
+            || intent.Claims.Process is not { NetworkRequired: false, EffectClass: "External",
+                WorkingDirectory: { Length: > 0 } cwd }
+            || intent.Claims.Writes.Count != 1) return false;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(intent.Claims.Writes.Single(), cwd, comparison);
     }
 
     /// <summary>

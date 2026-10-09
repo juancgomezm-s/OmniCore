@@ -22,7 +22,7 @@ internal sealed class InProcessSupervisor(IOmniClient client, ExecutionId superv
             throw new InvalidOperationException(ack.Error ?? ack.Outcome?.Reason ?? "Supervisor binding handshake failed.");
     }
 
-    internal int ReviewReturnedResults(CancellationToken cancellationToken)
+    internal int ReviewReturnedResults(CancellationToken cancellationToken, ExecutionId? onlyExecution = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var query = client.Query("agents", cancellationToken)
@@ -43,20 +43,30 @@ internal sealed class InProcessSupervisor(IOmniClient client, ExecutionId superv
 
         var reviewed = 0;
         foreach (var lane in snapshot.Lanes.Where(lane => lane.ParentExecutionId == supervisorExecutionId.ToString()
-            && lane.ExecutionState == "Completed" && lane.ResultId is not null && lane.ResultDisposition is null))
+            && lane.ExecutionState == "Completed" && lane.ResultId is not null && lane.ResultDisposition is null
+            && (onlyExecution is null || lane.ExecutionId == onlyExecution.ToString())))
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!resultFacts.Contains((lane.ExecutionId ?? "", lane.ResultId!)) || lane.ResultIssueCount is null)
                 continue;
-            var gatesReady = lane.IntegrationVerified && lane.IntegrationValidationPassed
-                && lane.ToolBackedEvidenceCount > 0;
-            var outcome = lane.ResultIssueCount == 0 && gatesReady
+            var gatesReady = lane.WorkflowId is not null
+                ? lane.WorkflowGateSatisfied == true
+                : lane.IntegrationVerified && lane.IntegrationValidationPassed
+                    && lane.ToolBackedEvidenceCount > 0;
+            var succeeded = string.Equals(lane.ResultOutcome, "Succeeded", StringComparison.Ordinal);
+            var outcome = succeeded && lane.ResultIssueCount == 0 && gatesReady
                 ? ResultDispositionOutcome.Accepted : ResultDispositionOutcome.ReworkRequested;
             var reason = outcome == ResultDispositionOutcome.Accepted
-                ? "Integración y validación quedaron verificadas con recibos de herramientas."
+                ? lane.WorkflowId is not null
+                    ? $"La etapa {lane.WorkflowStage} satisfizo su contrato {lane.WorkflowId}@1 con recibos exactos."
+                    : "Integración y validación quedaron verificadas con recibos de herramientas."
                 : lane.ResultIssueCount > 0
                     ? $"ReworkRequested: el resultado conserva {lane.ResultIssueCount} incidencia(s) pendiente(s)."
-                    : "ReworkRequested: faltan integración verificada y validación con recibos tool-backed del mismo Task/Lane.";
+                    : !succeeded
+                        ? $"ReworkRequested: el resultado declara Outcome={lane.ResultOutcome ?? "Unknown"}."
+                    : lane.WorkflowId is not null
+                        ? "ReworkRequested: " + (lane.WorkflowGateReason ?? "faltan recibos del contrato de etapa.")
+                        : "ReworkRequested: faltan integración verificada y validación con recibos tool-backed del mismo Task/Lane.";
             var command = WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "supervisor.result.disposition")
                 + "," + JsonObj.Field("executionId", lane.ExecutionId!) + "," + JsonObj.Field("resultId", lane.ResultId!)
                 + "," + JsonObj.Field("outcome", outcome.ToString()) + "," + JsonObj.Field("reason", reason) + "}");

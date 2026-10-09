@@ -22,7 +22,17 @@ public sealed class HostTools
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
         bool includeMutationTools = false, bool includeProcessTools = false,
         SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null,
-        bool includeControlTools = true, bool includeMailboxReceive = false)
+        bool includeControlTools = true, bool includeMailboxReceive = false, bool includeShellTool = true)
+        : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
+            processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
+            processRuntime: null)
+    {
+    }
+
+    private HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools,
+        bool includeMutationTools, bool includeProcessTools, SandboxStrength processSandboxStrength,
+        ArtifactReadTool? artifactReadTool, bool includeControlTools, bool includeMailboxReceive,
+        bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime)
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog();
@@ -39,9 +49,9 @@ public sealed class HostTools
         }
         if (includeProcessTools)
         {
-            var processLauncher = OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
-            catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength))
-                .Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength));
+            var processLauncher = OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
+            catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength));
+            if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength));
         }
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
@@ -74,6 +84,28 @@ public sealed class HostTools
             includeProcessTools: profile.PermissionCeiling.Process.Count > 0 || profile.PermissionCeiling.AllowShell,
             processSandboxStrength: processSandboxStrength, artifactReadTool: artifactReadTool,
             includeControlTools: false, includeMailboxReceive: true);
+
+    /// <summary>Workflow stage catalog: only tools whose concrete capabilities are declared by that stage.</summary>
+    public static HostTools WorkflowStage(WorkflowStage stage, AgentProfile profile,
+        ArtifactReadTool? artifactReadTool = null,
+        SandboxStrength processSandboxStrength = SandboxStrength.Strong) =>
+        WorkflowStageCore(stage, profile, artifactReadTool, processSandboxStrength, processRuntime: null);
+
+    internal static HostTools WorkflowStageForTests(WorkflowStage stage, AgentProfile profile,
+        ArtifactReadTool? artifactReadTool, SandboxStrength processSandboxStrength,
+        OmniCore.Abstractions.IProcessRuntime processRuntime) =>
+        WorkflowStageCore(stage, profile, artifactReadTool, processSandboxStrength,
+            processRuntime ?? throw new ArgumentNullException(nameof(processRuntime)));
+
+    private static HostTools WorkflowStageCore(WorkflowStage stage, AgentProfile profile,
+        ArtifactReadTool? artifactReadTool, SandboxStrength processSandboxStrength,
+        OmniCore.Abstractions.IProcessRuntime? processRuntime) =>
+        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            includeMutationTools: stage == global::OmniCore.Host.WorkflowStage.Implement,
+            includeProcessTools: stage == global::OmniCore.Host.WorkflowStage.Verify && profile.PermissionCeiling.Process.Count > 0,
+            processSandboxStrength: processSandboxStrength, artifactReadTool: artifactReadTool,
+            includeControlTools: false, includeMailboxReceive: true, includeShellTool: false,
+            processRuntime: processRuntime);
 
     public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,

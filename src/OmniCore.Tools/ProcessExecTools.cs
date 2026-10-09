@@ -37,7 +37,7 @@ public sealed class ProcessExecTool : ITool
                 ToolErrorCode.InvalidArguments);
         var claims = new ResourceClaims(Array.Empty<string>(), new[] { cwd },
             Array.Empty<NetworkGrant>(),
-            new ProcessClaim(args.Executable, args.Argv, "External", args.NetworkRequired), Array.Empty<string>());
+            new ProcessClaim(args.Executable, args.Argv, "External", args.NetworkRequired, cwd), Array.Empty<string>());
         return new Prepared(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
             EffectClass.NonIdempotent, claims, ToolRisk.High, null));
     }
@@ -90,7 +90,7 @@ public sealed class ShellExecTool : ITool
         var (shell, shellArgs) = ProcessToolJson.ShellInvocation(command);
         // shell.exec queda autorizado como tool distinta y command viaja raw en argv[1], sin parseo.
         var claims = new ResourceClaims(Array.Empty<string>(), new[] { cwd }, Array.Empty<NetworkGrant>(),
-            new ProcessClaim(shell, shellArgs, "External"), Array.Empty<string>());
+            new ProcessClaim(shell, shellArgs, "External", WorkingDirectory: cwd), Array.Empty<string>());
         return new Prepared(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
             EffectClass.NonIdempotent, claims, ToolRisk.Critical, null));
     }

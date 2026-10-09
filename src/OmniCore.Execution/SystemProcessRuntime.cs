@@ -25,7 +25,8 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         _additionalEnvironmentAllowlist = extras.Distinct(EnvironmentComparer).ToArray();
     }
 
-    public static IProcessRuntime Instance() => new SystemProcessRuntime();
+    public static IProcessRuntime Instance(IEnumerable<string>? additionalEnvironmentAllowlist = null) =>
+        new SystemProcessRuntime(additionalEnvironmentAllowlist);
 
     public IProcessRuntime Create() => new SystemProcessRuntime(_additionalEnvironmentAllowlist);
 

@@ -136,12 +136,18 @@ public sealed partial class OmniServer
                         delegation.ParentExecutionId, delegation.Relation, delegation.Supervision);
                     var binding = new SupervisionBinding(BindingId.New(), executionId, delegation.ParentExecutionId, 1);
                     var mailbox = new ExecutionMailbox(MailboxId.New(), executionId);
-                    new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {
+                    var admissionEvents = new List<DomainEventPayload> {
                         new TaskStarted(task.TaskId, delegation.ChildLaneId), new LaneProvisioning(delegation.ChildLaneId), new LaneStarted(delegation.ChildLaneId), started,
                         new SupervisionBindingCreated(executionId, binding),
                         new ExecutionMailboxCreated(executionId, mailbox),
                         new DelegationAccepted(delegation.ParentExecutionId, id, executionId),
-                    }, DurabilityClass.Barrier, new ExecutionScopeState?[] { scope, scope, scope, scope, scope, scope, parentScope });
+                    };
+                    admissionEvents.AddRange(BindWorkflowStageExecution(session, run, task.TaskId,
+                        delegation.ChildLaneId, executionId));
+                    var scopes = admissionEvents.Select(evt => evt is DelegationAccepted
+                        ? (ExecutionScopeState?)parentScope : scope).ToArray();
+                    new EventStream(_store, _codecs, session).AppendBatch(admissionEvents,
+                        DurabilityClass.Barrier, scopes);
                     var scopedSupervisor = SupervisorClientFactory.Create(this, delegation.ParentExecutionId);
                     new InProcessSupervisor(scopedSupervisor, delegation.ParentExecutionId)
                         .AcknowledgeBinding(executionId, binding.BindingId, capacity.Cancellation.Token);

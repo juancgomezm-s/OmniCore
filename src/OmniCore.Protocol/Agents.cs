@@ -14,7 +14,9 @@ public sealed record AgentLaneSnapshot(string LaneId, string TaskId, string? Par
     AgentBudgetSnapshot? Budget = null, string? SupervisionState = null,
     int PendingMailboxMessages = 0, int PendingWakeRequests = 0, int? ResultIssueCount = null,
     bool IntegrationVerified = false, bool IntegrationValidationPassed = false,
-    int ToolBackedEvidenceCount = 0);
+    int ToolBackedEvidenceCount = 0, string? WorkflowId = null, string? WorkflowStage = null,
+    string? WorkflowInstance = null, bool? WorkflowGateSatisfied = null,
+    string? WorkflowGateReason = null, string? ResultOutcome = null);
 public sealed record AgentBudgetSnapshot(decimal? MaxCostUsd, decimal? CostUsedUsd, long? MaxTokens,
     long? TokensUsed, int? MaxTurns, int TurnsUsed, int? MaxToolCalls, int ToolCallsUsed);
 public sealed record AgentCapacitySnapshot(int Active, int Waiting, int Maximum, bool WriterActive,

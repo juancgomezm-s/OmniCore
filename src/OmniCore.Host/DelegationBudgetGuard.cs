@@ -50,7 +50,7 @@ internal static class DelegationBudgetGuard
         var tokens = RunTokenBudgetReader.Read(own, codecs, run, budget.MaxTokens,
             (evt, step) => pool.OwnsPendingPrimary(evt, step, reservations));
         if (tokens.Remaining is not { } remaining || remaining < 0 || invocation && (maximumTokens is null || maximumTokens > remaining))
-            throw new InvalidOperationException("Child token budget insufficient or unknown.");
+            throw new InvalidOperationException($"Child token budget insufficient or unknown (remaining={tokens.Remaining?.ToString() ?? "unknown"}, required={maximumTokens?.ToString() ?? "unknown"}, limit={tokens.Limit?.ToString() ?? "unknown"}, reason={tokens.Limitation ?? "none"}).");
         var reader = new CanonicalSpendReader(codecs, artifacts);
         var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var primary = reader.ReadPrimary(own, session, run, day,

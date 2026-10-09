@@ -80,8 +80,18 @@ public static class AgentPresentation
             if (lane.CancellationRequested && lane.DelegationState == "Accepted")
                 rows.Add(new(L("Cancelación solicitada · checkpoint pendiente", "Cancellation requested · checkpoint pending"), ThemeRole.Attention));
             if (lane.ResultId is { } result) rows.Add(new("Result " + result + " · " + (lane.ResultDisposition ?? L("sin aceptar", "not accepted")), ThemeRole.Attention));
+            if (lane.ResultOutcome is { } resultOutcome)
+                rows.Add(new(L("Resultado · ", "Outcome · ") + resultOutcome,
+                    resultOutcome == "Succeeded" ? ThemeRole.Info : ThemeRole.Error));
             if (lane.ResultIssueCount is { } issueCount && issueCount > 0)
                 rows.Add(new(L("Problemas pendientes · ", "Remaining issues · ") + issueCount, ThemeRole.Error));
+            if (lane.WorkflowId is { } workflowId)
+                rows.Add(new("Workflow · " + workflowId + " · " + lane.WorkflowStage
+                    + " · " + (lane.WorkflowGateSatisfied == true ? L("gate cumplido", "gate passed")
+                        : lane.WorkflowGateSatisfied == false ? L("gate pendiente", "gate pending") : L("gate sin evaluar", "gate unevaluated")),
+                    lane.WorkflowGateSatisfied == true ? ThemeRole.Success : ThemeRole.Attention));
+            if (lane.WorkflowGateReason is { } workflowReason)
+                rows.Add(new(L("Workflow gate · ", "Workflow gate · ") + workflowReason, ThemeRole.Muted));
             if (lane.PendingJoinIds is { Count: > 0 } joins) rows.Add(new("Join · " + string.Join(", ", joins), ThemeRole.Attention));
             if (!details) continue;
             rows.Add(new("Lane " + lane.LaneId, ThemeRole.Muted));

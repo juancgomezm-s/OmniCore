@@ -1,6 +1,7 @@
 namespace OmniCore.Host;
 
 using OmniCore.Domain;
+using OmniCore.Protocol;
 
 /// <summary>Production turns behind the Host boundary; the TUI never composes providers or credentials.</summary>
 public interface ITuiTurnHost
@@ -8,6 +9,8 @@ public interface ITuiTurnHost
     Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken);
     Task<int> ExecuteDelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
+    Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId, Action<string> diagnostics,
+        CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) => ExecuteAsync(input, diagnostics, cancellationToken);
     Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
@@ -34,6 +37,8 @@ public sealed class TuiTurnHost : ITuiTurnHost
     }
     public Task<int> ExecuteDelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>
         _runtime.DelegationAsync(delegationId, diagnostics, token);
+    public Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId, Action<string> diagnostics,
+        CancellationToken token) => _runtime.ExecuteWorkflowAsync(request, commandId, diagnostics, token);
     public async Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
     {
         var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);

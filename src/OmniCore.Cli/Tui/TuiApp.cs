@@ -722,7 +722,17 @@ public sealed class TuiApp
             {
                 var outcome = _client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
                 var text = JsonObj.Parse(outcome);
-                if (text.TryGetValue("outcome", out var _) && TryReadOutcome(outcome, out var expanded))
+                if (text.TryGetValue("outcome", out var _)
+                    && TryReadWorkflowOutcome(outcome, out var workflow, out var workflowCommandId))
+                {
+                    if (_turnHost is not null)
+                    {
+                        if (!StartModelTurn("", workflow: workflow, workflowCommandId: workflowCommandId)) return;
+                    }
+                    else ShowMessage(Ui("Este comando de workflow requiere el Host local.", "This workflow command requires the local Host."));
+                }
+                else if (text.TryGetValue("outcome", out _)
+                    && TryReadOutcome(outcome, out var expanded))
                 {
                     if (_turnHost is not null) { if (!StartModelTurn(expanded)) return; }
                     else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(expanded) + "\""));
@@ -743,7 +753,8 @@ public sealed class TuiApp
         PollEvents();
     }
 
-    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null, string? delegationId = null)
+    private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null,
+        string? delegationId = null, WorkflowRequestDto? workflow = null, string? workflowCommandId = null)
     {
         if (_turnHost is null) return false;
         if (_turnBusy) { ShowMessage(Ui("Ya hay un turno procesando. Espera o usa /cancel.", "A turn is already processing. Wait or use /cancel.")); return false; }
@@ -762,7 +773,10 @@ public sealed class TuiApp
                     if (messages.Count == 4) messages.RemoveAt(0);
                     messages.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await (delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)
+                code = await (workflow is not null ? _turnHost.ExecuteWorkflowAsync(workflow,
+                    workflowCommandId ?? throw new InvalidOperationException("Workflow command identity is missing."),
+                    diagnostic, cancellation.Token)
+                    : delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)
                     : resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
                     : resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
                     : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
@@ -1965,5 +1979,29 @@ public sealed class TuiApp
             return true;
         }
         catch (Exception exception) when (exception is System.Text.Json.JsonException or InvalidOperationException or KeyNotFoundException) { return false; }
+    }
+
+    private static bool TryReadWorkflowOutcome(string json, out WorkflowRequestDto? request, out string commandId)
+    {
+        request = null;
+        commandId = "";
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("outcome", out var outcome)
+                || outcome.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !outcome.TryGetProperty("kind", out var kind)
+                || kind.GetString() != "workflowRequested") return false;
+            var workflowId = outcome.GetProperty("workflowId").GetString() ?? "";
+            var version = outcome.GetProperty("version").GetString() ?? "";
+            var arguments = outcome.GetProperty("arguments").EnumerateArray()
+                .Select(value => value.GetString() ?? "").ToArray();
+            request = new WorkflowRequestDto(workflowId, version, arguments);
+            commandId = outcome.GetProperty("commandId").GetString() ?? "";
+            return commandId.Length > 0;
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or InvalidOperationException
+            or KeyNotFoundException)
+        { return false; }
     }
 }

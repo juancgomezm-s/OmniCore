@@ -46,6 +46,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private WorkflowRequested? _lastWorkflowRequested;
 
+    private WorkflowInvocation? _lastWorkflowInvocation;
+
     private string? _pendingPromptOrigin;
 
     private readonly CommandService _commandService = new();
@@ -419,7 +421,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private static CommandAck SafeCommandAck(CommandAck ack) => ack.Error is null ? ack
         : new CommandAck(ack.CommandId, ack.Status, SafeCommandError(ack.Error), ack.Outcome, ack.FirstSeq, ack.LastSeq);
 
-    private CommandAck SendCore(WireEnvelope command, CancellationToken cancellationToken, bool trustedUserAction)
+    private CommandAck SendCore(WireEnvelope command, CancellationToken cancellationToken, bool trustedUserAction,
+        WorkflowRuntimeAuthorization? workflowAuthorization = null)
     {
         if (command.MessageType != MessageTypes.Command)
         {
@@ -457,7 +460,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 or UnauthorizedAccessException or YamlDotNet.Core.YamlException)
             { return new(command.MessageId, "error", exception is ConfigValidationException ? "Invalid sidebar settings" : exception.Message, RuntimeCommandOutcome.Rejected()); }
         }
-        if (commandName == "delegation.create") return CreateQueuedDelegation(command, trustedUserAction, cancellationToken);
+        if (commandName == "delegation.create") return CreateQueuedDelegation(command, trustedUserAction,
+            cancellationToken, workflowAuthorization);
         if (commandName == "fanout.create") return CreateFanOutGroup(command, trustedUserAction, cancellationToken);
         if (commandName == "fanout.replace_member") return ReplaceFanOutMember(command, trustedUserAction, cancellationToken);
         if (commandName is "delegation.cancel" or "delegation.disposition" or "execution.join" or "execution.join.cancel")
@@ -466,6 +470,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             try
             {
+                _lastWorkflowInvocation = null;
+                _lastWorkflowRequested = null;
                 using var document = System.Text.Json.JsonDocument.Parse(command.PayloadJson);
                 var root = document.RootElement;
                 var name = root.GetProperty("name").GetString() ?? "";
@@ -474,8 +480,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     : Array.Empty<string>();
                 var origin = root.TryGetProperty("origin", out var originValue)
                     ? originValue.GetString() ?? "Typed" : "Typed";
+                var commandContext = CommandContextForCurrentRun();
                 var invoked = _commandService.InvokeAsync(new CommandInvocation(name, args, origin),
-                    CommandContextForCurrentRun(),
+                    commandContext,
                     cancellationToken).AsTask().GetAwaiter().GetResult();
                 if (invoked is PromptCommandRequested prompt)
                 {
@@ -487,6 +494,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 {
                     _lastPromptExpanded = null;
                     _lastWorkflowRequested = workflow;
+                    _lastWorkflowInvocation = new WorkflowInvocation(command.MessageId, workflow,
+                        commandContext.Session, commandContext.Run);
                     _pendingPromptOrigin = null;
                 }
                 else throw new InvalidOperationException("Command handler returned an unsupported outcome.");
@@ -1852,6 +1861,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             if (_lastWorkflowRequested is { } workflow) return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
                 + JsonObj.Field("kind", "workflowRequested") + "," + JsonObj.Field("workflowId", workflow.Workflow.Id) + ","
                 + JsonObj.Field("version", workflow.Workflow.Version) + ","
+                + JsonObj.Field("commandId", _lastWorkflowInvocation?.CommandId ?? "") + ","
                 + JsonObj.FieldRaw("arguments", "[" + string.Join(",", workflow.Arguments.Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]") + "}}");
             return new SessionQueryResult("commandOutcome", "{\"outcome\":null}");
         }

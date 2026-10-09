@@ -208,27 +208,58 @@ public sealed partial class OmniServer
         var result = ReadAgentResult(produced);
         var acceptedDelegation = facts.OfType<DelegationAccepted>().Single(e => e.ChildExecutionId == child);
         var delegation = facts.OfType<DelegationCreated>().Single(e => e.Delegation.DelegationId == acceptedDelegation.DelegationId).Delegation;
-        var integrationVerified = HasVerifiedIntegrationEvidence(session, run, child, delegation.ChildTaskId,
-            delegation.ChildLaneId, own);
+        var stageItem = PlanProjection.Replay(_codecs, own).Items()
+            .SingleOrDefault(item => item.LinkedTasks.Any(link => link.TaskId == delegation.ChildTaskId));
+        WorkflowStageContract? stageContract = null;
+        WorkflowStageEvidence? stageEvidence = null;
+        if (stageItem is not null && WorkflowStageContract.TryFromPlanItem(stageItem, out stageContract))
+        {
+            if (stageContract!.Task != delegation.ChildTaskId || stageContract.Lane != delegation.ChildLaneId
+                || stageContract.Execution != child
+                || !WorkflowStageContract.IsCanonicalAdmission(stageContract, stageItem, session, run, own, _codecs, _artifacts))
+                throw new InvalidOperationException("Workflow stage contract is not bound to this exact Task/Lane/Execution.");
+            stageEvidence = WorkflowStageEvidenceEvaluator.Evaluate(stageContract, session, run,
+                delegation.ChildTaskId, delegation.ChildLaneId, child, own, _codecs);
+        }
+        else if (stageItem?.Metadata.ContainsKey(WorkflowStageContract.WorkflowIdKey) == true)
+            throw new InvalidDataException("Workflow stage metadata is invalid or does not resolve to a compiled workflow.");
+        var integrationVerified = stageContract is null && HasVerifiedIntegrationEvidence(session, run, child,
+            delegation.ChildTaskId, delegation.ChildLaneId, own);
+        var acceptedGate = stageContract is not null
+            ? stageEvidence?.Passed == true : integrationVerified;
         if (!facts.OfType<AgentExecutionCompleted>().Any(e => e.ExecutionId == child)
             || outcome == ResultDispositionOutcome.Accepted
-                && (result.Outcome != AgentOutcome.Succeeded || result.RemainingIssues.Count != 0 || !integrationVerified))
+                && (result.Outcome != AgentOutcome.Succeeded || result.RemainingIssues.Count != 0 || !acceptedGate))
             throw new InvalidOperationException("A failed, issue-bearing, or unverified result cannot be accepted.");
         var created = delegation;
         var disposition = new ResultDisposition(DispositionId.New(), child, produced.ResultRef, outcome,
-            supervisor, new PiiRedactor().Redact(reason), []);
+            supervisor, new PiiRedactor().Redact(reason), stageEvidence?.Receipts ?? []);
         var state = AgentScope(run, facts, child);
         var task = TaskGraphProjection.Replay(_codecs, own).Get(created.ChildTaskId)
             ?? throw new InvalidDataException("Delegated Task is missing.");
         if (StateMachines.IsTaskTerminal(task.State)) throw new InvalidOperationException("Delegated Task is already terminal.");
         using var execution = ExecutionScope.Begin(state);
-        var batch = new List<DomainEventPayload> { new ResultDispositionRecorded(child, disposition) };
+        var batch = new List<DomainEventPayload>();
+        if (stageContract?.Definition.Stage == WorkflowStage.Verify)
+        {
+            var passed = outcome == ResultDispositionOutcome.Accepted && stageEvidence?.Passed == true;
+            var validationScope = new ValidationScope(session, run, created.ChildTaskId, created.ChildLaneId);
+            batch.Add(new IntegrationStatusRecorded(child, new IntegrationStatusRecord(validationScope,
+                passed ? IntegrationStatus.Verified : IntegrationStatus.NotIntegrated,
+                stageEvidence?.Receipts ?? [])));
+            batch.Add(new ValidationStateRecorded(child, new ValidationState(validationScope,
+                ValidationLevel.Integration, passed ? ValidationStatus.Passed : ValidationStatus.Failed,
+                stageContract.Definition.RequiredSuccessfulToolIds, stageEvidence?.Receipts ?? [])));
+        }
+        batch.Add(new ResultDispositionRecorded(child, disposition));
         if (outcome == ResultDispositionOutcome.Accepted)
         { batch.Add(new LaneCompleted(created.ChildLaneId, result)); batch.Add(new TaskCompleted(created.ChildTaskId, result)); }
         else
         { batch.Add(new LaneBlocked(created.ChildLaneId, outcome.ToString())); batch.Add(new TaskBlocked(created.ChildTaskId, outcome.ToString())); }
         stream.AppendBatch(batch, DurabilityClass.Barrier,
             Enumerable.Repeat<ExecutionScopeState?>(state, batch.Count).ToArray());
+        if (outcome == ResultDispositionOutcome.Accepted)
+            ReconcileWorkflowPlanProgress(session, run);
         ResolveReadyJoins(session, run);
     }
 

@@ -45,8 +45,11 @@ public sealed class PlanMutation
         new(PlanMutationKind.Cancel, item, cause, reason, MutationTarget.None());
 
     public static PlanMutation Add(int order, string text, PlanItemId? parent, IReadOnlyList<PlanItemId> dependsOn,
-        MutationCause cause) =>
-        new(PlanMutationKind.Add, null, cause, text, MutationTarget.Add(order, text, parent, dependsOn));
+        MutationCause cause, IReadOnlyDictionary<string, string>? metadata = null) =>
+        new(PlanMutationKind.Add, null, cause, text,
+            MutationTarget.Add(order, text, parent, dependsOn) with
+            { Metadata = metadata is null ? new Dictionary<string, string>()
+                : metadata.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal) });
 
     public static PlanMutation Skip(PlanItemId item, MutationCause cause, string reason) =>
         new(PlanMutationKind.Skip, item, cause, reason, MutationTarget.None());
@@ -70,8 +73,11 @@ public sealed class PlanMutation
         new(PlanMutationKind.Unlink, item, cause, null, MutationTarget.None() with { LinkTask = task });
 
     /// <summary>Cambia el texto de un item sin cambiar su estado.</summary>
-    public static PlanMutation Update(PlanItemId item, MutationCause cause, string newText) =>
-        new(PlanMutationKind.Update, item, cause, newText, MutationTarget.None());
+    public static PlanMutation Update(PlanItemId item, MutationCause cause, string newText,
+        IReadOnlyDictionary<string, string>? metadata = null) =>
+        new(PlanMutationKind.Update, item, cause, newText, MutationTarget.None() with
+        { Metadata = metadata is null ? new Dictionary<string, string>()
+            : metadata.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal) });
 
     /// <summary>Pending → Ready cuando sus dependencias terminaron (R6).</summary>
     public static PlanMutation Ready(PlanItemId item, MutationCause cause) =>
@@ -90,6 +96,7 @@ public record MutationTarget(
     private IReadOnlyList<PlanItemId> _addDependsOn = Freeze(AddDependsOn);
     private IReadOnlyList<PlanItemId> _reorderList = Freeze(ReorderList);
     private IReadOnlyList<string> _splitParts = Array.AsReadOnly(Array.Empty<string>());
+    private IReadOnlyDictionary<string, string> _metadata = FreezeMetadata(null);
     public IReadOnlyList<PlanItemId> AddDependsOn { get => _addDependsOn; init => _addDependsOn = Freeze(value); }
     public IReadOnlyList<PlanItemId> ReorderList { get => _reorderList; init => _reorderList = Freeze(value); }
 
@@ -99,12 +106,25 @@ public record MutationTarget(
     private static IReadOnlyList<T> Freeze<T>(IReadOnlyList<T> values) =>
         values is null ? null! : Array.AsReadOnly(values.ToArray());
 
+    private static IReadOnlyDictionary<string, string> FreezeMetadata(IReadOnlyDictionary<string, string>? values)
+    {
+        var copy = values?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+            ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        if (copy.Any(pair => string.IsNullOrWhiteSpace(pair.Key) || pair.Value is null))
+            throw new ArgumentException("Plan mutation metadata must have explicit keys and values.", nameof(values));
+        return new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(copy);
+    }
+
     /// <summary>Task de un Link/Unlink.</summary>
     public TaskId? LinkTask { get; init; }
 
     public LinkRole LinkRole { get; init; } = LinkRole.Implements;
 
     public bool LinkRequired { get; init; } = true;
+
+    /// <summary>Durable declarative context for Host-owned workflows, never an authority grant.</summary>
+    public IReadOnlyDictionary<string, string> Metadata
+    { get => _metadata; init => _metadata = FreezeMetadata(value); }
 
     public static MutationTarget None() => new(false, 0, string.Empty, null, new PlanItemId[0], new PlanItemId[0]);
 

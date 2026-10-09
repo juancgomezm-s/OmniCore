@@ -90,4 +90,9 @@ public sealed class AgentProfileRegistry
         ArgumentNullException.ThrowIfNull(id);
         return _profiles.GetValueOrDefault(id);
     }
+
+    /// <summary>Explicit configured profiles only, for deterministic least-authority workflow role selection.</summary>
+    public IReadOnlyList<AgentProfile> Profiles() => _profiles.Values
+        .OrderBy(profile => profile.Name, StringComparer.Ordinal)
+        .ThenBy(profile => profile.Id.ToString(), StringComparer.Ordinal).ToArray();
 }

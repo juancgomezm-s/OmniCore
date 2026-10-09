@@ -163,6 +163,14 @@ public sealed class CliApp
         {
             using var document = System.Text.Json.JsonDocument.Parse(expanded);
             var outcome = document.RootElement.GetProperty("outcome");
+            if (outcome.TryGetProperty("kind", out var kind) && kind.GetString() == "workflowRequested")
+            {
+                var workflow = new WorkflowRequestDto(outcome.GetProperty("workflowId").GetString() ?? "",
+                    outcome.GetProperty("version").GetString() ?? "",
+                    outcome.GetProperty("arguments").EnumerateArray().Select(argument => argument.GetString() ?? "").ToArray());
+                var commandId = outcome.GetProperty("commandId").GetString() ?? "";
+                return Runtime.ExecuteWorkflowAsync(workflow, commandId, Console.WriteLine, CancellationToken.None);
+            }
             var text = outcome.GetProperty("text").GetString() ?? "";
             var origin = outcome.GetProperty("origin").GetString() ?? "";
             Console.WriteLine("[" + origin + "]");

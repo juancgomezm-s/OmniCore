@@ -192,7 +192,7 @@ public sealed class ToolRuntime
                 var resolved = _executableResolver.Resolve(processClaim.Executable, prepContext.WorkspaceRoot);
                 var claims = new ResourceClaims(intent.Claims.Reads, intent.Claims.Writes, intent.Claims.Network,
                     new ProcessClaim(resolved.ResolvedPath, processClaim.Args, processClaim.EffectClass,
-                        processClaim.NetworkRequired), intent.Claims.Secrets);
+                        processClaim.NetworkRequired, processClaim.WorkingDirectory), intent.Claims.Secrets);
                 intent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                     intent.Effect, claims, intent.Risk, intent.Reconciliation);
             }

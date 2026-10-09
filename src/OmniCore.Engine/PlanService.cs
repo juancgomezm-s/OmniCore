@@ -235,7 +235,8 @@ public sealed class PlanService
 
         return Structural(plan, mutation, MutationImpact.Minor, new PlanItemAdded(PlanItemId.New(), plan.Id!,
             target.AddText, target.AddOrder, target.AddParent, target.AddDependsOn, true,
-            new Dictionary<string, string>()));
+            target.Metadata is null ? new Dictionary<string, string>()
+                : target.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)));
     }
 
     private static PlanServiceResult ApplySplit(PlanProjection plan, PlanItem item, PlanMutation mutation)
@@ -311,7 +312,9 @@ public sealed class PlanService
             }
         }
 
-        return PlanServiceResult.AcceptedOne(new PlanItemUpdated(item.Id, mutation.Reason, null));
+        var metadata = mutation.Target.Metadata.Count == 0 ? null
+            : mutation.Target.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        return PlanServiceResult.AcceptedOne(new PlanItemUpdated(item.Id, mutation.Reason, metadata));
     }
 
     private static PlanServiceResult ApplyLink(PlanItem item, TaskGraphProjection tasks, PlanMutation mutation)
@@ -391,6 +394,15 @@ public sealed class PlanService
             if (mutation.Reason is not null)
             {
                 writer.WriteString("text", mutation.Reason);
+            }
+
+            if (mutation.Kind == PlanMutationKind.Add && mutation.Target.Metadata is { Count: > 0 } metadata)
+            {
+                writer.WritePropertyName("metadata");
+                writer.WriteStartObject();
+                foreach (var pair in metadata.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                    writer.WriteString(pair.Key, pair.Value);
+                writer.WriteEndObject();
             }
 
             writer.WriteEndObject();

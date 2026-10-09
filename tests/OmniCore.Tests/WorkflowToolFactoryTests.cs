@@ -4,6 +4,7 @@ using OmniCore.Engine;
 using OmniCore.Execution;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
+using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
 
@@ -11,6 +12,26 @@ namespace OmniCore.Tests;
 
 public sealed class WorkflowToolFactoryTests
 {
+    [Fact]
+    public void Explore_and_verify_catalogs_exclude_filesystem_mutation_even_for_a_writer_profile()
+    {
+        var profile = new AgentProfile(new ProfileId(Guid.NewGuid()), "writer", 1,
+            PermissionScope.With(["**"], ["**"], [new ProcessRule("**", ["*"], PermissionDecision.Allow)],
+                Array.Empty<NetworkRule>(), Array.Empty<string>(), allowShell: true), []);
+
+        var explore = HostTools.WorkflowStage(WorkflowStage.Explore, profile).Catalog();
+        var verify = HostTools.WorkflowStage(WorkflowStage.Verify, profile).Catalog();
+        var implement = HostTools.WorkflowStage(WorkflowStage.Implement, profile).Catalog();
+
+        Assert.Null(explore.Find(new ToolId("filesystem.write")));
+        Assert.Null(explore.Find(new ToolId("filesystem.patch")));
+        Assert.Null(verify.Find(new ToolId("filesystem.write")));
+        Assert.Null(verify.Find(new ToolId("filesystem.patch")));
+        Assert.NotNull(implement.Find(new ToolId("filesystem.write")));
+        Assert.NotNull(implement.Find(new ToolId("filesystem.patch")));
+        Assert.Null(verify.Find(new ToolId("shell.exec")));
+    }
+
     [Fact]
     public void Workflow_dynamic_tool_uses_dynamic_owner_namespace_and_normal_authorization_journal()
     {
@@ -85,6 +106,55 @@ public sealed class WorkflowToolFactoryTests
         Assert.False(boundary.IsToolVisible("dyn.core.probe_process"));
         Assert.False(boundary.IsToolVisible("dyn.other.probe_process"));
         Assert.Contains("dyn.core.probe_process", WorkflowToolFactory.Capabilities(catalog).Keys);
+    }
+
+    [Fact]
+    public void Dynamic_registration_cannot_wrap_shell_and_bypass_the_profile_shell_flag()
+    {
+        var workflow = new CompiledWorkflowDescriptor(new WorkflowRef("core:explore-implement-verify", "1"),
+            ComponentSource.Core());
+        var shell = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            includeProcessTools: true, includeControlTools: false).Catalog().Find(new ToolId("shell.exec"))!;
+
+        Assert.Throws<ArgumentException>(() => WorkflowToolFactory.Register(new FakeCatalog(), workflow,
+            "wrapped_shell", "wrapped shell", ModelToolCapability.GeneralProcess, shell));
+        Assert.Throws<ArgumentException>(() => WorkflowToolFactory.Register(new FakeCatalog(), workflow,
+            "shell_alias", "shell alias", ModelToolCapability.Shell, new ReadFileTool(new PathBoundaryValidator())));
+    }
+
+    [Fact]
+    public void Workflow_verifier_is_dynamic_and_pins_the_declared_command_before_normal_process_prepare()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-workflow-verify-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var workflow = CompiledWorkflowCatalog.ExploreImplementVerify;
+            var process = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+                includeProcessTools: true, includeControlTools: false).Catalog().Find(new ToolId("process.exec"))!;
+            var catalog = new FakeCatalog();
+            var verifier = WorkflowToolFactory.RegisterVerification(catalog, workflow, process,
+                "dotnet", ["test", "tests/Connected.csproj"], root);
+
+            Assert.Equal("dyn.core.verify_integration", verifier.Descriptor.Id.ToString());
+            Assert.Equal(ModelToolCapability.ValidationProcess,
+                WorkflowToolFactory.Capabilities(catalog)[verifier.Descriptor.Id.ToString()]);
+            var valid = verifier.Prepare(new ValidatedToolCall(ToolCallId.New(), verifier.Descriptor.Id,
+                "verify", "{\"executable\":\"dotnet\",\"argv\":[\"test\",\"tests/Connected.csproj\"],"
+                    + "\"cwd\":\"" + JsonObj.Escape(root) + "\",\"timeoutSeconds\":120,\"networkRequired\":false}"),
+                new ToolPreparationContext(root, DateTimeOffset.UnixEpoch));
+            var prepared = Assert.IsType<Prepared>(valid);
+            Assert.Equal("dyn.core.verify_integration", prepared.Intent.ToolId.ToString());
+            Assert.Equal("dotnet", prepared.Intent.Claims.Process!.Executable);
+            Assert.Equal(new[] { "test", "tests/Connected.csproj" }, prepared.Intent.Claims.Process.Args);
+
+            var mismatch = verifier.Prepare(new ValidatedToolCall(ToolCallId.New(), verifier.Descriptor.Id,
+                "verify-mismatch", "{\"executable\":\"dotnet\",\"argv\":[\"test\",\"tests/Other.csproj\"],"
+                    + "\"cwd\":\"" + JsonObj.Escape(root) + "\",\"timeoutSeconds\":120}"),
+                new ToolPreparationContext(root, DateTimeOffset.UnixEpoch));
+            Assert.IsType<PreparationRejected>(mismatch);
+        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     private static EffectiveModelPolicy EffectiveObservePolicy()

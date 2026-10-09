@@ -10,11 +10,13 @@ using OmniCore.Client;
 using OmniCore.Cli;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Execution;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Protocol;
 using OmniCore.Security;
+using OmniCore.Sandbox;
 using Task = System.Threading.Tasks.Task;
 
 namespace OmniCore.Tests;
@@ -103,6 +105,281 @@ public sealed class CliEndToEndTests
             Assert.Equal("Blocked", AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes.Single(e => e.DelegationId == child.DelegationId).TaskState);
         });
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Typed_workflow_runs_real_filesystem_and_verifier_tools_and_reworks_unconnected_module(bool connectModule)
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            const string profileId = "0199a000-0000-7000-8000-000000000011";
+            // Keep the physical invocation envelope below the workflow's finite per-stage
+            // reservation. This fixture does not increase Run/task budgets to accommodate the
+            // default 8192+2048 model multiplied by the provider's retry bound.
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  scripted-model:
+                    provider: scripted
+                    context: 4096
+                    maxOutput: 256
+                    inputPricePerMillionUsd: 0
+                    outputPricePerMillionUsd: 0
+                    reasoning:
+                      supported: true
+                      effortLevels: [high, adaptive]
+                      replayPolicy: RequiredWithTools
+                """);
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
+                providers:
+                  scripted:
+                    family: OpenAIResponses
+                    profile: api
+                    baseUrl: {{provider.BaseUrl}}
+                    auth: none
+                    billingMode: Local
+                """);
+            var executable = new SystemExecutableResolver().Resolve("dotnet", workspace).ResolvedPath;
+            var projectDirectory = Path.Combine(workspace, "src", "FeatureApp");
+            Directory.CreateDirectory(projectDirectory);
+            const string originalProgram = "public static class Program { public static int Main() { /* FEATURE_MODULE_HOOK */ return FeatureModule.IsInitialized ? 0 : 1; } }\n";
+            File.WriteAllText(Path.Combine(projectDirectory, "Program.cs"), originalProgram);
+            File.WriteAllText(Path.Combine(projectDirectory, "FeatureApp.csproj"), """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <OutputType>Exe</OutputType>
+                    <TargetFramework>net10.0</TargetFramework>
+                    <ImplicitUsings>disable</ImplicitUsings>
+                    <Nullable>enable</Nullable>
+                    <RestorePackagesPath>$(MSBuildThisFileDirectory).packages</RestorePackagesPath>
+                    <NuGetAudit>false</NuGetAudit>
+                  </PropertyGroup>
+                </Project>
+                """);
+            File.WriteAllText(Path.Combine(projectDirectory, "NuGet.Config"), """
+                <?xml version="1.0" encoding="utf-8"?>
+                <configuration><packageSources><clear /></packageSources></configuration>
+                """);
+            var restore = new System.Diagnostics.ProcessStartInfo(executable)
+            {
+                WorkingDirectory = workspace,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            restore.ArgumentList.Add("restore");
+            restore.ArgumentList.Add(Path.Combine("src", "FeatureApp", "FeatureApp.csproj"));
+            restore.ArgumentList.Add("--configfile");
+            restore.ArgumentList.Add(Path.Combine("src", "FeatureApp", "NuGet.Config"));
+            restore.ArgumentList.Add("--packages");
+            restore.ArgumentList.Add(Path.Combine("src", "FeatureApp", ".packages"));
+            restore.ArgumentList.Add("--nologo");
+            restore.ArgumentList.Add("-p:NuGetAudit=false");
+            using (var process = System.Diagnostics.Process.Start(restore)
+                ?? throw new InvalidOperationException("Could not start dotnet restore for the temporary workflow project."))
+            {
+                await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+                Assert.True(process.ExitCode == 0,
+                    "Temporary workflow project restore failed: " + await process.StandardOutput.ReadToEndAsync()
+                    + await process.StandardError.ReadToEndAsync());
+            }
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
+                defaultProfile: {{profileId}}
+                agentProfiles:
+                  workflow:
+                    id: {{profileId}}
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: ["**"]
+                      process:
+                        - executablePattern: '{{executable.Replace("\\", "/", StringComparison.Ordinal)}}'
+                          argvPatterns: ["run", "--project", "src/FeatureApp/FeatureApp.csproj", "--configuration", "Release", "--no-restore"]
+                          decision: Allow
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read, filesystem.write, filesystem.patch]
+                """);
+
+            using (var modelPolicies = OmniHost.CreateModelPolicyService(data))
+                modelPolicies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
+                    ModelPolicyPresets.FullAgent(), CancellationToken.None);
+
+            var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(originalProgram))).ToLowerInvariant();
+            var implementation = "public static class FeatureModule { public static bool IsInitialized { get; private set; } public static void Initialize() => IsInitialized = true; }\n";
+            var patchArguments = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                path = "src/FeatureApp/Program.cs",
+                expectedVersion = version,
+                oldText = "/* FEATURE_MODULE_HOOK */",
+                newText = connectModule ? "FeatureModule.Initialize();" : "/* FEATURE_MODULE_HOOK */",
+            });
+            var requests = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
+            provider.RespondWith((index, body) =>
+            {
+                requests[index] = body;
+                return index switch
+                {
+                    0 => ResponsesTextResponse("principal workflow context"),
+                    1 => ResponsesToolCallResponse("explore-entrypoint", "filesystem.read", "{\"path\":\"src/FeatureApp/Program.cs\"}"),
+                    2 => ResponsesTextResponse("EXPLORE_RESULT_EVIDENCE: src/FeatureApp/Program.cs is the executable entry point and contains FEATURE_MODULE_HOOK."),
+                    3 => ResponsesToolCallResponse("implement-read-entrypoint", "filesystem.read", "{\"path\":\"src/FeatureApp/Program.cs\"}"),
+                    4 => ResponsesToolCallResponse("implement-module", "filesystem.write", System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        path = "src/FeatureApp/FeatureModule.cs", content = implementation,
+                    })),
+                    5 when connectModule => ResponsesToolCallResponse("implement-connect", "filesystem.patch", patchArguments),
+                    5 => ResponsesToolCallResponse("implement-review", "filesystem.read", "{\"path\":\"src/FeatureApp/FeatureModule.cs\"}"),
+                    6 when connectModule => ResponsesToolCallResponse("implement-review", "filesystem.read", "{\"path\":\"src/FeatureApp/Program.cs\"}"),
+                    6 when !connectModule => ResponsesTextResponse("IMPLEMENT_RESULT_EVIDENCE: src/FeatureApp/FeatureModule.cs exists; Program.Main does not invoke FeatureModule.Initialize."),
+                    7 when connectModule => ResponsesTextResponse("IMPLEMENT_RESULT_EVIDENCE: FeatureModule.Initialize is connected from the application entry point."),
+                    7 when !connectModule => ResponsesToolCallResponse("verify-integration", "dyn.core.verify_integration",
+                        VerifierArguments(executable, workspace)),
+                    8 when connectModule => ResponsesToolCallResponse("verify-integration", "dyn.core.verify_integration",
+                        VerifierArguments(executable, workspace)),
+                    9 when connectModule => ResponsesTextResponse("VERIFY_RESULT_EVIDENCE: the declared integration check passed."),
+                    _ => ResponsesTextResponse("VERIFY_RESULT_EVIDENCE: integration check completed."),
+                };
+            });
+
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.ProcessSandboxStrengthForTests = SandboxStrength.Weak;
+            var processEnvironmentRoot = Path.Combine(workspace, ".workflow-process-env");
+            var testAppData = Path.Combine(processEnvironmentRoot, "roaming");
+            var testLocalAppData = Path.Combine(processEnvironmentRoot, "local");
+            Directory.CreateDirectory(testAppData);
+            Directory.CreateDirectory(testLocalAppData);
+            var previousAppData = Environment.GetEnvironmentVariable("APPDATA");
+            var previousLocalAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+            runtime.ProcessRuntimeFactoryForTests = () => new OmniCore.Execution.SystemProcessRuntime(
+                new[] { "APPDATA", "LOCALAPPDATA" });
+            runtime.UseConsoleInput = false;
+            var previousRuntime = CliApp.UseRuntimeForTests(runtime);
+            try
+            {
+                var host = new TuiTurnHost(runtime);
+                var diagnostics = new List<string>();
+                Assert.Equal(0, await host.ExecuteAsync("Start an authorized workflow session", diagnostics.Add,
+                    TestContext.Current.CancellationToken));
+
+                var client = runtime.Connect(TestContext.Current.CancellationToken);
+                var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+                var authority = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                    {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
+                     "allowedModes":"plan,act,orq","maxAgents":4,"maxDepth":3,"maxTurns":12,
+                     "maxToolCalls":36,"maxElapsedSeconds":300,"maxSpendUsd":5}
+                    """), TestContext.Current.CancellationToken);
+                Assert.True(authority.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                    authority.Error ?? authority.Outcome?.Reason ?? "Run mode authority was not accepted.");
+
+                var rootRun = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<RunCreated>());
+                var workspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(
+                    ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace)));
+                var verifyArguments = VerifierArguments(executable, workspace);
+                var verifyArgv = new[] { "run", "--project", "src/FeatureApp/FeatureApp.csproj",
+                    "--configuration", "Release", "--no-restore" };
+                var verifyIntent = new ToolIntent(ToolCallId.New(), new ToolId("dyn.core.verify_integration"),
+                    verifyArguments, EffectClass.NonIdempotent,
+                    new ResourceClaims(Array.Empty<string>(), new[] { workspace }, Array.Empty<NetworkGrant>(),
+                    new ProcessClaim(executable, verifyArgv, "External", NetworkRequired: false,
+                            WorkingDirectory: workspace), Array.Empty<string>()),
+                    ToolRisk.High, null);
+                var permissionPolicy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>())
+                    .WithModeDefaults(RunMode.Orchestrate)
+                    .WithGrantStore(OmniHost.CreatePermissionGrantStore(workspace), workspaceId, rootRun.RunId);
+                _ = permissionPolicy.RecordApprovedGrant(verifyIntent, GrantLifetime.Run, CancellationToken.None);
+                OmniHost.GetWeakSandboxConsentState(rootRun.RunId).GrantForRun();
+
+                var command = "/orq-auth \"connect FeatureModule to the application entry point\" --verify-executable \""
+                    + executable + "\" --verify-argv-json '[\"run\",\"--project\",\"src/FeatureApp/FeatureApp.csproj\","
+                    + "\"--configuration\",\"Release\",\"--no-restore\"]'";
+                (int Code, string Output) result;
+                try
+                {
+                    Environment.SetEnvironmentVariable("APPDATA", testAppData);
+                    Environment.SetEnvironmentVariable("LOCALAPPDATA", testLocalAppData);
+                    result = await Run(command);
+                }
+                finally
+                {
+                    Environment.SetEnvironmentVariable("APPDATA", previousAppData);
+                    Environment.SetEnvironmentVariable("LOCALAPPDATA", previousLocalAppData);
+                }
+                Assert.True(result.Code == (connectModule ? 0 : 1),
+                    $"Workflow returned {result.Code}; output: {result.Output}\nDiagnostics: {string.Join(" | ", diagnostics)}"
+                    + $"\nProvider requests={provider.RequestCount}; keys={string.Join(",", requests.Keys.Order())}"
+                    + $"\nJournal tail={string.Join(" | ", ReadCurrentSessionEvents(workspace).TakeLast(12).Select(item => item.GetType().Name))}"
+                    + $"\nTask failures={string.Join(" | ", ReadCurrentSessionEvents(workspace).OfType<TaskFailed>().Select(item => item.Cause))}"
+                    + $"\nProgram={File.ReadAllText(Path.Combine(projectDirectory, "Program.cs"))}"
+                    + $"\nModule={(File.Exists(Path.Combine(projectDirectory, "FeatureModule.cs")) ? File.ReadAllText(Path.Combine(projectDirectory, "FeatureModule.cs")) : "<missing>")}"
+                    + $"\nFinal provider request={requests.OrderBy(pair => pair.Key).LastOrDefault().Value}"
+                    + $"\nEvent details={string.Join(" | ", ReadCurrentSessionJournalEvents(workspace).TakeLast(18).Select(evt => evt.Sequence + ":" + EventCodecs.Create().Decode(evt)))}");
+                Assert.Contains(connectModule ? "Workflow completed" : "ReworkRequested", result.Output,
+                    StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(connectModule, File.ReadAllText(Path.Combine(projectDirectory, "Program.cs"))
+                    .Contains("FeatureModule.Initialize", StringComparison.Ordinal));
+                Assert.Equal(implementation, File.ReadAllText(Path.Combine(projectDirectory, "FeatureModule.cs")));
+                Assert.Contains(requests.OrderBy(pair => pair.Key).Select(pair => pair.Value), body =>
+                    body.Contains("EXPLORE_RESULT_EVIDENCE", StringComparison.Ordinal));
+                Assert.Contains(requests.OrderBy(pair => pair.Key).Select(pair => pair.Value), body =>
+                    body.Contains("IMPLEMENT_RESULT_EVIDENCE", StringComparison.Ordinal));
+
+                var journal = ReadCurrentSessionJournalEvents(workspace).ToArray();
+                var codecs = EventCodecs.Create();
+                var events = journal.Select(codecs.Decode).ToArray();
+                var plan = PlanProjection.Replay(codecs, journal);
+                var stageItems = plan.Items().Where(item => item.Metadata.ContainsKey(WorkflowStageContract.WorkflowIdKey))
+                    .OrderBy(item => item.Metadata[WorkflowStageContract.StageKey], StringComparer.Ordinal).ToArray();
+                Assert.Equal(3, stageItems.Length);
+                Assert.Equal(connectModule ? 3 : 2,
+                    stageItems.Count(item => item.State == PlanItemState.Completed));
+                Assert.Equal(connectModule ? PlanItemState.Completed : PlanItemState.Blocked, stageItems[^1].State);
+                var completionGate = Assert.Single(plan.Items(), item =>
+                    item.Metadata.ContainsKey("workflow.gate.workflow"));
+                if (connectModule) Assert.Equal(PlanItemState.Completed, completionGate.State);
+                else Assert.NotEqual(PlanItemState.Completed, completionGate.State);
+                var produced = events.OfType<AgentResultProduced>().ToArray();
+                Assert.Equal(3, produced.Length);
+                var dispositions = events.OfType<ResultDispositionRecorded>().ToArray();
+                Assert.Equal(3, dispositions.Length);
+                Assert.Equal(connectModule ? ResultDispositionOutcome.Accepted : ResultDispositionOutcome.ReworkRequested,
+                    dispositions[^1].Disposition.Outcome);
+                Assert.Contains(events.OfType<ToolCallRequested>(), item => item.ToolName == "filesystem.write");
+                var verifier = Assert.Single(events.OfType<ToolCallRequested>(), item =>
+                    item.ToolName == "dyn.core.verify_integration");
+                Assert.Equal(connectModule,
+                    events.OfType<ToolCallSucceeded>().Any(item => item.ToolCallId == verifier.ToolCallId));
+                Assert.Equal(!connectModule,
+                    events.OfType<ToolCallFailed>().Any(item => item.ToolCallId == verifier.ToolCallId));
+                Assert.True(requests.Count >= (connectModule ? 10 : 9));
+                if (connectModule)
+                {
+                    var providerCalls = provider.RequestCount;
+                    var modelSteps = events.OfType<ModelStepStarted>().Count();
+                    var toolCalls = events.OfType<ToolCallRequested>().Count();
+                    var retry = await Run(command);
+                    Assert.Equal(0, retry.Code);
+                    Assert.Contains("Workflow completed", retry.Output, StringComparison.OrdinalIgnoreCase);
+                    Assert.Equal(providerCalls, provider.RequestCount);
+                    var retryEvents = ReadCurrentSessionEvents(workspace);
+                    Assert.Equal(modelSteps, retryEvents.OfType<ModelStepStarted>().Count());
+                    Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
+                }
+            }
+            finally { CliApp.UseRuntimeForTests(previousRuntime); }
+        });
+    }
+
+    private static string VerifierArguments(string executable, string workspace) => System.Text.Json.JsonSerializer.Serialize(new
+    {
+        executable,
+        argv = new[] { "run", "--project", "src/FeatureApp/FeatureApp.csproj",
+            "--configuration", "Release", "--no-restore" },
+        cwd = workspace,
+        timeoutSeconds = 120,
+    });
 
     [Fact]
     public async Task Normal_PLAN_chat_can_recommend_ORQ_without_granting_mode_or_creating_workers()
@@ -1189,6 +1466,44 @@ public sealed class CliEndToEndTests
         return string.Join("\n", "data: " + eventBody, "",
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}", "",
             "data: [DONE]", "");
+    }
+
+    private static string ResponsesToolCallResponse(string id, string name, string arguments)
+    {
+        var wireName = name.Length is > 0 and <= 64 && !name.StartsWith("omni_", StringComparison.Ordinal)
+            && name.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
+            ? name
+            : "omni_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name))).ToLowerInvariant()[..48];
+        var encodedArguments = System.Text.Json.JsonSerializer.Serialize(arguments);
+        var encodedName = System.Text.Json.JsonSerializer.Serialize(wireName);
+        var encodedId = System.Text.Json.JsonSerializer.Serialize(id);
+        return string.Join("\n", new[]
+        {
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_" + id + "\",\"call_id\":" + encodedId + ",\"name\":" + encodedName + "}}",
+            "",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":" + encodedArguments + "}",
+            "",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_" + id + "\",\"call_id\":" + encodedId + ",\"name\":" + encodedName + ",\"arguments\":" + encodedArguments + "}}",
+            "",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_" + id + "\",\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":16}}}",
+            "",
+        });
+    }
+
+    private static string ResponsesTextResponse(string text)
+    {
+        var encoded = System.Text.Json.JsonSerializer.Serialize(text);
+        return string.Join("\n", new[]
+        {
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\"}}",
+            "",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":" + encoded + "}",
+            "",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":" + encoded + "}]}}",
+            "",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":16}}}",
+            "",
+        });
     }
 
     private static string PatchArguments(string version) =>

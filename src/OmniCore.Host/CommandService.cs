@@ -124,7 +124,8 @@ public sealed class CommandService
     private sealed class OrqAuthWorkflowHandler(ComponentSource source) : ICommandHandler
     {
         public CommandDescriptor Descriptor { get; } = new("core:orq-auth", "orq-auth", [], CommandKind.Workflow,
-            "Explore, implement and verify an explicitly requested integration change.", ["objective"], source);
+            "Explore, implement and verify an explicitly requested integration change using the declared integration check.",
+            ["<objective> --verify-executable <path> --verify-argv-json <JSON array>"], source);
 
         public bool IsEnabled(CommandContext context, out string? disabledReason)
         {
@@ -139,8 +140,7 @@ public sealed class CommandService
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (arguments.Count == 0 || string.IsNullOrWhiteSpace(string.Join(" ", arguments)))
-                throw new ArgumentException("/orq-auth requires an objective.");
+            _ = WorkflowRequestSpecification.Parse(arguments, context.WorkspaceRoot ?? Directory.GetCurrentDirectory());
             var outcome = new WorkflowRequested(new WorkflowRef("core:explore-implement-verify", "1"), arguments.ToArray());
             outcome.Validate();
             return ValueTask.FromResult<HostCommandOutcome>(outcome);

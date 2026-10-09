@@ -10,9 +10,10 @@ public sealed partial class OmniServer
 {
     /// <summary>Trusted-user admission of bounded, read-only work to the durable queue.
     /// No child execution, route selection, capacity claim, join or result acceptance.</summary>
-    private CommandAck CreateQueuedDelegation(WireEnvelope command, bool trustedUserAction, CancellationToken cancellationToken)
+    private CommandAck CreateQueuedDelegation(WireEnvelope command, bool trustedUserAction,
+        CancellationToken cancellationToken, WorkflowRuntimeAuthorization? workflowAuthorization = null)
     {
-        if (!trustedUserAction)
+        if (!trustedUserAction && workflowAuthorization is null)
             return new(command.MessageId, "error", "Delegation requires a trusted user action", RuntimeCommandOutcome.Rejected());
         if (_lastSessionId is not { } session || _lastRunId is not { } run)
             return new(command.MessageId, "error", "No active Run", RuntimeCommandOutcome.Rejected());
@@ -41,6 +42,10 @@ public sealed partial class OmniServer
                 // Explorer holds only the latter two for its short reservation/start boundary.
                 using var budgetAdmission = RunBudgetPool.For(_store).EnterAdmission(session, run);
                 cancellationToken.ThrowIfCancellationRequested();
+                if (workflowAuthorization is not null
+                    && (workflowAuthorization.Session != session || workflowAuthorization.Run != run
+                        || !WorkflowAuthorizationIsCurrent(workflowAuthorization)))
+                    return Deferred("WorkflowAuthorizationUnavailable");
                 if (_lastSessionId != session || _lastRunId != run
                     || new RunControlService(_store, _codecs).ActiveRun(session) != run)
                     return Deferred("RunNotActive");
@@ -140,9 +145,19 @@ public sealed partial class OmniServer
                     profile.Id, prepared.Reference, target.Relation, target.Supervision, request.Priority);
                 var childScope = new ExecutionScopeState(run, childTask.TaskId, childLane.LaneId);
                 var parentScope = new ExecutionScopeState(run, projection.RootTask, parentLane, ExecutionId: parentId);
-                new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {
+                var admissionEvents = new List<DomainEventPayload> {
                     childTask, new TaskReady(childTask.TaskId), childLane, new DelegationCreated(parentId, delegation),
-                }, DurabilityClass.Barrier, new ExecutionScopeState?[] { childScope, childScope, childScope, parentScope });
+                };
+                if (workflowAuthorization is not null)
+                {
+                    var planEvents = BuildWorkflowPlanAdmissionEvents(workflowAuthorization, childTask, childLane,
+                        request.Objective, payloads, own, session, run);
+                    admissionEvents.AddRange(planEvents);
+                }
+                var eventScopes = admissionEvents.Select(evt => evt is DelegationCreated
+                    ? (ExecutionScopeState?)parentScope : childScope).ToArray();
+                new EventStream(_store, _codecs, session).AppendBatch(admissionEvents,
+                    DurabilityClass.Barrier, eventScopes);
                 return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(), session, before.Value, commandId);
             }
         }
@@ -151,5 +166,76 @@ public sealed partial class OmniServer
             return before is null ? UnavailableCommandOutcome(command.MessageId)
                 : FailedDurableCommandAck(command.MessageId, session, before.Value, failure.Message, restoreRunIdentity: false);
         }
+    }
+
+    private IReadOnlyList<DomainEventPayload> BuildWorkflowPlanAdmissionEvents(
+        WorkflowRuntimeAuthorization authorization, TaskCreated task, LaneCreated lane, string objective,
+        IReadOnlyList<DomainEventPayload> existingPayloads, IReadOnlyList<DomainEvent> existingEvents,
+        SessionId session, RunId run)
+    {
+        if (authorization.AllowedStage is not { } stage || authorization.Session != session
+            || authorization.Run != run || authorization.Instance.Length != 64
+            || !authorization.Instance.All(Uri.IsHexDigit))
+            throw new InvalidOperationException("Workflow stage admission is not scoped to the current compiled request.");
+        var definition = CompiledWorkflowCatalog.Stage(stage);
+        if (!string.Equals(objective, WorkflowStageObjective(authorization, definition),
+            StringComparison.Ordinal))
+            throw new InvalidOperationException("Workflow stage objective differs from its compiled definition.");
+        var plan = PlanProjection.Replay(_codecs, existingEvents);
+        var current = plan.Latest() ?? throw new InvalidDataException("Workflow admission requires the durable Run Plan.");
+        var root = plan.Items().Single(item => item.ParentId is null);
+        WorkflowPriorResult? priorResult = null;
+        PlanItemId[] dependencies = authorization.DependsOnPlanItem is { } dependency ? [dependency] : [];
+        if (stage == WorkflowStage.Explore && dependencies.Length != 0
+            || stage is WorkflowStage.Implement or WorkflowStage.Verify && dependencies.Length != 1)
+            throw new InvalidOperationException("Workflow dependency does not match the compiled stage order.");
+        foreach (var id in dependencies)
+        {
+            var dependencyItem = plan.Item(id) ?? throw new InvalidOperationException("Workflow stage dependency is absent from the Plan.");
+            if (dependencyItem.State != PlanItemState.Completed
+                || !WorkflowStageContract.TryFromPlanItem(dependencyItem, out var priorContract)
+                || priorContract!.Instance != authorization.Instance
+                || !WorkflowStageContract.IsCanonicalAdmission(priorContract, dependencyItem, session, run,
+                    existingEvents, _codecs, _artifacts))
+                throw new InvalidOperationException("Workflow stage dependency has not been reconciled to Completed.");
+            priorResult = WorkflowStageContract.ReadAcceptedPriorResult(dependencyItem, priorContract,
+                session, run, existingEvents, _codecs, _artifacts)
+                ?? throw new InvalidOperationException("Workflow stage dependency has no accepted result projection.");
+        }
+        var metadata = definition.Metadata(authorization.Request.Workflow, authorization.Instance,
+            task.TaskId, lane.LaneId, authorization.Specification.Objective, lane.AgentProfile.ToString(),
+            authorization.Specification.Executable, authorization.Specification.ArgvJson,
+            authorization.Specification.WorkingDirectory,
+            authorization.MinimumSequenceExclusive, priorResult?.Event.EventId.ToString(),
+            priorResult?.Result.ResultRef.Id.ToString());
+        var nextOrder = plan.Items().Count == 0 ? 1 : plan.Items().Max(item => item.Order) + 1;
+        var planService = new PlanService();
+        var taskGraph = TaskGraphProjection.FromPayloads(existingPayloads.Concat<DomainEventPayload>([
+            task, new TaskReady(task.TaskId), lane]));
+        var lanes = LaneProjection.FromPayloads(existingPayloads.Concat<DomainEventPayload>([
+            task, new TaskReady(task.TaskId), lane]));
+        var add = planService.Apply(plan, taskGraph, lanes,
+            PlanMutation.Add(nextOrder, definition.Name + ": " + authorization.Specification.Objective,
+                root.Id, dependencies, MutationCause.User, metadata));
+        if (!add.Accepted) throw new InvalidOperationException("Workflow Plan stage could not be added: " + add.Reason);
+        var output = add.Events.ToList();
+        var itemId = output.OfType<PlanItemAdded>().Single().PlanItemId;
+        var projectedPayloads = existingPayloads.Concat<DomainEventPayload>([
+            task, new TaskReady(task.TaskId), lane]).Concat(output).ToArray();
+        plan = PlanProjection.FromPayloads(projectedPayloads);
+        taskGraph = TaskGraphProjection.FromPayloads(projectedPayloads);
+        lanes = LaneProjection.FromPayloads(projectedPayloads);
+        var link = planService.Apply(plan, taskGraph, lanes,
+            PlanMutation.Link(itemId, task.TaskId, LinkRole.Implements, true, MutationCause.User));
+        if (!link.Accepted) throw new InvalidOperationException("Workflow Plan stage could not link its Task: " + link.Reason);
+        output.AddRange(link.Events);
+        projectedPayloads = projectedPayloads.Concat(link.Events).ToArray();
+        plan = PlanProjection.FromPayloads(projectedPayloads);
+        taskGraph = TaskGraphProjection.FromPayloads(projectedPayloads);
+        lanes = LaneProjection.FromPayloads(projectedPayloads);
+        var ready = planService.Apply(plan, taskGraph, lanes, PlanMutation.Ready(itemId, MutationCause.Reconciler));
+        if (!ready.Accepted) throw new InvalidOperationException("Workflow stage is not ready: " + ready.Reason);
+        output.AddRange(ready.Events);
+        return output;
     }
 }

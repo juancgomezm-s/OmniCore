@@ -22,6 +22,7 @@ internal static class AgentLaneReader
             var payloads = own.Select(codecs.Decode).ToArray();
             var tasks = TaskGraphProjection.Replay(codecs, own);
             var lanes = LaneProjection.Replay(codecs, own);
+            var plan = PlanProjection.Replay(codecs, own);
             _ = payloads.OfType<RunCreated>().Single();
             var authority = RunProjection.Replay(session, run, codecs, own).ModeAuthority;
             var maximumAgents = authority?.Mode == RunMode.Orchestrate
@@ -44,6 +45,18 @@ internal static class AgentLaneReader
                     ? "Failed" : payloads.Any(e => e is AgentExecutionCompleted c && c.ExecutionId == execution.ExecutionId)
                         ? "Completed" : "Started";
                 var definition = payloads.OfType<TaskCreated>().Single(t => t.TaskId == lane.TaskId);
+                var stageItem = plan.Items().SingleOrDefault(item => item.LinkedTasks.Any(link => link.TaskId == lane.TaskId));
+                WorkflowStageContract? workflowStage = null;
+                WorkflowStageEvidence? workflowEvidence = null;
+                if (stageItem is not null && WorkflowStageContract.TryFromPlanItem(stageItem, out workflowStage))
+                {
+                    if (!WorkflowStageContract.IsCanonicalAdmission(workflowStage!, stageItem, session, run,
+                        own, codecs, artifacts))
+                        throw new InvalidDataException("Workflow stage Plan metadata is not backed by its canonical admission.");
+                    if (execution is not null && workflowStage!.Execution == execution.ExecutionId)
+                        workflowEvidence = WorkflowStageEvidenceEvaluator.Evaluate(workflowStage!, session, run,
+                            lane.TaskId, lane.LaneId, execution.ExecutionId, own, codecs);
+                }
                 var taskEvents = own.Where(e => e.TaskId == lane.TaskId).ToArray();
                 var taskFacts = taskEvents.Select(codecs.Decode).ToArray();
                 var tokenState = RunTokenBudgetReader.Read(taskEvents, codecs, run, definition.Budget.MaxTokens);
@@ -67,11 +80,13 @@ internal static class AgentLaneReader
                     .LastOrDefault(e => e.Disposition.ResultRef == result.ResultRef)?.Disposition.Outcome.ToString();
                 string? summary = null;
                 int? resultIssueCount = null;
+                string? resultOutcome = null;
                 if (result is { ResultSchemaId: "core.explorer.v1" } && artifacts?.GetText(result.ResultRef.Hash) is { } text)
                 {
                     var document = JsonSerializer.Deserialize(text, DelegationResultJson.Default.DelegationResultDocument);
                     if (document?.Version == 1)
                     {
+                        resultOutcome = document.Outcome;
                         summary = new PiiRedactor().Redact(document.Summary);
                         resultIssueCount = document.RemainingIssues.Count;
                         if (summary.Length > 4096) summary = summary[..4096] + "…";
@@ -152,7 +167,9 @@ internal static class AgentLaneReader
                     result?.ResultRef.Id.ToString(), disposition, summary, joins,
                     history?.Facts.OfType<DelegationCancellationRequested>().Any() == true, budget,
                     supervisionState, pendingMessages, pendingWakes, resultIssueCount,
-                    integrationVerified, integrationValidationPassed, gateEvidenceCount));
+                    integrationVerified, integrationValidationPassed, gateEvidenceCount,
+                    workflowStage?.Workflow.Id, workflowStage?.Definition.Name, workflowStage?.Instance,
+                    workflowEvidence?.Passed, workflowEvidence?.Reason, resultOutcome));
             }
             var waiting = capacity.WaitingDelegations.Select(id => id.ToString()).Order(StringComparer.Ordinal).ToArray();
             var fanOutGroups = payloads.OfType<FanOutGroupCreated>().Select(created =>
