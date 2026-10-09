@@ -222,7 +222,7 @@ Log revisado `C:/Users/juanc/.codex/m6-writer-permission-20261008.log`:
 20 PASS, 0 FAIL/SKIP, 3.136 s. Runner/triada, background/heartbeat/transcript y
 validación integral continúan pendientes.
 
-## Criterios que quedan para el cierre integral
+## Criterios del cierre integral
 
 La continuación no se considera cerrada por la suma de checkpoints. El estado
 final debe acreditar, sobre la misma revisión de código y sus binarios:
@@ -244,3 +244,43 @@ final debe acreditar, sobre la misma revisión de código y sus binarios:
 - Compilación completa y targets compatibles, arquitectura, suite integral y
   recuperación M4 serial; registro de revisión, hashes de binarios y resultados
   exactos. Esta comprobación final todavía está pendiente.
+
+## Continuación en curso: workflow compilado y triada real
+
+Checkpoint `6bddaca`: `/orq-auth` entrega una intención Workflow tipada al runner
+del Host, desde CLI/TUI. Explore, Implement y Verify se admiten como Tasks/Lanes
+distintas y dependen del resultado anterior aceptado. El contexto siguiente sólo
+incluye un resumen acotado y referencias verificadas; no hereda autoridad ni el
+transcript. El contrato durable ata la etapa, perfil, instancia, dependencia y
+ToolCalls a sus identidades canónicas. La clave de instancia incluye la
+especificación de verificación además del objetivo.
+
+Cada etapa intersecta el catálogo y la política efectiva con sus capacidades.
+Verify usa `dyn.core.verify_integration`, fijada al ejecutable, argv y cwd
+declarados, mediante el pipeline normal de permisos, Started Barrier, sandbox,
+fingerprint y presupuesto. La clasificación exacta `ValidationProcess` permite
+el claim de su cwd sólo con política Full; no concede tools de escritura ni
+habilita ids dinámicos desconocidos. La admisión usa el presupuesto autorizado
+del Run, sin aumentarlo para ajustar el envelope del modelo.
+
+Un PlanItem requerido mantiene abierto el Plan hasta que las tres etapas tengan
+aceptación explícita, reconciliación y evidencia vigente. El fixture ejecuta
+`dotnet run` sobre un proyecto temporal: Implement crea el módulo y, en el caso
+positivo, lo conecta al punto de entrada. El proceso real devuelve 0 y completa
+el gate. En el negativo, el módulo existe pero no se inicializa desde el punto
+de entrada: el mismo proceso devuelve 1, Verify queda ReworkRequested y el gate
+permanece abierto. No se deduce integración de una afirmación del modelo.
+
+La prueba usa HTTP loopback scripted, SQLite y tools reales en rutas temporales.
+Usa sandbox Weak con consentimiento explícito del Run y una factory interna de
+prueba que añade APPDATA/LOCALAPPDATA temporales al entorno del proceso para
+MSBuild/NuGet. Producción conserva Strong por defecto y su allowlist de entorno.
+No acredita confinamiento Strong del verificador, proveedor autenticado ni
+cualificación nueva del modelo.
+
+Log revisado `C:/Users/juanc/.codex/m6-workflow-retry-20261008.log`: 2 PASS,
+0 FAIL/SKIP, 12.493 s. Incluye reintento explícito del caso positivo sin nuevas
+peticiones al proveedor, ModelStepStarted ni ToolCallRequested. Es evidencia
+focal de este checkpoint, no una suite integral. Deuda durable ante evidencia
+obsoleta, background, heartbeat agregado, transcript por Lane y verificación
+final siguen pendientes; M6 no está cerrado.
