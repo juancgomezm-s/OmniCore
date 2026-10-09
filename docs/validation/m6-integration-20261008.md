@@ -123,3 +123,29 @@ supervisor y reapertura SQLite sin repetir la llamada ni adoptar ownership.
 M6 sigue abierto: FanOut/FanIn, consumo y resolución operativa de mailbox/wake,
 WorkflowCommand, Dynamic tools, la triada Explore/Implement/Verify y la
 validación integral de los binarios finales continúan en el worker Luna.
+
+## Continuación en curso: FanOut/FanIn y recuperación de capacidad
+
+Checkpoint `fc00197`: FanOut Direct/Aggregate usa un evaluador determinista,
+requiere resultados aceptados de todos los miembros y preserva su orden. Una
+disposition ReworkRequested mantiene el grupo pendiente; el reemplazo explícito
+con una delegación nueva conserva su posición. El agregado se publica bajo
+lease CAS y sus referencias, junto con las de los resultados, quedan indexadas
+en el envelope durable. Codec y replay validan payload, schema, identidad,
+scope y resolución única antes de persistir, sin retirar la validación de los
+contratos pre-M6 congelados.
+
+La recuperación cubre aceptación duradera seguida de fallo de append de la
+resolución: al reabrir SQLite resuelve grupo y join una vez, sin repetir llamadas
+al proveedor. La causa apunta al EventId de la aceptación que satisface el grupo
+o join. Cancelar el último join permite el desbloqueo atribuido al join fallido;
+un owner cuyo AgentExecution terminó conserva Task/Lane bloqueados.
+
+Capacidad deja avanzar al lector que precede al escritor en la cola y evita
+contar dos veces el cupo principal activo: principal y dos lectores ocupan
+exactamente MaxAgents=3. Evidencia revisada en
+`%LOCALAPPDATA%/Temp/m6-fanout-capacity-20261008.log`: build 0/0,
+FanOut 10 PASS (5.186 s), Capacity 2 PASS (0.699 s), y focos de contratos,
+proyección y escritor canónico sin fallos. Sigue siendo evidencia intermedia;
+mailbox/wake operativo, workflow/triada, background/heartbeat/transcript y
+validación integral final permanecen pendientes.
