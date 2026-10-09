@@ -221,3 +221,26 @@ rechaza antes de invocar, sin aumentar el budget del producto.
 Log revisado `C:/Users/juanc/.codex/m6-writer-permission-20261008.log`:
 20 PASS, 0 FAIL/SKIP, 3.136 s. Runner/triada, background/heartbeat/transcript y
 validación integral continúan pendientes.
+
+## Criterios que quedan para el cierre integral
+
+La continuación no se considera cerrada por la suma de checkpoints. El estado
+final debe acreditar, sobre la misma revisión de código y sus binarios:
+
+- Entrada WorkflowCommand desde CLI/TUI y Explore → Implement → Verify como
+  Tasks distintas, con aceptación explícita de cada etapa y Plan reconciliado.
+- Check de integración declarado y tool dinámica en el pipeline efectivo de
+  permisos, fingerprint y presupuesto. Un proceso arbitrario exitoso o una
+  afirmación del modelo no satisfacen Verify. La identidad de la instancia debe
+  distinguir especificaciones diferentes para el mismo objetivo.
+- Caso positivo que ejercita el punto de entrada real y caso negativo de módulo
+  sin cablear, con ReworkRequested observable y sin avance implícito.
+- Lectores en background desde el runtime compartido, un único Host, límites
+  de capacidad y escritoras serializadas; cancelación y estado propios de cada
+  Lane, heartbeat agregado y transcript atribuible en LaneInspector.
+- Recuperación idempotente: aceptaciones durables preservadas, sin repetir
+  tools/proveedores ni adoptar ownership incierto. La concurrencia de varios
+  Hosts sobre SQLite sigue fuera del alcance de M6.
+- Compilación completa y targets compatibles, arquitectura, suite integral y
+  recuperación M4 serial; registro de revisión, hashes de binarios y resultados
+  exactos. Esta comprobación final todavía está pendiente.
