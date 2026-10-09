@@ -42,6 +42,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     private readonly bool _isInteractive;
 
     private readonly IArtifactStore? _artifacts;
+    private readonly Func<ToolCallId, CancellationToken, Task<string?>>? _receiveMailbox;
 
     public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy)
     {
@@ -77,7 +78,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy, string workspaceRoot,
         ModelCapabilityBoundary? boundary, IAuditSink? audit,
         Func<InteractionRequested, string?>? interactionResponder, bool isInteractive,
-        WeakSandboxConsentState? weakSandboxConsent = null, IArtifactStore? artifacts = null)
+        WeakSandboxConsentState? weakSandboxConsent = null, IArtifactStore? artifacts = null,
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null)
     {
         _catalog = catalog;
         _policy = policy;
@@ -89,6 +91,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _interactionResponder = interactionResponder;
         _isInteractive = isInteractive;
         _artifacts = artifacts;
+        _receiveMailbox = receiveMailbox;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -108,8 +111,10 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// modelo (ADR-0044 §5). null = sin frontera (semántica M2).
     /// </summary>
     public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, IPermissionPolicy policy,
-        string workspaceRoot, ModelCapabilityBoundary? boundary) =>
-        new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary);
+        string workspaceRoot, ModelCapabilityBoundary? boundary,
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null) =>
+        new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary, null, null, false,
+            artifacts: null, receiveMailbox: receiveMailbox);
 
     /// <summary>
     /// Pipeline sin journal, solo para tests del pipeline: nada se persiste y todos los eventos
@@ -169,10 +174,13 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             }
 
             if (stream is not null && payload is ToolCallStarted started
-                && started.EffectClass != EffectClass.None)
+                && (started.EffectClass != EffectClass.None
+                    || validated.ToolId.ToString() == "core.agents.mailbox.receive"))
             {
                 // ADR-0004 §2: el Started de un intent con efecto se confirma con commit Barrier
                 // ANTES de que la tool ejecute (aquí el ToolRuntime aún no llamó ExecuteAsync).
+                // The mailbox receive also needs its exact Started envelope durable before it
+                // waits: the Host may accept a scoped wake only while this ToolCall is live.
                 // Los eventos previos se escriben antes (Standard, en orden) para no romper la
                 // secuencia, y luego este Started como Barrier.
                 foreach (var evt in buffered.Where(evt => evt is not PostEditValidationPending))
@@ -215,7 +223,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 if (runId is null) return;
                 // Buffered before Started: its Barrier confirms this debt before ExecuteAsync.
                 emit(new PostEditValidationPending(runId, intent.ToolCallId, intent.Claims.Writes.ToArray()));
-            }, artifacts: _artifacts);
+            }, artifacts: _artifacts, receiveMailbox: _receiveMailbox);
         var outcome = requestReceipt is null
             ? runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken)
             : runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken, requestReceipt);

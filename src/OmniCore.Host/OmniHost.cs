@@ -253,12 +253,13 @@ public sealed class OmniHost
 
     public static IToolExecutor CreateExplorerExecutor(FakeCatalog catalog, string workspaceRoot,
         ModelCapabilityBoundary? boundary, IReadOnlyDictionary<string, string>? projectRestrictions,
-        RunId? runId = null, AgentProfile? agentProfile = null)
+        RunId? runId = null, AgentProfile? agentProfile = null,
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null)
     {
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions, workspaceRoot, runId);
         IPermissionPolicy effectivePolicy = agentProfile is null ? policy
             : new AgentProfilePermissionPolicy(policy, agentProfile, new PathBoundaryValidator(), workspaceRoot);
-        return ScriptedToolExecutor.WithWorkspace(catalog, effectivePolicy, workspaceRoot, boundary);
+        return ScriptedToolExecutor.WithWorkspace(catalog, effectivePolicy, workspaceRoot, boundary, receiveMailbox);
     }
 
     public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,

@@ -242,7 +242,7 @@ public sealed partial class OmniServer
         var sourceId = new EventId(Guid.Parse(input.GetProperty("sourceEventId").GetString()!));
         var text = input.GetProperty("content").GetString();
         if (string.IsNullOrWhiteSpace(text) || text.Length > 16_384) throw new ArgumentException("Mailbox content is empty or too large.");
-        var binding = RequireBoundChild(records, facts, supervisor, target);
+        _ = RequireBoundChild(records, facts, supervisor, target);
         var source = own.SingleOrDefault(evt => evt.EventId == sourceId)
             ?? throw new ArgumentException("Mailbox source event is outside the bound Run.");
         if (source.ExecutionId != supervisor && source.ExecutionId != target)
@@ -257,21 +257,15 @@ public sealed partial class OmniServer
         var artifact = prepared.Publish();
         var message = new ExecutionMailboxMessage(MailboxMessageId.New(), mailbox.MailboxId, supervisor,
             artifact, new EvidenceEventRef(session, source.EventId));
-        var batch = new List<DomainEventPayload> { new ExecutionMailboxMessageReceived(target, message) };
-        var tasks = TaskGraphProjection.Replay(_codecs, own);
-        var lanes = LaneProjection.Replay(_codecs, own);
-        var child = facts.OfType<AgentExecutionStarted>().Single(e => e.ExecutionId == target);
-        if (tasks.Get(facts.OfType<LaneCreated>().Single(e => e.LaneId == child.LaneId).TaskId)?.State == TaskState.Blocked
-            && lanes.StateOf(child.LaneId) == LaneState.Blocked)
-        {
-            var wake = new WakeRequest(WakeRequestId.New(), target, new(session, source.EventId),
-                "Mailbox message received", binding.PolicyRevision, message.MessageId);
-            batch.Add(new WakeRequestCreated(target, wake));
-            batch.Add(new WakeRequestAccepted(target, wake.WakeRequestId));
-        }
         var scope = AgentScope(run, facts, target);
         using var execution = ExecutionScope.Begin(scope);
-        stream.AppendBatch(batch, DurabilityClass.Barrier, Enumerable.Repeat<ExecutionScopeState?>(scope, batch.Count).ToArray());
+        stream.Append(new ExecutionMailboxMessageReceived(target, message), DurabilityClass.Barrier);
+        var messageEvent = _store.ReadFrom(session, 1).Single(evt => _codecs.Decode(evt) is ExecutionMailboxMessageReceived received
+            && received.ExecutionId == target && received.Message.MessageId == message.MessageId);
+        // WakePolicy: a message wakes only an actively owned, accepted child at the dedicated
+        // mailbox-receive tool boundary. It cannot unblock Wait, join, budget, or human input.
+        TryWakeActiveMailboxWait(session, run, target,
+            new ExecutionMailboxMessageReceived(target, message), messageEvent);
     }
 
     private static SupervisionBinding RequireBoundChild(PreM6RecordProjection records,

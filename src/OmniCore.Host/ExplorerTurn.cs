@@ -217,6 +217,8 @@ public sealed class ExplorerTurn
 
     private readonly Func<InteractionId, QuestionnaireSchema, QuestionnaireAskOutcome?>? _questionnaireResponder;
 
+    private readonly Action<ToolCallId>? _mailboxDeliveryCompleted;
+
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
         ModelSelection selection, IEventStore store, IEventCodecRegistry codecs, IArtifactStore artifacts,
@@ -232,7 +234,8 @@ public sealed class ExplorerTurn
         Func<bool>? quotaAllowsMeta = null,
         SqliteSpendReservationStore? spendReservations = null,
         long? maximumGenerationRequestAttempts = null,
-        IReadOnlyList<IPreparedArtifact>? fingerprintArtifacts = null)
+        IReadOnlyList<IPreparedArtifact>? fingerprintArtifacts = null,
+        Action<ToolCallId>? mailboxDeliveryCompleted = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -265,6 +268,7 @@ public sealed class ExplorerTurn
         _dailyCapUsd = dailyCapUsd;
         _questionnaires = questionnaires;
         _questionnaireResponder = questionnaireResponder;
+        _mailboxDeliveryCompleted = mailboxDeliveryCompleted;
         _metaModelProvider = metaModelProvider;
         _modelContextCapacity = modelContextCapacity;
     }
@@ -1320,6 +1324,9 @@ public sealed class ExplorerTurn
                         });
                     else
                         stream.AppendBatch(toPersist, DurabilityClass.Standard);
+
+                    if (call.ToolName == "core.agents.mailbox.receive")
+                        _mailboxDeliveryCompleted?.Invoke(call.Id);
 
                     if (pendingPermission is { } permissionInteractionId)
                     {

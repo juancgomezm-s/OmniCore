@@ -199,6 +199,7 @@ public sealed partial class OmniServer
     {
         lock (_modeAuthorityMutationGate)
         {
+            ReconcileDurableMailboxReceipts(work.Session, work.Run);
             var journal = _store.ReadFrom(work.Session, 1);
             var records = PreM6RecordProjection.Replay(work.Session, _codecs, journal);
             if (records.Records["delegation:" + work.Delegation.DelegationId].Phase != PreM6RecordPhase.Accepted) return;

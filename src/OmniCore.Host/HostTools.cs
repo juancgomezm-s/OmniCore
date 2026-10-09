@@ -22,7 +22,7 @@ public sealed class HostTools
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
         bool includeMutationTools = false, bool includeProcessTools = false,
         SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null,
-        bool includeControlTools = true)
+        bool includeControlTools = true, bool includeMailboxReceive = false)
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog();
@@ -46,6 +46,7 @@ public sealed class HostTools
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
         if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);
+        if (includeMailboxReceive) catalog = catalog.Add(new AgentMailboxReceiveTool());
         _catalog = includeControlTools ? catalog.Add(_planPropose).Add(new ModeProposeTool()) : catalog;
     }
 
@@ -59,6 +60,10 @@ public sealed class HostTools
     public static HostTools DelegatedReader(ArtifactReadTool? artifactReadTool = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             artifactReadTool: artifactReadTool, includeControlTools: false);
+
+    public static HostTools DelegatedReaderWithMailbox(ArtifactReadTool? artifactReadTool = null) =>
+        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            artifactReadTool: artifactReadTool, includeControlTools: false, includeMailboxReceive: true);
 
     public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,

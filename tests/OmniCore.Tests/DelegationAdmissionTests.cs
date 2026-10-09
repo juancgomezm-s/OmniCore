@@ -235,14 +235,18 @@ public sealed class DelegationAdmissionTests
         internal AgentProfile Profile { get; } = new(ProfileId.New(), "reader", 1, PermissionScope.With(["**"], [], [], [], [], false), []);
         internal AgentProfile Writer { get; } = new(ProfileId.New(), "writer", 1, PermissionScope.With(["**"], ["**"], [], [], [], false), []);
         internal AgentProfile ForeignReader { get; } = new(ProfileId.New(), "outside", 1, PermissionScope.With(["outside/**"], [], [], [], [], false), []);
+        internal ModelRoute MailboxRoute { get; } = new("fixture", "http://fixture", ProviderFamily.OpenAiChatCompatible,
+            null, "fixture");
+        private readonly bool _authorizeMailboxRoute;
         internal SessionId Session { get; }
         internal RunId Run { get; }
         internal TaskId RootTask { get; }
         internal LaneId Lane { get; }
         internal int ProviderCalls;
         internal IEnumerable<DomainEventPayload> Payloads => Store.ReadFrom(Session, 1).Select(Codecs.Decode);
-        internal Fixture()
+        internal Fixture(bool authorizeMailboxRoute = false)
         {
+            _authorizeMailboxRoute = authorizeMailboxRoute;
             Directory.CreateDirectory(Root);
             Store = new SqliteEventStore(Journal); Artifacts = new FileArtifactStore(Root);
             Reservations = new SqliteSpendReservationStore(Path.Combine(Root, "reservations.db"));
@@ -257,6 +261,9 @@ public sealed class DelegationAdmissionTests
         {
             var server = new OmniServer(writeStore ?? Store, Codecs, new InMemoryAuditSink(), StateFile, Artifacts);
             server.ConfigureAgentProfiles(new(new AgentProfileRegistry([Profile, Writer, ForeignReader]), Profile));
+            if (_authorizeMailboxRoute)
+                server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
+                    [AuthorizedModelRoute.From(MailboxRoute, BillingMode.Local)], [BillingMode.Local], false, null, "fixture"));
             return server;
         }
         internal void Grant(int maxAgents = 3, int maxDepth = 1)
@@ -280,6 +287,20 @@ public sealed class DelegationAdmissionTests
                 new InMemoryAuditSink(), new RedactionPolicy(), pricing: new ModelPricing(0m, 0m), modelContextCapacity: 8192,
                 spendReservations: Reservations, maximumGenerationRequestAttempts: 1);
         }
+        internal ExplorerTurn ExplorerWithMailbox(Func<ModelRequest, CancellationToken, ModelResponse> complete,
+            Func<ToolCallId, CancellationToken, Task<string?>> receiveMailbox)
+        {
+            var tools = HostTools.DelegatedReaderWithMailbox();
+            var executor = ScriptedToolExecutor.WithWorkspace(tools.Catalog(), new AgentProfilePermissionPolicy(
+                new ScriptedPermissionPolicy([]), Profile, new PathBoundaryValidator(), Root), Root,
+                boundary: null, receiveMailbox: receiveMailbox);
+            return new ExplorerTurn(complete, executor, tools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), []),
+                new("fixture", "h", "t", "c", "o", "fixture"),
+                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), Store, Codecs,
+                Artifacts, new InMemoryAuditSink(), new RedactionPolicy(), pricing: new ModelPricing(0m, 0m),
+                modelContextCapacity: 8192, spendReservations: Reservations, maximumGenerationRequestAttempts: 1,
+                mailboxDeliveryCompleted: Server.ResolveMailboxDelivery);
+        }
         internal void Ask(string question = "Información española: acción, niño, pingüino.")
         {
             var result = Server.ExecuteExplorerTurn(Session, Run,
@@ -297,6 +318,32 @@ public sealed class DelegationAdmissionTests
             return new(Profile.Id.ToString(), source.EventId.ToString(), "Revisar sin modificar archivos", new[] { id }, 8192, 2, 4, 4096, 0m);
         }
         internal void Reopen() { Close(); Store = new SqliteEventStore(Journal); Server = NewServer(); }
+        internal (SqliteEventStore Store, OmniServer Server) OpenSnapshotServer()
+        {
+            var snapshotPath = Path.Combine(Root, "recovery-snapshot-" + Guid.NewGuid().ToString("N") + ".db");
+            using (var source = new SqliteConnection(new SqliteConnectionStringBuilder
+                { DataSource = Journal, Mode = SqliteOpenMode.ReadOnly }.ToString()))
+            using (var destination = new SqliteConnection(new SqliteConnectionStringBuilder
+                { DataSource = snapshotPath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString()))
+            {
+                source.Open();
+                destination.Open();
+                source.BackupDatabase(destination);
+                source.Close();
+                destination.Close();
+                SqliteConnection.ClearPool(source);
+                SqliteConnection.ClearPool(destination);
+            }
+            var store = new SqliteEventStore(snapshotPath);
+            return (store, NewServer(store));
+        }
+        internal static void CloseAdditionalStore(SqliteEventStore store)
+        {
+            var connection = (SqliteConnection)store.Connection;
+            store.Close();
+            SqliteConnection.ClearPool(connection);
+            connection.Dispose();
+        }
         internal void UseFaultStore(bool afterCommit) => Server = NewServer(new FaultStore(Store, afterCommit));
         internal void UseServerStore(IEventStore writeStore) => Server = NewServer(writeStore);
         private void Close() { var connection = (SqliteConnection)Store.Connection; Store.Close(); SqliteConnection.ClearPool(connection); connection.Dispose(); }

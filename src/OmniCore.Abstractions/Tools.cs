@@ -236,13 +236,17 @@ public sealed class ToolExecutionContext
     /// <summary>Host-owned CAS for faithful filesystem pre-images; not exposed in tool arguments.</summary>
     public IArtifactStore? Artifacts { get; }
 
+    /// <summary>Host-owned, cancellable receive operation for a delegated execution's durable mailbox.</summary>
+    public Func<ToolCallId, CancellationToken, Task<string?>>? ReceiveMailbox { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
         Action<DomainEventPayload>? emitEvent = null, Func<InteractionRequested, string?>? resolveInteraction = null,
         IAuditSink? audit = null, bool isInteractive = false,
         WeakSandboxConsentState? weakSandboxConsent = null, Action<ToolIntent>? beforeEffect = null,
-        IArtifactStore? artifacts = null)
+        IArtifactStore? artifacts = null,
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -253,6 +257,7 @@ public sealed class ToolExecutionContext
         WeakSandboxConsent = weakSandboxConsent;
         BeforeEffect = beforeEffect;
         Artifacts = artifacts;
+        ReceiveMailbox = receiveMailbox;
     }
 }
 

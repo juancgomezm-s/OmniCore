@@ -267,6 +267,7 @@ public sealed partial class OmniServer
         {
             lock (_modeAuthorityMutationGate)
             {
+                ReconcileDurableMailboxReceipts(session, run);
                 var journal = _store.ReadFrom(session, 1);
                 if (RunProjection.Replay(session, run, _codecs, journal.Where(item => item.RunId == run).ToArray()).IsTerminal())
                     return;
