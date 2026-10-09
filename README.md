@@ -66,7 +66,7 @@ Se distinguen rutas locales, cuota incluida, facturación monetaria y condicione
 
 ## Estado actual
 
-Resumen documental al **7 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
+Resumen documental al **8 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
 
 | Hito | Estado | Evidencia y alcance |
 |---|---|---|
