@@ -80,6 +80,59 @@ internal static class ChangedFilesReader
         { return Unavailable("ImageUnavailable"); }
     }
 
+    private sealed record BatchDiff(string Id, string Path, string? RunId, string? LaneId,
+        byte[]? Before, byte[]? After, bool Available, string? Reason);
+
+    // Batch integration has one journal effect for many paths. The manifest is revalidated by
+    // WorkspaceSnapshotStore, the same authority used by undo; raw protected JSON never crosses
+    // the protocol boundary. Row IDs include the path so each diff remains addressable.
+    private static IReadOnlyList<BatchDiff> BatchDiffs(IReadOnlyList<DomainEvent> events,
+        IEventCodecRegistry codecs, SessionId session, IArtifactStore? artifacts)
+    {
+        if (artifacts is null) return [];
+        var decoded = events.Select(item => (Envelope: item, Payload: codecs.Decode(item))).ToArray();
+        var roots = decoded.Select(item => item.Payload).OfType<WorkspaceRootEstablished>()
+            .Where(item => item.SessionId == session).ToArray();
+        if (roots.Length != 1 || string.IsNullOrWhiteSpace(roots[0].DurableIdentity)) return [];
+        WorkspaceSnapshotStore snapshots;
+        try { snapshots = new WorkspaceSnapshotStore(roots[0].CanonicalRoot,
+            new SnapshotEventStore(events), codecs, artifacts, roots[0].DurableIdentity, verifyPhysicalRoot: false); }
+        catch (Exception ex) when (ex is ArgumentException or IOException or InvalidOperationException) { return []; }
+        var starts = decoded.Where(item => item.Payload is ToolCallStarted)
+            .ToDictionary(item => ((ToolCallStarted)item.Payload).ToolCallId);
+        var result = new List<BatchDiff>();
+        foreach (var item in decoded.Where(item => item.Payload is WorktreeIntegrationStateRecorded
+                     { State: WorktreeIntegrationState.Completed }))
+        {
+            var state = (WorktreeIntegrationStateRecorded)item.Payload;
+            if (!starts.TryGetValue(state.ToolCallId, out var start) || !SameScope(start.Envelope, item.Envelope)) continue;
+            foreach (var entry in snapshots.BuildPlan(session, state.ToolCallId, includeCompensated: true).Entries.Where(row => row.State == "Ready"))
+            {
+                var diffId = entry.OriginalEffect + ":" + entry.RelativePath;
+                result.Add(new(diffId, OmniCliRuntime.RedactSensitive(entry.RelativePath),
+                    start.Envelope.RunId?.ToString(), start.Envelope.LaneId?.ToString(), entry.RestoreBytes,
+                    entry.PostimageBytes, true, null));
+            }
+        }
+        return result;
+    }
+
+    private sealed class SnapshotEventStore(IReadOnlyList<DomainEvent> events) : IEventStore
+    {
+        public void Append(SessionId sessionId, DomainEvent evt, DurabilityClass durability, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public void AppendBatch(SessionId sessionId, IReadOnlyList<DomainEvent> evts, DurabilityClass durability, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public long CurrentSequence(SessionId sessionId) => events.Where(item => item.SessionId == sessionId)
+            .Select(item => item.Sequence).DefaultIfEmpty().Max();
+        public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive) => events
+            .Where(item => item.SessionId == sessionId && item.Sequence >= fromSequenceInclusive).ToArray();
+    }
+
+    private static bool SameScope(DomainEvent left, DomainEvent right) => left.RunId == right.RunId
+        && left.TaskId == right.TaskId && left.LaneId == right.LaneId
+        && left.TurnId == right.TurnId && left.ExecutionId == right.ExecutionId;
+
     public static ChangedFilesSnapshot Read(IEventStore store, IEventCodecRegistry codecs, SessionId session, IArtifactStore? artifacts)
     {
         var all = store.ReadFrom(session, 1).Where(e => e.SessionId == session).ToArray();
@@ -94,7 +147,15 @@ internal static class ChangedFilesReader
                     effect.Envelope.LaneId?.ToString(), effect.Outcome == "Unknown" || effect.Metadata is null ? "?"
                         : effect.Metadata?.ExpectedPreHash == FilesystemReconciliationMetadata.AbsentPreHash ? "A" : "M",
                     added, deleted, diff.Available, diff.Reason);
-            }).ToArray();
+            }).Concat(BatchDiffs(all, codecs, session, artifacts).Select(diff =>
+            {
+                int? added = null, deleted = null;
+                var before = diff.Before is null ? "" : FileVersion.Decode(diff.Before).Text;
+                var after = diff.After is null ? "" : FileVersion.Decode(diff.After).Text;
+                if (diff.Available) { FileVersion.ChangedLines(before, after, out var d, out var a); added = a; deleted = d; }
+                return new ChangedFile(diff.Id, diff.Path, diff.RunId, diff.LaneId,
+                    diff.Before is null ? "A" : diff.After is null ? "D" : "M", added, deleted, diff.Available, diff.Reason);
+            })).ToArray();
             return new(session.ToString(), all.LastOrDefault()?.Sequence ?? 0, rows);
         }
         catch (Exception exception) when (Unreadable(exception))
@@ -105,8 +166,19 @@ internal static class ChangedFilesReader
     {
         try
         {
-            var effect = Effects(store.ReadFrom(session, 1), codecs, session).FirstOrDefault(e => e.Start.ToolCallId.ToString() == id);
-            return effect is null ? new(session.ToString(), id, "", false, "EffectNotFound", null, null) : Diff(effect, session, artifacts);
+            var all = store.ReadFrom(session, 1);
+            var effect = Effects(all, codecs, session).FirstOrDefault(e => e.Start.ToolCallId.ToString() == id);
+            if (effect is not null) return Diff(effect, session, artifacts);
+            var batch = BatchDiffs(all, codecs, session, artifacts).FirstOrDefault(item => item.Id == id);
+            if (batch is not null)
+            {
+                if (!batch.Available) return new(session.ToString(), id, batch.Path, false, batch.Reason, null, null);
+                var before = batch.Before is null ? "" : FileVersion.Decode(batch.Before).Text;
+                var after = batch.After is null ? "" : FileVersion.Decode(batch.After).Text;
+                return new(session.ToString(), id, batch.Path, true, null,
+                    OmniCliRuntime.RedactSensitive(before), OmniCliRuntime.RedactSensitive(after));
+            }
+            return new(session.ToString(), id, "", false, "EffectNotFound", null, null);
         }
         catch (Exception exception) when (Unreadable(exception))
         { return new(session.ToString(), id, "", false, "JournalUnavailable", null, null); }

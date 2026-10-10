@@ -83,11 +83,16 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
             capture.Preview.WorkspaceBranchAtCapture, capture.Preview.LaneHeadAtCapture,
             capture.Preview.LaneBranchAtCapture, images.ToArray());
         var payloadJson = JsonSerializer.Serialize(payload, ManifestJson.Default.BatchPayload);
+        // The protected artifact is loaded as a bounded UTF-8 document during recovery/undo.
+        // Reject before CAS publication and before ToolRuntime can commit its start Barrier.
+        if (Encoding.UTF8.GetByteCount(payloadJson) > MaxBatchBytes * 2)
+            throw new ToolPreflightException(ToolErrorCode.LimitExceeded,
+                "Integration manifest exceeds the safe protected-artifact limit.");
         var purpose = Purpose(workspace, args.OwnershipId, capture.Preview.ProposalId);
         var protectedStore = _artifacts as IProtectedArtifactStore
             ?? throw new InvalidOperationException("Protected integration storage is unavailable.");
         var reference = protectedStore.PutProtectedText(payloadJson, purpose, "application/json", ArtifactKind.Patch);
-        if (!_artifacts.Verify(reference.Hash, reference.Size))
+        if (reference.Size > MaxBatchBytes * 2 || !_artifacts.Verify(reference.Hash, reference.Size))
             throw new InvalidOperationException("Integration artifact failed verification.");
 
         var metadata = new BatchMetadata("worktree.integration.batch", 1, authorized.Intent.ToolCallId.ToString(), args.OwnershipId,
