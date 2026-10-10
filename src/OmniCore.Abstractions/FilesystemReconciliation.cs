@@ -8,6 +8,10 @@ using OmniCore.Domain;
 /// </summary>
 public sealed record FilesystemReconciliation(ReconciliationOutcome Outcome, string Detail)
 {
+    /// <summary>Typed entity event committed atomically with ToolCallReconciled when recovering
+    /// a transaction such as a worktree integration.</summary>
+    public DomainEventPayload? SupplementalEvent { get; init; }
+
     public static FilesystemReconciliation Applied(string detail) =>
         new FilesystemReconciliation(ReconciliationOutcome.Applied, detail);
 
@@ -40,4 +44,12 @@ public interface IFilesystemReconciler
     /// </summary>
     FilesystemReconciliation Reconcile(string workspaceRoot, string reconciliationJson,
         CancellationToken cancellationToken);
+}
+
+/// <summary>Optional reconciler extension for a top-level artifact reference persisted by
+/// ToolCallStarted. Existing single-file reconcilers remain source-compatible.</summary>
+public interface IArtifactAwareFilesystemReconciler : IFilesystemReconciler
+{
+    FilesystemReconciliation Reconcile(string workspaceRoot, string reconciliationJson,
+        ArtifactRef? beforeStateRef, CancellationToken cancellationToken);
 }

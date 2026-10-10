@@ -126,7 +126,13 @@ public sealed class RunResumeService
                     ToolCallId: id,
                     ExecutionId: origin.ExecutionId ?? startedEvent?.ExecutionId));
                 using var causation = CausationScope.Begin(requestedBy ?? new EventCausation(origin.EventId));
-                stream.Append(ReconcileCall(id, json));
+                started.TryGetValue(id, out var startedForCall);
+                startedEvents.TryGetValue(id, out var startedForCallEvent);
+                var terminalResult = ReconcileEffect(id, json, startedForCall, startedForCallEvent,
+                    origin, startedForCall?.BeforeStateRef);
+                var terminalReconciled = new ToolCallReconciled(id, terminalResult.Outcome, terminalResult.Detail);
+                if (terminalResult.SupplementalEvent is null) stream.Append(terminalReconciled);
+                else stream.AppendBatch([terminalReconciled, terminalResult.SupplementalEvent], DurabilityClass.Standard);
                 count += 1;
             }
         }
@@ -370,13 +376,52 @@ public sealed class RunResumeService
     private static string JsonString(string value) =>
         System.Text.Json.JsonSerializer.Serialize(value, JsonStrings.Default.String);
 
-    private ToolCallReconciled ReconcileCall(ToolCallId id, string? reconciliationJson)
+    private FilesystemReconciliation ReconcileEffect(ToolCallId id, string? reconciliationJson,
+        ToolCallStarted? started, DomainEvent? startedEvent, DomainEvent origin, ArtifactRef? beforeStateRef)
     {
         FilesystemReconciliation result = _fsReconciler is not null && reconciliationJson is not null
-            ? _fsReconciler!.Reconcile(_workspaceRoot, reconciliationJson!, CancellationToken.None)
+            ? _fsReconciler is IArtifactAwareFilesystemReconciler artifactAware
+                ? artifactAware.Reconcile(_workspaceRoot, reconciliationJson, beforeStateRef, CancellationToken.None)
+                : _fsReconciler.Reconcile(_workspaceRoot, reconciliationJson, CancellationToken.None)
             : FilesystemReconciliation.Unresolvable(
                 "metadatos de reconciliación ausentes o sin reconciliador: falla cerrado, sin re-ejecutar");
-        return new ToolCallReconciled(id, result.Outcome, result.Detail);
+        if (TryGetIntegrationIdentity(reconciliationJson, out var ownershipId, out var proposalId, out var paths))
+        {
+            if (result.SupplementalEvent is not WorktreeIntegrationStateRecorded entity
+                || entity.ToolCallId != id || entity.OwnershipId != ownershipId || entity.ProposalId != proposalId
+                || entity.Files is null || entity.Files.Count != paths.Count
+                || !entity.Files.Select(file => file.RelativePath).ToHashSet(StringComparer.Ordinal).SetEquals(paths))
+                return FilesystemReconciliation.Unresolvable("integration recovery state did not match its durable start record");
+        }
+        else if (result.SupplementalEvent is not null)
+            return FilesystemReconciliation.Unresolvable("unexpected supplemental recovery event");
+        return result;
+    }
+
+    private static bool TryGetIntegrationIdentity(string? json, out string ownershipId,
+        out string proposalId, out HashSet<string> paths)
+    {
+        ownershipId = ""; proposalId = ""; paths = new HashSet<string>(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(json)) return false;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("kind", out var kind) || kind.GetString() != "worktree.integration.batch")
+                return false;
+            if (!root.TryGetProperty("version", out var version) || version.GetInt32() != 1
+                || !root.TryGetProperty("ownershipId", out var owner) || owner.ValueKind != System.Text.Json.JsonValueKind.String
+                || !root.TryGetProperty("proposalId", out var proposal) || proposal.ValueKind != System.Text.Json.JsonValueKind.String
+                || !root.TryGetProperty("files", out var files) || files.ValueKind != System.Text.Json.JsonValueKind.Array
+                || files.GetArrayLength() is < 1 or > 64) return false;
+            ownershipId = owner.GetString() ?? ""; proposalId = proposal.GetString() ?? "";
+            foreach (var file in files.EnumerateArray())
+                if (!file.TryGetProperty("relativePath", out var path)
+                    || path.ValueKind != System.Text.Json.JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(path.GetString()) || !paths.Add(path.GetString()!)) return false;
+            return ownershipId.Length == 32 && proposalId.Length == 64;
+        }
+        catch (Exception) { return false; }
     }
 
     private int ResumeRun(SessionId sessionId, RunId runId)
@@ -476,21 +521,15 @@ public sealed class RunResumeService
                     _codecs.Decode(evt) is ToolCallEffectUnknown unknown && unknown.ToolCallId == id);
             }
 
-            FilesystemReconciliation result;
-            if (_fsReconciler is not null && started.ReconciliationJson is not null)
-            {
-                result = _fsReconciler!.Reconcile(_workspaceRoot, started.ReconciliationJson!,
-                    CancellationToken.None);
-            }
-            else
-            {
-                // Sin metadatos/reconciliador: falla cerrado. Nunca se re-ejecuta ni se clasifica.
-                result = FilesystemReconciliation.Unresolvable(
-                    "metadatos de reconciliación ausentes o sin reconciliador: falla cerrado, sin re-ejecutar");
-            }
+            var result = ReconcileEffect(id, started.ReconciliationJson, started, startedEvent,
+                unknownEvents[id], started.BeforeStateRef);
 
             using (CausationScope.Begin(requestedBy ?? new EventCausation(unknownEvents[id].EventId)))
-                stream.Append(new ToolCallReconciled(id, result.Outcome, result.Detail));
+            {
+                var reconciledEvent = new ToolCallReconciled(id, result.Outcome, result.Detail);
+                if (result.SupplementalEvent is null) stream.Append(reconciledEvent);
+                else stream.AppendBatch([reconciledEvent, result.SupplementalEvent], DurabilityClass.Standard);
+            }
             reconciled += 1;
         }
 

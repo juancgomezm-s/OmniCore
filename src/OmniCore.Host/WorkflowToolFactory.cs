@@ -165,11 +165,12 @@ public static class WorkflowToolFactory
             return _implementation.ExecuteAsync(intent, context, cancellationToken);
         }
 
-        public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context)
+        public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context,
+            CancellationToken cancellationToken)
         {
             if (!intent.Intent.ToolId.Equals(Descriptor.Id))
                 throw new InvalidOperationException("Dynamic tool reconciliation belongs to another registration.");
-            return (_implementation as IReconcilableTool)?.DescribeReconciliation(intent, context);
+            return (_implementation as IReconcilableTool)?.DescribeReconciliation(intent, context, cancellationToken);
         }
 
         private static StringComparison PathComparison() => OperatingSystem.IsWindows()

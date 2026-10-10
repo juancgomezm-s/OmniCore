@@ -408,10 +408,22 @@ public sealed class OmniHost
     /// FakeTools de simulación. Es la única composición real que expone mutaciones.
     /// </summary>
     public static HostTools CreateActTools(SandboxStrength processSandboxStrength = SandboxStrength.Strong,
-        ArtifactReadTool? artifactReadTool = null) =>
+        ArtifactReadTool? artifactReadTool = null,
+        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength,
-            artifactReadTool: artifactReadTool);
+            artifactReadTool: artifactReadTool, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator);
+
+    internal static IWorktreeIntegrationCoordinator? CreateWorktreeIntegrationCoordinator(
+        string workspaceRoot, IPlatformPaths paths, IArtifactStore artifacts)
+    {
+        if (artifacts is not IProtectedArtifactStore) return null;
+        var physical = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot);
+        var workspace = OmniCore.Domain.WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physical));
+        var dataRoot = Path.Combine(paths.DataDirectory, "workspaces", workspace.ToString());
+        return new WorktreeIntegrationHostCoordinator(physical, dataRoot, artifacts,
+            new GitWorktreeStore(SystemProcessRuntime.Instance()));
+    }
 
     /// <summary>
     /// Executor de <c>omni act</c>: capa de modo ACT (escrituras dentro del workspace permitidas por
@@ -433,7 +445,7 @@ public sealed class OmniHost
         return new ScriptedToolExecutor(catalog, effectivePolicy, workspaceRoot, boundary, audit,
             interactionResponder, isInteractive, GetWeakSandboxConsentState(runId),
             artifacts ?? CreateArtifactStore(WorkspaceDataDirectory(CreatePlatformPaths(), workspaceRoot)),
-            receiveMailbox: receiveMailbox);
+            receiveMailbox: receiveMailbox, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared);
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>

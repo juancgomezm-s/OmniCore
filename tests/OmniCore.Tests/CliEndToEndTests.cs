@@ -132,14 +132,14 @@ public sealed class CliEndToEndTests
                 """);
 
             var readersEntered = new CountdownEvent(2);
-            using var releaseFirstReader = new ManualResetEventSlim(false);
-            using var releaseSecondReader = new ManualResetEventSlim(false);
+            var releaseFirstReader = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseSecondReader = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var bothReadersAtProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var firstReaderAtProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var principalReachedProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             static string WithUsage(string response) => response.Replace("data: [DONE]",
                 "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]", StringComparison.Ordinal);
-            provider.RespondWith((index, _) =>
+            provider.RespondWithAsync(async (index, _) =>
             {
                 if (index == 0) return WithUsage(TextResponse("stable root context"));
                 if (index > 2)
@@ -151,8 +151,11 @@ public sealed class CliEndToEndTests
                 if (index == 1) firstReaderAtProvider.TrySetResult(true);
                 if (readersEntered.CurrentCount == 0) bothReadersAtProvider.TrySetResult(true);
                 var release = index == 1 ? releaseFirstReader : releaseSecondReader;
-                if (!release.Wait(TimeSpan.FromSeconds(25)))
+                try { await release.Task.WaitAsync(TimeSpan.FromSeconds(25), TestContext.Current.CancellationToken); }
+                catch (TimeoutException)
+                {
                     return WithUsage(TextResponse("reader fixture timeout"));
+                }
                 return WithUsage(TextResponse("reader completed " + index));
             });
 
@@ -227,7 +230,7 @@ public sealed class CliEndToEndTests
 
                 // Settle the sibling's known provider receipt before cancelling the first
                 // invocation. Its later cancellation must not poison the already-settled Lane.
-                releaseSecondReader.Set();
+                releaseSecondReader.TrySetResult(true);
                 var secondResult = await second.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
                 Assert.True(secondResult == 0, "Second reader failed before independent cancellation: "
                     + string.Join(" | ", secondDiagnostics));
@@ -235,7 +238,7 @@ public sealed class CliEndToEndTests
                     .Capacity!.Active);
 
                 firstCancellation.Cancel();
-                releaseFirstReader.Set();
+                releaseFirstReader.TrySetResult(true);
                 var firstResult = await first.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
                 Assert.NotEqual(0, firstResult);
                 var afterReaders = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
@@ -252,8 +255,8 @@ public sealed class CliEndToEndTests
             {
                 firstCancellation.Cancel();
                 secondCancellation.Cancel();
-                releaseFirstReader.Set();
-                releaseSecondReader.Set();
+                releaseFirstReader.TrySetResult(true);
+                releaseSecondReader.TrySetResult(true);
                 var workers = new[] { first, second }.Where(task => task is not null).Cast<Task<int>>().ToArray();
                 try { await Task.WhenAll(workers).WaitAsync(TimeSpan.FromSeconds(15)); }
                 catch (Exception) { }
@@ -2188,6 +2191,7 @@ public sealed class CliEndToEndTests
         private readonly CancellationTokenSource _stop = new();
         private readonly Task _serve;
         private Func<int, string, string>? _response;
+        private Func<int, string, Task<string>>? _asyncResponse;
         private int _requestCount;
 
         public ScriptedHttpProvider()
@@ -2200,7 +2204,17 @@ public sealed class CliEndToEndTests
 
         public string BaseUrl { get; }
         public int RequestCount => Volatile.Read(ref _requestCount);
-        public void RespondWith(Func<int, string, string> response) => _response = response;
+        public void RespondWith(Func<int, string, string> response)
+        {
+            _asyncResponse = null;
+            _response = response;
+        }
+
+        public void RespondWithAsync(Func<int, string, Task<string>> response)
+        {
+            _response = null;
+            _asyncResponse = response;
+        }
 
         private async Task ServeAsync()
         {
@@ -2235,7 +2249,9 @@ public sealed class CliEndToEndTests
 
                 var requestNumber = Interlocked.Increment(ref _requestCount) - 1;
                 var request = new string(body, 0, read);
-                var eventText = _response?.Invoke(requestNumber, request) ?? TextResponse("respuesta-scripted");
+                var eventText = _asyncResponse is { } asyncResponse
+                    ? await asyncResponse(requestNumber, request).ConfigureAwait(false)
+                    : _response?.Invoke(requestNumber, request) ?? TextResponse("respuesta-scripted");
                 var bytes = Encoding.UTF8.GetBytes(eventText);
                 var response = Encoding.ASCII.GetBytes(string.Join("\r\n", "HTTP/1.1 200 OK",
                     "Content-Type: text/event-stream", "Cache-Control: no-cache", "Connection: close",

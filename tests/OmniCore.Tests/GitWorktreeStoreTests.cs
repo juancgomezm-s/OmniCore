@@ -5,7 +5,11 @@ using System.Text;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Execution;
+using OmniCore.Engine;
 using OmniCore.Infrastructure;
+using OmniCore.Host;
+using OmniCore.Security;
+using OmniCore.Tools;
 using Task = System.Threading.Tasks.Task;
 
 namespace OmniCore.Tests;
@@ -78,6 +82,9 @@ public sealed class GitWorktreeStoreTests
 
         Assert.True(storeOutcome.Succeeded, storeOutcome.Error?.ToString());
         var preview = Assert.IsType<WorktreeIntegrationPreview>(storeOutcome.Preview);
+        var repeated = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree), CancellationToken.None);
+        Assert.True(repeated.Succeeded, repeated.Error?.ToString());
+        Assert.Equal(preview.ProposalId, repeated.Preview!.ProposalId);
         Assert.False(preview.HasConflicts);
         Assert.Contains(preview.Changes, change => change.RelativePath == "common.txt"
             && change.ExpectedPreSha256 == Sha256(workspaceCommon)
@@ -98,6 +105,68 @@ public sealed class GitWorktreeStoreTests
         Assert.False(File.Exists(Path.Combine(fixture.Repository, "lane-added.txt")));
         Assert.True(File.Exists(Path.Combine(fixture.Repository, "delete-me.txt")));
         Assert.Equal("remove in lane\n", File.ReadAllText(Path.Combine(fixture.Repository, "delete-me.txt")));
+
+        var capture = await store.CaptureIntegrationForApplyAsync(new(worktree, preview.ProposalId,
+            preview.Changes.Select(item => item.RelativePath).ToArray()), CancellationToken.None);
+        Assert.True(capture.Succeeded, capture.Error?.ToString());
+        Assert.Equal(preview.ProposalId, capture.Capture!.Preview.ProposalId);
+        Assert.Equal(index, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
+        Assert.Equal(head, fixture.Git("rev-parse", "HEAD").Trim());
+        Assert.Equal(workspaceCommon, File.ReadAllBytes(Path.Combine(fixture.Repository, "common.txt")));
+        var images = capture.Capture.Files.ToDictionary(item => item.RelativePath, StringComparer.Ordinal);
+        Assert.Equal(workspaceCommon, images["common.txt"].Preimage);
+        Assert.Equal(Encoding.UTF8.GetBytes("left user\ncontext one\ncontext two\ncontext three\nright lane\n"),
+            images["common.txt"].Postimage);
+        Assert.Equal(Encoding.UTF8.GetBytes("remove in lane\n"), images["delete-me.txt"].Preimage);
+        Assert.Null(images["delete-me.txt"].Postimage);
+        Assert.Null(images["lane-added.txt"].Preimage);
+        Assert.Equal(new UTF8Encoding(false).GetBytes("lane addition λ\n"), images["lane-added.txt"].Postimage);
+    }
+
+    [Fact]
+    public async Task Apply_capture_rejects_a_stale_proposal_and_requires_exact_claimed_paths()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("common.txt", "base\ncontext\nend\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "common.txt"), "base\ncontext\nlane\n");
+        var preview = Assert.IsType<WorktreeIntegrationPreview>(
+            (await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None)).Preview);
+
+        var omittedClaim = await store.CaptureIntegrationForApplyAsync(new(worktree, preview.ProposalId, []), CancellationToken.None);
+        Assert.Equal(GitWorktreeErrorCode.OwnershipMismatch, omittedClaim.Error);
+
+        fixture.Write("user-later.txt", "kept user edit\n");
+        var changed = await store.CaptureIntegrationForApplyAsync(new(worktree, preview.ProposalId,
+            preview.Changes.Select(item => item.RelativePath).ToArray()), CancellationToken.None);
+        Assert.Equal(GitWorktreeErrorCode.WorkspaceChanged, changed.Error);
+        Assert.Equal("kept user edit\n", File.ReadAllText(Path.Combine(fixture.Repository, "user-later.txt")));
+        Assert.Equal("base\ncontext\nlane\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, "common.txt")));
+    }
+
+    [Fact]
+    public async Task Proposal_id_binds_real_head_and_branch_even_when_trees_are_identical()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("common.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "common.txt"), "lane edit\n");
+        var first = Assert.IsType<WorktreeIntegrationPreview>(
+            (await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None)).Preview);
+        fixture.Git("checkout", "-b", "same-tree-new-branch");
+        var second = Assert.IsType<WorktreeIntegrationPreview>(
+            (await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None)).Preview);
+        Assert.NotEqual(first.ProposalId, second.ProposalId);
+        Assert.Equal(first.OursTree, second.OursTree);
+        Assert.Equal(first.TheirsTree, second.TheirsTree);
     }
 
     [Fact]
@@ -461,6 +530,601 @@ public sealed class GitWorktreeStoreTests
         Assert.False(Directory.Exists(Path.Combine(fixture.Repository, ".git", "worktrees")));
     }
 
+    [Fact]
+    public async Task Authorized_integration_applies_exact_batch_without_touching_git_index_or_head()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("edit.txt", "base one\ncontext\nbase end\n");
+        fixture.Write("remove.txt", "remove me\n");
+        fixture.Write("keep.txt", "user file\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "edit.txt"), "base one\ncontext\nlane end\n");
+        File.Delete(Path.Combine(worktree.WorktreePath, "remove.txt"));
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "new.txt"), "added λ\n", new UTF8Encoding(false));
+        fixture.Write("edit.txt", "user one\ncontext\nbase end\n");
+        fixture.Git("add", "edit.txt");
+        var originalIndex = File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index"));
+        var originalHead = fixture.Git("rev-parse", "HEAD").Trim();
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var changes = preview.Preview!.Changes.Select(item => item.RelativePath).ToArray();
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var (tool, authorized, context, events) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.Preview.ProposalId, changes);
+        var spec = tool.DescribeReconciliation(authorized, context, CancellationToken.None);
+        Assert.NotNull(spec?.BeforeStateRef);
+        Assert.Equal(EffectClass.Reconcilable, authorized.Intent.Effect);
+
+        var result = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+
+        Assert.False(result.IsError, result.Summary);
+        Assert.Equal(EffectOutcome.Applied, result.EffectOutcome);
+        Assert.Equal("user one\ncontext\nlane end\n", File.ReadAllText(Path.Combine(fixture.Repository, "edit.txt")));
+        Assert.False(File.Exists(Path.Combine(fixture.Repository, "remove.txt")));
+        Assert.Equal("added λ\n", File.ReadAllText(Path.Combine(fixture.Repository, "new.txt")));
+        Assert.Equal("user file\n", File.ReadAllText(Path.Combine(fixture.Repository, "keep.txt")));
+        Assert.Equal(originalIndex, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
+        Assert.Equal(originalHead, fixture.Git("rev-parse", "HEAD").Trim());
+        Assert.Contains(events, evt => evt is WorktreeIntegrationStateRecorded
+            { State: WorktreeIntegrationState.Completed });
+        Assert.True(artifacts.Verify(spec!.BeforeStateRef!.Hash, spec.BeforeStateRef.Size));
+
+        // A directory at a deleted-file target is not the deleted postimage. It must not be
+        // collapsed to the same null hash as a genuinely absent file during recovery.
+        Directory.CreateDirectory(Path.Combine(fixture.Repository, "remove.txt"));
+        var recovery = new WorktreeIntegrationAwareReconciler(fixture.Repository, artifacts,
+            new FilesystemReconciler(new PathBoundaryValidator()), fixture.Data).Reconcile(
+            fixture.Repository, spec.DurableMetadataJson!, spec.BeforeStateRef, CancellationToken.None);
+        Assert.Equal(ReconciliationOutcome.Conflict, recovery.Outcome);
+        Assert.Contains(Assert.IsType<WorktreeIntegrationStateRecorded>(recovery.SupplementalEvent).Files!,
+            file => file.RelativePath == "remove.txt" && file.Outcome == ReconciliationOutcome.Conflict);
+    }
+
+    [Fact]
+    public async Task Integration_batch_policy_preflight_rejects_excess_file_budget_before_barrier_or_artifact()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("a.txt", "a base\n");
+        fixture.Write("b.txt", "b base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "a.txt"), "a lane\n");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "b.txt"), "b lane\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifactsPath = Path.Combine(fixture.Root, "artifacts");
+        var artifacts = new FileArtifactStore(artifactsPath);
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var registry = new FileReadRegistry(fixture.Repository);
+        registry.Ledger.Bind(new FileMutationPolicy(FileMutationMode.Full, DestructiveActionPolicy.Allow,
+            DestructiveActionPolicy.Allow, maxFilesPerTurn: 1, maxChangedLinesPerTurn: 100,
+            maxRewriteRatio: 1.0, requirePriorRead: false, requireExpectedVersionToken: false,
+            requirePostEditValidation: true, allowParallelMutations: false));
+        var index = File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index"));
+        var (tool, authorized, context, events) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.Preview!.ProposalId,
+            preview.Preview.Changes.Select(change => change.RelativePath).ToArray(), registry);
+
+        var error = Assert.Throws<ToolPreflightException>(() =>
+            tool.DescribeReconciliation(authorized, context, CancellationToken.None));
+
+        Assert.Equal(ToolErrorCode.LimitExceeded, error.ErrorCode);
+        Assert.Equal("a base\n", File.ReadAllText(Path.Combine(fixture.Repository, "a.txt")));
+        Assert.Equal("b base\n", File.ReadAllText(Path.Combine(fixture.Repository, "b.txt")));
+        Assert.Equal(index, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
+        Assert.Empty(events);
+        Assert.False(Directory.Exists(artifactsPath));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Integration_recovery_is_idempotent_for_active_and_terminal_runs(bool terminal)
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("sample.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane result\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var (tool, authorized, context, executionEvents) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.Preview!.ProposalId,
+            preview.Preview.Changes.Select(change => change.RelativePath).ToArray());
+        var spec = tool.DescribeReconciliation(authorized, context, CancellationToken.None)!;
+
+        // Simulate an exception after the final atomic file move. The integration code must
+        // record a conservative Conflict/Unknown until restart classifies the complete post-set.
+        coordinator.AfterWriteForTests = (_, _) => throw new IOException("crash after final file move");
+        var interrupted = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+        Assert.Equal(EffectOutcome.Unknown, interrupted.EffectOutcome);
+        Assert.Equal("lane result\n", File.ReadAllText(Path.Combine(fixture.Repository, "sample.txt")));
+        var session = SessionId.New();
+        var journal = new InMemoryEventStore();
+        var run = TestRun.Open(journal, session);
+        var codecs = EventCodecs.Create();
+        var stream = new EventStream(journal, codecs, session);
+        var callId = authorized.Intent.ToolCallId;
+        var statuses = preview.Preview.Changes.Select(change => new WorktreeIntegrationFileStatus(
+            change.RelativePath, ReconciliationOutcome.NotApplied)).ToArray();
+        stream.AppendBatch([
+            new ToolCallRequested(callId, "fixture", "worktree.integrate", authorized.Intent.NormalizedArgumentsJson),
+            new ToolCallPrepared(callId, "{}"),
+            new PermissionEvaluated(callId, PermissionDecision.Allow, "{}", null),
+            new ToolCallAuthorized(callId),
+            new WorktreeIntegrationStateRecorded(callId, worktree.OwnershipId, preview.Preview.ProposalId,
+                WorktreeIntegrationState.Started, statuses),
+            new ToolCallStarted(callId, EffectClass.Reconcilable, spec.DurableMetadataJson)
+            {
+                BeforeStateRef = spec.BeforeStateRef,
+                Reversibility = Reversibility.Unknown,
+            },
+        ], DurabilityClass.Barrier);
+        var conflict = Assert.Single(executionEvents.OfType<WorktreeIntegrationStateRecorded>(), item =>
+            item.State == WorktreeIntegrationState.Conflict);
+        stream.AppendBatch([conflict, new ToolCallEffectUnknown(callId, EffectClass.Reconcilable)],
+            DurabilityClass.Standard);
+        if (terminal) new RunControlService(journal, codecs).CancelRun(session, run.RunId);
+
+        var reconciler = new WorktreeIntegrationAwareReconciler(fixture.Repository, artifacts,
+            new FilesystemReconciler(new PathBoundaryValidator()), fixture.Data);
+        var resume = new RunResumeService(journal, codecs, reconciler, fixture.Repository);
+        var first = terminal ? resume.ReconcileTerminalRuns(session) : resume.Resume(session, run.RunId);
+        var second = terminal ? resume.ReconcileTerminalRuns(session) : resume.Resume(session, run.RunId);
+
+        Assert.Equal(1, first);
+        Assert.Equal(0, second);
+        var decoded = journal.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+        Assert.Single(decoded.OfType<WorktreeIntegrationStateRecorded>(), item =>
+            item.State == WorktreeIntegrationState.Completed);
+        Assert.Single(decoded.OfType<ToolCallReconciled>(), item => item.ToolCallId == callId);
+        Assert.Equal(WorktreeIntegrationState.Completed,
+            CanonicalStateTracker.Replay(codecs, journal.ReadFrom(session, 1)).WorktreeIntegration(callId));
+        Assert.Equal("lane result\n", File.ReadAllText(Path.Combine(fixture.Repository, "sample.txt")));
+    }
+
+    [Fact]
+    public async Task OmniServer_restart_recovers_integration_from_platform_workspace_data_root()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("sample.txt", "base\n");
+        var durableRootIdentity = WorkspaceRootIdentity.Establish(fixture.Repository);
+        fixture.CommitAll("base");
+
+        var canonicalRoot = ProjectIdentity.CanonicalWorkspacePath(fixture.Repository);
+        var workspaceId = WorkspaceId.Of(canonicalRoot);
+        var platformData = Path.Combine(fixture.Root, "platform data");
+        var dataRoot = Path.Combine(platformData, "workspaces", workspaceId.ToString());
+        Directory.CreateDirectory(dataRoot);
+        var request = new WorktreeCreateRequest(workspaceId, LaneId.New(), canonicalRoot, dataRoot);
+        var git = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>(
+            (await git.CreateAsync(request, CancellationToken.None)).Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane result\n");
+        var preview = await git.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+
+        var artifactPath = Path.Combine(fixture.Root, "cas");
+        var artifacts = new FileArtifactStore(artifactPath);
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, dataRoot, artifacts, git);
+        var (tool, authorized, context, _) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.Preview!.ProposalId,
+            preview.Preview.Changes.Select(change => change.RelativePath).ToArray());
+        var reconciliation = Assert.IsType<ReconciliationSpec>(
+            tool.DescribeReconciliation(authorized, context, CancellationToken.None));
+
+        var journalPath = Path.Combine(fixture.Root, "journal.db");
+        var stateFile = Path.Combine(fixture.Root, "last-session.txt");
+        var session = SessionId.New();
+        var run = RunId.New();
+        var task = TaskId.New();
+        var call = authorized.Intent.ToolCallId;
+        var codecs = EventCodecs.Create();
+        var initialStore = new SqliteEventStore(journalPath);
+        try
+        {
+            var stream = new EventStream(initialStore, codecs, session);
+            stream.Append(new SessionCreated(session, workspaceId.ToString(), fixture.Repository,
+                ProfileId.New(), DateTimeOffset.UtcNow));
+            stream.Append(new WorkspaceRootEstablished(session, canonicalRoot, DateTimeOffset.UtcNow,
+                durableRootIdentity));
+            stream.Append(new RunCreated(run, session, "recover integration", RunMode.Act,
+                ExecutionStrategy.Direct, FailurePolicy.BlockDependents,
+                new TaskBudget(null, null, null, null), task, DateTimeOffset.UtcNow));
+            stream.Append(new RunStarted(run));
+            using (ExecutionScope.Begin(new ExecutionScopeState(run, task)))
+            {
+                stream.Append(new ToolCallRequested(call, "fixture", "worktree.integrate",
+                    authorized.Intent.NormalizedArgumentsJson));
+                stream.Append(new ToolCallPrepared(call, "{}"));
+                stream.Append(new PermissionEvaluated(call, PermissionDecision.Allow, "{}", null));
+                stream.Append(new ToolCallAuthorized(call));
+                var statuses = preview.Preview.Changes.Select(change => new WorktreeIntegrationFileStatus(
+                    change.RelativePath, ReconciliationOutcome.NotApplied)).ToArray();
+                stream.AppendBatch([
+                    new WorktreeIntegrationStateRecorded(call, worktree.OwnershipId,
+                        preview.Preview.ProposalId, WorktreeIntegrationState.Started, statuses),
+                    new ToolCallStarted(call, EffectClass.Reconcilable, reconciliation.DurableMetadataJson)
+                    {
+                        BeforeStateRef = reconciliation.BeforeStateRef,
+                        Reversibility = Reversibility.Unknown,
+                    },
+                ], DurabilityClass.Barrier);
+                stream.Append(new ToolCallEffectUnknown(call, EffectClass.Reconcilable));
+            }
+            File.WriteAllText(stateFile, session + "\n" + run);
+        }
+        finally { initialStore.Close(); }
+        File.WriteAllText(Path.Combine(fixture.Repository, "sample.txt"), "lane result\n");
+
+        var oldDataDirectory = Environment.GetEnvironmentVariable(DefaultPlatformPaths.DataDirVariable);
+        try
+        {
+            Environment.SetEnvironmentVariable(DefaultPlatformPaths.DataDirVariable, platformData);
+            long afterFirstRecovery;
+            var reopened = new SqliteEventStore(journalPath);
+            try
+            {
+                var server = new OmniServer(reopened, codecs, new InMemoryAuditSink(), stateFile,
+                    new FileArtifactStore(artifactPath));
+                Assert.Null(server.LastRecoveryProblem());
+                var payloads = reopened.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+                Assert.Single(payloads.OfType<ToolCallReconciled>(), item =>
+                    item.Outcome == ReconciliationOutcome.Applied);
+                Assert.Single(payloads.OfType<WorktreeIntegrationStateRecorded>(), item =>
+                    item.ToolCallId == call && item.State == WorktreeIntegrationState.Completed);
+                Assert.Equal("lane result\n", File.ReadAllText(Path.Combine(fixture.Repository, "sample.txt")));
+                afterFirstRecovery = reopened.CurrentSequence(session);
+            }
+            finally { reopened.Close(); }
+
+            var reopenedAgain = new SqliteEventStore(journalPath);
+            try
+            {
+            var secondServer = new OmniServer(reopenedAgain, codecs, new InMemoryAuditSink(), stateFile,
+                new FileArtifactStore(artifactPath));
+            Assert.Null(secondServer.LastRecoveryProblem());
+            Assert.Equal(afterFirstRecovery, reopenedAgain.CurrentSequence(session));
+            }
+            finally { reopenedAgain.Close(); }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(DefaultPlatformPaths.DataDirVariable, oldDataDirectory);
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        }
+    }
+
+    [Fact]
+    public async Task Integration_full_runtime_commits_validation_debt_and_entity_start_with_barrier()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("edit.txt", "base\n");
+        fixture.Write("delete.txt", "delete\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "edit.txt"), "lane\n");
+        File.Delete(Path.Combine(worktree.WorktreePath, "delete.txt"));
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "new.txt"), "new\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var boundary = CreateIntegrationBoundary(requirePostEditValidation: true);
+        var executor = CreateExecutor(fixture.Repository, artifacts, coordinator, boundary,
+            PermissionDecision.Allow, includeLease: true);
+        var journal = new RecordingEventStore(new InMemoryEventStore());
+        var session = SessionId.New();
+        var run = TestRun.Open(journal, session);
+        var args = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            ownershipId = worktree.OwnershipId,
+            proposalId = preview.Preview!.ProposalId,
+            paths = preview.Preview.Changes.Select(change => change.RelativePath).ToArray(),
+        });
+        var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("worktree.integrate"), "pipeline", args);
+        var stream = new EventStream(journal, EventCodecs.Create(), session);
+        using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane));
+
+        var outcome = executor.ExecuteTool(call, userApprovesAsk: false, CancellationToken.None, stream);
+
+        Assert.True(outcome.Succeeded, outcome.Summary);
+        Assert.Equal("lane\n", File.ReadAllText(Path.Combine(fixture.Repository, "edit.txt")));
+        Assert.False(File.Exists(Path.Combine(fixture.Repository, "delete.txt")));
+        Assert.Equal("new\n", File.ReadAllText(Path.Combine(fixture.Repository, "new.txt")));
+        var barrier = Assert.Single(journal.Batches, batch => batch.Durability == DurabilityClass.Barrier);
+        var codecs = EventCodecs.Create();
+        var barrierPayloads = barrier.Events.Select(codecs.Decode).ToArray();
+        Assert.Contains(barrierPayloads, item => item is WorktreeIntegrationStateRecorded
+            { State: WorktreeIntegrationState.Started });
+        Assert.Contains(barrierPayloads, item => item is PostEditValidationPending debt
+            && debt.ToolCallId == call.ToolCallId && debt.Paths.Count == 3);
+        Assert.Contains(barrierPayloads, item => item is ToolCallStarted start && start.ToolCallId == call.ToolCallId);
+        Assert.Single(journal.ReadFrom(session, 1).Select(codecs.Decode)
+            .OfType<WorktreeIntegrationStateRecorded>(), item => item.State == WorktreeIntegrationState.Completed);
+        Assert.Equal(3, boundary.ReadRegistry().Ledger.PendingValidations().Count);
+    }
+
+    [Theory]
+    [InlineData("deny")]
+    [InlineData("ask")]
+    [InlineData("no-lease")]
+    public async Task Integration_permission_ask_and_missing_lease_stop_before_barrier_or_effect(string gate)
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("sample.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifactPath = Path.Combine(fixture.Root, "artifacts");
+        var artifacts = new FileArtifactStore(artifactPath);
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var boundary = gate == "ask"
+            ? CreateIntegrationBoundary(delete: DestructiveActionPolicy.Ask)
+            : CreateIntegrationBoundary();
+        var decision = gate == "deny" ? PermissionDecision.Deny : PermissionDecision.Allow;
+        var executor = CreateExecutor(fixture.Repository, artifacts, coordinator, boundary, decision,
+            includeLease: gate != "no-lease");
+        var journal = new RecordingEventStore(new InMemoryEventStore());
+        var session = SessionId.New();
+        var run = TestRun.Open(journal, session);
+        var args = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            ownershipId = worktree.OwnershipId,
+            proposalId = preview.Preview!.ProposalId,
+            paths = preview.Preview.Changes.Select(change => change.RelativePath).ToArray(),
+        });
+        var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("worktree.integrate"), "pipeline", args);
+        var stream = new EventStream(journal, EventCodecs.Create(), session);
+        using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane));
+
+        var outcome = executor.ExecuteTool(call, userApprovesAsk: false, CancellationToken.None, stream);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Equal("base\n", File.ReadAllText(Path.Combine(fixture.Repository, "sample.txt")));
+        Assert.DoesNotContain(journal.Batches, batch => batch.Durability == DurabilityClass.Barrier);
+        Assert.DoesNotContain(journal.ReadFrom(session, 1).Select(EventCodecs.Create().Decode), item =>
+            item is ToolCallStarted || item is WorktreeIntegrationStateRecorded);
+        if (gate is "deny" or "ask") Assert.False(Directory.Exists(artifactPath));
+        if (gate == "no-lease") Assert.False(Directory.Exists(artifactPath));
+    }
+
+    [Fact]
+    public async Task Integration_barrier_failure_never_writes_workspace_files()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("sample.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var boundary = CreateIntegrationBoundary(requirePostEditValidation: true);
+        var executor = CreateExecutor(fixture.Repository, artifacts, coordinator, boundary,
+            PermissionDecision.Allow, includeLease: true);
+        var journal = new RecordingEventStore(new InMemoryEventStore(), failBarrier: true);
+        var session = SessionId.New();
+        var run = TestRun.Open(journal, session);
+        var args = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            ownershipId = worktree.OwnershipId,
+            proposalId = preview.Preview!.ProposalId,
+            paths = preview.Preview.Changes.Select(change => change.RelativePath).ToArray(),
+        });
+        var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("worktree.integrate"), "pipeline", args);
+        var stream = new EventStream(journal, EventCodecs.Create(), session);
+        using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane));
+
+        Assert.Throws<IOException>(() => executor.ExecuteTool(call, false, CancellationToken.None, stream));
+
+        Assert.Equal("base\n", File.ReadAllText(Path.Combine(fixture.Repository, "sample.txt")));
+        Assert.DoesNotContain(journal.ReadFrom(session, 1).Select(EventCodecs.Create().Decode),
+            item => item is ToolCallStarted);
+        var attempted = Assert.Single(journal.Batches, batch => batch.Durability == DurabilityClass.Barrier);
+        var attemptedPayloads = attempted.Events.Select(EventCodecs.Create().Decode).ToArray();
+        Assert.Contains(attemptedPayloads, item => item is WorktreeIntegrationStateRecorded
+            { State: WorktreeIntegrationState.Started });
+        Assert.Contains(attemptedPayloads, item => item is PostEditValidationPending);
+        Assert.Contains(attemptedPayloads, item => item is ToolCallStarted);
+    }
+
+    [Fact]
+    public async Task Integration_rechecks_each_preimage_and_recovers_partial_external_edit_as_conflict()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("a.txt", "a base\n");
+        fixture.Write("b.txt", "b base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "a.txt"), "a lane\n");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "b.txt"), "b lane\n");
+        var originalIndex = File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index"));
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var (tool, authorized, context, events) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.Preview!.ProposalId, preview.Preview.Changes.Select(c => c.RelativePath).ToArray());
+        var spec = tool.DescribeReconciliation(authorized, context, CancellationToken.None);
+        Assert.NotNull(spec);
+        coordinator.AfterWriteForTests = (index, _) =>
+        {
+            if (index == 0) File.WriteAllText(Path.Combine(fixture.Repository, "b.txt"), "later user edit\n");
+        };
+
+        var result = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal(EffectOutcome.Unknown, result.EffectOutcome);
+        Assert.Equal("a lane\n", File.ReadAllText(Path.Combine(fixture.Repository, "a.txt")));
+        Assert.Equal("later user edit\n", File.ReadAllText(Path.Combine(fixture.Repository, "b.txt")));
+        Assert.Equal(originalIndex, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
+        Assert.Contains(events, evt => evt is WorktreeIntegrationStateRecorded
+            { State: WorktreeIntegrationState.Conflict });
+
+        var reconciler = new WorktreeIntegrationAwareReconciler(fixture.Repository, artifacts,
+            new FilesystemReconciler(new PathBoundaryValidator()), fixture.Data);
+        var recovery = reconciler.Reconcile(fixture.Repository, Assert.IsType<string>(spec!.DurableMetadataJson),
+            spec.BeforeStateRef, CancellationToken.None);
+        Assert.Equal(ReconciliationOutcome.Conflict, recovery.Outcome);
+        var entity = Assert.IsType<WorktreeIntegrationStateRecorded>(recovery.SupplementalEvent);
+        Assert.Contains(entity.Files!, file => file.RelativePath == "b.txt"
+            && file.Outcome == ReconciliationOutcome.Conflict);
+    }
+
+    [Fact]
+    public async Task Integration_detects_edit_to_already_written_file_before_completed_outcome()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("a.txt", "a base\n");
+        fixture.Write("b.txt", "b base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "a.txt"), "a lane\n");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "b.txt"), "b lane\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var (tool, authorized, context, events) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.Preview!.ProposalId, preview.Preview.Changes.Select(c => c.RelativePath).ToArray());
+        var spec = tool.DescribeReconciliation(authorized, context, CancellationToken.None);
+        coordinator.AfterWriteForTests = (index, path) =>
+        {
+            if (index == 0) File.WriteAllText(Path.Combine(fixture.Repository, path), "later edit to first target\n");
+        };
+
+        var result = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal(EffectOutcome.Unknown, result.EffectOutcome);
+        Assert.Equal("later edit to first target\n", File.ReadAllText(Path.Combine(fixture.Repository, "a.txt")));
+        Assert.Contains(events, evt => evt is WorktreeIntegrationStateRecorded state
+            && state.State == WorktreeIntegrationState.Conflict
+            && state.Files!.Any(file => file.RelativePath == "a.txt" && file.Outcome == ReconciliationOutcome.Conflict));
+        var recovered = new WorktreeIntegrationAwareReconciler(fixture.Repository, artifacts,
+            new FilesystemReconciler(new PathBoundaryValidator()), fixture.Data).Reconcile(fixture.Repository,
+            spec!.DurableMetadataJson!, spec.BeforeStateRef, CancellationToken.None);
+        Assert.Equal(ReconciliationOutcome.Conflict, recovered.Outcome);
+    }
+
+    [Fact]
+    public async Task Integration_create_does_not_overwrite_file_appearing_before_publication()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "new.txt"), "lane proposal\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var (tool, authorized, context, events) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.Preview!.ProposalId, ["new.txt"]);
+        var spec = tool.DescribeReconciliation(authorized, context, CancellationToken.None);
+        Assert.NotNull(spec);
+        coordinator.BeforePublishForTests = (_, path) =>
+            File.WriteAllText(Path.Combine(fixture.Repository, path), "external creation\n");
+
+        var result = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+
+        Assert.True(result.IsError);
+        Assert.Equal(EffectOutcome.Unknown, result.EffectOutcome);
+        Assert.Equal("external creation\n", File.ReadAllText(Path.Combine(fixture.Repository, "new.txt")));
+        Assert.Contains(events, evt => evt is WorktreeIntegrationStateRecorded
+            { State: WorktreeIntegrationState.Conflict });
+        var reconciler = new WorktreeIntegrationAwareReconciler(fixture.Repository, artifacts,
+            new FilesystemReconciler(new PathBoundaryValidator()), fixture.Data);
+        var recovered = reconciler.Reconcile(fixture.Repository, spec!.DurableMetadataJson!,
+            spec.BeforeStateRef, CancellationToken.None);
+        Assert.Equal(ReconciliationOutcome.Conflict, recovered.Outcome);
+    }
+
+    private static (WorktreeIntegrationApplyTool Tool, AuthorizedToolIntent Authorized,
+        ToolExecutionContext Context, List<DomainEventPayload> Events) MakeIntegrationCall(string repository, IArtifactStore artifacts,
+        WorktreeIntegrationHostCoordinator coordinator, string ownershipId, string proposalId,
+        string[] paths, FileReadRegistry? registry = null)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(new { ownershipId, proposalId, paths });
+        var callId = ToolCallId.New();
+        var tool = new WorktreeIntegrationApplyTool(new PathBoundaryValidator(), coordinator);
+        var call = new ValidatedToolCall(callId, tool.Descriptor.Id, "integration-test", json);
+        var prepared = Assert.IsType<Prepared>(tool.Prepare(call, new ToolPreparationContext(repository, DateTimeOffset.UtcNow)));
+        var authorized = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).Authorize(prepared.Intent);
+        var events = new List<DomainEventPayload>();
+        var context = new ToolExecutionContext(repository, registry, events.Add, artifacts: artifacts);
+        return (tool, authorized, context, events);
+    }
+
+    private static ModelCapabilityBoundary CreateIntegrationBoundary(
+        bool requirePostEditValidation = false, DestructiveActionPolicy delete = DestructiveActionPolicy.Allow,
+        int maxFiles = 8)
+    {
+        var key = ModelPolicyKey.For("m7-test", "fixture-model");
+        var full = ModelPolicyPresets.FullAgent();
+        var mutation = new FileMutationPolicy(FileMutationMode.Full, delete, DestructiveActionPolicy.Allow,
+            maxFiles, 2000, 1.0, requirePriorRead: false, requireExpectedVersionToken: false,
+            requirePostEditValidation, allowParallelMutations: false);
+        var user = new UserModelPolicy(full.Category, full.ToolPolicy, mutation, full.Source, full.Note);
+        var harness = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Discovered, 16,
+            GuidanceLevel.Full, 3, PlanControl.ModelDriven, 8);
+        var effective = EffectiveModelPolicy.Resolve(key,
+            new StoredModelPolicy(key, 1, user, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch), harness);
+        return new ModelCapabilityBoundary(effective);
+    }
+
+    private static ScriptedToolExecutor CreateExecutor(string workspace, IArtifactStore artifacts,
+        WorktreeIntegrationHostCoordinator coordinator, ModelCapabilityBoundary boundary,
+        PermissionDecision permission, bool includeLease)
+    {
+        var tool = new WorktreeIntegrationApplyTool(new PathBoundaryValidator(), coordinator);
+        var catalog = new FakeCatalog().Add(tool);
+        var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+        {
+            ["worktree.integrate"] = permission,
+        });
+        return new ScriptedToolExecutor(catalog, policy, workspace, boundary, null, null, false,
+            artifacts: artifacts,
+            workspaceWriteLeases: includeLease ? HostWorkspaceWriteLeases.Shared : null);
+    }
+
     private sealed class GitFixture : IDisposable
     {
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "omnicore-m7-git", Guid.NewGuid().ToString("N"));
@@ -516,6 +1180,25 @@ public sealed class GitWorktreeStoreTests
         {
             M7FixtureCleanup.DeleteOwnedTempDirectory(Root);
         }
+    }
+
+    private sealed record RecordedBatch(DurabilityClass Durability, IReadOnlyList<DomainEvent> Events);
+
+    private sealed class RecordingEventStore(IEventStore inner, bool failBarrier = false) : IEventStore
+    {
+        public List<RecordedBatch> Batches { get; } = new();
+        public void Append(SessionId sessionId, DomainEvent evt, DurabilityClass durability,
+            CancellationToken cancellationToken) => AppendBatch(sessionId, [evt], durability, cancellationToken);
+        public void AppendBatch(SessionId sessionId, IReadOnlyList<DomainEvent> evts, DurabilityClass durability,
+            CancellationToken cancellationToken)
+        {
+            Batches.Add(new RecordedBatch(durability, evts.ToArray()));
+            if (failBarrier && durability == DurabilityClass.Barrier) throw new IOException("fixture barrier failure");
+            inner.AppendBatch(sessionId, evts, durability, cancellationToken);
+        }
+        public long CurrentSequence(SessionId sessionId) => inner.CurrentSequence(sessionId);
+        public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive) =>
+            inner.ReadFrom(sessionId, fromSequenceInclusive);
     }
 
     private sealed class ControlledRuntime : IProcessRuntime

@@ -27,7 +27,28 @@ public interface ITool
 /// </summary>
 public interface IReconcilableTool
 {
-    ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context);
+    ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Effect tool whose reconciliation manifest is mandatory. A missing/failed pre-image
+/// must stop before the durable start barrier, never fall through to an untracked effect.</summary>
+public interface IRequiresReconciliationTool : IReconcilableTool { }
+
+/// <summary>Workspace-scoped exclusion for every authorized tool that declares write claims.
+/// Host implementations key by the canonical physical workspace root and share across sessions.</summary>
+public interface IWorkspaceWriteLeaseProvider
+{
+    IDisposable Acquire(string workspaceRoot, CancellationToken cancellationToken);
+}
+
+/// <summary>Host-composed coordinator for a single authenticated worktree integration.</summary>
+public interface IWorktreeIntegrationCoordinator
+{
+    ReconciliationSpec Prepare(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+    Task<ToolResult> ApplyAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>Descripción de una tool (spec §32, ADR-0027).</summary>
@@ -239,6 +260,8 @@ public sealed class ToolExecutionContext
     /// <summary>Host-owned, cancellable receive operation for a delegated execution's durable mailbox.</summary>
     public Func<ToolCallId, CancellationToken, Task<string?>>? ReceiveMailbox { get; }
 
+    public IWorkspaceWriteLeaseProvider? WorkspaceWriteLeases { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
@@ -246,7 +269,8 @@ public sealed class ToolExecutionContext
         IAuditSink? audit = null, bool isInteractive = false,
         WeakSandboxConsentState? weakSandboxConsent = null, Action<ToolIntent>? beforeEffect = null,
         IArtifactStore? artifacts = null,
-        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null)
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
+        IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -258,6 +282,7 @@ public sealed class ToolExecutionContext
         BeforeEffect = beforeEffect;
         Artifacts = artifacts;
         ReceiveMailbox = receiveMailbox;
+        WorkspaceWriteLeases = workspaceWriteLeases;
     }
 }
 
@@ -298,6 +323,13 @@ public sealed class ReconciliationSpec
 {
     public ArtifactRef? BeforeStateRef { get; init; }
 
+    /// <summary>Strict, tool-specific canonical envelope for a batch effect. Only a core tool
+    /// implementing IRequiresReconciliationTool may set it; generic callers cannot opt out of parsing.</summary>
+    public string? DurableMetadataJson { get; init; }
+
+    /// <summary>Optional typed entity event committed atomically with ToolCallStarted's Barrier.</summary>
+    public DomainEventPayload? StartedEntityEvent { get; init; }
+
     public Reversibility Reversibility { get; init; } = Reversibility.Unknown;
 
     public string? ExpectedPreHash { get; }
@@ -312,4 +344,10 @@ public sealed class ReconciliationSpec
         ExpectedPostHash = expectedPostHash;
         IdempotencyKey = idempotencyKey;
     }
+}
+
+/// <summary>Typed, side-effect-free refusal discovered while preparing an authorized effect.</summary>
+public sealed class ToolPreflightException(ToolErrorCode errorCode, string message) : Exception(message)
+{
+    public ToolErrorCode ErrorCode { get; } = errorCode;
 }

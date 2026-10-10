@@ -116,7 +116,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     /// Es oportunista: si el dry-run no es fiable (ruta fuera de la frontera o hacia un secreto,
     /// reemplazo con token obsoleto o encoding inválido) devuelve null y ExecuteAsync decide.
     /// </summary>
-    public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context)
+    public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
     {
         var (path, expectedVersion, content) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null || path.Length == 0 || content is null)

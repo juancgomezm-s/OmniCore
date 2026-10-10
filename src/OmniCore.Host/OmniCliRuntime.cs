@@ -1334,7 +1334,9 @@ public sealed class OmniCliRuntime : IDisposable
                         ProcessSandboxStrengthForTests)
                     : childRequiresActTools ? HostTools.DelegatedAgent(agentProfile!, artifactReadTool) : HostTools.DelegatedReaderWithMailbox(artifactReadTool)
                 : executingAct
-                ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
+                ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
+                    worktreeIntegrationCoordinator: delegation is null
+                        ? OmniHost.CreateWorktreeIntegrationCoordinator(_workspaceRoot, paths, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
             if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
             {
@@ -1596,7 +1598,9 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (optionId == "approve_execute")
                 {
-                    var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts));
+                    var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts),
+                        worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
+                            _workspaceRoot, paths, artifacts));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
                         server.ResolveLaneAgentProfile(sessionId, runId, laneId));
@@ -2513,7 +2517,9 @@ public sealed class OmniCliRuntime : IDisposable
         var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), _workspaceRoot));
         var artifactReadTool = CreateArtifactReadTool(server, artifacts);
         var catalog = (mode == RunMode.Act
-            ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool)
+            ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
+                worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
+                    _workspaceRoot, OmniHost.CreatePlatformPaths(), artifacts))
             : OmniHost.CreateExplorerTools(artifactReadTool)).Catalog();
         server.ConfigureToolDiagnostics(catalog, CreateBoundary(effective, _workspaceRoot), mode);
     }

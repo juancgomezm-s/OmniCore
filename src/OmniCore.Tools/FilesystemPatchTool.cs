@@ -103,7 +103,8 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
     /// oportunista: si el dry-run no es posible (archivo ausente, encoding inválido, STALE_WRITE,
     /// ruta fuera de la frontera o hacia un secreto) devuelve null y ExecuteAsync decide.
     /// </summary>
-    public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context)
+    public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
     {
         var (path, expectedVersion, oldText, newText) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null || path.Length == 0 || expectedVersion is null || oldText is null || newText is null)

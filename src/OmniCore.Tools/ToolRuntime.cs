@@ -374,10 +374,34 @@ public sealed class ToolRuntime
         // canónica de los metadatos (ruta + hashes) para que un crash posterior pueda reconciliar el
         // efecto desde el journal sin re-ejecutar (ADR-0004 §4). Si la tool calcula esos metadatos
         // (IReconcilableTool), se piden aquí: ya autorizada y antes del efecto, nunca en Prepare.
+        IDisposable? workspaceWriteLease = null;
+        try
+        {
+            if (intent.Effect != EffectClass.None && intent.Claims.Writes.Count > 0)
+            {
+                if (execContext.WorkspaceWriteLeases is not null)
+                    workspaceWriteLease = execContext.WorkspaceWriteLeases.Acquire(execContext.WorkspaceRoot, cancellationToken);
+                else if (tool is IRequiresReconciliationTool)
+                {
+                    const string cause = "Workspace write exclusion is unavailable.";
+                    _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+                    return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception)
+        {
+            const string cause = "Workspace write exclusion could not be acquired.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
+        using var heldWorkspaceWrite = workspaceWriteLease;
+
         IDisposable? publication;
         try
         {
-            publication = tool is FilesystemWriteTool or FilesystemPatchTool && execContext.Artifacts is not null
+            publication = tool is IReconcilableTool && intent.Effect != EffectClass.None && execContext.Artifacts is not null
                 ? (execContext.Artifacts as IArtifactPublicationLease
                     ?? throw new FilesystemPreimageException()).AcquirePublicationLease(cancellationToken)
                 : null;
@@ -393,9 +417,16 @@ public sealed class ToolRuntime
         var reconciliation = intent.Reconciliation;
         if (reconciliation is null && tool is IReconcilableTool reconcilable)
         {
+            var trustedIntegrationTool = IsTrustedIntegrationTool(tool);
             try
             {
-                reconciliation = reconcilable.DescribeReconciliation(authorized, execContext);
+                reconciliation = reconcilable.DescribeReconciliation(authorized, execContext, cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (ToolPreflightException ex)
+            {
+                _emit(new ToolCallFailed(call.ToolCallId, ex.Message, EffectOutcome.None, ex.ErrorCode));
+                return new Outcome(false, ex.Message, null, ToolCallState.Failed, EffectOutcome.None);
             }
             catch (FilesystemPreimageException)
             {
@@ -405,12 +436,54 @@ public sealed class ToolRuntime
             }
             catch (Exception)
             {
-                reconciliation = null; // sin metadatos: reconciliación conservadora, nunca bloquea
+                if (tool is IRequiresReconciliationTool)
+                {
+                    const string cause = "Required effect metadata could not be prepared safely.";
+                    _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+                    return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+                }
+                reconciliation = null; // legado no requerido: reconciliación conservadora
             }
         }
 
+        var trustedIntegration = IsTrustedIntegrationTool(tool);
+
+        if (tool is IRequiresReconciliationTool && (reconciliation is null
+            || execContext.Artifacts is null || reconciliation.BeforeStateRef is null
+            || string.IsNullOrWhiteSpace(reconciliation.DurableMetadataJson)))
+        {
+            const string cause = "Required effect metadata is unavailable.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
+
+        if (tool is IRequiresReconciliationTool && (!IsTrustedIntegrationTool(tool)
+            || reconciliation is null || !ValidateIntegrationEnvelope(intent, execContext, reconciliation)))
+        {
+            const string cause = "Required integration metadata did not match its authorized targets.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
+
+        if (reconciliation?.DurableMetadataJson is not null && !trustedIntegration)
+        {
+            const string cause = "Custom reconciliation metadata is restricted to the registered integration tool.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
+
+        if (reconciliation?.StartedEntityEvent is not null && !trustedIntegration)
+        {
+            const string cause = "Custom start events are restricted to the registered integration tool.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
+
         execContext.BeforeEffect?.Invoke(intent);
-        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, ReconciliationJsonFor(intent.Claims, reconciliation))
+        if (reconciliation?.StartedEntityEvent is { } entityEvent) _emit(entityEvent);
+        var durableReconciliation = reconciliation?.DurableMetadataJson
+            ?? ReconciliationJsonFor(intent.Claims, reconciliation);
+        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, durableReconciliation)
         {
             // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
             TargetRef = RelativeTargetRef(intent.Claims.Writes, execContext.WorkspaceRoot),
@@ -470,6 +543,62 @@ public sealed class ToolRuntime
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
         return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect);
     }
+
+    private static bool IsTrustedIntegrationTool(ITool tool) =>
+        tool is WorktreeIntegrationApplyTool
+        && tool.Descriptor.Id.ToString() == "worktree.integrate"
+        && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
+        && tool.Descriptor.Source.Trust == TrustLevel.Core
+        && tool.Descriptor.Protection == ToolProtection.Protected;
+
+    private static bool ValidateIntegrationEnvelope(ToolIntent intent, ToolExecutionContext context,
+        ReconciliationSpec reconciliation)
+    {
+        try
+        {
+            if (reconciliation.BeforeStateRef is not { } artifact || context.Artifacts is null
+                || !context.Artifacts.Verify(artifact.Hash, artifact.Size)
+                || reconciliation.StartedEntityEvent is not WorktreeIntegrationStateRecorded state
+                || state.ToolCallId != intent.ToolCallId || state.State != WorktreeIntegrationState.Started
+                || state.Files is null || string.IsNullOrWhiteSpace(reconciliation.DurableMetadataJson)) return false;
+            using var document = System.Text.Json.JsonDocument.Parse(reconciliation.DurableMetadataJson);
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object || root.EnumerateObject().Count() != 12
+                || root.GetProperty("kind").GetString() != "worktree.integration.batch"
+                || root.GetProperty("version").GetInt32() != 1
+                || root.GetProperty("toolCallId").GetString() != intent.ToolCallId.ToString()
+                || root.GetProperty("ownershipId").GetString() != state.OwnershipId
+                || root.GetProperty("proposalId").GetString() != state.ProposalId
+                || !Guid.TryParseExact(state.OwnershipId, "N", out _)
+                || state.ProposalId.Length != 64 || state.ProposalId.Any(ch => !Uri.IsHexDigit(ch))) return false;
+            var claims = new HashSet<string>(PathComparer);
+            var rootPath = Path.GetFullPath(context.WorkspaceRoot);
+            foreach (var target in intent.Claims.Writes)
+            {
+                var full = Path.GetFullPath(target, rootPath);
+                var relative = Path.GetRelativePath(rootPath, full).Replace(Path.DirectorySeparatorChar, '/');
+                if (Path.IsPathRooted(relative) || relative == ".."
+                    || relative.StartsWith("../", StringComparison.Ordinal) || !claims.Add(relative)) return false;
+            }
+            if (!root.TryGetProperty("files", out var files) || files.ValueKind != System.Text.Json.JsonValueKind.Array
+                || files.GetArrayLength() != claims.Count || claims.Count is < 1 or > 64) return false;
+            var durablePaths = new HashSet<string>(PathComparer);
+            foreach (var file in files.EnumerateArray())
+            {
+                if (file.ValueKind != System.Text.Json.JsonValueKind.Object || file.EnumerateObject().Count() != 5
+                    || !file.TryGetProperty("relativePath", out var path) || path.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !durablePaths.Add(path.GetString()!)) return false;
+            }
+            if (!claims.SetEquals(durablePaths) || !state.Files.Select(file => file.RelativePath)
+                .ToHashSet(PathComparer).SetEquals(claims)
+                || state.Files.Any(file => file.Outcome != ReconciliationOutcome.NotApplied)) return false;
+            return true;
+        }
+        catch (Exception) { return false; }
+    }
+
+    private static StringComparer PathComparer => OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     public static ToolRuntime For(FakeCatalog catalog, IPermissionPolicy policy,
         Func<DomainEventPayload, VoidBox> emit) => new ToolRuntime(catalog, policy, emit);

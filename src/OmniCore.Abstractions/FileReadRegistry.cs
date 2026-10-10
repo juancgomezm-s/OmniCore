@@ -147,6 +147,10 @@ public sealed record PendingEditValidation(string Path, int Turn, ToolCallId? To
 /// </summary>
 public sealed record MutationRefusal(ToolErrorCode Code, string Message);
 
+/// <summary>One file in an atomic mutation-batch policy preflight.</summary>
+public sealed record MutationProposal(string Path, ModelToolCapability Operation, bool TargetExists,
+    int DeletedLines, int InsertedLines, int OriginalLines);
+
 /// <summary>
 /// Contabilidad de mutaciones del Run (ADR-0044 §5, EPIC-021): aplica los límites de la
 /// política de mutación del modelo — <c>MaxFilesPerTurn</c>, <c>MaxChangedLinesPerTurn</c> y
@@ -314,6 +318,47 @@ public sealed class MutationLedger
             }
         }
 
+        return null;
+    }
+
+    /// <summary>
+    /// Purely checks an entire batch against the active per-Turn budget. The projected file and
+    /// line totals advance between entries without publishing or consuming any budget.
+    /// </summary>
+    public MutationRefusal? RefuseMutationBatch(IReadOnlyList<MutationProposal> proposals)
+    {
+        ArgumentNullException.ThrowIfNull(proposals);
+        var policy = _policy;
+        if (policy is null) return null;
+        var projectedFiles = new HashSet<string>(_turnFiles, StringComparer.Ordinal);
+        var projectedLines = _turnChangedLines;
+        foreach (var proposal in proposals)
+        {
+            var changed = proposal.DeletedLines + proposal.InsertedLines;
+            if (!FileMutationRules.ModeAllows(policy.Mode, proposal.Operation))
+            {
+                Observe(null, Sample(proposal.Path, proposal.Operation, proposal.OriginalLines, changed, withinScope: false));
+                return new MutationRefusal(ToolErrorCode.MutationRefused,
+                    MutationRefusedCode + ": the active mutation mode does not permit a file in this integration batch.");
+            }
+            if (policy.MaxFilesPerTurn == 0)
+                return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                    LimitExceededCode + ": the active policy assigns no file budget for this Turn.");
+            var key = _registry.CanonicalKey(proposal.Path);
+            if (!projectedFiles.Contains(key) && projectedFiles.Count >= policy.MaxFilesPerTurn)
+                return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                    LimitExceededCode + ": the integration batch exceeds the remaining file budget for this Turn.");
+            if (policy.MaxChangedLinesPerTurn == 0
+                || projectedLines + changed > policy.MaxChangedLinesPerTurn)
+                return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                    LimitExceededCode + ": the integration batch exceeds the remaining changed-line budget for this Turn.");
+            if (proposal.TargetExists && proposal.OriginalLines > 0 && policy.MaxRewriteRatio < 1.0
+                && proposal.DeletedLines / (double)proposal.OriginalLines > policy.MaxRewriteRatio)
+                return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                    LimitExceededCode + ": a file in the integration batch exceeds the rewrite-ratio limit.");
+            projectedFiles.Add(key);
+            projectedLines += changed;
+        }
         return null;
     }
 

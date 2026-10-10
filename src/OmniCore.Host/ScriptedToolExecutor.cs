@@ -43,6 +43,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     private readonly IArtifactStore? _artifacts;
     private readonly Func<ToolCallId, CancellationToken, Task<string?>>? _receiveMailbox;
+    private readonly IWorkspaceWriteLeaseProvider? _workspaceWriteLeases;
 
     public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy)
     {
@@ -79,7 +80,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         ModelCapabilityBoundary? boundary, IAuditSink? audit,
         Func<InteractionRequested, string?>? interactionResponder, bool isInteractive,
         WeakSandboxConsentState? weakSandboxConsent = null, IArtifactStore? artifacts = null,
-        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null)
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
+        IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null)
     {
         _catalog = catalog;
         _policy = policy;
@@ -92,6 +94,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _isInteractive = isInteractive;
         _artifacts = artifacts;
         _receiveMailbox = receiveMailbox;
+        _workspaceWriteLeases = workspaceWriteLeases;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -173,6 +176,28 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 return VoidBox.Instance;
             }
 
+            if (stream is not null && payload is ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown)
+            {
+                var callId = payload switch
+                {
+                    ToolCallSucceeded value => value.ToolCallId,
+                    ToolCallFailed value => value.ToolCallId,
+                    ToolCallEffectUnknown value => value.ToolCallId,
+                    _ => default,
+                };
+                var integrationState = buffered.OfType<WorktreeIntegrationStateRecorded>()
+                    .LastOrDefault(value => value.ToolCallId == callId
+                        && value.State != WorktreeIntegrationState.Started);
+                if (integrationState is not null)
+                {
+                    foreach (var evt in buffered.Where(evt => !ReferenceEquals(evt, integrationState)))
+                        stream.Append(evt);
+                    stream.AppendBatch([integrationState, payload], DurabilityClass.Standard);
+                    buffered.Clear();
+                    return VoidBox.Instance;
+                }
+            }
+
             if (stream is not null && payload is ToolCallStarted started
                 && (started.EffectClass != EffectClass.None
                     || validated.ToolId.ToString() == "core.agents.mailbox.receive"))
@@ -183,12 +208,17 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 // waits: the Host may accept a scoped wake only while this ToolCall is live.
                 // Los eventos previos se escriben antes (Standard, en orden) para no romper la
                 // secuencia, y luego este Started como Barrier.
-                foreach (var evt in buffered.Where(evt => evt is not PostEditValidationPending))
+                var integrationStart = buffered.OfType<WorktreeIntegrationStateRecorded>()
+                    .LastOrDefault(value => value.ToolCallId == started.ToolCallId
+                        && value.State == WorktreeIntegrationState.Started);
+                foreach (var evt in buffered.Where(evt => evt is not PostEditValidationPending
+                    && !ReferenceEquals(evt, integrationStart)))
                 {
                     stream.Append(evt);
                 }
 
-                var debtAndStart = buffered.Where(evt => evt is PostEditValidationPending).ToList();
+                var debtAndStart = buffered.Where(evt => evt is PostEditValidationPending
+                    || ReferenceEquals(evt, integrationStart)).ToList();
                 if (debtAndStart.Count == 0) stream.Append(started, DurabilityClass.Barrier);
                 else
                 {
@@ -212,9 +242,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             payload => emit(payload), _interactionResponder, _audit, _isInteractive, _weakSandboxConsent,
             beforeEffect: intent =>
             {
-                // Match the two Core tools that currently call Ledger.RecordMutation;
-                // process write claims are not file-edit publication or validation debt.
-                if (stream is null || intent.ToolId.ToString() is not ("filesystem.patch" or "filesystem.write")
+                // Filesystem patch/write and the host-owned integration tool publish files
+                // through the mutation ledger; process write claims are not file-edit debt.
+                if (stream is null || intent.ToolId.ToString() is not ("filesystem.patch" or "filesystem.write" or "worktree.integrate")
                     || intent.Claims.Writes.Count == 0 || intent.Effect == EffectClass.None
                     || _boundary?.ReadRegistry().Ledger.MutationPolicy?.RequirePostEditValidation != true)
                     return;
@@ -223,7 +253,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 if (runId is null) return;
                 // Buffered before Started: its Barrier confirms this debt before ExecuteAsync.
                 emit(new PostEditValidationPending(runId, intent.ToolCallId, intent.Claims.Writes.ToArray()));
-            }, artifacts: _artifacts, receiveMailbox: _receiveMailbox);
+            }, artifacts: _artifacts, receiveMailbox: _receiveMailbox,
+            workspaceWriteLeases: _workspaceWriteLeases);
         var outcome = requestReceipt is null
             ? runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken)
             : runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken, requestReceipt);

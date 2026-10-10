@@ -131,6 +131,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.ToolCallEffectUnknown())
             .Plus(Typed.ToolCallReconciled())
             .Plus(Typed.ToolCallCancelled())
+            .Plus(Typed.WorktreeIntegrationStateRecorded())
             .Plus(Typed.PlanCreated())
             .Plus(Typed.PlanRevised())
             .Plus(Typed.PlanItemAdded())
@@ -484,6 +485,8 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(ToolCallEffectUnknown))]
 [JsonSerializable(typeof(ToolCallReconciled))]
 [JsonSerializable(typeof(ToolCallCancelled))]
+[JsonSerializable(typeof(WorktreeIntegrationStateRecorded))]
+[JsonSerializable(typeof(WorktreeIntegrationFileStatus))]
 [JsonSerializable(typeof(PlanCreated))]
 [JsonSerializable(typeof(PlanRevised))]
 [JsonSerializable(typeof(PlanItemAdded))]
@@ -853,6 +856,9 @@ public sealed class Typed
 
     public static CodecPair ToolCallCancelled() =>
         Of(EventType.Of("toolcall.cancelled"), EventJsonContext.Default.ToolCallCancelled);
+
+    public static CodecPair WorktreeIntegrationStateRecorded() =>
+        Of(EventType.Of("worktree.integration_state.recorded"), EventJsonContext.Default.WorktreeIntegrationStateRecorded);
 
     public static CodecPair PlanCreated() =>
         Of(EventType.Of("plan.created"), EventJsonContext.Default.PlanCreated);

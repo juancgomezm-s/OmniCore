@@ -300,7 +300,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         var service = new RunResumeService(_store, _codecs,
-            new FilesystemReconciler(new PathBoundaryValidator()), root!);
+            new WorktreeIntegrationAwareReconciler(root!, _artifacts,
+                new FilesystemReconciler(new PathBoundaryValidator())), root!);
         try
         {
             var n = service.Resume(_lastSessionId!, _lastRunId!);

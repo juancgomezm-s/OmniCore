@@ -61,6 +61,10 @@ public sealed class ModelCapabilityBoundary
             { "filesystem.write", ModelToolCapability.ReplaceFile },
             { "filesystem.delete", ModelToolCapability.DeleteFile },
             { "filesystem.move", ModelToolCapability.MoveOrRename },
+            // Batch integration can create, replace, and delete. Classify it at the strictest
+            // existing destructive capability so only Full mutation policy can expose it and
+            // Delete=Ask/Deny is honored for the entire batch.
+            { "worktree.integrate", ModelToolCapability.DeleteFile },
             { "process.exec", ModelToolCapability.GeneralProcess },
             { "shell.exec", ModelToolCapability.Shell },
             { "user.ask", ModelToolCapability.PlanProposal },
@@ -135,6 +139,25 @@ public sealed class ModelCapabilityBoundary
         {
             return ModelCapabilityDecision.Reject(
                 "tool sin clasificar en la política de capacidad: " + toolName, null);
+        }
+
+        if (toolName == "worktree.integrate")
+        {
+            // A batch may create, replace, or delete depending on the immutable proposal.
+            // Prepare is pure and must not inspect the filesystem to narrow those operations,
+            // so model-originated batches require the complete file mutation ceiling.
+            var required = new[] { ModelToolCapability.CreateFile, ModelToolCapability.ReplaceFile,
+                ModelToolCapability.DeleteFile };
+            if (_policy.MutationPolicy.Mode != FileMutationMode.Full
+                || required.Any(item => !_policy.ToolPolicy.Allows(item)))
+                return ModelCapabilityDecision.Reject(
+                    "worktree integration requires Full file mutation capabilities", capability);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject(
+                    "worktree integration includes a destructive delete-capable batch denied by policy", capability);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Ask)
+                return ModelCapabilityDecision.Ask(
+                    "worktree integration can create, replace, or delete workspace files", capability);
         }
 
         // EPIC-021 (ADR-0044 §5): filesystem.write se declara ReplaceFile, pero lo que el modo

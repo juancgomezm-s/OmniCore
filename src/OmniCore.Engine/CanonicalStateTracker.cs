@@ -27,6 +27,7 @@ public sealed class CanonicalStateTracker
     private readonly Dictionary<ToolCallId, ToolCallState> _toolCalls;
 
     private readonly Dictionary<ToolCallId, ReconciliationOutcome> _toolCallReconciliationOutcomes;
+    private readonly Dictionary<ToolCallId, WorktreeIntegrationLifecycle> _worktreeIntegrations;
 
     private readonly Dictionary<PlanItemId, PlanItemState> _planItems;
 
@@ -37,10 +38,12 @@ public sealed class CanonicalStateTracker
     private readonly Dictionary<TurnId, LaneId> _turnLanes;
     private readonly Dictionary<TurnId, ReasoningResolution?> _turnReasoningResolutions;
     private sealed record SteeringEntry(RunId Run, LaneId Lane, TurnId Turn, string State);
+    private sealed record WorktreeIntegrationLifecycle(string OwnershipId, string ProposalId,
+        WorktreeIntegrationState State, string[] Paths);
     private readonly Dictionary<SteeringId, SteeringEntry> _steering;
 
     public CanonicalStateTracker()
-        : this(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new())
+        : this(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new())
     {
     }
 
@@ -54,7 +57,8 @@ public sealed class CanonicalStateTracker
         Dictionary<SteeringId, SteeringEntry> steering,
         Dictionary<RunId, RunReasoningSelectionState> runReasoningSelections,
         Dictionary<InteractionId, (InteractionKind Kind, bool Pending, string? OptionId,
-            InteractionCause? Cause)> interactionStates)
+            InteractionCause? Cause)> interactionStates,
+        Dictionary<ToolCallId, WorktreeIntegrationLifecycle> worktreeIntegrations)
     {
         _runs = runs;
         _runReasoningSelections = runReasoningSelections;
@@ -64,6 +68,7 @@ public sealed class CanonicalStateTracker
         _turns = turns;
         _toolCalls = toolCalls;
         _toolCallReconciliationOutcomes = toolCallReconciliationOutcomes;
+        _worktreeIntegrations = worktreeIntegrations;
         _planItems = planItems;
         _taskRuns = taskRuns;
         _laneTasks = laneTasks;
@@ -105,7 +110,7 @@ public sealed class CanonicalStateTracker
     public CanonicalStateTracker Clone() => new(new(_runs), new(_tasks), new(_lanes), new(_turns),
         new(_toolCalls), new(_toolCallReconciliationOutcomes), new(_planItems), new(_taskRuns),
         new(_laneTasks), new(_turnLanes), new(_turnReasoningResolutions), new(_steering),
-        new(_runReasoningSelections), new(_interactionStates));
+        new(_runReasoningSelections), new(_interactionStates), new(_worktreeIntegrations));
 
     /// <summary>
     /// Foto canónica y ordenada de todos los estados ("entidad:id=estado"), para comparar dos
@@ -123,6 +128,9 @@ public sealed class CanonicalStateTracker
         lines.AddRange(_lanes.Select(kv => "lane:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_turns.Select(kv => "turn:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_toolCalls.Select(kv => "toolcall:" + kv.Key + "=" + kv.Value));
+        lines.AddRange(_worktreeIntegrations.Select(kv => "worktree_integration:" + kv.Key + "="
+            + kv.Value.OwnershipId + ":" + kv.Value.ProposalId + ":" + kv.Value.State + ":"
+            + string.Join(",", kv.Value.Paths.OrderBy(path => path, StringComparer.Ordinal))));
         lines.AddRange(_planItems.Select(kv => "plan_item:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_interactionStates.Select(kv => "interaction:" + kv.Key + "=" + kv.Value.Kind + ":"
             + kv.Value.Pending + ":" + kv.Value.OptionId + ":" + kv.Value.Cause));
@@ -140,6 +148,9 @@ public sealed class CanonicalStateTracker
     public TurnState? Turn(TurnId id) => _turns.TryGetValue(id, out var s) ? s : null;
 
     public ToolCallState? ToolCall(ToolCallId id) => _toolCalls.TryGetValue(id, out var s) ? s : null;
+
+    public WorktreeIntegrationState? WorktreeIntegration(ToolCallId id) =>
+        _worktreeIntegrations.TryGetValue(id, out var s) ? s.State : null;
 
     public PlanItemState? PlanItem(PlanItemId id) => _planItems.TryGetValue(id, out var s) ? s : null;
 
@@ -399,6 +410,7 @@ public sealed class CanonicalStateTracker
             case ToolCallEffectUnknown e: ToolCallTransition(e.ToolCallId, payload); break;
             case ToolCallReconciled e: ApplyToolCallReconciled(e, payload); break;
             case ToolCallCancelled e: ToolCallTransition(e.ToolCallId, payload); break;
+            case WorktreeIntegrationStateRecorded e: ApplyWorktreeIntegration(e, payload); break;
 
             // ── PlanItem (ADR-0036 §4) ──
             case PlanCreated created:
@@ -485,6 +497,67 @@ public sealed class CanonicalStateTracker
         var next = StateMachines.ApplyToolCall(currentState, payload);
         _toolCalls[reconciled.ToolCallId] = next;
         _toolCallReconciliationOutcomes[reconciled.ToolCallId] = reconciled.Outcome;
+    }
+
+    private void ApplyWorktreeIntegration(WorktreeIntegrationStateRecorded recorded, DomainEventPayload payload)
+    {
+        var callState = Require(_toolCalls, recorded.ToolCallId, "toolcall", payload);
+        if (!Guid.TryParseExact(recorded.OwnershipId, "N", out _)
+            || string.IsNullOrEmpty(recorded.ProposalId) || recorded.ProposalId.Length != 64
+            || recorded.ProposalId.Any(character => !Uri.IsHexDigit(character))
+            || recorded.Files is null || recorded.Files.Count is < 1 or > 64
+            || recorded.Files.Any(file => file is null || !IsSafeIntegrationPath(file.RelativePath))
+            || recorded.Files.Select(file => file.RelativePath).Distinct(StringComparer.Ordinal).Count() != recorded.Files.Count)
+            throw new InvalidStateTransitionException("worktree integration", "invalid identity or file set",
+                payload.Type().ToString());
+
+        if (recorded.State == WorktreeIntegrationState.Started)
+        {
+            if (callState != ToolCallState.Authorized || _worktreeIntegrations.ContainsKey(recorded.ToolCallId)
+                || recorded.Files.Any(file => file.Outcome != ReconciliationOutcome.NotApplied))
+                throw new InvalidStateTransitionException("worktree integration", "invalid start", payload.Type().ToString());
+            _worktreeIntegrations.Add(recorded.ToolCallId,
+                new(recorded.OwnershipId, recorded.ProposalId, recorded.State,
+                    recorded.Files.Select(file => file.RelativePath).ToArray()));
+            return;
+        }
+
+        if (!_worktreeIntegrations.TryGetValue(recorded.ToolCallId, out var existing)
+            || existing.OwnershipId != recorded.OwnershipId || existing.ProposalId != recorded.ProposalId
+            || !existing.Paths.ToHashSet(StringComparer.Ordinal)
+                .SetEquals(recorded.Files.Select(file => file.RelativePath))
+            || callState is not (ToolCallState.Started or ToolCallState.EffectUnknown or ToolCallState.Reconciled
+                or ToolCallState.Failed))
+            throw new InvalidStateTransitionException("worktree integration", "terminal state without matching start",
+                payload.Type().ToString());
+        if (existing.State != WorktreeIntegrationState.Started && existing.State != recorded.State)
+        {
+            var expectedToolOutcome = recorded.State switch
+            {
+                WorktreeIntegrationState.Completed => ReconciliationOutcome.Applied,
+                WorktreeIntegrationState.NotApplied => ReconciliationOutcome.NotApplied,
+                _ => (ReconciliationOutcome?)null,
+            };
+            if (existing.State != WorktreeIntegrationState.Conflict || callState != ToolCallState.Reconciled
+                || expectedToolOutcome is null
+                || !_toolCallReconciliationOutcomes.TryGetValue(recorded.ToolCallId, out var reconciledOutcome)
+                || reconciledOutcome != expectedToolOutcome)
+                throw new InvalidStateTransitionException("worktree integration", existing.State, payload.Type().ToString());
+        }
+        if (recorded.State == WorktreeIntegrationState.Completed
+            && recorded.Files.Any(file => file.Outcome != ReconciliationOutcome.Applied)
+            || recorded.State == WorktreeIntegrationState.NotApplied
+                && recorded.Files.Any(file => file.Outcome != ReconciliationOutcome.NotApplied))
+            throw new InvalidStateTransitionException("worktree integration", "file outcomes disagree with terminal state",
+                payload.Type().ToString());
+        _worktreeIntegrations[recorded.ToolCallId] = existing with { State = recorded.State };
+    }
+
+    private static bool IsSafeIntegrationPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || System.IO.Path.IsPathRooted(path)) return false;
+        var segments = path.Replace('\\', '/').Split('/');
+        return segments.All(segment => segment.Length > 0 && segment is not ("." or ".."));
     }
 
     private void PlanItemTransition(PlanItemId id, DomainEventPayload payload) =>

@@ -83,6 +83,60 @@ public sealed record WorktreeIntegrationPreview(
     DateTimeOffset CreatedAtUtc)
 {
     public bool HasConflicts => Conflicts.Count > 0;
+
+    /// <summary>Stable inputs used to bind an apply token; synthetic temporary commit IDs and
+    /// wall-clock capture times are deliberately excluded.</summary>
+    public string OwnershipId { get; init; } = "";
+    public string OursTree { get; init; } = "";
+    public string TheirsTree { get; init; } = "";
+    public string LaneHeadAtCapture { get; init; } = "";
+    public string? LaneBranchAtCapture { get; init; }
+}
+
+/// <summary>Captures the exact current-workspace/merged bytes for an authorized integration.
+/// This is intentionally separate from preview: callers must supply the preview ID and exact
+/// target set, and the store revalidates both before returning any images.</summary>
+public sealed record WorktreeIntegrationCaptureRequest(WorktreeIdentity Worktree, string ProposalId,
+    IReadOnlyList<string> ClaimedPaths);
+
+/// <summary>Fidelity-bounded file images for a transaction. Null before/after denotes absence.
+/// Consumers must reject unsupported encoding, size, mode, or topology before publishing them.</summary>
+public sealed class WorktreeIntegrationFileImage
+{
+    private readonly byte[]? _preimage;
+    private readonly byte[]? _postimage;
+
+    public string RelativePath { get; }
+    public string? ExpectedPreSha256 { get; }
+    public string? ExpectedPostSha256 { get; }
+    public string? ExpectedPreMode { get; }
+    public string? ExpectedPostMode { get; }
+    public byte[]? Preimage => _preimage?.ToArray();
+    public byte[]? Postimage => _postimage?.ToArray();
+
+    public WorktreeIntegrationFileImage(string relativePath, string? expectedPreSha256,
+        string? expectedPostSha256, string? expectedPreMode, string? expectedPostMode,
+        byte[]? preimage, byte[]? postimage)
+    {
+        RelativePath = relativePath;
+        ExpectedPreSha256 = expectedPreSha256;
+        ExpectedPostSha256 = expectedPostSha256;
+        ExpectedPreMode = expectedPreMode;
+        ExpectedPostMode = expectedPostMode;
+        _preimage = preimage?.ToArray();
+        _postimage = postimage?.ToArray();
+    }
+}
+
+public sealed record WorktreeIntegrationCapture(WorktreeIntegrationPreview Preview,
+    IReadOnlyList<WorktreeIntegrationFileImage> Files);
+
+public sealed record WorktreeIntegrationCaptureOutcome(WorktreeIntegrationCapture? Capture,
+    GitWorktreeErrorCode? Error)
+{
+    public bool Succeeded => Capture is not null && Error is null;
+    public static WorktreeIntegrationCaptureOutcome Success(WorktreeIntegrationCapture capture) => new(capture, null);
+    public static WorktreeIntegrationCaptureOutcome Failure(GitWorktreeErrorCode error) => new(null, error);
 }
 
 /// <summary>Path conflictivo sin contenido ni texto crudo del proceso Git.</summary>

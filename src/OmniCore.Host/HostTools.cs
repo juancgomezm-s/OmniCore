@@ -22,17 +22,19 @@ public sealed class HostTools
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
         bool includeMutationTools = false, bool includeProcessTools = false,
         SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null,
-        bool includeControlTools = true, bool includeMailboxReceive = false, bool includeShellTool = true)
+        bool includeControlTools = true, bool includeMailboxReceive = false, bool includeShellTool = true,
+        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null)
         : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
             processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
-            processRuntime: null)
+            processRuntime: null, worktreeIntegrationCoordinator)
     {
     }
 
     private HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools,
         bool includeMutationTools, bool includeProcessTools, SandboxStrength processSandboxStrength,
         ArtifactReadTool? artifactReadTool, bool includeControlTools, bool includeMailboxReceive,
-        bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime)
+        bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime,
+        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null)
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog();
@@ -46,6 +48,8 @@ public sealed class HostTools
             // EPIC-021 (ADR-0044 §5): escritura completa create-only/reemplazo según el modo de
             // mutación; la frontera de capacidad decide la exposición por categoría.
             catalog = catalog.Add(new FilesystemWriteTool(boundary));
+            if (worktreeIntegrationCoordinator is not null)
+                catalog = catalog.Add(new WorktreeIntegrationApplyTool(boundary, worktreeIntegrationCoordinator));
         }
         if (includeProcessTools)
         {
