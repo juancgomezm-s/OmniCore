@@ -77,7 +77,7 @@ Resumen documental al **10 de octubre de 2026**. La [arquitectura §24](docs/arc
 | **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
 | **M5.5 · Fronteras pre-M6** | Cerrado en Windows | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. 2.958 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS. |
 | **M6 · Multiagente** | Cerrado en Windows | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify con Plan reconciliado, scheduler, budgets, joins/FanOut, supervisión/mailbox, background e inspector. [Revisión de cableado del 09-10](docs/validation/m6-wiring-audit-20261009.md): 3.292 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS y recuperación M4 serial verde. Un Host compartido. |
-| **M7 · Aislamiento** | En construcción | [Primer checkpoint y fases restantes](docs/validation/m7-isolation-20261010.md): backend Git y CLI de inspección; integración y lanes aisladas pendientes. |
+| **M7 · Aislamiento** | En construcción | [Checkpoints y fases restantes](docs/validation/m7-isolation-20261010.md): backend Git, inspección y preview de integración cableados a CLI; aplicación autorizada, recovery y lanes aisladas pendientes. |
 | **M8–M10** | Planificados | Extensiones, Host separado y madurez v1. |
 
 La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.

@@ -1,0 +1,84 @@
+M7 second checkpoint — Windows 2026-10-10
+Verified source commit: 14a5d6411cc4c44d2e98ff85f2c7ff1044b9b84c
+Status: partial checkpoint; CLI grouped regression has one unresolved timeout. Not an M7 closure or main integration.
+
+m7-preview-build-20261010.log
+SHA256: 83098B48B48B33B70328B6AA2746BD05B5555026B682F2870C29B97B2249F85F
+
+Compilación correcta.
+    0 Advertencia(s)
+    0 Errores
+
+Tiempo transcurrido 00:00:03.20
+
+m7-preview-focal-final-20261010.log
+SHA256: 0B6D5FAD95948EDDBCB8F7880D65DC74B126DDD1FF7380BB2E79A7C303FE6D66
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.Tests
+  Discovered:  OmniCore.Tests
+  Starting:    OmniCore.Tests
+  Finished:    OmniCore.Tests (ID = 'daa6f82956d504802b2e7f3d5c5ddc5dea67c7ba8d16a4add1d60935e3991bcb')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.Tests  Total: 31, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 49.822s
+
+m7-preview-architecture-20261010.log
+SHA256: 573CA7421C308D32F982F23220B2A7AE690B909F2A85CECECC78E6F20A32A16F
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.ArchitectureTests
+  Discovered:  OmniCore.ArchitectureTests
+  Starting:    OmniCore.ArchitectureTests
+  Finished:    OmniCore.ArchitectureTests (ID = 'ea5bdf12e18d215a1e0c6e477424741736183fe9a1f891a32aba9556e15bb586')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.ArchitectureTests  Total: 56, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 0.497s
+
+m7-preview-cli-regression-20261010.log
+SHA256: D6C25FB728B9C4A0BE4899C79CF10399A5EADAA23652F6EFEE5007BF65838096
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.Tests
+  Discovered:  OmniCore.Tests
+  Starting:    OmniCore.Tests
+    OmniCore.Tests.CliEndToEndTests.Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers [FAIL]
+      System.TimeoutException : The operation has timed out.
+      Stack Trace:
+        tests\OmniCore.Tests\CliEndToEndTests.cs(205,0): at OmniCore.Tests.CliEndToEndTests.<>c.<<Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers>b__1_0>d.MoveNext()
+        --- End of stack trace from previous location ---
+        tests\OmniCore.Tests\CliEndToEndTests.cs(260,0): at OmniCore.Tests.CliEndToEndTests.<>c.<<Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers>b__1_0>d.MoveNext()
+        --- End of stack trace from previous location ---
+        tests\OmniCore.Tests\CliEndToEndTests.cs(2071,0): at OmniCore.Tests.CliEndToEndTests.InIsolatedCli(Func`5 run)
+        tests\OmniCore.Tests\CliEndToEndTests.cs(2071,0): at OmniCore.Tests.CliEndToEndTests.InIsolatedCli(Func`5 run)
+        tests\OmniCore.Tests\CliEndToEndTests.cs(113,0): at OmniCore.Tests.CliEndToEndTests.Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers()
+        --- End of stack trace from previous location ---
+  Finished:    OmniCore.Tests (ID = 'daa6f82956d504802b2e7f3d5c5ddc5dea67c7ba8d16a4add1d60935e3991bcb')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.Tests  Total: 71, Errors: 0, Failed: 1, Skipped: 0, Not Run: 0, Time: 65.720s
+
+m7-preview-cli-timeout-rerun-20261010.log
+SHA256: 57373E39E0E7B686AE19FCC8B418C5415691AF43EC786A434AD5223DA85E29E6
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.Tests
+  Discovered:  OmniCore.Tests
+  Starting:    OmniCore.Tests
+  Finished:    OmniCore.Tests (ID = 'daa6f82956d504802b2e7f3d5c5ddc5dea67c7ba8d16a4add1d60935e3991bcb')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.Tests  Total: 1, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 2.139s
+
+m7-preview-cli-regression-final-20261010.log
+SHA256: 90F3A61C4AEF548CCA74897F36FCCF1826320DA7E72CADCCDB87BD8277928C7D
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.Tests
+  Discovered:  OmniCore.Tests
+  Starting:    OmniCore.Tests
+    OmniCore.Tests.CliEndToEndTests.Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers [FAIL]
+      System.TimeoutException : The operation has timed out.
+      Stack Trace:
+        tests\OmniCore.Tests\CliEndToEndTests.cs(205,0): at OmniCore.Tests.CliEndToEndTests.<>c.<<Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers>b__1_0>d.MoveNext()
+        --- End of stack trace from previous location ---
+        tests\OmniCore.Tests\CliEndToEndTests.cs(260,0): at OmniCore.Tests.CliEndToEndTests.<>c.<<Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers>b__1_0>d.MoveNext()
+        --- End of stack trace from previous location ---
+        tests\OmniCore.Tests\CliEndToEndTests.cs(2071,0): at OmniCore.Tests.CliEndToEndTests.InIsolatedCli(Func`5 run)
+        tests\OmniCore.Tests\CliEndToEndTests.cs(2071,0): at OmniCore.Tests.CliEndToEndTests.InIsolatedCli(Func`5 run)
+        tests\OmniCore.Tests\CliEndToEndTests.cs(113,0): at OmniCore.Tests.CliEndToEndTests.Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers()
+        --- End of stack trace from previous location ---
+  Finished:    OmniCore.Tests (ID = 'daa6f82956d504802b2e7f3d5c5ddc5dea67c7ba8d16a4add1d60935e3991bcb')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.Tests  Total: 71, Errors: 0, Failed: 1, Skipped: 0, Not Run: 0, Time: 60.612s

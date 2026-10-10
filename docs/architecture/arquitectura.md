@@ -839,7 +839,7 @@ M4/M5.5 conservan sus cierres y M6 queda cerrado en Windows con el alcance y lí
 | Status line y tokens | Hecho | Costo `≈$` con precio declarado, cuota solo informada (cabeceras de rate limit), `—` sin dato; calibración de la estimación con los conteos exactos de `/tokenize`; cuota de suscripción en la status line. Créditos de OpenRouter diferidos hasta que haya un provider de OpenRouter configurado (el contrato ya los admite) |
 | **M5.5** | Cerrado en Windows | [Acta integral](../validation/m55-closure-20261007.md), siete salidas ADR0046 y autoridad ADR0047. Full y arquitectura verdes; evidencia de proveedor scripted separada de M5 real. Delegación/scheduler operativos siguen en M6 |
 | **M6** | Cerrado en Windows (2026-10-08) | Workflow Explore/Implement/Verify con Plan reconciliado, lectores paralelos/escritoras serializadas, pool, joins/FanOut, supervisión Wait, mailbox/wake, background e inspector. Full 3279 casos: 3275 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS y M4 serial verde. Un Host/store; [acta integral y límites](../validation/m6-integration-20261008.md) |
-| **M7** | En construcción | Backend Git y CLI readonly; integración, lanes aisladas, undo y ejecutor externo pendientes. [Acta](../validation/m7-isolation-20261010.md). |
+| **M7** | En construcción | Backend Git y CLI de inspección/preview de integración cableados; aplicación autorizada, recovery, lanes aisladas, undo y ejecutor externo pendientes. [Acta](../validation/m7-isolation-20261010.md). |
 | **M8–M10** | Sin empezar | Según el roadmap |
 
 > **TUI v0:** implementada sobre `ClientProjection` con Terminal.Gui 2.6.0-develop.61. Incluye 4 zonas,
