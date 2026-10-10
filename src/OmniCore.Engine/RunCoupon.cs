@@ -122,6 +122,10 @@ public sealed class RunCoupon
         }
 
         var failedExternal = externalResults.Where(result => !result.Passed).ToList();
+        // Un Build/Test fallido sobre ediciones publicadas es una rotura atribuible al modelo
+        // (FileMutationReliability, ADR-0044 §4); solo cuenta lo que la política exigió validar.
+        if (failedExternal.Any(result => result.Key is "build" or "test"))
+            mutationLedger?.RecordValidationBreak(coveredMemory);
         if (mutationLedger?.PendingValidations() is { Count: > 0 }
             || PostEditValidationProjection.Pending(_run.Id, codecs, store.ReadFrom(sessionId, 1)).Count > 0)
         {

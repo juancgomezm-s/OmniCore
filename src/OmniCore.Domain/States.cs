@@ -1,6 +1,17 @@
 namespace OmniCore.Domain;
 
 /// <summary>Modo de ejecución de un Run (spec §7, ADR-0035 §3).</summary>
+/// <summary>
+/// Perfil de permisos del usuario (ADR-0037 §4, <c>permissions.profile</c>). <c>Autonomous</c> es el
+/// default; los otros dos solo pueden pedir confirmación donde el autónomo no la pide, nunca conceder más.
+/// </summary>
+public enum PermissionProfile
+{
+    Autonomous,
+    Balanced,
+    Conservative,
+}
+
 public enum RunMode
 {
     Plan,
@@ -168,6 +179,8 @@ public enum InteractionKind
     Question,
     AcceptanceConfirmation,
     ModelRouteConsent,
+    /// <summary>Respuesta <c>AskUser</c> a un item estancado (ADR-0048 §3).</summary>
+    StallResolution,
 }
 
 /// <summary>Estado de un PlanItem (ADR-0036 §4).</summary>
@@ -233,7 +246,10 @@ public enum PlanMutationKind
     Ready,
 }
 
-/// <summary>Política de respuesta ante un item estancado (ADR-0016 §9).</summary>
+/// <summary>
+/// Política de respuesta ante un item estancado (ADR-0016 §9). El orden de declaración es la
+/// cadena por defecto de ADR-0048 §2; los valores se persisten como número y no se reordenan.
+/// </summary>
 public enum StallPolicy
 {
     Replan,

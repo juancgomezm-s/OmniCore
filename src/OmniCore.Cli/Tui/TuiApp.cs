@@ -14,6 +14,7 @@ namespace OmniCore.Cli;
 public sealed partial class TuiApp
 {
     private readonly IOmniClient _client;
+    private IApplication? _application;
     private readonly string _locale;
     private readonly Localization _localization;
     private readonly ClientProjection _projection;
@@ -155,6 +156,7 @@ public sealed partial class TuiApp
     /// </summary>
     internal int RunWith(IApplication application)
     {
+        _application = application;
         var window = BuildMainWindow();
         application.AddTimeout(TimeSpan.FromMilliseconds(500), PollOnce);
         application.AddTimeout(TimeSpan.FromMilliseconds(100), AnimateActivity);
@@ -719,7 +721,7 @@ public sealed partial class TuiApp
             {
                 var parts = input.Split(' ', 5, StringSplitOptions.RemoveEmptyEntries);
                 if (parts.Length < 3 || !Guid.TryParse(parts[2], out _))
-                    throw new ArgumentException("/agent run|cancel <DelegationId> · /agent accept|reject|rework <DelegationId> <ResultId> <razón>");
+                    throw new ArgumentException("/agent run|cancel <DelegationId> · /agent send <DelegationId> <mensaje> · /agent accept|reject|rework <DelegationId> <ResultId> <razón>");
                 if (parts[1] == "run")
                 { if (StartModelTurn("", delegationId: parts[2])) _composer.Text = ""; return; }
                 if (_client is not ITrustedUserActionClient trusted) throw new InvalidOperationException("Trusted user client required");
@@ -729,7 +731,14 @@ public sealed partial class TuiApp
                 if (parts[1] == "cancel" && Guid.TryParse(parts[2], out var cancellingId)
                     && _delegationTasks.TryGetValue(cancellingId.ToString("D"), out var activeBackground))
                     background = activeBackground;
-                if (parts[1] != "cancel")
+                if (parts[1] == "send")
+                {
+                    var message = input[(input.IndexOf(parts[2], StringComparison.Ordinal) + parts[2].Length)..].Trim();
+                    if (message.Length == 0) throw new ArgumentException("/agent send <DelegationId> <mensaje>");
+                    fields += "," + JsonObj.Field("content", message);
+                    name = "delegation.mailbox.send";
+                }
+                else if (parts[1] != "cancel")
                 {
                     if (parts.Length != 5 || !Guid.TryParse(parts[3], out _)) throw new ArgumentException("ResultId y razón requeridos");
                     var outcome = parts[1] switch { "accept" => "Accepted", "reject" => "Rejected", "rework" => "ReworkRequested", _ => throw new ArgumentException("Acción desconocida") };
@@ -788,19 +797,13 @@ public sealed partial class TuiApp
             { ShowMessage(failure.Message); }
             _composer.Text = ""; return;
         }
-        if (input is "/context" or "/tools" or "/plan")
+        // ADR-0024/0025: los ClientCommands (/help, /exit, /plan, /tasks, /events, /context, /tools, /permissions,
+        // /cancel, /interrupt) resuelven a una ClientAction; la TUI solo aporta lo que es suyo (cerrar, el Turn en curso).
+        if (input[0] == '/' && CommandLineParser.TryParse(input, out var typed) && typed is not null
+            && ClientCommandRegistry.Default.TryResolve(typed, out var clientAction) && clientAction is not null)
         {
-            var query = input switch { "/plan" => "workingState", _ => input.Substring(1) };
-            var result = _client.Query(query, CancellationToken.None)?.Json ?? (_locale == "en" ? "No data available." : "Sin datos disponibles.");
-            ShowMessage(result.Length <= 1800 ? result : result.Substring(0, 1800) + "…");
-            _composer.Text = "";
+            RunClientAction(clientAction);
             return;
-        }
-        if (input is "/cancel" or "/interrupt")
-        {
-            if (_turnBusy) _turnCancellation?.Cancel();
-            else SendCommand(input == "/cancel" ? "run.cancel" : "run.interrupt", "{}");
-            _composer.Text = ""; PollEvents(); return;
         }
         if (input[0] == '/')
         {
@@ -838,6 +841,24 @@ public sealed partial class TuiApp
             else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(input) + "\""));
         }
         _composer.Text = "";
+        PollEvents();
+    }
+
+    private void RunClientAction(ClientActionInvocation action)
+    {
+        _composer!.Text = "";
+        // La TUI lleva su propio Turn: cancelar o interrumpir detiene primero ese Turn (misma ruta que antes).
+        if (action.ActionId is ClientActionIds.RunCancel or ClientActionIds.RunInterrupt && _turnBusy)
+        {
+            _turnCancellation?.Cancel();
+            PollEvents();
+            return;
+        }
+        var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
+        var result = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None)
+            .AsTask().GetAwaiter().GetResult();
+        if (result.Text.Length > 0) ShowMessage(result.Text);
+        if (result.ExitRequested) _application?.RequestStop();
         PollEvents();
     }
 

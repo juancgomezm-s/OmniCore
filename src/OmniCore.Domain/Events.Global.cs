@@ -138,6 +138,18 @@ public record ProgressStalled(PlanItemId PlanItemId, int TurnsWithoutProgress, D
     public int SchemaVersion() => 1;
 }
 
+/// <summary>
+/// StallResponseSelected: respuesta determinista elegida para un <see cref="ProgressStalled"/>
+/// (ADR-0048 §2). <c>Skipped</c> nombra las respuestas no disponibles que se saltaron.
+/// </summary>
+public record StallResponseSelected(RunId RunId, PlanItemId PlanItemId, StallPolicy Policy, int Step,
+    IReadOnlyList<string> Skipped) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("stall.response_selected");
+
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>RunModeChanged: el Run cambia de modo sin cambiar de estado (ADR-0036 §1).</summary>
 public record RunModeChanged(RunId RunId, RunMode From, RunMode To, string Cause) : DomainEventPayload
 {

@@ -238,7 +238,7 @@ public sealed class SimulationEngine
 
         // Watchdog de progreso (ADR-0016 §9, ADR-0036 §7): si el item actual lleva N Turns en
         // InProgress sin señal, emitir ProgressStalled. En M1 el umbral es constante.
-        EmitStallIfNeeded(stream, sessionId, runId);
+        EmitStallIfNeeded(stream, runId);
 
         // Tras un crash inyectado, el Run queda interrumpido (sin pasar los gates): se reanuda
         // con Resume() (ADR-0041 §2). El run vivo queda en el estado previo.
@@ -280,28 +280,12 @@ public sealed class SimulationEngine
     /// Turns en InProgress sin señal de progreso —contando solo los Turns de sus Lanes vinculadas o,
     /// sin vínculos, de la Lane raíz— emite ProgressStalled.
     /// </summary>
-    private void EmitStallIfNeeded(EventStream stream, SessionId sessionId, RunId runId)
+    private void EmitStallIfNeeded(EventStream stream, RunId runId)
     {
-        var tail = stream.EventsSince(1);
-        var plan = PlanProjection.Replay(_codecs, tail);
-        var current = _reconciler.CurrentItem(plan);
-        var item = current is null ? null : plan.Item(current);
-        if (item is null || item.State != PlanItemState.InProgress)
+        // Misma detección que los Runs reales (ADR-0048 §1); la simulación de M1 no aplica respuestas.
+        if (StallWatch.Observe(_codecs, stream.EventsSince(1), runId, _stallThreshold) is { } stalled)
         {
-            return;
-        }
-
-        var lanes = LaneProjection.Replay(_codecs, tail);
-        var relevant = item.LinkedTasks.SelectMany(link => lanes.ForTask(link.TaskId)).Select(lane => lane.Id).ToHashSet();
-        if (relevant.Count == 0 && RunProjection.Replay(sessionId, runId, _codecs, tail).RootTask is { } root)
-        {
-            relevant = lanes.ForTask(root).Select(lane => lane.Id).ToHashSet();
-        }
-
-        var turns = ProgressWatchdog.TurnsWithoutProgress(_codecs, tail, relevant);
-        if (new ProgressWatchdog(_stallThreshold).IsStalled(turns))
-        {
-            stream.Append(new ProgressStalled(item.Id, turns, DateTimeOffset.Now));
+            stream.Append(new ProgressStalled(stalled.PlanItemId, stalled.TurnsWithoutProgress, stalled.LastProgressAt));
         }
     }
 

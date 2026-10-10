@@ -803,7 +803,7 @@ M4/M5.5 conservan sus cierres y M6 queda cerrado en Windows con el alcance y lí
 | 003 Máquinas de estado | Hecho | `CanonicalStateTracker` valida al escribir y al reproducir; actividad de Lane derivada; PlanItem padres derivados de sus hijos |
 | 004 Conversación ↔ Run y cancelación | Hecho | `SendInput`, `Interrupt`, `CancelRun`, `RespondToInteraction`; no arranca un Run con efectos sin reconciliar |
 | 005 PlanService | Hecho | Política de impacto, `PlanRevised`, Split/Link/Ready |
-| 006 Reconciler y watchdog | Hecho | R1–R6 corregidos; watchdog por Turns sin progreso con umbral configurable |
+| 006 Reconciler y watchdog | Hecho | R1–R6 corregidos. Watchdog en Runs reales desde 2026-10-09 (ADR-0048): umbral de `HarnessPolicy.StallThresholdTurns`, `StallPolicy` Replan → Diagnose → EscalateModel → SplitTask → AskUser y avisos en el cliente. Hasta entonces solo se evaluaba en `omni sim`. Pendiente: detección de loops por repetición |
 | 007 Completion | Hecho | Gates de Run y de Lane; un requerido fallido no termina en `Completed`. Sin evento propio de rechazo de Lane (se usa `RunValidationRejected` con gate `lane`) |
 | 008 Permisos y auditoría | Hecho | `Ask` respondido por el escenario; auditoría append-only en JSONL, scope User (`<data>/audit/`) |
 | 009 Contratos congelados | Hecho | Fingerprint SHA-256 en `TurnStarted` (también simulado); `Secret` no serializable; `LocalizedText` en uso |
@@ -812,8 +812,8 @@ M4/M5.5 conservan sus cierres y M6 queda cerrado en Windows con el alcance y lí
 | Tests de arquitectura de M1 | Hecho | IVT de Abstractions solo para Security; `omni.dll` solo referencia Protocol, Client y Host |
 | Pendiente de M1 | Diferido | Verificación en Linux (sin distro en WSL, decisión del usuario 2026-09-29) |
 | **M2** | | |
-| 012 Provider, host local, procesos | Hecho | SSE real, JSON por generador, `ProviderOpaque` conservado, reintentos y circuit breaker (por instancia); key del servidor gestionado por entorno (`LLAMA_API_KEY`) |
-| 013 Config, scopes, confianza | Hecho | YAML tipado con generador estático y schemas; resolución por scopes con `locked`; confianza de workspace por `WorkspaceId`; formato `auth` anterior aceptado como obsoleto |
+| 012 Provider, host local, procesos | Hecho | SSE real, JSON por generador, `ProviderOpaque` conservado, reintentos y circuit breaker (por instancia); key del servidor gestionado por entorno (`LLAMA_API_KEY`). Desde 2026-10-09 `host: attach`/`managed` por provider cableado al runtime (`LocalServerSupervisor`, ADR-0011 §4): arranque, reutilización, reinicio con límite y parada del servidor managed; faltan los eventos `ProviderUnavailable`/`ProviderRestarted` |
+| 013 Config, scopes, confianza | Hecho | YAML tipado con generador estático y schemas; resolución por scopes con `locked` (cableada al runtime, a `doctor` y a la sidebar desde 2026-10-09, ADR-0039 §5); confianza de workspace por `WorkspaceId`; formato `auth` anterior aceptado como obsoleto |
 | 014 Secretos y redacción | Hecho | Redacción por valores conocidos (también Base64/URL) en el codec del journal, artifacts, contexto y logs. Secret Service/Keychain pendientes |
 | 015 Permission Engine | Hecho | Grants de Run y de workspace (solo levantan `Ask` de UserPolicy/perfil), `/permissions`, topes de gasto con precios de config y gasto derivado del journal, entorno de procesos por allowlist |
 | 016 Perfil y tokens | Hecho | Conteo exacto con `/tokenize` (llama.cpp/ik_llama por tipo de provider), estimación con margen del 10 %, caché por tokenizer |

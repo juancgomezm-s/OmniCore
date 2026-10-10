@@ -269,9 +269,24 @@ public sealed class ProgressWatchdog
 
     /// <summary>Turns de las Lanes dadas desde la última señal de progreso (ADR-0036 §7).</summary>
     public static int TurnsWithoutProgress(IEventCodecRegistry codecs, IReadOnlyList<DomainEvent> events,
-        IReadOnlyCollection<LaneId> lanes)
+        IReadOnlyCollection<LaneId> lanes) => Scan(codecs, events, lanes, null).TurnsSinceSignal;
+
+    /// <summary>
+    /// Recorrido del watchdog. Además de los Turns desde la última señal, cuenta los Turns del
+    /// episodio actual del item (desde la señal o desde su último <c>ProgressStalled</c>, ADR-0048
+    /// §1) y las respuestas ya seleccionadas desde la señal (paso de la cadena, ADR-0048 §2).
+    /// </summary>
+    internal static WatchdogScan Scan(IEventCodecRegistry codecs, IReadOnlyList<DomainEvent> events,
+        IReadOnlyCollection<LaneId> lanes, PlanItemId? item)
     {
         var turns = 0;
+        var episodeTurns = 0;
+        var step = 0;
+        StallResponseSelected? lastResponse = null;
+        DateTimeOffset? lastSignalAt = null;
+        IReadOnlyList<string>? lastRejection = null;
+        var answeringHuman = false;
+        var stallOpen = false;
         var effects = new Dictionary<ToolCallId, EffectClass>();
         var resourceOf = new Dictionary<ToolCallId, string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -279,10 +294,33 @@ public sealed class ProgressWatchdog
         foreach (var evt in events)
         {
             var payload = codecs.Decode(evt);
+            var signal = false;
+            if (payload is ProgressStalled) stallOpen = true;
             switch (payload)
             {
                 case TurnStarted started when lanes.Contains(started.LaneId):
+                    // El Turn que responde a un input humano tiene dirección nueva: no cuenta.
+                    if (answeringHuman)
+                    {
+                        answeringHuman = false;
+                        break;
+                    }
                     turns += 1;
+                    episodeTurns += 1;
+                    break;
+                case ProgressStalled stalled when item is { } watched && stalled.PlanItemId == watched:
+                    episodeTurns = 0;
+                    break;
+                case StallResponseSelected response when item is { } chained && response.PlanItemId == chained:
+                    step += 1;
+                    lastResponse = response;
+                    break;
+                case UserInputReceived input when !IsRuntimeOrigin(input.Origin):
+                    // ADR-0048 §1: un input humano es dirección nueva, no un agente girando en falso.
+                    // Reinicia el conteo, pero no la cadena ni lastProgressAt: no es progreso del Plan.
+                    turns = 0;
+                    episodeTurns = 0;
+                    answeringHuman = true;
                     break;
                 case ToolCallRequested requested:
                     if (ownership.LaneOf(evt) is { } requestedLane && lanes.Contains(requestedLane))
@@ -294,32 +332,43 @@ public sealed class ProgressWatchdog
                 case ToolCallSucceeded succeeded:
                     var applied = effects.TryGetValue(succeeded.ToolCallId, out var effect) && effect != EffectClass.None;
                     var fresh = resourceOf.TryGetValue(succeeded.ToolCallId, out var resource) && seen.Add(resource);
-                    if (applied || fresh)
-                    {
-                        turns = 0;
-                    }
-
+                    signal = applied || fresh;
                     break;
-                case RunValidationRejected or RunValidationStarted:
-                    turns = 0;
+                case RunValidationRejected rejected:
+                    // ADR-0048 §1: el resultado de una validación es señal salvo que repita el rechazo
+                    // anterior; un rechazo idéntico es justo el bucle que el watchdog debe detectar.
+                    signal = lastRejection is null || !lastRejection.SequenceEqual(rejected.Missing, StringComparer.Ordinal);
+                    lastRejection = rejected.Missing;
                     break;
                 case ToolCallReconciled { Outcome: ReconciliationOutcome.Applied }
                     when ownership.LaneOf(evt) is { } reconciledLane && lanes.Contains(reconciledLane):
-                    turns = 0;
+                    signal = true;
                     break;
                 default:
-                    if (IsPlanTransition(payload)
-                        || IsLaneOrTaskTransition(payload) && ownership.LaneOf(evt) is { } transitionLane && lanes.Contains(transitionLane))
-                    {
-                        turns = 0;
-                    }
-
+                    signal = IsPlanTransition(payload)
+                        || IsLaneOrTaskTransition(payload) && ownership.LaneOf(evt) is { } transitionLane && lanes.Contains(transitionLane);
                     break;
+            }
+
+            if (signal)
+            {
+                turns = 0;
+                episodeTurns = 0;
+                step = 0;
+                lastResponse = null;
+                lastSignalAt = evt.Timestamp;
+                stallOpen = false;
             }
         }
 
-        return turns;
+        return new WatchdogScan(turns, episodeTurns, step, lastResponse, lastSignalAt, stallOpen);
     }
+
+    /// <summary>Prefijo de origen de los prompts que genera el propio runtime (ADR-0048 §1).</summary>
+    public const string RuntimeOriginPrefix = "Runtime(";
+
+    private static bool IsRuntimeOrigin(string? origin) =>
+        origin?.StartsWith(RuntimeOriginPrefix, StringComparison.Ordinal) == true;
 
     private static bool IsPlanTransition(DomainEventPayload payload) => payload is
         PlanItemReady or PlanItemStarted or PlanItemBlocked or PlanItemUnblocked or PlanItemCompleted
@@ -329,3 +378,7 @@ public sealed class ProgressWatchdog
         TaskReady or TaskStarted or TaskBlocked or TaskUnblocked or TaskCompleted or TaskFailed or TaskSkipped
         or TaskCancelled or LaneStarted or LaneBlocked or LaneUnblocked or LaneCompleted or LaneFailed or LaneCancelled;
 }
+
+/// <summary>Resultado del recorrido del watchdog (ADR-0048 §1–§2).</summary>
+internal sealed record WatchdogScan(int TurnsSinceSignal, int EpisodeTurns, int Step,
+    StallResponseSelected? LastResponse, DateTimeOffset? LastSignalAt, bool StallOpen = false);

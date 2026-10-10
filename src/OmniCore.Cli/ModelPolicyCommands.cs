@@ -205,6 +205,15 @@ public sealed class ModelPolicyCommands
         return Onboard(key, modelId);
     }
 
+    private static string RecommendedChoice(string category) => category switch
+    {
+        "ObserveOnly" => "1) ObserveOnly",
+        "PatchOnly" => "2) PatchOnly",
+        "ScopedCoder" => "3) ScopedCoder",
+        "FullAgent" => "4) FullAgent",
+        _ => category,
+    };
+
     /// <summary>Onboarding lineal mínimo: tarjetas de categoría + elección explícita (ADR-0044 §6).</summary>
     internal int Onboard(ModelPolicyKeyDto key, string modelId)
     {
@@ -226,7 +235,9 @@ public sealed class ModelPolicyCommands
             _output.WriteLine("  aviso: " + warning);
         }
 
-        _output.WriteLine("Recomendación sin evidencia de cualificación: 1) ObserveOnly.");
+        _output.WriteLine(draft.HasQualificationEvidence
+            ? "Recomendación según la cualificación: " + RecommendedChoice(draft.RecommendedCategory) + "."
+            : "Recomendación sin evidencia de cualificación: 1) ObserveOnly.");
         while (true)
         {
             _output.Write("Elige 1-4, s o c: ");

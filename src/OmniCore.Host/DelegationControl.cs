@@ -129,6 +129,24 @@ public sealed partial class OmniServer
                             new LaneCancelled(delegation.ChildLaneId), new DelegationFailed(delegation.ParentExecutionId, id, "Explicit user cancellation") },
                             DurabilityClass.Barrier, new ExecutionScopeState?[] { child, child, parent });
                     }
+                    else if (name == "delegation.mailbox.send")
+                    {
+                        // El usuario escribe al buzón del hijo en curso como su supervisor (la ejecución padre).
+                        // Se reutiliza el camino durable del supervisor (CAS + evento + Wake); el mensaje queda
+                        // pendiente hasta que el hijo llame a core.agents.mailbox.receive.
+                        if (history.Phase != PreM6RecordPhase.Accepted)
+                            throw new InvalidOperationException("Only a running delegation has a mailbox to message.");
+                        var target = history.Facts.OfType<DelegationAccepted>().Single().ChildExecutionId;
+                        var handshake = own.FirstOrDefault(evt => evt.ExecutionId == target
+                                && _codecs.Decode(evt) is SupervisionBindingAccepted)
+                            ?? throw new InvalidOperationException("Accepted supervisor binding is unavailable.");
+                        var content = input.TryGetProperty("content", out var contentValue) ? contentValue.GetString() : null;
+                        using var message = JsonDocument.Parse("{" + JsonObj.Field("targetExecutionId", target.ToString())
+                            + "," + JsonObj.Field("sourceEventId", handshake.EventId.ToString())
+                            + "," + JsonObj.Field("content", content ?? "") + "}");
+                        ApplySupervisorMailboxMessage(message.RootElement, command, session, run,
+                            delegation.ParentExecutionId, commandId, before.Value, own, facts, records, stream);
+                    }
                     else
                     {
                         if (history.Phase != PreM6RecordPhase.Returned) throw new InvalidOperationException("No returned result to evaluate.");

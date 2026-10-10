@@ -36,6 +36,12 @@ public sealed class ProviderDescriptor
     /// <summary>Explicit provider billing declaration; never inferred from endpoint or credentials.</summary>
     public BillingMode BillingMode { get; init; } = OmniCore.Domain.BillingMode.Unknown;
 
+    /// <summary>
+    /// Cómo se relaciona OmniCore con el servidor local de este provider (ADR-0011 §4); null para
+    /// providers remotos, que no tienen servidor que supervisar.
+    /// </summary>
+    public LocalHostConfig? LocalHost { get; init; }
+
     public ProviderDescriptor(string id, ProviderFamily family, string baseUrl, AuthConfig auth,
         bool supportsJsonSchemaPerRequest, bool supportsGrammarPerRequest, bool supportsNativeToolCalls)
     {
@@ -235,6 +241,32 @@ public sealed class ModelDefinition
         Aliases = (aliases ?? Array.Empty<string>()).ToArray();
         ReasoningCapability = reasoningCapability ?? OmniCore.Domain.ReasoningCapability.Unknown;
     }
+}
+
+/// <summary><c>attach</c>: servidor ya levantado; <c>managed</c>: lo lanza y supervisa OmniCore (ADR-0011 §4).</summary>
+public enum LocalHostMode
+{
+    Attach,
+    Managed,
+}
+
+/// <summary>
+/// Configuración del servidor local de un provider (<c>host</c> y <c>managed</c> en providers.yaml).
+/// Con <c>Managed</c>, el <c>baseUrl</c> de la ruta es una identidad lógica estable y el endpoint real
+/// (puerto efímero) se resuelve al arrancar; un puerto explícito en <c>baseUrl</c> lo fija.
+/// <c>Declared</c> es false cuando el modo es el <c>attach</c> implícito de un provider local sin <c>host</c>:
+/// <c>omni doctor</c> lo diagnostica, pero el runtime no lo sondea antes de cada Turn.
+/// </summary>
+public sealed record LocalHostConfig(LocalHostMode Mode, string? Executable = null,
+    IReadOnlyList<string>? Args = null, string? WorkingDirectory = null, int FixedPort = 0,
+    TimeSpan? ReadinessTimeout = null, bool Declared = true)
+{
+    /// <summary>Endpoint lógico de un provider managed con puerto efímero (loopback, sin puerto).</summary>
+    public const string ManagedLogicalBaseUrl = "http://127.0.0.1/v1";
+
+    public static readonly TimeSpan DefaultReadinessTimeout = TimeSpan.FromSeconds(120);
+
+    public TimeSpan EffectiveReadinessTimeout => ReadinessTimeout ?? DefaultReadinessTimeout;
 }
 
 /// <summary>Error tipado cuando una familia de provider aún no está implementada.</summary>

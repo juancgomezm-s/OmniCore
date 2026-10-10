@@ -499,6 +499,28 @@ public sealed class SystemPromptContributor : IContextContributor
     }
 }
 
+/// <summary>
+/// Contribuye la directiva vigente de la respuesta al estancamiento (ADR-0048 §3): una restricción
+/// fijada que se regenera cada Turn desde el journal y desaparece con la siguiente señal de progreso.
+/// </summary>
+public sealed class StallDirectiveContributor : IContextContributor
+{
+    private readonly string _directive;
+
+    public StallDirectiveContributor(string directive) => _directive = directive;
+
+    public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var provenance = new ContextProvenance("core.stall-policy", ContributionCategory.WorkingState,
+            "engine", ScopeLevel.Run, false);
+        var item = new ContextItem("stall-directive", ContextItemKind.Constraint, _directive, 0,
+            ContextPriority.Pinned, RetentionPolicy.RegenerateEachTurn, provenance);
+        return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>([item]);
+    }
+}
+
 /// <summary>Contribuye la proyección WorkingState renderizada (ADR-0016 §7).</summary>
 public sealed class WorkingStateContributor : IContextContributor
 {

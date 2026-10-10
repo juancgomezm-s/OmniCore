@@ -14,11 +14,12 @@ using System.Globalization;
 using System.Text.Json;
 
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
-public sealed class OmniCliRuntime
+public sealed class OmniCliRuntime : IDisposable
 {
     private readonly string _workspaceRoot;
     private readonly object _serverInitializationGate = new();
     private readonly ProviderResilienceCatalog _providerCircuits = new();
+    private readonly LocalServerSupervisor _localServers = new();
     private int _turnExecutionActive;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<DelegationId, byte> _activeDelegations = new();
     private readonly Func<string, CancellationToken, Task<ProviderQuotaSnapshot>> _queryQuota;
@@ -38,6 +39,9 @@ public sealed class OmniCliRuntime
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _queryQuota = queryQuota ?? QueryConfiguredQuotaAsync;
     }
+
+    /// <summary>Detiene los servidores locales managed que este runtime lanzó (ADR-0011 §4).</summary>
+    public void Dispose() => _localServers.Dispose();
 
     public static OmniCliRuntime Create(string workspaceRoot,
         Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota = null) => new(workspaceRoot, queryQuota);
@@ -158,14 +162,23 @@ public sealed class OmniCliRuntime
             return 1;
         }
         var registry = loaded.Registry;
+        UserPermissions userPermissions;
+        try { userPermissions = UserPermissionsLoader.Load(paths); }
+        catch (ConfigValidationException ex)
+        {
+            ReportDiagnostics(ex.Diagnostics, locale, writeLine, localize);
+            return 1;
+        }
         ReportProviderNotices(loaded, locale, writeLine, localize);
         writeLine(Resolve(LocalizedText.Of("doctor.heading"), localize));
+        writeLine(Resolve(Localized("doctor.permissions", ("profile", userPermissions.Profile.ToString()),
+            ("rules", userPermissions.Rules.Count.ToString(CultureInfo.InvariantCulture))), localize));
         writeLine(Resolve(Localized("doctor.config", ("path", paths.ConfigDirectory)), localize));
         var trust = new WorkspaceTrustStore(paths).IsTrusted(Directory.GetCurrentDirectory());
         WorkspaceConfigurationResult workspaceConfig;
         try
         {
-            workspaceConfig = WorkspaceConfigurationLoader.Load(Directory.GetCurrentDirectory(), trust,
+            workspaceConfig = ScopedSettingsLoader.Load(paths, Directory.GetCurrentDirectory(), trust,
                 alias => registry.Model(alias) is not null);
         }
         catch (ConfigValidationException ex)
@@ -206,18 +219,36 @@ public sealed class OmniCliRuntime
         var defaultProvider = defaultModel is null ? null : registry.Provider(defaultModel.ProviderId);
         var tokenizer = OmniHost.CreateTokenCounter(defaultProvider,
             defaultProvider is null ? null : loaded.ProviderKind(defaultProvider.Id), null);
-        var resolver = OmniHost.CreateScopeResolver();
         var credentials = OmniHost.CreateUserCredentialStore(paths);
-        var localHost = OmniHost.CreateLocalModelHost();
         var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(paths, "."));
         writeLine(Resolve(LocalizedText.Of("doctor.runtime"), localize));
         writeLine(Resolve(Localized("doctor.runtime.tokenCounter", ("value", tokenizer.Id.ToString())), localize));
         writeLine(Resolve(Localized("doctor.runtime.scopeResolver",
-            ("value", resolver is null ? "?" : resolver.GetType().Name)), localize));
+            ("value", nameof(ConfigurationScopeResolver))), localize));
+        if (workspaceConfig.Scopes is { } scopes)
+        {
+            foreach (var key in scopes.Values.Keys.Order(StringComparer.Ordinal))
+                writeLine(Resolve(Localized("doctor.config.scoped", ("key", key),
+                    ("scope", scopes.SourceOf(key)?.ToString() ?? "")), localize));
+            foreach (var blocked in scopes.Blocked ?? [])
+                writeLine(Resolve(Localized("doctor.config.locked", ("key", blocked.Key),
+                    ("scope", blocked.Scope.ToString()), ("lock", blocked.Lock),
+                    ("owner", blocked.LockedBy.ToString())), localize));
+        }
         writeLine(Resolve(Localized("doctor.runtime.credentialStore", ("type", credentials.GetType().Name),
             ("value", credentials.ToString() ?? "")), localize));
-        writeLine(Resolve(Localized("doctor.runtime.localModelHost", ("type", localHost.GetType().Name),
-            ("managed", localHost.IsManagedRunning().ToString())), localize));
+        writeLine(Resolve(Localized("doctor.runtime.localModelHost", ("type", nameof(LocalServerSupervisor))), localize));
+        foreach (var provider in registry.Providers().Where(item => item.LocalHost is not null))
+        {
+            writeLine(Resolve(provider.LocalHost!.Mode == LocalHostMode.Managed
+                ? Localized("doctor.localServer.managed", ("provider", provider.Id),
+                    ("executable", provider.LocalHost.Executable ?? ""),
+                    ("port", provider.LocalHost.FixedPort == 0 ? "auto"
+                        : provider.LocalHost.FixedPort.ToString(CultureInfo.InvariantCulture)))
+                : Localized(LocalServerSupervisor.TcpReachable(provider.BaseUrl, TimeSpan.FromSeconds(2))
+                    ? "doctor.localServer.attach.reachable" : "doctor.localServer.attach.unreachable",
+                    ("provider", provider.Id), ("endpoint", provider.BaseUrl)), localize));
+        }
         writeLine(Resolve(Localized("doctor.runtime.artifactStore", ("type", artifacts.GetType().Name),
             ("value", artifacts.ToString() ?? "")), localize));
         var configured = registry.Models().Count > 0;
@@ -764,6 +795,13 @@ public sealed class OmniCliRuntime
             return 1;
         }
         var registry = loaded.Registry;
+        // Un permissions.yaml inválido falla cerrado antes de cualquier Turn, con su línea y columna.
+        try { _ = UserPermissionsLoader.Load(paths); }
+        catch (ConfigValidationException ex)
+        {
+            WriteDiagnostics(ex.Diagnostics, writeLine);
+            return 1;
+        }
         var trust = new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
         using var policyService = OmniHost.CreateModelPolicyService(null);
         var workspaceSelectionId = ModelPolicyHost.WorkspaceSelectionId(_workspaceRoot);
@@ -771,7 +809,7 @@ public sealed class OmniCliRuntime
         WorkspaceConfigurationResult workspaceConfig;
         try
         {
-            workspaceConfig = WorkspaceConfigurationLoader.Load(_workspaceRoot, trust,
+            workspaceConfig = ScopedSettingsLoader.Load(paths, _workspaceRoot, trust,
                 alias => registry.Model(alias) is not null);
         }
         catch (ConfigValidationException ex)
@@ -921,15 +959,61 @@ public sealed class OmniCliRuntime
             }
         }
 
+        // ADR-0011 §4: attach comprueba el servidor ya levantado; managed lo arranca y supervisa.
+        // La ruta conserva el endpoint lógico (baseUrl); la conexión usa el real (puerto efímero).
+        var connectUrl = baseUrl;
+        var connectDescriptor = providerDescription;
+        if (providerDescription?.LocalHost is not null)
+        {
+            try
+            {
+                var endpoint = await System.Threading.Tasks.Task.Run(() => _localServers.Ensure(providerDescription, baseUrl),
+                    cancellationToken).ConfigureAwait(false);
+                connectUrl = endpoint.BaseUrl;
+                if (endpoint.ApiKey is not null)
+                {
+                    key = endpoint.ApiKey;
+                    secretRef = "managed-" + providerDescription.Id;
+                    connectDescriptor = new ProviderDescriptor(providerDescription.Id, providerDescription.Family,
+                        providerDescription.BaseUrl, AuthConfig.ApiKey(secretRef),
+                        providerDescription.SupportsJsonSchemaPerRequest, providerDescription.SupportsGrammarPerRequest,
+                        providerDescription.SupportsNativeToolCalls)
+                    {
+                        TrustedCertificatePath = providerDescription.TrustedCertificatePath,
+                        Profile = providerDescription.Profile, BillingMode = providerDescription.BillingMode,
+                    };
+                }
+            }
+            catch (LocalServerUnavailableException ex)
+            {
+                writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
+                    ("message", Text(ex.UserMessage)))));
+                return 1;
+            }
+        }
+
         var tokenCounter = OmniHost.CreateTokenCounter(providerDescription,
             providerDescription is null ? null : loaded.ProviderKind(providerDescription.Id), key,
-            baseUrlOverride: baseUrl);
+            baseUrlOverride: connectUrl);
         try
         {
             if (model is null)
             {
                 writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
                     ("message", Text(noModel?.UserMessage ?? LocalizedText.Of("models.noneConfigured"))))));
+                return 1;
+            }
+
+            // ADR-0044 §6: sin TTY ni cliente interactivo no hay onboarding posible. Un modelo sin clasificar
+            // quedaría en ObserveOnly, y un `act` que existe para modificar archivos termina con
+            // ModelPolicyRequired en lugar de ampliar capacidad en silencio (ni de fingir que trabaja).
+            if (act && delegation is null && !HasInteractionClient && !(UseConsoleInput && !Console.IsInputRedirected)
+                && IsUnclassified(policyService, storedSelection, modelDefinition, model, cancellationToken))
+            {
+                var required = new ModelPolicyRequiredException(
+                    ModelPolicyKey.For(modelDefinition?.ProviderId ?? "local", model), ModelToolCapability.PatchExisting);
+                writeLine(Text(Localized("cli.runtime.command.error", ("command", "act"),
+                    ("message", Text(required.UserMessage)))));
                 return 1;
             }
 
@@ -1096,13 +1180,13 @@ public sealed class OmniCliRuntime
                 server.AcquireCodecs(), sessionId)!;
             var sessionCap = Math.Min(loaded.SessionCapUsd, routingPolicy.SessionSpendLimit ?? loaded.SessionCapUsd);
             IModelProvider provider = providerDescription is null
-                ? OmniHost.ConnectLocalChatCompletions(baseUrl, model, secretRef, key ?? "", circuits: _providerCircuits)
-                : OmniHost.ConnectProvider(providerDescription, baseUrl, secretRef, key ?? "",
+                ? OmniHost.ConnectLocalChatCompletions(connectUrl, model, secretRef, key ?? "", circuits: _providerCircuits)
+                : OmniHost.ConnectProvider(connectDescriptor!, connectUrl, secretRef, key ?? "",
                     string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
                         ? OmniHost.CreateChatGptAuth(paths) : null, _providerCircuits);
+            var qualificationData = act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
             var qualification = EmpiricalQualification(modelDefinition, providerDescription,
-                act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR"), cancellationToken,
-                route.Endpoint);
+                qualificationData, cancellationToken, route.Endpoint);
             var effectiveProfile = new ModelProfileResolver().Resolve(
                 runtimeModel,
                 providerDescription,
@@ -1158,8 +1242,7 @@ public sealed class OmniCliRuntime
                 if (selected is "approve_only" or "reject") return 0;
             }
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
-            var localHost = OmniHost.CreateLocalModelHost();
-            if (!act && localHost.IsManagedRunning())
+            if (!act && _localServers.IsManagedRunning(providerDescription?.Id))
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.managedHost.active")));
             }
@@ -1173,7 +1256,7 @@ public sealed class OmniCliRuntime
                 || delegation is null && (act || effectiveMode is RunMode.Act or RunMode.Orchestrate);
             // Child readers share the root runtime but must not replace its usage/status context.
             if (delegation is null)
-                _usageContext = (sessionId, route.ProviderId, provider, loaded.Pricing(model), baseUrl, artifacts);
+                _usageContext = (sessionId, route.ProviderId, provider, loaded.Pricing(model), connectUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
             var receiveMailbox = delegation is null ? null
                 : (Func<ToolCallId, CancellationToken, Task<string?>>)((toolCallId, token) =>
@@ -1262,6 +1345,21 @@ public sealed class OmniCliRuntime
                 RefreshProviderQuotaAsync(providerDescription!.Id, cancellationToken).GetAwaiter().GetResult();
                 return IncludedQuotaAdmission.AllowsMeta(server, sessionId, providerDescription.Id);
             }
+            // ADR-0048 §2: EscalateModel solo se ofrece cuando el runtime dirige el siguiente Turn
+            // (bucle ACT); en la conversación lo dispara el usuario y la escalación no persistiría.
+            var stallEscalationLoop = false;
+            string? StallEscalationUnavailable()
+            {
+                if (!stallEscalationLoop) return "UserDrivenTurn";
+                if (_escalatedModel is not null) return "EscalationActive";
+                if (Environment.GetEnvironmentVariable("OMNI_MODEL") is not null) return "ModelPinned";
+                return ModelRoutingHost.NextEscalation(loaded, route.Id, true, usableContext,
+                    candidate => HasWritePolicy(candidate, loaded, cancellationToken), _providerCircuits) is null
+                    ? "NoEscalationRoute" : null;
+            }
+            int? EscalateOnStall() =>
+                TryEscalateAsync(loaded, model!, route.Id, usableContext, StallEscalationPrompt, true, writeLine,
+                    cancellationToken, EscalationCause.ProgressStalled).GetAwaiter().GetResult();
             ExplorerTurn BuildTurn(ReasoningRequest? appliedReasoning, ReasoningResolution? resolution,
                 IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null)
             {
@@ -1289,7 +1387,9 @@ public sealed class OmniCliRuntime
                     quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
                         ? QuotaAllowsMeta : null,
                     maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts,
-                    mailboxDeliveryCompleted: delegation is null ? null : server.ResolveMailboxDelivery);
+                    mailboxDeliveryCompleted: delegation is null ? null : server.ResolveMailboxDelivery,
+                    stallEscalationUnavailable: delegation is null ? StallEscalationUnavailable : null,
+                    mutationEvidence: samples => RecordMutationEvidence(qualification, qualificationData, samples));
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
@@ -1353,6 +1453,7 @@ public sealed class OmniCliRuntime
                         return null;
                     }
                 }
+                stallEscalationLoop = true;
                 return RunActLoop(turn, writeLine, prompt, instruction, sessionId, runId, laneId, workingState,
                     workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
                     interactionResponder, interactive, locale, cancellationToken, promptOrigin,
@@ -1360,7 +1461,8 @@ public sealed class OmniCliRuntime
                     subsequentTurnFactory: reasoningResolution?.Source == ReasoningSelectionSource.TurnBoost
                         ? BuildSubsequentActTurn : null,
                     turnBoostId: turnBoostId ?? reasoningResolution?.TurnBoostId,
-                    turnBoostConsumed: turnBoostConsumed, delegationId: delegation?.DelegationId);
+                    turnBoostConsumed: turnBoostConsumed, delegationId: delegation?.DelegationId,
+                    escalateOnStall: delegation is null ? EscalateOnStall : null);
             }
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
@@ -1398,6 +1500,9 @@ public sealed class OmniCliRuntime
             writeLine(Text(Localized("cli.runtime.turn.summary", ("reason", result.StopReason.ToString()),
                 ("steps", result.Steps.ToString()),
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
+            if (HandleStallOutcome(server, sessionId, result.Stall, interactionResponder, interactive, writeLine)
+                is { } stallCode)
+                return stallCode;
             if (result.StopReason == StopReason.ContextOverflow &&
                 await TryEscalateAsync(loaded, model!, route.Id, usableContext, prompt, act, writeLine, cancellationToken) is { } escalatedCode)
                 return escalatedCode;
@@ -1439,11 +1544,13 @@ public sealed class OmniCliRuntime
                     var actTurn = BuildTurn(approvedResolution.AppliedRequest, approvedResolution,
                         actExecutor, actTools.Catalog());
                     var approvedState = ReadWorkingState(server, cancellationToken);
+                    stallEscalationLoop = true;
                     return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         approvedInstruction,
                         sessionId, runId, laneId, approvedState, workspaceConfig.Settings?.Gates, restrictions,
                         server, artifacts, audit, interactionResponder, interactive, locale, cancellationToken,
-                        instructionSnapshot: approvedSnapshot, delegationId: delegation?.DelegationId);
+                        instructionSnapshot: approvedSnapshot, delegationId: delegation?.DelegationId,
+                        escalateOnStall: delegation is null ? EscalateOnStall : null);
                 }
             }
 
@@ -1469,6 +1576,20 @@ public sealed class OmniCliRuntime
         }
     }
 
+    /// <summary>
+    /// ¿Resolvería la política efectiva de este modelo al fallback ObserveOnly? Refleja la resolución del Turn:
+    /// una selección efímera segura o la ausencia de una política guardada para la clave exacta.
+    /// </summary>
+    private static bool IsUnclassified(ModelPolicyService policyService, ModelSelectionState? selection,
+        ModelDefinition? definition, string model, CancellationToken cancellationToken)
+    {
+        var selected = selection is not null && selection.ModelId == definition?.Id
+            && selection.Key.ProviderId == definition.ProviderId;
+        if (selected && selection!.EphemeralObserveOnly) return true;
+        var key = selected ? selection!.Key : ModelPolicyKey.For(definition?.ProviderId ?? "local", model);
+        return policyService.Get(key, cancellationToken) is null;
+    }
+
     private static bool ReportModePolicyTransition(InternalCommandResult? transition, Action<string> writeLine)
     {
         if (transition is null) return true;
@@ -1476,6 +1597,19 @@ public sealed class OmniCliRuntime
             + JsonObj.Field("outcome", transition.Ack.Outcome?.Kind.ToString() ?? "Unavailable") + ","
             + JsonObj.Field("reason", transition.Ack.Outcome?.Reason ?? transition.Ack.Error ?? "") + "}");
         return transition.Failure is null && transition.Ack.Status == "ok";
+    }
+
+    /// <summary>
+    /// Suma las muestras de mutación de un Turn ACT al trait FileMutationReliability de su perfil de
+    /// cualificación (ADR-0044 §4). Es telemetría: nunca rompe el Run y no hace nada sin un perfil
+    /// de cualificación utilizable.
+    /// </summary>
+    private static void RecordMutationEvidence(ModelQualificationSnapshot? qualification, string? dataDirectory,
+        IReadOnlyList<FileMutationSample> samples)
+    {
+        if (qualification is null || samples.Count == 0) return;
+        using var store = OmniHost.CreateModelQualificationStore(dataDirectory);
+        MutationEvidenceRecorder.Record(store, qualification.Key, samples, DateTimeOffset.UtcNow, CancellationToken.None);
     }
 
     internal int RunActLoop(ExplorerTurn turn, Action<string> writeLine, string objective, string instruction,
@@ -1486,7 +1620,41 @@ public sealed class OmniCliRuntime
         string locale, CancellationToken cancellationToken, string? origin = null,
         Func<InteractionRequested, string?>? acceptanceResponder = null,
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
-        Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null)
+        Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
+        Func<int?>? escalateOnStall = null)
+    {
+        // Las mutaciones y las roturas de validación quedan completas solo al cerrar el bucle:
+        // la evidencia de cada Turn usado (el inicial y los que cree la fábrica) se entrega entonces.
+        var turns = new List<ExplorerTurn> { turn };
+        Func<int, ExplorerTurn?>? tracked = subsequentTurnFactory is null ? null : attempt =>
+        {
+            var next = subsequentTurnFactory(attempt);
+            if (next is not null) turns.Add(next);
+            return next;
+        };
+        try
+        {
+            return RunActLoopCore(turn, writeLine, objective, instruction, sessionId, runId, laneId, workingState,
+                gateConfiguration, restrictions, server, artifacts, audit, interactionResponder, interactive, locale,
+                cancellationToken, origin, acceptanceResponder, instructionSnapshot, tracked, turnBoostId,
+                turnBoostConsumed, delegationId, escalateOnStall);
+        }
+        finally
+        {
+            foreach (var used in turns) used.FlushMutationEvidence();
+        }
+    }
+
+    private int RunActLoopCore(ExplorerTurn turn, Action<string> writeLine, string objective, string instruction,
+        SessionId sessionId,
+        RunId runId, LaneId laneId, string workingState, WorkspaceGatesYaml? gateConfiguration,
+        IReadOnlyDictionary<string, string>? restrictions, OmniServer server, IArtifactStore artifacts,
+        IAuditSink audit, Func<InteractionRequested, string?>? interactionResponder, bool interactive,
+        string locale, CancellationToken cancellationToken, string? origin = null,
+        Func<InteractionRequested, string?>? acceptanceResponder = null,
+        TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
+        Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
+        Func<int?>? escalateOnStall = null)
     {
         var hasExternalGates = gateConfiguration is { Build: not null } or { Test: not null };
         var hasAcceptance = gateConfiguration?.Acceptance == true;
@@ -1521,7 +1689,8 @@ public sealed class OmniCliRuntime
             }
 
             var result = askExecution.Result;
-            origin = null;
+            // Los prompts siguientes los genera el runtime: no son dirección humana (ADR-0048 §1).
+            origin = ProgressWatchdog.RuntimeOriginPrefix + "ActLoop)";
             if (HandlePendingBudget(server, sessionId, runId, interactive, writeLine) is { } budgetCode)
                 return budgetCode;
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
@@ -1535,6 +1704,12 @@ public sealed class OmniCliRuntime
             writeLine(Text(Localized("cli.runtime.turn.summary", ("reason", result.StopReason.ToString()),
                 ("steps", result.Steps.ToString()),
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
+            // ADR-0048 §3: AskUser espera al usuario; EscalateModel continúa el Run con otro modelo.
+            if (HandleStallOutcome(server, sessionId, result.Stall, interactionResponder, interactive, writeLine)
+                is { } stallCode)
+                return stallCode;
+            if (result.Stall?.Policy == StallPolicy.EscalateModel && escalateOnStall?.Invoke() is { } escalatedCode)
+                return escalatedCode;
             if (result.StopReason != StopReason.EndTurn || result.FinalText is null)
             {
                 if (result.StopReason == StopReason.Error)
@@ -1662,6 +1837,52 @@ public sealed class OmniCliRuntime
         writeLine(Text(LocalizedText.Of("cli.runtime.completion.turnLimit")));
         return 1;
 
+    }
+
+    private const string StallEscalationPrompt =
+        "A more capable model now continues this Run because the current plan item stopped making progress. "
+        + "Review the latest results, change the approach and continue the work.";
+
+    /// <summary>
+    /// Presenta un episodio de estancamiento (ADR-0048 §4) y atiende <c>AskUser</c>: con un cliente
+    /// de interacción (TUI) o sin consola, la interacción queda pendiente y se devuelve
+    /// <c>InputRequired</c>; en consola interactiva se pregunta. Null = el Run continúa.
+    /// </summary>
+    private int? HandleStallOutcome(OmniServer server, SessionId sessionId, ExplorerTurn.StallOutcome? stall,
+        Func<InteractionRequested, string?>? responder, bool interactiveConsole, Action<string> writeLine)
+    {
+        if (stall is null) return null;
+        if (stall.Failure is { } failure)
+        {
+            writeLine(Text(Localized("cli.runtime.stall.failed", ("message", RedactSensitive(failure)))));
+            return null;
+        }
+
+        writeLine(Text(Localized("cli.runtime.stall.notice", ("item", RedactSensitive(stall.ItemDescription)),
+            ("turns", stall.TurnsWithoutProgress.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            ("response", Text(LocalizedText.Of("stall.policy." + (stall.Policy?.ToString() ?? "None")))))));
+        if (stall.Policy != StallPolicy.AskUser || stall.InteractionId is not { } interaction) return null;
+        var request = FindPendingInteraction(server.AcquireStore().ReadFrom(sessionId, 1), server.AcquireCodecs(),
+            InteractionKind.StallResolution);
+        if (request is null || request.InteractionId != interaction) return null;
+        var selected = HasInteractionClient || !interactiveConsole ? null : responder?.Invoke(request);
+        if (selected is null)
+        {
+            writeLine(InputRequiredJson(interaction, "StallResolution"));
+            return 3;
+        }
+
+        var response = server.RespondToInteraction(interaction, selected);
+        if (response.Status != "ok")
+        {
+            writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "StallResolution"),
+                ("error", response.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
+            return 1;
+        }
+
+        if (selected != "stop") return null;
+        writeLine(Text(LocalizedText.Of("cli.runtime.stall.stopped")));
+        return 1;
     }
 
     private string FormatToolTrace(ExplorerTurn.ToolUseTrace trace) =>
@@ -1795,6 +2016,7 @@ public sealed class OmniCliRuntime
             InteractionKind.WeakSandboxConsent => "interaction.weak_sandbox.title",
             InteractionKind.BudgetExceeded => "interaction.budget_exceeded.title",
             InteractionKind.ModelRouteConsent => "interaction.model_route_consent.title",
+            InteractionKind.StallResolution => "interaction.stall_resolution.title",
             _ => "interaction.permission.title",
         };
         writeLine(Text(LocalizedText.Of(titleKey)));
@@ -1819,6 +2041,8 @@ public sealed class OmniCliRuntime
                     "allow_quota" when request.Kind == InteractionKind.BudgetExceeded => "interaction.budget_exceeded.allow_quota",
                     "allow_route" when request.Kind == InteractionKind.ModelRouteConsent => "interaction.model_route_consent.allow_route",
                     "deny" when request.Kind == InteractionKind.ModelRouteConsent => "interaction.model_route_consent.deny",
+                    "continue" when request.Kind == InteractionKind.StallResolution => "interaction.stall_resolution.continue",
+                    "stop" when request.Kind == InteractionKind.StallResolution => "interaction.stall_resolution.stop",
                     _ => request.Kind == InteractionKind.WeakSandboxConsent
                         ? "interaction.weak_sandbox.deny" : "interaction.permission.deny",
                 };
@@ -2001,17 +2225,20 @@ public sealed class OmniCliRuntime
     /// cadena; en modo <c>ask</c> queda solicitada y se informa, sin inventar una aprobación.
     /// </summary>
     private async Task<int?> TryEscalateAsync(LoadedUserConfiguration loaded, string currentModel, RouteId currentRouteId, long currentContext,
-        string prompt, bool act, Action<string> writeLine, CancellationToken cancellationToken)
+        string prompt, bool act, Action<string> writeLine, CancellationToken cancellationToken,
+        EscalationCause cause = EscalationCause.ContextLimit)
     {
         if (_escalatedModel is not null || Environment.GetEnvironmentVariable("OMNI_MODEL") is not null) return null;
-        var next = ModelRoutingHost.NextEscalation(loaded, currentRouteId, act, currentContext + 1,
+        // Por contexto se necesita más ventana; por estancamiento (ADR-0048), al menos la actual.
+        var neededContext = cause == EscalationCause.ContextLimit ? currentContext + 1 : currentContext;
+        var next = ModelRoutingHost.NextEscalation(loaded, currentRouteId, act, neededContext,
             candidate => HasWritePolicy(candidate, loaded, cancellationToken), _providerCircuits);
         var server = Server();
         if (next is null || server.LastSessionId() is not { } session || server.LastRunId() is not { } run) return null;
         var originatingTurn = server.AcquireStore().ReadFrom(session, 1)
             .Where(evt => evt.RunId == run).Select(server.AcquireCodecs().Decode).OfType<TurnStarted>().LastOrDefault();
         EnsureEscalationRecorded(server.RecordModelEscalationRequested(session,
-            new ModelEscalationRequested(run, currentModel, next.ModelId, EscalationCause.ContextLimit,
+            new ModelEscalationRequested(run, currentModel, next.ModelId, cause,
                 originatingTurn?.TurnId, originatingTurn?.LaneId)));
         // phaseA7 (M55): en modo auto no se aprueba la escalación si el proveedor del modelo
         // destino requiere API key y esta no está resuelta; misma semántica que RunTurnAsync,
@@ -2052,16 +2279,23 @@ public sealed class OmniCliRuntime
         EnsureEscalationRecorded(server.RecordModelEscalationApproved(session,
             new ModelEscalationApproved(run, next.ModelId, escalationMode == "auto" ? "policy:auto-authorized" : "interaction:user",
                 originatingTurn?.TurnId, originatingTurn?.LaneId)));
-        writeLine(Text(Localized("cli.escalation.auto", ("from", currentModel), ("model", next.ModelId))));
+        writeLine(Text(Localized(cause == EscalationCause.ProgressStalled ? "cli.escalation.stall" : "cli.escalation.auto",
+            ("from", currentModel), ("model", next.ModelId))));
         var beforeTarget = server.AcquireStore().CurrentSequence(session);
         _escalatedModel = next.ModelId;
         try
         {
-            var code = await RunTurnCoreAsync("", act, writeLine, cancellationToken,
+            // Por contexto se reintenta el Turn abandonado; por estancamiento se continúa el Run.
+            var code = await RunTurnCoreAsync(cause == EscalationCause.ProgressStalled ? prompt : "", act, writeLine,
+                cancellationToken,
                 conversationOnly: originatingTurn?.InstructionSnapshot?.ConversationOnly
                     ?? (!act && server.CurrentRunMode() == RunMode.Plan),
-                routingResume: new(session, run, null, next.ModelId, next.Route,
-                    InstructionSnapshot: originatingTurn?.InstructionSnapshot)).ConfigureAwait(false);
+                routingResume: cause == EscalationCause.ProgressStalled
+                    ? new(session, run, null, next.ModelId, next.Route,
+                        Origin: ProgressWatchdog.RuntimeOriginPrefix + "StallEscalation)",
+                        InstructionSnapshot: originatingTurn?.InstructionSnapshot)
+                    : new(session, run, null, next.ModelId, next.Route,
+                        InstructionSnapshot: originatingTurn?.InstructionSnapshot)).ConfigureAwait(false);
             if (server.LastSessionId() == session && server.LastRunId() == run
                 && server.AcquireStore().ReadFrom(session, beforeTarget + 1).Any(evt => evt.RunId == run
                     && server.AcquireCodecs().Decode(evt) is ModelStepCompleted))

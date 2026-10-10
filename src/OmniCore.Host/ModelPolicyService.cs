@@ -38,6 +38,13 @@ public sealed class ModelSelectionResult
         new(selection, false, null, draft);
 }
 
+/// <summary>Resumen de la cualificación utilizable de una configuración de modelo.</summary>
+/// <param name="Traits">Traits empíricos por nombre (0..1).</param>
+/// <param name="FileMutationSamples">Muestras que respaldan FileMutationReliability.</param>
+/// <param name="State">Estado del perfil (Qualified, Calibrated o Stale).</param>
+public sealed record QualificationEvidence(IReadOnlyDictionary<string, double> Traits, int FileMutationSamples,
+    ModelQualificationState State);
+
 /// <summary>
 /// Servicio de política operativa de modelos (ADR-0044). Orquesta el store relacional por clave
 /// exacta, construye drafts de onboarding, resuelve la política efectiva (techo ∩ harness) y
@@ -49,6 +56,12 @@ public sealed class ModelPolicyService : IDisposable
     private readonly IModelPolicyStore _store;
 
     private readonly Func<DateTimeOffset> _clock;
+
+    /// <summary>
+    /// Evidencia de cualificación de una clave (ADR-0044 §6): la suite quick y, si existe, la
+    /// FileMutationReliability medida en uso real. Sin ella el onboarding recomienda ObserveOnly.
+    /// </summary>
+    public Func<ModelPolicyKey, CancellationToken, QualificationEvidence?>? EvidenceLookup { get; set; }
 
     public ModelPolicyService(IModelPolicyStore store) : this(store, null)
     {
@@ -81,22 +94,34 @@ public sealed class ModelPolicyService : IDisposable
         _store.GetSelection(workspaceId, cancellationToken);
 
     /// <summary>
-    /// Draft de onboarding para una clave sin política (ADR-0044 §6). M3: sin suite de
-    /// cualificación (M5) la recomendación es ObserveOnly y así se declara en Warnings.
+    /// Draft de onboarding para una clave sin política (ADR-0044 §6). Con evidencia de cualificación
+    /// (M5) la categoría sale de <see cref="QualificationRecommender"/>; sin ella, o sin una
+    /// cualificación utilizable, es ObserveOnly y así se declara en Warnings. Solo recomienda: la
+    /// política nunca se guarda sin una acción del usuario.
     /// </summary>
     public ModelPolicyDraft Draft(ModelPolicyKey key, CancellationToken cancellationToken)
     {
-        var warnings = new List<string>
+        var warnings = new List<string>();
+        var category = ModelPolicyCategory.ObserveOnly;
+        var evidence = EvidenceLookup?.Invoke(key, cancellationToken);
+        if (evidence is null)
         {
-            "sin evidencia de cualificación: la recomendación es conservadora (ObserveOnly)",
-        };
+            warnings.Add("sin evidencia de cualificación: la recomendación es conservadora (ObserveOnly)");
+        }
+        else
+        {
+            var recommendation = QualificationRecommender.Recommend(evidence.Traits, evidence.FileMutationSamples);
+            category = recommendation.Category;
+            warnings.AddRange(recommendation.Notes);
+            if (evidence.State == ModelQualificationState.Stale)
+                warnings.Add("la cualificación está obsoleta (versión nueva de la suite): recualifica para confirmarla");
+        }
         if (key.ChatTemplateHash is null)
         {
             warnings.Add("configuración sin hash de chat template: la identidad de la política es más gruesa");
         }
 
-        return new ModelPolicyDraft(key, ModelPolicyCategory.ObserveOnly, warnings,
-            hasQualificationEvidence: false);
+        return new ModelPolicyDraft(key, category, warnings, hasQualificationEvidence: evidence is not null);
     }
 
     /// <summary>

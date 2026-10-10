@@ -71,6 +71,10 @@ public abstract record CommandOutcome;   // ClientActionRequested | ServerComman
 4. **Aliases:** siguen las mismas reglas, y un alias nunca oculta un nombre canónico ni un nombre corto no ambiguo.
 5. **Capacidades:** un command cuya `RequiredCapabilities` no se cumple (por ejemplo, un `ServerCommand` sin Run activo) aparece deshabilitado, con la razón visible.
 
+### Estado de implementación (A9, 2026-10-09)
+
+`ClientCommandRegistry` existe en `OmniCore.Client` con los ClientCommands de M1: `/help`, `/exit`, `/plan`, `/tasks`, `/events`, `/context`, `/tools`, `/permissions`, `/interrupt` y `/cancel`. Cada uno resuelve a una `ClientActionInvocation` (ADR-0025) que ejecuta `ClientActionHandler`; la TUI y el CLI plano usan el mismo registro y el mismo handler, y solo aportan lo suyo (la TUI, cerrar y detener su Turn; el CLI, el listado de permisos). Antes `/help`, `/exit`, `/tasks`, `/events` y `/permissions` caían en el Host y terminaban en `command.prompt_not_found`. Todos los nombres del registro están reservados en el Host (un test lo verifica), de modo que ninguna otra fuente puede registrarlos. Los commands propios de la TUI (`/mode`, `/agents`, `/agent`, `/models`…) siguen resueltos en `TuiApp`: moverlos al registro es trabajo pendiente. `CommandDescriptor` completo, `ListCommands` con precedencia entre fuentes y la palette siguen como se declaró arriba.
+
 ## Clasificación
 
 | Elemento | Categoría |

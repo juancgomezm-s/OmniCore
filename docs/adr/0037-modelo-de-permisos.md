@@ -73,7 +73,19 @@ Las categorías de la spec §43 se mapean a `ResourceClaims` (ADR-0014):
 - **Riesgo aceptado (red libre para build):** `dotnet test`/`build` ejecutan código del repo (MSBuild y los propios tests). Con red libre, un repo malicioso puede exfiltrar lo que ese proceso pueda leer. Hay dos mitigaciones que se mantienen:
   1. el sandbox de proceso (ADR-0038) limita qué puede leer (sin `~/.ssh`, sin almacenes de credenciales, sin rutas de secretos);
   2. un workspace **no confiable** (ADR-0039) no tiene este default: ahí la red de build vuelve a `Ask`.
-- **Configuración:** el perfil (`autonomous | balanced | conservative`) se cambia en `permissions.profile`, en scope User.
+- **Configuración (A11, 2026-10-09):** el perfil y las reglas del usuario viven en `<config>/permissions.yaml` (scope User; un `permissions.yaml` dentro de `.omnicore/` es un archivo prohibido, ADR-0039 §4):
+
+  ```yaml
+  profile: balanced          # autonomous (default) | balanced | conservative
+  rules:                     # capa UserPolicy, por id de tool
+    filesystem.write: ask    # allow | ask | deny
+    process.exec: deny
+  ```
+
+  - **Perfiles.** `autonomous` es la tabla de arriba. `balanced` pide confirmación (`Ask`, con grant hasta Run) antes de ejecutar procesos de build/test en ACT/ORQ. `conservative` además pide confirmación antes de escribir dentro del workspace. Los perfiles solo endurecen: PLAN sigue negando escrituras y procesos con efecto, y los secretos son `Deny` en los tres.
+  - **Reglas.** `deny` y `ask` restringen (mínimo con las demás capas, §2). `allow` es una regla explícita del usuario: solo levanta un `Ask` de modo, perfil o `UserPolicy`, nunca un `Deny` ni una restricción que el repo haya estrechado. La capa aparece en el `PermissionDecisionRecord` como `UserPolicy` (restricción) o `user-rule` (levantamiento).
+  - **Validación.** Un archivo inválido se rechaza con línea y columna antes de cualquier Turn y en `omni doctor`; nunca se ignora en silencio. Sin archivo rige el perfil autónomo sin reglas.
+  - **Pendiente:** la regla de la red de build de un workspace no confiable (`Ask`, §4) aún no se aplica: el recurso `BuildTestNetwork` no se clasifica por separado del proceso.
 
 ### 5. Grants: dónde viven y cómo se revocan
 

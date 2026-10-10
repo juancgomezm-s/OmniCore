@@ -196,6 +196,7 @@ public sealed class ManagedServerSpec
         // llama.cpp e ik_llama leen la key de LLAMA_API_KEY (equivale a --api-key): sin ella el
         // servidor gestionado arrancaría sin autenticación.
         env["LLAMA_API_KEY"] = apiKey;
-        return new ProcessLaunch(Executable, outArgs, WorkingDirectory, env, true);
+        // Nadie espera al servidor: su salida se descarta para que no llene la tubería y lo bloquee.
+        return new ProcessLaunch(Executable, outArgs, WorkingDirectory, env, false) { DiscardOutput = true };
     }
 }

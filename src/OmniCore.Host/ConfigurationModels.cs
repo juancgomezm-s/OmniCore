@@ -17,11 +17,24 @@ public sealed class ProviderFileYaml
     public string? Profile { get; set; }
     public string? BillingMode { get; set; }
     public string? AuthRef { get; set; }
+
+    /// <summary><c>attach</c> (servidor ya levantado) o <c>managed</c> (lo lanza OmniCore), ADR-0011 §4.</summary>
+    public string? Host { get; set; }
+    public ManagedHostYaml? Managed { get; set; }
     public decimal? InputPricePerMillionUsd { get; set; }
     public decimal? OutputPricePerMillionUsd { get; set; }
 
     /// <summary>Legacy auth syntax, parsed explicitly from YAML nodes to support scalar/map forms AOT-safely.</summary>
     public ProviderAuthYaml? Auth { get; set; }
+}
+
+/// <summary>Lanzamiento del servidor local con <c>host: managed</c>. El puerto y la API key los genera el runtime.</summary>
+public sealed class ManagedHostYaml
+{
+    public string? Executable { get; set; }
+    public List<string>? Args { get; set; }
+    public string? WorkingDirectory { get; set; }
+    public int? ReadinessTimeoutSeconds { get; set; }
 }
 
 /// <summary>Typed representation of legacy <c>auth: none</c> or <c>auth: { apiKey: ref }</c>.</summary>
@@ -94,6 +107,11 @@ public sealed class UserSettingsYaml
     public SidebarSettingsYaml? Sidebar { get; set; }
     public Dictionary<string, WidgetSettingsYaml>? Widgets { get; set; }
     public BudgetSettingsYaml? Budget { get; set; }
+    public string? DefaultModel { get; set; }
+    public WorkspaceGatesYaml? Gates { get; set; }
+
+    /// <summary>Claves fijadas en User: Project y Workspace no las cambian (ADR-0039 §5).</summary>
+    public List<string>? Locked { get; set; }
 }
 
 public sealed class SidebarSettingsYaml
@@ -140,6 +158,7 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(ProvidersFileYaml))]
 [YamlSerializable(typeof(ProviderFileYaml))]
 [YamlSerializable(typeof(ProviderAuthYaml))]
+[YamlSerializable(typeof(ManagedHostYaml))]
 [YamlSerializable(typeof(ModelsFileYaml))]
 [YamlSerializable(typeof(ModelFileYaml))]
 [YamlSerializable(typeof(ReasoningCapabilityYaml))]

@@ -742,11 +742,16 @@ public sealed class ModelPolicyRequiredException : Exception
 
     public string PolicyKeyHash { get; }
 
+    /// <summary>Mensaje para el usuario (ADR-0040): qué capacidad falta, para qué modelo y cómo resolverlo.</summary>
+    public LocalizedText UserMessage { get; }
+
     public ModelPolicyRequiredException(ModelPolicyKey key, ModelToolCapability requiredCapability)
         : base("la Task requiere " + requiredCapability + " y la política de " + key + " no la concede; "
             + "clasifica el modelo para continuar")
     {
         RequiredCapability = requiredCapability;
         PolicyKeyHash = key.PolicyKeyHash();
+        UserMessage = LocalizedText.Of("modelPolicy.required", ("capability", requiredCapability.ToString()),
+            ("model", key.ModelId));
     }
 }

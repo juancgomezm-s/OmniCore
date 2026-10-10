@@ -31,7 +31,6 @@ public static class LaneActivityProjection
         var runningTools = new HashSet<ToolCallId>();
         var pendingPermissions = new HashSet<InteractionId>();
         RunId? awaitingRun = null;
-        var stalled = false;
         var ambiguousToolOwnership = false;
         var ownership = new CanonicalEventOwnership(codecs, events);
 
@@ -93,12 +92,6 @@ public static class LaneActivityProjection
                 case RunCancelled e when e.RunId.Equals(awaitingRun): awaitingRun = null; break;
                 case RunFailed e when e.RunId.Equals(awaitingRun): awaitingRun = null; break;
 
-                case ProgressStalled: stalled = true; break;
-                // Señales de progreso (ADR-0036 §7): transición de item/Task o efecto aplicado.
-                case PlanItemStarted or PlanItemCompleted or PlanItemBlocked or PlanItemUnblocked
-                    or PlanItemFailed or TaskCompleted or TaskFailed or TaskBlocked:
-                    stalled = false;
-                    break;
             }
         }
 
@@ -112,7 +105,10 @@ public static class LaneActivityProjection
         if (runningTools.Count > 0) return LaneActivity.WaitingForTool;
         if (openTurn is not null && !modelResponded) return LaneActivity.WaitingForModel;
         if (ambiguousToolOwnership) return LaneActivity.Stalled;
-        if (stalled) return LaneActivity.Stalled;
+        // ADR-0036 §7: un ProgressStalled sin una señal de progreso posterior; las señales son las del
+        // watchdog (ADR-0048 §1), de modo que la Lane deja de estar Stalled exactamente cuando el watchdog
+        // vuelve a ver progreso.
+        if (ProgressWatchdog.Scan(codecs, events, new[] { lane }, null).StallOpen) return LaneActivity.Stalled;
         return LaneActivity.None;
     }
 }

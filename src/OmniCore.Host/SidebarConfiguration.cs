@@ -10,14 +10,13 @@ using YamlDotNet.Serialization.NamingConventions;
 
 namespace OmniCore.Host;
 
-/// <summary>Presentation-only YAML configuration. User -> trusted Project -> local Workspace.
-/// Changes require a trusted human command and a matching revision; other settings are preserved.</summary>
+/// <summary>Presentation-only YAML configuration. User -> trusted Project -> local Workspace, resolved per key
+/// with User <c>locked</c> entries (ADR-0039 §5). Changes require a trusted human command and a matching
+/// revision; other settings are preserved.</summary>
 public sealed class SidebarConfiguration
 {
     private readonly IPlatformPaths _paths;
     private readonly string _workspace;
-    private static readonly IDeserializer Deserializer = new StaticDeserializerBuilder(new OmniYamlStaticContext())
-        .WithNamingConvention(CamelCaseNamingConvention.Instance).IgnoreUnmatchedProperties().Build();
     public SidebarConfiguration(IPlatformPaths paths, string workspace) { _paths = paths; _workspace = workspace; }
     private string UserFile => Path.Combine(_paths.ConfigDirectory, "settings.yaml");
     private string WorkspaceFile => Path.Combine(OmniHost.WorkspaceDataDirectory(_paths, _workspace), "settings.yaml");
@@ -72,8 +71,8 @@ public sealed class SidebarConfiguration
         }
     }
 
-    private static bool ValidId(string id) => id.Length is > 0 and <= 100 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_');
-    private static string ReadFile(string path)
+    internal static bool ValidId(string id) => id.Length is > 0 and <= 100 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_');
+    internal static string ReadFile(string path)
     {
         CheckLinks(path);
         if (!File.Exists(path)) return "";
@@ -100,6 +99,12 @@ public sealed class SidebarConfiguration
         var trusted = new WorkspaceTrustStore(_paths).IsTrusted(_workspace);
         return [("User", ReadFile(UserFile)), ("Project", trusted ? ReadFile(ProjectFile) : ""), ("Workspace", ReadFile(WorkspaceFile))];
     }
+    private static (UserSettingsYaml Settings, ScopedConfiguration<ScopedSettingValue> Resolved) Effective(
+        (string Scope, string Text)[] layers)
+    {
+        var resolved = ScopedSettingsLoader.Resolve(Root(layers[0].Text), Root(layers[1].Text), Root(layers[2].Text));
+        return (ScopedSettings.Typed<UserSettingsYaml>(resolved), resolved);
+    }
     private static string Revision((string Scope, string Text)[] layers) => Convert.ToHexStringLower(SHA256.HashData(
         Encoding.UTF8.GetBytes(string.Join("\n", layers.Select(l => l.Scope + ":" + l.Text.Length + ":" + l.Text)))));
 
@@ -107,35 +112,27 @@ public sealed class SidebarConfiguration
     {
         try
         {
-            var layers = Layers(); var prefs = new SidebarPreferences();
-            var widgets = new Dictionary<string, WidgetPreferences>(StringComparer.Ordinal);
-            var sources = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var (scope, text) in layers)
+            var layers = Layers();
+            var (settings, resolved) = Effective(layers);
+            var prefs = new SidebarPreferences();
+            if (settings.Sidebar is { } sidebar) prefs = prefs with
             {
-                var root = Root(text);
-                foreach (var section in new[] { "sidebar", "widgets" })
-                    if (root.Children.TryGetValue(new YamlScalarNode(section), out var node) && node is YamlMappingNode map)
-                        foreach (var entry in map.Children)
-                        {
-                            var name = (entry.Key as YamlScalarNode)!.Value!;
-                            if (section == "sidebar") sources[section + "." + name] = scope;
-                            else if (entry.Value is YamlMappingNode fields)
-                                foreach (var key in fields.Children.Keys.OfType<YamlScalarNode>()) sources["widgets." + name + "." + key.Value] = scope;
-                        }
-                var settings = string.IsNullOrWhiteSpace(text) ? new UserSettingsYaml() : Deserializer.Deserialize<UserSettingsYaml>(text);
-                if (settings.Sidebar is { } sidebar) prefs = prefs with
-                {
-                    Visible = sidebar.Visible ?? prefs.Visible, Mode = sidebar.Mode ?? prefs.Mode,
-                    StackedMinWidth = sidebar.StackedMinWidth ?? prefs.StackedMinWidth,
-                    TabbedMinWidth = sidebar.TabbedMinWidth ?? prefs.TabbedMinWidth,
-                };
-                foreach (var (id, setting) in settings.Widgets ?? [])
-                {
-                    var current = widgets.GetValueOrDefault(id) ?? new WidgetPreferences();
-                    widgets[id] = current with { Visible = setting.Visible ?? current.Visible,
-                        Expanded = setting.Expanded ?? current.Expanded, Priority = setting.Priority ?? current.Priority };
-                }
+                Visible = sidebar.Visible ?? prefs.Visible, Mode = sidebar.Mode ?? prefs.Mode,
+                StackedMinWidth = sidebar.StackedMinWidth ?? prefs.StackedMinWidth,
+                TabbedMinWidth = sidebar.TabbedMinWidth ?? prefs.TabbedMinWidth,
+            };
+            var widgets = new Dictionary<string, WidgetPreferences>(StringComparer.Ordinal);
+            foreach (var (id, setting) in settings.Widgets ?? [])
+            {
+                var current = new WidgetPreferences();
+                widgets[id] = current with { Visible = setting.Visible ?? current.Visible,
+                    Expanded = setting.Expanded ?? current.Expanded, Priority = setting.Priority ?? current.Priority };
             }
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var contribution in resolved.Contributions)
+                if (contribution.Key.StartsWith("sidebar.", StringComparison.Ordinal)
+                    || contribution.Key.StartsWith("widgets.", StringComparison.Ordinal))
+                    sources[contribution.Key] = contribution.Scope.ToString();
             if (prefs.StackedMinWidth <= prefs.TabbedMinWidth) throw new InvalidDataException("InvalidBreakpoints");
             return new(Revision(layers), prefs with { Widgets = widgets }, [], sources);
         }
@@ -143,7 +140,7 @@ public sealed class SidebarConfiguration
         {
             var diagnostics = exception is ConfigValidationException config
                 ? config.Diagnostics.Select(d => $"{d.File}:{d.Line}:{d.Column} {d.KeyPath}").ToArray()
-                : exception is YamlException yaml ? [$"settings.yaml:{yaml.Start.Line + 1}:{yaml.Start.Column + 1} Syntax"]
+                : exception is YamlException yaml ? [$"settings.yaml:{yaml.Start.Line}:{yaml.Start.Column} Syntax"]
                 : ["Sidebar settings unavailable · " + exception.GetType().Name];
             return new("unavailable", new(), diagnostics);
         }
@@ -155,6 +152,10 @@ public sealed class SidebarConfiguration
         var current = Read();
         if (current.Diagnostics.Count > 0) throw new InvalidOperationException("Fix invalid settings before saving");
         if (current.Revision != revision) throw new InvalidOperationException("Settings changed; reload before saving");
+        // ADR-0039 §5: a User lock freezes the key for every more-specific scope.
+        if (scope == "Workspace" && value != "reset"
+            && ScopedSettings.Locks(Root(Layers()[0].Text)).Any(entry => ConfigurationScopeResolver.Covers(entry, key)))
+            throw new InvalidOperationException("Setting is locked by User settings");
         string[] parts;
         if (key.StartsWith("sidebar.", StringComparison.Ordinal)) parts = key.Split('.');
         else if (key.StartsWith("widgets.", StringComparison.Ordinal))
@@ -187,12 +188,8 @@ public sealed class SidebarConfiguration
         var content = output.ToString();
         // Also validate effective cross-scope breakpoint ordering before publishing.
         var layers = Layers(); layers[scope == "User" ? 0 : 2] = (scope, content);
-        var stacked = 120; var tabbed = 90;
-        foreach (var layer in layers)
-        {
-            var settings = string.IsNullOrWhiteSpace(layer.Text) ? new UserSettingsYaml() : Deserializer.Deserialize<UserSettingsYaml>(layer.Text);
-            stacked = settings.Sidebar?.StackedMinWidth ?? stacked; tabbed = settings.Sidebar?.TabbedMinWidth ?? tabbed;
-        }
+        var effective = Effective(layers).Settings.Sidebar;
+        var stacked = effective?.StackedMinWidth ?? 120; var tabbed = effective?.TabbedMinWidth ?? 90;
         if (stacked <= tabbed) throw new ArgumentException("Stacked breakpoint must exceed tabbed breakpoint");
         var temp = file + ".tmp-" + Guid.NewGuid().ToString("N");
         try

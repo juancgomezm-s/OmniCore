@@ -102,6 +102,8 @@ Se ejecuta tras cambios en el estado de Tasks o Lanes, al completar un Turn, tra
 | `ScopeExpansion` | el objetivo cambia de naturaleza ("fix auth bug" → "reemplazar el subsistema de auth"), se agregan recursos fuera del `TaskScope` | `Ask` (ADR-0003: sin cliente → `Deny`, se mantiene la revisión anterior) |
 | `RequiredSkip` / `RequiredCancel` | saltar o cancelar un item requerido | `Ask` y razón obligatoria |
 
+- **`Skip` y las Tasks vinculadas (2026-10-09, ADR-0036 §2):** al saltar un item, `PlanService` emite además `TaskSkipped` para sus Tasks vinculadas `Pending`/`Ready` (sin Lane) que ningún otro item vivo necesite, en el mismo lote y con el mismo impacto que el `Skip`. Una Task `Running` o `Blocked` ya ejecutó y no se toca. Sin esto, la Task quedaba sin terminar y el gate de Tasks rechazaba el Run. `Cancel` de un item no cancela Tasks.
+
 - **Cálculo del impacto:** en M1 son reglas estructurales (recursos fuera de scope, cantidad de items, cambio del objetivo del item raíz). Una clasificación más fina es DEFERABLE.
 
 ### 7. `WorkingState`
@@ -140,6 +142,8 @@ Blockers: —   Siguiente: aplicar el fix en AuthenticationService.cs
 - **`ModelDriven`** (alta fiabilidad): igual que `Assisted`, con menos WorkingState expandido (solo el item actual y los adyacentes) para ahorrar contexto.
 
 ### 9. Watchdog de progreso
+
+> **Precisado por [ADR-0048](0048-watchdog-y-respuesta-al-estancamiento.md) (2026-10-09):** evaluación en Runs reales, un evento por episodio, Plan sin descomponer, input humano, rechazos repetidos y semántica de cada `StallPolicy`.
 
 - **Señales de progreso:**
   - cambio de estado de una Task o Lane vinculada;

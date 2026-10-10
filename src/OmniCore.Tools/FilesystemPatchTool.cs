@@ -181,6 +181,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             && (context.ReadRegistry!.Ledger.MutationPolicy?.RequirePriorRead ?? true)
             && (expectedVersion is null || !context.ReadRegistry!.Matches(path!, expectedVersion!)))
         {
+            context.ReadRegistry!.Ledger.RecordTokenViolation(path!, ModelToolCapability.PatchExisting);
             return ToolResult.Error(ToolErrorCode.PriorReadRequired,
                 "PRIOR_READ_REQUIRED: no se puede parchear " + path
                 + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
@@ -209,6 +210,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion is null || expectedVersion != actualVersion)
         {
+            context.ReadRegistry?.Ledger.RecordTokenViolation(path!, ModelToolCapability.PatchExisting);
             return ToolResult.Error(ToolErrorCode.StaleWrite,
                 FileVersion.StaleWriteMessage(actualVersion));
         }
@@ -382,7 +384,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
         // política la exige, ADR-0044 §5).
         context.ReadRegistry?.Ledger.RecordMutation(path!, deletedLines, insertedLines,
-            intent.Intent.ToolCallId);
+            intent.Intent.ToolCallId, ModelToolCapability.PatchExisting, FileVersion.CountLines(content));
 
         return new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied)
         { AfterStateBytes = newBytes };

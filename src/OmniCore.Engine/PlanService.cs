@@ -119,7 +119,7 @@ public sealed class PlanService
                 return Transition(plan, item, new PlanItemFailed(item.Id, mutation.Reason ?? "fallo declarado"),
                     "No se puede marcar como fallido un item en ");
             case PlanMutationKind.Skip:
-                return ApplySkip(plan, item, mutation, approved);
+                return ApplySkip(plan, tasks, item, mutation, approved);
             case PlanMutationKind.Cancel:
                 return ApplyCancel(plan, item, mutation, approved);
             case PlanMutationKind.Revise:
@@ -174,7 +174,8 @@ public sealed class PlanService
         return Transition(plan, item, new PlanItemCompleted(item.Id, mutation.Reason), "No se puede completar un item en ");
     }
 
-    private static PlanServiceResult ApplySkip(PlanProjection plan, PlanItem item, PlanMutation mutation, bool approved)
+    private static PlanServiceResult ApplySkip(PlanProjection plan, TaskGraphProjection tasks, PlanItem item,
+        PlanMutation mutation, bool approved)
     {
         var evt = new PlanItemSkipped(item.Id, mutation.Reason ?? "");
         var valid = Transition(plan, item, evt, "No se puede saltar un item en ");
@@ -183,13 +184,35 @@ public sealed class PlanService
             return valid;
         }
 
+        // El trabajo que el Plan descarta y nunca arrancó se omite también en el TaskGraph (ADR-0036 §2);
+        // si no, una Task Pending/Ready quedaría sin terminar y el gate de Tasks rechazaría el Run.
+        var events = new List<DomainEventPayload> { evt };
+        events.AddRange(SkippableTasks(plan, tasks, item).Select(task => (DomainEventPayload)new TaskSkipped(task,
+            "item del Plan saltado" + (string.IsNullOrWhiteSpace(mutation.Reason) ? "" : ": " + mutation.Reason))));
+
         if (!item.Required)
         {
-            return PlanServiceResult.AcceptedOne(evt); // Moderate: automático y visible
+            return PlanServiceResult.AcceptedMany(events); // Moderate: automático y visible
         }
 
         var gate = RequireApproval(MutationImpact.RequiredSkip, mutation, approved, "Saltar un item requerido");
-        return gate ?? Structural(plan, mutation, MutationImpact.RequiredSkip, evt);
+        return gate ?? Structural(plan, mutation, MutationImpact.RequiredSkip, events.ToArray());
+    }
+
+    /// <summary>
+    /// Tasks vinculadas que aún no arrancaron (Pending/Ready, sin Lane) y que ningún otro item vivo del Plan
+    /// necesita. Una Task Blocked ya tuvo ejecución: no se omite, se resuelve por su propio camino.
+    /// </summary>
+    private static IEnumerable<TaskId> SkippableTasks(PlanProjection plan, TaskGraphProjection tasks, PlanItem item)
+    {
+        foreach (var link in item.LinkedTasks.DistinctBy(candidate => candidate.TaskId))
+        {
+            if (tasks.StateOf(link.TaskId) is not (TaskState.Pending or TaskState.Ready)) continue;
+            var neededElsewhere = plan.Items().Any(other => !other.Id.Equals(item.Id)
+                && !StateMachines.IsPlanItemTerminal(other.State)
+                && other.LinkedTasks.Any(otherLink => otherLink.TaskId.Equals(link.TaskId)));
+            if (!neededElsewhere) yield return link.TaskId;
+        }
     }
 
     private static PlanServiceResult ApplyCancel(PlanProjection plan, PlanItem item, PlanMutation mutation,

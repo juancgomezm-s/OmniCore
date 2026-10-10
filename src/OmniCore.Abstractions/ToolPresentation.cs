@@ -1,29 +1,56 @@
 namespace OmniCore.Abstractions;
 
-/// <summary>
-/// Presentación declarativa de una tool para la UI (ADR-0033 §2): claves de LocalizedText y
-/// verbosidad, nunca frases. La UI la interpreta con los recursos es/en (ADR-0040).
-/// </summary>
-public sealed class ToolPresentation
+/// <summary>Categoría de actividad de una tool: elige glyph y rol en el cliente (ADR-0033 §2).</summary>
+public enum ActivityCategory
 {
-    public string TitleKey { get; }
+    Search,
+    Read,
+    Edit,
+    Execute,
+    Test,
+    Build,
+    Plan,
+    Delegate,
+    Network,
+    Other,
+}
 
-    public string RunningKey { get; }
+/// <summary>
+/// Presentación declarativa de una tool para la UI (ADR-0033 §2, INV-013): datos, nunca código ni frases.
+/// Las etiquetas son claves de localización (ADR-0040) con argumentos; el cliente las interpola con los
+/// campos de <see cref="SummaryFields"/> tomados de los argumentos de la llamada (ya redactados).
+/// </summary>
+public sealed record ToolPresentation(ActivityCategory Category, string RunningKey, string SucceededKey,
+    string FailedKey, IReadOnlyList<string> SummaryFields)
+{
+    /// <summary>Convención de claves: <c>tool.&lt;id&gt;.running|succeeded|failed</c>.</summary>
+    public static ToolPresentation For(string toolId, ActivityCategory category, params string[] summaryFields) =>
+        new(category, "tool." + toolId + ".running", "tool." + toolId + ".succeeded", "tool." + toolId + ".failed",
+            summaryFields);
 
-    public string DoneKey { get; }
+    private static readonly IReadOnlyDictionary<string, ToolPresentation> Core =
+        new Dictionary<string, ToolPresentation>(StringComparer.Ordinal)
+        {
+            ["filesystem.read"] = For("filesystem.read", ActivityCategory.Read, "path"),
+            ["filesystem.list"] = For("filesystem.list", ActivityCategory.Read, "path"),
+            ["search.text"] = For("search.text", ActivityCategory.Search, "pattern"),
+            ["filesystem.write"] = For("filesystem.write", ActivityCategory.Edit, "path"),
+            ["filesystem.patch"] = For("filesystem.patch", ActivityCategory.Edit, "path"),
+            ["process.exec"] = For("process.exec", ActivityCategory.Execute, "executable"),
+            ["dyn.core.verify_integration"] = For("dyn.core.verify_integration", ActivityCategory.Test, "executable"),
+            ["plan.propose"] = For("plan.propose", ActivityCategory.Plan),
+            ["mode.propose"] = For("mode.propose", ActivityCategory.Plan),
+            ["reference.resolve"] = For("reference.resolve", ActivityCategory.Read),
+            ["artifact.read"] = For("artifact.read", ActivityCategory.Read),
+            ["user.ask"] = For("user.ask", ActivityCategory.Other),
+            ["core.agents.mailbox.receive"] = For("core.agents.mailbox.receive", ActivityCategory.Delegate),
+        };
 
-    public string[] ArgsKeys { get; }
+    /// <summary>Presentación de una tool Core; null para las demás (el cliente usa la etiqueta genérica).</summary>
+    public static ToolPresentation? Of(string toolId) => Core.TryGetValue(toolId, out var value) ? value : null;
 
-    public ToolPresentation(string titleKey, string runningKey, string doneKey, string[] argsKeys)
-    {
-        TitleKey = titleKey;
-        RunningKey = runningKey;
-        DoneKey = doneKey;
-        ArgsKeys = argsKeys;
-    }
-
-    public static ToolPresentation Simple(string toolId) =>
-        new("tool." + toolId + ".title", "tool." + toolId + ".running", "tool." + toolId + ".done", new string[0]);
+    /// <summary>Ids de las tools Core con presentación propia.</summary>
+    public static IReadOnlyCollection<string> CoreToolIds => Core.Keys.ToArray();
 }
 
 /// <summary>Referencia resuelta del composer (@file, @folder; ADR-0033 §1).</summary>

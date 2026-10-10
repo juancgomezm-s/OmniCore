@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -949,6 +950,333 @@ public sealed class CliEndToEndTests
         });
     }
 
+    [Fact]
+    public async Task Act_stall_escalates_the_same_run_through_the_runtime_with_progress_stalled_cause()
+    {
+        // ADR-0048: un `omni act` que no avanza (el gate rechaza siempre igual) recorre la cadena
+        // y, en EscalateModel, el runtime escala por la ruta autorizada y continúa el mismo Run.
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            // Sin TTY de forma explícita: al agotar la cadena, AskUser termina en InputRequired en lugar
+            // de esperar una respuesta en la consola de quien lance los tests.
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.UseConsoleInput = false;
+            runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
+            CliApp.UseRuntimeForTests(runtime);
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  small-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [small] }
+                  big-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [big] }
+                routing:
+                  implementation: [small]
+                  escalation: { mode: auto, chain: [small, big] }
+                """);
+            Assert.Equal(0, (await Run("model", "policy", "set", "small-model", "--category", "PatchOnly", "--note", "stall")).Code);
+            Assert.Equal(0, (await Run("model", "policy", "set", "big-model", "--category", "PatchOnly", "--note", "stall")).Code);
+            Assert.Equal(0, (await Run("trust")).Code);
+            Directory.CreateDirectory(Path.Combine(workspace, ".omnicore"));
+            File.WriteAllText(Path.Combine(workspace, ".omnicore", "settings.yaml"),
+                "gates:\n  test: [omnicore-stall-missing-gate-tool]\n");
+            provider.RespondWith((_, _) => TextResponse("listo"));
+
+            var act = await Run("act", "corrige este test");
+
+            var events = ReadCurrentSessionEvents(workspace);
+            var run = Assert.Single(events.OfType<RunCreated>());
+            var responses = events.OfType<StallResponseSelected>().ToArray();
+            Assert.Equal(new[] { StallPolicy.Replan, StallPolicy.Diagnose, StallPolicy.EscalateModel },
+                responses.Take(3).Select(item => item.Policy));
+            var requested = Assert.Single(events.OfType<ModelEscalationRequested>());
+            Assert.Equal(EscalationCause.ProgressStalled, requested.Cause);
+            Assert.Equal(run.RunId, requested.RunId);
+            Assert.Equal("big-model", requested.ToModel);
+            Assert.Contains(events.OfType<ModelStepStarted>(), step => step.ModelId == "big-model");
+            Assert.Contains(events.OfType<UserInputReceived>(),
+                input => input.Origin == ProgressWatchdog.RuntimeOriginPrefix + "StallEscalation)");
+            // Ya escalado, la cadena sigue sin volver a escalar.
+            Assert.All(responses.Skip(3), item => Assert.NotEqual(StallPolicy.EscalateModel, item.Policy));
+            Assert.Contains("escalando a big-model", act.Output);
+            Assert.Contains("Sin progreso en «corrige este test»", act.Output);
+            AssertNoLeaks(act.Output);
+        });
+    }
+
+    private const string FakeLlamaServer = """
+        param([int]$Port, [string]$Log)
+        $key = $env:LLAMA_API_KEY
+        # Registra el arranque y vuelca salida de sobra: si nadie la drena, el servidor se bloquea aquí.
+        Add-Content -Path $Log -Value "STARTED $PID"
+        [Console]::Out.Write('x' * 3000000)
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        while ($true) {
+            $client = $listener.AcceptTcpClient()
+            try {
+                $stream = $client.GetStream()
+                $reader = New-Object System.IO.StreamReader($stream)
+                $request = $reader.ReadLine()
+                $auth = ''
+                $length = 0
+                while (($line = $reader.ReadLine()) -ne '') {
+                    if ($line -like 'Authorization:*') { $auth = $line.Substring(14).Trim() }
+                    if ($line -like 'Content-Length:*') { $length = [int]$line.Substring(15).Trim() }
+                }
+                if ($length -gt 0) {
+                    $buffer = New-Object char[] $length
+                    $read = 0
+                    while ($read -lt $length) { $read += $reader.Read($buffer, $read, $length - $read) }
+                }
+                $verb = $request.Split(' ')[0]
+                if ($auth -ne "Bearer $key") {
+                    Add-Content -Path $Log -Value "$verb auth=bad"
+                    $head = "HTTP/1.1 401 Unauthorized`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+                    $body = ''
+                } elseif ($verb -eq 'GET') {
+                    Add-Content -Path $Log -Value "GET auth=ok"
+                    $body = '{"data":[]}'
+                    $head = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
+                } else {
+                    Add-Content -Path $Log -Value "POST auth=ok"
+                    $body = 'data: {"choices":[{"delta":{"content":"respuesta-managed"},"finish_reason":null}]}' + "`n`n" + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}' + "`n`n" + 'data: [DONE]' + "`n"
+                    $head = "HTTP/1.1 200 OK`r`nContent-Type: text/event-stream`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
+                }
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($head + $body)
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush()
+            } finally { $client.Close() }
+        }
+        """;
+
+    [Fact]
+    public async Task Managed_local_server_is_launched_with_its_own_key_reused_across_turns_and_stopped_on_dispose()
+    {
+        // ADR-0011 §4: `host: managed` arranca el servidor con puerto efímero y API key generados en
+        // runtime, lo reutiliza entre Turns y lo detiene al terminar el runtime.
+        if (!OperatingSystem.IsWindows()) return;
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            var script = Path.Combine(config, "fake-llama.ps1");
+            var log = Path.Combine(config, "fake-llama.log");
+            File.WriteAllText(script, FakeLlamaServer);
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
+                providers:
+                  scripted:
+                    family: OpenAiChatCompatible
+                    billingMode: Local
+                    host: managed
+                    baseUrl: auto
+                    managed:
+                      executable: powershell.exe
+                      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", '{{script}}', "-Port", "{port}", "-Log", '{{log}}']
+                      readinessTimeoutSeconds: 90
+                """);
+            using var runtime = OmniCliRuntime.Create(workspace);
+            runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
+            CliApp.UseRuntimeForTests(runtime);
+
+            var first = await Run("ask", "primera pregunta");
+            Assert.True(first.Code == 0, first.Output);
+            Assert.Contains("respuesta-managed", first.Output);
+            var second = await Run("ask", "segunda pregunta");
+            Assert.True(second.Code == 0, second.Output);
+
+            var lines = File.ReadAllLines(log);
+            var started = Assert.Single(lines, line => line.StartsWith("STARTED ", StringComparison.Ordinal));
+            Assert.Contains("GET auth=ok", lines);
+            Assert.Equal(2, lines.Count(line => line == "POST auth=ok"));
+            Assert.DoesNotContain(lines, line => line.Contains("auth=bad", StringComparison.Ordinal));
+            Assert.Equal(0, provider.RequestCount); // el provider scripted del arnés nunca recibe nada
+            AssertNoLeaks(first.Output + second.Output);
+
+            var doctor = await Run("doctor");
+            Assert.Contains("administrado por OmniCore", doctor.Output);
+
+            var pid = int.Parse(started["STARTED ".Length..]);
+            Assert.True(IsRunning(pid), "el servidor sigue vivo entre Turns");
+            runtime.Dispose();
+            var deadline = DateTime.UtcNow.AddSeconds(20);
+            while (DateTime.UtcNow < deadline && IsRunning(pid)) await Task.Delay(200);
+            Assert.False(IsRunning(pid), "Dispose detiene el servidor managed");
+        });
+    }
+
+    private static bool IsRunning(int pid)
+    {
+        try { return !Process.GetProcessById(pid).HasExited; }
+        catch (ArgumentException) { return false; }
+    }
+
+    [Fact]
+    public async Task Attach_to_a_down_local_server_fails_before_the_turn_with_a_clear_message()
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            var free = new TcpListener(IPAddress.Loopback, 0);
+            free.Start();
+            var port = ((IPEndPoint)free.LocalEndpoint).Port;
+            free.Stop();
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), string.Join(Environment.NewLine,
+                "providers:", "  scripted:", "    family: OpenAiChatCompatible", "    baseUrl: http://127.0.0.1:" + port + "/v1",
+                "    auth: none", "    billingMode: Local", "    host: attach", ""));
+
+            var ask = await Run("ask", "hola");
+
+            Assert.Equal(1, ask.Code);
+            Assert.Contains("El servidor local de «scripted» no responde en http://127.0.0.1:" + port + "/v1", ask.Output);
+            Assert.Contains("host: managed", ask.Output);
+            Assert.Equal(0, provider.RequestCount);
+            AssertNoLeaks(ask.Output);
+
+            var doctor = await Run("doctor");
+            Assert.Contains("servidor ya levantado en http://127.0.0.1:" + port + "/v1 — no responde", doctor.Output);
+        });
+    }
+
+    [Fact]
+    public async Task Non_interactive_act_on_an_unclassified_model_ends_with_model_policy_required_before_any_run()
+    {
+        // ADR-0044 §6: sin TTY no hay onboarding; `act` existe para modificar archivos, así que termina en lugar
+        // de fingir que trabaja en ObserveOnly. Ni se crea un Run ni se llama al provider.
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            var refused = await Run("act", "cambia doc.txt");
+
+            Assert.Equal(1, refused.Code);
+            Assert.Contains("«scripted-model» no tiene una política de modelo", refused.Output);
+            Assert.Contains("PatchExisting", refused.Output);
+            Assert.Equal(0, provider.RequestCount);
+            Assert.DoesNotContain(ReadAllSessionEventsOrEmpty(workspace), evt => evt is RunCreated);
+
+            // Sin TTY, `model select` deja el modelo en modo seguro efímero, que tampoco concede escritura.
+            Assert.Equal(0, (await Run("model", "select", "scripted-model")).Code);
+            var ephemeral = await Run("act", "cambia doc.txt");
+            Assert.Equal(1, ephemeral.Code);
+            Assert.Equal(0, provider.RequestCount);
+
+            // Un modelo clasificado sí puede actuar, y el modo `ask` nunca exigió política de escritura.
+            provider.RespondWith((_, _) => TextResponse("listo"));
+            Assert.Equal(0, (await Run("model", "policy", "set", "scripted-model", "--category", "PatchOnly", "--note", "e2e")).Code);
+            Assert.Equal(0, (await Run("model", "select", "scripted-model")).Code);
+            Assert.Equal(0, (await Run("act", "cambia doc.txt")).Code);
+            Assert.True(provider.RequestCount > 0);
+        });
+    }
+
+    private static IReadOnlyList<DomainEventPayload> ReadAllSessionEventsOrEmpty(string workspace)
+    {
+        var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+        return File.Exists(journal) ? ReadAllSessionEvents(workspace) : Array.Empty<DomainEventPayload>();
+    }
+
+    [Fact]
+    public async Task Permissions_yaml_is_reported_by_doctor_and_an_invalid_one_stops_every_turn_before_the_provider()
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            File.WriteAllText(Path.Combine(config, "permissions.yaml"),
+                "profile: balanced\nrules:\n  filesystem.write: ask\n");
+            var doctor = await Run("doctor");
+            Assert.True(doctor.Code == 0, doctor.Output);
+            Assert.Contains("Permisos: perfil Balanced; reglas de usuario: 1", doctor.Output);
+
+            // doctor sondea el servidor local (una conexión TCP que el provider de prueba cuenta como petición).
+            var requests = provider.RequestCount;
+            File.WriteAllText(Path.Combine(config, "permissions.yaml"), "profile: reckless\n");
+            var ask = await Run("ask", "hola");
+            Assert.Equal(1, ask.Code);
+            Assert.Contains("permissions.yaml:1:10", ask.Output);
+            Assert.Equal(requests, provider.RequestCount);
+            Assert.Equal(1, (await Run("doctor")).Code);
+        });
+    }
+
+    [Fact]
+    public async Task Explain_shows_the_context_and_the_effective_configuration_of_the_last_turn()
+    {
+        // ADR-0017 / ADR-0029: `omni explain` explica qué recibió el último Turn, no solo el estado del plan.
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            var before = await Run("explain");
+            Assert.Equal(0, before.Code);
+            Assert.Contains("Ningún Turn ha registrado su fingerprint todavía.", before.Output);
+
+            provider.RespondWith((_, _) => TextResponse("hecho"));
+            Assert.Equal(0, (await Run("ask", "explica el estado")).Code);
+
+            var after = await Run("explain");
+            Assert.Equal(0, after.Code);
+            Assert.Contains("Contexto del último Turn:", after.Output);
+            Assert.Matches(@"Tokens: \d+/\d+ \(", after.Output);
+            Assert.Contains("Configuración efectiva del último Turn (fingerprint):", after.Output);
+            Assert.Contains("Modelo: ", after.Output);
+            Assert.True(Regex.IsMatch(after.Output, @"model\.profile@\S+  \S{12}"), after.Output);
+            Assert.True(Regex.IsMatch(after.Output, @"tools\.plan@\S+  \S{12}"), after.Output);
+        });
+    }
+
+    [Fact]
+    public async Task Client_commands_run_in_the_plain_cli_instead_of_failing_as_unknown_prompts()
+    {
+        // ADR-0024/0025: /help, /exit, /tasks, /events, /permissions y /cancel resuelven a una ClientAction.
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            var help = await Run("/help");
+            Assert.Equal(0, help.Code);
+            Assert.Contains("Comandos disponibles:", help.Output);
+            foreach (var name in new[] { "/help", "/exit", "/plan", "/tasks", "/events", "/permissions", "/cancel" })
+                Assert.Contains(name + " — ", help.Output);
+            Assert.DoesNotContain("prompt_not_found", help.Output);
+
+            Assert.Contains("Hasta pronto.", (await Run("/exit")).Output);
+            var permissions = await Run("/permissions");
+            Assert.Equal(0, permissions.Code);
+            Assert.Contains("Permisos", permissions.Output, StringComparison.OrdinalIgnoreCase);
+
+            foreach (var command in new[] { "/tasks", "/events", "/plan", "/cancel", "/interrupt" })
+            {
+                var result = await Run(command);
+                Assert.Equal(0, result.Code);
+                Assert.DoesNotContain("prompt_not_found", result.Output);
+                AssertNoLeaks(result.Output);
+            }
+            Assert.Equal(0, provider.RequestCount);
+        });
+    }
+
+    [Fact]
+    public async Task Workspace_local_settings_choose_the_model_unless_user_settings_lock_it()
+    {
+        // ADR-0022 §4 / ADR-0039 §5: el scope Workspace gana sobre User, salvo claves `locked` de User.
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  small-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [small] }
+                  big-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [big] }
+                """);
+            var localSettings = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace),
+                "settings.yaml");
+            Directory.CreateDirectory(Path.GetDirectoryName(localSettings)!);
+            File.WriteAllText(localSettings, "defaultModel: big-model\n");
+            File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: small-model\n");
+            provider.RespondWith((_, _) => TextResponse("uno"));
+
+            Assert.Equal(0, (await Run("ask", "primera")).Code);
+            Assert.Equal("big-model", ReadCurrentSessionEvents(workspace).OfType<ModelStepStarted>().Last().ModelId);
+
+            File.WriteAllText(Path.Combine(config, "settings.yaml"),
+                "defaultModel: small-model\nlocked: [defaultModel]\n");
+            var doctor = await Run("doctor");
+            Assert.Equal(0, doctor.Code);
+            Assert.Contains("defaultModel ← User", doctor.Output);
+            Assert.Contains("defaultModel: ignorado en Workspace (locked «defaultModel» en User)", doctor.Output);
+            AssertNoLeaks(doctor.Output);
+            provider.RespondWith((_, _) => TextResponse("dos"));
+            Assert.Equal(0, (await Run("ask", "segunda")).Code);
+            Assert.Equal("small-model", ReadCurrentSessionEvents(workspace).OfType<ModelStepStarted>().Last().ModelId);
+        });
+    }
+
     [Theory]
     [InlineData("deny")]
     [InlineData("endpoint")]
@@ -1277,7 +1605,9 @@ public sealed class CliEndToEndTests
             var explain = await Run("explain", "estado del plan");
             Assert.Equal(0, explain.Code);
             Assert.Contains("Pregunta: estado del plan", explain.Output);
-            AssertNoLeaks(explain.Output);
+            // Las líneas «tipo · contributor ×n» y «componente@versión  hash» llevan ids (p. ej. run.mode_authority), no textos.
+            AssertNoLeaks(string.Join('\n', explain.Output.Split('\n')
+                .Where(line => !line.Contains(" ×", StringComparison.Ordinal) && !line.Contains('@'))));
 
             var context = await Run("/context");
             Assert.Equal(0, context.Code);
@@ -1294,8 +1624,17 @@ public sealed class CliEndToEndTests
             Assert.Contains("respuesta-scripted", typedExplain.Output);
             AssertNoLeaks(typedExplain.Output);
 
+            // ADR-0044 §6: sin TTY, un modelo sin clasificar no puede actuar y no se llama al provider.
+            var requests = provider.RequestCount;
+            var refused = await Run("act", "implementa el objetivo");
+            Assert.Equal(1, refused.Code);
+            Assert.Contains("modelPolicy.required", refused.Output); // este runtime no tiene resolvedor de textos
+            Assert.Equal(requests, provider.RequestCount);
+
             // M3: exercise the real Act path and verify the scripted provider response is rendered.
+            Assert.Equal(0, (await Run("model", "policy", "set", "scripted-model", "--category", "PatchOnly", "--note", "e2e")).Code);
             var act = await Run("act", "implementa el objetivo");
+            Assert.Equal(0, (await Run("model", "policy", "delete", "scripted-model")).Code);
             Assert.Equal(0, act.Code);
             Assert.Contains("respuesta-scripted", act.Output);
             AssertNoLeaks(act.Output);
@@ -1510,6 +1849,67 @@ public sealed class CliEndToEndTests
     }
 
     [Fact]
+    public async Task Act_mutations_are_recorded_as_file_mutation_reliability_on_the_qualified_profile()
+    {
+        // ADR-0044 §4: un Run ACT real alimenta FileMutationReliability en el perfil de cualificación
+        // de la configuración exacta que lo ejecutó, y el onboarding la usa en su recomendación.
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            const string original = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
+            File.WriteAllText(Path.Combine(workspace, "doc.txt"), original);
+            var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(original))).ToLowerInvariant();
+            var registry = OmniHost.LoadUserConfiguration(config).Registry;
+            var model = registry.Model("scripted-model")!;
+            var key = ModelQualificationHost.QualificationKeyFor(model, registry.Provider("scripted"));
+            ModelQualificationProfile profile;
+            using (var store = OmniHost.CreateModelQualificationStore(data))
+            {
+                profile = store.Upsert(key, 0, ModelQualificationState.Qualified, "fixture-quick", "1.0.0",
+                    TestContext.Current.CancellationToken);
+                store.SaveTraits(key, profile.ProfileRevision, new[]
+                {
+                    new ModelTraitRecord(key.QualificationKeyHash(), profile.ProfileRevision,
+                        "InstructionFollowing", 1.0, 1.0, 10, "fixture"),
+                    new ModelTraitRecord(key.QualificationKeyHash(), profile.ProfileRevision,
+                        "StructuredOutputReliability", 1.0, 1.0, 10, "fixture"),
+                }, TestContext.Current.CancellationToken);
+            }
+            provider.RespondWith((requestNumber, _) => requestNumber switch
+            {
+                0 => ToolCallResponse("call-read", "filesystem.read", """{"path":"doc.txt"}"""),
+                1 => ToolCallResponse("call-patch", "filesystem.patch", PatchArguments(version)),
+                _ => TextResponse("cambio aplicado"),
+            });
+            Assert.Equal(0, (await Run("model", "policy", "set", "scripted-model", "--category", "PatchOnly",
+                "--note", "mutation-evidence")).Code);
+            var policyService = OmniHost.CreateModelPolicyService(data);
+            var policyKey = ModelPolicyKey.For("scripted", "scripted-model");
+            var stored = Assert.IsType<StoredModelPolicy>(policyService.Get(policyKey, CancellationToken.None));
+            var oldMutation = stored.Policy.MutationPolicy;
+            policyService.Set(policyKey, stored.Revision, new UserModelPolicy(stored.Policy.Category,
+                stored.Policy.ToolPolicy, new FileMutationPolicy(oldMutation.Mode, oldMutation.Delete,
+                    oldMutation.MoveOrRename, oldMutation.MaxFilesPerTurn, oldMutation.MaxChangedLinesPerTurn,
+                    oldMutation.MaxRewriteRatio, oldMutation.RequirePriorRead, oldMutation.RequireExpectedVersionToken,
+                    requirePostEditValidation: false, allowParallelMutations: oldMutation.AllowParallelMutations),
+                stored.Policy.Source, "mutation-evidence"), CancellationToken.None);
+
+            var act = await Run("act", "actualiza doc.txt");
+
+            Assert.Equal(0, act.Code);
+            Assert.Equal("one\ntwo-X\nthree\nfour\nfive\nsix\nseven\neight\n",
+                File.ReadAllText(Path.Combine(workspace, "doc.txt")));
+            using var reopened = OmniHost.CreateModelQualificationStore(data);
+            var traits = reopened.Traits(key, profile.ProfileRevision, TestContext.Current.CancellationToken);
+            var mutation = Assert.Single(traits, trait => trait.Trait == MutationEvidenceRecorder.TraitName);
+            Assert.Equal(1, mutation.Samples);
+            Assert.Equal(MutationEvidenceRecorder.Source, mutation.Source);
+            Assert.Equal(0.925, mutation.Value, 4); // 2 líneas cambiadas sobre 8: solo penaliza el tamaño del diff
+            Assert.Contains(traits, trait => trait.Trait == "InstructionFollowing" && trait.Samples == 10);
+            AssertNoLeaks(act.Output);
+        });
+    }
+
+    [Fact]
     public async Task Act_permission_ask_without_tty_stays_awaiting_input_without_inventing_answer()
     {
         await InIsolatedCli(async (workspace, _, _, provider) =>
@@ -1581,6 +1981,7 @@ public sealed class CliEndToEndTests
             AssertNoLeaks(response.Output);
 
             provider.RespondWith((_, _) => TextResponse("nuevo run completado"));
+            Assert.Equal(0, (await Run("model", "policy", "set", "scripted-model", "--category", "PatchOnly", "--note", "e2e")).Code);
             var act = await Run("act", "inicia trabajo nuevo");
             Assert.Equal(0, act.Code);
             Assert.Contains("nuevo run completado", act.Output);

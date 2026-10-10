@@ -68,6 +68,16 @@ Las claves de seguridad **solo pueden estrecharse** desde el scope Project:
 
 Si un repo intenta configurar una clave no permitida, la clave se ignora y se emite un diagnóstico en `/doctor`.
 
+### 5. Resolución por scope y claves `locked` (precisado por el cableado de A2, 2026-10-09)
+
+La configuración no sensible se resuelve **por hoja** con `ConfigurationScopeResolver` (ADR-0022 §4): gana el scope más específico (`User` → `Project` → `Workspace`), clave por clave. Las secciones que participan son `defaultModel`, `gates`, `sidebar` y `widgets`; cada hoja (`gates.test`, `sidebar.mode`, `widgets.core.context.priority`) se resuelve por separado, de modo que `User` puede fijar el gate de build y el repo el de test.
+
+- **`locked`:** lista en el `settings.yaml` de `User`. Una entrada fija esa clave y todas las que cuelgan de ella (`sidebar` cubre `sidebar.mode`) para `Project` y `Workspace`. Solo `User` puede declararlas: el repo la rechaza como clave prohibida y el `settings.yaml` del Workspace local, como clave desconocida. Una entrada fuera de las claves bloqueables es un diagnóstico (`locked.<clave>`), nunca se ignora en silencio.
+- **`User` puede definir** `defaultModel` y `gates` además de `sidebar`, `widgets` y `budget`; sin ello no habría nada que bloquear. `budget` y los permisos no pasan por este resolutor: el presupuesto solo existe en `User` y los permisos se combinan por mínimo (ADR-0037).
+- **Workspace local** (`<data>/workspaces/<WorkspaceId>/settings.yaml`) solo admite `defaultModel`, `sidebar` y `widgets`. `Project` solo cuenta si el workspace es confiable (§3).
+- **Alias:** `defaultModel` efectivo debe ser un alias que el usuario definió, venga del scope que venga.
+- **Diagnóstico:** `omni doctor` muestra, por clave efectiva, el scope que la aportó, y qué contribuciones descartó un `locked` y de qué scope. `SidebarPreferencesSnapshot.Sources` usa la misma resolución, y guardar una preferencia en `Workspace` que un `locked` de `User` cubre se rechaza.
+
 ## Clasificación
 
 | Elemento | Categoría |

@@ -392,8 +392,8 @@ public sealed class M2IntegrationTests
         var localHost = OmniHost.CreateLocalModelHost();
         Assert.False(localHost.IsManagedRunning(), "sin servidor managed aún");
 
-        var resolver = OmniHost.CreateScopeResolver();
-        Assert.Equal("fallback", resolver.Resolve(OmniCore.Domain.ScopeLevel.User, "clave", "fallback"));
+        // Sin capas, el resolutor de configuración por scope no inventa valores (ADR-0022 §4).
+        Assert.Empty(ConfigurationScopeResolver.Resolve(Array.Empty<ConfigScopeLayer<string>>()).Values);
 
         var creds = OmniHost.CreateCredentialStore(".");
         Assert.True(creds.GetType().Name.Equals("FileCredentialStore", StringComparison.Ordinal),

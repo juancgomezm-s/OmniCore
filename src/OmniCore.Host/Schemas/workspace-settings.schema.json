@@ -28,7 +28,8 @@
     "network": false,
     "environmentAllowlist": false,
     "grants": false,
-    "userPolicy": false
+    "userPolicy": false,
+    "locked": false
   },
   "$defs": {
     "sidebar": { "type": "object", "additionalProperties": false, "properties": {

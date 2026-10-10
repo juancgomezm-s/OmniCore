@@ -55,6 +55,43 @@ public sealed class SessionSidebarTests
     }
 
     [Fact]
+    public void Session_widget_shows_the_derived_activity_of_the_root_lane_and_never_persists_it()
+    {
+        // ADR-0036 §3 / A7: la actividad se deriva del journal y llega al widget; leerla no escribe nada.
+        var store = new InMemoryEventStore(); var codecs = EventCodecs.Create();
+        var server = new OmniServer(store, codecs, new InMemoryAuditSink());
+        Assert.Equal("ok", Send(server, """{"cmd":"session.input","text":"trabajo largo","mode":"act"}""").Status);
+        var session = server.LastSessionId()!; var run = server.LastRunId()!;
+        var journal = store.ReadFrom(session, 1).Where(e => e.RunId == run).ToArray();
+        var rootTask = RunProjection.Replay(session, run, codecs, journal).RootTask!;
+        var rootLane = LaneProjection.Replay(codecs, journal).ForTask(rootTask).First().Id;
+        var stream = new EventStream(store, codecs, session);
+        static string[] Rows(SessionSidebarSnapshot snapshot) => ((ListWidgetModel)SessionSidebarPresentation
+            .Build(snapshot, null, "modelo", "act", "es", false).First(w => w.Id == "core.session")
+            .Build(ClientState.Empty(), WidgetSize.Expanded)).Rows.Select(row => row.Text).ToArray();
+        Assert.Null(SessionSidebarReader.Read(store, codecs, session, run, false).Activity);
+
+        var turn = TurnId.New();
+        using (ExecutionScope.Begin(new(run, rootTask, rootLane)))
+            stream.Append(new TurnStarted(turn, rootLane));
+        var before = store.ReadFrom(session, 1).Count;
+        var waiting = SessionSidebarReader.Read(store, codecs, session, run, false);
+        Assert.Equal("WaitingForModel", waiting.Activity);
+        Assert.Contains("esperando al modelo", Rows(waiting));
+        Assert.Equal(before, store.ReadFrom(session, 1).Count); // derivar la actividad nunca escribe
+
+        using (ExecutionScope.Begin(new(run, rootTask, rootLane)))
+        {
+            stream.Append(new TurnCompleted(turn));
+            stream.Append(new ProgressStalled(PlanItemId.New(), 6, DateTimeOffset.UtcNow));
+        }
+        var stalled = SessionSidebarReader.Read(store, codecs, session, run, false);
+        Assert.Equal("Stalled", stalled.Activity);
+        Assert.Contains("sin progreso", Rows(stalled));
+        Assert.Equal("Stalled", SidebarJson.Decode(SidebarJson.Encode(stalled))!.Activity);
+    }
+
+    [Fact]
     public void Client_discards_stale_or_cross_session_snapshots_and_clears_on_switch()
     {
         var projection = new SessionSidebarProjection(); projection.Activate("one");

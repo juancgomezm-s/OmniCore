@@ -58,6 +58,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.InteractionResolved())
             .Plus(Typed.InteractionExpired())
             .Plus(Typed.ProgressStalled())
+            .Plus(Typed.StallResponseSelected())
             .Plus(Typed.TaskCreated())
             .Plus(Typed.AgentExecutionStarted())
             .Plus(Typed.AgentExecutionCompleted())
@@ -404,6 +405,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(InteractionResolved))]
 [JsonSerializable(typeof(InteractionExpired))]
 [JsonSerializable(typeof(ProgressStalled))]
+[JsonSerializable(typeof(StallResponseSelected))]
 [JsonSerializable(typeof(TaskCreated))]
 [JsonSerializable(typeof(AgentExecutionStarted))]
 [JsonSerializable(typeof(AgentExecutionCompleted))]
@@ -632,6 +634,9 @@ public sealed class Typed
 
     public static CodecPair ProgressStalled() =>
         Of(EventType.Of("progress.stalled"), EventJsonContext.Default.ProgressStalled);
+
+    public static CodecPair StallResponseSelected() =>
+        Of(EventType.Of("stall.response_selected"), EventJsonContext.Default.StallResponseSelected);
 
     public static CodecPair TaskCreated() =>
         Of(EventType.Of("task.created"), EventJsonContext.Default.TaskCreated, currentVersion: 2);

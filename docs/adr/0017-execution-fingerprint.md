@@ -47,6 +47,10 @@ Componentes:
   - comparar dos Turns y ver qué componente cambió;
   - agrupar métricas de calibración (ADR-0007) por configuración efectiva.
 
+### Estado de implementación (A12, 2026-10-09)
+
+`omni explain` explica ya el último Turn del Run: además del estado del plan muestra el **contexto** materializado (presupuesto de tokens, y de qué contributor y tipo viene cada pieza, ADR-0029) y su **fingerprint** (modelo y cada componente con su versión y un prefijo de su hash). Los datos salen de las consultas `context` y `turnFingerprint` del servidor; esta última solo expone identidades y hashes, nunca el contenido de los componentes. `omni turn explain <id>` (un Turn concreto) y el diff de fingerprints siguen diferidos.
+
 ## Clasificación
 
 | Elemento | Categoría |
