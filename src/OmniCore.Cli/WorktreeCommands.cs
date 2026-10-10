@@ -1,5 +1,6 @@
 using OmniCore.Client;
 using OmniCore.Host;
+using OmniCore.Domain;
 
 namespace OmniCore.Cli;
 
@@ -14,15 +15,19 @@ public static class WorktreeCommands
         {
             Console.WriteLine(loc.Resolve("worktree.inspect.usage"));
             Console.WriteLine(loc.Resolve("worktree.preview.usage"));
+            Console.WriteLine(loc.Resolve("worktree.undo.usage"));
             return 0;
         }
         if (args.Length >= 2 && args[1] == "preview")
             return await PreviewAsync(args, loc, cancellationToken).ConfigureAwait(false);
+        if (args.Length >= 2 && args[1] == "undo")
+            return Undo(args, loc, cancellationToken);
         if (args.Length is < 2 or > 3 || args[1] != "inspect"
             || (args.Length == 3 && (string.IsNullOrWhiteSpace(args[2]) || args[2].StartsWith('-'))))
         {
             Console.WriteLine(loc.Resolve("worktree.inspect.usage"));
             Console.WriteLine(loc.Resolve("worktree.preview.usage"));
+            Console.WriteLine(loc.Resolve("worktree.undo.usage"));
             return 2;
         }
         try
@@ -80,6 +85,39 @@ public static class WorktreeCommands
         {
             Console.WriteLine(loc.Resolve("worktree.preview.cancelled"));
             return 130;
+        }
+    }
+
+    private static int Undo(string[] args, Localization loc, CancellationToken cancellationToken)
+    {
+        if (args.Length > 3 || (args.Length == 3 && !Guid.TryParse(args[2], out _)))
+        {
+            Console.WriteLine(loc.Resolve("worktree.undo.usage"));
+            return 2;
+        }
+        try
+        {
+            var effect = args.Length == 3 ? ToolCallId.Parse(args[2]) : (ToolCallId?)null;
+            if (effect is null)
+            {
+                var plan = WorktreeUndoHost.Plan(Environment.CurrentDirectory);
+                if (plan is null) { Console.WriteLine("No hay una sesión verificada de OmniCore para este workspace."); return 1; }
+                foreach (var entry in plan.Entries)
+                    Console.WriteLine($"{entry.OriginalEffect}  {entry.State}  {EscapePath(entry.RelativePath)}");
+                Console.WriteLine("Selecciona un toolCallId con: omni worktree undo <toolCallId>");
+                return 0;
+            }
+            var result = WorktreeUndoHost.Undo(Environment.CurrentDirectory, effect, cancellationToken);
+            foreach (var file in result.Files)
+                Console.WriteLine($"{file.Outcome}  {EscapePath(file.RelativePath)}");
+            Console.WriteLine(result.Summary);
+            return result.Outcome switch { UndoOutcome.Applied or UndoOutcome.NoOp => 0, UndoOutcome.Conflict => 3, _ => 1 };
+        }
+        catch (OperationCanceledException) { Console.WriteLine("Undo cancelado."); return 130; }
+        catch (Exception)
+        {
+            Console.WriteLine(loc.Resolve("worktree.undo.error"));
+            return 1;
         }
     }
 

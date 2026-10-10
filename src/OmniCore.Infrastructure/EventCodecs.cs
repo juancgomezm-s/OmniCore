@@ -133,6 +133,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.ToolCallReconciled())
             .Plus(Typed.ToolCallCancelled())
             .Plus(Typed.WorktreeIntegrationStateRecorded())
+            .Plus(Typed.UndoStarted())
+            .Plus(Typed.UndoCompleted())
             .Plus(Typed.PlanCreated())
             .Plus(Typed.PlanRevised())
             .Plus(Typed.PlanItemAdded())
@@ -489,6 +491,11 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(ToolCallCancelled))]
 [JsonSerializable(typeof(WorktreeIntegrationStateRecorded))]
 [JsonSerializable(typeof(WorktreeIntegrationFileStatus))]
+[JsonSerializable(typeof(UndoStarted))]
+[JsonSerializable(typeof(UndoCompleted))]
+[JsonSerializable(typeof(UndoFileState))]
+[JsonSerializable(typeof(UndoFileIntent))]
+[JsonSerializable(typeof(UndoAttribution))]
 [JsonSerializable(typeof(PlanCreated))]
 [JsonSerializable(typeof(PlanRevised))]
 [JsonSerializable(typeof(PlanItemAdded))]
@@ -864,6 +871,12 @@ public sealed class Typed
 
     public static CodecPair WorktreeIntegrationStateRecorded() =>
         Of(EventType.Of("worktree.integration_state.recorded"), EventJsonContext.Default.WorktreeIntegrationStateRecorded);
+
+    public static CodecPair UndoStarted() =>
+        Of(EventType.Of("workspace.undo.started"), EventJsonContext.Default.UndoStarted);
+
+    public static CodecPair UndoCompleted() =>
+        Of(EventType.Of("workspace.undo.completed"), EventJsonContext.Default.UndoCompleted);
 
     public static CodecPair PlanCreated() =>
         Of(EventType.Of("plan.created"), EventJsonContext.Default.PlanCreated);
