@@ -50,6 +50,12 @@ public sealed class EventStream
 
     private long _trackedThrough;
 
+    // Envelopes are append-only. Keep a stream-local read snapshot and refresh its tail,
+    // rather than materializing the complete journal at every boundary of a Turn.
+    private List<DomainEvent>? _readEvents;
+    private long _readFrom;
+    private long _readThrough;
+
     private RunId? _runId;
 
     public SessionId SessionId => _sessionId;
@@ -339,8 +345,40 @@ public sealed class EventStream
     }
 
     /// <summary>Replay de todos los eventos de la sesión desde la secuencia dada (1-based inclusive).</summary>
-    public IReadOnlyList<DomainEvent> EventsSince(long fromSequenceInclusive) =>
-        _store.ReadFrom(_sessionId, fromSequenceInclusive);
+    public IReadOnlyList<DomainEvent> EventsSince(long fromSequenceInclusive)
+    {
+        lock (WriterGate())
+        {
+            // Retention may purge a session. Do not keep returning its old snapshot.
+            if (_readEvents is not null && _store.CurrentSequence(_sessionId) < _readThrough)
+                _readEvents = null;
+
+            var restart = _readEvents is null || fromSequenceInclusive < _readFrom;
+            var next = restart ? fromSequenceInclusive
+                : _readThrough == long.MaxValue ? long.MaxValue : _readThrough + 1;
+            var fresh = _store.ReadFrom(_sessionId, next);
+            // Some test stores do not assign canonical sequences; retain their original behavior.
+            if (fresh.Any(evt => evt.Sequence <= 0))
+            {
+                _readEvents = null;
+                return _store.ReadFrom(_sessionId, fromSequenceInclusive);
+            }
+            if (restart)
+            {
+                _readEvents = new List<DomainEvent>(fresh);
+                _readFrom = fromSequenceInclusive;
+                _readThrough = fresh.Count == 0 ? Math.Max(0, fromSequenceInclusive - 1) : fresh[^1].Sequence;
+            }
+            else if (fresh.Count > 0 && _readThrough < long.MaxValue)
+            {
+                _readEvents!.AddRange(fresh);
+                _readThrough = fresh[^1].Sequence;
+            }
+
+            // Return an independent snapshot: subsequent reads/writes cannot alter it.
+            return Array.AsReadOnly(_readEvents!.Where(evt => evt.Sequence >= fromSequenceInclusive).ToArray());
+        }
+    }
 
     // Only successful persistence publishes the candidate run cursor. Sequence is not causation.
     private DomainEvent BuildEnvelope(DomainEventPayload payload, ref RunId? pendingRunId,
