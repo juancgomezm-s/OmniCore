@@ -16,6 +16,15 @@ public sealed class Localization
 
     public static Localization Spanish() => new("es");
 
+    /// <summary>Claves del recurso español. Expuesto para el test de paridad es/en.</summary>
+    public static IReadOnlyCollection<string> SpanishKeys => _es.Keys;
+
+    /// <summary>Claves del recurso inglés. Expuesto para el test de paridad es/en.</summary>
+    public static IReadOnlyCollection<string> EnglishKeys => _en.Keys;
+
+    /// <summary>True si la clave existe en los dos recursos.</summary>
+    public static bool HasInBoth(string key) => _es.ContainsKey(key) && _en.ContainsKey(key);
+
     public static Localization English() => new("en");
 
     /// <summary>Localiza un error tipado de validación de formulario.</summary>
@@ -249,6 +258,26 @@ public sealed class Localization
         ["doctor.chatgpt.none"] = "    Sesión de ChatGPT: sin iniciar (omni login chatgpt)",
         ["doctor.chatgpt.active"] = "    Sesión de ChatGPT: activa (cuenta {account}, expira {expires})",
         ["doctor.chatgpt.expired"] = "    Sesión de ChatGPT: expirada (cuenta {account}); se refrescará al usarla",
+        ["doctor.claude.oauth.none"] = "    Sesión de Claude ({provider}): sin iniciar (omni login claude)",
+        ["doctor.claude.oauth.active"] = "    Sesión de Claude ({provider}): activa ({account}, plan {plan}, cuota {tier}, expira {expires})",
+        ["doctor.claude.oauth.dead"] = "    Sesión de Claude ({provider}): el servidor rechazó el refresco ({account}); vuelve a iniciar sesión",
+        ["doctor.claude.oauth.notConfigured"] = "    Provider '{provider}': declara OAuth pero no hay sección oauth en providers.yaml",
+        ["claude.oauth.awaiting_browser"] = "Completa el inicio de sesión en el navegador que se abrió…",
+        ["claude.oauth.awaiting_browser_manual"] = "Abre esta URL y pega el código que muestra la página:",
+        ["claude.oauth.exchanging"] = "Canjeando el código por tokens…",
+        ["claude.oauth.fetching_profile"] = "Leyendo el perfil de la cuenta…",
+        ["claude.oauth.persisting"] = "Guardando la sesión cifrada…",
+        ["claude.oauth.succeeded"] = "Sesión de Claude guardada.",
+        ["claude.oauth.failed.cancelled"] = "Inicio de sesión cancelado.",
+        ["claude.oauth.failed.timeout"] = "El inicio de sesión expiró antes de recibir el código.",
+        ["claude.oauth.failed.callback"] = "El código recibido no corresponde a este inicio de sesión.",
+        ["claude.oauth.failed.browser"] = "No se pudo abrir el navegador. Abre la URL manualmente.",
+        ["claude.oauth.failed.transport"] = "No se pudo abrir el puerto del callback. Prueba el inicio de sesión manual.",
+        ["claude.oauth.failed.exchange"] = "Anthropic rechazó el intercambio del código.",
+        ["claude.oauth.failed.exchange_invalid"] = "El código de autorización ya no sirve.",
+        ["claude.oauth.failed.storage"] = "No se pudo guardar la sesión cifrada.",
+        ["claude.oauth.manual.bad_format"] = "Pega el valor con formato CÓDIGO#STATE que muestra la página.",
+        ["claude.oauth.manual.prompt"] = "Pega aquí el código que muestra la página (CÓDIGO#STATE):",
         ["cli.login.browser"] = "Abre esta URL para iniciar sesión con tu cuenta de ChatGPT:\n{url}",
         ["cli.login.device"] = "Abre {url} e introduce el código {code}",
         ["cli.login.ok"] = "Sesión de ChatGPT guardada (cuenta {account}).",
@@ -401,6 +430,9 @@ public sealed class Localization
         ["providers.menu.method.subscription"] = "suscripción",
         ["config.legacyAuthDeprecated"] = "el formato auth de providers.yaml está obsoleto; usa authRef.",
         ["config.wrongType"] = "tipo incorrecto: {path}",
+        ["config.oauth.httpsRequired"] = "la URL debe ser https absoluta: {path}",
+        ["config.oauth.noUserInfoInUrl"] = "la URL no puede llevar usuario ni contraseña: {path}",
+        ["config.oauth.userAgentNeedsVersion"] = "el user-agent debe contener el marcador {{version}}: {path}",
         ["config.expectedArgv"] = "se esperaba un argv no vacío (el primer elemento es el ejecutable): {path}",
         ["config.missingRequired"] = "falta un campo obligatorio: {path}",
         ["config.outOfRange"] = "valor fuera de rango: {path}",
@@ -670,6 +702,26 @@ public sealed class Localization
         ["doctor.chatgpt.none"] = "    ChatGPT session: not signed in (omni login chatgpt)",
         ["doctor.chatgpt.active"] = "    ChatGPT session: active (account {account}, expires {expires})",
         ["doctor.chatgpt.expired"] = "    ChatGPT session: expired (account {account}); it will be refreshed on use",
+        ["doctor.claude.oauth.none"] = "    Claude session ({provider}): not signed in (omni login claude)",
+        ["doctor.claude.oauth.active"] = "    Claude session ({provider}): active ({account}, plan {plan}, quota {tier}, expires {expires})",
+        ["doctor.claude.oauth.dead"] = "    Claude session ({provider}): the server refused the refresh ({account}); sign in again",
+        ["doctor.claude.oauth.notConfigured"] = "    Provider '{provider}': declares OAuth but providers.yaml has no oauth section",
+        ["claude.oauth.awaiting_browser"] = "Finish signing in in the browser that opened…",
+        ["claude.oauth.awaiting_browser_manual"] = "Open this URL and paste the code the page shows:",
+        ["claude.oauth.exchanging"] = "Exchanging the code for tokens…",
+        ["claude.oauth.fetching_profile"] = "Reading the account profile…",
+        ["claude.oauth.persisting"] = "Saving the encrypted session…",
+        ["claude.oauth.succeeded"] = "Claude session saved.",
+        ["claude.oauth.failed.cancelled"] = "Sign-in cancelled.",
+        ["claude.oauth.failed.timeout"] = "Sign-in timed out before the code arrived.",
+        ["claude.oauth.failed.callback"] = "The code received does not belong to this sign-in.",
+        ["claude.oauth.failed.browser"] = "Could not open the browser. Open the URL manually.",
+        ["claude.oauth.failed.transport"] = "Could not open the callback port. Try manual sign-in.",
+        ["claude.oauth.failed.exchange"] = "Anthropic rejected the code exchange.",
+        ["claude.oauth.failed.exchange_invalid"] = "The authorization code is no longer valid.",
+        ["claude.oauth.failed.storage"] = "Could not save the encrypted session.",
+        ["claude.oauth.manual.bad_format"] = "Paste the CODE#STATE value the page shows.",
+        ["claude.oauth.manual.prompt"] = "Paste the code the page shows here (CODE#STATE):",
         ["cli.login.browser"] = "Open this URL to sign in with your ChatGPT account:\n{url}",
         ["cli.login.device"] = "Open {url} and enter the code {code}",
         ["cli.login.ok"] = "ChatGPT session saved (account {account}).",
@@ -822,6 +874,9 @@ public sealed class Localization
         ["providers.menu.method.subscription"] = "subscription",
         ["config.legacyAuthDeprecated"] = "the providers.yaml auth format is deprecated; use authRef.",
         ["config.wrongType"] = "wrong type: {path}",
+        ["config.oauth.httpsRequired"] = "the URL must be absolute https: {path}",
+        ["config.oauth.noUserInfoInUrl"] = "the URL must not carry a user or password: {path}",
+        ["config.oauth.userAgentNeedsVersion"] = "the user agent must contain the {{version}} placeholder: {path}",
         ["config.expectedArgv"] = "expected a non-empty argv (first item is executable): {path}",
         ["config.missingRequired"] = "required field is missing: {path}",
         ["config.outOfRange"] = "value is out of range: {path}",
