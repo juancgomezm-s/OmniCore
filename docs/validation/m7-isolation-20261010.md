@@ -48,7 +48,7 @@ El backend de creación/limpieza se valida directamente con contratos reales; su
 
 **Siguiente entrega:** integración base/ours/theirs con preview, conservación del index del usuario, autorización de WorkspaceWrite, Barrier y reconciliación; después, materialización de TaskPacket y scheduling de lanes por worktree. El cierre integral de M7 requiere F1–F6, no la suma de pruebas unitarias aisladas.
 
-## Segundo checkpoint — F2 en curso
+## Segundo checkpoint — preview F2 (histórico)
 
 El usuario pidió reactivar el trabajo después del primer checkpoint. Luna high construye la propuesta de integración; la revisión raíz compone Host/CLI y pruebas con el CLI como proceso hijo.
 
@@ -60,6 +60,29 @@ La metadata v2 vincula ownership, base, snapshot y captura del index; metadata i
 
 Código congelado: `14a5d6411cc4c44d2e98ff85f2c7ff1044b9b84c`. Árboles Git: `src` = `7c76c5301dee1b700f2bdb9474b6d6c54318c5cb`; `tests` = `9efaac82681447fbf9b639a62ec74f4d692ed2c4`. El checkpoint documental posterior conserva esos árboles.
 
-La compilación multi-target pasó con 0 errores y 0 advertencias. Las pruebas focalizadas pasaron 31/31 y arquitectura 56/56. La regresión de CLI/cliente dio **70 PASS y 1 FAIL por timeout**, tanto en la pasada inicial (65.720 s) como en la repetición del grupo (60.612 s): `Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers`, esperando el primer lector en `CliEndToEndTests.cs:205`. Esa prueba aislada pasó 1/1 (2.139 s) sin editar fuentes. El fallo dependiente del grupo sigue abierto: no se acredita regresión verde, no se integra este checkpoint a main y Luna debe investigar la interacción antes de la siguiente entrega. La suite integral queda pendiente para el cierre de M7. [Logs y hashes del segundo checkpoint](m7-preview-checkpoint-20261010.txt).
+La compilación multi-target pasó con 0 errores y 0 advertencias. Las pruebas focalizadas pasaron 31/31 y arquitectura 56/56. La regresión de CLI/cliente dio **70 PASS y 1 FAIL por timeout**, tanto en la pasada inicial (65.720 s) como en la repetición del grupo (60.612 s): `Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers`, esperando el primer lector en `CliEndToEndTests.cs:205`. Esa prueba aislada pasó 1/1 (2.139 s) sin editar fuentes. El fallo dependiente del grupo seguía abierto al terminar ese checkpoint; quedó resuelto y volvió a pasar el grupo exacto en el tercer checkpoint. Esta observación histórica no se atribuye al código F2 actual. La suite integral queda pendiente para el cierre de M7. [Logs y hashes del segundo checkpoint](m7-preview-checkpoint-20261010.txt).
 
 Antes de la pasada focal final se corrigieron el contexto de objetos privados para `check-attr --source`, nulabilidad/tipos internos y el terminador LF del archivo Git alternates. Un CRLF incorporaba el CR a la ruta en Windows y causaba `GitCommandFailed`. Las pruebas también corrigieron expectativas de los fixtures y limpieza de objetos de solo lectura. La prueba de carrera muta el workspace entre captura y merge, y verifica el rechazo conservando la edición del usuario. Estos fallos iniciales no se cuentan como pases.
+
+## Tercer checkpoint — aplicación autorizada y recuperación de F2
+
+El código de F2 está en `codex/m7-isolation-20261010`, commit `d65d9f40e91a487778fb498af68225c550bb31fc`, publicado en `origin/codex/m7-isolation-20261010`. Esta entrega conecta el backend de captura con `worktree.integrate` a través de Security, ToolRuntime, leases de escritura del Host y un Barrier durable que agrupa `ToolCallStarted`, el estado de integración `Started` y la deuda de validación previa al efecto. La propuesta/claim no permite al cliente escoger metadata ni CAS. La política por lotes se proyecta antes del Barrier y se vuelve a comprobar antes de escribir.
+
+La reconciliación conserva el manifest tipado y las pre/postimágenes en CAS protegido, confirma la identidad Git/ownership en recuperación y registra el estado de cada path junto con la transición reconciliada del ToolCall. Las reaperturas activas y terminales son idempotentes; un crash después del último reemplazo se clasifica como Applied solo si todo el lote coincide con posthashes. Los paths con topology, encoding, size o mode fuera del contrato fallan cerrados. La prueba de `OmniServer` verifica CAS durable, root canónico y retención idempotente entre dos reaperturas. El propósito del CAS usa ahora la raíz física canónica, evitando que el casing equivalente de Windows altere la clave de protección.
+
+La suite exacta de CLI/cliente que había quedado con timeout en el checkpoint 2 pasó 71/71 sin ampliar plazos ni relajar assertions. Build multi-target, recuperación single-file existente, referencias de artifacts, ledger/deuda y el backend de Git también pasaron en las ejecuciones indicadas abajo.
+
+Límites conocidos: el lease excluye otros escritores coordinados por este Host, no editores externos. Para altas se usa publicación atómica sin overwrite y se prueba una creación ajena entre la comprobación y la publicación. En reemplazos y borrados queda una ventana entre el último preimage check y el efecto porque la API de archivos no ofrece compare-and-swap con hashes frente a procesos externos; se hacen rechecks por archivo y verificación postimage del lote, y una divergencia queda como Unknown/Conflict, pero no se atribuye exclusión absoluta de procesos externos. `ChangedFilesReader` todavía no proyecta el lote multarchivo de integración en el diff de producto. Siguen pendientes F3 (TaskPacket, worktree operativo, leases por destino y provisioning journalizado), F4, F5, F6, changedFiles/diff y la suite integral; M7 no está cerrado.
+
+Código de implementación: commit `d65d9f40e91a487778fb498af68225c550bb31fc`; los 245 tests focales y de regresión se ejecutaron sobre ese commit. Un arreglo solo de representación cambió el byte NUL literal del source a escape C# `\0` en `6a31c154598867b11773c34a89e37011b096f1f0`; el build completo de esa revisión pasó 0/0 sin warnings. HEAD al publicar esta acta: `6a31c154598867b11773c34a89e37011b096f1f0`; árbol de `src` `9ccfdd3ee8f21f5dca98d116a72a12b190d2321d`; árbol de `tests` `2398312ac414a14fb4d3bad21171414027bb8473`.
+
+| Comprobación | Resultado |
+| --- | --- |
+| `dotnet build OmniCore.slnx --no-restore` | exit 0; 0 errores, 0 advertencias |
+| `GitWorktreeStoreTests` | 34 PASS; incluye integración por Runtime, no-overwrite, recovery parcial y reapertura real de OmniServer |
+| `OmniCore.ArchitectureTests` | 56 PASS |
+| `CliEndToEndTests` + `ClientTests` + `ClientActionTests` | 71 PASS; prueba de lectores/writer incluida |
+| Recovery single-file + ArtifactRefs + PostEditValidation + MutationLedger | 84 PASS |
+| `git diff --check` | exit 0 |
+
+La evidencia y SHA-256 de logs externos está en [m7-f2-checkpoint-20261010.txt](m7-f2-checkpoint-20261010.txt). Hubo una pasada preliminar con fallo al limpiar el fixture SQLite y otra que detectó la divergencia de casing del propósito CAS; se conservaron los logs y no cuentan como éxito. Los resultados anteriores son de una repetición secuencial posterior al arreglo. No se ejecutó la suite integral de M7 ni se integra esta rama a `main`.

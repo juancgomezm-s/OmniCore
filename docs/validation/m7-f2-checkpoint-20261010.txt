@@ -1,0 +1,61 @@
+M7 F2 checkpoint — Windows 2026-10-10
+Implementation commit: d65d9f40e91a487778fb498af68225c550bb31fc
+Final source-only representation fix: 6a31c154598867b11773c34a89e37011b096f1f0
+Branch: codex/m7-isolation-20261010, both commits published to origin
+Status: F2 applied integration/recovery checkpoint; M7 remains open (F3–F6 pending).
+
+Build log outside repository:
+C:\Users\juanc\.codex\m7-f2-build-purpose-canonical-20261010.log
+SHA256: 7CA2DCCDEC46797C10843CDA19C43BBD7EB30E701EB7689745E285AF2AA23CE3
+dotnet build OmniCore.slnx --no-restore — exit 0, 0 warnings, 0 errors.
+
+Git integration tests log:
+C:\Users\juanc\.codex\m7-f2-focal-purpose-canonical-20261010.log
+SHA256: D9A62491E5A28D28F7B2F7B46DDEAD0D56E7EC3C610852A4A18DF67383D5912F
+GitWorktreeStoreTests — 34 passed, 0 failed.
+Includes authorized runtime/barrier, create no-overwrite race, workspace edits preserved,
+partial application recovery, active and terminal resume, and OmniServer reopen with persisted CAS.
+
+Architecture log:
+C:\Users\juanc\.codex\m7-f2-architecture-final-20261010.log
+SHA256: F8B89E819EACA1D667F1A7020E46055DD5EBC00780D76672423B1720D2380FEF
+OmniCore.ArchitectureTests — 56 passed, 0 failed.
+
+CLI/client regression log (exact runner selection):
+C:\Users\juanc\.codex\m7-f2-cli-client-final-20261010.log
+SHA256: AE8B3A626290C6DCD7E54D7AF6AAB90E9A7121313C50AC328235D85D856E9A9B
+OmniCore.Tests.CliEndToEndTests + ClientTests + ClientActionTests — 71 passed, 0 failed.
+The earlier grouped reader/writer timeout is resolved with its original assertions and deadlines.
+
+Recovery/artifact/ledger log:
+C:\Users\juanc\.codex\m7-f2-recovery-ledger-final-20261010.log
+SHA256: D9E80CB943F1C49D8D523BC6EFECF6675B5F87796DE6540AC4CA39CFAF967DDE
+M3HostRecoveryTests + M3FilesystemRecoveryTests + ArtifactRefsEnvelopeTests +
+DurablePostEditValidationTests + FileMutationReliabilityTests + MutationLedgerLifetimeTests +
+MutationEvidenceTests — 84 passed, 0 failed.
+
+`git diff --check` exited 0 before source commit. Test invocations used the direct xUnit
+runner, `-noColor -parallelMode none`; logs are outside the repository. The total 245 passes
+are the sum of the four disjoint targeted groups above, not a full-suite result.
+
+After the test commit, one literal NUL byte in WorktreeIntegrationApplyTool.cs was replaced
+with the equivalent C# `\0` escape so Git can review the source as text. No semantic code
+changed; the full multi-target build was repeated after that fix:
+C:\Users\juanc\.codex\m7-f2-build-nul-source-fix-20261010.log
+SHA256: 80EBF5C395469E21A4209F3D3D4AF483AB24D53D0C7AC5799351EBD5D4195AF3
+exit 0, 0 warnings, 0 errors. The 245 focused/regression tests above were run on d65d9f4;
+the only subsequent source diff is the byte-equivalent escape correction.
+
+Historical failures retained in m7-preview-checkpoint-20261010.txt and external logs:
+- Grouped CLI/client run initially had 70 pass and 1 timeout. The exact group later passed 71/71.
+- One host-recovery test run detected a casing mismatch in the protected-CAS purpose; the
+  purpose now derives from canonical physical root and the final reopen test passes.
+- An earlier host test run passed recovery assertions but its temporary SQLite cleanup failed
+  because pooled connections retained the journal; ClearAllPools was added before final run.
+None of these preliminary runs is counted as a final pass.
+
+Known boundaries: leases coordinate Host writers, not external editors. Create publication uses
+no-overwrite, but a replacement/deletion still has a narrow external-process race between the
+last preimage check and filesystem effect. Postimage checks classify divergence as Unknown/Conflict;
+they cannot prevent every uncoordinated external write. ChangedFilesReader/diff does not yet project
+the mult-file integration manifest. No full M7 suite was run and this checkpoint does not close M7.
