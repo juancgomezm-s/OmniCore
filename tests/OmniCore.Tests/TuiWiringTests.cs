@@ -551,7 +551,9 @@ public sealed class TuiWiringTests
         Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
         Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
         Assert.Contains("fixture/sidebar-model", fx.App.SidebarSession!.Text.ToString());
-        Assert.Equal(4, fx.App.SidebarSession.GetAllLines().Count); // title, session, model, mode remain pinned
+        // title, session, model, mode and the activity derived from the open Turn (ADR-0036 §3) remain pinned
+        Assert.Equal(5, fx.App.SidebarSession.GetAllLines().Count);
+        Assert.Contains("esperando al modelo", fx.App.SidebarSession.Text.ToString());
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 22));
         fx.Wait(() => fx.App.MainWindow!.Frame.Height == 22 && fx.App.SidebarContent.Viewport.Height < 20, "altura reducida obliga a desplazar detalle");
         fx.Invoke(() => fx.App.SidebarContent.MoveEnd());
@@ -1472,6 +1474,33 @@ public sealed class TuiWiringTests
         Type(fx, "/plan");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /plan no abre el overlay");
         Assert.NotNull(fx.App.Overlay);
+    });
+
+    [Fact]
+    public void Client_commands_resolve_through_the_registry_and_show_real_data() => RunTuiTest(fx =>
+    {
+        // ADR-0024/0025: /help, /events y /tasks ya no terminan en command.prompt_not_found.
+        fx.StartTui();
+
+        Type(fx, "/help");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /help no abre el overlay");
+        var help = OverlayText(fx.App.Overlay!);
+        Assert.Contains("Comandos disponibles", help);
+        Assert.Contains("/permissions", help);
+        Assert.Contains("/exit", help);
+        Assert.DoesNotContain("prompt_not_found", help);
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc no cierra la ayuda");
+        fx.Wait(() => fx.App.Composer!.HasFocus, "el foco vuelve al composer tras la ayuda");
+
+        Type(fx, "/events");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /events no abre el overlay");
+        Assert.Contains("run.created", OverlayText(fx.App.Overlay!));
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc no cierra /events");
+        fx.Wait(() => fx.App.Composer!.HasFocus, "el foco vuelve al composer tras /events");
+
+        Type(fx, "/tasks");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /tasks no abre el overlay");
+        Assert.DoesNotContain("prompt_not_found", OverlayText(fx.App.Overlay!));
     });
 
     // ------------------------------------------------------------------ interacción de elección: clic real y Esc por defecto

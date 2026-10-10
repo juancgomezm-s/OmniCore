@@ -1,7 +1,7 @@
 namespace OmniCore.Domain;
 
 /// <summary>Causa de una escalación de modelo (spec §73).</summary>
-public enum EscalationCause { CapabilityMissing, ContextLimit, RepeatedFailure, Uncertainty, ToolReliability, ManualRequest }
+public enum EscalationCause { CapabilityMissing, ContextLimit, RepeatedFailure, Uncertainty, ToolReliability, ManualRequest, ProgressStalled }
 
 /// <summary>ModelEscalationRequested: se solicita subir de modelo dentro de un Run.</summary>
 public record ModelEscalationRequested(RunId RunId, string FromModel, string ToModel, EscalationCause Cause,

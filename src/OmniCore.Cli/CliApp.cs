@@ -129,6 +129,17 @@ public sealed class CliApp
         }
         var invocation = parsed!;
         var client = Runtime.Connect(CancellationToken.None);
+        // ADR-0024: el resto de ClientCommands (/help, /exit, /plan, /tasks, /events, /permissions, /cancel,
+        // /interrupt) se resuelven a su ClientAction; /context y /tools conservan su render propio de abajo.
+        if (invocation.Name is not ("context" or "tools")
+            && ClientCommandRegistry.Default.TryResolve(invocation, out var clientAction) && clientAction is not null)
+        {
+            var context = new ClientContext(client, Loc(), PermissionsListing);
+            var result = new ClientActionHandler().ExecuteAsync(clientAction, context, CancellationToken.None)
+                .AsTask().GetAwaiter().GetResult();
+            Console.WriteLine(result.Text);
+            return Task.FromResult(0);
+        }
         if (invocation.Name is "context" or "tools")
         {
             if (invocation.Name == "tools")
@@ -335,7 +346,76 @@ public sealed class CliApp
             Console.WriteLine(RedactJson(text, 900));
         }
         else Console.WriteLine(Loc().Resolve("cli.explain.no_context"));
+        ExplainContext(client);
+        ExplainFingerprint(client);
         return Task.FromResult(0);
+    }
+
+    /// <summary>Resumen del contexto del último Turn: presupuesto y de dónde viene cada pieza (ADR-0029).</summary>
+    private static void ExplainContext(IOmniClient client)
+    {
+        Console.WriteLine(Loc().Resolve("cli.explain.context"));
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(
+                client.Query("context", CancellationToken.None)?.Json ?? "{\"snapshot\":null}");
+            var snapshot = document.RootElement.GetProperty("snapshot");
+            if (snapshot.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                Console.WriteLine(Loc().Resolve("cli.explain.no_snapshot"));
+                return;
+            }
+
+            var items = snapshot.GetProperty("items").EnumerateArray().ToArray();
+            Console.WriteLine(Loc().Resolve("cli.explain.tokens", new Dictionary<string, string>
+            {
+                ["tokens"] = snapshot.GetProperty("tokenCount").GetInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["budget"] = snapshot.TryGetProperty("tokenBudget", out var budget) ? budget.ToString() : "?",
+                ["accuracy"] = snapshot.TryGetProperty("tokenAccuracy", out var accuracy) ? accuracy.ToString() : "?",
+            }));
+            foreach (var group in items.GroupBy(item => item.GetProperty("kind").GetString() + " · "
+                + item.GetProperty("contributor").GetString()))
+                Console.WriteLine("  " + group.Key + " ×" + group.Count());
+            var dropped = snapshot.TryGetProperty("diagnostics", out var diagnostics) ? diagnostics.GetArrayLength() : 0;
+            if (dropped > 0)
+                Console.WriteLine(Loc().Resolve("cli.explain.omitted", "count",
+                    dropped.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+            or KeyNotFoundException)
+        {
+            Console.WriteLine(Loc().Resolve("cli.diagnostic.no_snapshot"));
+        }
+    }
+
+    /// <summary>La configuración efectiva que recibió el último Turn: componentes con su versión y hash (ADR-0017).</summary>
+    private static void ExplainFingerprint(IOmniClient client)
+    {
+        Console.WriteLine(Loc().Resolve("cli.explain.fingerprint"));
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(
+                client.Query("turnFingerprint", CancellationToken.None)?.Json ?? "{\"fingerprint\":null}");
+            var fingerprint = document.RootElement.GetProperty("fingerprint");
+            if (fingerprint.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                Console.WriteLine(Loc().Resolve("cli.explain.no_fingerprint"));
+                return;
+            }
+
+            Console.WriteLine("  " + Loc().Resolve("cli.explain.model", "model", fingerprint.GetProperty("modelKey").GetString() ?? ""));
+            foreach (var component in fingerprint.GetProperty("components").EnumerateArray())
+            {
+                var hash = component.GetProperty("hash").GetString() ?? "";
+                Console.WriteLine("  " + component.GetProperty("name").GetString() + "@"
+                    + component.GetProperty("version").GetString() + "  " + (hash.Length > 12 ? hash[..12] : hash));
+            }
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+            or KeyNotFoundException)
+        {
+            Console.WriteLine(Loc().Resolve("cli.explain.no_fingerprint"));
+        }
     }
 
     private static string RedactJson(string json, int max)
@@ -344,24 +424,31 @@ public sealed class CliApp
         return redacted.Length <= max ? redacted : redacted.Substring(0, max) + "…";
     }
 
+    /// <summary>Listado de los grants del workspace (mismo texto que <c>omni permissions list</c>).</summary>
+    internal static string PermissionsListing()
+    {
+        var result = Runtime.Permissions(new ListPermissionGrantsCommand(), CancellationToken.None);
+        var lines = new List<string> { Loc().Resolve("permissions.heading") };
+        if (result.Grants.Count == 0) lines.Add(Loc().Resolve("permissions.empty"));
+        foreach (var grant in result.Grants)
+        {
+            var lifetimeKey = grant.Lifetime switch
+            {
+                "Run" => "interaction.permission.allow_run",
+                "Workspace" => "interaction.permission.allow_workspace",
+                _ => "interaction.permission.allow_once",
+            };
+            lines.Add(grant.Id + "  " + grant.ToolId + "  " + Loc().Resolve(lifetimeKey)
+                + "  " + grant.ClaimsKey + (grant.Run is null ? "" : "  Run " + grant.Run));
+        }
+        return string.Join(Environment.NewLine, lines);
+    }
+
     private static Task<int> RunPermissions(string[] args)
     {
         if (args.Length == 1 || args.Length == 2 && args[1] == "list")
         {
-            var result = Runtime.Permissions(new ListPermissionGrantsCommand(), CancellationToken.None);
-            Console.WriteLine(Loc().Resolve("permissions.heading"));
-            if (result.Grants.Count == 0) Console.WriteLine(Loc().Resolve("permissions.empty"));
-            foreach (var grant in result.Grants)
-            {
-                var lifetimeKey = grant.Lifetime switch
-                {
-                    "Run" => "interaction.permission.allow_run",
-                    "Workspace" => "interaction.permission.allow_workspace",
-                    _ => "interaction.permission.allow_once",
-                };
-                Console.WriteLine(grant.Id + "  " + grant.ToolId + "  " + Loc().Resolve(lifetimeKey)
-                    + "  " + grant.ClaimsKey + (grant.Run is null ? "" : "  Run " + grant.Run));
-            }
+            Console.WriteLine(PermissionsListing());
             return Task.FromResult(0);
         }
 

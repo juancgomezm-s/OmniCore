@@ -10,8 +10,11 @@ public sealed class CommandRegistry
     private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "plan", "tasks", "mode", "cancel", "interrupt", "resume", "permissions", "context",
-        "help", "exit", "commands", "tools", "agents", "delegate", "join",
+        "help", "exit", "commands", "tools", "agents", "delegate", "join", "events",
     };
+
+    /// <summary>¿Es un nombre reservado de Core? Los ClientCommands del cliente lo están todos (ADR-0024 §4).</summary>
+    public static bool IsReserved(string name) => ReservedNames.Contains(name);
 
     private readonly Dictionary<string, ICommandHandler> _byId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ICommandHandler>> _byName = new(StringComparer.OrdinalIgnoreCase);

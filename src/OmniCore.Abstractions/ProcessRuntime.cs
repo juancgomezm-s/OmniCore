@@ -32,6 +32,12 @@ public sealed class ProcessLaunch
 
     public bool CaptureOutput { get; }
 
+    /// <summary>
+    /// Proceso de larga vida que nadie espera (un servidor local): su salida se drena y descarta
+    /// mientras corre. Sin drenarla, el buffer de la tubería se llena y el proceso se bloquea al escribir.
+    /// </summary>
+    public bool DiscardOutput { get; init; }
+
     public ProcessLaunch(string executable, IReadOnlyList<string> args, string workingDirectory,
         IReadOnlyDictionary<string, string> environment, bool captureOutput)
     {

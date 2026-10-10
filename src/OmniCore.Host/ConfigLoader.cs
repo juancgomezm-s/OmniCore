@@ -23,7 +23,7 @@ public sealed class ConfigLoader
         var diagnostics = new List<ConfigDiagnostic>();
         ParseSettings(settingsYaml, diagnostics);
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
-            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth",
+            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth", "host", "managed",
                 "billingMode", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models", "routing" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
@@ -39,7 +39,7 @@ public sealed class ConfigLoader
         if (providerFile?.Providers is null)
             registry.Add(new ProviderDescriptor("local", ProviderFamily.OpenAiChatCompatible,
                 "http://127.0.0.1:8080", AuthConfig.None(), true, true, true)
-            { BillingMode = BillingMode.Local });
+            { BillingMode = BillingMode.Local, LocalHost = new LocalHostConfig(LocalHostMode.Attach, Declared: false) });
         if (providerFile?.Providers is not null)
         {
             foreach (var pair in providerFile.Providers)
@@ -56,20 +56,25 @@ public sealed class ConfigLoader
                     "OpenAIResponses" => ProviderFamily.OpenAIResponses,
                     _ => ProviderFamily.OpenAiChatCompatible,
                 };
-                registry.Add(new ProviderDescriptor(pair.Key, family, values.BaseUrl!,
+                var billing = values.BillingMode switch
+                {
+                    "Local" => BillingMode.Local,
+                    "IncludedQuota" => BillingMode.IncludedQuota,
+                    "CreditBalance" => BillingMode.CreditBalance,
+                    "MeteredCurrency" => BillingMode.MeteredCurrency,
+                    _ => BillingMode.Unknown,
+                };
+                var localHost = LocalHostFor(values, family, billing);
+                registry.Add(new ProviderDescriptor(pair.Key, family,
+                    localHost is { Mode: LocalHostMode.Managed, FixedPort: 0 } ? LocalHostConfig.ManagedLogicalBaseUrl
+                        : values.BaseUrl!,
                     auth,
                     true, true, true)
                 {
+                    LocalHost = localHost,
                     TrustedCertificatePath = values.CaCertificate,
                     Profile = values.Profile,
-                    BillingMode = values.BillingMode switch
-                    {
-                        "Local" => BillingMode.Local,
-                        "IncludedQuota" => BillingMode.IncludedQuota,
-                        "CreditBalance" => BillingMode.CreditBalance,
-                        "MeteredCurrency" => BillingMode.MeteredCurrency,
-                        _ => BillingMode.Unknown,
-                    },
+                    BillingMode = billing,
                 });
             }
         }
@@ -102,7 +107,7 @@ public sealed class ConfigLoader
         return new LoadedUserConfiguration(registry, providerFile, modelFile, notices, settings);
     }
 
-    private static YamlMappingNode? ParseSettings(string? yaml, List<ConfigDiagnostic> diagnostics)
+    internal static YamlMappingNode? ParseSettings(string? yaml, List<ConfigDiagnostic> diagnostics)
     {
         if (string.IsNullOrWhiteSpace(yaml)) return null;
         try
@@ -115,8 +120,15 @@ public sealed class ConfigLoader
                 return null;
             }
 
-            CheckKeys(root, "settings.yaml", "$", ["budget", "sidebar", "widgets"], diagnostics);
+            CheckKeys(root, "settings.yaml", "$", ["budget", "sidebar", "widgets", "locked", "defaultModel", "gates"],
+                diagnostics);
             SidebarConfiguration.ValidateRoot(root, diagnostics);
+            ValidateLocked(root, diagnostics);
+            if (root.Children.TryGetValue(new YamlScalarNode("defaultModel"), out var defaultModel)
+                && !IsYamlString(defaultModel))
+                AddAtNode(diagnostics, "settings.yaml", "defaultModel", "config.wrongType", defaultModel);
+            if (root.Children.TryGetValue(new YamlScalarNode("gates"), out var gates))
+                WorkspaceConfigurationLoader.ValidateGates(gates, diagnostics);
             if (!root.Children.TryGetValue(new YamlScalarNode("budget"), out var budgetNode)) return root;
             if (budgetNode is not YamlMappingNode budget)
             {
@@ -143,9 +155,28 @@ public sealed class ConfigLoader
         }
         catch (YamlException ex)
         {
-            Add(diagnostics, "settings.yaml", "$", "config.yamlSyntax", checked((int)ex.Start.Line + 1),
-                checked((int)ex.Start.Column + 1));
+            Add(diagnostics, "settings.yaml", "$", "config.yamlSyntax", checked((int)ex.Start.Line),
+                checked((int)ex.Start.Column));
             return null;
+        }
+    }
+
+    /// <summary><c>locked</c>: lista de claves que ningún scope más específico puede cambiar (ADR-0039 §5).</summary>
+    private static void ValidateLocked(YamlMappingNode root, List<ConfigDiagnostic> diagnostics)
+    {
+        if (!root.Children.TryGetValue(new YamlScalarNode("locked"), out var node)) return;
+        if (node is not YamlSequenceNode entries)
+        {
+            AddAtNode(diagnostics, "settings.yaml", "locked", "config.wrongType", node);
+            return;
+        }
+
+        foreach (var entry in entries.Children)
+        {
+            if (!IsYamlString(entry))
+                AddAtNode(diagnostics, "settings.yaml", "locked", "config.wrongType", entry);
+            else if (!ScopedSettings.IsLockable(((YamlScalarNode)entry).Value!))
+                AddAtNode(diagnostics, "settings.yaml", "locked." + ((YamlScalarNode)entry).Value, "config.unknownKey", entry);
         }
     }
 
@@ -193,8 +224,8 @@ public sealed class ConfigLoader
         }
         catch (YamlException ex)
         {
-            Add(diagnostics, file, "$", "config.yamlSyntax", checked((int)ex.Start.Line + 1),
-                checked((int)ex.Start.Column + 1));
+            Add(diagnostics, file, "$", "config.yamlSyntax", checked((int)ex.Start.Line),
+                checked((int)ex.Start.Column));
             return null;
         }
     }
@@ -211,12 +242,21 @@ public sealed class ConfigLoader
                 var id = (pair.Key as YamlScalarNode)?.Value ?? "?";
                 if (pair.Value is not YamlMappingNode values) continue;
                 var path = "providers." + id;
+                var managedHost = Scalar(values, "host") == "managed";
                 if (!values.Children.TryGetValue(new YamlScalarNode("baseUrl"), out var baseNode))
-                    AddAtNode(diagnostics, "providers.yaml", path + ".baseUrl", "config.missingRequired", values);
+                {
+                    if (!managedHost)
+                        AddAtNode(diagnostics, "providers.yaml", path + ".baseUrl", "config.missingRequired", values);
+                }
+                else if (managedHost && Scalar(values, "baseUrl") == "auto")
+                {
+                    // Puerto efímero: el endpoint real se resuelve al arrancar el servidor.
+                }
                 else if (IsYamlString(baseNode) && baseNode is YamlScalarNode baseScalar && baseScalar.Value is not null
                     && (!Uri.TryCreate(baseScalar.Value, UriKind.Absolute, out var uri)
                         || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
                     AddAtNode(diagnostics, "providers.yaml", path + ".baseUrl", "config.invalidUrl", baseNode);
+                ValidateHost(values, path, diagnostics);
                 if (Scalar(values, "kind") is { } kind && kind is not ("openAiChatCompatible" or "openAiResponses"
                     or "anthropicMessages" or "llamaCpp" or "ikLlama"))
                     AddAtNode(diagnostics, "providers.yaml", path + ".kind", "config.outOfRange",
@@ -290,6 +330,9 @@ public sealed class ConfigLoader
                 Profile = Scalar(values, "profile"),
                 BillingMode = Scalar(values, "billingMode"),
                 AuthRef = Scalar(values, "authRef"),
+                Host = Scalar(values, "host"),
+                Managed = values.Children.TryGetValue(new YamlScalarNode("managed"), out var managedNode)
+                    && managedNode is YamlMappingNode managedMap ? CreateManaged(managedMap) : null,
                 InputPricePerMillionUsd = Decimal(values, "inputPricePerMillionUsd"),
                 OutputPricePerMillionUsd = Decimal(values, "outputPricePerMillionUsd"),
             };
@@ -305,6 +348,107 @@ public sealed class ConfigLoader
         }
         return result;
     }
+
+    private static readonly string[] ManagedKeys = ["executable", "args", "workingDirectory", "readinessTimeoutSeconds"];
+
+    /// <summary>
+    /// <c>host</c> y <c>managed</c> de un provider (ADR-0011 §4). Solo los providers OpenAI-compatibles
+    /// tienen servidor local; el endpoint managed es siempre loopback.
+    /// </summary>
+    private static void ValidateHost(YamlMappingNode values, string path, List<ConfigDiagnostic> diagnostics)
+    {
+        var hasManaged = values.Children.TryGetValue(new YamlScalarNode("managed"), out var managedNode);
+        if (!values.Children.TryGetValue(new YamlScalarNode("host"), out var hostNode))
+        {
+            if (hasManaged) AddAtNode(diagnostics, "providers.yaml", path + ".managed", "config.unknownKey", managedNode!);
+            return;
+        }
+
+        var host = Scalar(values, "host");
+        if (!IsYamlString(hostNode) || host is not ("attach" or "managed"))
+        {
+            AddAtNode(diagnostics, "providers.yaml", path + ".host", IsYamlString(hostNode)
+                ? "config.outOfRange" : "config.wrongType", hostNode);
+            return;
+        }
+        if (Scalar(values, "family") is { } family && family != "OpenAiChatCompatible")
+            AddAtNode(diagnostics, "providers.yaml", path + ".host", "config.outOfRange", hostNode);
+        if (host == "attach")
+        {
+            if (hasManaged) AddAtNode(diagnostics, "providers.yaml", path + ".managed", "config.unknownKey", managedNode!);
+            return;
+        }
+
+        if (!hasManaged)
+        {
+            AddAtNode(diagnostics, "providers.yaml", path + ".managed", "config.missingRequired", values);
+            return;
+        }
+        if (managedNode is not YamlMappingNode managed)
+        {
+            AddAtNode(diagnostics, "providers.yaml", path + ".managed", "config.wrongType", managedNode!);
+            return;
+        }
+
+        var managedPath = path + ".managed";
+        CheckKeys(managed, "providers.yaml", managedPath, ManagedKeys, diagnostics);
+        if (!managed.Children.TryGetValue(new YamlScalarNode("executable"), out var executable))
+            AddAtNode(diagnostics, "providers.yaml", managedPath + ".executable", "config.missingRequired", managed);
+        else if (!IsYamlString(executable) || string.IsNullOrWhiteSpace(Scalar(managed, "executable")))
+            AddAtNode(diagnostics, "providers.yaml", managedPath + ".executable", "config.wrongType", executable);
+        if (managed.Children.TryGetValue(new YamlScalarNode("args"), out var args))
+        {
+            if (args is not YamlSequenceNode argv)
+                AddAtNode(diagnostics, "providers.yaml", managedPath + ".args", "config.expectedArgv", args);
+            else
+                foreach (var item in argv.Children)
+                    if (!IsYamlString(item))
+                        AddAtNode(diagnostics, "providers.yaml", managedPath + ".args", "config.expectedArgv", item);
+        }
+        if (managed.Children.TryGetValue(new YamlScalarNode("workingDirectory"), out var directory)
+            && !IsYamlString(directory))
+            AddAtNode(diagnostics, "providers.yaml", managedPath + ".workingDirectory", "config.wrongType", directory);
+        if (managed.Children.TryGetValue(new YamlScalarNode("readinessTimeoutSeconds"), out var timeout)
+            && !(timeout is YamlScalarNode { Style: ScalarStyle.Plain, Value: { } raw }
+                && int.TryParse(raw, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds)
+                && seconds is >= 1 and <= 3600))
+            AddAtNode(diagnostics, "providers.yaml", managedPath + ".readinessTimeoutSeconds", "config.outOfRange", timeout);
+
+        // Con host: managed el endpoint es siempre loopback; un puerto explícito lo fija.
+        if (Scalar(values, "baseUrl") is { } baseUrl && baseUrl != "auto"
+            && Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) && !uri.IsLoopback)
+            AddAtNode(diagnostics, "providers.yaml", path + ".baseUrl", "config.outOfRange",
+                values.Children[new YamlScalarNode("baseUrl")]);
+    }
+
+    /// <summary>
+    /// Servidor local de un provider: <c>host</c> explícito o, por defecto, <c>attach</c> para los
+    /// providers OpenAI-compatibles con facturación <c>Local</c>. Los demás no tienen servidor que supervisar.
+    /// </summary>
+    private static LocalHostConfig? LocalHostFor(ProviderFileYaml values, ProviderFamily family, BillingMode billing)
+    {
+        if (values.Host == "managed" && values.Managed is { } managed)
+        {
+            var fixedPort = values.BaseUrl is { } url && url != "auto"
+                && Uri.TryCreate(url, UriKind.Absolute, out var uri) && !uri.IsDefaultPort ? uri.Port : 0;
+            return new LocalHostConfig(LocalHostMode.Managed, managed.Executable, managed.Args ?? [],
+                managed.WorkingDirectory ?? "", fixedPort,
+                managed.ReadinessTimeoutSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null);
+        }
+        return values.Host == "attach"
+            || values.Host is null && family == ProviderFamily.OpenAiChatCompatible && billing == BillingMode.Local
+            ? new LocalHostConfig(LocalHostMode.Attach, Declared: values.Host is not null) : null;
+    }
+
+    private static ManagedHostYaml CreateManaged(YamlMappingNode map) => new()
+    {
+        Executable = Scalar(map, "executable"),
+        Args = map.Children.TryGetValue(new YamlScalarNode("args"), out var args) && args is YamlSequenceNode sequence
+            ? sequence.Children.OfType<YamlScalarNode>().Select(item => item.Value ?? "").ToList() : null,
+        WorkingDirectory = Scalar(map, "workingDirectory"),
+        ReadinessTimeoutSeconds = int.TryParse(Scalar(map, "readinessTimeoutSeconds"), NumberStyles.None,
+            CultureInfo.InvariantCulture, out var seconds) ? seconds : null,
+    };
 
     private static void ValidateLegacyAuth(YamlNode node, string providerPath,
         List<ConfigDiagnostic> diagnostics)
@@ -384,6 +528,10 @@ public sealed class ConfigLoader
             else if (key == "auth")
             {
                 // Validated as the supported legacy scalar/mapping union in ValidateLegacyAuth.
+            }
+            else if (key == "managed")
+            {
+                // Mapping validated with the provider's host in ValidateHost.
             }
             else if (key == "billingMode")
             {
@@ -497,8 +645,8 @@ public sealed class ConfigLoader
     }
 
     internal static void AddAtNode(List<ConfigDiagnostic> diagnostics, string file, string path, string key,
-        YamlNode node) => Add(diagnostics, file, path, key, checked((int)node.Start.Line + 1),
-            checked((int)node.Start.Column + 1));
+        YamlNode node) => Add(diagnostics, file, path, key, checked((int)node.Start.Line),
+            checked((int)node.Start.Column));
 
     /// <summary>Todo alias de <c>routing:</c> debe existir y el modo de escalación ser auto, ask o deny.</summary>
     private static void ValidateRouting(RoutingYaml? routing, ModelRegistry registry, List<ConfigDiagnostic> diagnostics)

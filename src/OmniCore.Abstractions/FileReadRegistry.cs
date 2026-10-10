@@ -174,6 +174,7 @@ public sealed class MutationLedger
     private readonly HashSet<string> _turnFiles = new(StringComparer.Ordinal);
     private readonly HashSet<string> _runFiles = new(StringComparer.Ordinal);
     private readonly List<PendingEditValidation> _pendingValidations = new();
+    private readonly List<ObservedMutation> _observed = new();
     private FileMutationPolicy? _policy;
     private int _turn;
     private int _turnChangedLines;
@@ -246,8 +247,11 @@ public sealed class MutationLedger
             return null;
         }
 
+        var changed = deletedLines + insertedLines;
         if (!FileMutationRules.ModeAllows(policy.Mode, operation))
         {
+            // Intentar una operación fuera del modo es salirse de lo permitido para este modelo.
+            Observe(null, Sample(path, operation, originalLines, changed, withinScope: false));
             return new MutationRefusal(ToolErrorCode.MutationRefused,
                 MutationRefusedCode + ": el modo de mutación " + policy.Mode + " no permite "
                 + OperationText(operation) + " (" + path + ").");
@@ -259,12 +263,14 @@ public sealed class MutationLedger
         // (coherente con FileMutationPolicy.CanMutateFiles).
         if (policy.MaxFilesPerTurn == 0)
         {
+            Observe(null, Sample(path, operation, originalLines, changed, withinScope: false));
             return new MutationRefusal(ToolErrorCode.LimitExceeded,
                 LimitExceededCode + ": la política del modelo no asigna presupuesto de archivos por Turn.");
         }
 
         if (!_turnFiles.Contains(key) && _turnFiles.Count >= policy.MaxFilesPerTurn)
         {
+            Observe(null, Sample(path, operation, originalLines, changed, withinScope: false));
             return new MutationRefusal(ToolErrorCode.LimitExceeded,
                 LimitExceededCode + ": la política del modelo permite como máximo "
                 + policy.MaxFilesPerTurn + " archivo(s) por Turn y ya se mutaron " + _turnFiles.Count
@@ -275,12 +281,14 @@ public sealed class MutationLedger
         var delta = deletedLines + insertedLines;
         if (policy.MaxChangedLinesPerTurn == 0)
         {
+            Observe(null, Sample(path, operation, originalLines, changed, withinScope: false));
             return new MutationRefusal(ToolErrorCode.LimitExceeded,
                 LimitExceededCode + ": la política del modelo no asigna presupuesto de líneas por Turn.");
         }
 
         if (_turnChangedLines + delta > policy.MaxChangedLinesPerTurn)
         {
+            Observe(null, Sample(path, operation, originalLines, changed, withinScope: false));
             return new MutationRefusal(ToolErrorCode.LimitExceeded,
                 LimitExceededCode + ": la política del modelo permite como máximo "
                 + policy.MaxChangedLinesPerTurn + " líneas cambiadas por Turn y esta mutación añade "
@@ -295,6 +303,8 @@ public sealed class MutationLedger
             var ratio = deletedLines / (double)originalLines;
             if (ratio > policy.MaxRewriteRatio)
             {
+                // Reescribir más de lo tolerado es no preservar el contenido que no tocaba.
+                Observe(null, Sample(path, operation, originalLines, changed, preserved: false));
                 return new MutationRefusal(ToolErrorCode.LimitExceeded,
                     LimitExceededCode + ": la política del modelo permite reescribir como máximo el "
                     + policy.MaxRewriteRatio.ToString("0.##", CultureInfo.InvariantCulture)
@@ -313,8 +323,10 @@ public sealed class MutationLedger
     /// (<c>RequirePostEditValidation</c>, ADR-0044 §5).
     /// </summary>
     public void RecordMutation(string path, int deletedLines, int insertedLines,
-        ToolCallId? toolCallId = null)
+        ToolCallId? toolCallId = null, ModelToolCapability operation = ModelToolCapability.PatchExisting,
+        int originalLines = 0)
     {
+        Observe(toolCallId, Sample(path, operation, originalLines, deletedLines + insertedLines), published: true);
         var key = _registry.CanonicalKey(path);
         _turnFiles.Add(key);
         _runFiles.Add(key);
@@ -345,6 +357,59 @@ public sealed class MutationLedger
         _pendingValidations.Clear();
         return taken;
     }
+
+    /// <summary>
+    /// Registra que el modelo mutó sin el token de versión vigente (ausente, obsoleto o sin lectura
+    /// previa efectiva): es evidencia de que no respeta <c>ExpectedVersionToken</c> (ADR-0044 §4).
+    /// </summary>
+    public void RecordTokenViolation(string path, ModelToolCapability operation) =>
+        Observe(null, Sample(path, operation, 0, 0, token: false));
+
+    /// <summary>
+    /// Un Build/Test falló sobre estas ediciones ya publicadas: cada una cuenta como una rotura
+    /// (ADR-0044 §4, "tasa de roturas de build y tests"). Solo las ediciones que la política exigió
+    /// validar (<c>RequirePostEditValidation</c>) pueden atribuirse.
+    /// </summary>
+    public void RecordValidationBreak(IReadOnlyList<PendingEditValidation> covered)
+    {
+        foreach (var edit in covered)
+        {
+            var index = _observed.FindLastIndex(item => item.Published
+                && (edit.ToolCallId is { } call ? Equals(item.ToolCallId, call)
+                    : string.Equals(item.Sample.Path, edit.Path, StringComparison.Ordinal)));
+            if (index < 0) continue;
+            var current = _observed[index];
+            _observed[index] = current with { Sample = current.Sample with { BreakCount = current.Sample.BreakCount + 1 } };
+        }
+    }
+
+    /// <summary>Muestras de mutación observadas desde la última toma (telemetría, no restringe nada).</summary>
+    public IReadOnlyList<FileMutationSample> ObservedSamples() => _observed.Select(item => item.Sample).ToArray();
+
+    /// <summary>Entrega y vacía las muestras observadas: quien las consume las agrega una sola vez.</summary>
+    public IReadOnlyList<FileMutationSample> TakeObservedSamples()
+    {
+        var samples = ObservedSamples();
+        _observed.Clear();
+        return samples;
+    }
+
+    private void Observe(ToolCallId? toolCallId, FileMutationSample sample, bool published = false) =>
+        _observed.Add(new ObservedMutation(toolCallId, sample, published));
+
+    /// <summary>
+    /// Muestra de FileMutationReliability (ADR-0044 §4) con lo que el ledger puede afirmar: parche
+    /// frente a reemplazo, token de versión, respeto de los límites y del ratio de reescritura.
+    /// Lo que no observa (p. ej. borrar y recrear) queda en su valor neutro.
+    /// </summary>
+    private static FileMutationSample Sample(string path, ModelToolCapability operation, int originalLines,
+        int changedLines, bool preserved = true, bool token = true, bool withinScope = true) =>
+        new(path, Math.Max(0, originalLines), Math.Max(0, changedLines),
+            PatchPreferred: operation != ModelToolCapability.ReplaceFile,
+            UnrelatedContentPreserved: preserved, VersionTokenRespected: token, WithinScope: withinScope,
+            BreakCount: 0, DeleteAndCreateAttempt: false);
+
+    private sealed record ObservedMutation(ToolCallId? ToolCallId, FileMutationSample Sample, bool Published);
 
     private static string OperationText(ModelToolCapability operation) => operation switch
     {

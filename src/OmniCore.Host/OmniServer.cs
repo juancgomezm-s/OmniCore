@@ -464,7 +464,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             cancellationToken, workflowAuthorization);
         if (commandName == "fanout.create") return CreateFanOutGroup(command, trustedUserAction, cancellationToken);
         if (commandName == "fanout.replace_member") return ReplaceFanOutMember(command, trustedUserAction, cancellationToken);
-        if (commandName is "delegation.cancel" or "delegation.disposition" or "execution.join" or "execution.join.cancel")
+        if (commandName is "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"
+            or "execution.join" or "execution.join.cancel")
             return ControlDelegation(command, commandName, trustedUserAction, cancellationToken);
         if (commandName == "command.invoke")
         {
@@ -1648,6 +1649,31 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         return null;
     }
 
+    /// <summary>
+    /// Fingerprint de ejecución del último Turn del Run activo (ADR-0017): qué configuración efectiva recibió.
+    /// Solo identidades y hashes, nunca el contenido de los componentes. <c>{"fingerprint":null}</c> si ningún Turn
+    /// lo registró.
+    /// </summary>
+    private string ReadLastTurnFingerprint()
+    {
+        if (_lastSessionId is null || _lastRunId is null) return "{\"fingerprint\":null}";
+        TurnStarted? latest = null;
+        foreach (var evt in EventsForRun(_store.ReadFrom(_lastSessionId, 1), _lastRunId))
+            if (_codecs.Decode(evt) is TurnStarted { Fingerprint: not null } started) latest = started;
+        if (latest?.Fingerprint is not { } fingerprint) return "{\"fingerprint\":null}";
+        var components = fingerprint.Components.Select(component => "{" + JsonObj.Field("name", component.Name)
+            + "," + JsonObj.Field("version", component.Version) + "," + JsonObj.Field("hash", component.Hash.ToString()) + "}");
+        return "{\"fingerprint\":{" + JsonObj.Field("turnId", latest.TurnId.ToString()) + ","
+            + JsonObj.Field("modelKey", fingerprint.ModelKey) + "," + JsonObj.Field("build", fingerprint.Build) + ","
+            + JsonObj.Field("harnessPolicy", fingerprint.HarnessPolicyHash) + ","
+            + JsonObj.Field("toolkit", fingerprint.ToolkitHash) + ","
+            + JsonObj.Field("tokenizer", fingerprint.TokenizerHash) + ","
+            + JsonObj.Field("contextPolicy", fingerprint.ContextPolicyHash) + ","
+            + JsonObj.Field("overrides", fingerprint.OverridesHash) + ","
+            + JsonObj.Field("modelPolicy", fingerprint.ModelPolicyHash) + ",\"components\":["
+            + string.Join(",", components) + "]}}";
+    }
+
     private string? ReadPersistedContextSnapshot()
     {
         if (_artifacts is null || _lastSessionId is null || _lastRunId is null) return null;
@@ -1924,6 +1950,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 : "{" + JsonObj.Field("workingState", RedactPii(_lastWorkingStateText)) + "}";
             return new SessionQueryResult("workingState", safe);
         }
+
+        if (name == "turnFingerprint")
+            return new SessionQueryResult("turnFingerprint", ReadLastTurnFingerprint());
 
         if (name == "context")
         {

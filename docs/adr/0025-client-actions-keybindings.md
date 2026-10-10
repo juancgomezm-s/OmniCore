@@ -80,6 +80,10 @@ public sealed record KeyBinding(
 - **Qué muestra:** búsqueda fuzzy, el binding de cada acción y la fuente o scope de los commands. Si un nombre es ambiguo, ofrece las dos opciones (ADR-0024 §4).
 - **Implementación:** en la TUI futura. En M1 no existe palette; el modelo de acciones ya la soporta sin cambios.
 
+### Estado de implementación (A9, 2026-10-09)
+
+`ClientActionDescriptor`, `ClientActionInvocation`, `IClientActionHandler` y su implementación por defecto (`ClientActionHandler`) existen en `OmniCore.Client`, con las acciones `help.show`, `app.exit`, `view.plan`, `view.tasks`, `view.events`, `context.inspect`, `tools.inspect`, `permissions.list`, `run.interrupt` y `run.cancel`. Las dos últimas emiten el `WireCommand` correspondiente, la misma ruta que cualquier otra superficie. Los bindings por defecto de `run.interrupt` y `run.cancel` **no** se han cableado: hoy la interrupción es la del CLI/TUI (cancelar el Turn en curso) y `KeyBindingService`, `keybindings.yaml` y la palette siguen en M10 como se clasificó.
+
 ## Clasificación
 
 | Elemento | Categoría |

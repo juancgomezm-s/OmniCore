@@ -33,8 +33,13 @@ internal static class SessionSidebarReader
                     item.ParentId?.ToString(), Safe(item.Description), item.State.ToString(), item.Order)).ToArray());
             if (view is not null && view.RunId != run.ToString())
                 return empty with { ProjectionUnavailable = true };
+            // La actividad se deriva del journal del Run (INV-027); sin Lane raíz o con la Lane cerrada no hay.
+            var rootLane = projected.RootTask is { } rootTask
+                ? LaneProjection.Replay(codecs, own).ForTask(rootTask).FirstOrDefault()?.Id : null;
+            var activity = rootLane is null ? LaneActivity.None : LaneActivityProjection.Derive(codecs, own, rootLane);
             return empty with { Objective = Safe(projected.Objective ?? ""), Mode = projected.Mode?.ToString().ToLowerInvariant(),
-                RunState = projected.State.ToString(), Plan = view };
+                RunState = projected.State.ToString(), Plan = view,
+                Activity = activity == LaneActivity.None ? null : activity.ToString() };
         }
         catch (InvalidStateTransitionException)
         {

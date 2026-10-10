@@ -184,6 +184,18 @@ public sealed class RunControlService
         var projection = RunProjection.Replay(session, run, _codecs, events);
         RequireActive(projection, events);
 
+        var batch = CancellationBatch(session, run, events, resolvedInteraction: null);
+        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard,
+            SteeringDropScopes(batch, events));
+    }
+
+    /// <summary>
+    /// Eventos de <c>CancelRun</c>. <paramref name="resolvedInteraction"/> se resuelve en el mismo
+    /// batch (p. ej. <c>StallResolution: stop</c>, ADR-0048 §3) y por eso no se marca como expirada.
+    /// </summary>
+    private List<DomainEventPayload> CancellationBatch(SessionId session, RunId run, IReadOnlyList<DomainEvent> events,
+        InteractionId? resolvedInteraction)
+    {
         var batch = CutInFlightWork(events, "run cancelado");
         batch.AddRange(PendingSteeringDrops(session, run, events, "run cancelled by user"));
         foreach (var lane in LaneProjection.Replay(_codecs, events).Lanes())
@@ -204,12 +216,12 @@ public sealed class RunControlService
 
         foreach (var pending in PendingInteractions(events))
         {
+            if (resolvedInteraction is { } resolved && pending.InteractionId == resolved) continue;
             batch.Add(new InteractionExpired(pending.InteractionId));
         }
 
         batch.Add(new RunCancelled(run));
-        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard,
-            SteeringDropScopes(batch, events));
+        return batch;
     }
 
     private IReadOnlyList<ExecutionScopeState?> SteeringDropScopes(IReadOnlyList<DomainEventPayload> batch,
@@ -384,6 +396,25 @@ public sealed class RunControlService
             if (projection.State == RunState.AwaitingInput && RootLane(events, projection) is not null)
                 batch.Add(new UserInputReceived(acceptanceRun, InputParts("AcceptanceConfirmation: " + optionId), null,
                     "InteractionResponse(AcceptanceConfirmation)"));
+        }
+        else if (request.Kind == InteractionKind.StallResolution)
+        {
+            // ADR-0048 §3: continue reanuda el Run; stop lo cancela en el mismo commit.
+            var stallRun = pendingRequest?.Envelope.RunId ?? ActiveRun(session)
+                ?? throw new InvalidInteractionOptionException(interaction, optionId);
+            var projection = RunProjection.Replay(session, stallRun, _codecs, events);
+            RequireActive(projection, events);
+            if (optionId == "stop")
+            {
+                batch.AddRange(CancellationBatch(session, stallRun, events, interaction));
+                new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard,
+                    SteeringDropScopes(batch, events));
+                return;
+            }
+            if (projection.State == RunState.AwaitingInput && RootLane(events, projection) is not null
+                && PendingInteractions(events).All(pending => pending.InteractionId == interaction))
+                batch.Add(new UserInputReceived(stallRun, InputParts("StallResolution: " + optionId), null,
+                    "InteractionResponse(StallResolution)"));
         }
 
         var stream = new EventStream(_store, _codecs, session);

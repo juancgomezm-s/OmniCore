@@ -167,6 +167,13 @@ Se añade el trait `FileMutationReliability`, compuesto por métricas observable
 
 El tamaño del modelo solo ayuda a construir una recomendación conservadora cuando no hay evidencia.
 
+**Medición en uso real (A4, 2026-10-09).** La suite `quick` no escribe archivos, así que `FileMutationReliability` se mide en los Runs ACT:
+
+- El `MutationLedger` observa cada intento y produce una `FileMutationSample` con lo que puede afirmar: parche frente a reemplazo, tamaño del diff, token de versión (ausente, obsoleto o sin lectura previa), límites excedidos (archivos, líneas o modo fuera de categoría → fuera de scope) y ratio de reescritura (contenido no relacionado no preservado). Un Build/Test fallido sobre ediciones que la política exigió validar suma una rotura a cada una. **No observa** borrar y recrear (queda neutro).
+- Al cerrar el bucle ACT, el Host agrega las muestras con `FileMutationEvaluator.Aggregate` al trait `FileMutationReliability` (fuente `observed`) del perfil de cualificación de la configuración exacta que ejecutó el Turn. Solo se registra sobre un perfil `Qualified`, `Calibrated` o `Stale`: sin cualificación previa no hay dónde anclar la evidencia, y la recomendación necesita la suite `quick` de todos modos. Es telemetría: un fallo al registrarla nunca rompe el Turn.
+- `QualificationRecommender` solo usa el trait con al menos `MinimumFileMutationSamples` (5) muestras; con menos, lo declara en las notas. Puede restringir (suelo `ObserveOnly`) o habilitar `ScopedCoder`, nunca `FullAgent` ni ampliar la política guardada.
+- **Onboarding (§6):** `ModelPolicyService.Draft` consulta el perfil de cualificación de la clave y recomienda con la evidencia (suite `quick` y mutaciones); sin ella, o con un perfil no utilizable, sigue recomendando `ObserveOnly`. La recomendación se muestra, nunca se guarda sin una acción del usuario.
+
 ### 5. Enforcement en dos fronteras
 
 La restricción se aplica dos veces:
@@ -223,6 +230,8 @@ selección desconocida usa `ObserveOnly`; si la Task requiere escritura, termina
 
 El Router no elige para una Task escritora una configuración sin política suficiente. Puede usarla
 para exploración read-only o proponer otra ruta.
+
+**Cableado de `ModelPolicyRequired` (A10, 2026-10-09).** El caso sin TTY queda así: `omni act` sin consola interactiva ni cliente interactivo (la TUI lleva el suyo), sobre un modelo cuya política efectiva sería el fallback `ObserveOnly` (sin política guardada para la clave exacta, o selección efímera segura), termina con `ModelPolicyRequiredException` (`PatchExisting` es la capacidad mínima que `act` necesita) antes de crear el Run y sin llamar al provider; el mensaje (`modelPolicy.required`) dice cómo clasificar el modelo. `omni ask` sigue sin exigir política de escritura, y `act` en una terminal interactiva conserva el aviso y el modo `ObserveOnly`, porque el usuario puede clasificar el modelo con `omni model select`. Las delegaciones escritoras no se evalúan todavía por esta vía.
 
 ### 7. Pantalla de mantenimiento
 

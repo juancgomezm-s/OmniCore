@@ -41,6 +41,8 @@ public static class SessionSidebarPresentation
             new(L("Modelo: ", "Model: ") + model, ThemeRole.Agent),
             new((canonical?.Mode ?? mode) + (canonical?.RunState is { } state ? " · " + RunState(state, locale) : ""), ThemeRole.Muted),
         };
+        if (canonical?.Activity is { } activity)
+            sessionRows.Add(new(Activity(activity, locale), ActivityRole(activity)));
         widgets.Add(new DataSidebarWidget("core.session", "SESSION", 100, sessionRows));
         if (canonical?.Plan is { } plan && (plan.Items.Count > 1 || plan.Items.Any(i => i.State is "Blocked" or "Failed")))
         {
@@ -141,6 +143,24 @@ public static class SessionSidebarPresentation
     {
         "Pending" => "pendiente", "Ready" => "listo", "InProgress" => "en curso", "Blocked" => "bloqueado",
         "Completed" => "completado", "Failed" => "falló", "Skipped" => "omitido", "Cancelled" => "cancelado", _ => state,
+    };
+    private static string Activity(string activity, string locale) => locale == "en" ? activity switch
+    {
+        "WaitingForModel" => "waiting for the model", "WaitingForTool" => "running a tool",
+        "WaitingForPermission" => "waiting for a permission", "WaitingForInput" => "waiting for your answer",
+        "WaitingForSubtask" => "waiting for a subtask", "Validating" => "validating", "Stalled" => "no progress",
+        _ => activity,
+    } : activity switch
+    {
+        "WaitingForModel" => "esperando al modelo", "WaitingForTool" => "ejecutando una herramienta",
+        "WaitingForPermission" => "esperando un permiso", "WaitingForInput" => "esperando tu respuesta",
+        "WaitingForSubtask" => "esperando una subtarea", "Validating" => "validando", "Stalled" => "sin progreso",
+        _ => activity,
+    };
+    private static ThemeRole ActivityRole(string activity) => activity switch
+    {
+        "WaitingForPermission" or "WaitingForInput" or "Stalled" => ThemeRole.Attention,
+        _ => ThemeRole.Active,
     };
     private static string RunState(string state, string locale) => locale == "en" ? state : state switch
     {

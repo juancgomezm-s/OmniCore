@@ -46,6 +46,8 @@ public sealed record ToolPresentation(
 - **Quién interpreta:** el cliente interpola las etiquetas y elige glyph y rol a partir de `Category` y del estado. Las etiquetas son **claves de localización** con argumentos, no frases (ADR-0040).
 - **Tools sin `ToolPresentation`:** se muestran con una etiqueta genérica (`● tool.id`).
 
+- **Implementación (A8, 2026-10-09):** `ToolPresentation` (en `Abstractions`) es el `record` de arriba con `ActivityCategory` y claves de localización `tool.<id>.running|succeeded|failed`; las tools Core la declaran en `ToolPresentation.Of`. `ProtocolMapper` añade a `toolcall.requested` la `category` y, solo para los `SummaryFields` declarados, `arg.<campo>` (redactado y acotado a 120 caracteres; «…» si no se puede leer, para que la etiqueta nunca quede a medias). `ClientProjection` crea un solo bloque por ToolCall (`tool:<toolCallId>`) con la etiqueta «en curso» y lo sustituye en su lugar por la de éxito o fallo (con la causa). Una tool sin presentación conserva la etiqueta genérica y su bloque de fallo aparte. Los `Verbose`/`Trace` por tool siguen pendientes.
+
 ### 3. Composer
 
 - **Qué acepta:** texto normal, `/commands` (ADR-0024) y `@references`.

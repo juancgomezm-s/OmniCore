@@ -66,14 +66,6 @@ public record LaneCancelled(LaneId LaneId) : DomainEventPayload
     public int SchemaVersion() => 1;
 }
 
-/// <summary>LaneHeartbeatRecorded: último heartbeat persistido de una Lane al cerrarla (ADR-0036 §3).</summary>
-public record LaneHeartbeatRecorded(LaneId LaneId, LaneHeartbeat Heartbeat) : DomainEventPayload
-{
-    public EventType Type() => EventType.Of("lane.heartbeat");
-
-    public int SchemaVersion() => 1;
-}
-
 /// <summary>TurnStarted: un Turn de la Lane arranca y registra su fingerprint de ejecución (ADR-0017).</summary>
 public record TurnStarted(TurnId TurnId, LaneId LaneId, ExecutionFingerprint? Fingerprint = null,
     ArtifactRef? ContextSnapshotRef = null, TurnInstructionSnapshot? InstructionSnapshot = null,

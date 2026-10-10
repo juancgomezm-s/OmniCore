@@ -11,6 +11,7 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
   - **v0.5, revisión integral y entrevista:** 0035–0043, con correcciones en ADRs anteriores.
   - **v0.6:** 0044–0045, política operativa por modelo y cuestionarios estructurados, con correcciones en ADRs anteriores.
   - **v0.7 (2026-09-30):** 0046–0047, fronteras pre-M6 (anexo de OmniCoder contrastado con el código; ver `docs/architecture/gap-pre-m6.md`) y modos explícitos con UltraCode.
+  - **2026-10-09:** 0048, watchdog en Runs reales y respuesta al estancamiento (auditoría de cableado).
 
   Diagramas, tabla de cambios, preguntas abiertas y roadmap: [docs/architecture/arquitectura.md](../architecture/arquitectura.md).
 
@@ -26,12 +27,12 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0008](0008-sandbox-compartido.md) | Sandbox como librería compartida `OmniCore.Sandbox` | Aceptada, rev. 3 (multiplataforma, multi-target net8; ver 0038) |
 | [0009](0009-grafo-de-dependencias.md) | Grafo de dependencias entre proyectos | Aceptada, rev. 3 (+ `OmniCore.Client`) |
 | [0010](0010-plataforma-y-tooling.md) | .NET 10, tooling de build y tests | Aceptada (+ excepción net8, AOT, YAML) |
-| [0011](0011-conexion-a-proveedores.md) | Mecanismo de conexión a proveedores de modelos | Aceptada, rev. 3 (+ protocolo Anthropic de Claude Code, §10) |
+| [0011](0011-conexion-a-proveedores.md) | Mecanismo de conexión a proveedores de modelos | Aceptada, rev. 3 (+ protocolo Anthropic de Claude Code, §10; §4: attach/managed cableados) |
 | [0012](0012-lanes-delegadas-a-claude-code.md) | Lanes delegadas a Claude Code con la suscripción del usuario | Aceptada, rev. 3 (M7, riesgo residual aceptado) |
 | [0013](0013-event-schema-vs-protocol.md) | Versión de schema de evento separada del Omni Protocol | Aceptada (+ nombres, `EventType`, ids de DTOs) |
 | [0014](0014-pipeline-tool-permission-execution.md) | Pipeline Tool → Permission → Execution | Aceptada |
 | [0015](0015-process-runtime.md) | Process Runtime unificado: `process.exec` como primitive | Aceptada, rev. 2 (sandbox según 0038) |
-| [0016](0016-plan-y-working-state.md) | Plan/Todo canónico, WorkingState y ProgressReconciler | Aceptada (transiciones en 0036, modos en 0035) |
+| [0016](0016-plan-y-working-state.md) | Plan/Todo canónico, WorkingState y ProgressReconciler | Aceptada (transiciones en 0036, modos en 0035, watchdog en 0048) |
 | [0017](0017-execution-fingerprint.md) | ExecutionFingerprint por Turn | Aceptada |
 | [0018](0018-secretos-y-redaccion.md) | Gestión de secretos y redacción | Aceptada |
 | [0019](0019-cli-transport-host.md) | CLI → IOmniClient / IOmniTransport → Host → Engine | Aceptada |
@@ -54,12 +55,13 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0036](0036-maquinas-de-estado.md) | Máquinas de estado canónicas y eventos por transición | Aceptada |
 | [0037](0037-modelo-de-permisos.md) | Modelo de permisos: tipos, capas, defaults autónomos, grants y gasto | Aceptada |
 | [0038](0038-plataformas-sandbox-y-distribucion.md) | Plataformas (Windows + Linux), sandbox, distribución y multi-target | Aceptada |
-| [0039](0039-workspace-trust-y-configuracion.md) | Confianza de workspace y configuración YAML por scope | Aceptada |
+| [0039](0039-workspace-trust-y-configuracion.md) | Confianza de workspace y configuración YAML por scope | Aceptada (§5: resolución por hoja y `locked`) |
 | [0040](0040-localizacion.md) | Localización: UI localizable, español por defecto | Aceptada |
 | [0041](0041-simulacion-m1.md) | Simulación de M1: `omni sim` y componentes mínimos | Aceptada |
 | [0042](0042-tokens-y-presupuesto-de-contexto.md) | Conteo de tokens y política de contexto antes de M4 | Aceptada |
 | [0043](0043-auditoria-y-telemetria.md) | Auditoría y telemetría | Aceptada |
-| [0044](0044-politica-de-modelos-y-mutaciones.md) | Política de modelos, onboarding y seguridad de mutaciones | Aceptada |
+| [0044](0044-politica-de-modelos-y-mutaciones.md) | Política de modelos, onboarding y seguridad de mutaciones | Aceptada (§4: `FileMutationReliability` medida en uso real) |
 | [0045](0045-cuestionarios-estructurados.md) | Cuestionarios estructurados y respuestas humanas | Aceptada |
 | [0046](0046-fronteras-pre-m6.md) | Fronteras pre-M6: ejecución, routing autorizado, eventos y control | Aceptada (con ajustes al anexo, §8) |
 | [0047](0047-modos-explicitos-y-ultracode.md) | Modos explícitos, ejecución directa y esfuerzo UltraCode | Aceptada (implementación en M5.5; delegación real en M6) |
+| [0048](0048-watchdog-y-respuesta-al-estancamiento.md) | Watchdog en Runs reales y respuesta al estancamiento (`StallPolicy`) | Aceptada (precisa 0016 §9 y 0036 §7) |

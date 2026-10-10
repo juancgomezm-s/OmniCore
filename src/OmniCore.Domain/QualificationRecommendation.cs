@@ -34,8 +34,15 @@ public static class QualificationRecommender
     /// <summary>FileMutationReliability por debajo de la cual se recomienda ObserveOnly.</summary>
     public const double FileMutationObserveOnlyThreshold = 0.5;
 
+    /// <summary>
+    /// Muestras mínimas para que FileMutationReliability cuente como evidencia: con menos, un único
+    /// parche malo (o bueno) decidiría la recomendación. Es el 0.5 de confianza del trait.
+    /// </summary>
+    public const int MinimumFileMutationSamples = 5;
+
     /// <summary>Recomienda una categoría y su política de mutación a partir de los traits medidos.</summary>
-    public static QualificationRecommendation Recommend(IReadOnlyDictionary<string, double> traits)
+    public static QualificationRecommendation Recommend(IReadOnlyDictionary<string, double> traits,
+        int fileMutationSamples = int.MaxValue)
     {
         ArgumentNullException.ThrowIfNull(traits);
 
@@ -51,6 +58,12 @@ public static class QualificationRecommender
         if (!hasFileMutation)
         {
             notes.Add("sin evidencia de FileMutationReliability: la suite quick no mide mutaciones de archivos");
+        }
+        else if (fileMutationSamples < MinimumFileMutationSamples)
+        {
+            notes.Add("FileMutationReliability con " + fileMutationSamples + " muestras (mínimo "
+                + MinimumFileMutationSamples + "): evidencia insuficiente, no se usa");
+            hasFileMutation = false;
         }
 
         // Base: la suite quick (lectura/razonamiento/salida estructurada) solo habilita PatchOnly.

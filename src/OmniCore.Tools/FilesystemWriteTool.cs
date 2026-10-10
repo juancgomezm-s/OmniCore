@@ -249,6 +249,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // defensa contra pisar un estado que el modelo no vio.
         if (expectedVersion is null || expectedVersion.Length == 0)
         {
+            ledger?.RecordTokenViolation(path, ModelToolCapability.ReplaceFile);
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "Falta 'expectedVersion': el token de versión es obligatorio para reemplazar un archivo existente (ADR-0044 §5). "
                 + "Lee el archivo y usa el token [version:…], o usa filesystem.patch para un cambio localizado.");
@@ -260,6 +261,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         if (context.ReadRegistry is not null && (ledger?.MutationPolicy?.RequirePriorRead ?? true)
             && !context.ReadRegistry.Matches(path, expectedVersion))
         {
+            ledger?.RecordTokenViolation(path, ModelToolCapability.ReplaceFile);
             return ToolResult.Error(ToolErrorCode.PriorReadRequired,
                 "PRIOR_READ_REQUIRED: no se puede reemplazar " + path
                 + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
@@ -273,6 +275,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         var actualVersion = FileVersion.VersionToken(bytes);
         if (expectedVersion != actualVersion)
         {
+            ledger?.RecordTokenViolation(path, ModelToolCapability.ReplaceFile);
             return ToolResult.Error(ToolErrorCode.StaleWrite,
                 FileVersion.StaleWriteMessage(actualVersion));
         }
@@ -315,7 +318,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: false,
             expectedVersion, deletedLines: deleted, insertedLines: inserted,
             summaryPrefix: "Archivo reemplazado: " + path + " (" + originalLines + "→"
-                + FileVersion.CountLines(content) + " líneas)", cancellationToken).ConfigureAwait(false);
+                + FileVersion.CountLines(content) + " líneas)", cancellationToken, originalLines).ConfigureAwait(false);
     }
 
     /// <summary>CREACIÓN de un archivo nuevo (directorios padre incluidos), UTF-8 sin BOM.</summary>
@@ -350,7 +353,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     /// </summary>
     private async Task<ToolResult> Publish(string path, string full, byte[] newBytes, MutationLedger? ledger,
         AuthorizedToolIntent intent, string workspaceRoot, bool created, string? expectedVersion,
-        int deletedLines, int insertedLines, string summaryPrefix, CancellationToken cancellationToken)
+        int deletedLines, int insertedLines, string summaryPrefix, CancellationToken cancellationToken,
+        int originalLines = 0)
     {
         var tempPath = Path.Combine(
             Path.GetDirectoryName(full)!,
@@ -498,7 +502,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
         // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
         // política la exige, ADR-0044 §5).
-        ledger?.RecordMutation(path, deletedLines, insertedLines, intent.Intent.ToolCallId);
+        ledger?.RecordMutation(path, deletedLines, insertedLines, intent.Intent.ToolCallId,
+            created ? ModelToolCapability.CreateFile : ModelToolCapability.ReplaceFile, originalLines);
 
         var newVersion = FileVersion.VersionToken(newBytes);
         var summary = summaryPrefix + " [version:" + newVersion + "]";

@@ -119,6 +119,39 @@ public sealed class ProtocolMapper
         return result;
     }
 
+    /// <summary>
+    /// <c>toolcall.requested</c> con su presentación (ADR-0033 §2): categoría y solo los campos que la tool
+    /// declara como resumen, tomados de los argumentos y redactados. Una tool sin presentación va sin ellos.
+    /// </summary>
+    private Dictionary<string, string> ToolRequestedFields(ToolCallRequested requested)
+    {
+        var fields = new Dictionary<string, string>
+        {
+            ["toolCallId"] = requested.ToolCallId.ToString(), ["tool"] = requested.ToolName,
+        };
+        if (ToolPresentation.Of(requested.ToolName) is not { } presentation) return fields;
+        fields["category"] = presentation.Category.ToString();
+        // Cada campo declarado viaja siempre (con «…» si no se puede leer) para que la etiqueta nunca quede a medias.
+        foreach (var name in presentation.SummaryFields) fields["arg." + name] = "…";
+        if (presentation.SummaryFields.Count == 0) return fields;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(requested.ArgumentsJson);
+            foreach (var name in presentation.SummaryFields)
+            {
+                if (document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && document.RootElement.TryGetProperty(name, out var value)
+                    && value.ValueKind == System.Text.Json.JsonValueKind.String && value.GetString() is { Length: > 0 } text)
+                    fields["arg." + name] = _redaction.Redact(text.Length > 120 ? text[..120] + "…" : text);
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            // Argumentos ilegibles: queda el «…» y la etiqueta se muestra sin el resumen.
+        }
+        return fields;
+    }
+
     private Dictionary<string, string>? Fields(DomainEventPayload payload) => payload switch
     {
         RunCreated e => new() { ["objective"] = _redaction.Redact(e.Objective), ["mode"] = Mode(e.Mode) },
@@ -188,7 +221,7 @@ public sealed class ProtocolMapper
         TurnCompleted e => new() { ["turnId"] = e.TurnId.ToString() },
         TurnInterrupted e => new() { ["turnId"] = e.TurnId.ToString() },
         TurnAbandoned e => new() { ["turnId"] = e.TurnId.ToString(), ["reason"] = _redaction.Redact(e.Reason) },
-        ToolCallRequested e => new() { ["toolCallId"] = e.ToolCallId.ToString(), ["tool"] = e.ToolName },
+        ToolCallRequested e => ToolRequestedFields(e),
         ToolCallSucceeded e => new() { ["toolCallId"] = e.ToolCallId.ToString() },
         ToolCallFailed e => new()
         {
@@ -263,6 +296,13 @@ public sealed class ProtocolMapper
         {
             ["planItemId"] = e.PlanItemId.ToString(),
             ["turns"] = e.TurnsWithoutProgress.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        },
+        StallResponseSelected e => new()
+        {
+            ["planItemId"] = e.PlanItemId.ToString(),
+            ["policy"] = e.Policy.ToString(),
+            ["step"] = e.Step.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["skipped"] = string.Join(",", e.Skipped),
         },
         _ => null,
     };

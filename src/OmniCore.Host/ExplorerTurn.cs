@@ -219,6 +219,15 @@ public sealed class ExplorerTurn
 
     private readonly Action<ToolCallId>? _mailboxDeliveryCompleted;
 
+    // ADR-0048 §2: el Host decide si EscalateModel está disponible (null = disponible).
+    private readonly Func<string?>? _stallEscalationUnavailable;
+
+    // ADR-0044 §4: destino de las muestras de mutación observadas por el ledger (telemetría).
+    private readonly Action<IReadOnlyList<FileMutationSample>>? _mutationEvidence;
+
+    // El watchdog y la directiva se evalúan en cada Turn: cada evento se decodifica una sola vez.
+    private readonly MemoizedEventDecoder _stallDecoder;
+
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
         FakeCatalog catalog, ContextMaterializer materializer, ExecutionFingerprint fingerprint,
         ModelSelection selection, IEventStore store, IEventCodecRegistry codecs, IArtifactStore artifacts,
@@ -235,7 +244,9 @@ public sealed class ExplorerTurn
         SqliteSpendReservationStore? spendReservations = null,
         long? maximumGenerationRequestAttempts = null,
         IReadOnlyList<IPreparedArtifact>? fingerprintArtifacts = null,
-        Action<ToolCallId>? mailboxDeliveryCompleted = null)
+        Action<ToolCallId>? mailboxDeliveryCompleted = null,
+        Func<string?>? stallEscalationUnavailable = null,
+        Action<IReadOnlyList<FileMutationSample>>? mutationEvidence = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -269,6 +280,9 @@ public sealed class ExplorerTurn
         _questionnaires = questionnaires;
         _questionnaireResponder = questionnaireResponder;
         _mailboxDeliveryCompleted = mailboxDeliveryCompleted;
+        _stallEscalationUnavailable = stallEscalationUnavailable;
+        _mutationEvidence = mutationEvidence;
+        _stallDecoder = new MemoizedEventDecoder(codecs);
         _metaModelProvider = metaModelProvider;
         _modelContextCapacity = modelContextCapacity;
     }
@@ -278,6 +292,19 @@ public sealed class ExplorerTurn
 
     /// <summary>Ledger de mutaciones del Run activo, compartido con las tools del boundary.</summary>
     internal MutationLedger? MutationLedger => _boundary?.ReadRegistry().Ledger;
+
+    /// <summary>
+    /// Entrega las muestras de mutación observadas a su destino de evidencia. Es telemetría: un
+    /// fallo aquí nunca rompe el Turn ni el Run.
+    /// </summary>
+    internal void FlushMutationEvidence()
+    {
+        if (_mutationEvidence is null || MutationLedger is not { } ledger) return;
+        var samples = ledger.TakeObservedSamples();
+        if (samples.Count == 0) return;
+        try { _mutationEvidence(samples); }
+        catch (Exception exception) when (exception is not OperationCanceledException) { }
+    }
 
     /// <summary>Constructor de conveniencia: en-memoria (tests, sin persistencia durable).</summary>
     public ExplorerTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, IToolExecutor tools,
@@ -332,6 +359,8 @@ public sealed class ExplorerTurn
         public TurnId? TurnId { get; init; }
         /// <summary>Redacted local diagnostic when execution fails before producing a result.</summary>
         public string? FailureDiagnostic { get; init; }
+        /// <summary>Episodio de estancamiento registrado al cerrar este Turn (ADR-0048), si lo hubo.</summary>
+        public StallOutcome? Stall { get; init; }
         public string? FinalText { get; }
 
         public StopReason StopReason { get; }
@@ -358,6 +387,17 @@ public sealed class ExplorerTurn
             ResponseArtifactId = responseArtifactId;
             PendingInteractionId = pendingInteractionId;
         }
+    }
+
+    /// <summary>
+    /// Resultado del watchdog al cerrar un Turn (ADR-0048). <c>Policy</c> nulo sin respuesta
+    /// disponible; <c>Failure</c> no nulo cuando el watchdog no pudo registrar el episodio.
+    /// </summary>
+    public sealed record StallOutcome(PlanItemId? PlanItemId, string ItemDescription, int TurnsWithoutProgress,
+        StallPolicy? Policy, IReadOnlyList<string> Skipped, InteractionId? InteractionId, string? Failure)
+    {
+        public static StallOutcome Failed(string diagnostic) =>
+            new(null, "", 0, null, Array.Empty<string>(), null, diagnostic);
     }
 
     public sealed class ToolUseTrace
@@ -419,9 +459,11 @@ public sealed class ExplorerTurn
             }
             var result = AskCore(question, instruction, sessionId, runId, laneId, workingStateText,
                 deadline.Token, origin, instructionSnapshot, start => { exactTurn = start.TurnId; turnStarted?.Invoke(start); });
+            // ADR-0048 §1: el watchdog se evalúa al cerrar el Turn, aún dentro del gate de la Lane.
+            var stall = exactTurn is { } finished ? ApplyStallWatchdog(sessionId, runId, laneId, finished) : null;
             return new TurnResult(result.FinalText, result.StopReason, result.Steps, result.Usage,
                 result.ToolCalls, result.ResponseArtifactId, result.PendingInteractionId)
-            { TurnId = exactTurn, FailureDiagnostic = result.FailureDiagnostic };
+            { TurnId = exactTurn, FailureDiagnostic = result.FailureDiagnostic, Stall = stall };
         }
         finally { gate.Release(); }
     }
@@ -1487,6 +1529,83 @@ public sealed class ExplorerTurn
         }
     }
 
+    /// <summary>
+    /// Watchdog al cerrar un Turn (ADR-0048 §1–§3). Si el item actual de una Lane vigilada lleva el
+    /// umbral de <c>HarnessPolicy.StallThresholdTurns</c> sin señal de progreso, registra en un solo
+    /// batch <c>ProgressStalled</c>, la respuesta determinista y, para <c>AskUser</c>, la interacción
+    /// <c>StallResolution</c> con el Run en <c>AwaitingInput</c>. Un fallo del watchdog no deshace
+    /// el Turn: se informa y el siguiente Turn vuelve a evaluar el mismo episodio.
+    /// </summary>
+    private StallOutcome? ApplyStallWatchdog(SessionId sessionId, RunId runId, LaneId laneId, TurnId turnId)
+    {
+        try
+        {
+            var stream = new EventStream(_store, _codecs, sessionId);
+            var events = stream.EventsSince(1);
+            if (!IsTerminalTurn(events, turnId)) return null; // suspendido: se evalúa cuando termine
+            var threshold = _harness?.StallThresholdTurns ?? ProgressReconciler.DefaultStallThresholdTurns;
+            if (StallWatch.Observe(_stallDecoder, events, runId, threshold) is not { } stalled
+                || !stalled.Lanes.Contains(laneId))
+                return null;
+            var own = StallWatch.RunEvents(_stallDecoder, events, runId);
+            var run = RunProjection.Replay(sessionId, runId, _stallDecoder, own);
+            if (run.IsTerminal()) return null;
+            var isRoot = run.RootTask is { } root
+                && LaneProjection.Replay(_stallDecoder, own).ForTask(root).Any(lane => lane.Id == laneId);
+            var askUnavailable = !isRoot ? "DelegatedLane" : run.State != RunState.Running ? "RunNotRunning" : null;
+            var escalateUnavailable = !isRoot ? "DelegatedLane"
+                : _stallEscalationUnavailable is null ? "NoEscalationHost" : _stallEscalationUnavailable();
+            var decision = StallPolicyEvaluator.Select(stalled.LastPolicy,
+                new StallAvailability(escalateUnavailable, askUnavailable));
+
+            var task = own.Where(evt => evt.Type.ToString() == "lane.created").Select(_stallDecoder.Decode)
+                .OfType<LaneCreated>().FirstOrDefault(created => created.LaneId == laneId)?.TaskId;
+            var batch = new List<DomainEventPayload>
+            {
+                new ProgressStalled(stalled.PlanItemId, stalled.TurnsWithoutProgress, stalled.LastProgressAt),
+            };
+            InteractionId? interaction = null;
+            if (decision.Policy is { } policy)
+            {
+                batch.Add(new StallResponseSelected(runId, stalled.PlanItemId, policy, stalled.Step, decision.Skipped));
+                if (policy == StallPolicy.AskUser)
+                {
+                    var requested = InteractionId.New();
+                    interaction = requested;
+                    // ADR-0034: opciones decididas por el servidor; sin respuesta, se detiene.
+                    batch.Add(new InteractionRequested(requested, InteractionKind.StallResolution,
+                        "{" + JsonObj.Field("operation", "stall.resolution") + ","
+                            + JsonObj.Field("target", _redaction.Redact(stalled.ItemDescription)) + ","
+                            + JsonObj.Field("detail", stalled.TurnsWithoutProgress.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture) + " turns") + ","
+                            + JsonObj.Field("reason", "stall.resolution.reason") + "}",
+                        "[{\"id\":\"continue\",\"intent\":\"allow\"},{\"id\":\"stop\",\"intent\":\"deny\"}]",
+                        "stop", null, laneId, task, stalled.PlanItemId, 0, 1));
+                    batch.Add(new RunAwaitingInput(runId, laneId));
+                }
+            }
+
+            using (ExecutionScope.Begin(new ExecutionScopeState(runId, task, laneId, turnId)))
+                stream.AppendBatch(batch, DurabilityClass.Standard);
+            return new StallOutcome(stalled.PlanItemId, stalled.ItemDescription, stalled.TurnsWithoutProgress,
+                decision.Policy, decision.Skipped, interaction, null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return StallOutcome.Failed(_redaction.Redact(ex.GetType().Name + ": " + (ex.Message ?? "stall watchdog failed")));
+        }
+    }
+
+    private bool IsTerminalTurn(IReadOnlyList<DomainEvent> events, TurnId turnId) =>
+        events.Where(evt => evt.Type.ToString() is "turn.completed" or "turn.interrupted" or "turn.abandoned")
+            .Select(_stallDecoder.Decode).Any(payload => payload switch
+        {
+            TurnCompleted completed => completed.TurnId == turnId,
+            TurnInterrupted interrupted => interrupted.TurnId == turnId,
+            TurnAbandoned abandoned => abandoned.TurnId == turnId,
+            _ => false,
+        });
+
     private void AppendTerminalTurn(EventStream stream, SessionId session, RunId run, LaneId lane,
         TurnId turn, DomainEventPayload terminal)
     {
@@ -2360,6 +2479,14 @@ public sealed class ExplorerTurn
         {
             contributors.Add(new RedactingContextContributor(new WorkingStateContributor(workingStateText),
                 _redaction));
+        }
+
+        // ADR-0048 §3: la directiva de Replan/Diagnose/SplitTask se proyecta del journal en cada Turn.
+        if (StallWatch.ActiveDirective(_stallDecoder, stream.EventsSince(1), runId, laneId) is { } directive)
+        {
+            var canProposePlan = _catalog.Find(new ToolId("plan.propose")) is not null;
+            contributors.Add(new RedactingContextContributor(
+                new StallDirectiveContributor(directive.Render(canProposePlan)), _redaction));
         }
 
         var prompt = EffectiveSystemPrompt(instruction);

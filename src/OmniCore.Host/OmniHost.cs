@@ -86,16 +86,6 @@ public sealed class OmniHost
         ISandboxCapabilitiesProbe? capabilities = null) =>
         new PlatformSandboxProcessLauncher(runtime, capabilities);
 
-    /// <summary>Resolver de configuración por scope (ADR-0022 §25) con lookup vacío por defecto.</summary>
-    public static OmniCore.Domain.ScopeResolver<string> CreateScopeResolver()
-    {
-        return new OmniCore.Domain.ScopeResolver<string>((scope, key) =>
-        {
-            // Lookup por defecto: sin capas configuradas, nada se resuelve → fallback.
-            return null;
-        });
-    }
-
     /// <summary>CredentialStore de plataforma del milestone M2 (FileCredentialStore; ver ADR-0011 AC-2026-09-27).</summary>
     public static ICredentialStore CreateCredentialStore(string dataDirectory) =>
         new FileCredentialStore(Path.Combine(dataDirectory, "credentials.ini"));
@@ -167,7 +157,36 @@ public sealed class OmniHost
     public static ModelPolicyService CreateModelPolicyService(string? dataDirectoryOverride)
     {
         var paths = new DefaultPlatformPaths(dataDirectoryOverride);
-        return new ModelPolicyService(new SqliteModelPolicyStore(paths.UserDatabasePath));
+        return new ModelPolicyService(new SqliteModelPolicyStore(paths.UserDatabasePath))
+        {
+            EvidenceLookup = (key, token) => QualificationEvidenceFor(paths, dataDirectoryOverride, key, token),
+        };
+    }
+
+    /// <summary>
+    /// Evidencia de cualificación utilizable para el onboarding de una <see cref="ModelPolicyKey"/>
+    /// (ADR-0044 §6): el perfil Qualified/Calibrated/Stale del modelo en el registro del usuario.
+    /// Un almacén o registro ilegible no rompe el onboarding: vuelve a la recomendación conservadora.
+    /// </summary>
+    internal static QualificationEvidence? QualificationEvidenceFor(IPlatformPaths paths,
+        string? dataDirectoryOverride, ModelPolicyKey key, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var registry = LoadUserModelRegistry(paths);
+            var model = registry.Models().FirstOrDefault(candidate =>
+                candidate.ProviderId == key.ProviderId && candidate.Id == key.ModelId);
+            if (model is null) return null;
+            using var store = CreateModelQualificationStore(dataDirectoryOverride);
+            var snapshot = ModelQualificationHost.UsableSnapshot(store, model, registry.Provider(model.ProviderId),
+                cancellationToken);
+            return snapshot is null ? null
+                : new QualificationEvidence(snapshot.Traits, snapshot.FileMutationSamples, snapshot.State);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -263,8 +282,15 @@ public sealed class OmniHost
     }
 
     public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,
-        IReadOnlyDictionary<string, string>? restrictions) =>
-        new ScriptedPermissionPolicy(ParseProjectRestrictions(restrictions)).WithModeDefaults(mode);
+        IReadOnlyDictionary<string, string>? restrictions, UserPermissions? user = null)
+    {
+        var policy = new ScriptedPermissionPolicy(ParseProjectRestrictions(restrictions)).WithModeDefaults(mode);
+        if (user is null) return policy;
+        // ADR-0037 §4–§5: el perfil y las reglas del usuario (permissions.yaml, scope User) son la capa UserPolicy.
+        policy.WithProfile(user.Profile);
+        foreach (var (tool, decision) in user.Rules) policy.WithUserPolicyTool(tool, decision);
+        return policy;
+    }
 
     private static Dictionary<string, OmniCore.Domain.PermissionDecision> ParseProjectRestrictions(
         IReadOnlyDictionary<string, string>? restrictions)
@@ -320,7 +346,8 @@ public sealed class OmniHost
             ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot)));
         var store = new OmniCore.Security.FilePermissionGrantStore(
             WorkspaceDataDirectory(paths, workspaceRoot), audit ?? new FileAuditSink(paths.DataDirectory));
-        return CreateProjectRestrictionPolicy(mode, restrictions).WithGrantStore(store, workspace, runId);
+        return CreateProjectRestrictionPolicy(mode, restrictions, UserPermissionsLoader.Load(paths))
+            .WithGrantStore(store, workspace, runId);
     }
 
     internal static WeakSandboxConsentState GetWeakSandboxConsentState(RunId? runId)

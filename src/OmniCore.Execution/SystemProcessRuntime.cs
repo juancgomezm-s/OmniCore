@@ -54,7 +54,7 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
             psi.Environment[kv.Key] = kv.Value;
         }
 
-        if (launch.CaptureOutput)
+        if (launch.CaptureOutput || launch.DiscardOutput)
         {
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
@@ -66,6 +66,14 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         if (process is null)
         {
             throw new InvalidOperationException("Fallo al lanzar: " + launch.Executable);
+        }
+
+        if (launch.DiscardOutput)
+        {
+            process.OutputDataReceived += static (_, _) => { };
+            process.ErrorDataReceived += static (_, _) => { };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
         }
 
         _alive[process.Id] = process;

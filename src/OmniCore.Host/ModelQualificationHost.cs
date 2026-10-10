@@ -414,7 +414,8 @@ public sealed partial class ModelQualificationHost : IDisposable
 
         // Recomendación de política operativa (ADR-0044 §6): se calcula y se muestra, pero solo el
         // flujo explícito `omni model policy set` puede aplicarla. Nunca amplía la política.
-        var recommendation = QualificationRecommender.Recommend(ToTraitMap(traits));
+        var recommendation = QualificationRecommender.Recommend(ToTraitMap(traits),
+            traits.FirstOrDefault(trait => trait.Trait == MutationEvidenceRecorder.TraitName)?.Samples ?? int.MaxValue);
 
         return new QualificationRunResult(
             model.Id, model.ProviderId, key.QualificationKeyHash(), previousState.ToString(), newState.ToString(),
@@ -515,7 +516,11 @@ public sealed partial class ModelQualificationHost : IDisposable
         }
 
         return new ModelQualificationSnapshot(profile.Key, profile.KeyHash, profile.ProfileRevision,
-            profile.State, new ReadOnlyDictionary<string, double>(map));
+            profile.State, new ReadOnlyDictionary<string, double>(map))
+        {
+            FileMutationSamples = traits.FirstOrDefault(trait => trait.Trait == MutationEvidenceRecorder.TraitName)
+                ?.Samples ?? 0,
+        };
     }
 
     /// <summary>
@@ -694,4 +699,8 @@ public sealed partial class ModelQualificationHost : IDisposable
 
 /// <summary>Immutable identity and values from one usable qualification profile revision.</summary>
 internal sealed record ModelQualificationSnapshot(ModelQualificationKey Key, string KeyHash,
-    long ProfileRevision, ModelQualificationState State, IReadOnlyDictionary<string, double> Traits);
+    long ProfileRevision, ModelQualificationState State, IReadOnlyDictionary<string, double> Traits)
+{
+    /// <summary>Muestras que respaldan FileMutationReliability (0 si el trait no existe).</summary>
+    public int FileMutationSamples { get; init; }
+}

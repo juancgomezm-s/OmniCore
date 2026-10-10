@@ -42,7 +42,7 @@
 | `Blocked` | `Ready` | `TaskUnblocked { requeue: true }` (sin Lane activa) |
 | `Running`, `Blocked` | `Completed` | `TaskCompleted` |
 | `Running`, `Blocked` | `Failed` | `TaskFailed` (**solo** al agotar la `RecoveryPolicy`) |
-| `Pending`, `Ready`, `Blocked` | `Skipped` | `TaskSkipped { reason }` |
+| `Pending`, `Ready`, `Blocked` | `Skipped` | `TaskSkipped { reason }` (la emite `PlanService` al saltar un item cuyas Tasks vinculadas Pending/Ready nunca arrancaron y ningún otro item vivo necesita; una Task Blocked ya ejecutó y sigue su propio camino) |
 | cualquier estado no terminal | `Cancelled` | `TaskCancelled` |
 
 - **Reintentos:** una Task permanece `Running` mientras su `RecoveryPolicy` reintenta con Lanes nuevas.
@@ -75,7 +75,9 @@
 | `Validating` | gates de la Task en curso |
 | `Stalled` | `ProgressStalled` sin resolver (ADR-0016 §9); no es terminal |
 
-Los heartbeats **no** se persisten salvo el último de cada Lane al cerrarla. Son telemetría.
+**Consumo (A7, 2026-10-09):** `LaneActivityProjection` ya no es solo de tests. `SessionSidebarReader` deriva la actividad de la Lane raíz en cada lectura y `SessionSidebarSnapshot.Activity` la lleva al widget `core.session` de la TUI (por ejemplo «esperando al modelo», «esperando tu respuesta», «sin progreso»). Nunca se persiste y leerla no escribe. `Stalled` usa las mismas señales de progreso que el watchdog (ADR-0048 §1): la Lane deja de estar estancada exactamente cuando el watchdog vuelve a ver progreso.
+
+Los heartbeats **no** se persisten: son telemetría. (Precisado por ADR-0046 §4, 2026-10-09: la versión inicial guardaba el último heartbeat de cada Lane al cerrarla con `LaneHeartbeatRecorded`, pero ADR-0046 mandó los heartbeats a `ITelemetrySink`, fuera del `IEventStore`, y ese evento nunca tuvo codec ni emisor; se retiró.) La actividad y los heartbeats de una Lane los observa el Host en proceso (`SessionObservationHub`) y los muestra `/agents`.
 
 **Lanes externas** (ADR-0012):
 
@@ -123,6 +125,8 @@ Complementa ADR-0004 §2:
 - **Reparaciones:** los reintentos de reparación de tool calls (ADR-0007) ocurren dentro del mismo Turn y no abren uno nuevo.
 
 ## 7. Watchdog: señales de progreso y conteo
+
+> **Precisado por [ADR-0048](0048-watchdog-y-respuesta-al-estancamiento.md) (2026-10-09):** evaluación en Runs reales, un evento por episodio, Plan sin descomponer, input humano, rechazos repetidos y semántica de cada `StallPolicy`.
 
 Esto precisa ADR-0016 §9:
 

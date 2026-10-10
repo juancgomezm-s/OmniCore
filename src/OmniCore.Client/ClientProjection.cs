@@ -95,12 +95,17 @@ public sealed class ConversationBlock
 
     public string? ToolName { get; }
 
-    public ConversationBlock(string id, ConversationRole role, string text, string? toolName)
+    /// <summary>Campos de resumen de la ToolCall (ADR-0033 §2), con los que se interpolan sus etiquetas.</summary>
+    public IReadOnlyDictionary<string, string>? Arguments { get; }
+
+    public ConversationBlock(string id, ConversationRole role, string text, string? toolName,
+        IReadOnlyDictionary<string, string>? arguments = null)
     {
         Id = id;
         Role = role;
         Text = text;
         ToolName = toolName;
+        Arguments = arguments;
     }
 }
 
@@ -323,13 +328,32 @@ public sealed class ClientProjection
             case "assistant_message.recorded":
                 return Get(f, "text").Length == 0 ? state : Append(state, Block(evt, ConversationRole.Assistant, Get(f, "text")));
             case "toolcall.requested":
-                return Append(state, new ConversationBlock(evt.MessageId, ConversationRole.Tool,
-                    _text.Resolve("tool.requested", "tool", Get(f, "tool")), Get(f, "tool")));
+            {
+                // ADR-0033 §2: un solo bloque por ToolCall, actualizado en su lugar. Con presentación declarada
+                // (categoría en el wire) lleva su etiqueta «en curso»; sin ella, la genérica.
+                if (Get(f, "category").Length == 0)
+                    return Append(state, new ConversationBlock(evt.MessageId, ConversationRole.Tool,
+                        _text.Resolve("tool.requested", "tool", Get(f, "tool")), Get(f, "tool")));
+                var summary = f.Where(pair => pair.Key.StartsWith("arg.", StringComparison.Ordinal))
+                    .ToDictionary(pair => pair.Key[4..], pair => pair.Value, StringComparer.Ordinal);
+                return Append(state, new ConversationBlock(ToolBlockId(f), ConversationRole.Tool,
+                    _text.Resolve("tool." + Get(f, "tool") + ".running", summary), Get(f, "tool"), summary));
+            }
+            case "toolcall.succeeded":
+                return ReplaceTool(state, ToolBlockId(f), "succeeded", null) ?? state;
             case "toolcall.failed":
             case "toolcall.rejected":
             case "toolcall.permission_denied":
             case "toolcall.cancelled":
-                return Append(state, Block(evt, ConversationRole.Tool, _text.Resolve("tool.failed", "cause", Get(f, "cause"))));
+                return ReplaceTool(state, ToolBlockId(f), "failed", Get(f, "cause"))
+                    ?? Append(state, Block(evt, ConversationRole.Tool, _text.Resolve("tool.failed", "cause", Get(f, "cause"))));
+            case "progress.stalled":
+                // NoticeBlock de ADR-0033 para el watchdog (ADR-0048 §4).
+                return Append(state, Block(evt, ConversationRole.System,
+                    _text.Resolve("notice.progress_stalled", "turns", Get(f, "turns"))));
+            case "stall.response_selected":
+                return Append(state, Block(evt, ConversationRole.System, _text.Resolve("notice.stall_response",
+                    "response", Label("stall.policy." + Get(f, "policy"), Get(f, "policy")))));
             case "interaction.requested":
                 return WithOverlays(state, state.Overlays.Append(Overlay(f)).ToArray());
             case "interaction.resolved":
@@ -454,6 +478,28 @@ public sealed class ClientProjection
 
     private static string Get(Dictionary<string, string> fields, string key) =>
         fields.TryGetValue(key, out var value) ? value : string.Empty;
+
+    private static string ToolBlockId(Dictionary<string, string> f) => "tool:" + Get(f, "toolCallId");
+
+    /// <summary>
+    /// Sustituye el texto del bloque de la ToolCall por su etiqueta de <paramref name="phase"/>
+    /// (<c>succeeded</c> o <c>failed</c>); null si la llamada no tenía bloque con presentación.
+    /// </summary>
+    private ClientState? ReplaceTool(ClientState state, string blockId, string phase, string? cause)
+    {
+        var blocks = state.Conversation.Blocks.ToArray();
+        var index = Array.FindLastIndex(blocks, block => block.Id == blockId);
+        if (index < 0) return null;
+        var existing = blocks[index];
+        var args = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (existing.Arguments is not null)
+            foreach (var pair in existing.Arguments) args[pair.Key] = pair.Value;
+        if (cause is not null) args["cause"] = cause;
+        blocks[index] = new ConversationBlock(existing.Id, existing.Role,
+            _text.Resolve("tool." + existing.ToolName + "." + phase, args), existing.ToolName, existing.Arguments);
+        return new(state.Header, new ConversationModel(blocks), state.Sidebar, state.Composer, state.StatusLine,
+            state.Overlays, state.Connection);
+    }
 
     private static ConversationBlock Block(WireEnvelope evt, ConversationRole role, string text) =>
         new(evt.MessageId, role, text, null);

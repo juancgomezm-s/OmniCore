@@ -420,7 +420,24 @@ suite 3279 casos con 3275 PASS/0 FAIL/4 SKIP symlink y recuperación M4 serial
 observable satisfacen §24 dentro de un Host/store compartido. Fuente, hashes,
 logs y límites de los fixtures en [el acta integral](../validation/m6-integration-20261008.md#cierre-de-m6-en-windows).
 La coordinación multiproceso sigue en M9; la detección de wiring por lenguaje y
-el aislamiento de TaskPacket/worktrees, en M7. La evidencia scripted no amplía
+el aislamiento de TaskPacket/worktrees, en M7.
+
+**Emisor del mailbox (A5, 2026-10-09).** El cierre dio por operativo el buzón por su recepción, pero ningún
+camino de producción enviaba mensajes. El emisor es el usuario, como supervisor de la delegación: `/agent send
+<DelegationId> <mensaje>` envía el comando de usuario de confianza `delegation.mailbox.send`, que solo admite una
+delegación `Accepted` (en curso) con su binding aceptado y entrega por el mismo camino que `supervisor.mailbox.send`
+(CAS del contenido, `ExecutionMailboxMessageReceived` remitido por la ejecución padre y Wake determinista). Ningún
+modelo emite mensajes: el principal no tiene una tool de envío, así que no hay autoridad nueva para un modelo
+(INV-002, INV-033). El mensaje queda pendiente y durable hasta que el hijo llame a `core.agents.mailbox.receive`.
+
+**Deuda de validación: resolución pendiente (A6, 2026-10-09).** `ValidationDebtCreated` sí se emite (el gate del workflow la
+registra cuando la evidencia de una etapa está obsoleta o falta), pero `ValidationDebtResolved` no tiene todavía ningún emisor
+de producción, y no es un olvido: la evaluación toma el **primer** recibo de verificación de la ejecución y una mutación
+posterior del Run lo deja obsoleto de forma permanente, así que la deuda de una ejecución solo puede saldarse con la
+verificación de una ejecución de reemplazo. Ese flujo de rework de una etapa del workflow (nueva ejecución sobre la misma
+Task/Lane y su vínculo con la deuda de la anterior) es trabajo de M7; hasta entonces la deuda queda visible en `/agents` y
+el workflow se detiene en esa etapa. El evento, su codec y su proyección (`PreM6RecordProjection`) existen y están
+cubiertos por los tests de contratos congelados. La evidencia scripted no amplía
 cualificación de proveedores ni acredita el sandbox Strong del verificador.
 
 ## Criterios de salida de M5.5

@@ -69,3 +69,12 @@ SHA256 comprobados antes y después de la suite integral:
 | `OmniCore.ArchitectureTests.dll` | `7D720F131C2FB955BB46418387D03672A5084A695F48953AA27D9C3444693B7F` |
 | `OmniCore.Host.dll` | `CE0F581933BAFF88AC1383B882368AF0B6D5F49C0B0D785D13289E3937EC1A89` |
 | `omni.dll` | `7DD79443505BE775CC84171F773893B40607A56CAC74EE6FAF082C6E4395E71F` |
+
+## Corrección posterior: emisor del mailbox (2026-10-09)
+
+Esta acta marcó el mailbox como cableado por su recorrido de **recepción**. La revisión posterior de callsites
+encontró que ningún camino de producción emitía `supervisor.mailbox.send`: solo lo ejercían los tests, así que el
+buzón nunca recibía mensajes fuera de ellos. Desde entonces el usuario puede escribir al buzón de una delegación
+en curso con `/agent send <DelegationId> <mensaje>` (comando de usuario de confianza `delegation.mailbox.send`),
+que usa el mismo camino durable del supervisor (CAS, evento, Wake) con la ejecución padre como remitente.
+El mensaje espera hasta que el hijo llame a `core.agents.mailbox.receive`. Detalle en ADR-0046.

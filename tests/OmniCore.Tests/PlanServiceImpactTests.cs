@@ -97,6 +97,56 @@ public sealed class PlanServiceImpactTests
     }
 
     [Fact]
+    public void Skipping_an_item_skips_its_never_started_tasks_so_the_task_gate_can_pass()
+    {
+        // ADR-0036 §2: lo que el Plan descarta y nunca arrancó también termina en el TaskGraph.
+        var fixture = new Fixture();
+        var item = fixture.AddItem("optional", 2, required: false);
+        var pending = fixture.CreateTask(TaskState.Pending);
+        var ready = fixture.CreateTask(TaskState.Ready);
+        var running = fixture.CreateTask(TaskState.Running);
+        var blocked = fixture.CreateTask(TaskState.Blocked);
+        var shared = fixture.CreateTask(TaskState.Pending);
+        var other = fixture.AddItem("other", 3);
+        foreach (var task in new[] { pending, ready, running, blocked, shared }) fixture.Link(item, task, required: true);
+        fixture.Link(other, shared, required: true);
+
+        var result = fixture.Apply(PlanMutation.Skip(item, Cause, "ya no aplica"));
+
+        Assert.True(result.Accepted, result.Reason);
+        Assert.Equal(new[] { pending, ready }, result.Events.OfType<TaskSkipped>().Select(evt => evt.TaskId));
+        Assert.All(result.Events.OfType<TaskSkipped>(), evt => Assert.Contains("ya no aplica", evt.Reason));
+        fixture.Append(result);
+        Assert.Equal(TaskState.Skipped, fixture.Tasks.StateOf(pending));
+        Assert.Equal(TaskState.Skipped, fixture.Tasks.StateOf(ready));
+        // La Task en curso, la bloqueada y la que otro item vivo necesita no se tocan.
+        Assert.Equal(TaskState.Running, fixture.Tasks.StateOf(running));
+        Assert.Equal(TaskState.Blocked, fixture.Tasks.StateOf(blocked));
+        Assert.Equal(TaskState.Pending, fixture.Tasks.StateOf(shared));
+    }
+
+    [Fact]
+    public void Skipping_a_required_item_with_pending_tasks_waits_for_approval_and_skips_them_with_the_revision()
+    {
+        var fixture = new Fixture();
+        var item = fixture.AddItem("required", 2);
+        var pending = fixture.CreateTask(TaskState.Pending);
+        fixture.Link(item, pending, required: true);
+
+        var unapproved = fixture.Apply(PlanMutation.Skip(item, Cause, "no aplica"));
+        Assert.False(unapproved.Accepted);
+        Assert.DoesNotContain(unapproved.Events, evt => evt is TaskSkipped);
+
+        var approved = fixture.Apply(PlanMutation.Skip(item, Cause, "no aplica"), approved: true);
+        Assert.True(approved.Accepted, approved.Reason);
+        Assert.IsType<PlanRevised>(approved.Events[0]);
+        Assert.Single(approved.Events.OfType<TaskSkipped>());
+        fixture.Append(approved);
+        Assert.Equal(TaskState.Skipped, fixture.Tasks.StateOf(pending));
+        Assert.DoesNotContain(fixture.Tasks.Tasks(), task => task.State is TaskState.Pending or TaskState.Ready);
+    }
+
+    [Fact]
     public void Skip_non_required_is_automatic_and_required_skip_needs_reason_and_approval()
     {
         var optional = new Fixture();

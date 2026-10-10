@@ -386,6 +386,76 @@ public sealed class DelegationLifecycleTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task User_mailbox_send_reaches_the_running_child_through_the_supervisor_path_and_is_delivered_once()
+    {
+        // A5: el usuario escribe al buzón de una delegación en curso (`/agent send`); el mensaje entra
+        // por el mismo camino durable que el del supervisor y despierta el receive del hijo.
+        using var fx = new DelegationAdmissionTests.Fixture(authorizeMailboxRoute: true);
+        fx.Ask();
+        var child = Queue(fx);
+        var providerCalls = 0;
+        string? delivered = null;
+        using var receiveEntered = new ManualResetEventSlim();
+        var dispatch = System.Threading.Tasks.Task.Run(() => fx.Server.ExecuteDelegation(child.DelegationId,
+            (work, token) => fx.ExplorerWithMailbox((_, _) =>
+            {
+                return Interlocked.Increment(ref providerCalls) == 1
+                    ? new ModelResponse([new ToolCallBlock(ToolCallId.New(), "mailbox-user",
+                        "core.agents.mailbox.receive", "{}")],
+                        StopReason.ToolUse, new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null))
+                    : new ModelResponse([new TextBlock("mensaje recibido")], StopReason.EndTurn,
+                        new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
+            }, async (toolCall, receiveToken) =>
+            {
+                receiveEntered.Set();
+                delivered = await fx.Server.ReceiveMailboxMessageAsync(fx.Session, fx.Run, fx.MailboxRoute,
+                    BillingMode.Local, toolCall, receiveToken).ConfigureAwait(false);
+                return delivered;
+            }).Ask(work.Objective, "system", work.Session, work.Run, work.Delegation.ChildLaneId, "", token),
+            TestContext.Current.CancellationToken), TestContext.Current.CancellationToken);
+
+        Assert.True(receiveEntered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        var childExecution = Assert.Single(fx.Payloads.OfType<DelegationAccepted>()).ChildExecutionId;
+        Assert.True(SpinWait.SpinUntil(() => fx.Server.HasActiveMailboxWaiter(fx.Session, fx.Run, childExecution),
+            TimeSpan.FromSeconds(10)));
+
+        var sent = Send(fx, "delegation.mailbox.send", "\"delegationId\":\"" + child.DelegationId
+            + "\",\"content\":\"prioriza el módulo B\"");
+        Assert.True(sent.Status == "ok", sent.Error);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, sent.Outcome?.Kind);
+
+        var completed = await dispatch.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        Assert.Equal("ok", completed.Status);
+        var root = Assert.Single(fx.Payloads.OfType<AgentExecutionStarted>(), item => item.ParentExecutionId is null);
+        var message = Assert.Single(fx.Payloads.OfType<ExecutionMailboxMessageReceived>());
+        Assert.Equal(root.ExecutionId, message.Message.SenderExecutionId);
+        Assert.Contains("prioriza el módulo B", delivered);
+        var acknowledged = Assert.Single(fx.Payloads.OfType<ExecutionMailboxMessageAcknowledged>());
+        Assert.Equal(message.Message.MessageId, acknowledged.MessageId);
+        Assert.Equal(2, Volatile.Read(ref providerCalls));
+        var lane = Assert.Single(AgentsJson.Decode(fx.Server.Query("agents", CancellationToken.None)!.Json)!.Lanes,
+            item => item.LaneId == child.ChildLaneId.ToString());
+        Assert.Equal(0, lane.PendingMailboxMessages);
+    }
+
+    [Fact]
+    public void User_mailbox_send_is_rejected_without_a_running_child_trusted_action_or_content()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture(authorizeMailboxRoute: true);
+        fx.Ask();
+        var child = Queue(fx);
+        var fields = "\"delegationId\":\"" + child.DelegationId + "\",\"content\":\"hola\"";
+
+        // Encolada: aún no hay ejecución ni buzón a quien escribir.
+        var queued = Send(fx, "delegation.mailbox.send", fields);
+        Assert.NotEqual(RuntimeCommandOutcomeKind.Accepted, queued.Outcome?.Kind);
+        // Solo una acción de usuario de confianza puede escribir al buzón.
+        var untrusted = fx.Server.Send(Command("delegation.mailbox.send", fields), CancellationToken.None);
+        Assert.NotEqual("ok", untrusted.Status);
+        Assert.Empty(fx.Payloads.OfType<ExecutionMailboxMessageReceived>());
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Durable_receive_success_reconciles_failed_ack_batch_after_reopen_once()
     {
         using var fx = new DelegationAdmissionTests.Fixture(authorizeMailboxRoute: true, failMailboxAckBatches: true);

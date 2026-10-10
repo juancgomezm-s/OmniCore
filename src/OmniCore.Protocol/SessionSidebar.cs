@@ -8,7 +8,10 @@ public sealed record SidebarPlanItem(string Id, string? ParentId, string Descrip
 public sealed record SidebarPlan(string Id, string RunId, int Revision, IReadOnlyList<SidebarPlanItem> Items);
 public sealed record SessionSidebarSnapshot(string SessionId, string? RunId, long BasedOnJournalSequence,
     string Title, string? Objective, string? Mode, string? RunState, SidebarPlan? Plan,
-    bool RecoveryBlocked, bool ProjectionUnavailable);
+    bool RecoveryBlocked, bool ProjectionUnavailable,
+    // Actividad derivada de la Lane raíz (ADR-0036 §3), nunca persistida: WaitingForModel, WaitingForTool,
+    // WaitingForPermission, WaitingForInput, WaitingForSubtask, Validating o Stalled. Null si no hay ninguna.
+    string? Activity = null);
 
 public static class SidebarJson
 {

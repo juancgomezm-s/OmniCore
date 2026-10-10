@@ -21,6 +21,8 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
 
     private bool _useModeDefaults;
 
+    private PermissionProfile _profile = PermissionProfile.Autonomous;
+
     private IPermissionGrantStore? _grantStore;
 
     private WorkspaceId? _grantWorkspace;
@@ -43,6 +45,13 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         return this;
     }
 
+    /// <summary>Perfil de permisos del usuario (<c>permissions.profile</c>, ADR-0037 §4); autónomo por defecto.</summary>
+    public ScriptedPermissionPolicy WithProfile(PermissionProfile profile)
+    {
+        _profile = profile;
+        return this;
+    }
+
     /// <summary>Conecta grants del usuario, aislados por workspace y Run (ADR-0037 §5).</summary>
     public ScriptedPermissionPolicy WithGrantStore(IPermissionGrantStore store, WorkspaceId workspace, RunId? run)
     {
@@ -52,7 +61,11 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         return this;
     }
 
-    /// <summary>Configura una regla UserPolicy (distinta de restricciones de repo/escenario).</summary>
+    /// <summary>
+    /// Configura una regla UserPolicy (distinta de restricciones de repo/escenario). <c>Deny</c> y <c>Ask</c>
+    /// restringen; <c>Allow</c> es una regla explícita del usuario que solo levanta un <c>Ask</c> de modo, perfil
+    /// o UserPolicy, nunca un <c>Deny</c> (ADR-0037 §2).
+    /// </summary>
     public ScriptedPermissionPolicy WithUserPolicyTool(string tool, PermissionDecision decision)
     {
         _userDecisions[tool] = decision;
@@ -94,9 +107,17 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         if (_useModeDefaults)
         {
             var resource = Classify(intent);
-            var mode = ModeDefaultsPolicy.Instance().ForRunMode(_modeForDefaults, resource);
+            var mode = ModeDefaultsPolicy.Instance(_profile).ForRunMode(_modeForDefaults, resource);
             layers.Add(new LayerDecision("mode-defaults", mode, "modo " + _modeForDefaults + " · " + resource));
             final = Min(final, mode);
+        }
+
+        // Una regla explícita del usuario con Allow levanta el Ask que vino de modo, perfil o UserPolicy.
+        if (final == PermissionDecision.Ask && userDecision == PermissionDecision.Allow
+            && _userDecisions.ContainsKey(intent.ToolId.ToString()) && IsGrantableAsk(layers))
+        {
+            layers.Add(new LayerDecision("user-rule", PermissionDecision.Allow, "permissions.yaml"));
+            return new PermissionDecisionRecord(PermissionDecision.Allow, layers.ToArray(), null);
         }
 
         if (final == PermissionDecision.Ask && _grantStore is not null && _grantWorkspace is not null
