@@ -43,4 +43,66 @@ public sealed class AgentCapacitySchedulerTests
         Assert.Equal(3, capacity.ReadSnapshot(fx.Session, fx.Run).Active);
         Assert.Null(capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 3, 0, true, CancellationToken.None));
     }
+
+    [Fact]
+    public void Destination_leases_allow_independent_writers_but_exclude_same_root_readers_and_writers()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        var capacity = AgentCapacity.For(fx.Store);
+        var root = Path.Combine(Path.GetTempPath(), "m7-capacity-" + Guid.NewGuid().ToString("N"));
+        var firstPath = Path.Combine(root, "lane-a");
+        var secondPath = Path.Combine(root, "lane-b");
+        using var first = capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 10,
+            readOnly: false, CancellationToken.None, destinationRoot: firstPath);
+        Assert.NotNull(first);
+        using var second = capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 0,
+            readOnly: false, CancellationToken.None, destinationRoot: secondPath);
+        Assert.NotNull(second);
+        Assert.Null(capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, -1,
+            readOnly: true, CancellationToken.None, destinationRoot: firstPath));
+        Assert.Null(capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, -1,
+            readOnly: false, CancellationToken.None, destinationRoot: firstPath));
+        Assert.Equal(2, capacity.ReadSnapshot(fx.Session, fx.Run).Active);
+    }
+
+    [Fact]
+    public void Destination_identity_uses_physical_path_canonicalization_and_case_fold_on_windows()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        var capacity = AgentCapacity.For(fx.Store);
+        var root = Path.Combine(Path.GetTempPath(), "m7-capacity-" + Guid.NewGuid().ToString("N"));
+        var original = Path.Combine(root, "lane");
+        using var writer = capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 3, 1,
+            false, CancellationToken.None, destinationRoot: original);
+        Assert.NotNull(writer);
+        var equivalent = OperatingSystem.IsWindows() ? original.ToUpperInvariant() : Path.Combine(root, ".", "lane");
+        Assert.Null(capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 3, 0,
+            true, CancellationToken.None, destinationRoot: equivalent));
+    }
+
+    [Fact]
+    public void Unknown_destination_is_a_wildcard_against_known_destinations()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        var capacity = AgentCapacity.For(fx.Store);
+        var knownPath = Path.Combine(Path.GetTempPath(), "m7-capacity-" + Guid.NewGuid().ToString("N"));
+        using (var unknownWriter = capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 10,
+                   false, CancellationToken.None))
+        {
+            Assert.NotNull(unknownWriter);
+            Assert.Null(capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 0,
+                true, CancellationToken.None, destinationRoot: knownPath));
+            Assert.Null(capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 0,
+                false, CancellationToken.None, destinationRoot: knownPath));
+        }
+
+        using var unknownReader = capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 10,
+            true, CancellationToken.None);
+        Assert.NotNull(unknownReader);
+        Assert.Null(capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 0,
+            false, CancellationToken.None, destinationRoot: knownPath));
+        using var knownReader = capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 4, 0,
+            true, CancellationToken.None, destinationRoot: knownPath);
+        Assert.NotNull(knownReader);
+    }
 }

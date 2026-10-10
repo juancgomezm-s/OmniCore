@@ -713,6 +713,12 @@ public sealed class JournalVerifier
             refs.Add((modelStepCompleted.ResponseArtifact, "responseArtifact"));
         }
 
+        if (payload is LaneWorktreeCreated worktreeCreated)
+        {
+            refs.Add((worktreeCreated.TaskPacketRef, "taskPacketRef"));
+            refs.Add((worktreeCreated.SelectedProjectionRef, "selectedProjectionRef"));
+        }
+
         return refs;
     }
 

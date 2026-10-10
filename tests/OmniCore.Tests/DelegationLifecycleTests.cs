@@ -20,6 +20,8 @@ public sealed class DelegationLifecycleTests
         Assert.Equal("ok", ack.Status);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
         var accepted = Assert.Single(fx.Payloads.OfType<DelegationAccepted>());
+        Assert.DoesNotContain(fx.Payloads.OfType<LaneWorktreeCreated>(), evt => evt.LaneId == child.ChildLaneId);
+        Assert.Contains(fx.Payloads.OfType<LaneStarted>(), evt => evt.LaneId == child.ChildLaneId);
         var produced = Assert.Single(fx.Payloads.OfType<AgentResultProduced>());
         Assert.Equal(accepted.ChildExecutionId, produced.ExecutionId);
         Assert.Single(fx.Payloads.OfType<SupervisionBindingAccepted>());
@@ -60,8 +62,10 @@ public sealed class DelegationLifecycleTests
         Assert.Equal("ok", Send(fx, "delegation.cancel", "\"delegationId\":\"" + first.DelegationId + "\"").Status);
         Assert.Equal(TaskState.Cancelled, TaskGraphProjection.Replay(fx.Codecs, fx.Store.ReadFrom(fx.Session, 1)).Get(first.ChildTaskId)!.State);
         Assert.Equal(TaskState.Running, TaskGraphProjection.Replay(fx.Codecs, fx.Store.ReadFrom(fx.Session, 1)).Get(fx.RootTask)!.State);
-        Assert.Equal("ok", Execute(fx, second).Status);
-        Assert.Equal(2, fx.ProviderCalls);
+        var secondExecution = Execute(fx, second);
+        Assert.Equal("ok", secondExecution.Status);
+        Assert.True(fx.ProviderCalls == 2, "second outcome=" + secondExecution.Outcome?.Kind + ":"
+            + secondExecution.Outcome?.Reason + "; events=" + string.Join(",", fx.Payloads.Select(e => e.GetType().Name)));
         Assert.Empty(fx.Payloads.OfType<RunCancelled>());
     }
 
@@ -848,6 +852,31 @@ public sealed class DelegationLifecycleTests
         fx.Server.ConfigureAgentProfiles(new(new AgentProfileRegistry([fx.Profile]), fx.Profile));
         Assert.Equal("ok", Send(fx, "run.mode.select", "\"mode\":\"plan\"").Status);
         Assert.Equal("CoordinationLimitsUnavailable", Execute(fx, child).Outcome?.Reason);
+        Assert.Empty(fx.Payloads.OfType<DelegationAccepted>());
+    }
+
+    [Fact]
+    public void Writer_lane_without_git_is_durable_provisioning_only_and_never_falls_back_to_user_root()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture(rootProfileIsWriter: true);
+        fx.Ask("El agente escritor necesita una Lane aislada.");
+        var request = fx.Request() with { ProfileId = fx.Writer.Id.ToString() };
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, fx.Server.SendUserAction(
+            DelegationCommands.Create(request, Ids.NewV7()), CancellationToken.None).Outcome?.Kind);
+        var child = fx.Payloads.OfType<DelegationCreated>().Single().Delegation;
+        var invoked = false;
+        var result = fx.Server.ExecuteDelegation(child.DelegationId, (work, _) =>
+        {
+            invoked = true;
+            return fx.Explorer().Ask(work.Objective, "system", work.Session, work.Run,
+                child.ChildLaneId, "", CancellationToken.None);
+        }, CancellationToken.None);
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, result.Outcome?.Kind);
+        Assert.Equal("LaneWorktreeProvisioningFailed", result.Outcome?.Reason);
+        Assert.False(invoked);
+        Assert.Contains(fx.Payloads.OfType<LaneProvisioning>(), evt => evt.LaneId == child.ChildLaneId);
+        Assert.DoesNotContain(fx.Payloads.OfType<LaneStarted>(), evt => evt.LaneId == child.ChildLaneId);
+        Assert.DoesNotContain(fx.Payloads.OfType<LaneWorktreeCreated>(), evt => evt.LaneId == child.ChildLaneId);
         Assert.Empty(fx.Payloads.OfType<DelegationAccepted>());
     }
 

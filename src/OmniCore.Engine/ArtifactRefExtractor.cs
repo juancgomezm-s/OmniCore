@@ -50,6 +50,11 @@ internal static class ArtifactRefExtractor
                 AddRange(refs, l.Result.ArtifactRefs);
                 break;
 
+            case LaneWorktreeCreated w:
+                refs.Add(w.TaskPacketRef);
+                refs.Add(w.SelectedProjectionRef);
+                break;
+
             // Lane/Turn events
             case TurnStarted t:
                 if (t.ContextSnapshotRef is not null) refs.Add(t.ContextSnapshotRef);

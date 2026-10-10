@@ -28,6 +28,7 @@ public sealed class CanonicalStateTracker
 
     private readonly Dictionary<ToolCallId, ReconciliationOutcome> _toolCallReconciliationOutcomes;
     private readonly Dictionary<ToolCallId, WorktreeIntegrationLifecycle> _worktreeIntegrations;
+    private readonly Dictionary<LaneId, LaneWorktreeCreated> _laneWorktrees;
 
     private readonly Dictionary<PlanItemId, PlanItemState> _planItems;
 
@@ -43,7 +44,7 @@ public sealed class CanonicalStateTracker
     private readonly Dictionary<SteeringId, SteeringEntry> _steering;
 
     public CanonicalStateTracker()
-        : this(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new())
+        : this(new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new(), new())
     {
     }
 
@@ -58,7 +59,8 @@ public sealed class CanonicalStateTracker
         Dictionary<RunId, RunReasoningSelectionState> runReasoningSelections,
         Dictionary<InteractionId, (InteractionKind Kind, bool Pending, string? OptionId,
             InteractionCause? Cause)> interactionStates,
-        Dictionary<ToolCallId, WorktreeIntegrationLifecycle> worktreeIntegrations)
+        Dictionary<ToolCallId, WorktreeIntegrationLifecycle> worktreeIntegrations,
+        Dictionary<LaneId, LaneWorktreeCreated> laneWorktrees)
     {
         _runs = runs;
         _runReasoningSelections = runReasoningSelections;
@@ -69,6 +71,7 @@ public sealed class CanonicalStateTracker
         _toolCalls = toolCalls;
         _toolCallReconciliationOutcomes = toolCallReconciliationOutcomes;
         _worktreeIntegrations = worktreeIntegrations;
+        _laneWorktrees = laneWorktrees;
         _planItems = planItems;
         _taskRuns = taskRuns;
         _laneTasks = laneTasks;
@@ -110,7 +113,7 @@ public sealed class CanonicalStateTracker
     public CanonicalStateTracker Clone() => new(new(_runs), new(_tasks), new(_lanes), new(_turns),
         new(_toolCalls), new(_toolCallReconciliationOutcomes), new(_planItems), new(_taskRuns),
         new(_laneTasks), new(_turnLanes), new(_turnReasoningResolutions), new(_steering),
-        new(_runReasoningSelections), new(_interactionStates), new(_worktreeIntegrations));
+        new(_runReasoningSelections), new(_interactionStates), new(_worktreeIntegrations), new(_laneWorktrees));
 
     /// <summary>
     /// Foto canónica y ordenada de todos los estados ("entidad:id=estado"), para comparar dos
@@ -131,6 +134,8 @@ public sealed class CanonicalStateTracker
         lines.AddRange(_worktreeIntegrations.Select(kv => "worktree_integration:" + kv.Key + "="
             + kv.Value.OwnershipId + ":" + kv.Value.ProposalId + ":" + kv.Value.State + ":"
             + string.Join(",", kv.Value.Paths.OrderBy(path => path, StringComparer.Ordinal))));
+        lines.AddRange(_laneWorktrees.Select(kv => "lane_worktree:" + kv.Key + "="
+            + kv.Value.OwnershipId + ":" + kv.Value.SnapshotCommit + ":" + kv.Value.WorktreePath));
         lines.AddRange(_planItems.Select(kv => "plan_item:" + kv.Key + "=" + kv.Value));
         lines.AddRange(_interactionStates.Select(kv => "interaction:" + kv.Key + "=" + kv.Value.Kind + ":"
             + kv.Value.Pending + ":" + kv.Value.OptionId + ":" + kv.Value.Cause));
@@ -151,6 +156,9 @@ public sealed class CanonicalStateTracker
 
     public WorktreeIntegrationState? WorktreeIntegration(ToolCallId id) =>
         _worktreeIntegrations.TryGetValue(id, out var s) ? s.State : null;
+
+    public LaneWorktreeCreated? LaneWorktree(LaneId id) =>
+        _laneWorktrees.TryGetValue(id, out var worktree) ? worktree : null;
 
     public PlanItemState? PlanItem(PlanItemId id) => _planItems.TryGetValue(id, out var s) ? s : null;
 
@@ -310,6 +318,7 @@ public sealed class CanonicalStateTracker
                 _laneTasks[created.LaneId] = created.TaskId;
                 break;
             case LaneProvisioning e: Transition(_lanes, e.LaneId, "lane", payload, StateMachines.ApplyLane); break;
+            case LaneWorktreeCreated e: ApplyLaneWorktreeCreated(e, payload); break;
             case LaneStarted e: Transition(_lanes, e.LaneId, "lane", payload, StateMachines.ApplyLane); break;
             case LaneBlocked e: Transition(_lanes, e.LaneId, "lane", payload, StateMachines.ApplyLane); break;
             case LaneUnblocked e: Transition(_lanes, e.LaneId, "lane", payload, StateMachines.ApplyLane); break;
@@ -552,6 +561,36 @@ public sealed class CanonicalStateTracker
                 payload.Type().ToString());
         _worktreeIntegrations[recorded.ToolCallId] = existing with { State = recorded.State };
     }
+
+    private void ApplyLaneWorktreeCreated(LaneWorktreeCreated created, DomainEventPayload payload)
+    {
+        var laneState = Require(_lanes, created.LaneId, "lane", payload);
+        var laneTask = Require(_laneTasks, created.LaneId, "lane task", payload);
+        if (laneState != LaneState.Provisioning || laneTask != created.TaskId
+            || created.ExecutionId.Value == Guid.Empty
+            || !Guid.TryParseExact(created.OwnershipId, "N", out _)
+            || !IsAbsolutePath(created.RepositoryRoot) || !IsAbsolutePath(created.GitCommonDirectory)
+            || !IsAbsolutePath(created.WorktreePath)
+            || !IsFullGitObjectId(created.SnapshotCommit) || !IsFullGitObjectId(created.SnapshotTree)
+            || created.TaskPacketRef is null || created.TaskPacketRef.Kind != ArtifactKind.Other
+            || created.TaskPacketRef.MediaType != "application/vnd.omnicore.task-packet+json"
+            || created.TaskPacketRef.Sensitivity != Sensitivity.Sensitive
+            || created.TaskPacketRef.Size is <= 0 or > 1024 * 1024
+            || created.SelectedProjectionRef is null || created.SelectedProjectionRef.Kind != ArtifactKind.Other
+            || created.SelectedProjectionRef.MediaType != "application/vnd.omnicore.selected-context+json"
+            || created.SelectedProjectionRef.Sensitivity != Sensitivity.Sensitive
+            || created.SelectedProjectionRef.Size is <= 0 or > 1024 * 1024
+            || _laneWorktrees.ContainsKey(created.LaneId))
+            throw new InvalidStateTransitionException("lane worktree", "invalid or duplicate provisioning identity",
+                payload.Type().ToString());
+        _laneWorktrees.Add(created.LaneId, created);
+    }
+
+    private static bool IsAbsolutePath(string value) => !string.IsNullOrWhiteSpace(value)
+        && System.IO.Path.IsPathFullyQualified(value);
+
+    private static bool IsFullGitObjectId(string value) => value is { Length: 40 or 64 }
+        && value.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     private static bool IsSafeIntegrationPath(string path)
     {

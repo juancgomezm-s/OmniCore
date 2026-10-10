@@ -77,6 +77,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionObservationHub Observability { get; }
 
     private string? _workspaceRoot;
+    private Func<IPlatformPaths> _platformPathsFactory = () => OmniHost.CreatePlatformPaths();
     private SessionRoutingPolicy _newSessionRoutingPolicy = SessionRoutingPolicy.Empty();
     private AgentProfileConfiguration.Loaded _agentProfiles = new(new AgentProfileRegistry([]), null);
 
@@ -112,8 +113,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     public void ConfigureWorkspaceRoot(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
 
+    internal void ConfigurePlatformPaths(Func<IPlatformPaths> factory) =>
+        _platformPathsFactory = factory ?? throw new ArgumentNullException(nameof(factory));
+
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
-        IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null)
+        IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null,
+        Func<IPlatformPaths>? platformPathsFactory = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
@@ -121,6 +126,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
         _userSpendReader = userSpendReader;
         _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
         Observability = new SessionObservationHub(store, codecs, artifacts);
@@ -133,7 +139,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
-        IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null)
+        IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null,
+        Func<IPlatformPaths>? platformPathsFactory = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
@@ -141,6 +148,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
         _userSpendReader = userSpendReader;
         _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
         Observability = new SessionObservationHub(store, codecs, artifacts);
@@ -301,7 +309,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         var service = new RunResumeService(_store, _codecs,
             new WorktreeIntegrationAwareReconciler(root!, _artifacts,
-                new FilesystemReconciler(new PathBoundaryValidator())), root!);
+                new FilesystemReconciler(new PathBoundaryValidator())), root!,
+            ResolveLaneWorktreeRootForRecovery);
         try
         {
             var n = service.Resume(_lastSessionId!, _lastRunId!);
@@ -2523,9 +2532,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 var scheduler = AgentCapacity.For(_store);
                 capacity = waitForCapacity
                     ? scheduler.Acquire(sessionId, runId, null, MaxAgentsFor(sessionId, runId), 0,
-                        readOnlyLane, cancellationToken)
+                        readOnlyLane, cancellationToken, destinationRoot: _workspaceRoot)
                     : scheduler.TryAcquire(sessionId, runId, null, MaxAgentsFor(sessionId, runId), 0,
-                        readOnlyLane, cancellationToken);
+                        readOnlyLane, cancellationToken, destinationRoot: _workspaceRoot);
             }
             if (!ownsDelegationLease && capacity is null)
                 return (null, CommandOutcomeAck(messageId, "ok", null,
@@ -2946,13 +2955,26 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     /// <summary>Crea una sesión nueva en el journal (primer input sin sesión previa).</summary>
     private void StartSession(SessionId session)
     {
-        var workspace = Path.GetFullPath(".");
-        new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[]
+        // Hosts that explicitly configure a workspace root establish it durably with the
+        // session. This gives delegated work and crash recovery the same verified authority
+        // used by `act`, without trusting a later in-memory ConfigureWorkspaceRoot call.
+        // Legacy/in-memory callers that do not configure a root retain their event shape.
+        var workspace = _workspaceRoot is { Length: > 0 } configured
+            ? Path.GetFullPath(configured)
+            : Path.GetFullPath(".");
+        var creation = new List<DomainEventPayload>
         {
             new SessionCreated(session, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
                 workspace, ProfileId.New(), DateTimeOffset.UtcNow),
             new SessionRoutingPolicySet(session, _newSessionRoutingPolicy),
-        }, DurabilityClass.Barrier);
+        };
+        if (_workspaceRoot is { Length: > 0 })
+        {
+            var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+            creation.Add(new WorkspaceRootEstablished(session, physicalRoot, DateTimeOffset.UtcNow,
+                WorkspaceRootIdentity.Establish(physicalRoot)));
+        }
+        new EventStream(_store, _codecs, session).AppendBatch(creation, DurabilityClass.Barrier);
     }
 
     private CommandAck ResumeSim(WireEnvelope command)

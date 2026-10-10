@@ -100,6 +100,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.TaskCancelled())
             .Plus(Typed.LaneCreated())
             .Plus(Typed.LaneProvisioning())
+            .Plus(Typed.LaneWorktreeCreated())
             .Plus(Typed.LaneStarted())
             .Plus(Typed.LaneBlocked())
             .Plus(Typed.LaneUnblocked())
@@ -448,6 +449,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(TaskCancelled))]
 [JsonSerializable(typeof(LaneCreated))]
 [JsonSerializable(typeof(LaneProvisioning))]
+[JsonSerializable(typeof(LaneWorktreeCreated))]
 [JsonSerializable(typeof(LaneStarted))]
 [JsonSerializable(typeof(LaneBlocked))]
 [JsonSerializable(typeof(LaneUnblocked))]
@@ -763,6 +765,9 @@ public sealed class Typed
 
     public static CodecPair LaneProvisioning() =>
         Of(EventType.Of("lane.provisioning"), EventJsonContext.Default.LaneProvisioning);
+
+    public static CodecPair LaneWorktreeCreated() =>
+        Of(EventType.Of("lane.worktree_created"), EventJsonContext.Default.LaneWorktreeCreated);
 
     public static CodecPair LaneStarted() =>
         Of(EventType.Of("lane.started"), EventJsonContext.Default.LaneStarted);

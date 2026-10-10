@@ -21,11 +21,13 @@ internal sealed class AgentCapacity
     internal static AgentCapacity For(IEventStore store) => Stores.GetValue(store, _ => new());
 
     internal Lease Acquire(SessionId session, RunId run, DelegationId? delegation, int maxAgents,
-        int priority, bool readOnly, CancellationToken token, long durableSequence = long.MaxValue)
+        int priority, bool readOnly, CancellationToken token, long durableSequence = long.MaxValue,
+        string? destinationRoot = null)
     {
         if (maxAgents < 1) throw new ArgumentOutOfRangeException(nameof(maxAgents));
         if (priority is < -1000 or > 1000) throw new ArgumentOutOfRangeException(nameof(priority));
         var waiter = new Waiter(session, run, delegation, maxAgents, priority, durableSequence, readOnly,
+            CanonicalDestination(destinationRoot),
             Interlocked.Increment(ref _ticket), CancellationTokenSource.CreateLinkedTokenSource(token));
         lock (_gate)
         {
@@ -44,7 +46,8 @@ internal sealed class AgentCapacity
                     {
                         _waiting.Remove(waiter);
                         waiter.Cancellation.Dispose();
-                        var lease = new Lease(this, session, run, delegation, readOnly, token);
+                        var lease = new Lease(this, session, run, delegation, readOnly,
+                            waiter.DestinationRoot, token);
                         _active.Add(lease);
                         Monitor.PulseAll(_gate);
                         return lease;
@@ -63,7 +66,8 @@ internal sealed class AgentCapacity
     }
 
     internal Lease? TryAcquire(SessionId session, RunId run, DelegationId? delegation, int maxAgents,
-        int priority, bool readOnly, CancellationToken token, long durableSequence = long.MaxValue)
+        int priority, bool readOnly, CancellationToken token, long durableSequence = long.MaxValue,
+        string? destinationRoot = null)
     {
         if (maxAgents < 1) throw new ArgumentOutOfRangeException(nameof(maxAgents));
         if (priority is < -1000 or > 1000) throw new ArgumentOutOfRangeException(nameof(priority));
@@ -77,9 +81,10 @@ internal sealed class AgentCapacity
                 || prior.Priority == priority && prior.DurableSequence <= durableSequence)) return null;
             using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
             var probe = new Waiter(session, run, delegation, maxAgents, priority, durableSequence, readOnly,
+                CanonicalDestination(destinationRoot),
                 long.MaxValue, cancellation);
             if (!CanGrant(probe)) return null;
-            var lease = new Lease(this, session, run, delegation, readOnly, token);
+            var lease = new Lease(this, session, run, delegation, readOnly, CanonicalDestination(destinationRoot), token);
             _active.Add(lease);
             Monitor.PulseAll(_gate);
             return lease;
@@ -145,8 +150,13 @@ internal sealed class AgentCapacity
         var rootLeaseActive = active.Any(item => item.Delegation is null);
         var occupied = active.Length + (waiter.Delegation is not null && !rootLeaseActive ? 1 : 0);
         if (occupied >= waiter.MaxAgents) return false;
-        if (!waiter.ReadOnly) return _active.Count == 0;
-        return _active.All(item => item.ReadOnly);
+        // A missing destination is a wildcard, not evidence that two leases are disjoint.
+        // Older callers therefore remain conservatively serialized against known roots too.
+        // M7 callers provide the planned physical lane root: distinct known worktrees may
+        // execute concurrently, while readers and writers on the same root exclude each other.
+        return !_active.Any(item => (item.DestinationRoot is null || waiter.DestinationRoot is null
+                || PathEquals(item.DestinationRoot, waiter.DestinationRoot))
+            && (!item.ReadOnly || !waiter.ReadOnly));
     }
 
     private void Release(Lease lease)
@@ -159,8 +169,18 @@ internal sealed class AgentCapacity
         }
     }
 
+    private static string? CanonicalDestination(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        return ProjectIdentity.CanonicalWorkspacePath(Path.GetFullPath(path));
+    }
+
+    private static bool PathEquals(string? left, string? right) => left is not null && right is not null
+        && string.Equals(left, right, StringComparison.Ordinal);
+
     private sealed record Waiter(SessionId Session, RunId Run, DelegationId? Delegation,
-        int MaxAgents, int Priority, long DurableSequence, bool ReadOnly, long Ticket, CancellationTokenSource Cancellation);
+        int MaxAgents, int Priority, long DurableSequence, bool ReadOnly, string? DestinationRoot,
+        long Ticket, CancellationTokenSource Cancellation);
 
     internal sealed class Lease : IDisposable
     {
@@ -170,16 +190,18 @@ internal sealed class AgentCapacity
         internal RunId Run { get; }
         internal DelegationId? Delegation { get; }
         internal bool ReadOnly { get; }
+        internal string? DestinationRoot { get; }
         internal CancellationTokenSource Cancellation { get; }
 
         internal Lease(AgentCapacity owner, SessionId session, RunId run, DelegationId? delegation,
-            bool readOnly, CancellationToken token)
+            bool readOnly, string? destinationRoot, CancellationToken token)
         {
             _owner = owner;
             Session = session;
             Run = run;
             Delegation = delegation;
             ReadOnly = readOnly;
+            DestinationRoot = destinationRoot;
             Cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         }
 

@@ -25,11 +25,13 @@ internal sealed class ConfiguredCompletionGates
     private readonly Func<InteractionRequested, string?>? _interactionResponder;
     private readonly bool _interactive;
     private readonly WeakSandboxConsentState _weakSandboxConsent;
+    private readonly AgentProfile? _laneProfile;
 
     public ConfiguredCompletionGates(WorkspaceGatesYaml configuration, string workspaceRoot,
         RunId runId, LaneId laneId, TaskId? taskId,
         IReadOnlyDictionary<string, string>? restrictions, IAuditSink audit, IArtifactStore artifacts,
-        Func<InteractionRequested, string?>? interactionResponder, bool interactive)
+        Func<InteractionRequested, string?>? interactionResponder, bool interactive,
+        AgentProfile? laneProfile = null)
     {
         _configuration = configuration;
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
@@ -41,6 +43,7 @@ internal sealed class ConfiguredCompletionGates
         _artifacts = artifacts;
         _interactionResponder = interactionResponder;
         _interactive = interactive;
+        _laneProfile = laneProfile;
         _weakSandboxConsent = OmniHost.GetWeakSandboxConsentState(runId);
     }
 
@@ -81,7 +84,9 @@ internal sealed class ConfiguredCompletionGates
         var processLauncher = OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
         var tool = new ProcessExecTool(processLauncher, new PathBoundaryValidator());
         var catalog = new FakeCatalog().Add(tool);
-        var policy = OmniHost.CreateGrantAwarePolicy(RunMode.Act, _restrictions, _workspaceRoot, _runId, _audit);
+        IPermissionPolicy policy = OmniHost.CreateGrantAwarePolicy(RunMode.Act, _restrictions, _workspaceRoot, _runId, _audit);
+        if (_laneProfile is not null)
+            policy = new AgentProfilePermissionPolicy(policy, _laneProfile, new PathBoundaryValidator(), _workspaceRoot);
         var executor = new ScriptedToolExecutor(catalog, policy, _workspaceRoot, boundary: null,
             _audit, _interactionResponder, _interactive, _weakSandboxConsent);
         var outcome = executor.ExecuteTool(new ValidatedToolCall(callId, new ToolId("process.exec"),

@@ -25,13 +25,17 @@ public sealed class RunResumeService
 
     private readonly string _workspaceRoot;
 
+    private readonly Func<SessionId, RunId, LaneWorktreeCreated, string?>? _laneWorkspaceRootResolver;
+
     public RunResumeService(IEventStore store, IEventCodecRegistry codecs,
-        IFilesystemReconciler? reconciler, string workspaceRoot)
+        IFilesystemReconciler? reconciler, string workspaceRoot,
+        Func<SessionId, RunId, LaneWorktreeCreated, string?>? laneWorkspaceRootResolver = null)
     {
         _store = store;
         _codecs = codecs;
         _fsReconciler = reconciler;
         _workspaceRoot = workspaceRoot;
+        _laneWorkspaceRootResolver = laneWorkspaceRootResolver;
     }
 
     /// <summary>
@@ -128,7 +132,7 @@ public sealed class RunResumeService
                 using var causation = CausationScope.Begin(requestedBy ?? new EventCausation(origin.EventId));
                 started.TryGetValue(id, out var startedForCall);
                 startedEvents.TryGetValue(id, out var startedForCallEvent);
-                var terminalResult = ReconcileEffect(id, json, startedForCall, startedForCallEvent,
+                var terminalResult = ReconcileEffect(sessionId, id, json, startedForCall, startedForCallEvent,
                     origin, startedForCall?.BeforeStateRef);
                 var terminalReconciled = new ToolCallReconciled(id, terminalResult.Outcome, terminalResult.Detail);
                 if (terminalResult.SupplementalEvent is null) stream.Append(terminalReconciled);
@@ -376,15 +380,16 @@ public sealed class RunResumeService
     private static string JsonString(string value) =>
         System.Text.Json.JsonSerializer.Serialize(value, JsonStrings.Default.String);
 
-    private FilesystemReconciliation ReconcileEffect(ToolCallId id, string? reconciliationJson,
+    private FilesystemReconciliation ReconcileEffect(SessionId sessionId, ToolCallId id, string? reconciliationJson,
         ToolCallStarted? started, DomainEvent? startedEvent, DomainEvent origin, ArtifactRef? beforeStateRef)
     {
-        FilesystemReconciliation result = _fsReconciler is not null && reconciliationJson is not null
+        var effectRoot = ResolveEffectRoot(sessionId, origin);
+        FilesystemReconciliation result = _fsReconciler is not null && reconciliationJson is not null && effectRoot is not null
             ? _fsReconciler is IArtifactAwareFilesystemReconciler artifactAware
-                ? artifactAware.Reconcile(_workspaceRoot, reconciliationJson, beforeStateRef, CancellationToken.None)
-                : _fsReconciler.Reconcile(_workspaceRoot, reconciliationJson, CancellationToken.None)
+                ? artifactAware.Reconcile(effectRoot, reconciliationJson, beforeStateRef, CancellationToken.None)
+                : _fsReconciler.Reconcile(effectRoot, reconciliationJson, CancellationToken.None)
             : FilesystemReconciliation.Unresolvable(
-                "metadatos de reconciliación ausentes o sin reconciliador: falla cerrado, sin re-ejecutar");
+                "metadatos, raíz aislada o reconciliador ausentes: falla cerrado, sin re-ejecutar");
         if (TryGetIntegrationIdentity(reconciliationJson, out var ownershipId, out var proposalId, out var paths))
         {
             if (result.SupplementalEvent is not WorktreeIntegrationStateRecorded entity
@@ -396,6 +401,29 @@ public sealed class RunResumeService
         else if (result.SupplementalEvent is not null)
             return FilesystemReconciliation.Unresolvable("unexpected supplemental recovery event");
         return result;
+    }
+
+    private string? ResolveEffectRoot(SessionId sessionId, DomainEvent origin)
+    {
+        if (origin.LaneId is not { } laneId) return _workspaceRoot;
+        if (origin.RunId is not { } runId) return null;
+        try
+        {
+            var runEvents = _store.ReadFrom(sessionId, 1).Where(evt => evt.RunId == runId).ToArray();
+            var rootTask = runEvents.Select(_codecs.Decode).OfType<RunCreated>()
+                .SingleOrDefault()?.RootTask;
+            var rootLanes = rootTask is null ? Array.Empty<LaneId>() : runEvents.Select(_codecs.Decode)
+                .OfType<LaneCreated>().Where(evt => evt.TaskId == rootTask).Select(evt => evt.LaneId).ToArray();
+            if (rootLanes.Length == 1 && rootLanes[0] == laneId) return _workspaceRoot;
+            if (_laneWorkspaceRootResolver is null) return null;
+            var bindings = runEvents.Where(evt => evt.LaneId == laneId)
+                .Select(_codecs.Decode).OfType<LaneWorktreeCreated>().ToArray();
+            return bindings.Length == 1 ? _laneWorkspaceRootResolver(sessionId, runId, bindings[0]) : null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     private static bool TryGetIntegrationIdentity(string? json, out string ownershipId,
@@ -521,7 +549,7 @@ public sealed class RunResumeService
                     _codecs.Decode(evt) is ToolCallEffectUnknown unknown && unknown.ToolCallId == id);
             }
 
-            var result = ReconcileEffect(id, started.ReconciliationJson, started, startedEvent,
+            var result = ReconcileEffect(sessionId, id, started.ReconciliationJson, started, startedEvent,
                 unknownEvents[id], started.BeforeStateRef);
 
             using (CausationScope.Begin(requestedBy ?? new EventCausation(unknownEvents[id].EventId)))

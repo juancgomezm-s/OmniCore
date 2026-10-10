@@ -247,9 +247,10 @@ public sealed class DelegationAdmissionTests
     internal sealed class Fixture : IDisposable
     {
         private string Root { get; } = Path.Combine(Path.GetTempPath(), "omni-admission-" + Guid.NewGuid().ToString("N"));
+        private string DataRoot => Root + "-data";
         internal string WorkspaceRoot => Root;
-        private string Journal => Path.Combine(Root, "journal.db");
-        private string StateFile => Path.Combine(Root, "last.txt");
+        private string Journal => Path.Combine(DataRoot, "journal.db");
+        private string StateFile => Path.Combine(DataRoot, "last.txt");
         internal SqliteEventStore Store { get; private set; }
         internal IEventStore RuntimeStore { get; private set; }
         internal IEventCodecRegistry Codecs { get; } = EventCodecs.Create();
@@ -276,8 +277,9 @@ public sealed class DelegationAdmissionTests
             _authorizeMailboxRoute = authorizeMailboxRoute;
             RootProfile = rootProfileIsWriter ? Writer : Profile;
             Directory.CreateDirectory(Root);
-            Store = new SqliteEventStore(Journal); Artifacts = new FileArtifactStore(Root);
-            Reservations = new SqliteSpendReservationStore(Path.Combine(Root, "reservations.db"));
+            Directory.CreateDirectory(DataRoot);
+            Store = new SqliteEventStore(Journal); Artifacts = new FileArtifactStore(DataRoot);
+            Reservations = new SqliteSpendReservationStore(Path.Combine(DataRoot, "reservations.db"));
             if (failMailboxAckBatches)
             {
                 MailboxAckFault = new MailboxAckFaultStore(Store, Codecs);
@@ -293,12 +295,48 @@ public sealed class DelegationAdmissionTests
         }
         private OmniServer NewServer(IEventStore? writeStore = null)
         {
-            var server = new OmniServer(writeStore ?? RuntimeStore, Codecs, new InMemoryAuditSink(), StateFile, Artifacts);
+            var server = new OmniServer(writeStore ?? RuntimeStore, Codecs, new InMemoryAuditSink(), StateFile,
+                Artifacts, platformPathsFactory: () => OmniHost.CreatePlatformPaths(Path.Combine(DataRoot, "platform")));
+            server.ConfigureWorkspaceRoot(Root);
             server.ConfigureAgentProfiles(new(new AgentProfileRegistry([Profile, Writer, ForeignReader]), RootProfile));
             if (_authorizeMailboxRoute)
                 server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
                     [AuthorizedModelRoute.From(MailboxRoute, BillingMode.Local)], [BillingMode.Local], false, null, "fixture"));
             return server;
+        }
+        internal void InitializeGitWorkspace(string? seedPath = null, string? seedContent = null)
+        {
+            RunGit("init", "-q", "--initial-branch=main");
+            if (seedPath is not null)
+            {
+                if (Path.IsPathRooted(seedPath) || seedPath.Split(['/', '\\']).Any(segment => segment == ".."))
+                    throw new ArgumentException("Fixture seed path must stay under the owned repository.", nameof(seedPath));
+                var full = Path.Combine(Root, seedPath.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+                File.WriteAllText(full, seedContent ?? "");
+                RunGit("add", "--", seedPath);
+            }
+            RunGit("-c", "user.name=OmniCore fixture", "-c", "user.email=fixture@example.invalid",
+                "commit", "--quiet", "--allow-empty", "-m", "fixture base");
+        }
+        private void RunGit(params string[] args)
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("git")
+            {
+                WorkingDirectory = Root,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var arg in args) start.ArgumentList.Add(arg);
+            using var process = System.Diagnostics.Process.Start(start)
+                ?? throw new InvalidOperationException("Git fixture process did not start.");
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            process.WaitForExit();
+            var output = System.Threading.Tasks.Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException("Git fixture setup failed: " + string.Join(" | ", output));
         }
         internal void Grant(int maxAgents = 3, int maxDepth = 1)
         {
@@ -390,7 +428,45 @@ public sealed class DelegationAdmissionTests
         internal void UseFaultStore(bool afterCommit) => Server = NewServer(new FaultStore(Store, afterCommit));
         internal void UseServerStore(IEventStore writeStore) => Server = NewServer(writeStore);
         private void Close() { var connection = (SqliteConnection)Store.Connection; Store.Close(); SqliteConnection.ClearPool(connection); connection.Dispose(); }
-        public void Dispose() { Close(); Directory.Delete(Root, true); }
+        public void Dispose()
+        {
+            Close();
+            DeleteOwnedFixtureDirectory(Root);
+            DeleteOwnedFixtureDirectory(DataRoot);
+        }
+
+        private static void DeleteOwnedFixtureDirectory(string path)
+        {
+            var fullPath = Path.GetFullPath(path);
+            var tempRoot = Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            if (!fullPath.StartsWith(tempRoot, OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+                || !Path.GetFileName(fullPath).StartsWith("omni-admission-", StringComparison.Ordinal)
+                || !Directory.Exists(fullPath))
+                return;
+
+            // Git object files can be readonly on Windows. Clear that attribute only beneath
+            // this fixture's unique temp root, without traversing any reparse point.
+            var pending = new Stack<string>();
+            pending.Push(fullPath);
+            while (pending.TryPop(out var directory))
+            {
+                foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+                {
+                    var attributes = File.GetAttributes(entry);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        pending.Push(entry);
+                        continue;
+                    }
+                    if ((attributes & FileAttributes.ReadOnly) != 0)
+                        File.SetAttributes(entry, attributes & ~FileAttributes.ReadOnly);
+                }
+            }
+            Directory.Delete(fullPath, true);
+        }
     }
 
     private sealed class FaultStore(IEventStore inner, bool afterCommit) : IEventStore
@@ -410,6 +486,7 @@ public sealed class DelegationAdmissionTests
     public void A_child_within_the_parent_writer_ceiling_uses_the_exclusive_writer_lease_and_real_tool_pipeline()
     {
         using var fx = new Fixture(rootProfileIsWriter: true);
+        fx.InitializeGitWorkspace();
         fx.Ask("Implementa la integración solicitada en el workspace.");
         var request = fx.Request() with { ProfileId = fx.Writer.Id.ToString(), MaxTokens = 16384 };
         var queued = fx.Server.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
@@ -419,10 +496,12 @@ public sealed class DelegationAdmissionTests
         var modelSteps = 0;
         ExplorerTurn.TurnResult? childTurn = null;
         var writerLeaseObserved = false;
-        var filePath = Path.Combine(fx.WorkspaceRoot, "workflow-child.txt");
+        string? filePath = null;
         var executed = fx.Server.ExecuteDelegation(delegation.DelegationId, (work, token) =>
         {
             Assert.False(AgentPermissionScopeSubset.IsReadOnly(work.Profile.PermissionCeiling));
+            Assert.NotNull(work.Worktree);
+            filePath = Path.Combine(work.EffectiveRoot, "workflow-child.txt");
             writerLeaseObserved = AgentCapacity.For(fx.Store).ReadSnapshot(work.Session, work.Run).WriterActive;
             var tools = HostTools.DelegatedAgent(work.Profile);
             var key = ModelPolicyKey.For("fixture", "fixture");
@@ -431,11 +510,11 @@ public sealed class DelegationAdmissionTests
                     DateTimeOffset.UnixEpoch),
                 new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 16, GuidanceLevel.Full, 2,
                     PlanControl.ModelDriven, 6));
-            var boundary = OmniCliRuntime.CreateBoundary(effective, fx.WorkspaceRoot, tools.Catalog());
+            var boundary = OmniCliRuntime.CreateBoundary(effective, work.EffectiveRoot, tools.Catalog());
             var executor = ScriptedToolExecutor.WithWorkspace(tools.Catalog(),
                 new AgentProfilePermissionPolicy(
                     ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow),
-                    work.Profile, new PathBoundaryValidator(), fx.WorkspaceRoot), fx.WorkspaceRoot, boundary,
+                    work.Profile, new PathBoundaryValidator(), work.EffectiveRoot), work.EffectiveRoot, boundary,
                 (toolCall, receiveToken) => fx.Server.ReceiveMailboxMessageAsync(fx.Session, fx.Run,
                     fx.MailboxRoute, BillingMode.Local, toolCall, receiveToken));
             var turn = new ExplorerTurn((_, _) => Interlocked.Increment(ref modelSteps) == 1
@@ -459,7 +538,7 @@ public sealed class DelegationAdmissionTests
         Assert.True(writerLeaseObserved, "The child must hold the exclusive writer lease during dispatch.");
         Assert.False(AgentCapacity.For(fx.Store).ReadSnapshot(fx.Session, fx.Run).WriterActive,
             "The exclusive writer lease must be released after the child turn settles.");
-        Assert.True(File.Exists(filePath), "write receipt missing; child failures: "
+        Assert.True(File.Exists(filePath!), "write receipt missing; child failures: "
             + string.Join(" | ", fx.Store.ReadFrom(fx.Session, 1).Select(fx.Codecs.Decode)
                 .OfType<ToolCallFailed>().Select(item => item.Cause + ":" + item.ErrorCode))
             + "; turn=" + childTurn?.StopReason + "; tools=" + string.Join(" | ",
@@ -468,7 +547,17 @@ public sealed class DelegationAdmissionTests
             + "; events=" + string.Join(",", fx.Store.ReadFrom(fx.Session, 1)
                 .Where(evt => evt.LaneId == delegation.ChildLaneId).Select(fx.Codecs.Decode)
                 .Select(payload => payload.GetType().Name)));
-        Assert.Equal("connected", File.ReadAllText(filePath));
+        Assert.Equal("connected", File.ReadAllText(filePath!));
+        Assert.False(File.Exists(Path.Combine(fx.WorkspaceRoot, "workflow-child.txt")));
+        var childEvents = fx.Store.ReadFrom(fx.Session, 1).Where(evt => evt.LaneId == delegation.ChildLaneId)
+            .Select(fx.Codecs.Decode).ToArray();
+        var worktreeCreated = Assert.Single(childEvents.OfType<LaneWorktreeCreated>());
+        Assert.True(Array.IndexOf(childEvents, worktreeCreated) < Array.FindIndex(childEvents, evt => evt is LaneStarted));
+        Assert.Equal(worktreeCreated.WorktreePath, Path.GetDirectoryName(filePath)!);
+        Assert.True(fx.Artifacts.Verify(worktreeCreated.TaskPacketRef.Hash, worktreeCreated.TaskPacketRef.Size));
+        using var packet = JsonDocument.Parse(fx.Artifacts.GetText(worktreeCreated.TaskPacketRef.Hash)!);
+        Assert.Equal(worktreeCreated.OwnershipId, packet.RootElement.GetProperty("OwnershipId").GetString());
+        Assert.Equal(worktreeCreated.WorktreePath, packet.RootElement.GetProperty("WorktreePath").GetString());
         var childLane = Assert.Single(AgentsJson.Decode(fx.Server.Query("agents", CancellationToken.None)!.Json)!.Lanes,
             lane => lane.DelegationId == delegation.DelegationId.ToString());
         Assert.Equal("Completed", childLane.ExecutionState);
@@ -480,6 +569,57 @@ public sealed class DelegationAdmissionTests
         Assert.Contains(writeEvents, evt => evt is ToolCallSucceeded succeeded
             && succeeded.ToolCallId == Assert.Single(writeEvents.OfType<ToolCallRequested>()).ToolCallId);
         Assert.Null(ExecutionScope.Current);
+    }
+
+    [Fact]
+    public void Host_restart_reconciles_a_child_lane_effect_against_its_owned_worktree_root()
+    {
+        using var fx = new Fixture(rootProfileIsWriter: true);
+        fx.InitializeGitWorkspace("child.txt", "before");
+        fx.Ask("Implementa la integración solicitada en el workspace.");
+        var request = fx.Request() with { ProfileId = fx.Writer.Id.ToString(), MaxTokens = 16384 };
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, fx.Server.SendUserAction(
+            DelegationCommands.Create(request, Ids.NewV7()), TestContext.Current.CancellationToken).Outcome?.Kind);
+        var delegation = fx.Payloads.OfType<DelegationCreated>().Single().Delegation;
+        string? laneRoot = null;
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, fx.Server.ExecuteDelegation(delegation.DelegationId,
+            (work, _) =>
+            {
+                laneRoot = work.EffectiveRoot;
+                return new ExplorerTurn.TurnResult("waiting", StopReason.InputRequired, 0,
+                    new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ExplorerTurn.ToolUseTrace>(), null);
+            }, TestContext.Current.CancellationToken).Outcome?.Kind);
+
+        var lane = Assert.Single(fx.Payloads.OfType<LaneWorktreeCreated>());
+        Assert.NotNull(laneRoot);
+        var childFile = Path.Combine(laneRoot!, "child.txt");
+        Assert.Equal("before", File.ReadAllText(childFile));
+        File.WriteAllText(childFile, "after");
+        var execution = Assert.Single(fx.Payloads.OfType<AgentExecutionStarted>(), evt => evt.LaneId == lane.LaneId);
+        var callId = ToolCallId.New();
+        var pre = FileVersion.VersionToken(System.Text.Encoding.UTF8.GetBytes("before"));
+        var post = FileVersion.VersionToken(System.Text.Encoding.UTF8.GetBytes("after"));
+        var scope = new ExecutionScopeState(fx.Run, lane.TaskId, lane.LaneId, ExecutionId: execution.ExecutionId);
+        using (ExecutionScope.Begin(scope))
+        {
+            var stream = new EventStream(fx.Store, fx.Codecs, fx.Session);
+            stream.AppendBatch(new DomainEventPayload[]
+            {
+                new ToolCallRequested(callId, "fixture-crash", "filesystem.write", "{}"),
+                new ToolCallPrepared(callId, "{}"),
+                new PermissionEvaluated(callId, PermissionDecision.Allow, "{}", null),
+                new ToolCallAuthorized(callId),
+            }, DurabilityClass.Standard);
+            stream.Append(new ToolCallStarted(callId, EffectClass.Reconcilable,
+                FilesystemReconciliationMetadata.Encode("child.txt", pre, post)), DurabilityClass.Barrier);
+        }
+
+        fx.Reopen(); // the Host resolves the LaneWorktreeCreated identity before reconciling
+        var reconciled = Assert.Single(fx.Payloads.OfType<ToolCallReconciled>(), evt => evt.ToolCallId == callId);
+        Assert.Equal(ReconciliationOutcome.Applied, reconciled.Outcome);
+        Assert.Equal("after", File.ReadAllText(childFile));
+        Assert.Equal("before", File.ReadAllText(Path.Combine(fx.WorkspaceRoot, "child.txt")));
+        Assert.Null(fx.Server.LastRecoveryProblem());
     }
 
     internal sealed class MailboxAckFaultStore(IEventStore inner, IEventCodecRegistry codecs) : IEventStore

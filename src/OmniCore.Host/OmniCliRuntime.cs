@@ -1069,7 +1069,13 @@ public sealed class OmniCliRuntime : IDisposable
             // ADR-0044 §6: sin TTY ni cliente interactivo no hay onboarding posible. Un modelo sin clasificar
             // quedaría en ObserveOnly, y un `act` que existe para modificar archivos termina con
             // ModelPolicyRequired en lugar de ampliar capacidad en silencio (ni de fingir que trabaja).
-            if (act && delegation is null && !HasInteractionClient && !(UseConsoleInput && !Console.IsInputRedirected)
+            var delegatedWriter = delegation is not null
+                && server.LastSessionId() is { } admissionSession
+                && server.LastRunId() is { } admissionRun
+                && server.ResolveLaneAgentProfile(admissionSession, admissionRun, delegation.ChildLaneId) is { } delegatedProfile
+                && !AgentPermissionScopeSubset.IsReadOnly(delegatedProfile.PermissionCeiling);
+            if ((act && delegation is null || delegatedWriter)
+                && !HasInteractionClient && !(UseConsoleInput && !Console.IsInputRedirected)
                 && IsUnclassified(policyService, storedSelection, modelDefinition, model, cancellationToken))
             {
                 var required = new ModelPolicyRequiredException(
@@ -1427,7 +1433,8 @@ public sealed class OmniCliRuntime : IDisposable
                 TryEscalateAsync(loaded, model!, route.Id, usableContext, StallEscalationPrompt, true, writeLine,
                     cancellationToken, EscalationCause.ProgressStalled).GetAwaiter().GetResult();
             ExplorerTurn BuildTurn(ReasoningRequest? appliedReasoning, ReasoningResolution? resolution,
-                IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null)
+                IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null,
+                ModelCapabilityBoundary? turnBoundary = null, ContextMaterializer? turnMaterializer = null)
             {
                 var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct,
                     appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution);
@@ -1440,8 +1447,8 @@ public sealed class OmniCliRuntime : IDisposable
                         throw new InvalidOperationException("Child route authorization unavailable.");
                     return server.Observability.Complete(sessionId, provider, request, modelDefinition?.ContextWindow, token);
                 }, turnExecutor ?? executor,
-                    turnCatalog ?? hostTools.Catalog(), materializer, preparedFingerprint.Fingerprint, selection, server.AcquireStore(),
-                    server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, boundary,
+                    turnCatalog ?? hostTools.Catalog(), turnMaterializer ?? materializer, preparedFingerprint.Fingerprint, selection, server.AcquireStore(),
+                    server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, turnBoundary ?? boundary,
                     loaded.Pricing(model), providerDescription?.BillingMode is BillingMode.MeteredCurrency or BillingMode.Unknown or BillingMode.CreditBalance,
                     sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
                     questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
@@ -1470,9 +1477,89 @@ public sealed class OmniCliRuntime : IDisposable
                     workflowStage?.Definition.Stage != WorkflowStage.Implement, childInstruction);
                 var ack = server.ExecuteDelegation(delegationId, (work, token) =>
                 {
-                    var childResult = turn.Ask(openTurn is null ? work.Objective : "", childInstruction,
-                        work.Session, work.Run, work.Delegation.ChildLaneId, "", token, "TrustedDelegation",
+                    var laneRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(work.EffectiveRoot);
+                    var childWorkingState = work.TaskPacket?.WorkingState ?? work.WorkingState;
+                    var childObjective = work.TaskPacket?.Objective ?? work.Objective;
+                    if (work.Worktree is { } ownedWorktree && work.TaskPacket is { } ownedPacket)
+                    {
+                        if (!SameCanonicalWorkspace(laneRoot, ownedPacket.WorktreePath)
+                            || ownedPacket.LaneId != work.Delegation.ChildLaneId
+                            || ownedPacket.ExecutionId != work.Scope.ExecutionId
+                            || ownedPacket.OwnershipId != ownedWorktree.OwnershipId)
+                            throw new InvalidOperationException("LaneTaskPacketBindingUnavailable");
+                    }
+                    else if (!AgentPermissionScopeSubset.IsReadOnly(work.Profile.PermissionCeiling)
+                        || !SameCanonicalWorkspace(laneRoot, _workspaceRoot)
+                        || workflowStage?.Definition.Stage == WorkflowStage.Implement)
+                        throw new InvalidOperationException("UnownedLaneWorkspaceUnavailable");
+
+                    var childTools = workflowStage is not null
+                        ? ProcessRuntimeFactoryForTests is { } processRuntimeFactory
+                            ? HostTools.WorkflowStageForTests(workflowStage.Definition.Stage, work.Profile,
+                                artifactReadTool, ProcessSandboxStrengthForTests, processRuntimeFactory())
+                            : HostTools.WorkflowStage(workflowStage.Definition.Stage, work.Profile,
+                                artifactReadTool, ProcessSandboxStrengthForTests)
+                        : childRequiresActTools ? HostTools.DelegatedAgent(work.Profile, artifactReadTool)
+                            : HostTools.DelegatedReaderWithMailbox(artifactReadTool);
+                    var childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog());
+                    if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
+                    {
+                        var verifyCwd = MapWorkflowCwdToLane(_workspaceRoot, laneRoot, workflowStage.VerifyCwd!);
+                        if (verifyCwd is null)
+                            throw new InvalidOperationException("WorkflowVerifierOutsideLane");
+                        var processTool = childTools.Catalog().Find(new ToolId("process.exec"))
+                            ?? throw new InvalidOperationException("VerificationProcessPermissionRequired");
+                        WorkflowToolFactory.RegisterVerification(childTools.Catalog(),
+                            CompiledWorkflowCatalog.ExploreImplementVerify, processTool,
+                            workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
+                                .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
+                            verifyCwd);
+                        childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog());
+                    }
+                    var childExecutor = childRequiresActTools
+                        ? OmniHost.CreateActExecutor(childTools.Catalog(), laneRoot, childBoundary,
+                            restrictions, work.Run, audit, interactionResponder, interactive, artifacts,
+                            work.Profile, receiveMailbox)
+                        : OmniHost.CreateExplorerExecutor(childTools.Catalog(), laneRoot, childBoundary,
+                            restrictions, work.Run, work.Profile, receiveMailbox);
+                    var childMaterializer = new ContextMaterializer(tokenCounter,
+                        [new WorkingStateContributor(childWorkingState)]);
+                    var childTurn = BuildTurn(productReasoning, reasoningResolution, childExecutor,
+                        childTools.Catalog(), childBoundary, childMaterializer);
+                    var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
+                        work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
                         openTurn?.Started.InstructionSnapshot ?? childSnapshot);
+                    var laneGates = workspaceConfig.Settings?.Gates;
+                    if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
+                        && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))
+                    {
+                        if (laneGates.Acceptance)
+                            throw new InvalidOperationException("LaneAcceptanceGateRequiresHumanResolution");
+                        var durableTurn = server.AcquireStore().ReadFrom(work.Session, 1)
+                            .Where(evt => evt.RunId == work.Run && evt.LaneId == work.Delegation.ChildLaneId)
+                            .Select(server.AcquireCodecs().Decode).OfType<TurnStarted>().LastOrDefault();
+                        if (durableTurn is null || !server.AcquireStore().ReadFrom(work.Session, 1)
+                            .Select(server.AcquireCodecs().Decode).OfType<TurnCompleted>()
+                            .Any(evt => evt.TurnId == durableTurn.TurnId))
+                            throw new InvalidOperationException("LaneCompletionGateTurnUnavailable");
+                        var gateConfiguration = new WorkspaceGatesYaml
+                        {
+                            Build = laneGates.Build,
+                            Test = laneGates.Test,
+                            Acceptance = false,
+                        };
+                        using var gateExecution = ExecutionScope.Begin(new ExecutionScopeState(work.Run,
+                            work.Scope.TaskId, work.Delegation.ChildLaneId, durableTurn.TurnId,
+                            ExecutionId: work.Scope.ExecutionId));
+                        var gateResults = new ConfiguredCompletionGates(gateConfiguration, laneRoot, work.Run,
+                            work.Delegation.ChildLaneId, work.Scope.TaskId, restrictions, audit, artifacts,
+                            interactionResponder, interactive, work.Profile)
+                            .Run(new EventStream(server.AcquireStore(), server.AcquireCodecs(), work.Session), token);
+                        if (gateResults.Any(gate => !gate.Passed))
+                            return new ExplorerTurn.TurnResult("Lane completion gate failed.", StopReason.Error,
+                                childResult.Steps, childResult.Usage, childResult.ToolCalls, childResult.ResponseArtifactId)
+                            { TurnId = childResult.TurnId };
+                    }
                     if (workflowStage is not null && childResult.StopReason == StopReason.Error)
                         writeLine("Workflow child Turn failed: " + RedactSensitive(childResult.FinalText
                             ?? childResult.FailureDiagnostic ?? "no diagnostic was returned"));
@@ -1656,6 +1743,37 @@ public sealed class OmniCliRuntime : IDisposable
         if (selected && selection!.EphemeralObserveOnly) return true;
         var key = selected ? selection!.Key : ModelPolicyKey.For(definition?.ProviderId ?? "local", model);
         return policyService.Get(key, cancellationToken) is null;
+    }
+
+    private static bool SameCanonicalWorkspace(string left, string right)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(ProjectIdentity.CanonicalWorkspacePath(left),
+            ProjectIdentity.CanonicalWorkspacePath(right), comparison);
+    }
+
+    private static string? MapWorkflowCwdToLane(string repositoryRoot, string laneRoot, string configuredCwd)
+    {
+        try
+        {
+            var repo = Path.GetFullPath(repositoryRoot);
+            var cwd = Path.GetFullPath(configuredCwd);
+            var relative = Path.GetRelativePath(repo, cwd);
+            if (Path.IsPathRooted(relative) || relative == ".."
+                || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                || relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
+                return null;
+            var mapped = Path.GetFullPath(Path.Combine(laneRoot, relative));
+            var lane = Path.GetFullPath(laneRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var prefix = lane + Path.DirectorySeparatorChar;
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return string.Equals(mapped, lane, comparison) || mapped.StartsWith(prefix, comparison) ? mapped : null;
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException
+            or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     private static bool ReportModePolicyTransition(InternalCommandResult? transition, Action<string> writeLine)

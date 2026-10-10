@@ -2,12 +2,15 @@ using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Execution;
+using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 
 namespace OmniCore.Host;
 
 internal sealed record DelegationWork(SessionId Session, RunId Run, Delegation Delegation,
-    ExecutionScopeState Scope, AgentProfile Profile, string Objective, TaskBudget Budget);
+    ExecutionScopeState Scope, AgentProfile Profile, string Objective, TaskBudget Budget,
+    WorktreeIdentity? Worktree, TaskPacket? TaskPacket, string EffectiveRoot, string WorkingState);
 
 public sealed partial class OmniServer
 {
@@ -31,7 +34,11 @@ public sealed partial class OmniServer
         var before = _store.CurrentSequence(session);
         using var cause = CausationScope.Begin(new CommandCausation(commandId));
         AgentCapacity.Lease? capacity = null;
+        IDisposable? taskPacketPublicationLease = null;
         DelegationWork? work = null;
+        string physicalRepositoryRoot;
+        string workspaceDataRoot;
+        string plannedLaneDestination;
         try
         {
             var initial = _store.ReadFrom(session, 1);
@@ -50,16 +57,164 @@ public sealed partial class OmniServer
             var admittedProfile = ResolveLaneAgentProfile(session, run, initialDelegation.ChildLaneId);
             if (admittedProfile is null) return Ack(RuntimeCommandOutcome.Deferred("ChildProfileUnavailable"));
             var readOnly = AgentPermissionScopeSubset.IsReadOnly(admittedProfile.PermissionCeiling);
+            var verifiedRoot = VerifiedWorkspaceRoot(session);
+            if (verifiedRoot is null) return Ack(RuntimeCommandOutcome.Deferred("WorkspaceRootUnavailable"));
+            try
+            {
+                physicalRepositoryRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(verifiedRoot);
+                workspaceDataRoot = OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), physicalRepositoryRoot);
+                plannedLaneDestination = Path.Combine(workspaceDataRoot, "worktrees", initialDelegation.ChildLaneId.ToString());
+            }
+            catch (Exception)
+            {
+                return Ack(RuntimeCommandOutcome.Deferred("WorkspaceIdentityUnavailable"));
+            }
+            var initialFacts = initialRun.Select(_codecs.Decode).ToArray();
+            if (readOnly) plannedLaneDestination = physicalRepositoryRoot;
+            var priorProvisioning = initialFacts.OfType<LaneProvisioning>()
+                .Any(payload => payload.LaneId == initialDelegation.ChildLaneId);
+            var priorLaneStarted = initialFacts.OfType<LaneStarted>()
+                .Any(payload => payload.LaneId == initialDelegation.ChildLaneId);
+            var priorWorktreeCount = initialFacts.OfType<LaneWorktreeCreated>()
+                .Count(payload => payload.LaneId == initialDelegation.ChildLaneId);
+            if (priorWorktreeCount > 1 || priorProvisioning && priorWorktreeCount == 0
+                && !(readOnly && priorLaneStarted))
+                return Ack(RuntimeCommandOutcome.Deferred("LaneProvisioningRecoveryRequired"));
+            if (priorWorktreeCount == 0 && initialProjection.State != RunState.Running)
+                return Ack(RuntimeCommandOutcome.Deferred("RunNotRunning"));
             var durableSequence = initial.Where(evt => evt.RunId == run)
                 .Single(evt => _codecs.Decode(evt) is DelegationCreated created
                     && created.Delegation.DelegationId == id).Sequence;
             var scheduler = AgentCapacity.For(_store);
             capacity = waitForCapacity
                 ? scheduler.Acquire(session, run, id, initialAuthorization.Limits.MaxAgents,
-                    initialDelegation.Priority, readOnly, token, durableSequence)
+                    initialDelegation.Priority, readOnly, token, durableSequence, plannedLaneDestination)
                 : scheduler.TryAcquire(session, run, id, initialAuthorization.Limits.MaxAgents,
-                    initialDelegation.Priority, readOnly, token, durableSequence);
+                    initialDelegation.Priority, readOnly, token, durableSequence, plannedLaneDestination);
             if (capacity is null) return Ack(RuntimeCommandOutcome.Deferred("WaitingForCapacity"));
+
+            // Provisioning is a durable phase of its own. A crash after LaneProvisioning but
+            // before LaneWorktreeCreated remains recovery-required; we never adopt a directory
+            // by guessing from its path or delete a possibly edited orphan.
+            var initialDelegationHistory = PreM6RecordProjection.Replay(session, _codecs, initial)
+                .Records["delegation:" + id];
+            if (initialDelegationHistory.Phase is PreM6RecordPhase.Returned or PreM6RecordPhase.Failed)
+                return Ack(RuntimeCommandOutcome.NoOp());
+            if (initialDelegationHistory.Phase == PreM6RecordPhase.Created)
+            {
+                // Queue order must be decided before provisioning writes LaneProvisioning or
+                // creates an owned worktree. Otherwise a rejected later lane would leave a
+                // durable half-provisioned record that blocks the predecessor's cancellation
+                // and cannot safely be adopted on retry.
+                var initialRecords = PreM6RecordProjection.Replay(session, _codecs, initial).Records;
+                var firstPending = initialRun
+                    .Select((evt, index) => (Event: evt, Payload: _codecs.Decode(evt)))
+                    .Where(item => item.Payload is DelegationCreated created
+                        && initialRecords["delegation:" + created.Delegation.DelegationId].Phase
+                            == PreM6RecordPhase.Created)
+                    .OrderByDescending(item => ((DelegationCreated)item.Payload).Delegation.Priority)
+                    .ThenBy(item => item.Event.Sequence)
+                    .Select(item => ((DelegationCreated)item.Payload).Delegation.DelegationId)
+                    .FirstOrDefault();
+                if (firstPending != id) return Ack(RuntimeCommandOutcome.Deferred("QueuePredecessor"));
+            }
+            var initialTask = initialFacts.OfType<TaskCreated>()
+                .Single(evt => evt.TaskId == initialDelegation.ChildTaskId);
+            WorktreeIdentity? worktreeIdentity = null;
+            TaskPacket? taskPacket = null;
+            LaneWorktreeCreated? worktreeEvent = initialFacts.OfType<LaneWorktreeCreated>()
+                .SingleOrDefault(evt => evt.LaneId == initialDelegation.ChildLaneId);
+            var hadWorktreeEvent = worktreeEvent is not null;
+            var sharedReadOnlyFallback = false;
+            ExecutionId? provisionedExecution = null;
+            if (worktreeEvent is null && initialDelegationHistory.Phase == PreM6RecordPhase.Created)
+            {
+                provisionedExecution = ExecutionId.New();
+                var provisioningScope = new ExecutionScopeState(run, initialTask.TaskId,
+                    initialDelegation.ChildLaneId, ExecutionId: provisionedExecution);
+                lock (_modeAuthorityMutationGate)
+                {
+                    var current = _store.ReadFrom(session, 1);
+                    var currentRun = current.Where(evt => evt.RunId == run).ToArray();
+                    var currentProjection = RunProjection.Replay(session, run, _codecs, currentRun);
+                    var currentFacts = currentRun.Select(_codecs.Decode).ToArray();
+                    if (_lastSessionId != session || _lastRunId != run
+                        || currentProjection.State != RunState.Running
+                        || currentFacts.OfType<LaneWorktreeCreated>().Any(evt => evt.LaneId == initialDelegation.ChildLaneId)
+                        || currentFacts.OfType<LaneProvisioning>().Any(evt => evt.LaneId == initialDelegation.ChildLaneId))
+                        return Ack(RuntimeCommandOutcome.Deferred("LaneProvisioningRecoveryRequired"));
+                    new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {
+                        new TaskStarted(initialTask.TaskId, initialDelegation.ChildLaneId),
+                        new LaneProvisioning(initialDelegation.ChildLaneId),
+                    }, DurabilityClass.Barrier, new ExecutionScopeState?[] { provisioningScope, provisioningScope });
+                }
+
+                var stateRun = RunProjection.Replay(session, run, _codecs,
+                    _store.ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray());
+                var statePlan = PlanProjection.Replay(_codecs,
+                    _store.ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray());
+                var compactWorkingState = WorkingStateProjector.Render(
+                    WorkingStateProjector.Project(stateRun, statePlan));
+                var provisioner = new LaneWorktreeProvisioner(SystemProcessRuntime.Instance(), _artifacts!);
+                var provisioned = provisioner.CreateAsync(physicalRepositoryRoot, workspaceDataRoot, session, run, initialTask,
+                        initialDelegation, provisionedExecution!,
+                        admittedProfile, compactWorkingState, capacity.Cancellation.Token)
+                    .GetAwaiter().GetResult();
+                if (provisioned.Succeeded)
+                    provisioned = provisioner.Publish(provisioned, capacity.Cancellation.Token);
+                if (!provisioned.Succeeded && readOnly
+                    && provisioned.Error == GitWorktreeErrorCode.NoRepository)
+                {
+                    // Existing read-only delegation remains usable for ordinary folders. This
+                    // path exposes no filesystem writer, and writer lanes always require Git.
+                    sharedReadOnlyFallback = true;
+                }
+                else if (!provisioned.Succeeded)
+                    return Ack(RuntimeCommandOutcome.Deferred("LaneWorktreeProvisioningFailed"));
+                else
+                {
+                    worktreeIdentity = provisioned.Identity;
+                    taskPacket = provisioned.Packet;
+                    taskPacketPublicationLease = provisioned.PublicationLease;
+                    if (worktreeIdentity is null || taskPacket is null || provisioned.TaskPacketRef is null)
+                        return Ack(RuntimeCommandOutcome.Deferred("LaneWorktreeProvisioningFailed"));
+                    worktreeEvent = new LaneWorktreeCreated(initialTask.TaskId, initialDelegation.ChildLaneId,
+                        provisionedExecution!, worktreeIdentity.OwnershipId, worktreeIdentity.RepositoryRoot,
+                        worktreeIdentity.GitCommonDirectory, worktreeIdentity.WorktreePath,
+                        worktreeIdentity.SnapshotCommit, worktreeIdentity.SnapshotTree,
+                        provisioned.TaskPacketRef, taskPacket.SelectedProjectionRef);
+                }
+            }
+            else if (worktreeEvent is not null)
+            {
+                provisionedExecution = worktreeEvent.ExecutionId;
+                var loaded = new GitWorktreeStore(SystemProcessRuntime.Instance())
+                    .LoadIdentityAsync(physicalRepositoryRoot, workspaceDataRoot, worktreeEvent.OwnershipId,
+                        capacity.Cancellation.Token).GetAwaiter().GetResult();
+                if (!loaded.Succeeded || loaded.Worktree is not { } durableIdentity
+                    || !MatchesCreatedEvent(worktreeEvent, durableIdentity)
+                    || _artifacts?.Verify(worktreeEvent.TaskPacketRef.Hash, worktreeEvent.TaskPacketRef.Size) != true
+                    || _artifacts?.GetText(worktreeEvent.TaskPacketRef.Hash) is not { } packetText)
+                    return Ack(RuntimeCommandOutcome.Deferred("LaneOwnershipUnavailable"));
+                taskPacket = JsonSerializer.Deserialize(packetText, TaskPacketJsonContext.Default.TaskPacket);
+                if (taskPacket is null || !MatchesTaskPacket(worktreeEvent, taskPacket, session, run,
+                    initialTask, initialDelegation, _artifacts))
+                    return Ack(RuntimeCommandOutcome.Deferred("LaneOwnershipUnavailable"));
+                worktreeIdentity = durableIdentity;
+            }
+            else if (readOnly && priorProvisioning && priorLaneStarted
+                && initialDelegationHistory.Phase == PreM6RecordPhase.Accepted)
+            {
+                // A non-Git read-only lane may resume on the verified root; the durable
+                // LaneStarted marker is written only after selecting this no-write fallback.
+                sharedReadOnlyFallback = true;
+                provisionedExecution = initialDelegationHistory.Facts.OfType<DelegationAccepted>()
+                    .Single().ChildExecutionId;
+            }
+            else
+            {
+                return Ack(RuntimeCommandOutcome.Deferred("LaneProvisioningRecoveryRequired"));
+            }
             lock (_modeAuthorityMutationGate)
             {
                 var journal = _store.ReadFrom(session, 1);
@@ -118,10 +273,15 @@ public sealed partial class OmniServer
                 if (!AgentPermissionScopeSubset.IsSubset(profile.PermissionCeiling, parentProfile.PermissionCeiling))
                     return Ack(RuntimeCommandOutcome.Deferred("ChildPermissionCeilingExceedsParent"));
                 var task = facts.OfType<TaskCreated>().Single(e => e.TaskId == delegation.ChildTaskId);
-                var executionId = history.Phase == PreM6RecordPhase.Created ? ExecutionId.New()
+                var executionId = history.Phase == PreM6RecordPhase.Created ? provisionedExecution!
                     : history.Facts.OfType<DelegationAccepted>().Single().ChildExecutionId;
                 var scope = new ExecutionScopeState(run, task.TaskId, delegation.ChildLaneId, ExecutionId: executionId);
-                work = new(session, run, delegation, scope, profile, task.Objective, task.Budget);
+                if (!sharedReadOnlyFallback && (worktreeEvent is null || worktreeIdentity is null || taskPacket is null
+                    || worktreeEvent.ExecutionId != executionId))
+                    return Ack(RuntimeCommandOutcome.Deferred("LaneOwnershipUnavailable"));
+                work = new(session, run, delegation, scope, profile, task.Objective, task.Budget,
+                    worktreeIdentity, taskPacket, worktreeIdentity?.WorktreePath ?? physicalRepositoryRoot,
+                    taskPacket?.WorkingState ?? "");
                 if (_artifacts is not IArtifactPreparationStore || _artifacts is not IArtifactPublicationLease)
                     return Ack(RuntimeCommandOutcome.Deferred("ResultPublicationUnavailable"));
                 // A finite elapsed authorization bounds the actual owned runtime cancellation token.
@@ -137,17 +297,23 @@ public sealed partial class OmniServer
                     var binding = new SupervisionBinding(BindingId.New(), executionId, delegation.ParentExecutionId, 1);
                     var mailbox = new ExecutionMailbox(MailboxId.New(), executionId);
                     var admissionEvents = new List<DomainEventPayload> {
-                        new TaskStarted(task.TaskId, delegation.ChildLaneId), new LaneProvisioning(delegation.ChildLaneId), new LaneStarted(delegation.ChildLaneId), started,
+                        new LaneStarted(delegation.ChildLaneId), started,
                         new SupervisionBindingCreated(executionId, binding),
                         new ExecutionMailboxCreated(executionId, mailbox),
                         new DelegationAccepted(delegation.ParentExecutionId, id, executionId),
                     };
+                    if (!hadWorktreeEvent && worktreeEvent is not null) admissionEvents.Insert(0, worktreeEvent);
                     admissionEvents.AddRange(BindWorkflowStageExecution(session, run, task.TaskId,
                         delegation.ChildLaneId, executionId));
                     var scopes = admissionEvents.Select(evt => evt is DelegationAccepted
                         ? (ExecutionScopeState?)parentScope : scope).ToArray();
                     new EventStream(_store, _codecs, session).AppendBatch(admissionEvents,
                         DurabilityClass.Barrier, scopes);
+                    // The journal Barrier now owns all references. Release the CAS GC
+                    // publication lease before entering Explorer: the child Turn acquires
+                    // its own publication lease and the store lease is intentionally exclusive.
+                    taskPacketPublicationLease?.Dispose();
+                    taskPacketPublicationLease = null;
                     var scopedSupervisor = SupervisorClientFactory.Create(this, delegation.ParentExecutionId);
                     new InProcessSupervisor(scopedSupervisor, delegation.ParentExecutionId)
                         .AcknowledgeBinding(executionId, binding.BindingId, capacity.Cancellation.Token);
@@ -197,9 +363,40 @@ public sealed partial class OmniServer
             }
             return FailedDurableCommandAck(messageId, session, before, failure.Message, false);
         }
-        finally { capacity?.Dispose(); }
+        finally { taskPacketPublicationLease?.Dispose(); capacity?.Dispose(); }
         CommandAck Ack(RuntimeCommandOutcome outcome) => CommandOutcomeAck(messageId, "ok", null, outcome, session, before, commandId);
     }
+
+    private static bool MatchesCreatedEvent(LaneWorktreeCreated evt, WorktreeIdentity identity) =>
+        evt.OwnershipId == identity.OwnershipId && evt.LaneId == identity.LaneId
+        && SamePhysicalPath(evt.RepositoryRoot, identity.RepositoryRoot)
+        && SamePhysicalPath(evt.GitCommonDirectory, identity.GitCommonDirectory)
+        && SamePhysicalPath(evt.WorktreePath, identity.WorktreePath)
+        && evt.SnapshotCommit == identity.SnapshotCommit && evt.SnapshotTree == identity.SnapshotTree;
+
+    private static bool MatchesTaskPacket(LaneWorktreeCreated evt, TaskPacket packet, SessionId session,
+        RunId run, TaskCreated task, Delegation delegation, IArtifactStore? artifacts) =>
+        packet.SchemaVersion == 1 && packet.SessionId == session && packet.RunId == run
+        && packet.TaskId == task.TaskId && packet.LaneId == evt.LaneId
+        && packet.ExecutionId == evt.ExecutionId && packet.DelegationId == delegation.DelegationId
+        && packet.ParentExecutionId == delegation.ParentExecutionId && packet.ProfileId == delegation.ProfileId
+        && packet.Budget == task.Budget
+        && packet.OwnershipId == evt.OwnershipId
+        && SamePhysicalPath(packet.RepositoryRoot, evt.RepositoryRoot)
+        && SamePhysicalPath(packet.GitCommonDirectory, evt.GitCommonDirectory)
+        && SamePhysicalPath(packet.WorktreePath, evt.WorktreePath)
+        && packet.SnapshotCommit == evt.SnapshotCommit && packet.SnapshotTree == evt.SnapshotTree
+        && packet.Base == WorktreeBase.SnapshotOfWorkingTree
+        && packet.SelectedProjectionRef == delegation.PacketRef
+        && artifacts is not null && artifacts.Verify(evt.TaskPacketRef.Hash, evt.TaskPacketRef.Size)
+        && evt.TaskPacketRef.Kind == ArtifactKind.Other
+        && evt.TaskPacketRef.MediaType == LaneWorktreeProvisioner.TaskPacketMediaType
+        && evt.TaskPacketRef.Sensitivity == Sensitivity.Sensitive
+        && evt.TaskPacketRef.Size is > 0 and <= LaneWorktreeProvisioner.MaximumTaskPacketBytes;
+
+    private static bool SamePhysicalPath(string left, string right) => string.Equals(
+        ProjectIdentity.CanonicalWorkspacePath(left), ProjectIdentity.CanonicalWorkspacePath(right),
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     private void FailOwnedDelegation(DelegationWork work, bool cancelled)
     {
