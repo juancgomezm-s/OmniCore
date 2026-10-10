@@ -208,6 +208,42 @@ public sealed class ClaudeOAuthClosureTests : IDisposable
         Assert.Null(session.Credentials.Load(session.SecretRef, Token));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Cancellation_between_credential_and_metadata_preserves_the_previous_session(bool hadPrevious)
+    {
+        Directory.CreateDirectory(_root);
+        var memory = new InMemoryCredentialStore();
+        var cancelling = new CancellingStore(memory);
+        var store = new ClaudeOAuthCredentialStore(cancelling, Path.Combine(_root, "metadata.json"));
+        var original = new ClaudeOAuthCredential("previous-access-test", "previous-refresh-test",
+            DateTimeOffset.UtcNow.AddHours(1), ["user:inference"], "client") { SubscriptionType = "pro" };
+        if (hadPrevious) store.Save("ref", original, Token);
+        using var cancelled = new CancellationTokenSource();
+        cancelling.AfterSave = cancelled.Cancel;
+        Assert.Throws<OperationCanceledException>(() => store.Save("ref", original with { AccessToken = "cancelled-access-test" }, cancelled.Token));
+        var loaded = store.Load("ref", Token);
+        if (hadPrevious)
+        {
+            Assert.Equal("previous-access-test", loaded?.AccessToken);
+            Assert.Equal("pro", store.ReadAccountInfo("ref", Token)?.SubscriptionType);
+        }
+        else
+        {
+            Assert.Null(loaded);
+            Assert.Null(store.ReadAccountInfo("ref", Token));
+        }
+    }
+
+    private sealed class CancellingStore(InMemoryCredentialStore inner) : ICredentialStore
+    {
+        public Action? AfterSave { get; set; }
+        public void Save(string key, string value, CancellationToken token) { inner.Save(key, value, token); AfterSave?.Invoke(); }
+        public string? Load(string key, CancellationToken token) => inner.Load(key, token);
+        public void Delete(string key, CancellationToken token) => inner.Delete(key, token);
+    }
+
     private sealed class Paths(string root) : IPlatformPaths
     {
         public string DataDirectory => Path.Combine(root, "data");

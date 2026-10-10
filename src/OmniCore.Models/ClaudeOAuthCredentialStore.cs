@@ -57,8 +57,20 @@ public sealed class ClaudeOAuthCredentialStore
         // Se registran las piezas ya aqui: un login que termine bien no puede depender de que
         // alguien llame a Load mas tarde para que los tokens sean redactables.
         RegisterForRedaction(series);
-        _store.Save(CredentialKey(secretRef), series, ct);
-        WriteMetadata(secretRef, credential, ct);
+        var key = CredentialKey(secretRef);
+        var previous = _store.Load(key, ct);
+        try
+        {
+            _store.Save(key, series, ct);
+            WriteMetadata(secretRef, credential, ct);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException)
+        {
+            // Compensation must finish even when the caller's token is cancelled.
+            if (previous is null) _store.Delete(key, CancellationToken.None);
+            else _store.Save(key, previous, CancellationToken.None);
+            throw;
+        }
     }
 
     /// <summary>
