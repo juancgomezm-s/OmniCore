@@ -45,6 +45,18 @@ public sealed class CliApp
         if (command == "act") return RunAct(args);
         if (command == "model") return ModelPolicyCommands.Run(args);
         if (command == "trust") return RunTrust(args);
+        if (command is "login" or "logout" && args.Length >= 2 && args[1] == "claude")
+        {
+            var providerArgs = args.Skip(2).Where(a => a != "--manual").ToArray();
+            if (providerArgs.Length > 1 || providerArgs.Any(a => a.StartsWith("-", StringComparison.Ordinal))
+                || (command == "logout" && args.Contains("--manual")))
+            { Console.WriteLine(Loc().Resolve("claude.oauth.cli.usage")); return Task.FromResult(2); }
+            var provider = providerArgs.FirstOrDefault() ?? "anthropic";
+            return command == "login"
+                ? Runtime.LoginClaudeAsync(provider, args.Contains("--manual"),
+                    token => Console.In.ReadLineAsync(token).AsTask(), Console.WriteLine, CancellationToken.None)
+                : Task.FromResult(Runtime.LogoutClaude(provider, Console.WriteLine, CancellationToken.None));
+        }
         if (command == "login" && args.Length >= 2 && args[1] == "chatgpt")
             return Runtime.LoginChatGptAsync(args.Any(a => a == "--device"), Console.WriteLine, CancellationToken.None);
         if (command == "logout" && args.Length >= 2 && args[1] == "chatgpt")
@@ -530,6 +542,7 @@ public sealed class CliApp
             UsagePresentation.Cost(usage.SessionCost),
             UsagePresentation.Remaining(usage.Remaining),
             UsagePresentation.AccountQuota(usage.AccountQuota),
+            UsagePresentation.Account(usage.Account, Loc()),
         }.Where(part => part is not null));
 
     private static void PrintUsage()
@@ -545,6 +558,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine(Loc().Resolve("commands.workflow.help"));
         Console.WriteLine(Loc().Resolve("cli.usage.model"));
+        Console.WriteLine(Loc().Resolve("claude.oauth.cli.usage"));
         Console.WriteLine(Loc().Resolve("cli.usage.verify_journal"));
         Console.WriteLine(Loc().Resolve("cli.usage.session_purge"));
         Console.WriteLine(Loc().Resolve("cli.usage.gc"));

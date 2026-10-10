@@ -631,6 +631,19 @@ public sealed class ProviderConnectionService
                         CanDiscoverModels: anthropic && present));
                     break;
                 }
+                case AuthKind.OAuth when provider.Family == ProviderFamily.AnthropicMessages:
+                {
+                    var session = OmniHost.CreateClaudeOAuthSession(_paths, provider.Id);
+                    var info = session?.Credentials.ReadAccountInfo(session.SecretRef, cancellationToken);
+                    var present = session?.Credentials.Exists(session.SecretRef, cancellationToken) == true;
+                    var state = !present ? ProviderConnectionState.NotConfigured
+                        : info?.ExpiresAt <= _now() ? ProviderConnectionState.Expired
+                        : ProviderConnectionState.Connected;
+                    result.Add(new(provider.Id, ProviderConnectionMethod.Subscription, state, provider.BillingMode,
+                        info?.SubscriptionType, null, CanConnect: false, CanTest: false,
+                        CanDisconnect: present, CanDiscoverModels: false));
+                    break;
+                }
                 default:
                     // auth: none (p. ej. servidor local): no hay credencial que medir aquí.
                     result.Add(new(provider.Id, ProviderConnectionMethod.None, ProviderConnectionState.Unknown,
@@ -895,6 +908,11 @@ public sealed class ProviderConnectionService
         var loaded = OmniHost.LoadUserConfiguration(_paths);
         var provider = loaded.Registry.Provider(providerId)
             ?? throw new ProviderConnectionException("unknownProvider", "Provider desconocido: " + providerId);
+        if (provider.Auth.Kind == AuthKind.OAuth && provider.Family == ProviderFamily.AnthropicMessages)
+        {
+            OmniHost.CreateClaudeOAuthSession(_paths, providerId)?.Auth.SignOut(cancellationToken);
+            return;
+        }
         if (provider.Auth.Kind != AuthKind.ApiKey)
         {
             throw new ProviderConnectionException("unsupported",

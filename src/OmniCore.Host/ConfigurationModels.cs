@@ -26,6 +26,39 @@ public sealed class ProviderFileYaml
 
     /// <summary>Legacy auth syntax, parsed explicitly from YAML nodes to support scalar/map forms AOT-safely.</summary>
     public ProviderAuthYaml? Auth { get; set; }
+
+    /// <summary>
+    /// Identidad OAuth de Claude declarada por el usuario (ADR-0011 §3.3, ADR-0039 §2). Ausente =
+    /// el provider no usa login por cuenta. Se parsea de nodos YAML igual que <see cref="Auth"/>:
+    /// las formas escalar y lista de <c>scopes</c> no caben en un DTO generado.
+    /// </summary>
+    public ProviderOAuthYaml? OAuth { get; set; }
+}
+
+/// <summary>
+/// Sección <c>oauth:</c> de un provider en providers.yaml. Los valores son los que el usuario
+/// elige: el runtime no tiene una identidad de cliente propia ni defaults (ADR-0011 rev. 5).
+/// </summary>
+public sealed class ProviderOAuthYaml
+{
+    public string? ClientId { get; set; }
+
+    /// <summary>Plantilla con <c>{version}</c>, como la manda el wire de Claude Code.</summary>
+    public string? UserAgent { get; set; }
+
+    public List<string>? Scopes { get; set; }
+
+    public string? AuthorizeUrl { get; set; }
+
+    public string? TokenUrl { get; set; }
+
+    /// <summary>Opcional: si falta se deriva del host de <see cref="TokenUrl"/>.</summary>
+    public string? ProfileUrl { get; set; }
+
+    public string? RolesUrl { get; set; }
+
+    /// <summary>Clave bajo la que se guarda el credential cifrado. Default: "&lt;provider&gt;-oauth".</summary>
+    public string? SecretRef { get; set; }
 }
 
 /// <summary>Lanzamiento del servidor local con <c>host: managed</c>. El puerto y la API key los genera el runtime.</summary>
@@ -158,6 +191,7 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(ProvidersFileYaml))]
 [YamlSerializable(typeof(ProviderFileYaml))]
 [YamlSerializable(typeof(ProviderAuthYaml))]
+[YamlSerializable(typeof(ProviderOAuthYaml))]
 [YamlSerializable(typeof(ManagedHostYaml))]
 [YamlSerializable(typeof(ModelsFileYaml))]
 [YamlSerializable(typeof(ModelFileYaml))]

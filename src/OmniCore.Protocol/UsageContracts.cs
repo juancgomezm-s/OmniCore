@@ -36,4 +36,6 @@ public sealed record TokenTotals(long Input, long Output, long CacheRead, long C
 /// windows, reset times and credit scopes are retained; absence is not a zero balance.</remarks>
 public sealed record UsageSnapshot(TokenTotals SessionTokens, Metric<Money> SessionCost, Metric<QuotaInfo> Remaining,
     DateTimeOffset AsOf, Metric<TokenTotals>? SessionTokenMeasurement = null,
-    ProviderQuotaSnapshot? AccountQuota = null);
+    ProviderQuotaSnapshot? AccountQuota = null, AccountConnectionSnapshot? Account = null);
+
+public sealed record AccountConnectionSnapshot(string ProviderId, string? Plan, string? Tier, DateTimeOffset? ExpiresAt);

@@ -1,9 +1,10 @@
 # ADR-0011 — Mecanismo de conexión a proveedores de modelos
 
-- **Estado:** Aceptada — rev. 4 (2026-10-08); conexión por cuenta Anthropic en reevaluación por petición del usuario.
-- **Rev. 4:** se retira el veto arquitectónico interno a investigar OAuth de Anthropic. El flujo por cuenta se evalúa separadamente del adaptador API y de la lane delegada; la existencia de un protocolo no acredita autorización del proveedor ni una integración autenticada.
+- **Estado:** Aceptada — rev. 6 (2026-10-10); conexión por cuenta Anthropic definida por el plan `docs/validation/claude-oauth-plan-20261010.md`.
+- **Rev. 6:** flujo nativo conectado y probado en Windows; identidad declarada en configuración User, sin defaults; aceptación con cuenta real aún pendiente (acta de cierre).
+- **Rev. 5:** se retira el veto interno a OAuth de Anthropic (plan v2, identidad fija Claude Code).
 - **Rev. 2:** se alinea con ADR-0005 rev. 2 (familias provider-native en lugar de "dialectos" sobre OpenAI-compatible) y con ADR-0018 (`ISecretProvider`).
-- **Rev. 3:** especifica la conexión al provider Anthropic imitando la lógica de Claude Code (§10): wire protocol, streaming, thinking con firma, reintentos y timeouts, prompt caching concreto y OAuth de suscripción como descarte. Verificado contra la documentación oficial de la API y contra la copia filtrada del source de Claude Code (leak del source-map de npm, 2026-03-31). No cambia las decisiones vigentes: Anthropic se usa solo con API key (§3.3).
+- **Rev. 3:** especifica la conexión al provider Anthropic imitando la lógica de Claude Code (§10): wire protocol, streaming, thinking con firma, reintentos y timeouts y prompt caching concreto. Verificado contra la documentación oficial de la API y contra la copia filtrada del source de Claude Code (leak del source-map de npm, 2026-03-31). Las decisiones de esa revisión sobre el camino API key siguen vigentes en el camino API key de §3.3; el camino de cuenta se especifica en §10.7.
 - **Complementa:** ADR-0005 (contratos del Model Runtime)
 - **Spec:** §17–§22, §70–§73, INV-010, INV-011
 
@@ -61,9 +62,11 @@ aliases:
 1. Los secretos se leen solo mediante `ISecretProvider` (ADR-0018). Detrás está `ICredentialStore` (escritura: **Windows Credential Manager** o DPAPI), con variables de entorno y comandos como fuentes alternativas. Los secretos nunca aparecen en configuración, eventos, `ContextSnapshot`, artifacts ni logs; el redactor de ADR-0018 los elimina en cada sink.
 2. `IAuthProvider` por proveedor con tipos `None | ApiKey | Bearer | OAuth`. La arquitectura soporta OAuth **desde el inicio** (refresh de tokens, expiración, revocación), para no tener que rediseñar cuando se habilite un flujo.
 3. **Login por suscripción:**
-   - **Anthropic (cuenta y API): evaluación independiente.** Se retira la exclusión interna de OAuth. Investigar el flujo de cuenta y sus capacidades reales usando el código de referencia y fuentes del proveedor; no confundir API, suscripción y ejecución delegada. La implementación entregada hasta ahora usa API key o el ejecutable oficial. No hay aceptación de un flujo OAuth nativo autenticado. Ver §10.7.
+   - **Anthropic (cuenta y API): dos caminos declarados, no excluyentes.**
+     - **API key de Console** (`AuthKind.ApiKey`, `MeteredCurrency`): implementado y aceptado (bloque 1).
+     - **Cuenta/suscripción par OAuth nativo** (`AuthKind.OAuth`): diseñado en `docs/validation/claude-oauth-plan-20261010.md`. Mismo protocolo Claude Code. Identidad declarada por el usuario, sin defaults en Models (ADR-0039). Login/logout por CLI, inferencia por Bearer y estado medido en doctor/status line; cierre en `docs/validation/claude-oauth-closure-20261010.md`.
    - **OpenAI (ChatGPT): requerimiento obligatorio, se implementa.** Ver §3.4.
-   - **Regla general: no se reutilizan client IDs de otros productos ni se suplanta a otro producto.** Pi usa el client ID de Claude Code y el de VS Code Copilot, y **se hace pasar por Claude Code**: `user-agent: claude-cli/…`, remapeo de nombres de tools e inyecta "You are Claude Code…" en el system prompt. Nada de eso se porta. La única excepción es el flujo de ChatGPT de §3.4, porque OpenAI respalda públicamente que harnesses de terceros lo usen, y aun así OmniCore se identifica como OmniCore.
+   - **Regla general:** no se portan a código prompts de sistema ni betas internas de otro producto. La beta `oauth-2025-04-20` y el camino OAuth sí se implementan porque son protocolo público requerido para que el token funcione. La excepción de §3.4 (ChatGPT) sigue vigente con identificación honesta.
 4. **Login con suscripción de ChatGPT (obligatorio).**
    - **Base de legitimidad:** Tibo Sottiaux (OpenAI, Codex) anunció que Pi se sumó a "la lista de agentes abiertos que soportan iniciar sesión con tu cuenta de ChatGPT y usar el mismo uso que obtienes en Codex" (traducido; [x.com/thsottiaux](https://x.com/thsottiaux/status/2012030806169121160)). El programa *Codex for Open Source* de OpenAI nombra a OpenCode, Cline y pi como herramientas que apoya. Son declaraciones públicas, **no contractuales**: OpenAI puede cambiar la política.
    - **Flujo** (el mismo que Pi y OpenCode, portado desde su código):
@@ -147,8 +150,8 @@ Se **portan a C#** (no se traducen línea a línea).
 | Catálogo de modelos | models.dev (`models.dev/api.json`); esquema de referencia en OpenCode `core/src/models-dev.ts:66-129` | Completa `ModelDescriptor` (§2); lo declarado prevalece |
 
 **No se portan:**
-- **cabeceras de identidad y betas internas de Claude Code** (ver §10.8): la conexión nunca se hace pasar por Claude Code ni por otro producto (§3.3);
-- flujos OAuth que reutilizan client IDs ajenos o suplantan otros productos (§3.3);
+- **cabeceras de identidad y betas internas de Claude Code** (ver §10.8), salvo la beta pública `oauth-2025-04-20` que el camino OAuth de §3.3 requiere;
+- el prefijo de system "You are Claude Code…" y el remapeo de nombres de tools;
 - el runtime de OpenCode sobre Vercel AI SDK / Effect (habría que rediseñarlo, no traducirlo);
 - la instalación de paquetes npm en runtime;
 - el almacenamiento `auth.json` en texto plano de ambos (`0o600` no protege nada en Windows).
@@ -180,8 +183,8 @@ Tres mecanismos, sin ninguna forma de evasión:
 POST https://api.anthropic.com/v1/messages
 ```
 
-- Cabeceras fijas: `anthropic-version: 2023-06-01`, `content-type: application/json`, `x-api-key: <desde ISecretProvider>` (nunca `Authorization: Bearer` salvo el flujo descartado de §10.7).
-- `User-Agent: omnicore/<versión> (<os>; <arch>)` (la misma identificación honesta de §3.4). Nunca `claude-cli/…`.
+- Cabeceras fijas: `anthropic-version: 2023-06-01`, `content-type: application/json`. La credencial la aporta el `AuthKind`: `x-api-key: <desde ISecretProvider>` en el camino API key (§3) o `Authorization: Bearer <access_token>` + `anthropic-beta: oauth-2025-04-20` en el camino OAuth de cuenta (§3, plan `claude-oauth-plan-20261010.md`).
+- `User-Agent`: valor declarado en `oauth.userAgent` por el usuario, con sustitución de `{version}`, en el camino OAuth (la referencia de protocolo es `claude-cli/<version> (external, cli)`); `omnicore/<version> (<os>; <arch>)` en el camino API key.
 - `x-client-request-id: <uuid>` por request para correlacionar timeouts (patrón de Claude Code, `client.ts`).
 - `anthropic-beta`: por defecto ninguna. Solo se envían **betas públicas** que un modelo o característica requiera, declaradas como compat flag `requiredBetaHeaders` del `ProviderDescriptor` y cubiertas por un test de contrato. Quedan excluidas las betas de producto de Claude Code (`claude-code-20250219`) y las internas 1P (`prompt-caching-scope-…`, `cli-internal-…`, `redact-thinking-…`).
 
@@ -278,9 +281,9 @@ Refina §9.2 para esta familia:
 - **Instrucciones a mitad de conversación:** si un hook/skill añade instrucciones en turnos posteriores, en los modelos que lo soportan se anexan como mensaje `role:"system"` dentro de `messages` en lugar de editar `system` top-level (no invalida el prefijo). Se detecta por capacidad.
 - **Pre-warming** (`max_tokens: 0`) queda opt-in y bajo presupuesto, para tareas previsibles antes de un turno largo.
 
-#### 10.7 OAuth de suscripción: referencia y reevaluación
+#### 10.7 OAuth de suscripción: protocolo y plan de construcción
 
-La rev. 4 retira el descarte interno del flujo por cuenta. Los datos siguientes son una referencia histórica de protocolo extraída de `constants/oauth.ts`, `services/oauth/*` y Pi (`packages/ai/src/auth/oauth/anthropic.ts`, inspección 2026-09-24), no una prueba de disponibilidad o autorización actual. La nueva referencia solicitada es `https://github.com/Icarus603/claude-code.git`; toda reevaluación debe registrar revisión y archivos inspeccionados, separar identidad de cliente de protocolo OAuth y mantener almacenamiento protegido y redacción de secretos.
+La rev. 6 registra el flujo construido y su cierre. Protocolo verificado, citado en el plan. Identidad de cliente en configuración User; los valores de la tabla son referencias de protocolo.
 
 | Hecho | Valor |
 |---|---|
@@ -293,7 +296,11 @@ La rev. 4 retira el descarte interno del flujo por cuenta. Los datos siguientes 
 | Refresh | `grant_type=refresh_token`; re-pide los scopes originales en cada refresh |
 | Transmisión | `authorization: Bearer` + beta `oauth-2025-04-20` |
 
-El diseño por cuenta queda abierto a reevaluación, sin sustituir la revisión técnica por tests que vetan literales OAuth. Esta revisión de la documentación no modifica condiciones externas del proveedor ni acredita autenticación real. La lane delegada de ADR-0012 conserva su propio alcance; no es equivalente a un provider OAuth nativo.
+El diseño por cuenta está especificado en el plan `docs/validation/claude-oauth-plan-20261010.md`:
+máquina de estados de login, listener loopback/manual, exchange, refresh pegajoso, dead-set,
+almacenamiento cifrado y camino OAuth del provider. Los valores de la tabla son la referencia de
+protocolo verificada en el source de Claude Code; el plan cita cada uno con su path:linea. La lane
+delegada de ADR-0012 conserva su propio alcance; no es equivalente a este provider OAuth nativo.
 
 #### 10.8 Fuentes y límites del port
 
@@ -308,7 +315,7 @@ El diseño por cuenta queda abierto a reevaluación, sin sustituir la revisión 
 | OAuth de suscripción | `constants/oauth.ts`, `services/oauth/*` |
 | Wire protocol vigente | Doc oficial: Messages API, streaming, prompt caching (2026-09) |
 
-**No se portan:** betas 1P-only e internas; cabeceras de identidad de Claude Code (`claude-cli/…`, `x-anthropic-billing-header`); el prefijo de system "You are Claude Code…"; cache con scope org/global; attestation; casos de `cache_reference`/cache editing del microcompact; fast mode y task budgets internos (se usan sus equivalentes públicos: `output_config.effort`, `TaskBudget`). Los tests de contrato con respuestas grabadas protegen contra cambios del backend y validan los compat flags de esta sección.
+**No se portan:** betas 1P-only e internas ni `x-anthropic-billing-header`; el camino OAuth transmite el user-agent declarado por el usuario según §10.7; el prefijo de system "You are Claude Code…"; cache con scope org/global; attestation; casos de `cache_reference`/cache editing del microcompact; fast mode y task budgets internos (se usan sus equivalentes públicos: `output_config.effort`, `TaskBudget`). Los tests de contrato con respuestas grabadas protegen contra cambios del backend y validan los compat flags de esta sección.
 
 ## Plan por milestone
 
@@ -347,5 +354,5 @@ Keychain siguen pendientes; sustituyen al archivo cifrado cuando se integren.
 - El Agent Runtime sigue viendo solo `IModelProvider` (INV-011); cambiar de ik_llama a un modelo frontera es cambiar un alias.
 - OmniCore protege credenciales mejor que OmniCoder, al no depender de Pi.
 - OmniCoder expone login OAuth de Anthropic a través de Pi (`PiProviderCatalog.cs`); es una referencia técnica que no acredita por sí sola disponibilidad o autorización para OmniCore.
-- El provider Anthropic replica el wire protocol de Messages API (§10). El flujo por cuenta se reevalúa en §10.7 separadamente de la lane delegada (ADR-0012).
+- El provider Anthropic replica el wire protocol de Messages API (§10). El flujo por cuenta se especifica en §10.7 y en el plan `docs/validation/claude-oauth-plan-20261010.md`, separado de la lane delegada (ADR-0012).
 - Tests de contrato con respuestas grabadas cubren la evolución del backend de Anthropic y validan los compat flags de §10 (betas públicas, TTL de caché, campos de usage).

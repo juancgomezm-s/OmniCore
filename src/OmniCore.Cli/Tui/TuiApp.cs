@@ -87,6 +87,7 @@ public sealed partial class TuiApp
     private int _activityPhase;
     internal View? Activity => _activity;
     private string? _turnStatus;
+    private UsageSnapshot? _turnUsage;
     private string? _cursorSession;
 
     // Acceso interno para pruebas de cableado reales (Terminal.Gui real sobre IOmniClient real).
@@ -900,6 +901,7 @@ public sealed partial class TuiApp
                 _turnStatus = cancellation.IsCancellationRequested ? Ui("Cancelado", "Cancelled")
                     : code == 0 ? Ui("Listo", "Done") : code == 3 ? Ui("Requiere respuesta", "Input required") : Ui("Error", "Error");
                 RefreshSelectedModel(); PollEvents();
+                _turnUsage = _turnHost.CurrentUsage();
                 if (code != 0 && code != 3 && !cancellation.IsCancellationRequested)
                     ShowMessage(string.Join("\n", messages));
                 if (_pendingEscalationResume is { } resume)
@@ -968,7 +970,7 @@ public sealed partial class TuiApp
         if (identity is not null && JsonObj.Parse(identity.Json).TryGetValue("sessionId", out var session)
             && session != _cursorSession)
         {
-            _cursorSession = session; _lastSequence = 0; _observedModel = null;
+            _cursorSession = session; _lastSequence = 0; _observedModel = null; _turnUsage = null;
             var empty = ClientState.Empty();
             // Keep the visible transcript across fresh Runs; reset only session-local UI state.
             _state = new ClientState(_state.Header, _state.Conversation, empty.Sidebar,
@@ -1180,6 +1182,8 @@ public sealed partial class TuiApp
         var right = _turnBusy ? "" : _delegationTasks.Count > 0
             ? Ui($"{_delegationTasks.Count} delegación(es) en segundo plano", $"{_delegationTasks.Count} background delegation(s)")
             : _turnStatus ?? presentation.Right;
+        var account = UsagePresentation.Account(_turnUsage?.Account, _localization);
+        if (account is not null && !_turnBusy) right += " · " + account;
         return "  " + FitText(right, width);
     }
 

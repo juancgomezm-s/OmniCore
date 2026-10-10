@@ -23,7 +23,7 @@ public sealed class ConfigLoader
         var diagnostics = new List<ConfigDiagnostic>();
         ParseSettings(settingsYaml, diagnostics);
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
-            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth", "host", "managed",
+            new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth", "oauth", "host", "managed",
                 "billingMode", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models", "routing" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
@@ -33,6 +33,7 @@ public sealed class ConfigLoader
 
         var settings = Deserialize<UserSettingsYaml>(settingsYaml, "settings.yaml", diagnostics);
         var providerFile = CreateProvidersFile(providerNodes);
+        ValidateOAuthContents(providerFile, diagnostics);
         var modelFile = Deserialize<ModelsFileYaml>(modelsYaml, "models.yaml", diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
         var registry = new ModelRegistry();
@@ -45,11 +46,16 @@ public sealed class ConfigLoader
             foreach (var pair in providerFile.Providers)
             {
                 var values = pair.Value;
-                var auth = values.AuthRef is not null
-                    ? AuthConfig.ApiKey(values.AuthRef)
-                    : values.Auth is { IsNone: false, ApiKey: not null } legacyAuth
-                        ? AuthConfig.ApiKey(legacyAuth.ApiKey)
-                        : AuthConfig.None();
+                // La seccion oauth: gana sobre authRef: un provider declarado por cuenta no puede
+                // autentificar ademas con API key, y silenciar esa colision haria que el usuario
+                // viera un camino de cuenta que en realidad gasta creditos de API.
+                var auth = values.OAuth is not null
+                    ? AuthConfig.OAuth(ClaudeOAuthConfiguration.SecretRefFor(pair.Key, values.OAuth))
+                    : values.AuthRef is not null
+                        ? AuthConfig.ApiKey(values.AuthRef)
+                        : values.Auth is { IsNone: false, ApiKey: not null } legacyAuth
+                            ? AuthConfig.ApiKey(legacyAuth.ApiKey)
+                            : AuthConfig.None();
                 var family = values.Family switch
                 {
                     "AnthropicMessages" => ProviderFamily.AnthropicMessages,
@@ -62,7 +68,7 @@ public sealed class ConfigLoader
                     "IncludedQuota" => BillingMode.IncludedQuota,
                     "CreditBalance" => BillingMode.CreditBalance,
                     "MeteredCurrency" => BillingMode.MeteredCurrency,
-                    _ => BillingMode.Unknown,
+                    _ => values.OAuth is not null ? BillingMode.IncludedQuota : BillingMode.Unknown,
                 };
                 var localHost = LocalHostFor(values, family, billing);
                 registry.Add(new ProviderDescriptor(pair.Key, family,
@@ -219,6 +225,11 @@ public sealed class ConfigLoader
                 }
                 CheckKeys(item, file, rootKey + "." + id, childAllowed, diagnostics);
                 ValidateKnownScalars(item, rootKey + "." + id, file, diagnostics);
+                if (item.Children.TryGetValue(new YamlScalarNode("oauth"), out var oauthCheck)
+                    && oauthCheck is YamlMappingNode oauthMapCheck)
+                {
+                    CheckKeys(oauthMapCheck, file, rootKey + "." + id + ".oauth", OAuthKeys, diagnostics);
+                }
             }
             return sectionMap;
         }
@@ -336,6 +347,11 @@ public sealed class ConfigLoader
                 InputPricePerMillionUsd = Decimal(values, "inputPricePerMillionUsd"),
                 OutputPricePerMillionUsd = Decimal(values, "outputPricePerMillionUsd"),
             };
+            if (values.Children.TryGetValue(new YamlScalarNode("oauth"), out var oauthNode)
+                && oauthNode is YamlMappingNode oauthMap)
+            {
+                provider.OAuth = CreateOAuth(oauthMap);
+            }
             if (values.Children.TryGetValue(new YamlScalarNode("auth"), out var authNode))
             {
                 provider.Auth = authNode is YamlScalarNode { Value: { } scalar }
@@ -348,6 +364,39 @@ public sealed class ConfigLoader
         }
         return result;
     }
+
+    private static readonly string[] OAuthKeys =
+        ["clientId", "userAgent", "scopes", "authorizeUrl", "tokenUrl", "profileUrl", "rolesUrl", "secretRef"];
+
+    /// <summary>
+    /// Seccion <c>oauth:</c> de un provider. Se lee de nodos YAML en vez de deserializar porque
+    /// <c>scopes</c> admite forma de lista y de escalar separado por espacios, igual que el wire.
+    /// La validacion de contenido (URLs absolutas, https, placeholder de version) vive en
+    /// <see cref="ClaudeOAuthConfiguration"/>.
+    /// </summary>
+    private static ProviderOAuthYaml CreateOAuth(YamlMappingNode map) => new()
+    {
+        ClientId = Scalar(map, "clientId"),
+        UserAgent = Scalar(map, "userAgent"),
+        AuthorizeUrl = Scalar(map, "authorizeUrl"),
+        TokenUrl = Scalar(map, "tokenUrl"),
+        ProfileUrl = Scalar(map, "profileUrl"),
+        RolesUrl = Scalar(map, "rolesUrl"),
+        SecretRef = Scalar(map, "secretRef"),
+        Scopes = map.Children.TryGetValue(new YamlScalarNode("scopes"), out var scopesNode)
+            ? scopesNode switch
+            {
+                YamlSequenceNode sequence => sequence.Children.OfType<YamlScalarNode>()
+                    .Select(s => s.Value ?? "").Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s.Trim()).ToList(),
+                YamlScalarNode { Value: { } scalar } => scalar
+                    .Split(' ', '	')
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s.Trim()).ToList(),
+                _ => null,
+            }
+            : null,
+    };
 
     private static readonly string[] ManagedKeys = ["executable", "args", "workingDirectory", "readinessTimeoutSeconds"];
 
@@ -529,6 +578,10 @@ public sealed class ConfigLoader
             {
                 // Validated as the supported legacy scalar/mapping union in ValidateLegacyAuth.
             }
+            else if (key == "oauth")
+            {
+                ValidateOAuth(pair.Value, path + ".oauth", file, diagnostics);
+            }
             else if (key == "managed")
             {
                 // Mapping validated with the provider's host in ValidateHost.
@@ -539,6 +592,155 @@ public sealed class ConfigLoader
             }
             else if (pair.Value is not YamlScalarNode)
                 AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+        }
+    }
+
+    /// <summary>
+    /// Contenido de cada seccion <c>oauth:</c> ya parseada: URLs absolutas https sin userinfo,
+    /// placeholder de version y scopes sin repetir. Se hace aqui y no solo en
+    /// <see cref="ClaudeOAuthConfiguration.TryBuild"/> para que un providers.yaml inválido
+    /// falle al cargarse, en vez de descubrirse a mitad de un login del usuario.
+    /// </summary>
+    private static void ValidateOAuthContents(ProvidersFileYaml? providers, List<ConfigDiagnostic> diagnostics)
+    {
+        if (providers?.Providers is null)
+        {
+            return;
+        }
+
+        foreach (var pair in providers.Providers)
+        {
+            if (pair.Value.OAuth is not { } oauth)
+            {
+                continue;
+            }
+
+            var path = "providers." + pair.Key + ".oauth";
+            RequireOAuthField(pair.Key, oauth.ClientId, path + ".clientId", diagnostics);
+            var userAgent = RequireOAuthField(pair.Key, oauth.UserAgent, path + ".userAgent", diagnostics);
+            RequireOAuthUrl(oauth.AuthorizeUrl, path + ".authorizeUrl", diagnostics);
+            RequireOAuthUrl(oauth.TokenUrl, path + ".tokenUrl", diagnostics);
+            if (oauth.ProfileUrl is { Length: > 0 })
+            {
+                RequireOAuthUrl(oauth.ProfileUrl, path + ".profileUrl", diagnostics);
+            }
+
+            if (oauth.RolesUrl is { Length: > 0 }) RequireOAuthUrl(oauth.RolesUrl, path + ".rolesUrl", diagnostics);
+            RequireOAuthScopes(oauth.Scopes, path + ".scopes", diagnostics);
+
+            // Sin {version} el user-agent quedaria clavado entre releases del producto.
+            if (userAgent.Length > 0 && !userAgent.Contains("{version}", StringComparison.Ordinal))
+            {
+                Add(diagnostics, "providers.yaml", path + ".userAgent", "config.oauth.userAgentNeedsVersion");
+            }
+        }
+    }
+
+    private static string RequireOAuthField(string providerId, string? value, string path,
+        List<ConfigDiagnostic> diagnostics)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value.Trim();
+        }
+
+        Add(diagnostics, "providers.yaml", path, "config.missingRequired");
+        return string.Empty;
+    }
+
+    private static void RequireOAuthUrl(string? value, string path, List<ConfigDiagnostic> diagnostics)
+    {
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            Add(diagnostics, "providers.yaml", path, "config.missingRequired");
+            return;
+        }
+
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var parsed))
+        {
+            Add(diagnostics, "providers.yaml", path, "config.invalidUrl");
+            return;
+        }
+
+        // Por aqui viajan el authorization code y el refresh token: otro esquema o un userinfo
+        // embebido los entregaria a un destino distinto del declarado (plan §6).
+        if (!string.Equals(parsed.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            Add(diagnostics, "providers.yaml", path, "config.oauth.httpsRequired");
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(parsed.UserInfo))
+        {
+            Add(diagnostics, "providers.yaml", path, "config.oauth.noUserInfoInUrl");
+        }
+    }
+
+    private static void RequireOAuthScopes(List<string>? scopes, string path,
+        List<ConfigDiagnostic> diagnostics)
+    {
+        if (scopes is null || scopes.Count == 0)
+        {
+            Add(diagnostics, "providers.yaml", path, "config.emptyCollection");
+            return;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var scope in scopes)
+        {
+            if (string.IsNullOrWhiteSpace(scope))
+            {
+                Add(diagnostics, "providers.yaml", path, "config.emptyScalar");
+                continue;
+            }
+
+            if (!seen.Add(scope.Trim()))
+            {
+                Add(diagnostics, "providers.yaml", path, "config.duplicateItem");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Forma de la seccion <c>oauth:</c>: mapeo con claves conocidas y valores del tipo esperado.
+    /// Solo forma: el contenido (URLs https, placeholder de version, scopes repetidos) se valida
+    /// en <see cref="ClaudeOAuthConfiguration"/> al construir la identidad.
+    /// </summary>
+    private static void ValidateOAuth(YamlNode node, string path, string file,
+        List<ConfigDiagnostic> diagnostics)
+    {
+        if (node is not YamlMappingNode map)
+        {
+            AddAtNode(diagnostics, file, path, "config.wrongType", node);
+            return;
+        }
+
+        CheckKeys(map, file, path, OAuthKeys, diagnostics);
+        foreach (var pair in map.Children)
+        {
+            var key = (pair.Key as YamlScalarNode)?.Value ?? "?";
+            if (key == "scopes")
+            {
+                if (pair.Value is YamlSequenceNode sequence)
+                {
+                    foreach (var item in sequence)
+                    {
+                        if (item is not YamlScalarNode scopeItem || !IsYamlString(scopeItem))
+                        {
+                            AddAtNode(diagnostics, file, path + ".scopes", "config.wrongType", item);
+                        }
+                    }
+                }
+                else if (!IsYamlString(pair.Value))
+                {
+                    AddAtNode(diagnostics, file, path + ".scopes", "config.wrongType", pair.Value);
+                }
+            }
+            else if (!IsYamlString(pair.Value))
+            {
+                AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+            }
         }
     }
 
@@ -622,7 +824,7 @@ public sealed class ConfigLoader
         return !double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
     }
 
-    private static void CheckKeys(YamlMappingNode map, string file, string path, string[] allowed,
+    internal static void CheckKeys(YamlMappingNode map, string file, string path, string[] allowed,
         List<ConfigDiagnostic> diagnostics)
     {
         foreach (var pair in map.Children)

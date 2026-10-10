@@ -134,6 +134,106 @@ public sealed class OmniHost
         CreateCredentialStore(paths.DataDirectory);
 
     /// <summary>
+    /// Piezas del login OAuth nativo de Claude para un provider declarado en providers.yaml
+    /// (ADR-0011 §3.3, plan claude-oauth-plan). Devuelve null si el provider no declara seccion
+    /// <c>oauth:</c>: entonces ese provider sigue por API key y no hay nada que loguear.
+    ///
+    /// La identidad sale solo de la configuración del usuario (INV-029): un repo nunca la fija.
+    /// </summary>
+    public static ClaudeOAuthSession? CreateClaudeOAuthSession(
+        IPlatformPaths paths,
+        string providerId,
+        Func<HttpClient>? httpFactory = null,
+        IBrowserLauncher? browser = null,
+        Func<System.DateTimeOffset>? utcNow = null)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+
+        var loaded = LoadUserConfiguration(paths);
+        if (loaded.Providers?.Providers is null
+            || !loaded.Providers.Providers.TryGetValue(providerId, out var declared)
+            || declared.OAuth is not { } oauthYaml)
+        {
+            return null;
+        }
+
+        var identity = ClaudeOAuthConfiguration.TryBuild(providerId, oauthYaml, []);
+        if (identity is null)
+        {
+            return null;
+        }
+
+        var secretRef = ClaudeOAuthConfiguration.SecretRefFor(providerId, oauthYaml);
+        var store = CreateUserCredentialStore(paths);
+        var metadataPath = System.IO.Path.Combine(
+            paths.DataDirectory, "claude-oauth-" + providerId + ".json");
+        var credentials = new ClaudeOAuthCredentialStore(store, metadataPath);
+        var http = httpFactory ?? DefaultOAuthHttpClient;
+        var tokens = new ClaudeOAuthTokenClient(identity, http, utcNow: utcNow);
+        Func<System.DateTimeOffset> clock = utcNow ?? DefaultOAuthUtcNow;
+        var refresh = new ClaudeOAuthRefreshCoordinator(
+            load: (ref_, ct) => System.Threading.Tasks.Task.Run(() => credentials.Load(ref_, ct), ct),
+            save: (cred, ct) => System.Threading.Tasks.Task.Run(() => credentials.Save(secretRef, cred, ct), ct),
+            refresh: (cred, ct) => tokens.RefreshAsync(
+                cred.RefreshToken, cred.Scopes, cred.ClientId, expiresInSeconds: null, ct),
+            acquireLock: (ref_, ct) => ClaudeOAuthRefreshLock.ForDataDirectory(paths.DataDirectory)(ref_, ct),
+            metadataWrittenAt: ct => System.Threading.Tasks.Task.Run(() => credentials.MetadataWrittenAt(ct), ct),
+            utcNow: clock);
+
+        return new ClaudeOAuthSession(
+            ProviderId: providerId,
+            SecretRef: secretRef,
+            Identity: identity,
+            Credentials: credentials,
+            Tokens: tokens,
+            Refresh: refresh,
+            Auth: new ClaudeOAuthAuthProvider(secretRef, credentials, refresh),
+            Browser: browser ?? new SystemBrowserLauncher(),
+            HttpFactory: http);
+    }
+
+    private static HttpClient DefaultOAuthHttpClient() => new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = System.TimeSpan.FromSeconds(600) };
+
+    /// <summary>
+    /// Version que reemplaza <c>{version}</c> en el User-Agent de la identidad. Sale del
+    /// ensamblado igual que en ProviderConnectionService, para que lo que ve Anthropic coincida
+    /// con lo que reporta /doctor.
+    /// </summary>
+    private static string ProductVersion { get; } =
+        typeof(OmniHost).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+
+    private static System.DateTimeOffset DefaultOAuthUtcNow() => System.DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Conjunto de piezas del flujo de cuenta de Claude, ya cableadas entre si. Se entrega junto
+    /// con el provider para que el cliente pueda loguear, inspeccionar y cerrar sesión sin
+    /// reconstruir el grafo de dependencias a mano.
+    /// </summary>
+    public sealed record ClaudeOAuthSession(
+        string ProviderId,
+        string SecretRef,
+        ClaudeOAuthClientIdentity Identity,
+        ClaudeOAuthCredentialStore Credentials,
+        ClaudeOAuthTokenClient Tokens,
+        ClaudeOAuthRefreshCoordinator Refresh,
+        ClaudeOAuthAuthProvider Auth,
+        IBrowserLauncher Browser,
+        Func<HttpClient> HttpFactory)
+    {
+        /// <summary>Máquina de login por loopback (camino primario).</summary>
+        public ClaudeOAuthLogin CreateLogin(Action<ClaudeOAuthLoginProgress>? progress = null) =>
+            new(Identity, Tokens, Credentials,
+                ct => System.Threading.Tasks.Task.FromResult<IClaudeOAuthCallbackTransport>(
+                    new HttpListenerCallbackTransport()),
+                Browser, progress);
+
+        /// <summary>Máquina de login para el camino manual, sin reservar puertos.</summary>
+        public ClaudeOAuthLogin CreateManualLogin(Action<ClaudeOAuthLoginProgress>? progress = null) =>
+            CreateLogin(progress);
+    }
+
+    /// <summary>
     /// Directorio de runtime del workspace: <c>(data)/workspaces/&lt;WorkspaceId&gt;/</c> (journal, blobs;
     /// ADR-0039 §2). El id se deriva de la ruta canónica de la raíz.
     /// </summary>
@@ -437,13 +537,16 @@ public sealed class OmniHost
     /// <summary>Conecta la implementación que corresponde a la familia declarada (ADR-0005, M5).</summary>
     public static IModelProvider ConnectProvider(ProviderDescriptor descriptor, string baseUrl,
         string secretRef, string apiKey, ISubscriptionCredentialSource? subscription = null,
-        ProviderResilienceCatalog? circuits = null)
+        ProviderResilienceCatalog? circuits = null,
+        IClaudeOAuthCredentialSource? claudeOAuth = null,
+        ClaudeOAuthClientIdentity? oauthIdentity = null,
+        Func<HttpClient>? anthropicHttpFactory = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         return descriptor.Family switch
         {
             ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey, circuits),
-            ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey, circuits),
+            ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey, circuits, claudeOAuth, oauthIdentity, anthropicHttpFactory),
             ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey, subscription, circuits),
             _ => throw new ProviderFamilyNotSupportedException(descriptor.Family),
         };
@@ -476,20 +579,41 @@ public sealed class OmniHost
     }
 
     private static AnthropicMessagesProvider ConnectAnthropicMessages(ProviderDescriptor descriptor,
-        string baseUrl, string secretRef, string apiKey, ProviderResilienceCatalog? circuits)
+        string baseUrl, string secretRef, string apiKey, ProviderResilienceCatalog? circuits,
+        IClaudeOAuthCredentialSource? claudeOAuth = null, ClaudeOAuthClientIdentity? identity = null,
+        Func<HttpClient>? httpFactory = null)
     {
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
             descriptor.SupportsNativeToolCalls)
         { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile, BillingMode = descriptor.BillingMode };
         // Misma política TLS que el resto: validación estándar para hosts públicos como api.anthropic.com.
-        HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
-        {
-            Timeout = System.TimeSpan.FromSeconds(600),
-        };
+        // La factory inyectada es solo para tests deterministas: sin ella no hay forma de afirmar
+        // las cabeceras del camino de cuenta sin salir a internet.
+        HttpClient CreateClient() => httpFactory is not null
+            ? httpFactory()
+            : new HttpClient(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
+            {
+                Timeout = System.TimeSpan.FromSeconds(600),
+            };
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
-        return new AnthropicMessagesProvider(configured, secrets, CreateClient,
-            new AnthropicProviderOptions { Resilience = new OpenAiProviderOptions { CircuitCatalog = circuits } });
+        var options = new AnthropicProviderOptions { Resilience = new OpenAiProviderOptions { CircuitCatalog = circuits } };
+        if (identity is not null)
+        {
+            // El camino de cuenta presenta la identidad que declaro el usuario (providers.yaml),
+            // no una inventada por el runtime: INV-007 y ADR-0039 §2.
+            options = new AnthropicProviderOptions
+            {
+                Resilience = options.Resilience,
+                ApiVersion = options.ApiVersion,
+                DefaultMaxOutputTokens = options.DefaultMaxOutputTokens,
+                OutputTokensAboveReasoningBudget = options.OutputTokensAboveReasoningBudget,
+                OAuthUserAgentTemplate = identity.UserAgentTemplate,
+                ClientVersion = ProductVersion,
+            };
+        }
+
+        return new AnthropicMessagesProvider(configured, secrets, CreateClient, options, claudeOAuth);
     }
 
     private static OpenAiChatCompatibleProvider ConnectOpenAiChatCompatible(ProviderDescriptor descriptor,
