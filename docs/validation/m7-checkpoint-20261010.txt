@@ -1,0 +1,41 @@
+M7 first checkpoint — Windows 2026-10-10
+Verified source commit: 6718fd15613e5ac77103568e40e342ebf5ade59a
+
+m7-build-20261010.log
+SHA256: 9904A628C0659A51267BEC11BA4839DDB5A2C95101C12951CB2F2878603878AC
+
+Compilación correcta.
+    0 Advertencia(s)
+    0 Errores
+
+Tiempo transcurrido 00:00:06.15
+
+m7-focal-final-20261010.log
+SHA256: 5594636AF2F4F4B898E76C6863081FA80276599EBC90ADBCBAF7B6E3451979C4
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.Tests
+  Discovered:  OmniCore.Tests
+  Starting:    OmniCore.Tests
+  Finished:    OmniCore.Tests (ID = 'daa6f82956d504802b2e7f3d5c5ddc5dea67c7ba8d16a4add1d60935e3991bcb')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.Tests  Total: 20, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 12.844s
+
+m7-architecture-20261010.log
+SHA256: 2FE0F96676332D4FDC9974D474F045BD8589D12E90B8ACACF297F37DCD869981
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.ArchitectureTests
+  Discovered:  OmniCore.ArchitectureTests
+  Starting:    OmniCore.ArchitectureTests
+  Finished:    OmniCore.ArchitectureTests (ID = 'ea5bdf12e18d215a1e0c6e477424741736183fe9a1f891a32aba9556e15bb586')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.ArchitectureTests  Total: 56, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 0.493s
+
+m7-cli-regression-20261010.log
+SHA256: B0C3522053ECE473636163246824F00F866F45D311240C80ECC9C2EF69C5BA23
+xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
+  Discovering: OmniCore.Tests
+  Discovered:  OmniCore.Tests
+  Starting:    OmniCore.Tests
+  Finished:    OmniCore.Tests (ID = 'daa6f82956d504802b2e7f3d5c5ddc5dea67c7ba8d16a4add1d60935e3991bcb')
+=== TEST EXECUTION SUMMARY ===
+   OmniCore.Tests  Total: 71, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 35.754s
