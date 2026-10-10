@@ -1,9 +1,8 @@
 # Plan de construcción — Login OAuth nativo de Anthropic usando la identidad de Claude Code (v3, 2026-10-10)
 
-> **Estado del documento:** PLAN. No es la construcción, no implementa nada, no autentica nada.
-> Especifica cómo se construirá el login por cuenta de Claude dentro de OmniCore usando el
-> protocolo e identidad de Claude Code. Sustituye al bloqueo de §3.3/§8/§10.7 de ADR-0011 (rev. 5)
-> y al informe `provider-connections-account-20261008.md` en todo lo referente al flujo por cuenta.
+> **Estado:** implementación completada en Windows; cierre y evidencia en `claude-oauth-closure-20261010.md`.
+> Este documento conserva la referencia de protocolo y describe la implementación final.
+> Las pruebas deterministas no acreditan un login ni consumo reales de Anthropic.
 
 ## 0. Decisión de alcance
 
@@ -16,37 +15,22 @@ user-agent y scopes de Claude Code) y produce un `ClaudeOAuthCredential` cifrado
 Referencia de comportamiento: `github.com/Icarus603/claude-code` @
 `7c918f786828f7071d023e1c401bc6be754446e3` (clon de solo lectura, derivado del sourcemap npm
 v2.1.88). Se porta el **protocolo completo** (endpoints, PKCE, callback, exchange, refresh,
-scopes, cabeceras de inferencia) **y la identidad de cliente** (client id, user-agent, scopes).
+scopes, cabeceras de inferencia) y admite la identidad declarada por el usuario (client id, user-agent, scopes).
 
 **Toda la lógica por nombre de modelo/provider sigue prohibida (INV-007).** El flujo se declara
 por `AuthKind.OAuth` + `ProviderDescriptor`, nunca por `if (provider == "anthropic")`.
 
 ## 1. Identidad de cliente
 
-La identidad de cliente es fija y coincide con la de Claude Code. No hay elección: OmniCore se
-identifica como Claude Code en todos los requests OAuth y de inferencia.
+La identidad se declara en `providers.yaml` del usuario (ADR-0039); no hay constantes ni valores por defecto en Models. La tabla siguiente conserva los valores de referencia de Claude Code. El runtime transmite el client id, scopes y user-agent declarados por el usuario; nunca el repo ni el modelo los eligen.
 
 ```csharp
-// src/OmniCore.Models/ClaudeOAuthClientIdentity.cs
-public sealed record ClaudeOAuthClientIdentity(
-    string ClientId,
-    string UserAgentTemplate,   // con {version} para sustituir
-    IReadOnlyList<string> Scopes,
-    string AuthorizeUrl,
-    string TokenUrl)
+public sealed record ClaudeOAuthClientIdentity(string ClientId, string UserAgentTemplate,
+    IReadOnlyList<string> Scopes, string AuthorizeUrl, string TokenUrl)
 {
-    public static ClaudeOAuthClientIdentity ClaudeCode { get; } = new(
-        ClientId:          "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-        UserAgentTemplate: "claude-cli/{version} (external, cli)",
-        Scopes:            new[] { "user:profile", "user:inference",
-                                   "user:sessions:claude_code",
-                                   "user:mcp_servers",
-                                   "user:file_upload" },
-        AuthorizeUrl: "https://claude.com/cai/oauth/authorize",
-        TokenUrl:     "https://platform.claude.com/v1/oauth/token");
-
-    public string BuildUserAgent(string version) =>
-        UserAgentTemplate.Replace("{version}", version);
+    public string? ProfileUrl { get; init; }
+    public string? RolesUrl { get; init; }
+    public string BuildUserAgent(string version) => UserAgentTemplate.Replace("{version}", version);
 }
 ```
 
@@ -58,7 +42,7 @@ public sealed record ClaudeOAuthClientIdentity(
 | `AuthorizeUrl` | `https://claude.com/cai/oauth/authorize` | `oauthConstants.ts:92` |
 | `TokenUrl` | `https://platform.claude.com/v1/oauth/token` | `oauthConstants.ts:94` |
 
-`{version}` se reemplaza por la versión actual de OmniCore. El resto es literal.
+`{version}` se reemplaza por la versión actual de OmniCore. El resto viene de la configuración User.
 
 ## 2. Extracción de la lógica de referencia
 
@@ -553,6 +537,17 @@ public async Task<ClaudeOAuthProfile?> FetchProfileAsync(string accessToken, Can
 - Timeout 10s → configurado en `HttpClient.Timeout`.
 - Perfil opcional: si falla, el refresh sigue funcionando con datos cached.
 
+### 2.9 Roles opcionales
+
+`rolesUrl` habilita `FetchRolesAsync`: GET con Bearer, timeout de 10 s y DTO AOT para
+`organization_role`, `workspace_role`, `organization_name`. Se consulta después del perfil
+cuando existe scope `user:profile`; un fallo de HTTP, JSON o timeout no impide el login.
+La cancelación del llamador sí se propaga. Si no se declara `rolesUrl`, no se consulta ni
+se inventan roles. Los roles se conservan en el blob cifrado y sobreviven al refresh.
+Referencia local: `C:/temp/omni-claude-reference-20261001/src/services/oauth/client.ts`,
+`fetchAndStoreUserRoles`; endpoint de referencia `/api/oauth/claude_cli/roles` en
+`src/constants/oauth.ts`. No se usan los roles como grants de OmniCore.
+
 ## 3. Arquitectura dentro de OmniCore
 
 Nuevo proyecto/lógica en `OmniCore.Models` (el Engine no conoce providers concretos, INV-008) y
@@ -569,7 +564,7 @@ cableado en `OmniCore.Host`. Reutiliza lo existente:
 
 | Archivo | Responsabilidad |
 |---|---|
-| `src/OmniCore.Models/ClaudeOAuthClientIdentity.cs` | Identidad fija de Claude Code (§1). |
+| `src/OmniCore.Models/ClaudeOAuthClientIdentity.cs` | Identidad declarada por el usuario, sin defaults (§1). |
 | `src/OmniCore.Models/ClaudeOAuthCredential.cs` | `AccessToken`, `RefreshToken`, `ExpiresAt`, `Scopes`, `SubscriptionType?`, `RateLimitTier?`, `ClientId` (pegajoso), `AccountUuid?`. |
 | `src/OmniCore.Models/ClaudeOAuthLogin.cs` | Máquina de estados del login (§4). |
 | `src/OmniCore.Models/ClaudeOAuthPkce.cs` | `verifier`/`challenge`/`state` (lógica pura, testeable). |
@@ -579,8 +574,8 @@ cableado en `OmniCore.Host`. Reutiliza lo existente:
 | `src/OmniCore.Models/ClaudeOAuthManualCallbackTransport.cs` | Transporte del modo manual (§3.3). |
 | `src/OmniCore.Models/ClaudeOAuthTokenClient.cs` | exchange + refresh + perfil + roles (§2.4-2.8). |
 | `src/OmniCore.Models/ClaudeOAuthRefreshCoordinator.cs` | dead-set + lockfile + re-lectura por mtime (§2.6, §5). |
-| `src/OmniCore.Models/ClaudeOAuthAuthProvider.cs` | `IAuthProvider` que entrega Bearer vigente (refresca si hace falta). |
-| `src/OmniCore.Host/OmniHost.cs` | Factory aditiva `CreateClaudeOAuthLogin()`. |
+| `src/OmniCore.Host/ClaudeOAuthAuthProvider.cs` | `IAuthProvider` que entrega Bearer vigente (refresca si hace falta). |
+| `src/OmniCore.Host/OmniHost.cs` | Factory aditiva `CreateClaudeOAuthSession()`. |
 | `src/OmniCore.Client/Localization.cs` | Claves `claude.oauth.*` es/en. |
 
 ### 3.2 Flujo de estados
@@ -634,19 +629,18 @@ journal, artifacts, contexto ni logs).
 
 1. Antes de usar el token: si `ExpiresAt - 5 min <= now`, refrescar.
 2. Comprobar dead-set; si el refresh token está muerto → `InvalidGrant` (pedir login).
-3. Adquirir lockfile (mutex en proceso + file lock en `<data>/workspaces/<WorkspaceId>/`).
+3. Adquirir lockfile por referencia de credencial (mutex en proceso + file lock en `<data>/`).
 4. Re-leer `credentials.json`; si cambió el `mtime` respecto a la copia en memoria, recargar y
    limpiar el dead-set (una escritura externa probablemente trajo otro token).
 5. Comprobar dead-set otra vez con el token recién leído (carrera entre procesos).
 6. Refrescar; `invalid_grant` → marcar muerto y fallar; éxito → persistir y liberar.
 
-Esto es lo que permite varios procesos OmniCore (o el CLI oficial) convivir sin pisarse los
-tokens.
+Esto coordina los procesos OmniCore que comparten el mismo almacén y lock. No coordina el almacén independiente del CLI oficial.
 
 ## 6. Persistencia y seguridad
 
 - `ClaudeOAuthCredential` cifrado en `ICredentialStore` (ADR-0018), nunca en texto plano ni en
-  YAML. Metadata sin secretos aparte (`(data)/provider-connections.json`): máscara, timestamps,
+  YAML. Metadata sin secretos aparte (`(data)/claude-oauth-<provider>.json`): máscara, timestamps,
   plan/tier.
 - `SecretRedactorRegistry` registra access y refresh en cuanto se obtienen.
 - Sin logs del `code`, `state`, tokens ni cabeceras. Los errores HTTP se reportan por código,
@@ -658,7 +652,7 @@ tokens.
 ## 7. Integración con el provider y el resto del runtime
 
 - `AnthropicMessagesProvider` añade el camino `AuthKind.OAuth`: `Authorization: Bearer` + beta
-  `oauth-2025-04-20`, `User-Agent: claude-cli/<versión> (external, cli)`,
+  `oauth-2025-04-20`, `User-Agent` declarado en `oauth.userAgent` con `{version}` sustituido,
   `x-anthropic-additional-protection: true`, en vez de `x-api-key`. Cubierto por la bifurcación
   existente `if (_descriptor.Auth.Kind == ...)` (§3.1).
 - `withOAuth401Retry` equivalente en C#: ante 401, un refresh y un reintento; si vuelve a fallar
@@ -698,7 +692,7 @@ Se usa `IHttpMessageHandler` falso (patrón `AnthropicMessagesProviderTests`/`Qu
 7. **Coordinación (§5):** dos refreshes concurrentes → un solo POST; mtime externo → recarga y
    dead-set limpio; token muerto leído por otro proceso durante la espera del lock → no refresca.
 8. **Cabeceras de inferencia (§2.7):** suscriptor → `Authorization: Bearer` + beta +
-   additional-protection; User-Agent = `claude-cli/<versión> (external, cli)`; 401 → refresh +
+   additional-protection; User-Agent conserva la identidad declarada por el usuario; 401 → refresh +
    1 reintento; 401 tras refresh → `AuthenticationFailed`.
 9. **Persistencia (§6):** credential cifrado y recuperable; redacción (scan de todos los archivos
    temporales sin access/refresh en claro); metadata con máscara; cancelación a mitad no deja
@@ -720,7 +714,7 @@ Se usa `IHttpMessageHandler` falso (patrón `AnthropicMessagesProviderTests`/`Qu
 - Scan de secretos en tests: ningún access/refresh/code/state en artefactos, logs, journal ni
   eventos.
 - `LocalizedText` en es/en para todas las cadenas visibles (ADR-0040).
-- Test que demuestra que la identidad de cliente es la de Claude Code (test de valores fijos, §9.11).
+- Test que demuestra que la identidad declarada por el usuario llega al wire sin defaults ni sustituciones (§9.11).
 - La delegación a CLI (`ClaudeAccountDelegationService`) **no** se presenta como este flujo: son
   caminos distintos y el consumidor real de cada uno se documenta (hoy la delegación solo la
   consume su factory y sus tests; el chat no la usa).
@@ -743,12 +737,12 @@ Se usa `IHttpMessageHandler` falso (patrón `AnthropicMessagesProviderTests`/`Qu
 | F2 ✅ hecha | `IClaudeOAuthCallbackTransport` + listener puro + transport HTTP + transport manual | 3, 10 |
 | F3 ✅ hecha | `ClaudeOAuthTokenClient` (exchange, refresh, perfil) + errores tipados + DTO AOT | 4, 5 |
 | F4 ✅ hecha | `ClaudeOAuthCredential`, `ClaudeOAuthCredentialStore` (clave separada + metadata atómica + mtime) | 9 |
-| F5 | `ClaudeOAuthRefreshCoordinator` (dead-set, lock, mtime) | 6, 7 |
-| F6 | `AnthropicMessagesProvider` camino OAuth + 401-retry | 8 |
-| F7 | `ClaudeOAuthAuthProvider` + factory Host + `/doctor` + status line | contratos, 12 |
-| F8 | Localización es/en y pulido; suite completa y arquitectura | aceptación §10 |
+| F5 ✅ hecha | `ClaudeOAuthRefreshCoordinator` (dead-set, lock, mtime) | 6, 7 |
+| F6 ✅ hecha | `AnthropicMessagesProvider` camino OAuth + 401-retry | 8 |
+| F7 ✅ hecha | `ClaudeOAuthAuthProvider` + factory Host + `/doctor` + status line | contratos, 12 |
+| F8 ✅ hecha | Localización es/en y pulido; suite completa y arquitectura | aceptación §10 |
 
-Cada fase: build + tests focales al cerrar; sin commits hasta la aceptación de la raíz.
+Cada fase: build + tests focales al cerrar. La raíz preservó el trabajo de Pi y completó el cierre en una rama aislada antes de fusionar a main.
 
 ## 13. Trazabilidad de fuentes
 
@@ -764,3 +758,31 @@ Cada fase: build + tests focales al cerrar; sin commits hasta la aceptación de 
 | Cabeceras de inferencia | `packages/provider/src/http.ts:17-28,56-71`; `anthropic/client.ts:126` |
 | Perfil/roles | `packages/provider/src/oauth/getOauthProfile.ts`; `oauth/client.ts` (fetchRoles) |
 | Persistencia/lockfile | `packages/provider/src/authAlias.ts`; `packages/cli/src/handlers/auth.ts:95,196,249-269` |
+
+## 14. Uso del flujo terminado
+
+El usuario declara el provider de familia `AnthropicMessages` y su sección `oauth:` en
+su directorio de configuración. Se requieren clientId, userAgent con `{version}`, scopes,
+authorizeUrl y tokenUrl. profileUrl y rolesUrl son opcionales; secretRef admite una clave
+propia o `<provider>-oauth`. El billing por defecto de este flujo es IncludedQuota;
+una declaración explícita de billingMode prevalece y no se altera la política de routing.
+
+```text
+omni login claude [provider]             # navegador + loopback; provider por defecto: anthropic
+omni login claude [provider] --manual    # URL y pegado transitorio de code#state por stdin
+omni logout claude [provider]           # borra solo la credencial y metadata de ese provider
+omni doctor                            # plan, tier, expiración y estado de sesión
+```
+
+Si no se puede abrir el navegador o el listener, el CLI prepara un intento manual nuevo
+con su propio PKCE/state. El pegado no es un argumento, un command de conversación ni
+un evento del journal. El tiempo de espera manual es de cinco minutos y admite cancelación.
+La status line plain y TUI presenta plan, tier y expiración UTC a partir de un DTO sin
+secretos del Host, conservando `—` para datos no informados. La TUI muestra los datos de
+la última conversación ejecutada y los borra al cambiar de sesión. El login interactivo
+de este flujo entra por el CLI; el catálogo de conexiones TUI permite inspección y logout.
+
+La persistencia carga tanto el formato previo de Pi (perfil en metadata separada) como
+el blob enriquecido; un refresh conserva perfil/roles. Ni credencial, Bearer ni tokens
+exponen sus valores en ToString. El cliente HTTP de producción no sigue redirecciones
+en exchange, refresh o consultas de perfil/roles.

@@ -27,7 +27,7 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0008](0008-sandbox-compartido.md) | Sandbox como librería compartida `OmniCore.Sandbox` | Aceptada, rev. 3 (multiplataforma, multi-target net8; ver 0038) |
 | [0009](0009-grafo-de-dependencias.md) | Grafo de dependencias entre proyectos | Aceptada, rev. 3 (+ `OmniCore.Client`) |
 | [0010](0010-plataforma-y-tooling.md) | .NET 10, tooling de build y tests | Aceptada (+ excepción net8, AOT, YAML) |
-| [0011](0011-conexion-a-proveedores.md) | Mecanismo de conexión a proveedores de modelos | Aceptada, rev. 5 (+ protocolo Anthropic de Claude Code §10 y plan OAuth de cuenta §10.7 / `validation/claude-oauth-plan-20261008.md`; §4: attach/managed cableados) |
+| [0011](0011-conexion-a-proveedores.md) | Mecanismo de conexión a proveedores de modelos | Aceptada, rev. 6 (+ protocolo Anthropic §10 y OAuth nativo terminado en Windows §10.7 / `validation/claude-oauth-closure-20261010.md`; §4: attach/managed cableados) |
 | [0012](0012-lanes-delegadas-a-claude-code.md) | Lanes delegadas a Claude Code con la suscripción del usuario | Aceptada, rev. 3 (M7, riesgo residual aceptado) |
 | [0013](0013-event-schema-vs-protocol.md) | Versión de schema de evento separada del Omni Protocol | Aceptada (+ nombres, `EventType`, ids de DTOs) |
 | [0014](0014-pipeline-tool-permission-execution.md) | Pipeline Tool → Permission → Execution | Aceptada |
