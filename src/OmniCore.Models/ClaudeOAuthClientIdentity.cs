@@ -18,6 +18,8 @@ public sealed record ClaudeOAuthClientIdentity(
     /// </summary>
     public string? ProfileUrl { get; init; }
 
+    public string? RolesUrl { get; init; }
+
     /// <summary>
     /// Construye el User-Agent final reemplazando {version} por la versión dada.
     /// Ejemplo: "claude-cli/2.1.88 (external, cli)" → "omnicore/1.0.0 (windows; x64)".

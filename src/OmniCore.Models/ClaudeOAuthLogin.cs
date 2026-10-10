@@ -92,9 +92,6 @@ public sealed class ClaudeOAuthPendingLogin
 /// configuración del usuario, no de quien invoca.</summary>
 public sealed record ClaudeOAuthLoginOptions
 {
-    /// <summary>Puerto fijo del listener loopback. Null deja que el SO asigne uno.</summary>
-    public int? FixedPort { get; init; }
-
     /// <summary>Intentar abrir el navegador del sistema. Si false, o si falla, se sigue el modo manual.</summary>
     public bool OpenBrowser { get; init; } = true;
 
@@ -204,7 +201,7 @@ public sealed class ClaudeOAuthLogin
         var state = ClaudeOAuthPkce.GenerateState();
         Report(ClaudeOAuthLoginPhase.PreparingChallenge);
 
-        IClaudeOAuthCallbackTransport transport;
+        IClaudeOAuthCallbackTransport? transport = null;
         ClaudeOAuthLoopbackListener listener;
         try
         {
@@ -214,11 +211,13 @@ public sealed class ClaudeOAuthLogin
         }
         catch (OAuthTransportException ex)
         {
+            if (transport is not null) await transport.DisposeAsync().ConfigureAwait(false);
             Report(ClaudeOAuthLoginPhase.Failed, messageKey: "claude.oauth.failed.transport");
             return ClaudeOAuthLoginResult.Fail(ClaudeOAuthLoginFailure.TransportUnavailable, ex.Message);
         }
         catch (OperationCanceledException)
         {
+            if (transport is not null) await transport.DisposeAsync().ConfigureAwait(false);
             Report(ClaudeOAuthLoginPhase.Failed, messageKey: "claude.oauth.failed.cancelled");
             return ClaudeOAuthLoginResult.Fail(ClaudeOAuthLoginFailure.Cancelled);
         }
@@ -289,7 +288,7 @@ public sealed class ClaudeOAuthLogin
     /// <see cref="ClaudeOAuthLoginFailure.BrowserUnavailable"/>) y pegó <c>CODE#STATE</c>.
     /// El verifier tiene que ser el mismo del intento original, así que lo guarda el llamador.
     /// </summary>
-    public Task<ClaudeOAuthLoginResult> CompleteManualAsync(
+    public async Task<ClaudeOAuthLoginResult> CompleteManualAsync(
         string secretRef,
         string codeAndState,
         ClaudeOAuthPendingLogin pending,
@@ -303,23 +302,32 @@ public sealed class ClaudeOAuthLogin
         var hash = codeAndState.IndexOf('#');
         if (hash <= 0 || hash == codeAndState.Length - 1)
         {
-            return Task.FromResult(ClaudeOAuthLoginResult.Fail(
+            return ClaudeOAuthLoginResult.Fail(
                 ClaudeOAuthLoginFailure.CallbackRejected,
-                "claude.oauth.manual.bad_format"));
+                "claude.oauth.manual.bad_format");
         }
 
-        var code = codeAndState[..hash].Trim();
-        var state = codeAndState[(hash + 1)..].Trim();
-        if (!string.Equals(state, pending.State, StringComparison.Ordinal))
+        // The manual and loopback paths share callback validation, including constant-time state comparison.
+        await using var transport = new ClaudeOAuthManualCallbackTransport(_ => Task.FromResult(codeAndState));
+        var listener = new ClaudeOAuthLoopbackListener(transport);
+        try
         {
-            return Task.FromResult(ClaudeOAuthLoginResult.Fail(
-                ClaudeOAuthLoginFailure.CallbackRejected,
-                "claude.oauth.callback.state_mismatch"));
+            await listener.StartAsync(ct).ConfigureAwait(false);
+            var code = await listener.WaitForAuthorizationAsync(pending.State, ct).ConfigureAwait(false);
+            return await CompleteAsync(secretRef, code, pending.State, pending.CodeVerifier,
+                redirectUri: ClaudeOAuthAuthorizeUrlBuilder.ManualRedirectUri,
+                expiresInSeconds: options.ExpiresInSeconds, ct).ConfigureAwait(false);
         }
-
-        return CompleteAsync(secretRef, code, state, pending.CodeVerifier,
-            redirectUri: ClaudeOAuthAuthorizeUrlBuilder.ManualRedirectUri,
-            expiresInSeconds: options.ExpiresInSeconds, ct);
+        catch (OAuthCallbackException)
+        {
+            return ClaudeOAuthLoginResult.Fail(
+                ClaudeOAuthLoginFailure.CallbackRejected,
+                "claude.oauth.callback.state_mismatch");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return ClaudeOAuthLoginResult.Fail(ClaudeOAuthLoginFailure.Cancelled);
+        }
     }
 
     private async Task<ClaudeOAuthLoginResult> CompleteAsync(
@@ -334,6 +342,8 @@ public sealed class ClaudeOAuthLogin
         ClaudeOAuthTokens tokens;
         try
         {
+            foreach (var secret in new[] { code, state, verifier })
+                if (secret.Length >= Secret.MinimumLength) SecretRedactorRegistry.Register(secret);
             Report(ClaudeOAuthLoginPhase.Exchanging, messageKey: "claude.oauth.exchanging");
             tokens = await _tokens
                 .ExchangeCodeAsync(code, state, verifier, redirectUri, expiresInSeconds, ct)
@@ -357,11 +367,20 @@ public sealed class ClaudeOAuthLogin
         }
 
         ClaudeOAuthProfile? profile = null;
-        if (tokens.Scopes.Contains(ClaudeOAuthScopes.Profile, StringComparer.Ordinal))
+        ClaudeOAuthRoles? roles = null;
+        try
         {
-            // El perfil exige scope user:profile; un token de solo inferencia daría 403 (plan §2.8).
-            Report(ClaudeOAuthLoginPhase.FetchingProfile, messageKey: "claude.oauth.fetching_profile");
-            profile = await _tokens.FetchProfileAsync(tokens.AccessToken, ct).ConfigureAwait(false);
+            if (tokens.Scopes.Contains(ClaudeOAuthScopes.Profile, StringComparer.Ordinal))
+            {
+                Report(ClaudeOAuthLoginPhase.FetchingProfile, messageKey: "claude.oauth.fetching_profile");
+                profile = await _tokens.FetchProfileAsync(tokens.AccessToken, ct).ConfigureAwait(false);
+                roles = await _tokens.FetchRolesAsync(tokens.AccessToken, ct).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Report(ClaudeOAuthLoginPhase.Failed, messageKey: "claude.oauth.failed.cancelled");
+            return ClaudeOAuthLoginResult.Fail(ClaudeOAuthLoginFailure.Cancelled);
         }
 
         try
@@ -381,6 +400,7 @@ public sealed class ClaudeOAuthLogin
                 DisplayName = profile?.DisplayName,
                 SubscriptionType = profile?.SubscriptionType,
                 RateLimitTier = profile?.RateLimitTier,
+                Roles = roles,
             };
 
             _credentials.Save(secretRef, credential, ct);

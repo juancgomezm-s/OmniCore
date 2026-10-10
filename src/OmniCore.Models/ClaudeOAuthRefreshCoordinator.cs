@@ -274,6 +274,7 @@ public sealed class ClaudeOAuthRefreshCoordinator
             DisplayName = locked.DisplayName,
             SubscriptionType = locked.SubscriptionType,
             RateLimitTier = locked.RateLimitTier,
+            Roles = locked.Roles,
             AuthenticatedAt = locked.AuthenticatedAt,
         };
 

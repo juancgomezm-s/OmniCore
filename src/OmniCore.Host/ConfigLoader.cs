@@ -68,7 +68,7 @@ public sealed class ConfigLoader
                     "IncludedQuota" => BillingMode.IncludedQuota,
                     "CreditBalance" => BillingMode.CreditBalance,
                     "MeteredCurrency" => BillingMode.MeteredCurrency,
-                    _ => BillingMode.Unknown,
+                    _ => values.OAuth is not null ? BillingMode.IncludedQuota : BillingMode.Unknown,
                 };
                 var localHost = LocalHostFor(values, family, billing);
                 registry.Add(new ProviderDescriptor(pair.Key, family,
@@ -366,7 +366,7 @@ public sealed class ConfigLoader
     }
 
     private static readonly string[] OAuthKeys =
-        ["clientId", "userAgent", "scopes", "authorizeUrl", "tokenUrl", "profileUrl", "secretRef"];
+        ["clientId", "userAgent", "scopes", "authorizeUrl", "tokenUrl", "profileUrl", "rolesUrl", "secretRef"];
 
     /// <summary>
     /// Seccion <c>oauth:</c> de un provider. Se lee de nodos YAML en vez de deserializar porque
@@ -381,6 +381,7 @@ public sealed class ConfigLoader
         AuthorizeUrl = Scalar(map, "authorizeUrl"),
         TokenUrl = Scalar(map, "tokenUrl"),
         ProfileUrl = Scalar(map, "profileUrl"),
+        RolesUrl = Scalar(map, "rolesUrl"),
         SecretRef = Scalar(map, "secretRef"),
         Scopes = map.Children.TryGetValue(new YamlScalarNode("scopes"), out var scopesNode)
             ? scopesNode switch
@@ -624,6 +625,7 @@ public sealed class ConfigLoader
                 RequireOAuthUrl(oauth.ProfileUrl, path + ".profileUrl", diagnostics);
             }
 
+            if (oauth.RolesUrl is { Length: > 0 }) RequireOAuthUrl(oauth.RolesUrl, path + ".rolesUrl", diagnostics);
             RequireOAuthScopes(oauth.Scopes, path + ".scopes", diagnostics);
 
             // Sin {version} el user-agent quedaria clavado entre releases del producto.

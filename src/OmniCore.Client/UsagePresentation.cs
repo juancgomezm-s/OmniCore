@@ -74,6 +74,17 @@ public static class UsagePresentation
         return parts.Count == 0 ? prefix + " quota " + Missing : string.Join(" · ", parts);
     }
 
+    public static string? Account(AccountConnectionSnapshot? account, Localization localization)
+    {
+        if (account is null) return null;
+        return localization.Resolve("claude.oauth.account.status", new Dictionary<string, string>
+        {
+            ["provider"] = account.ProviderId, ["plan"] = account.Plan ?? Missing,
+            ["tier"] = account.Tier ?? Missing,
+            ["expires"] = account.ExpiresAt?.ToUniversalTime().ToString("yyyy-MM-dd HH:mm'Z'", CultureInfo.InvariantCulture) ?? Missing,
+        });
+    }
+
     public static string Tokens(TokenTotals totals)
     {
         if (totals.Input < 0 || totals.Output < 0 || totals.CacheRead < 0 || totals.CacheWrite < 0)

@@ -104,6 +104,7 @@ public sealed class ClaudeOAuthCredentialStore
         }
 
         var scopes = wire.Scopes?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? [];
+        var metadata = ReadAccountInfo(secretRef, ct);
         return new ClaudeOAuthCredential(
             wire.AccessToken,
             wire.RefreshToken,
@@ -113,6 +114,9 @@ public sealed class ClaudeOAuthCredentialStore
         {
             AccountUuid = wire.AccountUuid,
             OrganizationUuid = wire.OrganizationUuid,
+            EmailAddress = wire.EmailAddress ?? metadata?.EmailAddress, DisplayName = wire.DisplayName ?? metadata?.DisplayName,
+            SubscriptionType = wire.SubscriptionType ?? metadata?.SubscriptionType, RateLimitTier = wire.RateLimitTier ?? metadata?.RateLimitTier,
+            Roles = wire.Roles,
             AuthenticatedAt = wire.AuthenticatedAtUnix > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(wire.AuthenticatedAtUnix)
                 : default,
@@ -321,6 +325,9 @@ public sealed class ClaudeOAuthCredentialStore
         Scopes = credential.Scopes.ToArray(),
         AccountUuid = credential.AccountUuid,
         OrganizationUuid = credential.OrganizationUuid,
+        EmailAddress = credential.EmailAddress, DisplayName = credential.DisplayName,
+        SubscriptionType = credential.SubscriptionType, RateLimitTier = credential.RateLimitTier,
+        Roles = credential.Roles,
         AuthenticatedAtUnix = credential.AuthenticatedAt == default ? 0 : credential.AuthenticatedAt.ToUnixTimeSeconds(),
     };
 
@@ -361,6 +368,11 @@ public sealed class ClaudeOAuthCredentialStore
 /// <summary>Forma persistida del credential. Solo lo necesario para reconstruirlo.</summary>
 internal sealed class ClaudeOAuthCredentialWire
 {
+    public string? EmailAddress { get; set; }
+    public string? DisplayName { get; set; }
+    public string? SubscriptionType { get; set; }
+    public string? RateLimitTier { get; set; }
+    public ClaudeOAuthRoles? Roles { get; set; }
     public int SchemaVersion { get; set; }
 
     public string AccessToken { get; set; } = "";

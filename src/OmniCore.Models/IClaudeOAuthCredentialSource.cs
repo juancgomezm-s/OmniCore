@@ -11,6 +11,8 @@ public sealed record ClaudeOAuthBearer(string AccessToken, string? AccountUuid, 
     /// cabecera, nunca el nombre del modelo (INV-007). Equivalente a isClaudeAISubscriber en
     /// authAlias.ts.
     /// </summary>
+    public override string ToString() => "claude.oauth.bearer";
+
     public bool IsSubscriber => Scopes.Contains(ClaudeOAuthScopes.Inference, StringComparer.Ordinal);
 }
 

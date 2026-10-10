@@ -6,6 +6,7 @@ using OmniCore.Protocol;
 /// <summary>Production turns behind the Host boundary; the TUI never composes providers or credentials.</summary>
 public interface ITuiTurnHost
 {
+    UsageSnapshot? CurrentUsage() => null;
     Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken);
     Task<int> ExecuteDelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
@@ -23,6 +24,7 @@ public interface ITuiTurnHost
 public sealed class TuiTurnHost : ITuiTurnHost
 {
     private readonly OmniCliRuntime _runtime;
+    public UsageSnapshot? CurrentUsage() => _runtime.CurrentUsage();
     private readonly object _boostGate = new();
     private sealed record PendingTurnBoost(Guid Id, ReasoningRequest Request);
     private PendingTurnBoost? _nextTurnReasoningBoost;

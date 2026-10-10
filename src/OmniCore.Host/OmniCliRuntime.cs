@@ -2229,6 +2229,72 @@ public sealed class OmniCliRuntime : IDisposable
     public static void LogoutChatGpt() =>
         OmniHost.CreateChatGptAuth(OmniHost.CreatePlatformPaths()).Logout(CancellationToken.None);
 
+    internal Func<string, OmniHost.ClaudeOAuthSession?>? ClaudeOAuthSessionFactoryForTests { get; set; }
+
+    private OmniHost.ClaudeOAuthSession? OAuthSession(string providerId) =>
+        ClaudeOAuthSessionFactoryForTests is { } factory ? factory(providerId)
+            : OmniHost.CreateClaudeOAuthSession(OmniHost.CreatePlatformPaths(), providerId);
+
+    /// <summary>Host-managed login. Codes come from transient input, never arguments or journal commands.</summary>
+    public async Task<int> LoginClaudeAsync(string providerId, bool manual,
+        Func<CancellationToken, Task<string?>> readCode, Action<string> writeLine, CancellationToken ct)
+    {
+        var session = OAuthSession(providerId);
+        if (session is null) { writeLine(Text(Localized("doctor.claude.oauth.notConfigured", ("provider", providerId)))); return 1; }
+        var login = session.CreateLogin();
+        var options = new ClaudeOAuthLoginOptions();
+        ClaudeOAuthLoginResult result;
+        try
+        {
+            if (!manual)
+            {
+                login = session.CreateLogin(p => { if (p.AuthorizeUrl is { } url) writeLine(Text(Localized("cli.login.browser", ("url", url)))); });
+                result = await login.LoginAsync(session.SecretRef, options, ct).ConfigureAwait(false);
+                if (result.Success) { writeLine(Text(Localized("claude.oauth.succeeded"))); return 0; }
+                if (result.Failure is not (ClaudeOAuthLoginFailure.BrowserUnavailable or ClaudeOAuthLoginFailure.TransportUnavailable))
+                { writeLine(Text(Localized(OAuthFailureKey(result.Failure)))); return 1; }
+            }
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ClaudeOAuthLoginOptions.DefaultCallbackTimeout);
+            var pending = await login.BeginManualAsync(options, timeout.Token).ConfigureAwait(false);
+            writeLine(Text(Localized("cli.login.browser", ("url", pending.AuthorizeUrl))));
+            writeLine(Text(Localized("claude.oauth.manual.prompt")));
+            var pasted = await readCode(timeout.Token).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(pasted)) { writeLine(Text(Localized("claude.oauth.failed.cancelled"))); return 1; }
+            result = await login.CompleteManualAsync(session.SecretRef, pasted, pending, options, timeout.Token).ConfigureAwait(false);
+            writeLine(Text(Localized(result.Success ? "claude.oauth.succeeded" : OAuthFailureKey(result.Failure))));
+            return result.Success ? 0 : 1;
+        }
+        catch (OperationCanceledException) { writeLine(Text(Localized(ct.IsCancellationRequested ? "claude.oauth.failed.cancelled" : "claude.oauth.failed.timeout"))); return 1; }
+    }
+
+    private static string OAuthFailureKey(ClaudeOAuthLoginFailure? failure) => failure switch
+    {
+        ClaudeOAuthLoginFailure.Cancelled => "claude.oauth.failed.cancelled",
+        ClaudeOAuthLoginFailure.TimedOut => "claude.oauth.failed.timeout",
+        ClaudeOAuthLoginFailure.CallbackRejected => "claude.oauth.failed.callback",
+        ClaudeOAuthLoginFailure.Storage => "claude.oauth.failed.storage",
+        ClaudeOAuthLoginFailure.Network => "claude.oauth.failed.network",
+        _ => "claude.oauth.failed.exchange",
+    };
+
+    public int LogoutClaude(string providerId, Action<string> writeLine, CancellationToken ct)
+    {
+        var session = OAuthSession(providerId);
+        if (session is null) { writeLine(Text(Localized("doctor.claude.oauth.notConfigured", ("provider", providerId)))); return 1; }
+        session.Auth.SignOut(ct);
+        writeLine(Text(Localized("cli.logout.ok")));
+        return 0;
+    }
+
+    internal static AccountConnectionSnapshot? ClaudeOAuthAccount(string providerId, IPlatformPaths paths)
+    {
+        var session = OmniHost.CreateClaudeOAuthSession(paths, providerId);
+        if (session is null) return null;
+        var info = session.Credentials.ReadAccountInfo(session.SecretRef, CancellationToken.None);
+        return info is null ? null : new(providerId, info.SubscriptionType, info.RateLimitTier, info.ExpiresAt);
+    }
+
     internal static ModelDefinition? ResolveExplicitModel(LoadedUserConfiguration loaded, string modelId)
     {
         try { return loaded.Registry.Resolve(modelId); }
@@ -2255,6 +2321,7 @@ public sealed class OmniCliRuntime : IDisposable
             // Account windows and credits are not interchangeable with response rate limits.
             // Read the cached measurement for this exact session/provider; rendering never queries credentials.
             AccountQuota = _server.Observability.Quota(session, context.ProviderId),
+            Account = ClaudeOAuthAccount(context.ProviderId, OmniHost.CreatePlatformPaths()),
         };
     }
 

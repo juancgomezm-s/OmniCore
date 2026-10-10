@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using OmniCore.Abstractions;
 
 namespace OmniCore.Models;
 
@@ -84,6 +85,8 @@ public sealed record ClaudeOAuthTokens(
     string? AccountUuid,
     string? OrganizationUuid)
 {
+    public override string ToString() => "claude.oauth.tokens";
+
     /// <summary>True si el token sirve para inferencia bajo suscripción claude.ai.</summary>
     [JsonIgnore]
     public bool CanDoInference => Scopes.Contains(ClaudeOAuthScopes.Inference, StringComparer.Ordinal);
@@ -301,6 +304,8 @@ public sealed class ClaudeOAuthTokenClient
                 "La respuesta del token endpoint no trae refresh_token.", inner: null, status);
         }
 
+        foreach (var secret in new[] { accessToken, refreshToken })
+            if (secret.Length >= Secret.MinimumLength) SecretRedactorRegistry.Register(secret);
         return new ClaudeOAuthTokens(
             AccessToken: accessToken,
             RefreshToken: refreshToken,
@@ -430,7 +435,30 @@ public sealed class ClaudeOAuthTokenClient
         return $"{token.Scheme}://{apiHost}/api/oauth/profile";
     }
 
-    private static HttpClient DefaultHttpClient() => new();
+    /// <summary>Optional organization enrichment. Failure never prevents inference; caller cancellation propagates.</summary>
+    public async Task<ClaudeOAuthRoles?> FetchRolesAsync(string accessToken, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(accessToken);
+        ct.ThrowIfCancellationRequested();
+        if (_identity.RolesUrl is not { Length: > 0 } url) return null;
+        try
+        {
+            using var http = _httpFactory();
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(_profileTimeout);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Authorization = new("Bearer", accessToken);
+            using var response = await http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null;
+            var json = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            return JsonSerializer.Deserialize(json, ClaudeOAuthJsonContext.Default.ClaudeOAuthRoles);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
+        catch (HttpRequestException) { return null; }
+        catch (JsonException) { return null; }
+    }
+
+    private static HttpClient DefaultHttpClient() => new(new HttpClientHandler { AllowAutoRedirect = false });
 
     private static DateTimeOffset DefaultUtcNow() => DateTimeOffset.UtcNow;
 

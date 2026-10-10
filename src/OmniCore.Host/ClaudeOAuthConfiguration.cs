@@ -60,6 +60,7 @@ public static class ClaudeOAuthConfiguration
         return new ClaudeOAuthClientIdentity(clientId, userAgent, scopes, authorizeUrl, tokenUrl)
         {
             ProfileUrl = oauth.ProfileUrl is { Length: > 0 } profile ? profile.Trim() : null,
+            RolesUrl = oauth.RolesUrl is { Length: > 0 } roles ? roles.Trim() : null,
         };
     }
 

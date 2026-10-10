@@ -22,6 +22,7 @@ namespace OmniCore.Models;
 [JsonSerializable(typeof(ClaudeOAuthProfileAccountDto))]
 [JsonSerializable(typeof(ClaudeOAuthProfileOrganizationDto))]
 [JsonSerializable(typeof(ClaudeOAuthTokenRequest))]
+[JsonSerializable(typeof(ClaudeOAuthRoles))]
 internal partial class ClaudeOAuthJsonContext : JsonSerializerContext
 {
 }

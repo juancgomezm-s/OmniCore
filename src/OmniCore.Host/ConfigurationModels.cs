@@ -55,6 +55,8 @@ public sealed class ProviderOAuthYaml
     /// <summary>Opcional: si falta se deriva del host de <see cref="TokenUrl"/>.</summary>
     public string? ProfileUrl { get; set; }
 
+    public string? RolesUrl { get; set; }
+
     /// <summary>Clave bajo la que se guarda el credential cifrado. Default: "&lt;provider&gt;-oauth".</summary>
     public string? SecretRef { get; set; }
 }

@@ -193,7 +193,7 @@ public sealed class OmniHost
             HttpFactory: http);
     }
 
-    private static HttpClient DefaultOAuthHttpClient() => new() { Timeout = System.TimeSpan.FromSeconds(600) };
+    private static HttpClient DefaultOAuthHttpClient() => new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = System.TimeSpan.FromSeconds(600) };
 
     /// <summary>
     /// Version que reemplaza <c>{version}</c> en el User-Agent de la identidad. Sale del
@@ -230,10 +230,7 @@ public sealed class OmniHost
 
         /// <summary>Máquina de login para el camino manual, sin reservar puertos.</summary>
         public ClaudeOAuthLogin CreateManualLogin(Action<ClaudeOAuthLoginProgress>? progress = null) =>
-            new(Identity, Tokens, Credentials,
-                ct => System.Threading.Tasks.Task.FromResult<IClaudeOAuthCallbackTransport>(
-                    new ClaudeOAuthManualCallbackTransport(_ => System.Threading.Tasks.Task.FromResult(string.Empty))),
-                Browser, progress);
+            CreateLogin(progress);
     }
 
     /// <summary>

@@ -28,6 +28,10 @@ public sealed record ClaudeOAuthCredential(
 
     public string? DisplayName { get; init; }
 
+    public ClaudeOAuthRoles? Roles { get; init; }
+
+    public override string ToString() => "claude.oauth.credential";
+
     /// <summary>Plan informado por el servidor (max/pro/team/enterprise). Null si no se sabe.</summary>
     public string? SubscriptionType { get; init; }
 
