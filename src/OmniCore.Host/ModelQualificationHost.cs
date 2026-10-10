@@ -599,9 +599,15 @@ public sealed partial class ModelQualificationHost : IDisposable
             ? OmniHost.CreateChatGptAuth(_paths)
             : null;
 
+        // La cualificacion mide el mismo camino que va a usar el chat: si un provider autentica
+        // por cuenta, medirlo con API key daria traits de otro producto (ADR-0011 §3.3).
+        var claudeOAuth = OmniCliRuntime.ClaudeOAuthFor(provider, _paths);
+        var oauthIdentity = OmniCliRuntime.ClaudeOAuthIdentityFor(provider, _paths);
+
         return provider is null
             ? OmniHost.ConnectLocalChatCompletions(baseUrl, model.Id, secretRef, key)
-            : OmniHost.ConnectProvider(provider, baseUrl, secretRef, key, subscription: subscription);
+            : OmniHost.ConnectProvider(provider, baseUrl, secretRef, key, subscription: subscription,
+                claudeOAuth: claudeOAuth, oauthIdentity: oauthIdentity);
     }
 
     /// <summary>

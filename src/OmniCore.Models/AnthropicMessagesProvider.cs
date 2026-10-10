@@ -20,6 +20,25 @@ public sealed class AnthropicProviderOptions
     public int OutputTokensAboveReasoningBudget { get; init; } = 4096;
 
     public OpenAiProviderOptions Resilience { get; init; } = new();
+
+    /// <summary>
+    /// Cabecera <c>anthropic-beta</c> que acompaña al Bearer de una cuenta de Claude. Es publica y
+    /// documentada (ADR-0011 §3.3), no una beta interna de otro cliente. Vacío = no se manda.
+    /// </summary>
+    public string OAuthBetaHeader { get; init; } = "oauth-2025-04-20";
+
+    /// <summary>
+    /// User-Agent para el camino OAuth, con <c>{version}</c> sustituido por <see cref="ClientVersion"/>.
+    /// Lo aporta la identidad del usuario (providers.yaml); null en el camino API key, donde el
+    /// provider usa su propio agente.
+    /// </summary>
+    public string? OAuthUserAgentTemplate { get; init; }
+
+    /// <summary>Versión que reemplaza <c>{version}</c> en <see cref="OAuthUserAgentTemplate"/>.</summary>
+    public string ClientVersion { get; init; } = "0.0.0";
+
+    /// <summary>Cabecera de protección adicional que la Messages API acepta con Bearer.</summary>
+    public bool SendAdditionalProtection { get; init; } = true;
 }
 
 /// <summary>
@@ -36,12 +55,14 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     private readonly Func<HttpClient> _httpFactory;
     private readonly AnthropicProviderOptions _options;
     private readonly ProviderResilience _resilience;
+    private readonly IClaudeOAuthCredentialSource? _oauth;
 
     public AnthropicMessagesProvider(ProviderDescriptor descriptor, ISecretProvider secrets)
-        : this(descriptor, secrets, static () => new HttpClient(), null) { }
+        : this(descriptor, secrets, static () => new HttpClient(), null, null) { }
 
     public AnthropicMessagesProvider(ProviderDescriptor descriptor, ISecretProvider secrets,
-        Func<HttpClient> httpFactory, AnthropicProviderOptions? options = null)
+        Func<HttpClient> httpFactory, AnthropicProviderOptions? options = null,
+        IClaudeOAuthCredentialSource? oauth = null)
     {
         if (descriptor.Family != ProviderFamily.AnthropicMessages)
             throw new ArgumentException("El descriptor no es de la familia AnthropicMessages.", nameof(descriptor));
@@ -53,6 +74,15 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
             throw new ArgumentOutOfRangeException(nameof(options), "Los límites de salida deben ser mayores que cero.");
         _resilience = _options.Resilience.CircuitCatalog?.Acquire(descriptor.Id, _options.Resilience)
             ?? new ProviderResilience(_options.Resilience, descriptor.Id);
+        // Una fuente OAuth solo tiene sentido si el descriptor autentica por cuenta: al revés, un
+        // 401 no tendria nada que refrescar y el retry silenciaría el fallo.
+        if (oauth is not null && descriptor.Auth.Kind != AuthKind.OAuth)
+        {
+            throw new ArgumentException(
+                "Un provider que no es AuthKind.OAuth no puede llevar fuente de credencial OAuth.", nameof(oauth));
+        }
+
+        _oauth = oauth;
     }
 
     /// <summary>La API informa tokens (incluidos los de caché); no informa costo ni cuota.</summary>
@@ -68,12 +98,43 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
         var halfOpenProbe = _resilience.EnterCircuit();
         HttpResponseMessage response;
         HttpClient http;
+        ClaudeOAuthBearer? bearer;
+        string? body = null;
         try
         {
-            var body = BuildBody(request, _options);
-            (response, http) = await _resilience.SendWithRetryAsync(_httpFactory,
-                () => CreateHttpRequest(body, cancellationToken), ProviderResilience.ErrorFromBody,
-                static status => status is 408 or 429 or 529 || status >= 500, cancellationToken).ConfigureAwait(false);
+            body = BuildBody(request, _options);
+            // La credencial se resuelve antes de tocar la red: sin Bearer no hay request que mandar,
+            // y fallar aqui es mas barato que un 401 ida y vuelta.
+            bearer = _oauth is null ? null : await _oauth.GetAsync(cancellationToken).ConfigureAwait(false);
+            if (_oauth is not null && bearer is null)
+            {
+                throw new ModelProviderException("AuthenticationFailed",
+                    "No hay sesión de Claude iniciada: ejecuta omni login claude.");
+            }
+
+            (response, http) = await SendAsync(body, bearer, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ModelProviderException ex) when (ex.StatusCode == 401 && _oauth is not null && body is not null)
+        {
+            // Un único refresco forzado. Si el 401 persiste o la sesion ya no es recuperable, el
+            // error sube como AuthenticationFailed (withOAuth401Retry en http.ts:74+).
+            bearer = await _oauth.ForceRefreshAsync(cancellationToken).ConfigureAwait(false);
+            if (bearer is null)
+            {
+                _resilience.AbandonProbe(halfOpenProbe);
+                throw new ModelProviderException("AuthenticationFailed",
+                    "Claude rechazó la sesión: vuelve a ejecutar omni login claude.");
+            }
+
+            try
+            {
+                (response, http) = await SendAsync(body, bearer, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                _resilience.AbandonProbe(halfOpenProbe);
+                throw;
+            }
         }
         catch
         {
@@ -104,7 +165,17 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
         }
     }
 
-    private HttpRequestMessage CreateHttpRequest(string body, CancellationToken cancellationToken)
+    /// <summary>
+    /// Envía el request con los reintentos de transporte habituales. El 401 NO se reintenta aquí:
+    /// lo maneja el llamador, porque necesita refrescar la credencial antes del segundo intento.
+    /// </summary>
+    private Task<(HttpResponseMessage Response, HttpClient Http)> SendAsync(
+        string body, ClaudeOAuthBearer? bearer, CancellationToken cancellationToken) =>
+        _resilience.SendWithRetryAsync(_httpFactory,
+            () => CreateHttpRequest(body, bearer, cancellationToken), ProviderResilience.ErrorFromBody,
+            static status => status is 408 or 429 or 529 || status >= 500, cancellationToken);
+
+    private HttpRequestMessage CreateHttpRequest(string body, ClaudeOAuthBearer? bearer, CancellationToken cancellationToken)
     {
         var baseUrl = _descriptor.BaseUrl.TrimEnd('/');
         var url = baseUrl.EndsWith("/v1", StringComparison.Ordinal) ? baseUrl + "/messages" : baseUrl + "/v1/messages";
@@ -113,11 +184,45 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
         request.Headers.TryAddWithoutValidation("anthropic-version", _options.ApiVersion);
+        if (bearer is not null)
+        {
+            // Camino de cuenta (ADR-0011 §3.3): Bearer + beta oauth, en vez de x-api-key. Las
+            // cabeceras las decide la credencial efectiva, nunca el nombre del modelo (INV-007).
+            request.Headers.Authorization = new("Bearer", bearer.AccessToken);
+            if (!string.IsNullOrEmpty(_options.OAuthBetaHeader))
+            {
+                request.Headers.TryAddWithoutValidation("anthropic-beta", _options.OAuthBetaHeader);
+            }
+
+            if (_options.SendAdditionalProtection)
+            {
+                request.Headers.TryAddWithoutValidation("x-anthropic-additional-protection", "true");
+            }
+
+            if (!string.IsNullOrEmpty(bearer.AccountUuid))
+            {
+                request.Headers.TryAddWithoutValidation("x-account-uuid", bearer.AccountUuid);
+            }
+
+            if (!string.IsNullOrEmpty(_options.OAuthUserAgentTemplate))
+            {
+                // Se manda sin validar a proposito: "producto (comentario)" es legitimo segun
+                // RFC 7230 y HttpClient lo representa como dos valores de cabecera, que cualquier
+                // servidor Une antes de parsear. ProductInfoHeaderValue no acepta el comentario
+                // con coma, asi que la via tipada lo descartaria.
+                request.Headers.TryAddWithoutValidation("User-Agent",
+                    _options.OAuthUserAgentTemplate.Replace("{version}", _options.ClientVersion));
+            }
+
+            return request;
+        }
+
         if (_descriptor.Auth.Kind == AuthKind.ApiKey && _descriptor.Auth.SecretRef is not null)
         {
             var secret = _secrets.GetSecret(_descriptor.Auth.SecretRef, cancellationToken);
             request.Headers.TryAddWithoutValidation("x-api-key", secret.Value());
         }
+
         return request;
     }
 

@@ -131,6 +131,13 @@ public sealed class AuthConfig
     public static AuthConfig None() => new(AuthKind.None, null);
 
     public static AuthConfig ApiKey(string secretRef) => new(AuthKind.ApiKey, secretRef);
+
+    /// <summary>
+    /// Cuenta de Claude con OAuth nativo (ADR-0011 §3.3). Lleva la secret ref bajo la que vive el
+    /// credential cifrado, no un API key: el adaptador pide el Bearer a
+    /// <c>IClaudeOAuthCredentialSource</c> en vez de leer un secreto fijo.
+    /// </summary>
+    public static AuthConfig OAuth(string secretRef) => new(AuthKind.OAuth, secretRef);
 }
 
 /// <summary>
