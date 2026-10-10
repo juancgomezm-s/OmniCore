@@ -180,9 +180,9 @@ public sealed class GitWorktreeStore
 
         var snapshotId = Guid.NewGuid().ToString("N");
         var snapshotRef = SnapshotRefFor(request.WorkspaceId.ToString(), request.LaneId.ToString(), snapshotId);
-        var meta = new OwnershipMetadata(1, ownershipId, request.WorkspaceId.ToString(), request.LaneId.ToString(), snapshotId,
+        var meta = new OwnershipMetadata(2, ownershipId, request.WorkspaceId.ToString(), request.LaneId.ToString(), snapshotId,
             dataRoot, repo.RepoRoot, repo.GitCommonDirectory, worktreePath, metadataPath, snapshotRef,
-            null, DateTimeOffset.UtcNow, "creating");
+            request.Base.ToString(), repo.HeadCommit, repo.Branch, null, null, null, DateTimeOffset.UtcNow, "creating");
         try { await PersistMetadata(dataRoot, metadataPath, meta, cancellationToken); }
         catch (OperationCanceledException) { throw; }
         catch (Exception) { return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.InvalidPath); }
@@ -242,7 +242,7 @@ public sealed class GitWorktreeStore
             var update = await Git(repo.RepoRoot,
                 ["update-ref", "--no-deref", snapshotRef, snapshotCommit, new string('0', snapshotCommit.Length)], null, cancellationToken);
             if (!update.Success) return await MarkFailed(dataRoot, metadataPath, GitWorktreeErrorCode.GitCommandFailed);
-            meta = meta with { SnapshotCommit = snapshotCommit, State = "snapshot" };
+            meta = meta with { SnapshotCommit = snapshotCommit, SnapshotTree = snapshotTree, UserIndexTree = userIndexTree, State = "snapshot" };
             await PersistMetadata(dataRoot, metadataPath, meta, cancellationToken);
 
             if (HasReparseDirectoryComponent(dataRoot) || HasReparseDirectoryComponent(laneFolder)
@@ -268,7 +268,8 @@ public sealed class GitWorktreeStore
             }
             return WorktreeCreateOutcome.Success(new WorktreeIdentity(request.WorkspaceId, request.LaneId,
                 repo.RepoRoot, repo.GitCommonDirectory, repo.HeadCommit, repo.Branch, snapshotCommit, snapshotTree,
-                userIndexTree, worktreePath, snapshotRef, ownershipId, metadataPath, dataRoot, meta.CreatedAtUtc));
+                userIndexTree, worktreePath, snapshotRef, ownershipId, metadataPath, dataRoot, meta.CreatedAtUtc)
+                { Base = request.Base });
         }
         catch (OperationCanceledException)
         {
@@ -278,6 +279,205 @@ public sealed class GitWorktreeStore
         catch (Exception)
         {
             return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.GitCommandFailed);
+        }
+    }
+
+    /// <summary>Loads only a complete version-2 ownership record whose paths and Git identities agree.</summary>
+    public async Task<WorktreeCreateOutcome> LoadIdentityAsync(string repositoryRoot, string expectedDataRoot,
+        string ownershipId, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParseExact(ownershipId, "N", out _))
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+        string repoPath;
+        string dataRoot;
+        try { repoPath = Canonical(repositoryRoot); dataRoot = Canonical(expectedDataRoot); }
+        catch (Exception) { return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.InvalidPath); }
+        if (HasReparseDirectoryComponent(repoPath) || HasReparseDirectoryComponent(dataRoot)
+            || IsWithinOrEqual(repoPath, dataRoot) || IsWithinOrEqual(dataRoot, repoPath))
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.UnsafePath);
+
+        var metadataPath = Path.Combine(dataRoot, "worktree-metadata", ownershipId + ".json");
+        if (HasReparseDirectoryComponent(metadataPath) || !File.Exists(metadataPath))
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+        OwnershipMetadata? metadata;
+        try
+        {
+            metadata = JsonSerializer.Deserialize(await File.ReadAllTextAsync(metadataPath, cancellationToken),
+                GitWorktreeJsonContext.Default.OwnershipMetadata);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception) { return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch); }
+        if (metadata is null || metadata.Version != 2)
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+        WorktreeBase baseKind;
+        try
+        {
+        if (string.IsNullOrWhiteSpace(metadata.State) || string.IsNullOrWhiteSpace(metadata.OwnershipId)
+            || string.IsNullOrWhiteSpace(metadata.WorkspaceId) || string.IsNullOrWhiteSpace(metadata.LaneId)
+            || string.IsNullOrWhiteSpace(metadata.SnapshotId) || string.IsNullOrWhiteSpace(metadata.Base)
+            || string.IsNullOrWhiteSpace(metadata.DataRoot) || string.IsNullOrWhiteSpace(metadata.RepositoryRoot)
+            || string.IsNullOrWhiteSpace(metadata.GitCommonDirectory) || string.IsNullOrWhiteSpace(metadata.WorktreePath)
+            || string.IsNullOrWhiteSpace(metadata.MetadataPath) || string.IsNullOrWhiteSpace(metadata.SnapshotRef)
+            || string.IsNullOrWhiteSpace(metadata.Head) || string.IsNullOrWhiteSpace(metadata.SnapshotCommit)
+            || string.IsNullOrWhiteSpace(metadata.SnapshotTree) || string.IsNullOrWhiteSpace(metadata.UserIndexTree)
+            || metadata.State != "active" || metadata.OwnershipId != ownershipId
+            || !IsWorkspaceId(metadata.WorkspaceId) || !Guid.TryParseExact(metadata.LaneId, "D", out _)
+            || !Guid.TryParseExact(metadata.SnapshotId, "N", out _)
+            || !(metadata.Base == nameof(WorktreeBase.Head) || metadata.Base == nameof(WorktreeBase.SnapshotOfWorkingTree))
+            || !Enum.TryParse(metadata.Base, ignoreCase: false, out baseKind)
+            || !IsOid(metadata.Head) || (metadata.Branch is not null && string.IsNullOrWhiteSpace(metadata.Branch))
+            || !IsOid(metadata.SnapshotTree) || !IsOid(metadata.UserIndexTree) || !IsOid(metadata.SnapshotCommit)
+            || !PathEquals(metadata.DataRoot, dataRoot) || !PathEquals(metadata.RepositoryRoot, repoPath)
+            || !PathEquals(metadata.MetadataPath, metadataPath)
+            || !PathEquals(metadata.WorktreePath, Path.Combine(dataRoot, "worktrees", SafeSegment(metadata.LaneId), ownershipId))
+            || metadata.SnapshotRef != SnapshotRefFor(metadata.WorkspaceId, metadata.LaneId, metadata.SnapshotId)
+            || !PathIsOwnedDirectory(dataRoot, metadata.WorktreePath))
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+        }
+        catch (Exception) { return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch); }
+
+        var repository = await InspectAsync(repoPath, cancellationToken);
+        var lane = await InspectAsync(metadata.WorktreePath, cancellationToken);
+        if (!repository.Succeeded || !lane.Succeeded
+            || !PathEquals(repository.Identity!.RepoRoot, repoPath)
+            || !PathEquals(repository.Identity.GitCommonDirectory, metadata.GitCommonDirectory)
+            || !PathEquals(repository.Identity.GitCommonDirectory, lane.Identity!.GitCommonDirectory)
+            || !PathEquals(lane.Identity.RepoRoot, metadata.WorktreePath))
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+        var snapshotRef = await Git(repoPath, ["rev-parse", "--verify", metadata.SnapshotRef + "^{commit}"], null, cancellationToken);
+        if (!snapshotRef.Success || !string.Equals(snapshotRef.Output.Trim(), metadata.SnapshotCommit, StringComparison.OrdinalIgnoreCase))
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+        var snapshotTree = await Git(repoPath, ["rev-parse", "--verify", metadata.SnapshotCommit + "^{tree}"], null, cancellationToken);
+        if (!snapshotTree.Success || !string.Equals(snapshotTree.Output.Trim(), metadata.SnapshotTree, StringComparison.OrdinalIgnoreCase))
+            return WorktreeCreateOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+
+        return WorktreeCreateOutcome.Success(new WorktreeIdentity(WorkspaceId.Parse(metadata.WorkspaceId),
+            LaneId.Parse(metadata.LaneId), repoPath, metadata.GitCommonDirectory, metadata.Head, metadata.Branch,
+            metadata.SnapshotCommit, metadata.SnapshotTree, metadata.UserIndexTree, metadata.WorktreePath,
+            metadata.SnapshotRef, metadata.OwnershipId, metadata.MetadataPath, metadata.DataRoot, metadata.CreatedAtUtc)
+            { Base = baseKind });
+    }
+
+    /// <summary>
+    /// Builds a read-only 3-way proposal: S=base, current workspace=ours, current lane=theirs.
+    /// All new Git objects and indexes are private temporary data outside the repository.
+    /// </summary>
+    public async Task<WorktreeIntegrationPreviewOutcome> PreviewIntegrationAsync(
+        WorktreeIntegrationPreviewRequest request, CancellationToken cancellationToken)
+    {
+        try { return await PreviewIntegrationCoreAsync(request, cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (IOException) { return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.InvalidPath); }
+        catch (UnauthorizedAccessException) { return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.InvalidPath); }
+        catch (ArgumentException) { return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.InvalidPath); }
+    }
+
+    private async Task<WorktreeIntegrationPreviewOutcome> PreviewIntegrationCoreAsync(
+        WorktreeIntegrationPreviewRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var source = request.Worktree;
+        if (source is null) return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+        var loaded = await LoadIdentityAsync(source.RepositoryRoot, source.WorkspaceDataRoot, source.OwnershipId, cancellationToken);
+        if (!loaded.Succeeded) return WorktreeIntegrationPreviewOutcome.Failure(loaded.Error!.Value);
+        var owned = loaded.Worktree!;
+        try
+        {
+            if (!IdentityEquals(source, owned)) return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+        }
+        catch (Exception) { return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch); }
+
+        var workspace = await InspectAsync(owned.RepositoryRoot, cancellationToken);
+        var lane = await InspectAsync(owned.WorktreePath, cancellationToken);
+        if (!workspace.Succeeded || !lane.Succeeded
+            || !PathEquals(workspace.Identity!.RepoRoot, owned.RepositoryRoot)
+            || !PathEquals(workspace.Identity.GitCommonDirectory, owned.GitCommonDirectory)
+            || !PathEquals(lane.Identity!.RepoRoot, owned.WorktreePath)
+            || !PathEquals(lane.Identity.GitCommonDirectory, owned.GitCommonDirectory))
+            return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch);
+
+        PrivateTempDirectory temp;
+        try { temp = new PrivateTempDirectory(owned.WorkspaceDataRoot); }
+        catch (Exception) { return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.InvalidPath); }
+        using (temp)
+        {
+        var privateObjects = await CreatePrivateObjectEnvironment(owned.RepositoryRoot, temp.Path, cancellationToken);
+        if (!privateObjects.Success) return WorktreeIntegrationPreviewOutcome.Failure(privateObjects.Error!.Value);
+        var objectEnv = privateObjects.Environment!;
+        var userCapture = await CaptureCurrentTree(owned.RepositoryRoot, workspace.Identity.HeadCommit, temp.Path,
+            "ours.index", objectEnv, cancellationToken);
+        if (!userCapture.Success) return WorktreeIntegrationPreviewOutcome.Failure(userCapture.Error!.Value);
+        var laneCapture = await CaptureCurrentTree(owned.WorktreePath, lane.Identity.HeadCommit, temp.Path,
+            "theirs.index", objectEnv, cancellationToken);
+        if (!laneCapture.Success) return WorktreeIntegrationPreviewOutcome.Failure(laneCapture.Error!.Value);
+
+        var baseCommit = owned.SnapshotCommit;
+        var oursCommit = userCapture.Commit!;
+        var theirsCommit = laneCapture.Commit!;
+        var merge = await Git(owned.RepositoryRoot,
+            ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", "--merge-base=" + baseCommit, oursCommit, theirsCommit],
+            objectEnv, cancellationToken, allowConflictExit: true);
+        if (merge.Error is not null && merge.ExitCode != 1)
+            return WorktreeIntegrationPreviewOutcome.Failure(merge.Error.Value);
+        if (!TryParseMergeTreeOutput(merge.Output, merge.ExitCode, out var mergeTree, out var conflictPaths))
+            return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.GitOutputTruncated);
+
+        var changes = new List<WorktreeIntegrationChange>();
+        if (conflictPaths.Count == 0)
+        {
+            var oursTree = await Git(owned.RepositoryRoot, ["rev-parse", "--verify", oursCommit + "^{tree}"], objectEnv, cancellationToken);
+            if (!oursTree.Success) return WorktreeIntegrationPreviewOutcome.Failure(oursTree.Error!.Value);
+            var oursEntries = await ReadTreeEntries(owned.RepositoryRoot, oursTree.Output.Trim(), objectEnv, cancellationToken);
+            if (!oursEntries.Success || oursEntries.Entries is null)
+                return WorktreeIntegrationPreviewOutcome.Failure(oursEntries.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+            var mergedEntries = await ReadTreeEntries(owned.RepositoryRoot, mergeTree!, objectEnv, cancellationToken);
+            if (!mergedEntries.Success || mergedEntries.Entries is null)
+                return WorktreeIntegrationPreviewOutcome.Failure(mergedEntries.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+            var materialized = await MaterializeAndHashTree(owned.RepositoryRoot, mergeTree!, temp.Path, objectEnv, "merged", cancellationToken);
+            if (!materialized.Success) return WorktreeIntegrationPreviewOutcome.Failure(materialized.Error!.Value);
+            var diff = await Git(owned.RepositoryRoot,
+                ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--no-renames", oursTree.Output.Trim(), mergeTree!],
+                objectEnv, cancellationToken);
+            if (!diff.Success) return WorktreeIntegrationPreviewOutcome.Failure(diff.Error!.Value);
+            if (!TryParseNameStatus(diff.Output, out var changed))
+                return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.GitOutputTruncated);
+            foreach (var path in changed)
+            {
+                if (!IsSafeGitPath(path) || _redaction.IsSecretPath(path))
+                    return WorktreeIntegrationPreviewOutcome.Failure(_redaction.IsSecretPath(path)
+                        ? GitWorktreeErrorCode.SecretPathPresent : GitWorktreeErrorCode.UnsafePath);
+                var pre = oursEntries.Entries.GetValueOrDefault(path);
+                var post = mergedEntries.Entries.GetValueOrDefault(path);
+                if ((pre is not null && pre.Mode is not ("100644" or "100755"))
+                    || (post is not null && post.Mode is not ("100644" or "100755")))
+                    return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.UnsafePath);
+                var preHash = userCapture.Hashes.GetValueOrDefault(path);
+                var postHash = post is null ? null : materialized.Hashes!.GetValueOrDefault(path);
+                if (post is not null && postHash is null)
+                    return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.UnsupportedTransform);
+                changes.Add(new WorktreeIntegrationChange(path, preHash, postHash, pre?.Mode, post?.Mode));
+            }
+        }
+
+        var finalWorkspace = await InspectAsync(owned.RepositoryRoot, cancellationToken);
+        var finalLane = await InspectAsync(owned.WorktreePath, cancellationToken);
+        if (!finalWorkspace.Succeeded || !finalLane.Succeeded
+            || !string.Equals(finalWorkspace.Identity!.HeadCommit, workspace.Identity.HeadCommit, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(finalWorkspace.Identity.Branch, workspace.Identity.Branch, StringComparison.Ordinal)
+            || !string.Equals(finalLane.Identity!.HeadCommit, lane.Identity.HeadCommit, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(finalLane.Identity.Branch, lane.Identity.Branch, StringComparison.Ordinal)
+            || !(await VerifyCurrentCapture(owned.RepositoryRoot, userCapture, cancellationToken))
+            || !(await VerifyCurrentCapture(owned.WorktreePath, laneCapture, cancellationToken)))
+            return WorktreeIntegrationPreviewOutcome.Failure(GitWorktreeErrorCode.WorkspaceChanged);
+
+        return WorktreeIntegrationPreviewOutcome.Success(new WorktreeIntegrationPreview(
+            Guid.NewGuid().ToString("N"), owned.RepositoryRoot, owned.GitCommonDirectory, baseCommit, oursCommit, theirsCommit,
+            mergeTree, workspace.Identity.HeadCommit, workspace.Identity.Branch,
+            !string.Equals(workspace.Identity.HeadCommit, owned.Head, StringComparison.OrdinalIgnoreCase),
+            !string.Equals(workspace.Identity.Branch, owned.Branch, StringComparison.Ordinal),
+            Array.AsReadOnly(conflictPaths.Select(static path => new WorktreeIntegrationConflict(path)).ToArray()),
+            Array.AsReadOnly(changes.ToArray()),
+            DateTimeOffset.UtcNow));
         }
     }
 
@@ -303,7 +503,7 @@ public sealed class GitWorktreeStore
             || string.IsNullOrWhiteSpace(metadata.DataRoot) || string.IsNullOrWhiteSpace(metadata.RepositoryRoot)
             || string.IsNullOrWhiteSpace(metadata.GitCommonDirectory) || string.IsNullOrWhiteSpace(metadata.WorktreePath)
             || string.IsNullOrWhiteSpace(metadata.MetadataPath) || string.IsNullOrWhiteSpace(metadata.SnapshotRef)
-            || metadata.Version != 1 || metadata.State != "active"
+            || metadata.Version != 2 || metadata.State != "active"
             || metadata.OwnershipId != ownership.OwnershipId
             || !Guid.TryParseExact(metadata.OwnershipId, "N", out _)
             || !IsWorkspaceId(metadata.WorkspaceId)
@@ -365,8 +565,294 @@ public sealed class GitWorktreeStore
         return tree.Success ? GitResult.Ok(tree.Output.Trim()) : GitResult.Failure(tree.Error ?? GitWorktreeErrorCode.GitCommandFailed);
     }
 
+    private async Task<PrivateObjectEnvironmentResult> CreatePrivateObjectEnvironment(string repositoryRoot,
+        string tempDirectory, CancellationToken cancellationToken)
+    {
+        var sourceObjects = await Git(repositoryRoot,
+            ["rev-parse", "--path-format=absolute", "--git-path", "objects"], null, cancellationToken);
+        if (!sourceObjects.Success) return PrivateObjectEnvironmentResult.Fail(sourceObjects.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        string source;
+        try { source = Canonical(sourceObjects.Output.Trim()); }
+        catch (Exception) { return PrivateObjectEnvironmentResult.Fail(GitWorktreeErrorCode.InvalidPath); }
+        if (HasReparseDirectoryComponent(source) || !Directory.Exists(source))
+            return PrivateObjectEnvironmentResult.Fail(GitWorktreeErrorCode.UnsafePath);
+        var objects = Path.Combine(tempDirectory, "objects");
+        var info = Path.Combine(objects, "info");
+        try
+        {
+            Directory.CreateDirectory(info);
+            // Git's alternates parser treats a CR in a CRLF record as part of the path on Windows.
+            // Store a slash-normalized absolute path and LF-only terminator.
+            await File.WriteAllTextAsync(Path.Combine(info, "alternates"), source.Replace('\\', '/') + "\n",
+                new UTF8Encoding(false), cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception) { return PrivateObjectEnvironmentResult.Fail(GitWorktreeErrorCode.InvalidPath); }
+        return PrivateObjectEnvironmentResult.Ok(new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["GIT_OBJECT_DIRECTORY"] = objects,
+        });
+    }
+
+    private async Task<CapturedSideResult> CaptureCurrentTree(string root, string expectedHead, string tempDirectory,
+        string indexName, IReadOnlyDictionary<string, string> objectEnvironment, CancellationToken cancellationToken)
+    {
+        var currentHead = await Git(root, ["rev-parse", "--verify", "HEAD^{commit}"], null, cancellationToken);
+        if (!currentHead.Success) return CapturedSideResult.Fail(GitWorktreeErrorCode.MissingHead);
+        if (!string.Equals(currentHead.Output.Trim(), expectedHead, StringComparison.OrdinalIgnoreCase))
+            return CapturedSideResult.Fail(GitWorktreeErrorCode.WorkspaceChanged);
+        var head = currentHead.Output.Trim();
+        var headEntries = await ReadTreeEntries(root, head, objectEnvironment, cancellationToken);
+        if (!headEntries.Success) return CapturedSideResult.Fail(headEntries.Error!.Value);
+        var pathsResult = await ListWorkingPaths(root, cancellationToken);
+        if (!pathsResult.Success) return CapturedSideResult.Fail(pathsResult.Error!.Value);
+        var workingPaths = pathsResult.Paths!;
+        var allPaths = headEntries.Entries!.Keys.Concat(workingPaths).Distinct(StringComparer.Ordinal).ToArray();
+        var unmerged = await Git(root, ["ls-files", "--unmerged", "-z"], null, cancellationToken);
+        if (!unmerged.Success) return CapturedSideResult.Fail(unmerged.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        if (unmerged.Output.Length != 0) return CapturedSideResult.Fail(GitWorktreeErrorCode.Conflict);
+
+        foreach (var path in allPaths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsSafeGitPath(path)) return CapturedSideResult.Fail(GitWorktreeErrorCode.UnsafePath);
+            if (_redaction.IsSecretPath(path)) return CapturedSideResult.Fail(GitWorktreeErrorCode.SecretPathPresent);
+            if (HasReparseComponent(root, path)) return CapturedSideResult.Fail(GitWorktreeErrorCode.UnsafePath);
+        }
+        foreach (var check in new[]
+        {
+            await CheckFilters(root, workingPaths, cancellationToken, null, objectEnvironment),
+            await CheckFilters(root, headEntries.Paths!, cancellationToken, head, objectEnvironment),
+            await CheckTransforms(root, workingPaths, cancellationToken, null, objectEnvironment),
+            await CheckTransforms(root, headEntries.Paths!, cancellationToken, head, objectEnvironment),
+            await CheckMergeDrivers(root, workingPaths, cancellationToken, null, objectEnvironment),
+            await CheckMergeDrivers(root, headEntries.Paths!, cancellationToken, head, objectEnvironment),
+        })
+            if (!check.Success) return CapturedSideResult.Fail(check.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+
+        var before = await HashWorkingPaths(root, allPaths, cancellationToken);
+        if (!before.Success) return CapturedSideResult.Fail(before.Error!.Value);
+        var indexFile = Path.Combine(tempDirectory, indexName);
+        var env = CombineEnvironments(objectEnvironment, IndexEnvironment(indexFile));
+        var readTree = await Git(root, ["read-tree", head], env, cancellationToken);
+        if (!readTree.Success) return CapturedSideResult.Fail(readTree.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        var add = await Git(root, ["add", "-A", "--", "."], env, cancellationToken);
+        if (!add.Success) return CapturedSideResult.Fail(add.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        var stage = await Git(root, ["ls-files", "--stage", "-z"], env, cancellationToken);
+        if (!stage.Success) return CapturedSideResult.Fail(stage.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        if (!IsCompleteNulList(stage.Output)) return CapturedSideResult.Fail(GitWorktreeErrorCode.GitOutputTruncated);
+        if (SplitNul(stage.Output).Any(static entry => entry.StartsWith("160000 ", StringComparison.Ordinal)))
+            return CapturedSideResult.Fail(GitWorktreeErrorCode.UnsupportedSubmoduleState);
+        var tree = await Git(root, ["write-tree"], env, cancellationToken);
+        if (!tree.Success || !IsOid(tree.Output.Trim()))
+            return CapturedSideResult.Fail(tree.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        var treeMaterialization = await MaterializeAndHashTree(root, tree.Output.Trim(), tempDirectory, objectEnvironment,
+            Path.GetFileNameWithoutExtension(indexName), cancellationToken);
+        if (!treeMaterialization.Success) return CapturedSideResult.Fail(treeMaterialization.Error!.Value);
+        var expectedMaterializedHashes = before.Hashes!.Where(static item => item.Value is not null)
+            .ToDictionary(static item => item.Key, static item => item.Value, StringComparer.Ordinal);
+        if (!SameHashes(expectedMaterializedHashes, treeMaterialization.Hashes!))
+            return CapturedSideResult.Fail(GitWorktreeErrorCode.UnsupportedTransform);
+        var commit = await Git(root,
+            ["-c", "user.name=OmniCore preview", "-c", "user.email=omnicore-preview@localhost", "commit-tree",
+                tree.Output.Trim(), "-p", head, "-m", "OmniCore temporary integration preview"], objectEnvironment, cancellationToken);
+        if (!commit.Success || !IsOid(commit.Output.Trim()))
+            return CapturedSideResult.Fail(commit.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+
+        var afterPaths = await ListWorkingPaths(root, cancellationToken);
+        var after = await HashWorkingPaths(root, allPaths, cancellationToken);
+        if (!afterPaths.Success || !after.Success || !SamePaths(workingPaths, afterPaths.Paths!)
+            || !SameHashes(before.Hashes!, after.Hashes!))
+            return CapturedSideResult.Fail(GitWorktreeErrorCode.WorkspaceChanged);
+        return CapturedSideResult.Ok(commit.Output.Trim(), tree.Output.Trim(), head, workingPaths, allPaths, before.Hashes!);
+    }
+
+    private async Task<TreeEntriesResult> ReadTreeEntries(string root, string treeish,
+        IReadOnlyDictionary<string, string> environment, CancellationToken cancellationToken)
+    {
+        var result = await Git(root, ["ls-tree", "-r", "-z", "--full-tree", treeish], environment, cancellationToken);
+        if (!result.Success) return TreeEntriesResult.Fail(result.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        if (!IsCompleteNulList(result.Output)) return TreeEntriesResult.Fail(GitWorktreeErrorCode.GitOutputTruncated);
+        var entries = new Dictionary<string, TreeEntry>(StringComparer.Ordinal);
+        foreach (var raw in SplitNul(result.Output))
+        {
+            var tab = raw.IndexOf('\t');
+            if (tab <= 0 || tab == raw.Length - 1) return TreeEntriesResult.Fail(GitWorktreeErrorCode.GitCommandFailed);
+            var fields = raw[..tab].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var path = raw[(tab + 1)..];
+            if (fields.Length != 3 || !IsOid(fields[2]) || !IsSafeGitPath(path))
+                return TreeEntriesResult.Fail(GitWorktreeErrorCode.UnsafePath);
+            if (_redaction.IsSecretPath(path)) return TreeEntriesResult.Fail(GitWorktreeErrorCode.SecretPathPresent);
+            if (fields[0] == "120000") return TreeEntriesResult.Fail(GitWorktreeErrorCode.UnsafePath);
+            if (fields[0] == "160000") return TreeEntriesResult.Fail(GitWorktreeErrorCode.UnsupportedSubmoduleState);
+            if (fields[1] != "blob" || fields[0] is not ("100644" or "100755"))
+                return TreeEntriesResult.Fail(GitWorktreeErrorCode.UnsafePath);
+            entries.Add(path, new TreeEntry(fields[0], fields[2]));
+        }
+        if (HasPlatformPathCollisions(entries.Keys)) return TreeEntriesResult.Fail(GitWorktreeErrorCode.UnsafePath);
+        return TreeEntriesResult.Ok(entries);
+    }
+
+    private async Task<WorkingPathsResult> ListWorkingPaths(string root, CancellationToken cancellationToken)
+    {
+        var result = await Git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], null, cancellationToken);
+        if (!result.Success) return WorkingPathsResult.Fail(result.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        if (!IsCompleteNulList(result.Output)) return WorkingPathsResult.Fail(GitWorktreeErrorCode.GitOutputTruncated);
+        var paths = SplitNul(result.Output);
+        if (HasPlatformPathCollisions(paths)) return WorkingPathsResult.Fail(GitWorktreeErrorCode.UnsafePath);
+        foreach (var path in paths)
+        {
+            if (!IsSafeGitPath(path)) return WorkingPathsResult.Fail(GitWorktreeErrorCode.UnsafePath);
+            if (_redaction.IsSecretPath(path)) return WorkingPathsResult.Fail(GitWorktreeErrorCode.SecretPathPresent);
+            if (HasReparseComponent(root, path)) return WorkingPathsResult.Fail(GitWorktreeErrorCode.UnsafePath);
+        }
+        return WorkingPathsResult.Ok(paths);
+    }
+
+    private async Task<HashMapResult> HashWorkingPaths(string root, IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    {
+        var hashes = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var path in paths)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!IsSafeGitPath(path) || HasReparseComponent(root, path)) return HashMapResult.Fail(GitWorktreeErrorCode.UnsafePath);
+            var full = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar));
+            try
+            {
+                if (Directory.Exists(full)) return HashMapResult.Fail(GitWorktreeErrorCode.UnsafePath);
+                hashes[path] = File.Exists(full) ? await HashFile(full, cancellationToken) : null;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { return HashMapResult.Fail(GitWorktreeErrorCode.WorkspaceChanged); }
+        }
+        return HashMapResult.Ok(hashes);
+    }
+
+    private async Task<bool> VerifyCurrentCapture(string root, CapturedSideResult capture, CancellationToken cancellationToken)
+    {
+        var head = await Git(root, ["rev-parse", "--verify", "HEAD^{commit}"], null, cancellationToken);
+        if (!head.Success || !string.Equals(head.Output.Trim(), capture.Head, StringComparison.OrdinalIgnoreCase)) return false;
+        var paths = await ListWorkingPaths(root, cancellationToken);
+        if (!paths.Success || !SamePaths(capture.WorkingPaths, paths.Paths!)) return false;
+        var hashes = await HashWorkingPaths(root, capture.HashedPaths, cancellationToken);
+        return hashes.Success && SameHashes(capture.Hashes, hashes.Hashes!);
+    }
+
+    private async Task<MaterializedTreeResult> MaterializeAndHashTree(string root, string tree, string tempDirectory,
+        IReadOnlyDictionary<string, string> objectEnvironment, string name, CancellationToken cancellationToken)
+    {
+        var entries = await ReadTreeEntries(root, tree, objectEnvironment, cancellationToken);
+        if (!entries.Success) return MaterializedTreeResult.Fail(entries.Error!.Value);
+        foreach (var check in new[]
+        {
+            await CheckFilters(root, entries.Paths!, cancellationToken, tree, objectEnvironment),
+            await CheckTransforms(root, entries.Paths!, cancellationToken, tree, objectEnvironment),
+            await CheckMergeDrivers(root, entries.Paths!, cancellationToken, tree, objectEnvironment),
+        })
+            if (!check.Success) return MaterializedTreeResult.Fail(check.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+
+        var worktree = Path.Combine(tempDirectory, name + "-view");
+        Directory.CreateDirectory(worktree);
+        if (HasReparseDirectoryComponent(worktree)) return MaterializedTreeResult.Fail(GitWorktreeErrorCode.UnsafePath);
+        var index = Path.Combine(tempDirectory, name + ".materialized.index");
+        var env = CombineEnvironments(objectEnvironment, IndexEnvironment(index), new Dictionary<string, string> { ["GIT_WORK_TREE"] = worktree });
+        var readTree = await Git(root, ["read-tree", tree], env, cancellationToken);
+        if (!readTree.Success) return MaterializedTreeResult.Fail(readTree.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        var checkout = await Git(root, ["checkout-index", "--all", "--force"], env, cancellationToken);
+        if (!checkout.Success) return MaterializedTreeResult.Fail(checkout.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        var hashes = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var path in entries.Paths!)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (HasReparseComponent(worktree, path)) return MaterializedTreeResult.Fail(GitWorktreeErrorCode.UnsafePath);
+            var full = Path.Combine(worktree, path.Replace('/', Path.DirectorySeparatorChar));
+            if (!File.Exists(full)) return MaterializedTreeResult.Fail(GitWorktreeErrorCode.UnsupportedTransform);
+            try { hashes[path] = await HashFile(full, cancellationToken); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { return MaterializedTreeResult.Fail(GitWorktreeErrorCode.UnsupportedTransform); }
+        }
+        return MaterializedTreeResult.Ok(hashes);
+    }
+
+    private async Task<GitResult> CheckMergeDrivers(string root, IReadOnlyList<string> paths,
+        CancellationToken cancellationToken, string? sourceTree, IReadOnlyDictionary<string, string>? environment = null)
+    {
+        for (var offset = 0; offset < paths.Count; offset += 96)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var chunk = paths.Skip(offset).Take(96).ToArray();
+            var args = new List<string> { "check-attr" };
+            if (sourceTree is not null) args.Add("--source=" + sourceTree);
+            args.AddRange(["-z", "merge", "--", .. chunk]);
+            var result = await Git(root, args, environment, cancellationToken);
+            if (!result.Success) return GitResult.Failure(sourceTree is not null
+                ? GitWorktreeErrorCode.UnsupportedMergeDriver : result.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+            if (!IsCompleteNulList(result.Output)) return GitResult.Failure(GitWorktreeErrorCode.GitOutputTruncated);
+            var parts = SplitNul(result.Output);
+            if (parts.Count != chunk.Length * 3) return GitResult.Failure(GitWorktreeErrorCode.GitOutputTruncated);
+            for (var i = 2; i < parts.Count; i += 3)
+                if (parts[i] is not ("unspecified" or "unset")) return GitResult.Failure(GitWorktreeErrorCode.UnsupportedMergeDriver);
+        }
+        return GitResult.Ok("");
+    }
+
+    private static IReadOnlyDictionary<string, string> CombineEnvironments(params IReadOnlyDictionary<string, string>[] sources)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var source in sources)
+            foreach (var pair in source) result[pair.Key] = pair.Value;
+        return result;
+    }
+
+    private static bool SamePaths(IReadOnlyList<string> left, IReadOnlyList<string> right) =>
+        left.Count == right.Count && left.Order(StringComparer.Ordinal).SequenceEqual(right.Order(StringComparer.Ordinal), StringComparer.Ordinal);
+
+    private static bool SameHashes(IReadOnlyDictionary<string, string?> left, IReadOnlyDictionary<string, string?> right) =>
+        left.Count == right.Count && left.All(pair => right.TryGetValue(pair.Key, out var value)
+            && string.Equals(pair.Value, value, StringComparison.Ordinal));
+
+    private static bool IdentityEquals(WorktreeIdentity left, WorktreeIdentity right) =>
+        left.WorkspaceId.Equals(right.WorkspaceId) && left.LaneId == right.LaneId
+        && PathEquals(left.RepositoryRoot, right.RepositoryRoot) && PathEquals(left.GitCommonDirectory, right.GitCommonDirectory)
+        && PathEquals(left.WorktreePath, right.WorktreePath) && PathEquals(left.WorkspaceDataRoot, right.WorkspaceDataRoot)
+        && left.Head == right.Head && left.Branch == right.Branch && left.SnapshotCommit == right.SnapshotCommit
+        && left.SnapshotTree == right.SnapshotTree && left.UserIndexTree == right.UserIndexTree
+        && left.SnapshotRef == right.SnapshotRef && left.OwnershipId == right.OwnershipId && left.Base == right.Base;
+
+    private static bool TryParseMergeTreeOutput(string output, int exitCode, out string? mergeTree, out List<string> conflicts)
+    {
+        mergeTree = null;
+        conflicts = [];
+        if (output.Length == 0 || output.Length >= CapturedOutputLimit) return false;
+        var delimiter = output.IndexOf('\0');
+        if (delimiter < 0) return false;
+        mergeTree = output[..delimiter].Trim();
+        if (!IsOid(mergeTree)) return false;
+        var tail = output[(delimiter + 1)..];
+        if (exitCode == 0) return tail.Length == 0;
+        if (exitCode != 1 || !IsCompleteNulList(tail)) return false;
+        conflicts = SplitNul(tail);
+        return conflicts.Count > 0 && conflicts.All(IsSafeGitPath) && !HasPlatformPathCollisions(conflicts);
+    }
+
+    private static bool TryParseNameStatus(string output, out List<string> paths)
+    {
+        paths = [];
+        if (output.Length == 0) return true;
+        if (output.Length >= CapturedOutputLimit || !IsCompleteNulList(output)) return false;
+        var tokens = SplitNul(output);
+        if (tokens.Count % 2 != 0) return false;
+        for (var i = 0; i < tokens.Count; i += 2)
+        {
+            if (tokens[i] is not ("A" or "D" or "M" or "T")) return false;
+            if (!IsSafeGitPath(tokens[i + 1])) return false;
+            paths.Add(tokens[i + 1]);
+        }
+        return !HasPlatformPathCollisions(paths);
+    }
+
     private async Task<GitResult> CheckFilters(string root, IReadOnlyList<string> paths, CancellationToken cancellationToken,
-        string? sourceTree)
+        string? sourceTree, IReadOnlyDictionary<string, string>? environment = null)
     {
         for (var offset = 0; offset < paths.Count; offset += 96)
         {
@@ -375,7 +861,7 @@ public sealed class GitWorktreeStore
             var args = new List<string> { "check-attr" };
             if (sourceTree is not null) args.Add("--source=" + sourceTree);
             args.AddRange(["-z", "filter", "--", .. chunk]);
-            var result = await Git(root, args, null, cancellationToken);
+            var result = await Git(root, args, environment, cancellationToken);
             if (!result.Success)
             {
                 var failure = result.Error ?? GitWorktreeErrorCode.GitCommandFailed;
@@ -395,7 +881,7 @@ public sealed class GitWorktreeStore
     }
 
     private async Task<GitResult> CheckTransforms(string root, IReadOnlyList<string> paths,
-        CancellationToken cancellationToken, string? sourceTree)
+        CancellationToken cancellationToken, string? sourceTree, IReadOnlyDictionary<string, string>? environment = null)
     {
         string[] attributes = ["text", "eol", "working-tree-encoding", "ident"];
         for (var offset = 0; offset < paths.Count; offset += 96)
@@ -405,7 +891,7 @@ public sealed class GitWorktreeStore
             var args = new List<string> { "check-attr" };
             if (sourceTree is not null) args.Add("--source=" + sourceTree);
             args.AddRange(["-z", .. attributes, "--", .. chunk]);
-            var result = await Git(root, args, null, cancellationToken);
+            var result = await Git(root, args, environment, cancellationToken);
             if (!result.Success)
             {
                 var failure = result.Error ?? GitWorktreeErrorCode.GitCommandFailed;
@@ -426,7 +912,7 @@ public sealed class GitWorktreeStore
     }
 
     private async Task<GitResult> Git(string workingDirectory, IReadOnlyList<string> command, IReadOnlyDictionary<string, string>? environment,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool allowConflictExit = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var disabledHooksPath = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
@@ -439,6 +925,8 @@ public sealed class GitWorktreeStore
             "-c", "core.eol=lf",
             "-c", "core.safecrlf=false",
             "-c", "commit.gpgSign=false",
+            "-c", "merge.default=text",
+            "-c", "merge.renormalize=false",
         };
         args.AddRange(command);
         var env = new Dictionary<string, string>(StringComparer.Ordinal) { ["GIT_OPTIONAL_LOCKS"] = "0", ["GIT_TERMINAL_PROMPT"] = "0" };
@@ -473,11 +961,13 @@ public sealed class GitWorktreeStore
                 CancelTree(handle);
                 return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed);
             }
-            if (result.ExitCode != 0) return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed);
             var output = result.Stdout ?? "";
             if (output.Length >= CapturedOutputLimit)
                 return GitResult.Failure(GitWorktreeErrorCode.GitOutputTruncated);
-            return GitResult.Ok(output);
+            if (result.ExitCode == 0) return GitResult.Ok(output);
+            if (allowConflictExit && result.ExitCode == 1)
+                return new GitResult(false, output, GitWorktreeErrorCode.GitCommandFailed, result.ExitCode);
+            return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception) { return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed); }
@@ -553,9 +1043,34 @@ public sealed class GitWorktreeStore
 
     private static string Canonical(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
     private static bool IsWorkspaceId(string value) => value.Length == 16 && value.All(Uri.IsHexDigit);
-    private static bool IsSafeGitPath(string path) => !string.IsNullOrEmpty(path)
-        && !Path.IsPathRooted(path) && path.IndexOf('\0') < 0
-        && path.Replace('\\', '/').Split('/').All(static part => part.Length > 0 && part is not ("." or ".."));
+    private static bool IsOid(string? value) => value is { Length: 40 or 64 } && value.All(Uri.IsHexDigit);
+    private static bool IsSafeGitPath(string path)
+    {
+        if (string.IsNullOrEmpty(path) || Path.IsPathRooted(path) || path.IndexOf('\0') >= 0
+            || path.Contains('\uFFFD') || path.Any(char.IsControl)) return false;
+        var parts = path.Replace('\\', '/').Split('/');
+        if (parts.Any(static part => part.Length == 0 || part is "." or "..")) return false;
+        if (!OperatingSystem.IsWindows()) return true;
+        foreach (var part in parts)
+        {
+            if (part.IndexOfAny(new[] { '<', '>', ':', '"', '|', '?', '*' }) >= 0 || part.EndsWith(' ') || part.EndsWith('.')) return false;
+            var stem = part.Split('.')[0];
+            if (stem.Equals("CON", StringComparison.OrdinalIgnoreCase)
+                || stem.Equals("PRN", StringComparison.OrdinalIgnoreCase)
+                || stem.Equals("AUX", StringComparison.OrdinalIgnoreCase)
+                || stem.Equals("NUL", StringComparison.OrdinalIgnoreCase)
+                || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.OrdinalIgnoreCase)
+                    || stem.StartsWith("LPT", StringComparison.OrdinalIgnoreCase)) && stem[3] is >= '1' and <= '9')) return false;
+        }
+        return true;
+    }
+
+    private static bool HasPlatformPathCollisions(IEnumerable<string> paths)
+    {
+        var comparison = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var seen = new HashSet<string>(comparison);
+        return paths.Any(path => !seen.Add(path.Replace('\\', '/')));
+    }
     private static string SafeSegment(string value) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..16];
     private static string SnapshotRefFor(string workspaceId, string laneId, string snapshotId) =>
         $"refs/omnicore/snapshots/{SafeSegment(workspaceId)}/{SafeSegment(laneId)}/{snapshotId}";
@@ -594,25 +1109,98 @@ public sealed class GitWorktreeStore
         catch (Exception) { return true; }
     }
 
-    private sealed record GitResult(bool Success, string Output, GitWorktreeErrorCode? Error)
+    private sealed record GitResult(bool Success, string Output, GitWorktreeErrorCode? Error, int ExitCode = 0)
     {
         public static GitResult Ok(string output) => new(true, output, null);
         public static GitResult Failure(GitWorktreeErrorCode error) => new(false, "", error);
     }
 
+    private sealed record TreeEntry(string Mode, string ObjectId);
+    private sealed record PrivateObjectEnvironmentResult(bool Success, IReadOnlyDictionary<string, string>? Environment,
+        GitWorktreeErrorCode? Error)
+    {
+        public static PrivateObjectEnvironmentResult Ok(IReadOnlyDictionary<string, string> environment) => new(true, environment, null);
+        public static PrivateObjectEnvironmentResult Fail(GitWorktreeErrorCode error) => new(false, null, error);
+    }
+    private sealed record TreeEntriesResult(bool Success, Dictionary<string, TreeEntry>? Entries,
+        GitWorktreeErrorCode? Error)
+    {
+        public IReadOnlyList<string>? Paths => Entries?.Keys.ToArray();
+        public static TreeEntriesResult Ok(Dictionary<string, TreeEntry> entries) => new(true, entries, null);
+        public static TreeEntriesResult Fail(GitWorktreeErrorCode error) => new(false, null, error);
+    }
+    private sealed record WorkingPathsResult(bool Success, List<string>? Paths, GitWorktreeErrorCode? Error)
+    {
+        public static WorkingPathsResult Ok(List<string> paths) => new(true, paths, null);
+        public static WorkingPathsResult Fail(GitWorktreeErrorCode error) => new(false, null, error);
+    }
+    private sealed record HashMapResult(bool Success, Dictionary<string, string?>? Hashes, GitWorktreeErrorCode? Error)
+    {
+        public static HashMapResult Ok(Dictionary<string, string?> hashes) => new(true, hashes, null);
+        public static HashMapResult Fail(GitWorktreeErrorCode error) => new(false, null, error);
+    }
+    private sealed record CapturedSideResult(bool Success, string? Commit, string? Tree, string? Head,
+        List<string> WorkingPaths, string[] HashedPaths, Dictionary<string, string?> Hashes, GitWorktreeErrorCode? Error)
+    {
+        public static CapturedSideResult Ok(string commit, string tree, string head, List<string> workingPaths,
+            string[] hashedPaths, Dictionary<string, string?> hashes) => new(true, commit, tree, head, workingPaths, hashedPaths, hashes, null);
+        public static CapturedSideResult Fail(GitWorktreeErrorCode error) => new(false, null, null, null, [], [], new(StringComparer.Ordinal), error);
+    }
+    private sealed record MaterializedTreeResult(bool Success, Dictionary<string, string?>? Hashes, GitWorktreeErrorCode? Error)
+    {
+        public static MaterializedTreeResult Ok(Dictionary<string, string?> hashes) => new(true, hashes, null);
+        public static MaterializedTreeResult Fail(GitWorktreeErrorCode error) => new(false, null, error);
+    }
+
     internal sealed record OwnershipMetadata(int Version, string OwnershipId, string WorkspaceId, string LaneId,
         string SnapshotId, string DataRoot, string RepositoryRoot, string GitCommonDirectory, string WorktreePath, string MetadataPath,
-        string SnapshotRef, string? SnapshotCommit, DateTimeOffset CreatedAtUtc, string State);
+        string SnapshotRef, string Base, string Head, string? Branch, string? SnapshotTree, string? UserIndexTree,
+        string? SnapshotCommit, DateTimeOffset CreatedAtUtc, string State);
 
     private sealed class PrivateTempDirectory : IDisposable
     {
+        private readonly string _parent;
         public string Path { get; }
         public PrivateTempDirectory(string parent)
         {
-            Path = System.IO.Path.Combine(parent, ".m7-tmp-" + Guid.NewGuid().ToString("N"));
+            _parent = Canonical(parent);
+            Path = System.IO.Path.Combine(_parent, ".m7-tmp-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Path);
         }
-        public void Dispose() { try { Directory.Delete(Path, true); } catch (Exception) { } }
+        public void Dispose()
+        {
+            try
+            {
+                if (IsWithin(_parent, Canonical(Path)) && !HasReparseDirectoryComponent(Path)) DeleteOwnedTree(Path);
+            }
+            catch (Exception) { }
+        }
+
+        private static void DeleteOwnedTree(string directory)
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.ReparsePoint) != 0) return;
+                if ((attributes & FileAttributes.Directory) != 0)
+                {
+                    DeleteOwnedTree(entry);
+                    if (Directory.Exists(entry)) Directory.Delete(entry, false);
+                }
+                else
+                {
+                    if ((attributes & FileAttributes.ReadOnly) != 0) File.SetAttributes(entry, attributes & ~FileAttributes.ReadOnly);
+                    File.Delete(entry);
+                }
+            }
+            if (Directory.Exists(directory))
+            {
+                var attributes = File.GetAttributes(directory);
+                if ((attributes & FileAttributes.ReadOnly) != 0)
+                    File.SetAttributes(directory, attributes & ~FileAttributes.ReadOnly);
+                Directory.Delete(directory, false);
+            }
+        }
     }
 }
 

@@ -560,6 +560,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.workflow.help"));
         Console.WriteLine(Loc().Resolve("cli.usage.model"));
         Console.WriteLine(Loc().Resolve("worktree.inspect.usage"));
+        Console.WriteLine(Loc().Resolve("worktree.preview.usage"));
         Console.WriteLine(Loc().Resolve("claude.oauth.cli.usage"));
         Console.WriteLine(Loc().Resolve("cli.usage.verify_journal"));
         Console.WriteLine(Loc().Resolve("cli.usage.session_purge"));

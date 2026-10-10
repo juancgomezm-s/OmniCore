@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Execution;
@@ -44,6 +46,157 @@ public sealed class GitWorktreeStoreTests
         Assert.False(Directory.Exists(worktree.WorktreePath));
         Assert.Equal(worktree.SnapshotCommit, fixture.Git("rev-parse", worktree.SnapshotRef).Trim());
     }
+
+    [Fact]
+    public async Task Preview_merges_lane_edits_against_snapshot_and_preserves_workspace_state_and_index()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("common.txt", "left base\ncontext one\ncontext two\ncontext three\nright base\n");
+        fixture.Write("delete-me.txt", "remove in lane\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+
+        // Later workspace changes remain ours; lane's non-overlapping edit and addition are proposed.
+        fixture.Write("common.txt", "left user\ncontext one\ncontext two\ncontext three\nright base\n");
+        fixture.Git("add", "common.txt");
+        fixture.Write("user-only.txt", "user file\n");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "common.txt"), "left base\ncontext one\ncontext two\ncontext three\nright lane\n");
+        File.Delete(Path.Combine(worktree.WorktreePath, "delete-me.txt"));
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "lane-added.txt"), "lane addition λ\n", new UTF8Encoding(false));
+
+        var index = File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index"));
+        var head = fixture.Git("rev-parse", "HEAD").Trim();
+        var refs = fixture.Git("for-each-ref", "--format=%(refname) %(objectname)");
+        var objectCount = fixture.Git("count-objects", "-v");
+        var workspaceCommon = File.ReadAllBytes(Path.Combine(fixture.Repository, "common.txt"));
+        var workspaceOnly = File.ReadAllBytes(Path.Combine(fixture.Repository, "user-only.txt"));
+        var laneCommon = File.ReadAllBytes(Path.Combine(worktree.WorktreePath, "common.txt"));
+        var storeOutcome = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree), CancellationToken.None);
+
+        Assert.True(storeOutcome.Succeeded, storeOutcome.Error?.ToString());
+        var preview = Assert.IsType<WorktreeIntegrationPreview>(storeOutcome.Preview);
+        Assert.False(preview.HasConflicts);
+        Assert.Contains(preview.Changes, change => change.RelativePath == "common.txt"
+            && change.ExpectedPreSha256 == Sha256(workspaceCommon)
+            && change.ExpectedPostSha256 == Sha256(Encoding.UTF8.GetBytes("left user\ncontext one\ncontext two\ncontext three\nright lane\n")));
+        Assert.Contains(preview.Changes, change => change.RelativePath == "delete-me.txt"
+            && change.ExpectedPreSha256 == Sha256(Encoding.UTF8.GetBytes("remove in lane\n"))
+            && change.ExpectedPostSha256 is null);
+        Assert.Contains(preview.Changes, change => change.RelativePath == "lane-added.txt"
+            && change.ExpectedPreSha256 is null
+            && change.ExpectedPostSha256 == Sha256(new UTF8Encoding(false).GetBytes("lane addition λ\n")));
+        Assert.Equal(index, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
+        Assert.Equal(head, fixture.Git("rev-parse", "HEAD").Trim());
+        Assert.Equal(refs, fixture.Git("for-each-ref", "--format=%(refname) %(objectname)"));
+        Assert.Equal(objectCount, fixture.Git("count-objects", "-v"));
+        Assert.Equal(workspaceCommon, File.ReadAllBytes(Path.Combine(fixture.Repository, "common.txt")));
+        Assert.Equal(workspaceOnly, File.ReadAllBytes(Path.Combine(fixture.Repository, "user-only.txt")));
+        Assert.Equal(laneCommon, File.ReadAllBytes(Path.Combine(worktree.WorktreePath, "common.txt")));
+        Assert.False(File.Exists(Path.Combine(fixture.Repository, "lane-added.txt")));
+        Assert.True(File.Exists(Path.Combine(fixture.Repository, "delete-me.txt")));
+        Assert.Equal("remove in lane\n", File.ReadAllText(Path.Combine(fixture.Repository, "delete-me.txt")));
+    }
+
+    [Fact]
+    public async Task Preview_reports_same_region_conflicts_without_writing_either_worktree()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("conflict.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        fixture.Write("conflict.txt", "ours\n");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "conflict.txt"), "theirs\n");
+        var index = File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index"));
+        var head = fixture.Git("rev-parse", "HEAD").Trim();
+
+        var result = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree), CancellationToken.None);
+
+        Assert.True(result.Succeeded, result.Error?.ToString());
+        Assert.Equal("conflict.txt", Assert.Single(result.Preview!.Conflicts).RelativePath);
+        Assert.Empty(result.Preview.Changes);
+        Assert.Equal(index, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
+        Assert.Equal(head, fixture.Git("rev-parse", "HEAD").Trim());
+        Assert.Equal("ours\n", File.ReadAllText(Path.Combine(fixture.Repository, "conflict.txt")));
+        Assert.Equal("theirs\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, "conflict.txt")));
+    }
+
+    [Fact]
+    public async Task Preview_hashes_binary_lane_content_from_materialized_bytes()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        File.WriteAllBytes(Path.Combine(fixture.Repository, "asset.bin"), [0, 255, 1, 128, 13, 10]);
+        fixture.CommitAll("binary base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var laneBytes = new byte[] { 0, 254, 1, 127, 13, 10, 0 };
+        File.WriteAllBytes(Path.Combine(worktree.WorktreePath, "asset.bin"), laneBytes);
+
+        var result = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree), CancellationToken.None);
+
+        Assert.True(result.Succeeded, result.Error?.ToString());
+        var change = Assert.Single(result.Preview!.Changes);
+        Assert.Equal("asset.bin", change.RelativePath);
+        Assert.Equal(Sha256(new byte[] { 0, 255, 1, 128, 13, 10 }), change.ExpectedPreSha256);
+        Assert.Equal(Sha256(laneBytes), change.ExpectedPostSha256);
+    }
+
+    [Fact]
+    public async Task Preview_rejects_lane_filter_before_git_add_can_execute_it()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var marker = Path.Combine(fixture.Root, "filter-ran.marker");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, ".gitattributes"), "*.payload filter=marker\n");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "sample.payload"), "payload\n");
+        fixture.Git("config", "filter.marker.clean", $"cmd /c echo ran > \"{marker}\"");
+
+        var result = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree), CancellationToken.None);
+
+        Assert.Equal(GitWorktreeErrorCode.UnsupportedFilter, result.Error);
+        Assert.False(File.Exists(marker));
+        Assert.False(File.Exists(Path.Combine(fixture.Repository, "sample.payload")));
+        Assert.Equal("base\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, "tracked.txt")));
+    }
+
+    [Fact]
+    public async Task Preview_rejects_identity_mismatch_and_honors_cancellation_without_mutation()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var incorrect = worktree with { GitCommonDirectory = Path.Combine(fixture.Root, "other-common") };
+        var mismatch = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(incorrect), CancellationToken.None);
+        Assert.Equal(GitWorktreeErrorCode.OwnershipMismatch, mismatch.Error);
+
+        var index = File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index"));
+        var head = fixture.Git("rev-parse", "HEAD").Trim();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree), cancellation.Token));
+        Assert.Equal(index, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
+        Assert.Equal(head, fixture.Git("rev-parse", "HEAD").Trim());
+        Assert.Equal("base\n", File.ReadAllText(Path.Combine(fixture.Repository, "tracked.txt")));
+    }
+
+    private static string Sha256(byte[] content) => Convert.ToHexStringLower(SHA256.HashData(content));
 
     [Fact]
     public async Task Head_only_secret_is_rejected_even_after_it_was_deleted_from_index_and_worktree()

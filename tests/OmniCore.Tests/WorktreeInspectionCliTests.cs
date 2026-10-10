@@ -1,6 +1,12 @@
 using System.Diagnostics;
 using OmniCore.Cli;
 using OmniCore.Client;
+using OmniCore.Abstractions;
+using OmniCore.Domain;
+using OmniCore.Execution;
+using OmniCore.Host;
+using OmniCore.Infrastructure;
+using Task = System.Threading.Tasks.Task;
 
 namespace OmniCore.Tests;
 
@@ -76,6 +82,125 @@ public sealed class WorktreeInspectionCliTests : IDisposable
         var keys = Localization.SpanishKeys.Where(key => key.StartsWith("worktree.", StringComparison.Ordinal)).ToArray();
         Assert.NotEmpty(keys);
         Assert.All(keys, key => Assert.True(Localization.HasInBoth(key), key));
+    }
+
+    [Theory]
+    [InlineData("es", "Preview sin conflictos.")]
+    [InlineData("en", "Preview has no conflicts.")]
+    public async Task Actual_cli_previews_uncommitted_lane_changes_without_changing_user_state(string locale, string ready)
+    {
+        var worktree = await CreateWorktree();
+        await File.WriteAllTextAsync(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane result\n", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(_repo, "user.txt"), "later user work\n", TestContext.Current.CancellationToken);
+        var index = await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken);
+        var refs = (await Git("show-ref")).Output;
+        var head = (await Git("rev-parse", "HEAD")).Output;
+
+        var result = await Cli(locale, "worktree", "preview", _repo, worktree.OwnershipId);
+
+        Assert.True(result.ExitCode == 0, result.Output);
+        Assert.Contains(ready, result.Output);
+        Assert.Contains("sample.txt", result.Output);
+        Assert.DoesNotContain("later user work", result.Output);
+        Assert.Equal(index, await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken));
+        Assert.Equal(head, (await Git("rev-parse", "HEAD")).Output);
+        Assert.Equal(refs, (await Git("show-ref")).Output);
+        Assert.Equal("base\n", await File.ReadAllTextAsync(Path.Combine(_repo, "sample.txt"), TestContext.Current.CancellationToken));
+        Assert.Equal("later user work\n", await File.ReadAllTextAsync(Path.Combine(_repo, "user.txt"), TestContext.Current.CancellationToken));
+        Assert.Equal("lane result\n", await File.ReadAllTextAsync(Path.Combine(worktree.WorktreePath, "sample.txt"), TestContext.Current.CancellationToken));
+    }
+
+    [Theory]
+    [InlineData("es", "Conflicto:")]
+    [InlineData("en", "Conflict:")]
+    public async Task Actual_cli_reports_conflict_without_applying_any_changes(string locale, string conflict)
+    {
+        var worktree = await CreateWorktree();
+        await File.WriteAllTextAsync(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane result\n", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(_repo, "sample.txt"), "user result\n", TestContext.Current.CancellationToken);
+        var index = await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken);
+
+        var result = await Cli(locale, "worktree", "preview", _repo, worktree.OwnershipId);
+
+        Assert.True(result.ExitCode == 3, result.Output);
+        Assert.Contains(conflict, result.Output);
+        Assert.Contains("sample.txt", result.Output);
+        Assert.Equal("user result\n", await File.ReadAllTextAsync(Path.Combine(_repo, "sample.txt"), TestContext.Current.CancellationToken));
+        Assert.Equal(index, await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Preview_cannot_select_foreign_metadata_and_does_not_expose_apply()
+    {
+        var worktree = await CreateWorktree();
+        var foreign = await Cli("en", "worktree", "preview", _repo, Guid.NewGuid().ToString("N"));
+        Assert.Equal(1, foreign.ExitCode);
+        Assert.DoesNotContain("Exception", foreign.Output);
+        var invalid = await Cli("en", "worktree", "preview", _repo, "../foreign.json");
+        Assert.Equal(2, invalid.ExitCode);
+        var apply = await Cli("en", "worktree", "apply", _repo, worktree.OwnershipId);
+        Assert.Equal(2, apply.ExitCode);
+        Assert.Equal("base\n", await File.ReadAllTextAsync(Path.Combine(_repo, "sample.txt"), TestContext.Current.CancellationToken));
+    }
+
+    private async Task<WorktreeIdentity> CreateWorktree()
+    {
+        await Git("init", "--template=");
+        await Git("config", "core.autocrlf", "false");
+        await File.WriteAllTextAsync(Path.Combine(_repo, "sample.txt"), "base\n", TestContext.Current.CancellationToken);
+        await Git("add", "sample.txt");
+        await Git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "base");
+        var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(_repo);
+        var workspace = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalRoot));
+        var dataRoot = Path.Combine(_root, "data", "workspaces", workspace.ToString());
+        var created = await new GitWorktreeStore(SystemProcessRuntime.Instance()).CreateAsync(
+            new(workspace, LaneId.New(), _repo, dataRoot), TestContext.Current.CancellationToken);
+        Assert.True(created.Succeeded, created.Error?.ToString());
+        return Assert.IsType<WorktreeIdentity>(created.Worktree);
+    }
+
+    [Fact]
+    public async Task Change_during_merge_invalidates_proposal_and_preserves_later_user_edit()
+    {
+        var worktree = await CreateWorktree();
+        await File.WriteAllTextAsync(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane result\n", TestContext.Current.CancellationToken);
+        var index = await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken);
+        var runtime = new BeforeMergeRuntime(() => File.WriteAllText(Path.Combine(_repo, "sample.txt"), "new edit during preview\n"));
+
+        var outcome = await new GitWorktreeStore(runtime).PreviewIntegrationAsync(new(worktree), TestContext.Current.CancellationToken);
+
+        Assert.True(runtime.Triggered, outcome.Error + ": " + runtime.LastFailedCommand);
+        Assert.Equal(GitWorktreeErrorCode.WorkspaceChanged, outcome.Error);
+        Assert.Null(outcome.Preview);
+        Assert.Equal("new edit during preview\n", await File.ReadAllTextAsync(Path.Combine(_repo, "sample.txt"), TestContext.Current.CancellationToken));
+        Assert.Equal(index, await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken));
+    }
+
+    private sealed class BeforeMergeRuntime(Action beforeMerge) : IProcessRuntime
+    {
+        private readonly IProcessRuntime _inner = SystemProcessRuntime.Instance();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<int, ProcessLaunch> _launches = new();
+        private int _triggered;
+        public string? LastFailedCommand { get; private set; }
+        public bool Triggered => Volatile.Read(ref _triggered) != 0;
+        public ProcessHandle Launch(ProcessLaunch launch, CancellationToken cancellationToken)
+        {
+            if (launch.Args.Contains("merge-tree") && Interlocked.CompareExchange(ref _triggered, 1, 0) == 0)
+                beforeMerge();
+            var handle = _inner.Launch(launch, cancellationToken);
+            _launches[handle.Pid] = launch;
+            return handle;
+        }
+        public ProcessResult Wait(ProcessHandle handle, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            var result = _inner.Wait(handle, timeout, cancellationToken);
+            if (result.ExitCode != 0 && _launches.TryGetValue(handle.Pid, out var launch)
+                && !launch.Args.Contains("symbolic-ref"))
+                LastFailedCommand = string.Join(" ", launch.Args) + ": " + result.Stderr;
+            return result;
+        }
+        public void CancelTree(ProcessHandle handle) => _inner.CancelTree(handle);
+        public bool IsAlive(ProcessHandle handle) => _inner.IsAlive(handle);
     }
 
     private async Task<ProcessOutput> Git(params string[] args)

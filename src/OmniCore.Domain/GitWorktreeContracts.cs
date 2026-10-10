@@ -56,8 +56,51 @@ public sealed record WorktreeIdentity(
     string WorkspaceDataRoot,
     DateTimeOffset CreatedAtUtc)
 {
+    public WorktreeBase Base { get; init; } = WorktreeBase.SnapshotOfWorkingTree;
+
     public WorktreeOwnership Ownership => new(OwnershipMetadataPath, OwnershipId, WorkspaceId.ToString(), LaneId.ToString(),
         WorkspaceDataRoot, RepositoryRoot, GitCommonDirectory, WorktreePath, SnapshotRef, SnapshotCommit);
+}
+
+/// <summary>Petición para calcular una propuesta 3-way; esta operación no aplica cambios.</summary>
+public sealed record WorktreeIntegrationPreviewRequest(WorktreeIdentity Worktree);
+
+/// <summary>Estado observado y propuesta inmutable para integrar una Lane después de SnapshotCommit.</summary>
+public sealed record WorktreeIntegrationPreview(
+    string ProposalId,
+    string RepositoryRoot,
+    string GitCommonDirectory,
+    string BaseCommit,
+    string OursCommit,
+    string TheirsCommit,
+    string? MergeTree,
+    string WorkspaceHeadAtCapture,
+    string? WorkspaceBranchAtCapture,
+    bool WorkspaceHeadChanged,
+    bool WorkspaceBranchChanged,
+    IReadOnlyList<WorktreeIntegrationConflict> Conflicts,
+    IReadOnlyList<WorktreeIntegrationChange> Changes,
+    DateTimeOffset CreatedAtUtc)
+{
+    public bool HasConflicts => Conflicts.Count > 0;
+}
+
+/// <summary>Path conflictivo sin contenido ni texto crudo del proceso Git.</summary>
+public sealed record WorktreeIntegrationConflict(string RelativePath);
+
+/// <summary>Pre/post hashes que permiten una futura aplicación por archivo reconciliable.</summary>
+public sealed record WorktreeIntegrationChange(
+    string RelativePath,
+    string? ExpectedPreSha256,
+    string? ExpectedPostSha256,
+    string? ExpectedPreMode,
+    string? ExpectedPostMode);
+
+public sealed record WorktreeIntegrationPreviewOutcome(WorktreeIntegrationPreview? Preview, GitWorktreeErrorCode? Error)
+{
+    public bool Succeeded => Preview is not null && Error is null;
+    public static WorktreeIntegrationPreviewOutcome Success(WorktreeIntegrationPreview preview) => new(preview, null);
+    public static WorktreeIntegrationPreviewOutcome Failure(GitWorktreeErrorCode error) => new(null, error);
 }
 
 /// <summary>Datos requeridos para retirar solo el worktree creado por OmniCore.</summary>
@@ -83,6 +126,9 @@ public enum GitWorktreeErrorCode
     InvalidPath,
     PathOutsideDataRoot,
     OwnershipMismatch,
+    UnsupportedOwnershipMetadata,
+    UnsupportedMergeDriver,
+    WorkspaceChanged,
     GitCommandFailed,
 }
 
