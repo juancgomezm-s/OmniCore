@@ -44,6 +44,7 @@ public sealed class CliApp
         if (command == "ask") return RunAsk(args);
         if (command == "act") return RunAct(args);
         if (command == "model") return ModelPolicyCommands.Run(args);
+        if (command == "worktree") return WorktreeCommands.RunAsync(args, CancellationToken.None);
         if (command == "trust") return RunTrust(args);
         if (command is "login" or "logout" && args.Length >= 2 && args[1] == "claude")
         {
@@ -558,6 +559,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine(Loc().Resolve("commands.workflow.help"));
         Console.WriteLine(Loc().Resolve("cli.usage.model"));
+        Console.WriteLine(Loc().Resolve("worktree.inspect.usage"));
         Console.WriteLine(Loc().Resolve("claude.oauth.cli.usage"));
         Console.WriteLine(Loc().Resolve("cli.usage.verify_journal"));
         Console.WriteLine(Loc().Resolve("cli.usage.session_purge"));
