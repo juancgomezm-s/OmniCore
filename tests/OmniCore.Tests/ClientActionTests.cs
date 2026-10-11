@@ -46,6 +46,8 @@ public sealed class ClientActionTests
             ["help"] = ClientActionIds.HelpShow, ["exit"] = ClientActionIds.AppExit, ["plan"] = ClientActionIds.ViewPlan,
             ["tasks"] = ClientActionIds.ViewTasks, ["events"] = ClientActionIds.ViewEvents,
             ["context"] = ClientActionIds.ContextInspect, ["tools"] = ClientActionIds.ToolsInspect,
+            ["extensions"] = ClientActionIds.ExtensionsInspect,
+            ["commands"] = ClientActionIds.CommandsInspect,
             ["permissions"] = ClientActionIds.PermissionsList, ["interrupt"] = ClientActionIds.RunInterrupt,
             ["cancel"] = ClientActionIds.RunCancel,
         };
@@ -116,8 +118,10 @@ public sealed class ClientActionTests
         client.Queries["workingState"] = "{\"plan\":true}";
         client.Queries["context"] = new string('x', 2500);
         client.Queries["tools"] = "{\"tools\":[]}";
+        client.Queries["commands"] = "{\"catalog\":{\"commands\":[{\"id\":\"core:explain\",\"enabled\":true}]}}";
         Assert.Equal("{\"plan\":true}", Run("plan", Context(client)).Text);
         Assert.Equal("{\"tools\":[]}", Run("tools", Context(client)).Text);
+        Assert.Contains("core:explain", Run("commands", Context(client)).Text);
         var truncated = Run("context", Context(client)).Text;
         Assert.Equal(1801, truncated.Length);
         Assert.EndsWith("…", truncated, StringComparison.Ordinal);
