@@ -77,14 +77,20 @@ public sealed partial class TuiApp
     private readonly ITuiTurnHost? _turnHost;
     private CancellationTokenSource? _turnCancellation;
     private Task? _turnTask;
-    private readonly Dictionary<string, (CancellationTokenSource Cancellation, Task Task)> _delegationTasks =
+    private readonly Dictionary<string, (CancellationTokenSource Cancellation, Task Task, string? SessionId, string? RunId)> _delegationTasks =
         new(StringComparer.OrdinalIgnoreCase);
     private bool _turnBusy;
+    private string? _localActivitySession;
     private string? _pendingEscalationResume;
     private string? _pendingQuotaResume;
-    private View? _activity;
+    private ActivityView? _activity;
     private Label? _activityLabel;
     private int _activityPhase;
+    private int _activityTicks;
+    private readonly AnimationSettingsStore _animationStore;
+    private AnimationPreferences _animationPreferences;
+    private ActivityView? _animationPreview;
+    private string _previewEffect = "omega-pulse";
     internal View? Activity => _activity;
     private string? _turnStatus;
     private UsageSnapshot? _turnUsage;
@@ -106,7 +112,8 @@ public sealed partial class TuiApp
     internal bool SidebarOpen => _sidebarOpen;
     internal ModelPolicyHost Policies => _policies;
 
-    public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? providerConnections = null)
+    public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? providerConnections = null,
+        string? animationSettingsPath = null)
     {
         _client = client;
         _locale = locale == "en" ? "en" : "es";
@@ -117,6 +124,8 @@ public sealed partial class TuiApp
         _accountOverride = account;
         _turnHost = turnHost;
         _providerConnectionHost = providerConnections ?? TuiProviderConnectionHost.Create();
+        _animationStore = new(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath());
+        _animationPreferences = _animationStore.Load();
         RefreshSidebarPreferences();
         _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
         _state = RefreshState();
@@ -230,32 +239,40 @@ public sealed partial class TuiApp
 
     internal bool AnimateActivity()
     {
-        if (!HasActiveModelWork) return true;
-        _activityPhase = (_activityPhase + 1) % 24;
+        if (!HasActiveModelWork && _activity?.Visible != true && _animationPreview is null) return true;
+        if (_animationPreferences.Enabled && !_animationPreferences.ReducedMotion
+            && ++_activityTicks >= _animationPreferences.IntervalMilliseconds / 100)
+        {
+            _activityTicks = 0;
+            _activityPhase = (_activityPhase + 1) % 120;
+        }
         RenderActivity();
+        RenderAnimationPreview();
         return true;
     }
 
     private void RenderActivity()
     {
         if (_activity is null) return;
-        _activity.Visible = HasActiveModelWork && (_window?.Frame.Width ?? 80) - _mainColumnInset >= 30;
+        var roots = _agents.Snapshot?.Lanes.Where(lane => lane.ParentTaskId is null).ToArray() ?? [];
+        var runId = _sidebarProjection.Snapshot?.RunId;
+        var pendingChildren = _delegationTasks.Values.Count(task => task.SessionId == _cursorSession && task.RunId == runId);
+        var presentation = ActivityPresentation.From(_cursorSession, _sidebarProjection.Snapshot?.RunId,
+            roots.Length == 1 ? roots[0].LaneId : null, _observability.Activity,
+            _turnBusy && (_localActivitySession is null || _localActivitySession == _cursorSession), pendingChildren);
+        _activity.Visible = presentation.Visible && (_window?.Frame.Width ?? 80) - _mainColumnInset >= 30;
         if (_activityLabel is not null) _activityLabel.Visible = _activity.Visible;
         if (_completion is not null) _completion.Visible = !_activity.Visible;
         if (!_activity.Visible) return;
-        var head = _activityPhase <= 12 ? _activityPhase - 2 : 22 - _activityPhase;
-        var colors = new[] { "#12303D", "#205061", "#30788B", "#4DBAC9", "#83C6DE", "#B47CE7" };
-        var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
-        for (var index = 0; index < _activity.SubViews.Count; index++)
+        if (_activityLabel is not null)
         {
-            var intensity = Math.Clamp(5 - Math.Abs(index - head), 0, 5);
-            var cell = _activity.SubViews.ElementAt(index);
-            cell.Text = noColor ? (intensity > 3 ? "▮" : intensity > 1 ? "▪" : "·") : index < 2 ? "▪" : "▮";
-            var color = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(colors[intensity]),
-                noColor ? Color.None : new Color("#061822"));
-            cell.SetScheme(new Scheme { Normal = color, Focus = color });
-            cell.SetNeedsDraw();
+            _activityLabel.Text = presentation.Label(_locale);
+            _activityLabel.Width = Dim.Fill(_mainColumnInset + 2);
         }
+        _activity.Render(_animationPreferences.Effect(presentation.Phase), _activityPhase,
+            presentation.Moving && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion,
+            Environment.GetEnvironmentVariable("NO_COLOR") is not null,
+            presentation.Phase == ChatActivityPhase.WaitingForApproval, _animationPreferences.Ascii);
     }
 
     /// <summary>Teclas a nivel de aplicación: F2 sidebar, F3 modelos, Esc responde/overlay.</summary>
@@ -349,11 +366,9 @@ public sealed partial class TuiApp
         _help = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1,
             Text = _locale == "en" ? "Enter send · Shift+Enter newline · / commands · F2 panel · F3 models · F4 settings" : "Enter enviar · Shift+Enter salto · / comandos · F2 panel · F3 modelos · F4 ajustes" };
         _window.Add(_help, _sidebar);
-        _activity = new View { Id = "omni-activity", X = 2, Y = Pos.AnchorEnd(3), Width = 12, Height = 1,
+        _activity = new ActivityView { Id = "omni-activity", X = 2, Y = Pos.AnchorEnd(3), Width = 12, Height = 1,
             CanFocus = false, Visible = false };
-        for (var index = 0; index < 11; index++)
-            _activity.Add(new Label { X = index, Y = 0, Width = 1, Height = 1, Text = "▮" });
-        _activityLabel = new Label { Id = "omni-heading", X = 16, Y = Pos.AnchorEnd(3), Width = 14, Height = 1,
+        _activityLabel = new Label { Id = "omni-activity-label", X = 16, Y = Pos.AnchorEnd(3), Width = 14, Height = 1,
             Text = Ui("Procesando…", "Processing…"), CanFocus = false, Visible = false };
         _window.Add(_activity, _activityLabel);
         ApplyTheme(_window);
@@ -429,7 +444,7 @@ public sealed partial class TuiApp
         _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout" });
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation" });
         var suggestions = ComposerAutocomplete.Complete(draft,
             names, ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
         // Keep common entry points visible as the catalog grows. Typed prefixes retain
@@ -477,6 +492,7 @@ public sealed partial class TuiApp
         "/reasoning" => Ui("Preferencia persistente, selección del Run o impulso de un turno", "Persistent preference, Run selection, or one-turn boost"),
         "/models" => Ui("Seleccionar modelo", "Select model"),
         "/preferences" => Ui("Abrir configuración", "Open settings"),
+        "/animation" => Ui("Ω Indicadores y vista previa", "Ω Activity and preview"),
         "/login" => Ui("Cuenta y conexión ChatGPT", "ChatGPT account and connection"),
         "/sidebar" => Ui("Mostrar u ocultar panel lateral", "Toggle workspace panel"),
         "/fuente" => Ui("Mostrar u ocultar ejemplos Markdown originales", "Show or hide original Markdown examples"),
@@ -548,6 +564,12 @@ public sealed partial class TuiApp
     {
         if (_composer is null) return;
         var input = _composer.Text?.ToString()?.Trim() ?? "";
+        if (input == "/animation" || input.StartsWith("/animation ", StringComparison.Ordinal))
+        {
+            HandleAnimationCommand(input.Length > 10 ? input[11..].Trim() : "");
+            _composer.Text = "";
+            return;
+        }
         if (input == "/fuente")
         {
             _showMarkdownExamples = !_showMarkdownExamples;
@@ -731,7 +753,7 @@ public sealed partial class TuiApp
                 (CancellationTokenSource Cancellation, Task Task)? background = null;
                 if (parts[1] == "cancel" && Guid.TryParse(parts[2], out var cancellingId)
                     && _delegationTasks.TryGetValue(cancellingId.ToString("D"), out var activeBackground))
-                    background = activeBackground;
+                    background = (activeBackground.Cancellation, activeBackground.Task);
                 if (parts[1] == "send")
                 {
                     var message = input[(input.IndexOf(parts[2], StringComparison.Ordinal) + parts[2].Length)..].Trim();
@@ -872,6 +894,7 @@ public sealed partial class TuiApp
         _turnCancellation?.Dispose();
         var cancellation = _turnCancellation = new CancellationTokenSource();
         _followConversationEnd = true;
+        _localActivitySession = _cursorSession;
         _turnBusy = true; _activityPhase = 0; _turnStatus = null; RenderState();
         _turnTask = Task.Run(async () =>
         {
@@ -957,7 +980,7 @@ public sealed partial class TuiApp
                 RenderState();
             });
         });
-        _delegationTasks.Add(id, (cancellation, task));
+        _delegationTasks.Add(id, (cancellation, task, _cursorSession, _sidebarProjection.Snapshot?.RunId));
         RenderState();
         return true;
     }
@@ -1044,7 +1067,8 @@ public sealed partial class TuiApp
         }
         if (_files.Snapshot is null || _files.Snapshot.BasedOnJournalSequence != _lastSequence) _files.Poll(_client);
         // Only reads existing observations. No authentication, quota refresh or generation here.
-        if (_sidebarOpen || _observability.Snapshot is null) _observability.Poll(_client);
+        // Activity is used by the composer indicator too, even when the sidebar is hidden.
+        _observability.Poll(_client);
     }
 
     private void ObserveModel(WireEnvelope envelope)
@@ -1463,7 +1487,7 @@ public sealed partial class TuiApp
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
         var background = noColor ? Color.None : new Color(surface);
         var foreground = view.Id == "omni-help" ? "#B9CBDF"
-            : view.Id == "omni-heading" ? "#85E6DF" : "#F4F7FB";
+            : view.Id is "omni-heading" or "omni-activity-label" ? "#85E6DF" : "#F4F7FB";
         if (dimmed) foreground = "#405666";
         var primary = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(foreground), background);
         var accent = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(dimmed ? "#405666" : "#67D4D0"), background);
@@ -1535,9 +1559,11 @@ public sealed partial class TuiApp
         account.Accepted += (_, _) => { CloseOverlay(); ShowAccount(); };
         var providers = new Button { Id = "settings-provider-connections", X = 2, Y = 8, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Conexiones API de providers", "Provider API connections") };
         providers.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(); };
+        var animations = new Button { Id = "settings-animations", X = 2, Y = 10, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Ω Indicadores y animaciones", "Ω Activity and animations") };
+        animations.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); };
         var close = new Button { Id = "settings-close", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
         close.Accepted += (_, _) => CloseOverlay();
-        frame.Add(models, account, providers, close); ApplyTheme(frame);
+        frame.Add(models, account, providers, animations, close); ApplyTheme(frame);
         _overlay = frame; _window.Add(frame); models.SetFocus();
     }
 
@@ -1964,6 +1990,7 @@ public sealed partial class TuiApp
     private void CloseOverlay()
     {
         if (_overlay is null || _window is null) return;
+        _animationPreview = null;
         ClearProviderApiKey();
         CancelProviderConnectionOperation();
         var catalog = _catalogCancellation; _catalogCancellation = null;

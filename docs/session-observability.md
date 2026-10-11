@@ -149,6 +149,47 @@ razonamiento y cursor de texto; la animación gráfica no se implementa en Core.
 La consulta devuelve estados terminales para retirar indicadores aunque la
 respuesta haya sido vacía. Cambiar de sesión borra inmediatamente las flags.
 
+### Indicadores nativos de la TUI
+
+La TUI consume estas observaciones también con el panel lateral cerrado. El
+indicador de una línea conserva el composer, la selección y el historial; sus
+frames no escriben eventos, contexto, logs ni requests al proveedor. La fase
+visible corresponde a la Lane raíz del Run actual; las Lanes hijas activas se
+cuentan aparte. Sin atribución inequívoca se muestra actividad genérica, no
+razonamiento inferido. `Tools` incluye llamadas solicitadas: su etiqueta es
+«Herramientas», no una afirmación de ejecución o progreso confirmado.
+
+El catálogo C# inicial contiene `omega-pulse`, `orbit-dots`, `block-wave` y
+`conveyor`, con `Ω` Unicode por defecto y sin depender de Node/Pi/Nerd Fonts.
+Inspiración visual: [pi-animations](https://github.com/arpagon/pi-animations), MIT;
+el catálogo es una implementación nativa, sin su parche de componentes ni sus
+temporizadores globales. Animaciones grandes y catálogo externo completo no
+forman parte de este primer bloque.
+
+- F4 → **Ω Indicadores y animaciones**, o `/animation showcase`: vista previa y
+  selección de efecto por fase. Enter cambia la opción; Esc devuelve el foco.
+- `/animation on|off`, `reduced|full`, `fast|normal|slow` y `ascii|unicode`:
+  movimiento, intervalos de 100/200/300 ms y fallback de caracteres.
+- `/animation thinking:orbit-dots`, `working:block-wave`, `tool:conveyor` o
+  `waiting:omega-pulse`: selección independiente; un nombre sin prefijo se aplica
+  a todas las fases.
+
+OFF y movimiento reducido conservan un indicador estático con la fase reportada.
+La espera de aprobación es estática; completed/cancelled/failed retiran el
+indicador de ese turno. `NO_COLOR` suprime colores, no la información del estado.
+Preferencias en `tui-animations.json`, dentro del directorio de configuración del
+usuario (`OMNICORE_CONFIG_DIR`/rutas de plataforma), nunca en archivos de cuenta
+o providers. Una configuración inválida se preserva y usa defaults con aviso;
+las escrituras válidas reemplazan el archivo dedicado de forma atómica.
+
+Los tests de `ActivityPresentationTests`, `AnimationSettingsStoreTests` y los
+casos `Omega_*`/`Visual_frames_*` de `TuiWiringTests` verifican atribución,
+terminales, frames deterministas, persistencia, falta de movimiento, teclado y
+capturas del buffer real del driver. Los SVG/PNG exportados son fixtures del
+driver, no capturas del escritorio ni validación contra un proveedor real.
+Es una mejora opcional del track TUI, no un gate de cierre del núcleo ni un
+cambio del mecanismo de extensiones M8.
+
 ## Integración y evidencia reproducible
 
 `OmniCoder.OmniCore` es un módulo WPF net8 real, con ViewModel, panel esencial y

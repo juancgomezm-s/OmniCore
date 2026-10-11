@@ -659,6 +659,8 @@ public sealed class TuiWiringTests
     [InlineData(120, 35, "commands")]
     [InlineData(80, 25, "activity")]
     [InlineData(120, 35, "activity")]
+    [InlineData(80, 25, "animations")]
+    [InlineData(120, 35, "animations")]
     [InlineData(80, 25, "table")]
     [InlineData(140, 40, "table")]
     [InlineData(100, 36, "rich")]
@@ -746,6 +748,12 @@ public sealed class TuiWiringTests
                 .Any(b => b.Text.ToString().Contains("subscription-b"))
                 || (scene == "picker" && PickerItems(fx).Any(item => item.Contains("Subscription B"))), "catálogo descubierto visible");
         }
+        else if (scene == "animations")
+        {
+            Type(fx, "/animation showcase");
+            KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.SubViews.Any(v => v.Id == "animation-preview") == true,
+                "vista previa de animaciones visible");
+        }
         else if (scene is "settings" or "account" or "login")
         {
             fx.InjectKey(new Key(KeyCode.F4));
@@ -772,7 +780,7 @@ public sealed class TuiWiringTests
                 string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
-            var marker = scene switch { "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
             if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
             try
@@ -836,7 +844,8 @@ public sealed class TuiWiringTests
                 }
                 else if (scene == "activity")
                 {
-                    Assert.Contains("▮", text);
+                    Assert.Contains("Ω", text);
+                    Assert.DoesNotContain("π", text);
                     Assert.True(fx.App.Activity!.Visible);
                     var composer = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
                     Assert.Equal(composer.Frame.Bottom, fx.App.Activity.Frame.Y);
@@ -844,6 +853,16 @@ public sealed class TuiWiringTests
                     Assert.Contains("Procesando", text);
                     Assert.DoesNotContain("Procesando", fx.App.Status!.Text.ToString());
                     Assert.DoesNotContain("%", fx.App.Status.Text.ToString());
+                }
+                else if (scene == "animations")
+                {
+                    Assert.Contains("Ω Indicadores y animaciones", text);
+                    Assert.Contains("Razonamiento reportado", text);
+                    Assert.Contains("Movimiento reducido", text);
+                    Assert.DoesNotContain("pi-pulse", text);
+                    var overlay = fx.App.Overlay!;
+                    Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, overlay.BorderStyle);
+                    Assert.All(overlay.SubViews.OfType<Button>(), button => Assert.True(button.Frame.Bottom <= overlay.Viewport.Height));
                 }
                 else if (scene == "commands")
                 {
@@ -1326,6 +1345,121 @@ public sealed class TuiWiringTests
         Assert.Equal("borrador", fx.App.Composer!.Text);
     }, noColor);
 
+    [Fact]
+    public void Omega_preferences_preview_is_native_persistent_and_does_not_submit_model_work() => RunTuiTest(fx =>
+    {
+        fx.StartTui();
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferencias visibles");
+        var journalCount = fx.Server.SubscribeSince(0).Count;
+        Click(fx, "Indicadores y animaciones");
+        fx.Wait(() => fx.App.Overlay!.SubViews.Any(v => v.Id == "animation-preview"), "vista previa visible");
+        var preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
+        Assert.Equal("Ω", preview.SubViews.First().Text);
+        Click(fx, "Razonamiento reportado");
+        Assert.Equal("block-wave", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Reasoning);
+        Click(fx, "Movimiento reducido");
+        Assert.True(new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().ReducedMotion);
+        var frozen = preview.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray();
+        fx.Invoke(() => { for (var i = 0; i < 15; i++) fx.App.AnimateActivity(); });
+        Assert.Equal(frozen, preview.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray());
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cierra preview");
+        Type(fx, "/animation tool:orbit-dots");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer!.Text == "", "comando local aplicado");
+        Assert.Equal("orbit-dots", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Tools);
+        Type(fx, "borrador intacto");
+        Assert.Equal("borrador intacto", fx.App.Composer!.Text);
+        Assert.False(fx.App.Activity!.Visible);
+        Assert.Equal(journalCount, fx.Server.SubscribeSince(0).Count);
+    });
+
+    [Theory]
+    [InlineData("off")]
+    [InlineData("reduced")]
+    public void Omega_can_stop_motion_without_hiding_an_active_turn_or_blocking_input(string option) => RunTuiTest(fx =>
+    {
+        var host = new TestTurn(fx);
+        fx.StartTui(turnHost: host);
+        Type(fx, "hola conectado");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "turno iniciado");
+        fx.Wait(() => fx.App.Activity!.Visible, "actividad visible");
+        Type(fx, "/animation " + option);
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer!.Text == "", "preferencia aplicada durante turno");
+        var frozen = fx.App.Activity!.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray();
+        fx.Invoke(() => { for (var tick = 0; tick < 12; tick++) fx.App.AnimateActivity(); });
+        Assert.Equal(frozen, fx.App.Activity.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray());
+        Assert.Equal("Ω", frozen[0].Text);
+        Assert.True(fx.App.Activity.Visible);
+        Assert.Equal(1, host.Calls);
+        Type(fx, "borrador");
+        host.Release.Set();
+        fx.Wait(() => !fx.App.Activity.Visible, "finalización retira indicador");
+        Assert.Equal("borrador", fx.App.Composer!.Text);
+    });
+
+    [Fact]
+    public void Omega_activity_tracks_live_phases_with_sidebar_closed_and_stops_on_terminal() => RunTuiTest(fx =>
+    {
+        var client = new AnimationObservationClient(fx.Server);
+        fx.StartTui(client: client);
+        Assert.False(fx.App.SidebarOpen);
+        string Label() => fx.App.MainWindow!.SubViews.Single(v => v.Id == "omni-activity-label").Text.ToString();
+        fx.Wait(() => fx.App.Activity!.Visible && Label().Contains("Razonando"), "razonamiento reportado visible");
+        client.Phase = ChatActivityPhase.AnswerText;
+        fx.Wait(() => Label().Contains("Respondiendo"), "texto de respuesta visible sin abrir sidebar");
+        client.Phase = ChatActivityPhase.Tools;
+        fx.Wait(() => Label().Contains("Herramientas"), "herramientas visibles");
+        client.Phase = ChatActivityPhase.WaitingForApproval;
+        fx.Wait(() => Label().Contains("Requiere tu respuesta"), "espera sin animación");
+        var frozen = fx.App.Activity!.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray();
+        fx.Invoke(() => { for (var i = 0; i < 5; i++) fx.App.AnimateActivity(); });
+        Assert.Equal(frozen, fx.App.Activity!.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray());
+        client.Phase = ChatActivityPhase.Completed;
+        fx.Wait(() => !fx.App.Activity!.Visible, "terminal retira indicador");
+        Assert.DoesNotContain("Razonando", fx.App.Conversation!.Text);
+    });
+
+    [Fact]
+    public void Omega_does_not_attribute_pending_local_work_to_a_new_session() => RunTuiTest(fx =>
+    {
+        var host = new TestTurn(fx);
+        var client = new AnimationObservationClient(fx.Server);
+        fx.StartTui(turnHost: host, client: client);
+        Type(fx, "hola conectado");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "turno pendiente iniciado");
+        fx.Wait(() => fx.App.Activity!.Visible, "actividad propia visible");
+        client.SessionOverride = "new-session";
+        fx.Invoke(() => fx.App.PollOnce());
+        Assert.False(fx.App.Activity!.Visible);
+        Type(fx, "borrador de otra sesión");
+        Assert.Equal("borrador de otra sesión", fx.App.Composer!.Text);
+        Assert.Equal(1, host.Calls);
+        client.Phase = ChatActivityPhase.Completed;
+        host.Release.Set();
+    });
+
+    private sealed class AnimationObservationClient(IOmniClient inner) : IOmniClient
+    {
+        internal volatile ChatActivityPhase Phase = ChatActivityPhase.Reasoning;
+        internal volatile string? SessionOverride;
+        private long _sequence;
+        public CommandAck Send(WireEnvelope command, CancellationToken token) => inner.Send(command, token);
+        public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => inner.SubscribeSince(fromSequence);
+        public SessionQueryResult? Query(string name, CancellationToken token)
+        {
+            if (name == "sessionIdentity" && SessionOverride is { } session)
+                return new(name, "{" + JsonObj.Field("sessionId", session) + "}");
+            var result = inner.Query(name, token);
+            if (!name.StartsWith("sessionObservability:", StringComparison.Ordinal)) return result;
+            var snapshot = ObservabilityJson.Decode(result!.Json)!;
+            var agents = AgentsJson.Decode(inner.Query("agents", token)!.Json)!;
+            var principal = agents.Lanes.Single(lane => lane.ParentTaskId is null);
+            var sequence = Interlocked.Increment(ref _sequence);
+            return new(name, ObservabilityJson.Encode(snapshot with { ActivitySequence = sequence,
+                Activities = [new(snapshot.SessionId, "fixture-turn", agents.RunId, principal.LaneId, sequence,
+                    Phase, false, DateTimeOffset.UtcNow, "fixture", true)] }));
+        }
+    }
+
     private sealed class TestTurn(TuiFixture fixture) : ITuiTurnHost
     {
         public readonly ManualResetEventSlim Started = new(false);
@@ -1336,7 +1470,8 @@ public sealed class TuiWiringTests
         {
             Interlocked.Increment(ref Calls);
             Input = input;
-            fixture.Server.Send(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"act\"," + JsonObj.Field("objective", input) + "}"), cancellationToken);
+            // Match ConversationAsync: ordinary chat persists session.input, not an
+            // unrelated act command which silently creates a different Session.
             fixture.Server.Send(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"session.input\"," + JsonObj.Field("text", input) + "}"), cancellationToken);
             Started.Set();
             Release.Wait(cancellationToken);
@@ -2419,7 +2554,8 @@ public sealed class TuiWiringTests
             {
                 _loopError = null;
                 App = new TuiApp(client ?? Server, "es", _fixturePolicies, account, turnHost,
-                    providerConnections ?? EmptyTuiProviderConnectionHost.Instance);
+                    providerConnections ?? EmptyTuiProviderConnectionHost.Instance,
+                    Path.Combine(Root, "tui-animations.json"));
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);
