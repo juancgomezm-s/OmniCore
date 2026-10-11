@@ -62,6 +62,15 @@ public sealed class ExtensionManifestTests
     }
 
     [Fact]
+    public void Manifest_ast_mapping_rejects_wrong_scalar_and_nested_types()
+    {
+        var loader = new ExtensionManifestLoader();
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest.Replace("manifestVersion: 1", "manifestVersion: nope", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest.Replace("schema: schemas/compile.json", "schema: { nested: value }", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest.Replace("read: ['**/*.p']", "read: { nested: value }", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void Extension_boundary_is_a_ceiling_for_path_process_and_network_claims()
     {
         var permissions = new ExtensionPermissionManifest

@@ -1,7 +1,6 @@
 namespace OmniCore.Extensions;
 
 using OmniCore.Domain;
-using YamlDotNet.Serialization;
 
 /// <summary>Project skill metadata. Discovery reads only this file; instruction bodies load on explicit activation.</summary>
 public sealed record SkillManifest
@@ -47,11 +46,3 @@ public sealed record DiscoveredSkill(string Directory, SkillManifest Manifest, S
     TrustLevel Trust, string ManifestSha256, SkillLifecycleState State, string? Diagnostic);
 
 public sealed record LoadedSkill(DiscoveredSkill Skill, string Instructions, string ContentSha256);
-
-[YamlStaticContext]
-[YamlSerializable(typeof(SkillManifest))]
-[YamlSerializable(typeof(SkillActivationManifest))]
-[YamlSerializable(typeof(SkillExecutionManifest))]
-public sealed partial class SkillYamlStaticContext : StaticContext
-{
-}

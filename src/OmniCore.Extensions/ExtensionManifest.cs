@@ -2,7 +2,6 @@ namespace OmniCore.Extensions;
 
 using OmniCore.Abstractions;
 using OmniCore.Domain;
-using YamlDotNet.Serialization;
 
 /// <summary>Typed, versioned representation of omnicore-extension.yaml (ADR-0023/0039).</summary>
 public sealed class ExtensionManifest
@@ -84,22 +83,6 @@ public sealed class ExtensionSourceManifest
     public string? Kind { get; set; }
     public string? Location { get; set; }
     public string? Sha256 { get; set; }
-}
-
-[YamlStaticContext]
-[YamlSerializable(typeof(ExtensionManifest))]
-[YamlSerializable(typeof(ExtensionProvidesManifest))]
-[YamlSerializable(typeof(ExtensionToolManifest))]
-[YamlSerializable(typeof(ExtensionCommandManifest))]
-[YamlSerializable(typeof(ExtensionHookManifest))]
-[YamlSerializable(typeof(ExtensionRequestsManifest))]
-[YamlSerializable(typeof(ExtensionPermissionManifest))]
-[YamlSerializable(typeof(ExtensionProcessPermissionManifest))]
-[YamlSerializable(typeof(ExtensionPathPermissionManifest))]
-[YamlSerializable(typeof(ExtensionRuntimeManifest))]
-[YamlSerializable(typeof(ExtensionSourceManifest))]
-public sealed partial class ExtensionYamlStaticContext : StaticContext
-{
 }
 
 public enum ExtensionDiscoveryStatus

@@ -5,30 +5,142 @@ using System.Text;
 using OmniCore.Domain;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
 
 /// <summary>Parses and discovers extensions without launching or initializing their processes.</summary>
 public sealed class ExtensionManifestLoader
 {
     public const string ManifestFileName = "omnicore-extension.yaml";
     private const string HostApiVersion = "1.0";
-    // YamlDotNet 18.1's StaticDeserializerBuilder currently leaves custom StaticContext.GetTypeResolver()
-    // ungenerated in normal project builds (upstream issue #1124). Keep strict key validation below,
-    // and use the runtime builder for this fixed manifest DTO graph. M8 does not publish an AOT binary.
-#pragma warning disable IL3050
-    private static readonly IDeserializer Deserializer = new DeserializerBuilder()
-        .WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
-#pragma warning restore IL3050
-
     public ExtensionManifest Load(string yaml)
     {
         ArgumentNullException.ThrowIfNull(yaml);
-        ValidateKeys(yaml);
-        var manifest = Deserializer.Deserialize<ExtensionManifest>(yaml)
-            ?? throw new InvalidDataException("The extension manifest is empty.");
+        var manifest = Map(ManifestYamlAst.ReadRoot(yaml, "extension manifest"));
         Validate(manifest);
         return manifest;
+    }
+
+    private static ExtensionManifest Map(YamlMappingNode root)
+    {
+        ManifestYamlAst.CheckKeys(root, "extension manifest", "manifestVersion", "id", "version", "displayName",
+            "publisher", "omnicoreApi", "provides", "requests", "runtime", "source");
+        var manifest = new ExtensionManifest
+        {
+            ManifestVersion = ManifestYamlAst.Optional(root, "manifestVersion") is { } manifestVersion
+                ? ManifestYamlAst.Int(manifestVersion, "manifestVersion") : 0,
+            Id = ManifestYamlAst.OptionalString(root, "id", "id"),
+            Version = ManifestYamlAst.OptionalString(root, "version", "version"),
+            DisplayName = ManifestYamlAst.OptionalString(root, "displayName", "displayName"),
+            Publisher = ManifestYamlAst.OptionalString(root, "publisher", "publisher"),
+            OmnicoreApi = ManifestYamlAst.OptionalString(root, "omnicoreApi", "omnicoreApi"),
+        };
+        if (ManifestYamlAst.OptionalMap(root, "provides", "provides", "tools", "commands", "skills", "hooks",
+            "contextContributors", "validators", "completionGates") is { } provides)
+        {
+            manifest.Provides = new ExtensionProvidesManifest
+            {
+                Tools = MapTools(provides), Commands = MapCommands(provides),
+                Skills = ManifestYamlAst.OptionalStringList(provides, "skills", "provides.skills"),
+                Hooks = MapHooks(provides),
+                ContextContributors = ManifestYamlAst.OptionalStringList(provides, "contextContributors", "provides.contextContributors"),
+                Validators = ManifestYamlAst.OptionalStringList(provides, "validators", "provides.validators"),
+                CompletionGates = ManifestYamlAst.OptionalStringList(provides, "completionGates", "provides.completionGates"),
+            };
+        }
+        if (ManifestYamlAst.OptionalMap(root, "requests", "requests", "capabilities", "permissions") is { } requests)
+        {
+            var result = new ExtensionRequestsManifest
+            {
+                Capabilities = ManifestYamlAst.OptionalStringList(requests, "capabilities", "requests.capabilities"),
+            };
+            if (ManifestYamlAst.OptionalMap(requests, "permissions", "requests.permissions", "process", "network", "paths") is { } permissions)
+            {
+                var permissionManifest = new ExtensionPermissionManifest
+                {
+                    Network = ManifestYamlAst.OptionalStringList(permissions, "network", "requests.permissions.network"),
+                };
+                if (ManifestYamlAst.Optional(permissions, "process") is { } processNode)
+                {
+                    if (processNode is not YamlSequenceNode process) throw ManifestYamlAst.WrongType("requests.permissions.process");
+                    permissionManifest.Process = process.Select(item =>
+                    {
+                        var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("process permission");
+                        ManifestYamlAst.CheckKeys(map, "process permission", "executable");
+                        return new ExtensionProcessPermissionManifest { Executable = ManifestYamlAst.OptionalString(map, "executable", "process.executable") };
+                    }).ToList();
+                }
+                if (ManifestYamlAst.OptionalMap(permissions, "paths", "requests.permissions.paths", "read", "write") is { } paths)
+                    permissionManifest.Paths = new ExtensionPathPermissionManifest
+                    {
+                        Read = ManifestYamlAst.OptionalStringList(paths, "read", "requests.permissions.paths.read"),
+                        Write = ManifestYamlAst.OptionalStringList(paths, "write", "requests.permissions.paths.write"),
+                    };
+                result.Permissions = permissionManifest;
+            }
+            manifest.Requests = result;
+        }
+        if (ManifestYamlAst.OptionalMap(root, "runtime", "runtime", "kind", "command", "args") is { } runtime)
+            manifest.Runtime = new ExtensionRuntimeManifest
+            {
+                Kind = ManifestYamlAst.OptionalString(runtime, "kind", "runtime.kind"),
+                Command = ManifestYamlAst.OptionalString(runtime, "command", "runtime.command"),
+                Args = ManifestYamlAst.OptionalStringList(runtime, "args", "runtime.args"),
+            };
+        if (ManifestYamlAst.OptionalMap(root, "source", "source", "kind", "location", "sha256") is { } source)
+            manifest.Source = new ExtensionSourceManifest
+            {
+                Kind = ManifestYamlAst.OptionalString(source, "kind", "source.kind"),
+                Location = ManifestYamlAst.OptionalString(source, "location", "source.location"),
+                Sha256 = ManifestYamlAst.OptionalString(source, "sha256", "source.sha256"),
+            };
+        return manifest;
+    }
+
+    private static List<ExtensionToolManifest>? MapTools(YamlMappingNode provides)
+    {
+        if (ManifestYamlAst.Optional(provides, "tools") is not { } node) return null;
+        if (node is not YamlSequenceNode sequence) throw ManifestYamlAst.WrongType("provides.tools");
+        return sequence.Select(item =>
+        {
+            var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("extension tool");
+            ManifestYamlAst.CheckKeys(map, "extension tool", "name", "schema");
+            return new ExtensionToolManifest
+            {
+                Name = ManifestYamlAst.OptionalString(map, "name", "tool.name"),
+                Schema = ManifestYamlAst.OptionalString(map, "schema", "tool.schema"),
+            };
+        }).ToList();
+    }
+
+    private static List<ExtensionCommandManifest>? MapCommands(YamlMappingNode provides)
+    {
+        if (ManifestYamlAst.Optional(provides, "commands") is not { } node) return null;
+        if (node is not YamlSequenceNode sequence) throw ManifestYamlAst.WrongType("provides.commands");
+        return sequence.Select(item =>
+        {
+            var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("extension command");
+            ManifestYamlAst.CheckKeys(map, "extension command", "name", "kind");
+            return new ExtensionCommandManifest
+            {
+                Name = ManifestYamlAst.OptionalString(map, "name", "command.name"),
+                Kind = ManifestYamlAst.OptionalString(map, "kind", "command.kind"),
+            };
+        }).ToList();
+    }
+
+    private static List<ExtensionHookManifest>? MapHooks(YamlMappingNode provides)
+    {
+        if (ManifestYamlAst.Optional(provides, "hooks") is not { } node) return null;
+        if (node is not YamlSequenceNode sequence) throw ManifestYamlAst.WrongType("provides.hooks");
+        return sequence.Select(item =>
+        {
+            var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("extension hook");
+            ManifestYamlAst.CheckKeys(map, "extension hook", "point", "capabilities");
+            return new ExtensionHookManifest
+            {
+                Point = ManifestYamlAst.OptionalString(map, "point", "hook.point"),
+                Capabilities = ManifestYamlAst.OptionalStringList(map, "capabilities", "hook.capabilities"),
+            };
+        }).ToList();
     }
 
     public IReadOnlyList<DiscoveredExtension> Discover(string root, TrustLevel trust, bool workspaceTrusted,
@@ -194,31 +306,4 @@ public sealed class ExtensionManifestLoader
             || normalized.Split('/').Any(segment => segment is ".." or ".");
     }
 
-    private static void ValidateKeys(string yaml)
-    {
-        var stream = new YamlStream();
-        stream.Load(new Parser(new StringReader(yaml)));
-        if (stream.Documents.Count != 1 || stream.Documents[0].RootNode is not YamlMappingNode root)
-            throw new InvalidDataException("The extension manifest must be a YAML mapping.");
-        Check(root, ["manifestVersion", "id", "version", "displayName", "publisher", "omnicoreApi", "provides", "requests", "runtime", "source"]);
-        CheckNested(root, "provides", ["tools", "commands", "skills", "hooks", "contextContributors", "validators", "completionGates"]);
-        CheckNested(root, "requests", ["capabilities", "permissions"]);
-        CheckNested(root, "runtime", ["kind", "command", "args"]);
-        CheckNested(root, "source", ["kind", "location", "sha256"]);
-    }
-
-    private static void CheckNested(YamlMappingNode root, string key, string[] allowed)
-    {
-        if (root.Children.TryGetValue(new YamlScalarNode(key), out var node) && node is YamlMappingNode map) Check(map, allowed);
-    }
-
-    private static void Check(YamlMappingNode map, string[] allowed)
-    {
-        foreach (var pair in map.Children)
-        {
-            var key = (pair.Key as YamlScalarNode)?.Value;
-            if (key is null || !allowed.Contains(key, StringComparer.Ordinal))
-                throw new InvalidDataException("Unknown manifest key: " + (key ?? "?"));
-        }
-    }
 }

@@ -74,6 +74,15 @@ public sealed class SkillLifecycleTests
     }
 
     [Fact]
+    public void Skill_manifest_ast_mapping_rejects_wrong_scalar_and_nested_types()
+    {
+        var loader = new SkillManifestLoader();
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest.Replace("priority: 5", "priority: high", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest.Replace("paths: [\"**/*.p\"]", "paths: true", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest.Replace("extensions: [\".w\"]", "explicit: certainly", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public void Skill_precedence_honors_sealed_and_does_not_allow_lower_trust_to_hide()
     {
         var manifest = new SkillManifest { Id = "core.skill", Version = "1", Sealed = true };

@@ -5,8 +5,6 @@ using System.Text;
 using OmniCore.Domain;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
 
 /// <summary>Project-scope skill discovery and explicit loading. Discovery never reads instructions or executes scripts.</summary>
 public sealed class SkillManifestLoader
@@ -14,12 +12,6 @@ public sealed class SkillManifestLoader
     public const string ManifestFileName = "skill.yaml";
     public const string InstructionsFileName = "instructions.md";
     private const int MaximumInstructionsCharacters = 65_536;
-    // Fixed manifest DTO graph; see ExtensionManifestLoader and upstream issue #1124. M8 has no AOT binary.
-#pragma warning disable IL3050
-    private static readonly IDeserializer Deserializer = new DeserializerBuilder()
-        .WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
-#pragma warning restore IL3050
-
     public IReadOnlyList<DiscoveredSkill> Discover(string root, ScopeLevel scope = ScopeLevel.Project,
         TrustLevel trust = TrustLevel.Project, bool workspaceTrusted = false)
     {
@@ -58,9 +50,39 @@ public sealed class SkillManifestLoader
         SkillManifest manifest;
         try
         {
-            ValidateKeys(yaml);
-            manifest = Deserializer.Deserialize<SkillManifest>(yaml)
-                ?? throw new InvalidDataException("The skill manifest is empty.");
+            var root = ManifestYamlAst.ReadRoot(yaml, "skill manifest");
+            ManifestYamlAst.CheckKeys(root, "skill manifest", "id", "version", "displayName", "sealed", "priority",
+                "modelInvocable", "activation", "execution", "tools");
+            manifest = new SkillManifest
+            {
+                Id = ManifestYamlAst.OptionalString(root, "id", "id"),
+                Version = ManifestYamlAst.OptionalString(root, "version", "version"),
+                DisplayName = ManifestYamlAst.OptionalString(root, "displayName", "displayName"),
+                Sealed = ManifestYamlAst.Optional(root, "sealed") is { } sealedNode && ManifestYamlAst.Bool(sealedNode, "sealed"),
+                Priority = ManifestYamlAst.Optional(root, "priority") is { } priorityNode
+                    ? ManifestYamlAst.Int(priorityNode, "priority") : 0,
+                ModelInvocable = ManifestYamlAst.Optional(root, "modelInvocable") is { } modelInvocableNode
+                    && ManifestYamlAst.Bool(modelInvocableNode, "modelInvocable"),
+                Tools = ManifestYamlAst.OptionalStringList(root, "tools", "tools"),
+            };
+            if (ManifestYamlAst.OptionalMap(root, "activation", "activation", "paths", "extensions", "languages",
+                "frameworks", "taskTypes", "explicit") is { } activation)
+                manifest.Activation = new SkillActivationManifest
+                {
+                    Paths = ManifestYamlAst.OptionalStringList(activation, "paths", "activation.paths"),
+                    Extensions = ManifestYamlAst.OptionalStringList(activation, "extensions", "activation.extensions"),
+                    Languages = ManifestYamlAst.OptionalStringList(activation, "languages", "activation.languages"),
+                    Frameworks = ManifestYamlAst.OptionalStringList(activation, "frameworks", "activation.frameworks"),
+                    TaskTypes = ManifestYamlAst.OptionalStringList(activation, "taskTypes", "activation.taskTypes"),
+                    Explicit = ManifestYamlAst.Optional(activation, "explicit") is { } explicitNode
+                        && ManifestYamlAst.Bool(explicitNode, "activation.explicit"),
+                };
+            if (ManifestYamlAst.OptionalMap(root, "execution", "execution", "context", "preferredModelAlias") is { } execution)
+                manifest.Execution = new SkillExecutionManifest
+                {
+                    Context = ManifestYamlAst.OptionalString(execution, "context", "execution.context"),
+                    PreferredModelAlias = ManifestYamlAst.OptionalString(execution, "preferredModelAlias", "execution.preferredModelAlias"),
+                };
         }
         catch (YamlException exception)
         {
@@ -201,28 +223,4 @@ public sealed class SkillManifestLoader
             System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
     }
 
-    private static void ValidateKeys(string yaml)
-    {
-        var stream = new YamlStream();
-        stream.Load(new Parser(new StringReader(yaml)));
-        if (stream.Documents.Count != 1 || stream.Documents[0].RootNode is not YamlMappingNode root)
-            throw new InvalidDataException("The skill manifest must be a YAML mapping.");
-        Check(root, ["id", "version", "displayName", "sealed", "priority", "modelInvocable", "activation", "execution", "tools"]);
-        if (root.Children.TryGetValue(new YamlScalarNode("activation"), out var activation)
-            && activation is YamlMappingNode activationNode)
-            Check(activationNode, ["paths", "extensions", "languages", "frameworks", "taskTypes", "explicit"]);
-        if (root.Children.TryGetValue(new YamlScalarNode("execution"), out var execution)
-            && execution is YamlMappingNode executionNode)
-            Check(executionNode, ["context", "preferredModelAlias"]);
-    }
-
-    private static void Check(YamlMappingNode node, IReadOnlyList<string> allowed)
-    {
-        foreach (var pair in node.Children)
-        {
-            var key = (pair.Key as YamlScalarNode)?.Value;
-            if (key is null || !allowed.Contains(key))
-                throw new InvalidDataException("Unknown skill manifest field: " + (key ?? "<non-scalar>"));
-        }
-    }
 }
