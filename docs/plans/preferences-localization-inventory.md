@@ -19,6 +19,32 @@ Reproducción: en `src/OmniCore.Client/Localization.cs`, delimitar `_es` y `_en`
 
 Un scan complementario de líneas con salidas directas y literales encontró candidatos en CLI, Client y Host. No se usa como total: incluye datos técnicos, solapamientos y contenido ajeno. El cierre exige clasificar los puntos de salida y seguir su flujo, no sólo reducir una expresión regular.
 
+### Incremento P1A (11 de octubre de 2026)
+
+El catálogo inicial de preferencias se implementó en `src/OmniCore.Client/PreferenceCategoryCatalog.cs`:
+9 categorías estables y 27 recursos (título, descripción y ayuda por categoría), cada uno con texto
+propio en `es`, `en`, `fr` e `it`. Esto es una cobertura acotada, no una traducción completa de la UI.
+Los IDs exactos son `general`, `accounts_connections`, `local_engines`, `models_execution`,
+`tools_security`, `interface`, `context_memory`, `extensions_skills` y `diagnostics_data`; cada uno
+genera las claves `preferences.category.<id>.title`, `.description` y `.help`.
+Las 538 entradas heredadas `es`/`en` siguen en `Localization.cs`; fr/it heredan inglés en esas claves.
+`Localization.ResolveDetailed` reporta `RequestedLocale`, `ResourceLocale` y `UsedFallback` para
+hacer visible esa transición.
+
+Persistencia del locale ya disponible: `ui.locale` sólo se admite en `settings.yaml` del scope User,
+se valida contra es/en/fr/it y se escribe atómicamente con revisión esperada, conservando otras
+preferencias. Protocol define DTOs y normalización; Host expone lectura y comando confiable de cambio.
+El resolver puro fija precedencia `--locale` > `OMNI_LOCALE` > `ui.locale` > `es`, con fallback a es
+ante un valor explícito inválido. **Pendiente P1B:** conectar esa resolución a los puntos de entrada
+CLI/TUI, aplicar la selección a renderers y mostrar estado/fallback. Hasta entonces, la persistencia
+y el resolver no cambian por sí solos el locale de la UI en ejecución.
+
+Pruebas P1A: `UiLocalePreferencesTests` cubre normalización, precedencia y valores inválidos, 27
+recursos en cuatro idiomas, fallback heredado, persistencia User con revisión/atomicidad lógica,
+preservación de settings y rechazo de otros scopes; además valida los comandos/query Host confiables.
+La suite de arquitectura valida límites Client/Protocol/Host. Inventario de grupos fuera de P1A:
+permanecen con el estado inicial indicado abajo; no se marca ninguno como traducido por esta entrega.
+
 ## Registro por superficie
 
 Estado inicial de todos los grupos: pendiente de migración completa a cuatro idiomas. «Parcial» se refiere a comportamiento existente, no a aceptación del rediseño.

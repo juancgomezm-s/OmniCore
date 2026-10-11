@@ -537,6 +537,24 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == UiLocalePreferencesProtocol.ConfigureCommand)
+        {
+            if (!trustedUserAction)
+                return new(command.MessageId, "error", "Trusted user action required", RuntimeCommandOutcome.Rejected());
+            try
+            {
+                var request = UiLocalePreferencesProtocol.DecodeUpdate(command.PayloadJson)
+                    ?? throw new ArgumentException("UI locale request is malformed.");
+                new UserLocaleConfiguration(_platformPathsFactory()).Set(request, cancellationToken);
+                return new(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+                or IOException or UnauthorizedAccessException or YamlDotNet.Core.YamlException
+                or System.Text.Json.JsonException or ConfigValidationException)
+            {
+                return new(command.MessageId, "error", exception.Message, RuntimeCommandOutcome.Rejected());
+            }
+        }
         if (commandName == "sidebar.configure")
         {
             if (!trustedUserAction) return new(command.MessageId, "error", "Trusted user action required", RuntimeCommandOutcome.Rejected());
@@ -1972,6 +1990,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == UiLocalePreferencesProtocol.QueryName)
+            return new(name, UiLocalePreferencesProtocol.Encode(new UserLocaleConfiguration(_platformPathsFactory()).Read()));
         if (name == "sidebarSettings") return new(name, SidebarPreferencesJson.Encode(SidebarSettings().Read()));
         if (name == "sessionSidebar")
             return new SessionQueryResult(name, _lastSessionId is null ? "null"

@@ -14,9 +14,16 @@
 
    Ejemplo: `LocalizedText("interaction.permission.allow_run", {})`. El cliente lo resuelve con sus recursos.
 2. **`ToolPresentation`** (ADR-0033 §2) declara claves (`tool.search.running`, con argumento `{query}`), no frases. Las tools de extensiones traen sus propios recursos en el paquete.
-3. **Recursos:** hay recursos `es` y `en` en `OmniCore.Client`; `es` es el default.
-   - El idioma se configura en `ui.locale` (scope User) y por defecto es `es`.
-   - Una clave sin traducción cae a `en` y, si tampoco existe, a la clave literal.
+3. **Recursos y transición (P1A, 2026-10-11):** `ui.locale` es una preferencia del scope User,
+   validada por Protocol y persistida atómicamente por Host. El default es `es`. El resolver puro
+   define precedencia `--locale` > `OMNI_LOCALE` > `ui.locale` > `es`; conectar la invocación CLI/TUI
+   y propagar el locale efectivo queda pendiente de P1B.
+   - El catálogo heredado de `OmniCore.Client` tiene recursos `es` y `en`. Un recurso ausente cae
+     a `en` y, si tampoco existe, a la clave literal.
+   - Las 9 categorías de preferencias (27 claves) ya tienen copy propio en `es`, `en`, `fr` e `it`.
+     Esto no significa que el resto de la interfaz esté traducido a francés o italiano: hasta migrar
+     cada clave heredada, esos idiomas usan fallback inglés. `ResolveDetailed` expone el locale del
+     recurso y si se usó fallback. La cobertura completa sigue pendiente del plan de localización.
 4. **Qué no se traduce:**
    - los prompts y system prompts hacia el modelo, que van en **inglés** (mejor comportamiento de los modelos);
    - los datos de eventos y logs técnicos;

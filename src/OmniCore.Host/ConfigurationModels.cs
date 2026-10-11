@@ -137,6 +137,7 @@ public sealed class WorkspaceSettingsYaml
 /// <summary>User-scope settings from <c>&lt;config&gt;/settings.yaml</c> (ADR-0039).</summary>
 public sealed class UserSettingsYaml
 {
+    public UiSettingsYaml? Ui { get; set; }
     public SidebarSettingsYaml? Sidebar { get; set; }
     public Dictionary<string, WidgetSettingsYaml>? Widgets { get; set; }
     public BudgetSettingsYaml? Budget { get; set; }
@@ -145,6 +146,11 @@ public sealed class UserSettingsYaml
 
     /// <summary>Claves fijadas en User: Project y Workspace no las cambian (ADR-0039 §5).</summary>
     public List<string>? Locked { get; set; }
+}
+
+public sealed class UiSettingsYaml
+{
+    public string? Locale { get; set; }
 }
 
 public sealed class SidebarSettingsYaml
@@ -200,6 +206,7 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(EscalationYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
 [YamlSerializable(typeof(UserSettingsYaml))]
+[YamlSerializable(typeof(UiSettingsYaml))]
 [YamlSerializable(typeof(SidebarSettingsYaml))]
 [YamlSerializable(typeof(WidgetSettingsYaml))]
 [YamlSerializable(typeof(BudgetSettingsYaml))]

@@ -2,9 +2,38 @@ namespace OmniCore.Client;
 
 using OmniCore.Protocol;
 
+public enum LocaleSelectionSource { CommandLine, Environment, UserSetting, Default }
+
+/// <summary>Effective UI locale and the winning source; invalid explicit values fall back to Spanish.</summary>
+public sealed record LocaleSelection(string Locale, LocaleSelectionSource Source, string? InvalidValue = null)
+{
+    public bool HasProcessOverride => Source is LocaleSelectionSource.CommandLine or LocaleSelectionSource.Environment;
+    public bool HasCompleteLegacyCatalog => Locale is "es" or "en";
+}
+
+public static class LocaleSelectionResolver
+{
+    public static LocaleSelection Resolve(string? commandLine, string? environment, string? userSetting)
+    {
+        if (commandLine is not null) return Select(commandLine, LocaleSelectionSource.CommandLine);
+        if (environment is not null) return Select(environment, LocaleSelectionSource.Environment);
+        if (userSetting is not null) return Select(userSetting, LocaleSelectionSource.UserSetting);
+        return new("es", LocaleSelectionSource.Default);
+    }
+
+    private static LocaleSelection Select(string value, LocaleSelectionSource source) =>
+        UiLocaleCodes.TryNormalize(value, out var locale)
+            ? new(locale, source)
+            : new("es", source, value);
+}
+
+public sealed record LocalizationResolution(string Text, string RequestedLocale, string? ResourceLocale,
+    bool UsedFallback);
+
 /// <summary>
 /// Resolver de texto localizado (ADR-0040): el servidor envía claves + argumentos; el cliente
-/// las resuelve con sus recursos es/en (es por defecto). Fallback: en, y luego la clave literal.
+/// resuelve los recursos de preferencias es/en/fr/it y los recursos heredados es/en (es por defecto).
+/// Las claves heredadas sin traducción caen a en y luego a la clave literal; ResolveDetailed lo informa.
 /// Los prompts al modelo y los datos técnicos no se traducen.
 /// </summary>
 public sealed class Localization
@@ -12,7 +41,7 @@ public sealed class Localization
     /// <summary>Idioma configurado (por defecto es).</summary>
     public string Locale { get; }
 
-    public Localization(string locale) => Locale = locale;
+    public Localization(string locale) => Locale = UiLocaleCodes.NormalizeOrDefault(locale);
 
     public static Localization Spanish() => new("es");
 
@@ -42,7 +71,7 @@ public sealed class Localization
     /// <summary>Resuelve una clave y todos sus argumentos.</summary>
     public string Resolve(string key, IReadOnlyDictionary<string, string>? args = null)
     {
-        var text = Resources(key);
+        var text = ResolveDetailed(key).Text;
         if (args is not null)
         {
             foreach (var pair in args)
@@ -54,6 +83,15 @@ public sealed class Localization
         return text;
     }
 
+    /// <summary>Resolves a key and reports whether a legacy key used a fallback resource.</summary>
+    public LocalizationResolution ResolveDetailed(string key)
+    {
+        if (PreferenceCategoryCatalog.TryTranslate(Locale, key, out var categoryText))
+            return new(categoryText, Locale, Locale, false);
+        var text = Resources(key, out var resourceLocale);
+        return new(text, Locale, resourceLocale, resourceLocale != Locale);
+    }
+
     /// <summary>
     /// Resuelve un texto que llega en el formato estable del servidor, <c>clave</c> o
     /// <c>clave(arg=valor,...)</c> (p. ej. el error de un ack). Si la clave no existe en los
@@ -63,7 +101,7 @@ public sealed class Localization
     {
         var open = text.IndexOf('(');
         var key = open < 0 ? text : text[..open];
-        if (!_es.ContainsKey(key) && !_en.ContainsKey(key))
+        if (!_es.ContainsKey(key) && !_en.ContainsKey(key) && !PreferenceCategoryCatalog.ContainsKey(key))
         {
             return text;
         }
@@ -84,16 +122,23 @@ public sealed class Localization
         return Resolve(key, args);
     }
 
-    private string Resources(string key)
+    private string Resources(string key, out string? resourceLocale)
     {
         var es = _es.TryGetValue(key, out var e) ? e : null;
         if (Locale == "es" && es is not null)
         {
+            resourceLocale = "es";
             return es!;
         }
 
         var en = _en.TryGetValue(key, out var v) ? v : null;
-        return en is not null ? en! : key;
+        if (en is not null)
+        {
+            resourceLocale = "en";
+            return en;
+        }
+        resourceLocale = null;
+        return key;
     }
 
     private static readonly Dictionary<string, string> _es = new()
