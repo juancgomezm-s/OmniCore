@@ -80,7 +80,7 @@ public sealed class ModelPolicyCommands
     public static async System.Threading.Tasks.Task<int> Run(string[] args, TextReader? input = null,
         TextWriter? output = null, bool? interactive = null, string? dataDirectoryOverride = null,
         IReadOnlyList<ModelRegistryModelDescriptor>? registryOverride = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, Localization? selectedLocalization = null)
     {
         var reader = input ?? Console.In;
         var writer = output ?? Console.Out;
@@ -104,9 +104,8 @@ public sealed class ModelPolicyCommands
         }
         // Mismo data dir y registro: la cualificación comparte el user.db del usuario (M5).
         using var qualification = ModelQualificationHost.Create(dataDirectoryOverride, registryOverride);
-        var loc = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
-            ? Localization.English()
-            : Localization.Spanish();
+        var loc = selectedLocalization ?? new Localization(LocaleSelectionResolver.Resolve(
+            null, Environment.GetEnvironmentVariable("OMNI_LOCALE"), null).Locale);
         // Workspace del CLI: el directorio actual (una selección vigente por proyecto).
         var workspace = "cli|" + Path.GetFullPath(".");
         var commands = new ModelPolicyCommands(host, qualification, loc, reader, writer, tty,

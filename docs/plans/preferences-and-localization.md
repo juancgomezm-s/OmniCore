@@ -1,10 +1,12 @@
 # Preferencias e idiomas de OmniCore
 
-Plan independiente de producto e implementación, acordado a partir de la petición del 11 de octubre de 2026. Responsable de integración y revisión: Codex. Implementación por paquetes: un worker Luna. El objetivo es que una persona encuentre y configure las funciones construidas sin conocer comandos, archivos YAML ni la arquitectura interna, con toda la interfaz propia disponible en español, inglés, francés e italiano.
+Plan independiente de producto e implementación, acordado a partir de la petición del 11 de octubre de 2026. Responsable de integración y revisión: Codex. Implementación por paquetes: dos workers Luna con razonamiento alto, tras la ampliación solicitada por el usuario. El objetivo es que una persona encuentre y configure las funciones construidas sin conocer comandos, archivos YAML ni la arquitectura interna, con toda la interfaz propia disponible en español, inglés, francés e italiano.
 
 El rediseño no se limita a cambiar etiquetas. Separa cuentas, conexiones y motores locales; une las preferencias dispersas; da representación a las capacidades recientes de M8; y sustituye la localización parcial por un contrato verificable de extremo a extremo. No declara M8 terminado ni adelanta MCP, hooks o memoria global por el hecho de añadir una entrada al menú.
 
-## Problemas que se deben resolver
+## Problemas detectados en la línea base
+
+Esta lista describe la situación anterior a P1. El estado de las entregas se registra al final y en el inventario; no debe interpretarse como ausencia de lo ya implementado.
 
 1. El subtítulo «Modelos, políticas y cuenta» ocupa una fila similar a una opción. El título, la explicación, el foco y la selección no tienen una jerarquía inequívoca.
 2. «Modelos y permisos» mezcla selección de modelo y autoridad operativa. «Conexiones API de providers» mezcla cuentas por suscripción, servidores locales y proveedores con clave. No permite entender dónde configurar cada uno.
@@ -65,7 +67,7 @@ Esta matriz identifica contratos existentes y trabajo nuevo. Cada paquete debe a
 | Cuenta ChatGPT | `TuiAccountHost`, `ChatGptSubscriptionAuthProvider`, catálogo | Reutilizar login, logout y estado; mostrar acciones acordes al estado, no pedir API key. |
 | Cuenta Claude | `OmniCliRuntime.LoginClaudeAsync`/`LogoutClaude`, configuración OAuth y almacenes | Añadir fachada TUI tipada y selector de provider exacto. Respetar identidad OAuth configurada, sin inventar cliente ni usar credenciales ajenas. |
 | API remota | `ProviderConnectionService`, `ITuiProviderConnectionHost` | Actualmente conectar/descubrir está especializado en Anthropic. Generalizar sólo a familias ya implementadas mediante adaptadores explícitos y capabilities; no llamar al flujo Anthropic para cualquier fila. |
-| Motor local | `LocalServerSupervisor`, `ProviderFileYaml.Host`, `ManagedHostYaml` | Editor y fachada Host de lectura/validación/guardado pendientes. Servidor existente y administrado son rutas distintas. Puerto efímero y API key de managed son del runtime, no campos inventados de usuario. |
+| Motor local | `LocalServerSupervisor`, `ProviderFileYaml.Host`, `ManagedHostYaml`, nueva `TuiLocalEngineHost` | Editor y fachada Host de lectura/validación/guardado construidos en el bloque P1B/P2; evidencia en el registro del bloque. Servidor existente y administrado son rutas distintas. Puerto efímero y API key de managed son del runtime, no campos inventados de usuario. Supervisión desde preferencias sigue pendiente. |
 | Modelos y políticas | `ModelPolicyHost`, picker, `ModelPolicyCommands`, routing en YAML | Unificar acceso sin mezclar selección, cualificación y permiso. Conservar revisión, historial y selección exacta provider/model. |
 | Perfil y reglas | `UserPermissionsConfiguration`, `PermissionGrantCommands`, `OmniCliRuntime.Permissions` | Vista explicativa y editor validado donde el contrato permita; separar visibilidad, política allow/ask/deny y grants revocables. No existe un toggle universal que conceda autoridad. |
 | Confianza | `WorkspaceTrustStore`, `SetWorkspaceTrusted`, ADR0039 | Entrada visible con alcance y confirmación. Confiar en un workspace no concede consentimiento automático a paquetes. |
@@ -165,7 +167,7 @@ Antes de P2, Root revisa diff, pruebas y la propuesta de navegación. Antes de P
 
 ## Verificación proporcional y definición de terminado
 
-No se exige repetir toda la suite por cada texto. Las pruebas de catálogo/parser se ejecutan en cada cambio de recursos; las de seguridad/persistencia se ejecutan al tocar su contrato; las visuales al tocar layout. La suite de arquitectura y la regresión amplia corresponden a la integración y al cierre, con fallos anteriores separados de los nuevos.
+No se exige repetir toda la suite por cada texto. Por indicación del usuario, se implementan paquetes amplios con sus pruebas antes de ejecutar la validación agrupada. Al integrar se seleccionan catálogo/parser, seguridad/persistencia y recorridos visuales según los contratos modificados. La suite de arquitectura y la regresión amplia corresponden a la integración y al cierre, con fallos anteriores separados de los nuevos. Un fallo localizado se reproduce y corrige sin repetir automáticamente regresiones ajenas.
 
 1. Toda acción del inventario está representada o tiene una dependencia explícita; no quedan controles que aparenten funcionar sobre contratos inexistentes.
 2. Una persona encuentra cuentas y motores locales desde F4 sin memorizar comandos. Puede identificar una cuenta conectada, configurar un endpoint y distinguir guardar de probar.
@@ -185,4 +187,16 @@ No se exige repetir toda la suite por cada texto. Las pruebas de catálogo/parse
 - [ADR0028 memoria](../adr/0028-memory.md): procedencia, reemplazo explícito y separación de WorkingState.
 - [Evidencia M8](../validation/m8-extensibility-20261011.md): capacidades entregadas y pendientes; no confundir un checkpoint con cierre del hito.
 
-Estado inicial: plan preparado; implementación del rediseño y cobertura completa de cuatro idiomas pendientes. Los avances se registran por paquete con commit y evidencia, no mediante porcentajes sin inventario.
+## Estado de ejecución
+
+P0 está consolidado y P1A quedó en `0c4ddc8`. El siguiente bloque construye P1B, el centro base
+de P2 y la configuración local de P3. Se implementaron dos paquetes amplios con dos Luna en
+alto; después se compiló y validó el conjunto. La evidencia de compilación, pruebas, capturas y
+correcciones está en [el registro del bloque](../validation/preferences-batch-20261011.md).
+
+No se declara cerrado P2: están verificados layouts iniciales 80×25 y 120×35, pero queda
+recomponer el centro al cruzar el umbral de ancho con el menú abierto y completar su recorrido
+de accesibilidad. Tampoco se cierran P3–P7: faltan Claude/API por capabilities, edición más profunda
+de políticas y seguridad, vistas/acciones M8 tipadas, diagnóstico y localización exhaustiva de
+pantallas e invocaciones heredadas. El [inventario actualizado](preferences-localization-inventory.md)
+separa cada entrega de estos pendientes. No se usan porcentajes sin inventario.

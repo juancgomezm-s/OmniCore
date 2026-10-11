@@ -8,12 +8,20 @@ namespace OmniCore.Cli;
 public sealed class CliApp
 {
     private static OmniCliRuntime Runtime = CreateRuntime();
+    private static LocaleSelection _localeSelection = new("es", LocaleSelectionSource.Default);
+    private static Localization _localization = Localization.Spanish();
+    internal static LocaleSelection ActiveLocaleSelection => _localeSelection;
+    internal static string ActiveEffectiveLocale => _localization.Locale;
 
     // Internal injection point for end-to-end tests. Production always uses CreateRuntime().
     internal static OmniCliRuntime UseRuntimeForTests(OmniCliRuntime runtime)
     {
         var previous = Runtime;
         Runtime = runtime;
+        // This seam is also used to restore the prior runtime. Do not leave the
+        // previous fixture's language preview in the shared CLI presentation state.
+        _localeSelection = new(UiLocaleCodes.NormalizeOrDefault(runtime.UiLocale), LocaleSelectionSource.Default);
+        _localization = new Localization(_localeSelection.Locale);
         return previous;
     }
 
@@ -21,16 +29,43 @@ public sealed class CliApp
     {
         var runtime = OmniCliRuntime.Create(".");
         runtime.Localize = (key, args) => Loc().Resolve(key, args);
-        runtime.QuestionnaireInput = Console.IsInputRedirected ? null : PlainQuestionnaireForm.Read;
+        runtime.QuestionnaireInput = Console.IsInputRedirected ? null
+            : prompt => PlainQuestionnaireForm.Read(prompt, Loc());
         return runtime;
     }
 
-    // Idioma de la interfaz: OMNI_LOCALE=en o español por defecto (ADR-0040).
-    private static Localization Loc() =>
-        Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? Localization.English() : Localization.Spanish();
+    private static Localization Loc() => _localization;
+
+    private static void UpdateLocaleConsumers()
+    {
+        Runtime.UiLocale = _localization.Locale;
+        Runtime.Localize = (key, values) => Loc().Resolve(key, values);
+        Runtime.QuestionnaireInput = Console.IsInputRedirected ? null
+            : prompt => PlainQuestionnaireForm.Read(prompt, Loc());
+    }
+
+    internal static void UpdateLocaleFromPreferences(string effectiveLocale)
+    {
+        var locale = _localeSelection.HasProcessOverride
+            ? _localeSelection.Locale : UiLocaleCodes.NormalizeOrDefault(effectiveLocale);
+        _localization = new Localization(locale);
+        UpdateLocaleConsumers();
+    }
 
     public static Task<int> RunAsync(string[] args)
     {
+        var parsedLocale = LocaleArgumentParser.Parse(args);
+        args = parsedLocale.Arguments;
+        var savedLocale = ReadUserLocale();
+        _localeSelection = LocaleSelectionResolver.Resolve(parsedLocale.ExplicitLocale,
+            Environment.GetEnvironmentVariable("OMNI_LOCALE"),
+            savedLocale?.IsConfigured == true ? savedLocale.Locale : null);
+        _localization = new Localization(_localeSelection.Locale);
+        UpdateLocaleConsumers();
+        ReportLocaleDiagnostics(parsedLocale.Diagnostics, savedLocale);
+        if (parsedLocale.HasMissingLocaleValue)
+            return Task.FromResult(2);
+
         if (args.Length == 0)
         {
             PrintUsage();
@@ -43,8 +78,8 @@ public sealed class CliApp
         if (command is "explain" or "explore") return RunExplain(args);
         if (command == "ask") return RunAsk(args);
         if (command == "act") return RunAct(args);
-        if (command == "model") return ModelPolicyCommands.Run(args);
-        if (command == "worktree") return WorktreeCommands.RunAsync(args, CancellationToken.None);
+        if (command == "model") return ModelPolicyCommands.Run(args, selectedLocalization: Loc());
+        if (command == "worktree") return WorktreeCommands.RunAsync(args, CancellationToken.None, Loc());
         if (command == "trust") return RunTrust(args);
         if (command == "extensions") return RunExtensions(args);
         if (command is "login" or "logout" && args.Length >= 2 && args[1] == "claude")
@@ -243,7 +278,6 @@ public sealed class CliApp
 
     private static void RenderDiagnostic(string name, string json)
     {
-        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
         Console.WriteLine(name switch
         {
             "context" => Loc().Resolve("cli.diagnostic.context"),
@@ -356,10 +390,10 @@ public sealed class CliApp
             return Task.FromResult(exitCode);
         }
 
-        var projection = new ClientProjection();
+        var projection = new ClientProjection(Loc());
         var state = ClientState.Empty();
         foreach (var envelope in events) state = projection.Apply(state, envelope);
-        new PlainRenderer("es").Render(state);
+        new PlainRenderer(Loc().Locale).Render(state);
         if (events.Count == 0) Console.WriteLine(Loc().Resolve("cli.sim.ok_no_events"));
         return Task.FromResult(exitCode);
     }
@@ -384,7 +418,8 @@ public sealed class CliApp
             return Task.FromResult(0);
         }
 
-        return Task.FromResult(TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime)));
+        return Task.FromResult(TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime),
+            localeSelection: _localeSelection, localeChanged: UpdateLocaleFromPreferences));
     }
 
     private static Task<int> RunExplain(string[] args)
@@ -545,21 +580,46 @@ public sealed class CliApp
             return JournalCommands.VerifyJournal(new[] { "verify-journal" }
                 .Concat(args.Where(argument => argument == "--json")).ToArray());
 
-        var localization = new Localization(DoctorLocale(args));
+        var localization = Loc();
         return Task.FromResult(OmniCliRuntime.Doctor(localization.Locale, Console.WriteLine,
             localization.Resolve));
     }
 
-    private static string DoctorLocale(string[] args)
+    private static UiLocalePreferencesSnapshot? ReadUserLocale()
     {
-        for (var index = 1; index < args.Length; index++)
+        try
         {
-            if (args[index] == "--locale" && index + 1 < args.Length)
-                return args[index + 1] == "en" ? "en" : "es";
-            if (args[index].StartsWith("--locale=", StringComparison.Ordinal))
-                return args[index][9..] == "en" ? "en" : "es";
+            return UserLocaleConfiguration.ReadCurrentUser();
         }
-        return Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        catch (Exception exception) when (exception is IOException or InvalidOperationException
+            or System.Text.Json.JsonException)
+        {
+            return new UiLocalePreferencesSnapshot("unavailable", "es", ["unavailable"]);
+        }
+    }
+
+    private static void ReportLocaleDiagnostics(IReadOnlyList<string> parserDiagnostics,
+        UiLocalePreferencesSnapshot? savedLocale)
+    {
+        foreach (var diagnostic in parserDiagnostics)
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.missing"));
+        if (_localeSelection.InvalidValue is { } invalid)
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.invalid", "value", invalid));
+        if (savedLocale is null || savedLocale.Diagnostics.Count > 0)
+        {
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.settings_unavailable"));
+        }
+        else if (_localeSelection.HasProcessOverride && savedLocale.IsConfigured)
+        {
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.override", new Dictionary<string, string>
+            {
+                ["active"] = _localeSelection.Locale,
+                ["saved"] = savedLocale.Locale,
+            }));
+        }
+
+        if (_localeSelection.Locale is "fr" or "it")
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.partial_catalog", "locale", _localeSelection.Locale));
     }
 
     private static async Task<int> RunAsk(string[] args)

@@ -93,11 +93,13 @@ public sealed class UiLocalePreferencesTests
         var initial = settings.Read();
         Assert.Empty(initial.Diagnostics);
         Assert.Equal("es", initial.Locale);
+        Assert.False(initial.IsConfigured);
         settings.Set(new UiLocaleUpdateRequest("User", "fr-CA", initial.Revision), CancellationToken.None);
 
         var reopened = new UserLocaleConfiguration(fixture.Paths).Read();
         Assert.Empty(reopened.Diagnostics);
         Assert.Equal("fr", reopened.Locale);
+        Assert.True(reopened.IsConfigured);
         Assert.NotEqual(initial.Revision, reopened.Revision);
         var loaded = new ConfigLoader().Load(null, null, File.ReadAllText(file));
         Assert.Equal("fr", loaded.Settings!.Ui!.Locale);
@@ -128,6 +130,7 @@ public sealed class UiLocalePreferencesTests
         var snapshot = settings.Read();
         Assert.NotEmpty(snapshot.Diagnostics);
         Assert.Equal("es", snapshot.Locale);
+        Assert.False(snapshot.IsConfigured);
         Assert.Throws<InvalidOperationException>(() => settings.Set(
             new UiLocaleUpdateRequest("User", "en", snapshot.Revision), CancellationToken.None));
         Assert.Throws<ConfigValidationException>(() => new ConfigLoader().Load(null, null, yaml));
@@ -180,13 +183,33 @@ public sealed class UiLocalePreferencesTests
         Assert.Empty(initial.Diagnostics);
 
         var command = UiLocalePreferencesProtocol.Configure("User", "it-IT", initial.Revision);
-        Assert.Equal("error", server.Send(command, CancellationToken.None).Status);
+        var untrusted = server.Send(command, CancellationToken.None);
+        Assert.Equal("error", untrusted.Status);
+        Assert.Equal("ui.locale.error.trusted_action_required", untrusted.Error);
         Assert.False(File.Exists(Path.Combine(fixture.Paths.ConfigDirectory, "settings.yaml")));
         Assert.Equal("ok", server.SendUserAction(command, CancellationToken.None).Status);
         var saved = UiLocalePreferencesProtocol.Decode(server.Query(
             UiLocalePreferencesProtocol.QueryName, CancellationToken.None)!.Json)!;
         Assert.Equal("it", saved.Locale);
         Assert.NotEqual(initial.Revision, saved.Revision);
+    }
+
+    [Fact]
+    public void Host_locale_write_errors_use_stable_localizable_keys()
+    {
+        using var fixture = new Fixture();
+        var server = new OmniServer(new InMemoryEventStore(), EventCodecs.Create(), new InMemoryAuditSink(),
+            platformPathsFactory: () => fixture.Paths);
+        var initial = UiLocalePreferencesProtocol.Decode(server.Query(
+            UiLocalePreferencesProtocol.QueryName, CancellationToken.None)!.Json)!;
+
+        Assert.Equal("ui.locale.error.scope", server.SendUserAction(
+            UiLocalePreferencesProtocol.Configure("Project", "it", initial.Revision), CancellationToken.None).Error);
+        Assert.Equal("ui.locale.error.unsupported", server.SendUserAction(
+            UiLocalePreferencesProtocol.Configure("User", "pt-BR", initial.Revision), CancellationToken.None).Error);
+        Assert.Equal("ui.locale.error.stale", server.SendUserAction(
+            UiLocalePreferencesProtocol.Configure("User", "it", "stale-revision"), CancellationToken.None).Error);
+        Assert.False(File.Exists(Path.Combine(fixture.Paths.ConfigDirectory, "settings.yaml")));
     }
 
     private sealed class Fixture : IDisposable

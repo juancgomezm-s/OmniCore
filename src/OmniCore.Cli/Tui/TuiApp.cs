@@ -15,9 +15,11 @@ public sealed partial class TuiApp
 {
     private readonly IOmniClient _client;
     private IApplication? _application;
-    private readonly string _locale;
-    private readonly Localization _localization;
-    private readonly ClientProjection _projection;
+    private string _locale;
+    private Localization _localization;
+    private ClientProjection _projection;
+    private LocaleSelection? _localeSelection;
+    private readonly Action<string>? _localeChanged;
     private readonly SessionSidebarProjection _sidebarProjection = new();
     private readonly AgentsProjection _agents = new();
     private DateTimeOffset _agentsPolledAt;
@@ -67,6 +69,7 @@ public sealed partial class TuiApp
     private string? _catalogNotice;
     private bool _catalogFresh;
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
+    private readonly ITuiLocalEngineHost _localEngines;
     private string WorkspaceSelectionId => ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory);
     private string? _selectedModel;
     private string? _observedModel;
@@ -113,17 +116,21 @@ public sealed partial class TuiApp
     internal ModelPolicyHost Policies => _policies;
 
     public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? providerConnections = null,
-        string? animationSettingsPath = null)
+        string? animationSettingsPath = null, LocaleSelection? localeSelection = null,
+        ITuiLocalEngineHost? localEngines = null, Action<string>? localeChanged = null)
     {
         _client = client;
-        _locale = locale == "en" ? "en" : "es";
-        _localization = _locale == "en" ? Localization.English() : Localization.Spanish();
+        _localeSelection = localeSelection;
+        _localeChanged = localeChanged;
+        _locale = UiLocaleCodes.NormalizeOrDefault(localeSelection?.Locale ?? locale);
+        _localization = new Localization(_locale);
         _projection = new ClientProjection(_localization);
         _policies = policies ?? ModelPolicyHost.Create();
         _ownsPolicies = policies is null;
         _accountOverride = account;
         _turnHost = turnHost;
         _providerConnectionHost = providerConnections ?? TuiProviderConnectionHost.Create();
+        _localEngines = localEngines ?? new TuiLocalEngineHost();
         _animationStore = new(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath());
         _animationPreferences = _animationStore.Load();
         RefreshSidebarPreferences();
@@ -151,9 +158,10 @@ public sealed partial class TuiApp
                 : conversation) + Environment.NewLine + status.Left + " · " + status.Right;
     }
 
-    public static int Run(IOmniClient client, string locale = "es", ITuiTurnHost? turnHost = null)
+    public static int Run(IOmniClient client, string locale = "es", ITuiTurnHost? turnHost = null,
+        LocaleSelection? localeSelection = null, Action<string>? localeChanged = null)
     {
-        var app = new TuiApp(client, locale, turnHost: turnHost);
+        var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection, localeChanged: localeChanged);
         using var application = Application.Create();
         application.Init();
         return app.RunWith(application);
@@ -286,6 +294,8 @@ public sealed partial class TuiApp
         else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
         else if (code == "F4") { ShowPreferences(); key.Handled = true; }
         else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
+        else if (code == "Esc" && _preferencesReturnToCategory) { ReturnFromPreferencesSubpage(); key.Handled = true; }
+        else if (code == "Esc" && _preferencesCenterActive) { HandlePreferencesEscape(); key.Handled = true; }
         else if (code == "Esc" && _overlay is not null) { CloseOverlay(); key.Handled = true; }
         else if (code == "Esc" && _commandHelper is not null) { HideCommandHelper(); key.Handled = true; }
     }
@@ -1491,6 +1501,10 @@ public sealed partial class TuiApp
         else if (view.Id == "omni-panel") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = "#344559";
         else if (view.Id is "omni-model-list" or "tools-list") surface = "#142636";
+        else if (view.Id == "preferences-panel") surface = "#202C3B";
+        else if (view.Id == "preferences-categories") surface = "#142636";
+        else if (view.Id == "preferences-search") surface = "#102331";
+        else if (view.Id == "preferences-accent") surface = noColor ? "#061822" : "#67D4D0";
         else if (view.Id == "omni-menu-action") surface = "#293E51";
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
         var background = noColor ? Color.None : new Color(surface);
@@ -1556,25 +1570,6 @@ public sealed partial class TuiApp
 
     private string Ui(string spanish, string english) => _locale == "en" ? english : spanish;
 
-    private void ShowPreferences()
-    {
-        if (_window is null || _overlay is not null) return;
-        var frame = OverlayFrame(Ui("Configuración", "Settings"), 14);
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = Ui("Modelos, políticas y cuenta", "Models, policies and account") });
-        var models = new Button { Id = "settings-models", X = 2, Y = 4, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Modelos y permisos", "Models and permissions") };
-        models.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
-        var account = new Button { Id = "settings-account", X = 2, Y = 6, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Cuenta ChatGPT · login", "ChatGPT account · login") };
-        account.Accepted += (_, _) => { CloseOverlay(); ShowAccount(); };
-        var providers = new Button { Id = "settings-provider-connections", X = 2, Y = 8, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Conexiones API de providers", "Provider API connections") };
-        providers.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(); };
-        var animations = new Button { Id = "settings-animations", X = 2, Y = 10, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("✦ Indicadores y animaciones", "✦ Activity and animations") };
-        animations.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); };
-        var close = new Button { Id = "settings-close", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
-        close.Accepted += (_, _) => CloseOverlay();
-        frame.Add(models, account, providers, animations, close); ApplyTheme(frame);
-        _overlay = frame; _window.Add(frame); models.SetFocus();
-    }
-
     private void ShowAccount()
     {
         if (_window is null || _overlay is not null) return;
@@ -1598,8 +1593,9 @@ public sealed partial class TuiApp
                 logout.Accepted += (_, _) => ConfirmLogout(); frame.Add(logout);
             }
             var back = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = Ui("Volver", "Back") };
-            back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences(); };
-            frame.Add(back); ApplyTheme(frame); _overlay = frame; _window.Add(frame); browser.SetFocus();
+            back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
+            frame.Add(back); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+            (status.LoggedIn ? (status.Expired ? browser : back) : browser).SetFocus();
         }
         catch (Exception) { ShowMessage(Ui("No se pudo leer la sesión. Revisa omni doctor.", "Could not read the session. Check omni doctor.")); }
     }
@@ -1849,7 +1845,7 @@ public sealed partial class TuiApp
         register.Accepted += (_, _) => { CloseOverlay(); _catalogNotice = null; ShowModelPolicies(); };
         frame.Add(register);
         var settings = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = Ui("Configuración", "Settings") };
-        settings.Accepted += (_, _) => { CloseOverlay(); ShowPreferences(); };
+        settings.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("models_execution", categoryPage: true); };
         frame.Add(settings);
         var close = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _locale == "en" ? "Close" : "Cerrar" };
         close.Accepted += (_, _) => CloseOverlay();
@@ -1998,6 +1994,9 @@ public sealed partial class TuiApp
     private void CloseOverlay()
     {
         if (_overlay is null || _window is null) return;
+        _preferencesCenterActive = false;
+        _preferencesCategoryPage = false;
+        _preferencesReturnToCategory = false;
         _animationPreview = null;
         ClearProviderApiKey();
         CancelProviderConnectionOperation();

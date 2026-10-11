@@ -9,13 +9,13 @@ namespace OmniCore.Cli;
 /// </summary>
 public sealed class PlainRenderer
 {
-    private readonly string _locale;
+    private readonly Localization _localization;
 
     private int _printedBlocks;
 
     private readonly HashSet<string> _printedInteractions = new(StringComparer.Ordinal);
 
-    public PlainRenderer(string locale) => _locale = locale;
+    public PlainRenderer(string locale) => _localization = new Localization(locale);
 
     /// <summary>Imprime los bloques de conversación nuevos (los del snapshot ya mostrados se omiten).</summary>
     public void Render(ClientState state)
@@ -36,20 +36,18 @@ public sealed class PlainRenderer
 
     private void Print(InteractionOverlayModel interaction)
     {
-        Console.WriteLine("[" + (_locale == "en" ? "Pending interaction" : "Interacción pendiente")
+        Console.WriteLine("[" + _localization.Resolve("plain.interaction.pending")
             + "] " + interaction.Title + " (#" + interaction.Id + ")");
         if (interaction.Subject.Length > 0) Console.WriteLine("  " + interaction.Subject);
         for (var i = 0; i < interaction.Options.Count; i++)
             Console.WriteLine("  [" + (i + 1) + "] " + interaction.Options[i]
                 + " (" + interaction.OptionIds[i] + ")");
-        Console.WriteLine(_locale == "en"
-            ? "  Resolve with: omni resolve " + interaction.Id + " <option-id>"
-            : "  Resuélvela con: omni resolve " + interaction.Id + " <id-opción>");
+        Console.WriteLine("  " + _localization.Resolve("plain.interaction.resolve", "id", interaction.Id));
     }
 
     private void Print(ConversationBlock block)
     {
-        var role = new LocalizedLine(_locale).RoleLabel(block.Role);
+        var role = new LocalizedLine(_localization.Locale).RoleLabel(block.Role);
         switch (block.Role)
         {
             case ConversationRole.System:
@@ -77,14 +75,15 @@ public sealed class LocalizedLine
 
     public string RoleLabel(ConversationRole role)
     {
-        switch (role)
+        var key = role switch
         {
-            case ConversationRole.System: return "sistema";
-            case ConversationRole.User: return _locale == "en" ? "you" : "tú";
-            case ConversationRole.Assistant: return _locale == "en" ? "assistant" : "asistente";
-            case ConversationRole.Tool: return _locale == "en" ? "tool" : "herramienta";
-            case ConversationRole.Interaction: return _locale == "en" ? "ask" : "pregunta";
-            default: return "?";
-        }
+            ConversationRole.System => "plain.role.system",
+            ConversationRole.User => "plain.role.user",
+            ConversationRole.Assistant => "plain.role.assistant",
+            ConversationRole.Tool => "plain.role.tool",
+            ConversationRole.Interaction => "plain.role.interaction",
+            _ => null,
+        };
+        return key is null ? "?" : new Localization(_locale).Resolve(key);
     }
 }

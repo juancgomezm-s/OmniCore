@@ -4,7 +4,7 @@ Implementar el [plan independiente](preferences-and-localization.md) por paquete
 
 ## Base y propiedad
 
-- Un único worker `gpt-6-luna`, coordinado por Codex. No crear subagentes.
+- Dos workers `gpt-6-luna` con razonamiento alto, coordinados por Codex conforme a la ampliación solicitada por el usuario. No crear subagentes adicionales.
 - Directorio de implementación: `C:\Users\juanc\.codex\worktrees\tui-omega-animations\OmniCore`.
 - Rama de trabajo: `codex/tui-omega-animations`. No cambiar de rama, reescribir historial, hacer push o merge a main desde el worker.
 - Base de código consolidada: `e06aa7f`; contiene la TUI, M8, memoria `709f17b` y el rescate OAuth con las defensas posteriores de main preservadas. El coordinador proporciona el SHA final de documentación y confirma que main está integrado antes de iniciar P1.
@@ -32,6 +32,32 @@ Archivos esperados, no autorización para cambios ajenos: `src/OmniCore.Client/L
 
 Entregar un commit por bloque coherente, lista de archivos, pruebas y conteos reales, decisiones tomadas y pendientes concretos para P1B/P2. No deshabilitar assertions, saltar tests ni introducir mocks que eviten el contrato que se pretende validar. Actualizar el inventario con las claves/superficies migradas y la evidencia.
 
-El coordinador reproduce las pruebas focales y revisa el diff antes del siguiente bloque. P1B conecta arranque y propagación de idioma; P2 conecta la nueva navegación y General. P3 a P7 siguen el orden y las dependencias del plan. Una incompatibilidad de arquitectura o una operación que requiera autoridad nueva se reporta con evidencia; no se resuelve saltándose el Host o simulando una función inexistente.
+El coordinador revisa cada diff y agrupa la validación al cerrar bloques amplios. No se repite la regresión por cada texto o pequeño ajuste. P1B conecta arranque y propagación de idioma; P2 conecta la nueva navegación y General. P3 a P7 siguen el orden y las dependencias del plan. Una incompatibilidad de arquitectura o una operación que requiera autoridad nueva se reporta con evidencia; no se resuelve saltándose el Host o simulando una función inexistente.
 
 Las pruebas no incluyen modificar preferencias reales del usuario ni gastar presupuesto de proveedores. Las futuras comprobaciones visuales distinguirán buffers Terminal.Gui, ventanas realmente ejecutadas y limitaciones de automatización.
+
+## Ejecución paralela autorizada
+
+Base de implementación `0c4ddc8`, entrega P1A. Main conserva la consolidación `fc6f8e0` mientras se construyen y revisan los bloques siguientes.
+
+| Responsable | Bloque completo | Archivos exclusivos |
+|---|---|---|
+| Luna A con razonamiento alto | P1B y localización compartida de arranque, CLI, Host y catálogo existente | CLI fuera de Tui, Localization y recursos generales, contratos y configuración de locale, tests de idioma |
+| Luna B con razonamiento alto | P2, General funcional, navegación y conexión de páginas ya existentes, formularios locales sobre la fachada Host | TuiApp y parciales, nuevas vistas de preferencias, PreferencesUiResources y PreferencesPresentation, tests de navegación y frames |
+| Codex coordinador | Integración, configuración de motores locales, revisión y evidencia | TuiLocalEngineHost, sus pruebas, documentación compartida y correcciones acordadas |
+
+Ambos agentes trabajan sin commits ni staging compartido; el coordinador reúne los archivos por bloque. El seam de TUI es `LocaleSelection? localeSelection = null` al final del constructor, seguido por la fachada local inyectable. Los recursos nuevos de preferencias se resuelven a través de Localization. Se escriben primero implementación y pruebas; después se compila el conjunto y se ejecuta una selección focal que cubra los contratos modificados, más arquitectura. Fallos nuevos se corrigen sin debilitar las pruebas. La regresión completa sólo se justifica por el riesgo de integración, no por la cantidad de traducciones.
+
+## Cola tras P1B y el centro base
+
+El [registro del bloque](../validation/preferences-batch-20261011.md) y el inventario describen el
+estado implementado. Próximos encargos amplios, sin iniciar trabajo adicional automáticamente:
+
+1. Completar navegación adaptativa en vivo y rutas de cuentas/API: cambio de ancho con borrador,
+   foco y scroll conservados; fachada Claude exacta; acciones por capabilities y mensajes de estado.
+2. Completar vistas/acciones tipadas de seguridad y M8, con recursos propios en los cuatro idiomas,
+   sin mezclar lectura con consentimiento o ejecución. Mantener propiedad disjunta del primer bloque.
+
+Antes de cada tanda se implementa el paquete y sus casos de prueba. Al integrar se reproduce
+el grupo afectado; un fallo de UI no justifica repetir toda la suite de OAuth o del motor.
+La traducción de las páginas heredadas y aliases sigue abierta y debe registrarse por superficie.

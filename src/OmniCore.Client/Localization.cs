@@ -51,6 +51,9 @@ public sealed class Localization
     /// <summary>Claves del recurso inglés. Expuesto para el test de paridad es/en.</summary>
     public static IReadOnlyCollection<string> EnglishKeys => _en.Keys;
 
+    /// <summary>Keys in the complete shared runtime and startup copy catalog.</summary>
+    public static IReadOnlyCollection<string> RuntimeResourceKeys => LocaleRuntimeResources.Keys;
+
     /// <summary>True si la clave existe en los dos recursos.</summary>
     public static bool HasInBoth(string key) => _es.ContainsKey(key) && _en.ContainsKey(key);
 
@@ -86,6 +89,10 @@ public sealed class Localization
     /// <summary>Resolves a key and reports whether a legacy key used a fallback resource.</summary>
     public LocalizationResolution ResolveDetailed(string key)
     {
+        if (LocaleRuntimeResources.TryTranslate(Locale, key, out var runtimeText))
+            return new(runtimeText, Locale, Locale, false);
+        if (PreferencesUiResources.TryTranslate(Locale, key, out var preferencesText))
+            return new(preferencesText, Locale, Locale, false);
         if (PreferenceCategoryCatalog.TryTranslate(Locale, key, out var categoryText))
             return new(categoryText, Locale, Locale, false);
         var text = Resources(key, out var resourceLocale);
@@ -101,7 +108,10 @@ public sealed class Localization
     {
         var open = text.IndexOf('(');
         var key = open < 0 ? text : text[..open];
-        if (!_es.ContainsKey(key) && !_en.ContainsKey(key) && !PreferenceCategoryCatalog.ContainsKey(key))
+        if (!_es.ContainsKey(key) && !_en.ContainsKey(key)
+            && !LocaleRuntimeResources.Keys.Contains(key, StringComparer.Ordinal)
+            && !PreferencesUiResources.ContainsKey(key)
+            && !PreferenceCategoryCatalog.ContainsKey(key))
         {
             return text;
         }

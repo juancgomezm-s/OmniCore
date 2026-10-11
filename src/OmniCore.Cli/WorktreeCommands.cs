@@ -6,10 +6,11 @@ namespace OmniCore.Cli;
 /// <summary>M7 repository inspection and integration preview through the Host.</summary>
 public static class WorktreeCommands
 {
-    public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
+    public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken,
+        Localization? selectedLocalization = null)
     {
-        var loc = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
-            ? Localization.English() : Localization.Spanish();
+        var loc = selectedLocalization ?? new Localization(LocaleSelectionResolver.Resolve(
+            null, Environment.GetEnvironmentVariable("OMNI_LOCALE"), null).Locale);
         if (args.Length == 2 && args[1] is "--help" or "-h" or "help")
         {
             Console.WriteLine(loc.Resolve("worktree.inspect.usage"));

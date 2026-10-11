@@ -26,7 +26,7 @@ public static class UiLocaleCodes
 
 /// <summary>User-only UI language setting; it is deliberately not a scoped workspace preference.</summary>
 public sealed record UiLocalePreferencesSnapshot(string Revision, string Locale,
-    IReadOnlyList<string> Diagnostics);
+    IReadOnlyList<string> Diagnostics, bool IsConfigured = false);
 
 /// <summary>Request for the trusted Host operation that persists User <c>ui.locale</c>.</summary>
 public sealed record UiLocaleUpdateRequest(string Scope, string Locale, string Revision);

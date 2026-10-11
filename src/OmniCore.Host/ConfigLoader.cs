@@ -139,8 +139,9 @@ public sealed class ConfigLoader
                     if (ui.Children.TryGetValue(new YamlScalarNode("locale"), out var localeNode))
                     {
                         var locale = (localeNode as YamlScalarNode)?.Value;
-                        if (!IsYamlString(localeNode) || !UiLocaleCodes.TryNormalize(locale, out _))
-                            AddAtNode(diagnostics, "settings.yaml", "ui.locale", "config.outOfRange", localeNode);
+                        if (!IsYamlString(localeNode) || !UiLocaleCodes.TryNormalize(locale, out var canonicalLocale)
+                            || !string.Equals(locale, canonicalLocale, StringComparison.Ordinal))
+                            AddAtNode(diagnostics, "settings.yaml", "ui.locale", "ui.locale.error.invalid_value", localeNode);
                     }
                 }
             }

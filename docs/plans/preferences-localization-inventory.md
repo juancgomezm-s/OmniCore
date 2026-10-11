@@ -35,15 +35,41 @@ Persistencia del locale ya disponible: `ui.locale` sólo se admite en `settings.
 se valida contra es/en/fr/it y se escribe atómicamente con revisión esperada, conservando otras
 preferencias. Protocol define DTOs y normalización; Host expone lectura y comando confiable de cambio.
 El resolver puro fija precedencia `--locale` > `OMNI_LOCALE` > `ui.locale` > `es`, con fallback a es
-ante un valor explícito inválido. **Pendiente P1B:** conectar esa resolución a los puntos de entrada
-CLI/TUI, aplicar la selección a renderers y mostrar estado/fallback. Hasta entonces, la persistencia
-y el resolver no cambian por sí solos el locale de la UI en ejecución.
+ante un valor explícito inválido. En P1A quedaba pendiente conectar esa resolución al arranque;
+el incremento P1B descrito abajo ya realiza ese cableado.
 
 Pruebas P1A: `UiLocalePreferencesTests` cubre normalización, precedencia y valores inválidos, 27
 recursos en cuatro idiomas, fallback heredado, persistencia User con revisión/atomicidad lógica,
 preservación de settings y rechazo de otros scopes; además valida los comandos/query Host confiables.
 La suite de arquitectura valida límites Client/Protocol/Host. Inventario de grupos fuera de P1A:
 permanecen con el estado inicial indicado abajo; no se marca ninguno como traducido por esta entrega.
+
+### Incremento P1B/P2 y configuración local (11 de octubre de 2026)
+
+`LocaleArgumentParser`, `CliApp` y `OmniCliRuntime` conectan la precedencia al arranque, plain,
+cuestionarios, doctor y TUI. Un `--locale` sin valor termina antes de despachar el comando; `--`
+protege los argumentos posteriores. El origen predeterminado se diferencia de una preferencia
+User realmente configurada. La previsualización y cancelación de General sincronizan el idioma
+efectivo sin modificar variables de entorno; un override de proceso permanece vigente.
+
+`LocaleRuntimeResources` contiene 35 claves compartidas con traducción propia en los cuatro
+idiomas. `PreferencesUiResources` contiene 119 claves del centro y sus formularios, también
+en los cuatro idiomas. Se suman al catálogo de 27 claves de categorías de P1A; no significan
+que las 538 claves heredadas ni los helpers binarios estén totalmente migrados.
+
+| Superficie | Entregado en este bloque | Pendiente específico |
+|---|---|---|
+| F4 y General | Nueve categorías, búsqueda con estado vacío, navegación ancha/compacta al abrir, preview/guardar/cancelar/recargar, origen y override visibles | Cambio de layout al cruzar el umbral de anchura con el menú abierto; recorrido completo NO_COLOR/ASCII y accesibilidad |
+| Cuentas/API | Accesos separados y cuenta ChatGPT conectada sin priorizar login | Fachada/página Claude, capabilities por familia, todos los estados y traducción de páginas heredadas |
+| Motores locales | Listar, añadir y editar attach/managed; revisión de providers/models, preservación, lease compartido y argumentos literales | Supervisión/ownership desde UI, eliminar configuración, catálogo/modelos locales y recorridos adicionales de error/resize |
+| Modelos/seguridad/interfaz | Rutas a políticas, herramientas, permisos, sidebar y animaciones; actualizar modelos requiere acción explícita en preferencias | Formularios completos de routing, límites, reglas, grants y trust; migración del copy heredado |
+| Contexto/M8 | Consultas de contexto, extensiones, skills y memoria en visor desplazable; uso medido diferenciado de ausencia de datos | Vistas tipadas completas, acciones de sesión/consentimiento y localización de todos los campos/estados |
+| Diagnóstico | Categoría y límite de disponibilidad explicado | Acciones de diagnóstico/datos tipadas; no se simula mantenimiento operativo |
+
+La evidencia agrupada y los fallos corregidos se conservan en
+[preferences-batch-20261011.md](../validation/preferences-batch-20261011.md). El registro inicial
+siguiente se mantiene para comparar la migración; esta tabla de incremento tiene precedencia
+para el estado actual. P3–P7 no están cerrados.
 
 ## Registro por superficie
 

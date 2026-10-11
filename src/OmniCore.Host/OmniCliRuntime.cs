@@ -94,6 +94,9 @@ public sealed class OmniCliRuntime : IDisposable
     /// </summary>
     public Func<string, IReadOnlyDictionary<string, string>, string>? Localize { get; set; }
 
+    /// <summary>Effective interface locale selected by the CLI for this runtime instance.</summary>
+    public string UiLocale { get; set; } = "es";
+
     /// <summary>Entrada plain provista por OmniCore.Cli; null cuando no existe un TTY interactivo.</summary>
     public Func<QuestionnairePromptDto, QuestionnaireResponseDto?>? QuestionnaireInput { get; set; }
     /// <summary>False for GUI/TUI hosts: pending interactions are rendered by the client, never Console.ReadLine.</summary>
@@ -427,7 +430,7 @@ public sealed class OmniCliRuntime : IDisposable
         }
         try
         {
-            var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+            var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
             var server = Server();
             var authorization = server.AuthorizeWorkflowRequest(
                 new WorkflowRequested(new WorkflowRef(request.WorkflowId, request.Version), request.Arguments), commandId);
@@ -544,9 +547,7 @@ public sealed class OmniCliRuntime : IDisposable
                         authorization.Run, own, token))
                 {
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
-                    diagnostics(locale == "en"
-                        ? "Workflow stopped at Verify: the accepted Implement worktree changed or its durable binding is unavailable."
-                        : "Flujo detenido en Verify: cambió el worktree Implement aceptado o no está disponible su vínculo durable.");
+                    diagnostics(Text(Localized("host.workflow.verify_binding", [])));
                     return 1;
                 }
                 if (contract.Definition.Stage == WorkflowStage.Implement)
@@ -556,16 +557,14 @@ public sealed class OmniCliRuntime : IDisposable
                         .SingleOrDefault(value => value.LaneId == contract.Lane);
                     if (implementationWorktree is null)
                     {
-                        diagnostics("Workflow stopped at Implement: isolated worktree ownership is unavailable.");
+                        diagnostics(Text(Localized("host.workflow.implementation_owner", [])));
                         return 1;
                     }
                     var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
                         implementationWorktree.OwnershipId, token).ConfigureAwait(false);
                     if (!preview.Succeeded)
                     {
-                        diagnostics(locale == "en"
-                            ? "Workflow paused after Implement: the isolated result needs manual recovery before Verify."
-                            : "Flujo en pausa después de Implement: el resultado aislado requiere recuperación manual antes de Verify.");
+                        diagnostics(Text(Localized("host.workflow.manual_recovery", [])));
                         return 3;
                     }
                 }
@@ -575,9 +574,7 @@ public sealed class OmniCliRuntime : IDisposable
             }
             BeforeWorkflowCompletionGateForTests?.Invoke(server, authorization);
             server.CompleteWorkflowCompletionGate(authorization);
-            diagnostics(locale == "en"
-                ? "Workflow completed: Explore, Implement, and Verify are accepted; Verify used the exact owned Implement tree. Integration into the main workspace remains a separate authorized action."
-                : "Flujo completado: Explore, Implement y Verify fueron aceptados; Verify usó el árbol Implement exacto y propio. La integración al workspace principal sigue siendo una acción autorizada aparte.");
+            diagnostics(Text(Localized("host.workflow.completed", [])));
             return 0;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -957,7 +954,7 @@ public sealed class OmniCliRuntime : IDisposable
             WriteDiagnostics(ex.Diagnostics, writeLine);
             return 1;
         }
-        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
         if (!_providerDeprecationShown && loaded.DeprecationNotices is { Count: > 0 } notices)
         {
             foreach (var notice in notices)
@@ -1302,9 +1299,7 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 catch (InvalidOperationException)
                 {
-                    writeLine(locale == "en"
-                        ? "The selected reasoning request conflicts with this route's declared capability; no provider request was sent."
-                        : "La solicitud de razonamiento elegida contradice la capacidad declarada de esta ruta; no se envió ninguna solicitud al proveedor.");
+                    writeLine(Text(Localized("host.reasoning.route_conflict", [])));
                     return 1;
                 }
             }
@@ -1315,17 +1310,13 @@ public sealed class OmniCliRuntime : IDisposable
             }
             catch (InvalidOperationException)
             {
-                writeLine(locale == "en"
-                    ? "The selected reasoning request conflicts with this route's declared capability; no provider request was sent."
-                    : "La solicitud de razonamiento elegida contradice la capacidad declarada de esta ruta; no se envió ninguna solicitud al proveedor.");
+                writeLine(Text(Localized("host.reasoning.route_conflict", [])));
                 return 1;
             }
             if (reasoningResolution?.Source == ReasoningSelectionSource.UltraCode
                 && reasoningResolution.AppliedRequest is null)
             {
-                writeLine(locale == "en"
-                    ? "UltraCode is selected, but this route has no compatible declared reasoning capability and finite configured budget; no native reasoning request was sent."
-                    : "UltraCode está seleccionado, pero la ruta no declara una capacidad compatible ni un presupuesto finito configurado; no se envió una solicitud de razonamiento nativo.");
+                writeLine(Text(Localized("host.reasoning.ultracode_unavailable", [])));
             }
             if (routingResume?.Interaction is not null)
             {
@@ -1807,9 +1798,7 @@ public sealed class OmniCliRuntime : IDisposable
                     }
                     catch (InvalidOperationException)
                     {
-                        writeLine(locale == "en"
-                            ? "The current reasoning preference conflicts with this route; no next Turn was sent."
-                            : "La preferencia de razonamiento vigente contradice esta ruta; no se envió el siguiente Turn.");
+                        writeLine(Text(Localized("host.reasoning.current_conflict", [])));
                         return null;
                     }
                 }
@@ -3262,7 +3251,7 @@ public sealed class OmniCliRuntime : IDisposable
         if (escalatedDefinition is null) return 1;
         var escalatedRoute = next.Route;
         var escalationMode = ModelRoutingHost.EscalationMode(loaded);
-        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
         if (AuthorizeRouteForInvocation(server, session, run, escalatedRoute,
                 escalatedProvider?.BillingMode ?? BillingMode.Unknown, writeLine, locale,
                 requireConsent: escalationMode == "ask") is { } authorizationCode)

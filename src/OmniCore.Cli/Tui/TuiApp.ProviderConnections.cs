@@ -57,7 +57,7 @@ public sealed partial class TuiApp
             Width = Dim.Percent(46), Text = Ui("Desconectar", "Disconnect") };
         var back = new Button { Id = "provider-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
             Text = Ui("Volver", "Back") };
-        back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences(); };
+        back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
 
         ProviderConnectionMenuRow? SelectedRow() => list.SelectedItem is { } index
             && index >= 0 && index < rows.Length ? rows[index] : null;

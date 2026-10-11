@@ -9,10 +9,10 @@ namespace OmniCore.Cli;
 /// <summary>Formulario secuencial plain renderizado desde el modelo declarativo de Client.</summary>
 internal static class PlainQuestionnaireForm
 {
-    public static WireQuestionnaireResponse? Read(QuestionnairePromptDto prompt)
+    public static WireQuestionnaireResponse? Read(QuestionnairePromptDto prompt, Localization? selectedLocalization = null)
     {
-        var english = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en";
-        var localization = english ? Localization.English() : Localization.Spanish();
+        var localization = selectedLocalization ?? new Localization(LocaleSelectionResolver.Resolve(
+            null, Environment.GetEnvironmentVariable("OMNI_LOCALE"), null).Locale);
         var model = new QuestionnaireOverlayModel(prompt.Title, prompt.Description,
             prompt.Questions.Select(question => new QuestionnaireQuestionModel(question.Id, question.Prompt,
                 question.HelpText, Enum.Parse<QuestionnaireQuestionKind>(question.Kind),
@@ -21,21 +21,21 @@ internal static class PlainQuestionnaireForm
                 question.Other is null ? null : new QuestionnaireOtherModel(question.Other.OptionId,
                     question.Other.Label, question.Other.Placeholder, question.Other.TextRequired,
                     question.Other.MaxTextLength), question.Required, question.MinSelections,
-                question.MaxSelections, question.MaxTextLength)).ToArray(), english ? "Submit" : "Enviar",
-            english ? "Cancel" : "Cancelar");
+                question.MaxSelections, question.MaxTextLength)).ToArray(),
+            localization.Resolve("cli.questionnaire.submit"), localization.Resolve("cli.questionnaire.cancel"));
 
         for (var attempt = 0; attempt < 3; attempt++)
         {
             Console.WriteLine(model.Title);
             if (!string.IsNullOrWhiteSpace(model.Description)) Console.WriteLine(model.Description);
-            Console.WriteLine((english ? "Type :cancel to cancel. " : "Escribe :cancel para cancelar. ")
-                + "[" + model.SubmitLabel + "/" + model.CancelLabel + "]");
+            Console.WriteLine(localization.Resolve("cli.questionnaire.cancel_hint")
+                + " [" + model.SubmitLabel + "/" + model.CancelLabel + "]");
             var inputs = new Dictionary<string, QuestionnairePlainFormInput>(StringComparer.Ordinal);
             foreach (var question in model.Questions)
             {
                 Console.WriteLine();
                 Console.WriteLine(question.Prompt + (question.Required
-                    ? (english ? " (required)" : " (requerido)") : ""));
+                    ? " (" + localization.Resolve("cli.questionnaire.required") + ")" : ""));
                 if (!string.IsNullOrWhiteSpace(question.HelpText)) Console.WriteLine("  " + question.HelpText);
                 if (question.Kind != QuestionnaireQuestionKind.FreeText)
                 {
@@ -47,7 +47,7 @@ internal static class PlainQuestionnaireForm
                 }
 
                 Console.Write(question.Kind == QuestionnaireQuestionKind.FreeText
-                    ? "> " : english ? "Choice ids (comma-separated): " : "Ids (separados por coma): ");
+                    ? "> " : localization.Resolve("cli.questionnaire.selection_prompt"));
                 var selectionOrText = Console.ReadLine();
                 if (selectionOrText is null || selectionOrText.Trim().Equals(":cancel", StringComparison.OrdinalIgnoreCase))
                     return new WireQuestionnaireResponse(Array.Empty<WireQuestionAnswer>(), true);
@@ -75,9 +75,9 @@ internal static class PlainQuestionnaireForm
             if (parsed.Response is { } response)
                 return ToWire(response);
             foreach (var error in parsed.Errors)
-                Console.WriteLine((english ? "Error: " : "Error: ")
+                Console.WriteLine(localization.Resolve("cli.questionnaire.error_prefix")
                     + localization.ResolveQuestionnaireValidationError(error));
-            Console.WriteLine(english ? "Correct the form and try again." : "Corrige el formulario y vuelve a intentarlo.");
+            Console.WriteLine(localization.Resolve("cli.questionnaire.retry"));
         }
         return null;
     }

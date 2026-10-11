@@ -540,7 +540,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (commandName == UiLocalePreferencesProtocol.ConfigureCommand)
         {
             if (!trustedUserAction)
-                return new(command.MessageId, "error", "Trusted user action required", RuntimeCommandOutcome.Rejected());
+                return new(command.MessageId, "error", "ui.locale.error.trusted_action_required",
+                    RuntimeCommandOutcome.Rejected());
             try
             {
                 var request = UiLocalePreferencesProtocol.DecodeUpdate(command.PayloadJson)
@@ -552,7 +553,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 or IOException or UnauthorizedAccessException or YamlDotNet.Core.YamlException
                 or System.Text.Json.JsonException or ConfigValidationException)
             {
-                return new(command.MessageId, "error", exception.Message, RuntimeCommandOutcome.Rejected());
+                return new(command.MessageId, "error", UiLocaleErrorKey(exception), RuntimeCommandOutcome.Rejected());
             }
         }
         if (commandName == "sidebar.configure")
@@ -2284,6 +2285,22 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         return null;
+    }
+
+    private static string UiLocaleErrorKey(Exception exception)
+    {
+        if (exception.Data["UiLocaleErrorKey"] is string errorKey)
+            return errorKey;
+        var key = exception switch
+        {
+            ConfigValidationException => "ui.locale.error.invalid_settings",
+            System.Text.Json.JsonException => "ui.locale.error.invalid_request",
+            InvalidOperationException => "ui.locale.error.invalid_settings",
+            ArgumentException => "ui.locale.error.invalid_request",
+            YamlDotNet.Core.YamlException => "ui.locale.error.invalid_settings",
+            _ => "ui.locale.error.save_failed",
+        };
+        return key;
     }
 
     /// <summary>Redacta PII del WorkingState antes de exponerlo en queries.</summary>
