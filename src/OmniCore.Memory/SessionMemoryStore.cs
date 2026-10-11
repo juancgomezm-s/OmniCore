@@ -42,6 +42,16 @@ public sealed class SessionMemoryStore : IMemoryStore
             if (sameId is not null && Normalize(sameId.Content) == Normalize(record.Content)) return sameId;
             if (sameId is not null)
                 throw new InvalidDataException("A Session memory record already uses that id.");
+            if (record.Supersedes is { } supersededId)
+            {
+                var superseded = records.FirstOrDefault(item => string.Equals(item.Id, supersededId, StringComparison.Ordinal));
+                if (superseded is null)
+                    throw new InvalidDataException("A Session memory replacement must reference an existing record in the same Session.");
+                if (record.CreatedAt < superseded.CreatedAt)
+                    throw new InvalidDataException("A Session memory replacement cannot predate the record it replaces.");
+                if (records.Any(item => string.Equals(item.Supersedes, supersededId, StringComparison.Ordinal)))
+                    throw new InvalidDataException("A Session memory record already has an explicit replacement.");
+            }
             var normalized = Normalize(record.Content);
             var duplicate = records.FirstOrDefault(item => Normalize(item.Content) == normalized);
             if (duplicate is not null) return duplicate;
@@ -62,7 +72,18 @@ public sealed class SessionMemoryStore : IMemoryStore
         lock (Gate(path))
         {
             var records = ReadFile(path, scope, cancellationToken).ToList();
-            var removed = records.RemoveAll(record => string.Equals(record.Id, memoryId, StringComparison.Ordinal)) > 0;
+            var target = records.FirstOrDefault(record => string.Equals(record.Id, memoryId, StringComparison.Ordinal));
+            var removed = target is not null;
+            if (target is not null)
+            {
+                // Collapse replacement chains across a forgotten node. Forgetting the newest
+                // replacement releases its predecessor; forgetting an older node keeps the
+                // newest descendant attached to the older node's predecessor.
+                for (var index = 0; index < records.Count; index++)
+                    if (string.Equals(records[index].Supersedes, target.Id, StringComparison.Ordinal))
+                        records[index] = records[index] with { Supersedes = target.Supersedes };
+                records.Remove(target);
+            }
             if (removed) WriteFile(path, records, cancellationToken);
             return removed;
         }
@@ -96,12 +117,40 @@ public sealed class SessionMemoryStore : IMemoryStore
                 if (record.Scope != scope || !ids.Add(record.Id))
                     throw new InvalidDataException("The Session memory file contains a foreign scope or duplicate id.");
             }
+            ValidateSupersedes(records);
             return records.OrderByDescending(item => item.Importance * item.Confidence)
                 .ThenByDescending(item => item.CreatedAt).ToArray();
         }
         catch (JsonException exception)
         {
             throw new InvalidDataException("The Session memory file is malformed.", exception);
+        }
+    }
+
+    private static void ValidateSupersedes(IReadOnlyList<MemoryRecord> records)
+    {
+        var byId = records.ToDictionary(item => item.Id, StringComparer.Ordinal);
+        var replaced = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var record in records)
+        {
+            if (record.Supersedes is not { } priorId) continue;
+            if (string.Equals(record.Id, priorId, StringComparison.Ordinal)
+                || !byId.TryGetValue(priorId, out var prior)
+                || record.CreatedAt < prior.CreatedAt
+                || !replaced.Add(priorId))
+                throw new InvalidDataException("The Session memory file contains an invalid replacement chain.");
+        }
+
+        foreach (var record in records)
+        {
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            var current = record;
+            while (current.Supersedes is { } priorId)
+            {
+                if (!visited.Add(current.Id))
+                    throw new InvalidDataException("The Session memory file contains a replacement cycle.");
+                current = byId[priorId];
+            }
         }
     }
 

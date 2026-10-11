@@ -15,7 +15,11 @@ public sealed class SessionMemoryContextContributor(IMemoryStore store) : IConte
     {
         cancellationToken.ThrowIfCancellationRequested();
         var scope = MemoryScope.ForSession(request.SessionId);
-        var records = store.Read(scope, cancellationToken)
+        var allRecords = store.Read(scope, cancellationToken);
+        var supersededIds = allRecords.Where(record => record.Supersedes is not null)
+            .Select(record => record.Supersedes!).ToHashSet(StringComparer.Ordinal);
+        var records = allRecords
+            .Where(record => !supersededIds.Contains(record.Id))
             .Where(record => !Expired(record))
             .OrderByDescending(record => SourceRank(record.Source))
             .ThenByDescending(record => record.Importance * record.Confidence)

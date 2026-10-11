@@ -39,6 +39,119 @@ public sealed class SessionMemoryTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Supersedes_requires_an_existing_unreplaced_record_and_context_uses_only_the_latest()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-replacement-" + Guid.NewGuid().ToString("N"));
+        var scope = MemoryScope.ForSession(SessionId.New());
+        try
+        {
+            var store = new SessionMemoryStore(root);
+            var original = Record(scope, "Use the old build command.");
+            store.Add(original, CancellationToken.None);
+            var missing = Record(scope, "Use the new build command.") with { Supersedes = "missing" };
+            Assert.Throws<InvalidDataException>(() => store.Add(missing, CancellationToken.None));
+            var missingDuplicate = Record(scope, "  use the   old build command. ") with { Supersedes = "missing" };
+            Assert.Throws<InvalidDataException>(() => store.Add(missingDuplicate, CancellationToken.None));
+
+            var replacement = Record(scope, "Use the new build command.") with
+            {
+                Supersedes = original.Id,
+                CreatedAt = original.CreatedAt.AddSeconds(1),
+            };
+            store.Add(replacement, CancellationToken.None);
+            Assert.Equal(replacement.Id, store.Add(replacement, CancellationToken.None).Id);
+            var competing = Record(scope, "Another replacement.") with
+            {
+                Supersedes = original.Id,
+                CreatedAt = original.CreatedAt.AddSeconds(2),
+            };
+            Assert.Throws<InvalidDataException>(() => store.Add(competing, CancellationToken.None));
+            var competingDuplicate = competing with { Content = "  use the   new build command. " };
+            Assert.Throws<InvalidDataException>(() => store.Add(competingDuplicate, CancellationToken.None));
+
+            var contributor = new SessionMemoryContextContributor(store);
+            var request = new MaterializeRequest(SessionId.Parse(scope.Id), RunId.New(), null, null, null, 0,
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"));
+            var items = await contributor.GetContextAsync(request, CancellationToken.None);
+            Assert.DoesNotContain(items, item => item.Content.Contains("old build command", StringComparison.Ordinal));
+            Assert.Contains(items, item => item.Content.Contains("new build command", StringComparison.Ordinal));
+
+            Assert.True(store.Remove(scope, original.Id, CancellationToken.None));
+            Assert.Equal(replacement.Id, Assert.Single(new SessionMemoryStore(root).Read(scope, CancellationToken.None)).Id);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Forgetting_a_replacement_releases_its_predecessor_without_dangling_links()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-forget-replacement-" + Guid.NewGuid().ToString("N"));
+        var scope = MemoryScope.ForSession(SessionId.New());
+        try
+        {
+            var store = new SessionMemoryStore(root);
+            var original = Record(scope, "Original fact.");
+            var replacement = Record(scope, "Replacement fact.") with
+            {
+                Supersedes = original.Id,
+                CreatedAt = original.CreatedAt.AddSeconds(1),
+            };
+            store.Add(original, CancellationToken.None);
+            store.Add(replacement, CancellationToken.None);
+
+            Assert.True(store.Remove(scope, replacement.Id, CancellationToken.None));
+            var remaining = Assert.Single(new SessionMemoryStore(root).Read(scope, CancellationToken.None));
+            Assert.Equal(original.Id, remaining.Id);
+            Assert.Null(remaining.Supersedes);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Replacement_chain_keeps_only_latest_context_and_collapses_when_middle_is_forgotten()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-replacement-chain-" + Guid.NewGuid().ToString("N"));
+        var scope = MemoryScope.ForSession(SessionId.New());
+        try
+        {
+            var store = new SessionMemoryStore(root);
+            var original = Record(scope, "Build with the legacy command.");
+            var first = Record(scope, "Build with the initial command.") with
+            {
+                Supersedes = original.Id,
+                CreatedAt = original.CreatedAt.AddSeconds(1),
+            };
+            var latest = Record(scope, "Build with the current command.") with
+            {
+                Supersedes = first.Id,
+                CreatedAt = first.CreatedAt.AddSeconds(1),
+            };
+            store.Add(original, CancellationToken.None);
+            store.Add(first, CancellationToken.None);
+            store.Add(latest, CancellationToken.None);
+            Assert.Equal(latest.Id, store.Add(latest, CancellationToken.None).Id);
+
+            var request = new MaterializeRequest(SessionId.Parse(scope.Id), RunId.New(), null, null, null, 0,
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"));
+            var contributor = new SessionMemoryContextContributor(store);
+            var items = await contributor.GetContextAsync(request, CancellationToken.None);
+            Assert.DoesNotContain(items, item => item.Content.Contains("legacy command", StringComparison.Ordinal));
+            Assert.DoesNotContain(items, item => item.Content.Contains("initial command", StringComparison.Ordinal));
+            Assert.Contains(items, item => item.Content.Contains("current command", StringComparison.Ordinal));
+
+            Assert.True(store.Remove(scope, first.Id, CancellationToken.None));
+            var afterMiddleForget = new SessionMemoryStore(root).Read(scope, CancellationToken.None);
+            Assert.Equal(2, afterMiddleForget.Count);
+            Assert.Equal(original.Id, Assert.Single(afterMiddleForget, item => item.Id == latest.Id).Supersedes);
+            Assert.True(store.Remove(scope, original.Id, CancellationToken.None));
+            var onlyLatest = Assert.Single(new SessionMemoryStore(root).Read(scope, CancellationToken.None));
+            Assert.Equal(latest.Id, onlyLatest.Id);
+            Assert.Null(onlyLatest.Supersedes);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Context_retrieval_is_session_scoped_provenanced_and_budgeted()
     {
         var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-context-" + Guid.NewGuid().ToString("N"));
