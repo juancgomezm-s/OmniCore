@@ -104,6 +104,9 @@ public sealed class ClaudeOAuthCredentialStore
         }
 
         var scopes = wire.Scopes?.Where(s => !string.IsNullOrWhiteSpace(s)).ToArray() ?? [];
+        // These fields intentionally live outside the encrypted token wire. Restore them
+        // before refresh, otherwise PersistAsync overwrites existing account metadata with null.
+        var info = ReadAccountInfo(secretRef, ct);
         return new ClaudeOAuthCredential(
             wire.AccessToken,
             wire.RefreshToken,
@@ -113,6 +116,10 @@ public sealed class ClaudeOAuthCredentialStore
         {
             AccountUuid = wire.AccountUuid,
             OrganizationUuid = wire.OrganizationUuid,
+            EmailAddress = info?.EmailAddress,
+            DisplayName = info?.DisplayName,
+            SubscriptionType = info?.SubscriptionType,
+            RateLimitTier = info?.RateLimitTier,
             AuthenticatedAt = wire.AuthenticatedAtUnix > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(wire.AuthenticatedAtUnix)
                 : default,

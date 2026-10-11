@@ -6,6 +6,8 @@ namespace OmniCore.Models;
 /// </summary>
 public sealed record ClaudeOAuthBearer(string AccessToken, string? AccountUuid, IReadOnlyList<string> Scopes)
 {
+    public override string ToString() => "claude.oauth.bearer [redacted]";
+
     /// <summary>
     /// True si este credencial es de suscripción claude.ai (scope de inferencia). Decide la
     /// cabecera, nunca el nombre del modelo (INV-007). Equivalente a isClaudeAISubscriber en

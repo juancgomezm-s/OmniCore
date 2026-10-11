@@ -31,6 +31,7 @@ public sealed class ClaudeOAuthRefreshLock : IAsyncDisposable
     private readonly string? _mutexName;
     private FileStream? _stream;
     private MutexHandle? _mutex;
+    private int _disposed;
 
     private ClaudeOAuthRefreshLock(string lockFilePath, string? mutexName)
     {
@@ -138,11 +139,12 @@ public sealed class ClaudeOAuthRefreshLock : IAsyncDisposable
         }
 
         MutexHandle? mutex = null;
+        var transferred = false;
         try
         {
             // En Windows el Mutex named es el que serializa de verdad entre procesos; el archivo
             // aporta la misma garantía fuera y deja rastro inspeccionable.
-            mutex = MutexHandle.TryAcquire(secretRef);
+            mutex = MutexHandle.TryAcquire(Path.GetFullPath(path));
             if (mutex is null)
             {
                 return null;
@@ -150,25 +152,33 @@ public sealed class ClaudeOAuthRefreshLock : IAsyncDisposable
 
             var payload = Encoding.UTF8.GetBytes(
                 Environment.ProcessId.ToString(CultureInfo.InvariantCulture) + "@" + DateTime.UtcNow.ToString("O"));
+            stream.SetLength(0);
             await stream.WriteAsync(payload, ct).ConfigureAwait(false);
             await stream.FlushAsync(ct).ConfigureAwait(false);
 
-            return new ClaudeOAuthRefreshLock(path, mutex.Name)
+            var lease = new ClaudeOAuthRefreshLock(path, mutex.Name)
             {
                 _stream = stream,
                 _mutex = mutex,
             };
+            transferred = true;
+            return lease;
         }
         catch
         {
             mutex?.Release();
-            stream.Dispose();
             throw;
+        }
+        finally
+        {
+            // A rejected mutex must not leave its already-open file handle behind.
+            if (!transferred) stream.Dispose();
         }
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         if (_stream is not null)
         {
             try
@@ -186,33 +196,22 @@ public sealed class ClaudeOAuthRefreshLock : IAsyncDisposable
         _mutex?.Release();
         _mutex = null;
 
-        try
-        {
-            if (File.Exists(_lockFilePath))
-            {
-                File.Delete(_lockFilePath);
-            }
-        }
-        catch (IOException)
-        {
-        }
-        catch (UnauthorizedAccessException)
-        {
-        }
+        // Keep the stable lock path. Deleting after releasing can unlink a new holder's
+        // file on Unix, allowing another writer to lock a different inode at the same path.
     }
 }
 
 /// <summary>
-/// Mutex named solo donde existe (Windows). Fuera de Windows devuelve un handle sin mutex, y la
-/// serialización la sostiene el archivo de bloqueo.
+/// Named mutex owned and released by one dedicated thread. Async continuations only signal
+/// that thread; mutex ownership must never migrate to an async disposer thread.
 /// </summary>
 internal sealed class MutexHandle
 {
-    private readonly Mutex? _mutex;
+    private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private MutexHandle(Mutex? mutex, string name)
+    private MutexHandle(string name)
     {
-        _mutex = mutex;
         Name = name;
     }
 
@@ -220,54 +219,44 @@ internal sealed class MutexHandle
 
     public static MutexHandle? TryAcquire(string secretRef)
     {
-        if (!OperatingSystem.IsWindows())
+        var name = "OmniCore.ClaudeOAuth." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secretRef)));
+        var handle = new MutexHandle(name);
+        var acquired = new TaskCompletionSource<MutexHandle?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var owner = new Thread(() =>
         {
-            return new MutexHandle(null, "n/a");
-        }
-
-        var name = "OmniCore.ClaudeOAuth." + new string(secretRef.Where(char.IsLetterOrDigit).ToArray());
-        var mutex = new Mutex(initiallyOwned: false, name: name, createdNew: out _);
-        try
-        {
-            if (mutex.WaitOne(TimeSpan.Zero))
+            try
             {
-                return new MutexHandle(mutex, name);
+                using var mutex = new Mutex(initiallyOwned: false, name: name, createdNew: out _);
+                var owns = false;
+                try
+                {
+                    try { owns = mutex.WaitOne(TimeSpan.Zero); }
+                    catch (AbandonedMutexException) { owns = true; }
+                    acquired.SetResult(owns ? handle : null);
+                    if (owns) handle._release.Task.GetAwaiter().GetResult();
+                }
+                finally { if (owns) mutex.ReleaseMutex(); }
+                handle._released.TrySetResult();
             }
-
-            mutex.Dispose();
-            return null;
-        }
-        catch (AbandonedMutexException)
-        {
-            // El dueño anterior murió sin liberar: se asume el lock y se sigue.
-            return new MutexHandle(mutex, name);
-        }
-        catch (WaitHandleCannotBeOpenedException)
-        {
-            mutex.Dispose();
-            return null;
-        }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                acquired.TrySetResult(null);
+                handle._released.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                acquired.TrySetException(ex);
+                handle._released.TrySetException(ex);
+            }
+        }) { IsBackground = true, Name = "OmniCore OAuth mutex owner" };
+        owner.Start();
+        return acquired.Task.GetAwaiter().GetResult();
     }
 
     public void Release()
     {
-        if (_mutex is null)
-        {
-            return;
-        }
-
-        try
-        {
-            _mutex.ReleaseMutex();
-        }
-        catch (ApplicationException)
-        {
-            // No éramos dueños (lock abandonado y tomado por otro): no hay nada que liberar.
-        }
-        finally
-        {
-            _mutex.Dispose();
-        }
+        _release.TrySetResult();
+        _released.Task.GetAwaiter().GetResult();
     }
 }
 

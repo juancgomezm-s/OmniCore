@@ -19,6 +19,8 @@ public sealed record ClaudeOAuthCredential(
     /// <summary>Serie del wire: se reconstruye al leer, nunca se interpreta a mano.</summary>
     public const int CurrentSchemaVersion = 1;
 
+    public override string ToString() => "claude.oauth.credential [redacted]";
+
     /// <summary>Identidad no secreta de la cuenta, para /doctor y la status line.</summary>
     public string? AccountUuid { get; init; }
 
