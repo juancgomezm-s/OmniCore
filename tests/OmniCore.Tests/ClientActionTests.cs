@@ -1,3 +1,4 @@
+using System.Text.Json;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
@@ -48,6 +49,7 @@ public sealed class ClientActionTests
             ["context"] = ClientActionIds.ContextInspect, ["tools"] = ClientActionIds.ToolsInspect,
             ["extensions"] = ClientActionIds.ExtensionsInspect,
             ["commands"] = ClientActionIds.CommandsInspect,
+            ["skills"] = ClientActionIds.SkillsInspect,
             ["permissions"] = ClientActionIds.PermissionsList, ["interrupt"] = ClientActionIds.RunInterrupt,
             ["cancel"] = ClientActionIds.RunCancel,
         };
@@ -119,15 +121,38 @@ public sealed class ClientActionTests
         client.Queries["context"] = new string('x', 2500);
         client.Queries["tools"] = "{\"tools\":[]}";
         client.Queries["commands"] = "{\"catalog\":{\"commands\":[{\"id\":\"core:explain\",\"enabled\":true}]}}";
+        client.Queries["skills"] = "{\"workspaceTrusted\":true,\"skills\":[{\"id\":\"progress.compile\",\"state\":\"Discovered\"}]}";
         Assert.Equal("{\"plan\":true}", Run("plan", Context(client)).Text);
         Assert.Equal("{\"tools\":[]}", Run("tools", Context(client)).Text);
         Assert.Contains("core:explain", Run("commands", Context(client)).Text);
+        Assert.Contains("progress.compile", Run("skills", Context(client)).Text);
         var truncated = Run("context", Context(client)).Text;
         Assert.Equal(1801, truncated.Length);
         Assert.EndsWith("…", truncated, StringComparison.Ordinal);
 
         client.Queries["agents"] = "null";
         Assert.Equal("Sin sesión", Run("tasks", Context(client)).Text);
+    }
+
+    [Fact]
+    public void Skills_command_lists_and_sends_explicit_session_activation_or_release()
+    {
+        var client = new FakeClient();
+        client.Queries["skills"] = "{\"workspaceTrusted\":true,\"skills\":[{\"id\":\"progress.compile\",\"state\":\"Activated\"}]}";
+
+        Assert.Contains("progress.compile", Run("skills", Context(client)).Text);
+        var loaded = Run("skills", Context(client), "load", "progress.compile");
+        Assert.Contains("Activated", loaded.Text);
+        using (var command = JsonDocument.Parse(Assert.Single(client.Sent)))
+        {
+            Assert.Equal("skills.activate", command.RootElement.GetProperty("cmd").GetString());
+            Assert.Equal("progress.compile", command.RootElement.GetProperty("skillId").GetString());
+        }
+
+        Run("skills", Context(client), "release", "progress.compile");
+        using var released = JsonDocument.Parse(client.Sent[1]);
+        Assert.Equal("skills.release", released.RootElement.GetProperty("cmd").GetString());
+        Assert.Contains("Usage", Run("skills", Context(client), "other", "x").Text);
     }
 
     [Fact]

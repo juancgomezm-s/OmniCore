@@ -1492,9 +1492,14 @@ public sealed class OmniCliRuntime : IDisposable
                     extensionBoundaries)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     agentProfile, receiveMailbox);
+            var loadedProjectSkills = LoadActiveProjectSkills(server, workspaceConfig.Trusted, cancellationToken);
+            var activeSkillFingerprints = loadedProjectSkills.Select(skill => new ActiveSkillFingerprint(
+                skill.Skill.Manifest.Id!, skill.Skill.Manifest.Version!, ContentHash.Sha256(skill.ContentSha256))).ToArray();
+            var skillContributors = loadedProjectSkills.Select(skill =>
+                (IContextContributor)new SkillContextContributor(sessionId, skill)).ToArray();
             var contributors = executingAct
-                ? Array.Empty<IContextContributor>()
-                : new IContextContributor[] { new WorkingStateContributor(workingState) };
+                ? skillContributors
+                : new IContextContributor[] { new WorkingStateContributor(workingState) }.Concat(skillContributors).ToArray();
             var materializer = new ContextMaterializer(tokenCounter, contributors);
             var questionnaireService = new QuestionnaireInteractionService(server.AcquireStore(),
                 server.AcquireCodecs(), artifacts);
@@ -1568,7 +1573,7 @@ public sealed class OmniCliRuntime : IDisposable
                     questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                     metaModelProvider: delegation is null ? provider : null, modelContextCapacity: modelDefinition?.ContextWindow,
                     recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
-                    userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
+                    userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: activeSkillFingerprints,
                     quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
                         ? QuotaAdmission : null,
                     quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
@@ -3124,6 +3129,37 @@ public sealed class OmniCliRuntime : IDisposable
         if (session is null) return null;
         var info = session.Credentials.ReadAccountInfo(session.SecretRef, CancellationToken.None);
         return info is null ? null : new(providerId, info.SubscriptionType, info.RateLimitTier, info.ExpiresAt);
+    }
+
+    private IReadOnlyList<LoadedSkill> LoadActiveProjectSkills(OmniServer server, bool workspaceTrusted,
+        CancellationToken cancellationToken)
+    {
+        if (!workspaceTrusted) return [];
+        var query = server.Query("skills", cancellationToken)?.Json;
+        if (string.IsNullOrWhiteSpace(query)) return [];
+        using var state = JsonDocument.Parse(query);
+        if (!state.RootElement.TryGetProperty("skills", out var entries)
+            || entries.ValueKind != JsonValueKind.Array) return [];
+        var requested = entries.EnumerateArray().Where(item => item.TryGetProperty("state", out var status)
+                && status.GetString() == SkillLifecycleState.Activated.ToString())
+            .Select(item => (Id: item.GetProperty("id").GetString()!,
+                Hash: item.GetProperty("manifestSha256").GetString()!)).ToArray();
+        if (requested.Length == 0) return [];
+        var loader = new SkillManifestLoader();
+        var discovered = SkillManifestLoader.ResolvePrecedence(loader.Discover(
+            Path.Combine(_workspaceRoot, ".omnicore", "skills"), ScopeLevel.Project, TrustLevel.Project,
+            workspaceTrusted: true));
+        var result = new List<LoadedSkill>();
+        foreach (var (id, hash) in requested)
+        {
+            var skill = discovered.SingleOrDefault(candidate => candidate.Manifest.Id == id
+                && candidate.State == SkillLifecycleState.Discovered)
+                ?? throw new InvalidDataException("An active skill is no longer available or has a precedence conflict.");
+            if (!string.Equals(skill.ManifestSha256, hash, StringComparison.Ordinal))
+                throw new InvalidDataException("An active skill changed during Run composition; activate it again.");
+            result.Add(loader.Activate(skill));
+        }
+        return result;
     }
 
     internal static ModelDefinition? ResolveExplicitModel(LoadedUserConfiguration loaded, string modelId)

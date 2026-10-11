@@ -596,6 +596,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             }
         }
 
+        if (commandName is "skills.activate" or "skills.release")
+            return ChangeSessionSkillActivation(command, commandName, fields);
+
         if (commandName == "sim")
         {
             return RunSim(command, fields);
@@ -1850,6 +1853,46 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             }
     }
 
+    private CommandAck ChangeSessionSkillActivation(WireEnvelope command, string commandName,
+        IReadOnlyDictionary<string, string> fields)
+    {
+        if (_lastSessionId is not { } session)
+            return new CommandAck(command.MessageId, "error", "An existing Session is required to activate a skill.",
+                RuntimeCommandOutcome.Rejected());
+        var skillId = fields.GetValueOrDefault("skillId") ?? "";
+        try
+        {
+            var workspaceRoot = _workspaceRoot ?? throw new InvalidOperationException("Workspace is unavailable.");
+            var store = new SessionSkillActivationStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), workspaceRoot));
+            if (commandName == "skills.release")
+            {
+                var removed = store.Release(session, skillId);
+                return new CommandAck(command.MessageId, "ok", removed ? null : "Skill was not active.",
+                    RuntimeCommandOutcome.Accepted());
+            }
+            if (!new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(workspaceRoot))
+                throw new InvalidOperationException("Trust the workspace before activating Project skills.");
+            var loader = new SkillManifestLoader();
+            var discovered = SkillManifestLoader.ResolvePrecedence(loader.Discover(
+                Path.Combine(workspaceRoot, ".omnicore", "skills"), ScopeLevel.Project, TrustLevel.Project,
+                workspaceTrusted: true));
+            var candidates = discovered.Where(skill => string.Equals(skill.Manifest.Id, skillId, StringComparison.Ordinal)).ToArray();
+            var selected = candidates.SingleOrDefault(skill => skill.State != SkillLifecycleState.Conflict
+                && skill.State != SkillLifecycleState.Released)
+                ?? throw new InvalidOperationException(candidates.Length == 0
+                    ? "No eligible Project skill has that id."
+                    : "Skill activation is ambiguous or shadowed by a sealed or more trusted source.");
+            _ = loader.Activate(selected); // Explicit activation validates the bounded instruction package.
+            store.Activate(session, selected.Manifest.Id!, selected.ManifestSha256);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+            or InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return new CommandAck(command.MessageId, "error", exception.Message, RuntimeCommandOutcome.Rejected());
+        }
+    }
+
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -1907,6 +1950,46 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 extension.Diagnostic is { } diagnostic ? JsonObj.Field("diagnostic", diagnostic) : "\"diagnostic\":null",
             }) + "}");
             return new SessionQueryResult(name, "{\"extensions\":[" + string.Join(",", entries) + "]}");
+        }
+        if (name == "skills")
+        {
+            if (_workspaceRoot is null) return new SessionQueryResult(name, "{\"workspaceTrusted\":false,\"skills\":[]}");
+            var trusted = new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(_workspaceRoot);
+            var root = Path.Combine(_workspaceRoot, ".omnicore", "skills");
+            var discovered = SkillManifestLoader.ResolvePrecedence(new SkillManifestLoader().Discover(root,
+                ScopeLevel.Project, TrustLevel.Project, workspaceTrusted: trusted));
+            var active = _lastSessionId is { } session
+                ? new SessionSkillActivationStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot))
+                    .Read(session)
+                : new Dictionary<string, string>(StringComparer.Ordinal);
+            var entries = discovered.Select(skill =>
+            {
+                var state = skill.State;
+                var diagnostic = skill.Diagnostic;
+                if (state != SkillLifecycleState.Conflict && active.TryGetValue(skill.Manifest.Id!, out var hash))
+                {
+                    if (string.Equals(hash, skill.ManifestSha256, StringComparison.Ordinal)) state = SkillLifecycleState.Activated;
+                    else
+                    {
+                        state = SkillLifecycleState.Released;
+                        diagnostic = "The skill package changed after activation; activate it again.";
+                    }
+                }
+                return "{" + string.Join(",", new[]
+            {
+                JsonObj.Field("id", skill.Manifest.Id ?? ""),
+                JsonObj.Field("version", skill.Manifest.Version ?? ""),
+                JsonObj.Field("displayName", skill.Manifest.DisplayName ?? skill.Manifest.Id ?? ""),
+                JsonObj.Field("scope", skill.Scope.ToString()),
+                JsonObj.Field("trust", skill.Trust.ToString()),
+                JsonObj.Field("state", state.ToString()),
+                JsonObj.Field("manifestSha256", skill.ManifestSha256),
+                skill.Manifest.Sealed ? "\"sealed\":true" : "\"sealed\":false",
+                diagnostic is { } message ? JsonObj.Field("diagnostic", message) : "\"diagnostic\":null",
+            }) + "}";
+            });
+            return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
+                + ",\"skills\":[" + string.Join(",", entries) + "]}");
         }
         if (name == "modePreference")
         {
