@@ -228,6 +228,8 @@ public sealed class CliApp
             }
             var text = outcome.GetProperty("text").GetString() ?? "";
             var origin = outcome.GetProperty("origin").GetString() ?? "";
+            if (outcome.TryGetProperty("toolName", out var toolName) && toolName.GetString() is { Length: > 0 } forcedTool)
+                return Runtime.ExecuteExtensionCommandAsync(text, forcedTool, Console.WriteLine, CancellationToken.None);
             Console.WriteLine("[" + origin + "]");
             return Runtime.AskAsync(text, Console.WriteLine, CancellationToken.None);
         }

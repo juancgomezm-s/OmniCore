@@ -71,6 +71,63 @@ public sealed class ExtensionManifestTests
     }
 
     [Fact]
+    public void Extension_commands_must_bind_a_declared_tool_and_manifest_loads_binding()
+    {
+        var commandManifest = Manifest.Replace("requests:", "  commands:\n    - name: prowin-compile\n      kind: Extension\n      tool: compile\nrequests:", StringComparison.Ordinal)
+            .Replace("capabilities: [tool.register]", "capabilities: [tool.register, command.register]", StringComparison.Ordinal);
+        var command = Assert.Single(new ExtensionManifestLoader().Load(commandManifest).Provides!.Commands!);
+        Assert.Equal("compile", command.Tool);
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(commandManifest.Replace("tool: compile", "tool: missing", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task Extension_command_returns_a_forced_tool_turn_intent_without_starting_a_process()
+    {
+        var manifest = new ExtensionManifest { Id = "acme.progress", Version = "1", DisplayName = "Progress" };
+        var extension = new DiscoveredExtension("unused", manifest, ExtensionDiscoveryStatus.Ready, null,
+            new string('a', 64), new string('b', 64), TrustLevel.Project);
+        var handler = new ProjectExtensionCommandHandler(extension,
+            new ExtensionCommandManifest { Name = "prowin-compile", Kind = "Extension", Tool = "compile" });
+        var context = new CommandContext(OmniCore.Domain.SessionId.New(), OmniCore.Domain.RunId.New(), OmniCore.Domain.RunMode.Act, Path.GetTempPath());
+        var outcome = Assert.IsType<PromptCommandRequested>(await handler.HandleAsync(
+            ["{\"file\":\"src/program.p\"}"], context, CancellationToken.None));
+        Assert.Equal("ext.acme.progress.compile", outcome.ForcedToolName);
+        Assert.Contains("{\"file\":\"src/program.p\"}", outcome.Text);
+    }
+
+    [Fact]
+    public void Host_command_catalog_only_registers_trusted_and_consented_extension_commands()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-command-catalog-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(workspace, ".omnicore", "extensions", "acme.progress");
+        Directory.CreateDirectory(package);
+        var manifest = Manifest.Replace("requests:", "  commands:\n    - name: prowin-compile\n      kind: Extension\n      tool: compile\nrequests:", StringComparison.Ordinal)
+            .Replace("capabilities: [tool.register]", "capabilities: [tool.register, command.register]", StringComparison.Ordinal);
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), manifest);
+        var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "data"));
+        var server = new OmniServer(new OmniCore.Infrastructure.InMemoryEventStore(),
+            OmniCore.Infrastructure.EventCodecs.Create(), new OmniCore.Infrastructure.InMemoryAuditSink());
+        server.ConfigurePlatformPaths(() => paths);
+        server.ConfigureWorkspaceRoot(workspace);
+        try
+        {
+            Assert.DoesNotContain("acme.progress:prowin-compile", server.Query("commands", CancellationToken.None)!.Json);
+            new WorkspaceTrustStore(paths).SetTrusted(workspace, true);
+            Assert.DoesNotContain("acme.progress:prowin-compile", server.Query("commands", CancellationToken.None)!.Json);
+            var loader = new ExtensionManifestLoader();
+            var extension = Assert.Single(loader.Discover(Path.Combine(workspace, ".omnicore", "extensions"),
+                TrustLevel.Project, workspaceTrusted: true));
+            new ExtensionConsentStore(paths, workspace).Grant(extension,
+                new HashSet<string>(["tool.register", "command.register"], StringComparer.Ordinal));
+            var catalog = server.Query("commands", CancellationToken.None)!.Json;
+            Assert.Contains("acme.progress:prowin-compile", catalog);
+            Assert.Contains("ext.acme.progress.compile", catalog);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void Extension_boundary_is_a_ceiling_for_path_process_and_network_claims()
     {
         var permissions = new ExtensionPermissionManifest

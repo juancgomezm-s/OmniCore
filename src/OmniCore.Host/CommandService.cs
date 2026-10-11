@@ -47,6 +47,20 @@ public sealed class CommandRegistry
     public IReadOnlyList<CommandDescriptor> Descriptors() => _byId.Values.Select(item => item.Descriptor)
         .OrderBy(item => item.Id, StringComparer.Ordinal).ToArray();
 
+    public void RemoveSource(SourceKind kind)
+    {
+        foreach (var handler in _byId.Values.Where(item => item.Descriptor.Source.Kind == kind).ToArray())
+        {
+            _byId.Remove(handler.Descriptor.Id);
+            foreach (var name in new[] { handler.Descriptor.Name }.Concat(handler.Descriptor.Aliases))
+            {
+                if (!_byName.TryGetValue(name, out var candidates)) continue;
+                candidates.Remove(handler);
+                if (candidates.Count == 0) _byName.Remove(name);
+            }
+        }
+    }
+
     public ICommandHandler Resolve(string name)
     {
         if (_byId.TryGetValue(name, out var canonical)) return canonical;

@@ -77,7 +77,7 @@ public abstract record CommandOutcome;   // ClientActionRequested | ServerComman
 
 ### Estado M8 parcial (2026-10-11)
 
-`/extensions` y `/commands` están cableados como acciones del Client. `/commands` consulta el catálogo Host; `CommandRegistry` elige el source de mayor scope para el short name, salvo que sea menos confiable que otra candidata (entonces presenta ambas como ambiguas). Las entradas no invocables muestran un diagnóstico y la forma canónica por id permanece resoluble. `ExtensionCommand`, los aliases explícitos de User y el resto de precedencia aún están pendientes.
+`/extensions` y `/commands` están cableados como acciones del Client. `/commands` consulta el catálogo Host; `CommandRegistry` elige el source de mayor scope para el short name, salvo que sea menos confiable que otra candidata (entonces presenta ambas como ambiguas). Las entradas no invocables muestran un diagnóstico y la forma canónica por id permanece resoluble. Project `ExtensionCommand` con consentimiento `command.register`+`tool.register` puede enlazarse a una tool declarada: el handler devuelve un prompt con la identidad exacta de la tool, el CLI/TUI fuerza esa tool solo en la primera petición y el Turn la ejecuta a través del ToolRuntime habitual. El handler no lanza procesos. Aliases explícitos de User y el resto de precedencia aún están pendientes.
 
 ## Clasificación
 

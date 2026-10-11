@@ -7,6 +7,7 @@ public enum CommandKind
 {
     Prompt,
     Workflow,
+    Extension,
 }
 
 public sealed record CommandDescriptor(string Id, string Name, IReadOnlyList<string> Aliases,
@@ -42,7 +43,7 @@ public sealed record WorkflowRef(string Id, string Version)
 /// <summary>Command handler output. A workflow request is data; only the Host executes it.</summary>
 public abstract record HostCommandOutcome;
 
-public sealed record PromptCommandRequested(string Text, string Origin) : HostCommandOutcome;
+public sealed record PromptCommandRequested(string Text, string Origin, string? ForcedToolName = null) : HostCommandOutcome;
 
 public sealed record WorkflowRequested(WorkflowRef Workflow, IReadOnlyList<string> Arguments) : HostCommandOutcome
 {

@@ -406,6 +406,14 @@ public sealed class OmniCliRuntime : IDisposable
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>
         RunTurnAsync("", false, diagnostics, token, delegationId: new DelegationId(Guid.Parse(delegationId)));
 
+    /// <summary>Runs an explicitly invoked extension tool through the ordinary Act Turn and ToolRuntime pipeline.</summary>
+    public Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
+        CancellationToken token)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        return RunTurnAsync(prompt, true, diagnostics, token, forcedInitialToolName: toolName);
+    }
+
     /// <summary>Runs the compiled Explore → Implement → Verify workflow through normal delegation and tool admission.</summary>
     public async Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId,
         Action<string> diagnostics, CancellationToken token)
@@ -876,7 +884,7 @@ public sealed class OmniCliRuntime : IDisposable
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
-        DelegationId? delegationId = null)
+        DelegationId? delegationId = null, string? forcedInitialToolName = null)
     {
         if (delegationId is { } child)
         {
@@ -888,7 +896,7 @@ public sealed class OmniCliRuntime : IDisposable
             try
             {
                 return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
-                    routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId).ConfigureAwait(false);
+                    routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -901,7 +909,7 @@ public sealed class OmniCliRuntime : IDisposable
         try
         {
             return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
-                routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId).ConfigureAwait(false);
+                routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName).ConfigureAwait(false);
         }
         finally
         {
@@ -912,7 +920,7 @@ public sealed class OmniCliRuntime : IDisposable
     private async Task<int> RunTurnCoreAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
-        DelegationId? delegationId = null)
+        DelegationId? delegationId = null, string? forcedInitialToolName = null)
     {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
@@ -1554,10 +1562,13 @@ public sealed class OmniCliRuntime : IDisposable
             int? EscalateOnStall() =>
                 TryEscalateAsync(loaded, model!, route.Id, usableContext, StallEscalationPrompt, true, writeLine,
                     cancellationToken, EscalationCause.ProgressStalled).GetAwaiter().GetResult();
+            var pendingForcedToolName = forcedInitialToolName;
             ExplorerTurn BuildTurn(ReasoningRequest? appliedReasoning, ReasoningResolution? resolution,
                 IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null,
                 ModelCapabilityBoundary? turnBoundary = null, ContextMaterializer? turnMaterializer = null)
             {
+                var requestedToolName = pendingForcedToolName;
+                pendingForcedToolName = null;
                 var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct,
                     appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution);
                 var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
@@ -1584,7 +1595,8 @@ public sealed class OmniCliRuntime : IDisposable
                     maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts,
                     mailboxDeliveryCompleted: delegation is null ? null : server.ResolveMailboxDelivery,
                     stallEscalationUnavailable: delegation is null ? StallEscalationUnavailable : null,
-                    mutationEvidence: samples => RecordMutationEvidence(qualification, qualificationData, samples));
+                    mutationEvidence: samples => RecordMutationEvidence(qualification, qualificationData, samples),
+                    forcedInitialToolName: requestedToolName);
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);

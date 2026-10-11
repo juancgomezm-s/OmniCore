@@ -39,6 +39,7 @@ public sealed class ExtensionCommandManifest
 {
     public string? Name { get; set; }
     public string? Kind { get; set; }
+    public string? Tool { get; set; }
 }
 
 public sealed class ExtensionHookManifest

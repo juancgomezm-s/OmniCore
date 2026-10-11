@@ -52,6 +52,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private string? _pendingPromptOrigin;
 
+    private string? _lastForcedCommandTool;
+
     private readonly CommandService _commandService = new();
 
     private FakeCatalog? _diagnosticCatalog;
@@ -559,8 +561,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             try
             {
+                RefreshProjectExtensionCommands();
                 _lastWorkflowInvocation = null;
                 _lastWorkflowRequested = null;
+                _lastPromptExpanded = null;
+                _lastForcedCommandTool = null;
                 using var document = System.Text.Json.JsonDocument.Parse(command.PayloadJson);
                 var root = document.RootElement;
                 var name = root.GetProperty("name").GetString() ?? "";
@@ -576,6 +581,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 if (invoked is PromptCommandRequested prompt)
                 {
                     _lastPromptExpanded = new PromptExpanded(prompt.Text, prompt.Origin);
+                    _lastForcedCommandTool = prompt.ForcedToolName;
                     _lastWorkflowRequested = null;
                     _pendingPromptOrigin = prompt.Origin;
                 }
@@ -591,7 +597,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
-                or KeyNotFoundException or ArgumentException)
+                or KeyNotFoundException or ArgumentException or InvalidDataException or IOException or UnauthorizedAccessException)
             {
                 return new CommandAck(command.MessageId, "error", ex.Message, RuntimeCommandOutcome.Rejected());
             }
@@ -827,6 +833,33 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             && authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow);
         var reason = authorized ? null : "An active Orchestrate Run with current authorization is required.";
         return new CommandContext(session, run, projection.Mode ?? CurrentRunMode(), _workspaceRoot, authorized, reason);
+    }
+
+    private void RefreshProjectExtensionCommands()
+    {
+        _commandService.Registry.RemoveSource(SourceKind.Extension);
+        if (_workspaceRoot is null) return;
+        var paths = _platformPathsFactory();
+        var trusted = new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+        if (!trusted) return;
+        var root = Path.Combine(_workspaceRoot, ".omnicore", "extensions");
+        var loader = new ExtensionManifestLoader();
+        var store = new ExtensionConsentStore(paths, _workspaceRoot);
+        var discovered = loader.Discover(root, TrustLevel.Project, workspaceTrusted: true);
+        var consents = discovered.Where(extension => extension.Manifest?.Id is not null)
+            .ToDictionary(extension => extension.Manifest!.Id!, store.ConsentedCapabilities, StringComparer.Ordinal);
+        foreach (var extension in loader.DiscoverWithConsents(root, TrustLevel.Project, true, consents)
+            .Where(extension => extension.Status == ExtensionDiscoveryStatus.Ready && extension.Manifest is not null))
+        {
+            var capabilities = consents.GetValueOrDefault(extension.Manifest!.Id!);
+            if (capabilities?.Contains("command.register") != true || capabilities.Contains("tool.register") != true) continue;
+            foreach (var command in extension.Manifest.Provides?.Commands ?? [])
+            {
+                if (command.Kind != "Extension" || command.Tool is null) continue;
+                try { _commandService.Registry.Register(new ProjectExtensionCommandHandler(extension, command)); }
+                catch (InvalidOperationException) { /* Conflicts stay unavailable; no source silently wins. */ }
+            }
+        }
     }
 
     public RunReasoningSelectionState? CurrentRunReasoningSelection()
@@ -1961,6 +1994,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
         if (name == "commands")
         {
+            RefreshProjectExtensionCommands();
             var catalog = _commandService.Catalog(CommandContextForCurrentRun());
             var names = new[] { "mode", "ultracode", "reasoning" }.Concat(catalog.Commands.Select(command => command.Name));
             var json = "{\"commands\":[" + string.Join(",", names.Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "],"
@@ -2152,7 +2186,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             if (_lastPromptExpanded is { } prompt) return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
                 + JsonObj.Field("kind", "promptExpanded") + "," + JsonObj.Field("text", prompt.Text) + ","
-                + JsonObj.Field("origin", prompt.Origin) + "}}");
+                + JsonObj.Field("origin", prompt.Origin) + (_lastForcedCommandTool is { } tool
+                    ? "," + JsonObj.Field("toolName", tool) : "") + "}}");
             if (_lastWorkflowRequested is { } workflow) return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
                 + JsonObj.Field("kind", "workflowRequested") + "," + JsonObj.Field("workflowId", workflow.Workflow.Id) + ","
                 + JsonObj.Field("version", workflow.Workflow.Version) + ","

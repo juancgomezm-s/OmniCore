@@ -826,7 +826,11 @@ public sealed partial class TuiApp
                 else if (text.TryGetValue("outcome", out _)
                     && TryReadOutcome(outcome, out var expanded))
                 {
-                    if (_turnHost is not null) { if (!StartModelTurn(expanded)) return; }
+                    string? forcedToolName = null;
+                    using (var outcomeDocument = System.Text.Json.JsonDocument.Parse(outcome))
+                        if (outcomeDocument.RootElement.GetProperty("outcome").TryGetProperty("toolName", out var toolName)
+                            && toolName.GetString() is { Length: > 0 } selectedTool) forcedToolName = selectedTool;
+                    if (_turnHost is not null) { if (!StartModelTurn(expanded, extensionToolName: forcedToolName)) return; }
                     else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(expanded) + "\""));
                 }
             }
@@ -864,7 +868,8 @@ public sealed partial class TuiApp
     }
 
     private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null,
-        string? delegationId = null, WorkflowRequestDto? workflow = null, string? workflowCommandId = null)
+        string? delegationId = null, WorkflowRequestDto? workflow = null, string? workflowCommandId = null,
+        string? extensionToolName = null)
     {
         if (_turnHost is null) return false;
         if (delegationId is not null) return StartDelegationTurn(delegationId);
@@ -884,7 +889,9 @@ public sealed partial class TuiApp
                     if (messages.Count == 4) messages.RemoveAt(0);
                     messages.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await (workflow is not null ? _turnHost.ExecuteWorkflowAsync(workflow,
+                code = await (extensionToolName is not null ? _turnHost.ExecuteExtensionCommandAsync(input, extensionToolName,
+                    diagnostic, cancellation.Token)
+                    : workflow is not null ? _turnHost.ExecuteWorkflowAsync(workflow,
                     workflowCommandId ?? throw new InvalidOperationException("Workflow command identity is missing."),
                     diagnostic, cancellation.Token)
                     : delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)

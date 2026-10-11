@@ -118,11 +118,12 @@ public sealed class ExtensionManifestLoader
         return sequence.Select(item =>
         {
             var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("extension command");
-            ManifestYamlAst.CheckKeys(map, "extension command", "name", "kind");
+            ManifestYamlAst.CheckKeys(map, "extension command", "name", "kind", "tool");
             return new ExtensionCommandManifest
             {
                 Name = ManifestYamlAst.OptionalString(map, "name", "command.name"),
                 Kind = ManifestYamlAst.OptionalString(map, "kind", "command.kind"),
+                Tool = ManifestYamlAst.OptionalString(map, "tool", "command.tool"),
             };
         }).ToList();
     }
@@ -286,6 +287,11 @@ public sealed class ExtensionManifestLoader
         if (manifest.Provides?.Tools?.Any(tool => string.IsNullOrWhiteSpace(tool.Name)
             || string.IsNullOrWhiteSpace(tool.Schema)) == true)
             throw new InvalidDataException("Each extension tool requires a name and a schema path.");
+        var declaredTools = manifest.Provides?.Tools ?? [];
+        if (manifest.Provides?.Commands?.Any(command => string.IsNullOrWhiteSpace(command.Name)
+            || command.Kind != "Extension" || string.IsNullOrWhiteSpace(command.Tool)) == true
+            || manifest.Provides?.Commands?.Any(command => !declaredTools.Any(tool => tool.Name == command.Tool)) == true)
+            throw new InvalidDataException("Each extension command must bind to a declared extension tool.");
         var requests = new HashSet<string>(manifest.Requests?.Capabilities ?? [], StringComparer.Ordinal);
         var requiredCapabilities = new List<string>();
         if (manifest.Provides?.Tools?.Count > 0) requiredCapabilities.Add("tool.register");
