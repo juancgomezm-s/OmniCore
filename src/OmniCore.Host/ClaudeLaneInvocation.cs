@@ -77,6 +77,10 @@ internal static class ClaudeLaneInvocationBuilder
         args.AddRange([
             "--add-dir", Path.GetFullPath(laneRoot),
             "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--disallowedTools", "mcp__*",
+            // Keep provider credentials inherited from the authenticated user environment, but
+            // load no user/project/local settings. In particular, a lane repository cannot add
+            // MCP servers, hooks, or tool customizations through .claude settings files.
+            "--setting-sources", "",
             "--restricted", "--safe-mode",
             "--model", profile.ExternalModel!,
             "--max-budget-usd", budget.MaxCostUsd.Value.ToString("G29", CultureInfo.InvariantCulture),

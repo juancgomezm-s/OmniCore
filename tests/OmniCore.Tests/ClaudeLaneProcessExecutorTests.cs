@@ -34,6 +34,7 @@ public sealed class ClaudeLaneProcessExecutorTests
             new Dictionary<string, string>(), TimeSpan.FromSeconds(10), static (_, _) => ValueTask.CompletedTask,
             TestContext.Current.CancellationToken);
         Assert.Equal(ClaudeLaneProcessFailure.NonZeroExit, failed.Failure);
+        Assert.Equal(7, failed.ExitCode);
         Assert.Null(failed.Stream);
         Assert.Null(failed.AgentResult);
 

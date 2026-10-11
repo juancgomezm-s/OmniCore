@@ -1987,6 +1987,7 @@ public sealed class OmniCliRuntime : IDisposable
             }, cancellationToken, invocation.StreamLimits).ConfigureAwait(false).GetAwaiter().GetResult();
         if (outcome.Failure is not null || outcome.Stream is null || outcome.AgentResult is null)
             throw new InvalidOperationException("ExternalLaneProcessFailed:" + outcome.Failure
+                + ":exit=" + outcome.ExitCode.ToString(CultureInfo.InvariantCulture)
                 + (outcome.ProtocolError is { } protocolError ? ":" + protocolError : "")
                 + (outcome.Diagnostic is { } diagnostic ? ":" + diagnostic : ""));
         var stream = outcome.Stream;

@@ -33,6 +33,8 @@ public sealed class CliEndToEndTests
         {
             const string profile = "0199a000-0000-7000-8000-000000000031";
             const string model = "claude-haiku-5-5";
+            var liveClaudeAcceptance = string.Equals(
+                Environment.GetEnvironmentVariable("OMNI_M7_LIVE_CLAUDE_ACCEPTANCE"), "1", StringComparison.Ordinal);
             InitializeGitRepository(workspace);
             File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
                 defaultProfile: {{profile}}
@@ -61,10 +63,14 @@ public sealed class CliEndToEndTests
                 "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]",
                 StringComparison.Ordinal);
             provider.RespondWith((_, _) => WithUsage(TextResponse("Principal context is ready.")));
-            IProcessRuntime process = new FakeClaudeLaneRuntime(model);
+            IProcessRuntime process = liveClaudeAcceptance
+                ? new SystemProcessRuntime()
+                : new FakeClaudeLaneRuntime(model);
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.ProcessRuntimeFactoryForTests = () => process;
-            runtime.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            runtime.ClaudeExecutableLocatorForTests = () => liveClaudeAcceptance
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe")
+                : Path.Combine(workspace, "claude-fixture.exe");
             var host = new TuiTurnHost(runtime);
             var diagnostics = new List<string>();
             Assert.Equal(0, await host.ExecuteAsync("Prepare a delegated task", diagnostics.Add,
@@ -78,7 +84,9 @@ public sealed class CliEndToEndTests
                 """), TestContext.Current.CancellationToken).Status);
             var root = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
             var request = new DelegationCreateRequest(profile, root.LastContextEventId!,
-                "Inspect the owned lane and report a result",
+                liveClaudeAcceptance
+                    ? "Create m7-lane-proof.txt in this worktree with exactly one line: isolated lane proof. Then report the result."
+                    : "Inspect the owned lane and report a result",
                 root.SelectableContextItemIds!, 8192, 2, 4, 20_000, 1m);
             var queued = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
                 TestContext.Current.CancellationToken);
@@ -89,14 +97,11 @@ public sealed class CliEndToEndTests
             var providerCalls = provider.RequestCount;
             var childExit = await host.ExecuteDelegationAsync(child.DelegationId!, diagnostics.Add,
                 TestContext.Current.CancellationToken);
-            if (process is not FakeClaudeLaneRuntime fakeProcess)
-                throw new InvalidOperationException("The fake external process runtime was not installed.");
             Assert.True(childExit == 0, "Claude lane failed: " + string.Join(" | ", diagnostics)
-                + "; launch=" + (fakeProcess.LastLaunch is null ? "not captured" : "captured")
+                + "; process=" + (liveClaudeAcceptance ? "real" : "fake")
                 + "; events=" + string.Join(",", ReadCurrentSessionEvents(workspace).Select(item => item.GetType().Name)));
             Assert.Equal(providerCalls, provider.RequestCount);
-            var launch = fakeProcess.LastLaunch
-                ?? throw new InvalidOperationException("The external lane did not launch its process.");
+            var fakeLaunch = process is FakeClaudeLaneRuntime fakeProcess ? fakeProcess.LastLaunch : null;
 
             var events = ReadCurrentSessionEvents(workspace);
             var worktree = Assert.Single(events.OfType<LaneWorktreeCreated>(), item => item.TaskId.ToString() == child.TaskId);
@@ -107,15 +112,30 @@ public sealed class CliEndToEndTests
             var resultArtifacts = OmniHost.CreateArtifactStore(
                 OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace));
             Assert.True(resultArtifacts.Verify(result.ResultRef.Hash, result.ResultRef.Size));
-            Assert.Contains("Fixture lane completed.", resultArtifacts.GetText(result.ResultRef.Hash));
-            Assert.Equal(Path.GetFullPath(worktree.WorktreePath), Path.GetFullPath(launch.WorkingDirectory));
-            Assert.Contains("--strict-mcp-config", launch.Args);
-            Assert.Contains("--safe-mode", launch.Args);
-            Assert.Contains("--restricted", launch.Args);
-            Assert.Contains("--permission-mode", launch.Args);
-            Assert.Contains("dontAsk", launch.Args);
-            Assert.Contains("--json-schema", launch.Args);
-            Assert.Equal("claude-fixture-session", session.SessionId);
+            var resultText = resultArtifacts.GetText(result.ResultRef.Hash);
+            Assert.False(string.IsNullOrWhiteSpace(resultText));
+            Assert.NotEmpty(session.SessionId);
+            if (liveClaudeAcceptance)
+            {
+                Assert.Equal(model, session.Model);
+                Assert.Equal("isolated lane proof\n", File.ReadAllText(Path.Combine(worktree.WorktreePath,
+                    "m7-lane-proof.txt")));
+                Assert.False(File.Exists(Path.Combine(workspace, "m7-lane-proof.txt")));
+            }
+            else
+            {
+                var launch = fakeLaunch ?? throw new InvalidOperationException("Fake process launch missing.");
+                Assert.Equal(Path.GetFullPath(worktree.WorktreePath), Path.GetFullPath(launch.WorkingDirectory));
+                Assert.Contains("Fixture lane completed.", resultText);
+                Assert.Contains("--strict-mcp-config", launch.Args);
+                Assert.Contains("--setting-sources", launch.Args);
+                Assert.Contains("--safe-mode", launch.Args);
+                Assert.Contains("--restricted", launch.Args);
+                Assert.Contains("--permission-mode", launch.Args);
+                Assert.Contains("dontAsk", launch.Args);
+                Assert.Contains("--json-schema", launch.Args);
+                Assert.Equal("claude-fixture-session", session.SessionId);
+            }
             Assert.Equal(session.ExecutionId, execution.ExecutionId);
             Assert.Equal(session.ExecutionId, usage.ExecutionId);
             Assert.Equal(session.ExecutionId, result.ExecutionId);

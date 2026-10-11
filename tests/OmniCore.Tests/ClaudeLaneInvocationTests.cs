@@ -31,7 +31,7 @@ public sealed class ClaudeLaneInvocationTests
         Assert.Equal("none", ValueAfter(args, "--permission-prompts"));
         Assert.Equal("{\"mcpServers\":{}}", ValueAfter(args, "--mcp-config"));
         Assert.Contains("--restricted", args);
-        Assert.DoesNotContain("--setting-sources", args);
+        Assert.Equal("", ValueAfter(args, "--setting-sources"));
         Assert.Equal("mcp__*", ValueAfter(args, "--disallowedTools"));
         Assert.Equal("claude-haiku-5-5", ValueAfter(args, "--model"));
         Assert.Equal("0.25", ValueAfter(args, "--max-budget-usd"));
