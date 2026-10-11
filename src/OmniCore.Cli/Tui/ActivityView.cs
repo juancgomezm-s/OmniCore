@@ -22,7 +22,8 @@ internal sealed class ActivityView : View
         foreach (var view in SubViews)
         {
             var cell = cells[x++];
-            var attribute = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(attention ? "#D99955" : Colors[cell.Intensity]),
+            var color = attention ? "#D99955" : effect == "braille-spinner" && x == 3 ? "#38BDF8" : Colors[cell.Intensity];
+            var attribute = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(color),
                 noColor ? Color.None : new Color("#061822"));
             if (view.Text == cell.Glyph && view.GetScheme().Normal == attribute) continue;
             view.Text = cell.Glyph;

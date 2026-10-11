@@ -159,8 +159,15 @@ cuentan aparte. Sin atribución inequívoca se muestra actividad genérica, no
 razonamiento inferido. `Tools` incluye llamadas solicitadas: su etiqueta es
 «Herramientas», no una afirmación de ejecución o progreso confirmado.
 
-El catálogo C# inicial contiene `omega-pulse`, `orbit-dots`, `block-wave` y
-`conveyor`, con `Ω` Unicode por defecto y sin depender de Node/Pi/Nerd Fonts.
+El catálogo C# contiene `omega-pulse`, `orbit-dots`, `block-wave`, `conveyor` y
+`braille-spinner`, con `Ω` Unicode por defecto y sin depender de Node/Pi/Nerd Fonts.
+`braille-spinner` reproduce el ciclo compacto de diez frames del
+[Loader nativo de Pi](https://github.com/earendil-works/pi/blob/main/packages/tui/src/components/loader.ts),
+no un efecto de la extensión: puntos azules junto al Ω, en una sola celda.
+Se selecciona con `/animation braille-spinner` (todas las fases) o
+`/animation waiting:braille-spinner` (sólo espera), y también desde F4.
+Respeta el intervalo configurado de OmniCore; ASCII usa `| / - \` y movimiento
+reducido/OFF conserva sólo el Ω estático. Los defaults anteriores no cambian.
 Inspiración visual: [pi-animations](https://github.com/arpagon/pi-animations), MIT;
 el catálogo es una implementación nativa, sin su parche de componentes ni sus
 temporizadores globales. Animaciones grandes y catálogo externo completo no

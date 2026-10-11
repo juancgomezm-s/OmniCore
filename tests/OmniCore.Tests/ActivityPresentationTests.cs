@@ -81,6 +81,7 @@ public sealed class ActivityPresentationTests
     [InlineData("orbit-dots")]
     [InlineData("block-wave")]
     [InlineData("conveyor")]
+    [InlineData("braille-spinner")]
     public void Frames_are_bounded_deterministic_native_and_omega_branded(string effect)
     {
         foreach (var width in new[] { -1, 0, 1, 2, 3, 11, 80, 1000 })
@@ -95,6 +96,26 @@ public sealed class ActivityPresentationTests
         Assert.NotEqual(AnimationCatalog.Render(effect, 0, 11), AnimationCatalog.Render(effect, 5, 11));
         Assert.Equal(AnimationCatalog.Render(effect, 0, 11, false), AnimationCatalog.Render(effect, 20, 11, false));
         Assert.All(AnimationCatalog.Render(effect, 0, 11, ascii: true), cell => Assert.All(cell.Glyph, ch => Assert.InRange((int)ch, 32, 126)));
+    }
+
+    [Fact]
+    public void Braille_spinner_matches_the_ten_frame_loader_cycle_and_keeps_the_rest_blank()
+    {
+        string[] frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        string[] ascii = ["|", "/", "-", "\\"];
+        Assert.Contains("braille-spinner", AnimationCatalog.Names);
+        Assert.True((new AnimationPreferences() with { Waiting = "braille-spinner" }).IsValid);
+        for (var tick = 0; tick < 120; tick++)
+        {
+            var cells = AnimationCatalog.Render("braille-spinner", tick, 11);
+            Assert.Equal(new AnimationCell(frames[tick % frames.Length], 5), cells[2]);
+            Assert.All(cells.Skip(3), cell => Assert.Equal(new AnimationCell(" ", 0), cell));
+            Assert.Equal(ascii[tick % ascii.Length], AnimationCatalog.Render("braille-spinner", tick, 11, ascii: true)[2].Glyph);
+        }
+        Assert.Equal(AnimationCatalog.Render("braille-spinner", 0, 11), AnimationCatalog.Render("braille-spinner", 120, 11));
+        Assert.Equal("⠏", AnimationCatalog.Render("braille-spinner", -1, 3)[2].Glyph);
+        Assert.All(AnimationCatalog.Render("braille-spinner", 42, 11, moving: false).Skip(1),
+            cell => Assert.Equal(new AnimationCell(" ", 0), cell));
     }
 
     [Fact]

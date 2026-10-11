@@ -661,6 +661,8 @@ public sealed class TuiWiringTests
     [InlineData(120, 35, "activity")]
     [InlineData(80, 25, "animations")]
     [InlineData(120, 35, "animations")]
+    [InlineData(80, 25, "animations-braille")]
+    [InlineData(120, 35, "animations-braille")]
     [InlineData(80, 25, "table")]
     [InlineData(140, 40, "table")]
     [InlineData(100, 36, "rich")]
@@ -748,8 +750,13 @@ public sealed class TuiWiringTests
                 .Any(b => b.Text.ToString().Contains("subscription-b"))
                 || (scene == "picker" && PickerItems(fx).Any(item => item.Contains("Subscription B"))), "catálogo descubierto visible");
         }
-        else if (scene == "animations")
+        else if (scene is "animations" or "animations-braille")
         {
+            if (scene == "animations-braille")
+            {
+                Type(fx, "/animation braille-spinner");
+                KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer!.Text == "", "spinner seleccionado");
+            }
             Type(fx, "/animation showcase");
             KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.SubViews.Any(v => v.Id == "animation-preview") == true,
                 "vista previa de animaciones visible");
@@ -781,6 +788,7 @@ public sealed class TuiWiringTests
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
             var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            if (scene == "animations-braille") marker = "braille-spinner";
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
             if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
             try
@@ -854,7 +862,7 @@ public sealed class TuiWiringTests
                     Assert.DoesNotContain("Procesando", fx.App.Status!.Text.ToString());
                     Assert.DoesNotContain("%", fx.App.Status.Text.ToString());
                 }
-                else if (scene == "animations")
+                else if (scene is "animations" or "animations-braille")
                 {
                     Assert.Contains("Ω Indicadores y animaciones", text);
                     Assert.Contains("Razonamiento reportado", text);
@@ -863,6 +871,13 @@ public sealed class TuiWiringTests
                     var overlay = fx.App.Overlay!;
                     Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, overlay.BorderStyle);
                     Assert.All(overlay.SubViews.OfType<Button>(), button => Assert.True(button.Frame.Bottom <= overlay.Viewport.Height));
+                    if (scene == "animations-braille")
+                    {
+                        Assert.Contains("braille-spinner", text);
+                        Assert.Contains(cells.Cast<Terminal.Gui.Drawing.Cell>(), cell =>
+                            cell.Grapheme?.Any(ch => ch is >= '\u2800' and <= '\u28ff') == true
+                            && cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#38BDF8"));
+                    }
                 }
                 else if (scene == "commands")
                 {
@@ -1371,6 +1386,38 @@ public sealed class TuiWiringTests
         Assert.False(fx.App.Activity!.Visible);
         Assert.Equal(journalCount, fx.Server.SubscribeSince(0).Count);
     });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Omega_braille_spinner_is_blue_or_colorless_and_can_freeze_during_a_turn(bool noColor) => RunTuiTest(fx =>
+    {
+        var host = new TestTurn(fx);
+        fx.StartTui(turnHost: host);
+        Type(fx, "/animation braille-spinner");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer!.Text == "", "spinner seleccionado sin request");
+        Assert.Equal(0, host.Calls);
+        Assert.Equal("braille-spinner", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Waiting);
+        Type(fx, "hola conectado");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "turno iniciado");
+        fx.Wait(() => fx.App.Activity!.Visible, "spinner visible");
+        var spinner = fx.App.Activity!.SubViews.ElementAt(2);
+        Assert.InRange((int)spinner.Text.ToString()[0], 0x2800, 0x28ff);
+        Assert.Equal(noColor ? Terminal.Gui.Drawing.Color.None : new Terminal.Gui.Drawing.Color("#38BDF8"), spinner.GetScheme().Normal.Foreground);
+        var first = spinner.Text;
+        fx.Wait(() => spinner.Text != first, "ciclo braille en movimiento");
+        Type(fx, "/animation reduced");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer!.Text == "", "movimiento reducido aplicado");
+        Assert.Equal("Ω", fx.App.Activity.SubViews.First().Text);
+        Assert.Equal(" ", spinner.Text);
+        fx.Invoke(() => { for (var tick = 0; tick < 12; tick++) fx.App.AnimateActivity(); });
+        Assert.Equal(" ", spinner.Text);
+        Assert.Equal(1, host.Calls);
+        Type(fx, "borrador");
+        host.Release.Set();
+        fx.Wait(() => !fx.App.Activity.Visible, "spinner retirado al terminar");
+        Assert.Equal("borrador", fx.App.Composer!.Text);
+    }, noColor);
 
     [Theory]
     [InlineData("off")]

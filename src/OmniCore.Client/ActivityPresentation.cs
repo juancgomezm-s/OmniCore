@@ -67,8 +67,11 @@ public readonly record struct AnimationCell(string Glyph, int Intensity);
 /// <summary>Deterministic native frames: no ANSI, I/O, random globals or terminal framework types.</summary>
 public static class AnimationCatalog
 {
+    // The compact braille cycle used by Pi's native Loader (not pi-animations).
+    private static readonly string[] BrailleFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    private static readonly string[] AsciiSpinnerFrames = ["|", "/", "-", "\\"];
     public static IReadOnlyList<string> Names { get; } = Array.AsReadOnly(new[]
-        { "omega-pulse", "orbit-dots", "block-wave", "conveyor" });
+        { "omega-pulse", "orbit-dots", "block-wave", "conveyor", "braille-spinner" });
 
     public static IReadOnlyList<AnimationCell> Render(string effect, long frame, int width,
         bool moving = true, bool ascii = false)
@@ -80,6 +83,12 @@ public static class AnimationCatalog
         {
             if (x == 0) { cells[x] = new(ascii ? "O" : "Ω", moving ? 2 + tick / 4 % 4 : 5); continue; }
             if (x == 1 || !moving) { cells[x] = new(" ", 0); continue; }
+            if (effect == "braille-spinner")
+            {
+                var frames = ascii ? AsciiSpinnerFrames : BrailleFrames;
+                cells[x] = x == 2 ? new(frames[tick % frames.Length], 5) : new(" ", 0);
+                continue;
+            }
             var position = x - 2;
             var length = Math.Max(1, width - 2);
             var head = tick % Math.Max(1, length * 2 - 2);

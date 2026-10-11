@@ -68,6 +68,7 @@ public sealed partial class TuiApp
     private void ShowAnimationSettings()
     {
         if (_window is null || _overlay is not null) return;
+        _previewEffect = _animationPreferences.Waiting;
         if (_window.Frame.Height < 18)
         {
             ShowMessage(Ui("Amplía la terminal para la vista previa.\n/animation on/off · reduced/full · fast/normal/slow",
