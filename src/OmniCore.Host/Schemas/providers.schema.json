@@ -39,9 +39,50 @@
             ]
           },
           "baseUrl": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "uri",
+                "pattern": "^https?://"
+              },
+              {
+                "const": "auto"
+              }
+            ]
+          },
+          "host": {
             "type": "string",
-            "format": "uri",
-            "pattern": "^https?://"
+            "enum": [
+              "attach",
+              "managed"
+            ]
+          },
+          "managed": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "executable"
+            ],
+            "properties": {
+              "executable": {
+                "type": "string",
+                "minLength": 1
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "workingDirectory": {
+                "type": "string"
+              },
+              "readinessTimeoutSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            }
           },
           "caCertificate": {
             "type": "string"
@@ -89,7 +130,80 @@
             ],
             "description": "Declaración explícita de facturación del proveedor; sin valor se trata como Unknown."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "host"
+              ]
+            },
+            "then": {
+              "properties": {
+                "family": {
+                  "const": "OpenAiChatCompatible"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "host": {
+                  "const": "managed"
+                }
+              },
+              "required": [
+                "host"
+              ]
+            },
+            "then": {
+              "required": [
+                "managed"
+              ]
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "managed"
+              ]
+            },
+            "then": {
+              "required": [
+                "host"
+              ],
+              "properties": {
+                "host": {
+                  "const": "managed"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "not": {
+                "properties": {
+                  "host": {
+                    "const": "managed"
+                  }
+                },
+                "required": [
+                  "host"
+                ]
+              }
+            },
+            "then": {
+              "properties": {
+                "baseUrl": {
+                  "not": {
+                    "const": "auto"
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     }
   }
