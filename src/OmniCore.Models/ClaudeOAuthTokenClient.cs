@@ -85,7 +85,7 @@ public sealed record ClaudeOAuthTokens(
     string? AccountUuid,
     string? OrganizationUuid)
 {
-    public override string ToString() => "claude.oauth.tokens";
+    public override string ToString() => "claude.oauth.tokens [redacted]";
 
     /// <summary>True si el token sirve para inferencia bajo suscripción claude.ai.</summary>
     [JsonIgnore]
