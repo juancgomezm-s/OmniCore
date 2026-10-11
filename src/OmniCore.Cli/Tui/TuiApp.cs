@@ -880,7 +880,8 @@ public sealed partial class TuiApp
         var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
         var result = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None)
             .AsTask().GetAwaiter().GetResult();
-        if (result.Text.Length > 0) ShowMessage(result.Text);
+        if (result.Tools is { } tools) ShowTools(tools);
+        else if (result.Text.Length > 0) ShowMessage(result.Text);
         if (result.ExitRequested) _application?.RequestStop();
         PollEvents();
     }
@@ -1482,7 +1483,7 @@ public sealed partial class TuiApp
         else if (view.Id == "omni-composer-accent") surface = "#B47CE7";
         else if (view.Id == "omni-panel") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = "#344559";
-        else if (view.Id == "omni-model-list") surface = "#142636";
+        else if (view.Id is "omni-model-list" or "tools-list") surface = "#142636";
         else if (view.Id == "omni-menu-action") surface = "#293E51";
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
         var background = noColor ? Color.None : new Color(surface);
@@ -1493,7 +1494,7 @@ public sealed partial class TuiApp
         var accent = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(dimmed ? "#405666" : "#67D4D0"), background);
         var focus = view is Button or ListView && !noColor
             ? new Terminal.Gui.Drawing.Attribute(new Color("#FFFFFF"), new Color("#3D5068")) : primary;
-        if (view.Id == "omni-model-list" && !noColor)
+        if (view.Id is "omni-model-list" or "tools-list" && !noColor)
             focus = new Terminal.Gui.Drawing.Attribute(new Color("#061822"), new Color("#67D4D0"));
         if (view is Button button)
         {

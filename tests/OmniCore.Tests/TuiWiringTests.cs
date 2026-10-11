@@ -663,6 +663,8 @@ public sealed class TuiWiringTests
     [InlineData(120, 35, "animations")]
     [InlineData(80, 25, "animations-braille")]
     [InlineData(120, 35, "animations-braille")]
+    [InlineData(80, 25, "tools")]
+    [InlineData(120, 35, "tools")]
     [InlineData(80, 25, "table")]
     [InlineData(140, 40, "table")]
     [InlineData(100, 36, "rich")]
@@ -738,6 +740,12 @@ public sealed class TuiWiringTests
             fx.InjectKey(new Key(KeyCode.Enter));
             fx.Wait(() => fx.App.Overlay is not null, "menú visible en fotograma");
         }
+        else if (scene == "tools")
+        {
+            Type(fx, "/tools");
+            KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.SubViews.Any(v => v.Id == "tools-list") == true,
+                "catálogo de herramientas visible");
+        }
         else if (scene == "commands")
         {
             fx.Invoke(() => fx.App.Composer!.Text = "/");
@@ -789,6 +797,7 @@ public sealed class TuiWiringTests
             // Wait for the normal loop's completed frame, retaining the timeout below.
             var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
             if (scene == "animations-braille") marker = "braille-spinner";
+            if (scene == "tools") marker = "Herramientas";
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
             if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
             try
@@ -892,6 +901,17 @@ public sealed class TuiWiringTests
                     var helper = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper");
                     var composer = fx.App.MainWindow.SubViews.Single(view => view.Id == "omni-composer");
                     Assert.True(helper.Frame.Bottom <= composer.Frame.Y);
+                }
+                else if (scene == "tools")
+                {
+                    Assert.Contains("Modo:", text);
+                    Assert.Contains("filesystem.read", text);
+                    Assert.DoesNotContain("visibleName", text);
+                    Assert.DoesNotContain("Aviso", text);
+                    var overlay = fx.App.Overlay!;
+                    Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, overlay.BorderStyle);
+                    Assert.False(fx.App.Composer!.HasFocus);
+                    Assert.All(overlay.SubViews, child => Assert.True(child.Frame.Bottom <= overlay.Viewport.Height));
                 }
                 else if (scene == "notice")
                 {
@@ -1636,16 +1656,122 @@ public sealed class TuiWiringTests
     // ------------------------------------------------------------------ comandos slash → overlays con datos del Host
 
     [Fact]
+    public void Tools_opens_a_navigable_catalog_instead_of_a_clipped_json_notice() => RunTuiTest(fx =>
+    {
+        fx.StartTui(initialColumns: 80, initialRows: 25);
+        var journalCount = fx.Server.SubscribeSince(0).Count;
+        Type(fx, "/tools");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "catálogo visible");
+        Assert.Contains("Herramientas", fx.App.Overlay!.Title);
+        var list = fx.App.Overlay.SubViews.OfType<ListView>().Single();
+        using var expected = System.Text.Json.JsonDocument.Parse(fx.Server.Query("tools", default)!.Json);
+        Assert.Equal(expected.RootElement.GetProperty("tools").GetArrayLength(), list.Source!.Count);
+        Assert.Contains(list.Source.ToList().Cast<object>(), item => item.ToString()!.Contains("filesystem.read"));
+        Assert.DoesNotContain("visibleName", OverlayText(fx.App.Overlay));
+        Assert.True(list.HasFocus);
+        KeyWithEffect(fx, KeyCode.End, () => list.SelectedItem == list.Source.Count - 1, "última herramienta accesible");
+        Assert.Equal(journalCount, fx.Server.SubscribeSince(0).Count);
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc cierra catálogo");
+        Assert.True(fx.App.Composer!.HasFocus);
+    });
+
+    [Fact]
+    public void Tools_catalog_empty_missing_and_invalid_data_are_explicit_and_never_submit_work() => RunTuiTest(fx =>
+    {
+        var client = new ToolQueryClient(fx.Server, "{\"mode\":\"Act\",\"tools\":[]}");
+        fx.StartTui(client: client);
+        foreach (var json in new string?[] { client.Json, null, "{\"tools\":[{}]}" })
+        {
+            client.Json = json;
+            Type(fx, "/tools");
+            KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "resultado de consulta visible");
+            var text = OverlayText(fx.App.Overlay!);
+            Assert.Contains(json is null ? "Sin datos" : json.Contains("[{}]") ? "No se pudo interpretar" : "no reportó herramientas", text);
+            KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cierra resultado sin ejecutar");
+        }
+        Assert.Equal(3, client.Queries);
+        Assert.Equal(0, client.Commands);
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Tools_catalog_filter_details_and_resize_keep_every_row_and_do_not_change_permissions(bool noColor) => RunTuiTest(fx =>
+    {
+        var source = "Plugin:Workspace:Untrusted:acción@1:" + new string('x', 240);
+        var entries = Enumerable.Range(0, 40).Select(index => new
+        {
+            visibleName = $"tool.{index:00}", toolId = $"id.{index:00}", source,
+            effectClass = "Write", decision = "reject:PLAN mode", visible = false,
+        });
+        var client = new ToolQueryClient(fx.Server, System.Text.Json.JsonSerializer.Serialize(new { mode = "Plan", tools = entries }));
+        fx.StartTui(client: client, initialColumns: 80, initialRows: 25);
+        var journalCount = fx.Server.SubscribeSince(0).Count;
+        Type(fx, "/tools");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "catálogo largo visible");
+        var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+        var detail = fx.App.Overlay.SubViews.OfType<StyledTextPresenter>().Single();
+        var search = fx.App.Overlay.SubViews.OfType<TextField>().Single();
+        Assert.Equal(40, list.Source!.Count);
+        KeyWithEffect(fx, KeyCode.End, () => list.SelectedItem == 39, "fila posterior a 1800 caracteres accesible");
+        fx.Wait(() => detail.Text.ToString().Contains("id.39"), "detalle seleccionado actualizado");
+        Assert.Contains(source, detail.Text);
+        Assert.Contains("No visible", detail.Text);
+        Assert.Contains("reject:PLAN mode", detail.Text);
+        Assert.Contains("no equivale a permiso", detail.Text);
+        KeyWithEffect(fx, KeyCode.Enter, () => detail.HasFocus, "Enter sólo enfoca detalle");
+        KeyWithEffect(fx, KeyCode.PageDown, () => detail.Viewport.Y > 0, "detalle largo desplaza sin cortar campos");
+        KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "Ctrl+F vuelve al filtro");
+        fx.Invoke(() => search.Text = "TOOL.39");
+        fx.Wait(() => list.Source.Count == 1, "filtro sin distinguir mayúsculas");
+        fx.Invoke(() => search.Text = "sin-coincidencias");
+        fx.Wait(() => list.Source.Count == 0 && detail.Text.ToString().Contains("Sin coincidencias"), "vacío explícito");
+        fx.Invoke(() => search.Text = "");
+        fx.Wait(() => list.Source.Count == 40, "limpiar recupera todas las herramientas");
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(55, 18));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Width == 55 && fx.App.Overlay!.Frame.Height <= 18, "resize compacto aplicado");
+        fx.Wait(() => list.Frame.Height > 0, "lista sigue siendo navegable");
+        Assert.All(fx.App.Overlay!.SubViews, child => Assert.True(child.Frame.Bottom <= fx.App.Overlay.Viewport.Height));
+        if (noColor) Assert.Equal(Terminal.Gui.Drawing.Color.None, list.GetScheme().Normal.Foreground);
+        Assert.Equal(1, client.Queries);
+        Assert.Equal(0, client.Commands);
+        Assert.Equal(journalCount, fx.Server.SubscribeSince(0).Count);
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc preserva aplicación");
+        Assert.True(fx.App.Composer!.HasFocus);
+        Type(fx, "borrador intacto");
+        Assert.Equal("borrador intacto", fx.App.Composer.Text);
+    }, noColor);
+
+    private sealed class ToolQueryClient(IOmniClient inner, string? json) : IOmniClient
+    {
+        internal string? Json = json;
+        internal int Queries, Commands;
+        public CommandAck Send(WireEnvelope command, CancellationToken token)
+        { Interlocked.Increment(ref Commands); return inner.Send(command, token); }
+        public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => inner.SubscribeSince(fromSequence);
+        public SessionQueryResult? Query(string name, CancellationToken token)
+        {
+            if (name != "tools") return inner.Query(name, token);
+            Interlocked.Increment(ref Queries);
+            return Json is { } value ? new(name, value) : null;
+        }
+    }
+
+    [Fact]
     public void Slash_commands_render_real_host_data_in_overlays() => RunTuiTest(fx =>
     {
         fx.StartTui();
 
         Type(fx, "/tools");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /tools no abre el overlay");
+        var toolsList = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+        fx.Invoke(() => toolsList.SelectedItem = Array.FindIndex(toolsList.Source!.ToList().Cast<object>().ToArray(),
+            item => item.ToString()!.Contains("filesystem.read")));
+        fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("filesystem.read"), "detalle de herramienta del Host");
         var overlayText = OverlayText(fx.App.Overlay!);
         Assert.Contains("filesystem.read", overlayText);
 
-        // Esc cierra el overlay de aviso y devuelve el foco al composer.
+        // Esc cierra el catálogo y devuelve el foco al composer.
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc no cierra el overlay de aviso");
         fx.Wait(() => fx.App.Composer!.HasFocus, "el foco vuelve al composer tras cerrar el overlay");
 

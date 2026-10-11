@@ -199,6 +199,20 @@ driver, no capturas del escritorio ni validación contra un proveedor real.
 Es una mejora opcional del track TUI, no un gate de cierre del núcleo ni un
 cambio del mecanismo de extensiones M8.
 
+### Consulta de herramientas en la TUI
+
+`/tools` resuelve la misma `tools.inspect` del registro de acciones del cliente.
+El handler conserva el JSON completo para clientes textuales y añade una
+proyección tipada (`ToolsInspection`) para la TUI, sin el recorte de 1.800
+caracteres de los avisos genéricos. No cambia la consulta ni la política del Host.
+El catálogo se presenta en un panel de sólo lectura con filtro, lista desplazable
+y detalle seleccionable/desplazable de ID, origen, efecto, decisión y visibilidad.
+Las herramientas no visibles permanecen en la inspección; visibilidad no
+equivale a autorización de ejecución. Enter enfoca el detalle, Ctrl+F el filtro
+y Esc cierra y devuelve el foco al composer. El panel se adapta al resize.
+Un catálogo vacío, una consulta ausente y datos inválidos tienen mensajes distintos;
+no se descartan filas inválidas silenciosamente ni se inventan permisos.
+
 ## Integración y evidencia reproducible
 
 `OmniCoder.OmniCore` es un módulo WPF net8 real, con ViewModel, panel esencial y

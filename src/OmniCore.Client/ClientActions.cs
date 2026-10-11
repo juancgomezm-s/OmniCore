@@ -36,7 +36,10 @@ public sealed record ClientActionInvocation(string ActionId, IReadOnlyList<strin
 public sealed record ClientContext(IOmniClient Client, Localization Text, Func<string>? Permissions = null);
 
 /// <summary>Resultado de una acción: texto para mostrar y, si procede, la petición de cerrar el cliente.</summary>
-public sealed record ClientActionResult(string Text, bool ExitRequested = false);
+public sealed record ClientActionResult(string Text, bool ExitRequested = false)
+{
+    public ToolsInspection? Tools { get; init; }
+}
 
 /// <summary>Ejecuta una <see cref="ClientActionInvocation"/> contra el servidor (ADR-0025 §1).</summary>
 public interface IClientActionHandler
@@ -113,7 +116,7 @@ public sealed class ClientActionHandler : IClientActionHandler
             ClientActionIds.AppExit => new ClientActionResult(context.Text.Resolve("client.exit.bye"), ExitRequested: true),
             ClientActionIds.ViewPlan => Query(context, "workingState"),
             ClientActionIds.ContextInspect => Query(context, "context"),
-            ClientActionIds.ToolsInspect => Query(context, "tools"),
+            ClientActionIds.ToolsInspect => InspectTools(context, cancellationToken),
             ClientActionIds.ViewTasks => Tasks(context, cancellationToken),
             ClientActionIds.ViewEvents => Events(context),
             ClientActionIds.PermissionsList => new ClientActionResult(context.Permissions?.Invoke()
@@ -159,6 +162,15 @@ public sealed class ClientActionHandler : IClientActionHandler
                 yield return (text, description);
             }
         }
+    }
+
+    private static ClientActionResult InspectTools(ClientContext context, CancellationToken cancellationToken)
+    {
+        var json = context.Client.Query("tools", cancellationToken)?.Json;
+        if (json is null) return new(context.Text.Resolve("client.no_data"));
+        var tools = ToolsInspectionJson.Decode(json);
+        return tools is null ? new(context.Text.Resolve("client.tools.invalid"))
+            : new ClientActionResult(json) { Tools = tools };
     }
 
     private static ClientActionResult Query(ClientContext context, string name)

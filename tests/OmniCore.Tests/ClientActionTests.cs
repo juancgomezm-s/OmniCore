@@ -127,6 +127,40 @@ public sealed class ClientActionTests
     }
 
     [Fact]
+    public void Tools_action_preserves_the_complete_catalog_instead_of_cutting_json_at_1800_characters()
+    {
+        var client = new FakeClient();
+        var entries = Enumerable.Range(0, 40).Select(index => new
+        {
+            visibleName = $"tool.{index:00}", toolId = $"tool.{index:00}",
+            source = "BuiltIn:BuiltIn:Core:core@1", effectClass = "None",
+            decision = "permission policy", visible = true,
+        });
+        var json = System.Text.Json.JsonSerializer.Serialize(new { mode = "Plan", tools = entries });
+        Assert.True(json.Length > 1800);
+        client.Queries["tools"] = json;
+        var result = Run("tools", Context(client));
+        Assert.Equal(json, result.Text);
+        Assert.Equal(40, result.Tools!.Tools.Count);
+        Assert.Equal("tool.39", result.Tools.Tools[^1].ToolId);
+        Assert.Empty(client.Sent);
+        Assert.False(result.ExitRequested);
+    }
+
+    [Fact]
+    public void Tools_action_handles_missing_or_invalid_catalog_without_claiming_authority()
+    {
+        var client = new FakeClient();
+        Assert.Null(Run("tools", Context(client)).Tools);
+        client.Queries["tools"] = "{\"tools\":[{\"visibleName\":\"broken\"}]}";
+        var es = Run("tools", Context(client));
+        Assert.Null(es.Tools);
+        Assert.Contains("No se pudo interpretar", es.Text);
+        Assert.Contains("Could not read", Run("tools", Context(client, locale: "en")).Text);
+        Assert.Empty(client.Sent);
+    }
+
+    [Fact]
     public void Events_shows_only_the_most_recent_journal_events_with_their_count()
     {
         var client = new FakeClient();
