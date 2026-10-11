@@ -1147,6 +1147,7 @@ public sealed class ExplorerTurn
                         resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields,
                         new GenerationRequestAttemptEvidence(generationAttempts.ObservedSends,
                             _maximumGenerationRequestAttempts)), DurabilityClass.Barrier);
+                    RecordUsedSessionMemory(sessionId, materialized.Items);
                     if (TokenUsageValidation.IsInvalid(resolved.Usage, resolved.ReportedUsageFields))
                     {
                         invalidUsageObserved = true;
@@ -2117,7 +2118,8 @@ public sealed class ExplorerTurn
             if (item.Kind == ContextItemKind.WorkingState || item.Kind == ContextItemKind.System
                 || item.Kind == ContextItemKind.Task || item.Kind == ContextItemKind.Decision
                 || item.Kind == ContextItemKind.Constraint || item.Kind == ContextItemKind.File
-                || item.Kind == ContextItemKind.Summary || item.Kind == ContextItemKind.Checkpoint)
+                || item.Kind == ContextItemKind.Summary || item.Kind == ContextItemKind.Checkpoint
+                || item.Kind == ContextItemKind.Memory)
             {
                 if (item.Content.Length > 0)
                 {
@@ -2664,6 +2666,12 @@ public sealed class ExplorerTurn
         }
 
         return new PreparedTurnContext(prepared, selectedMessages.ToArray());
+    }
+
+    private void RecordUsedSessionMemory(SessionId sessionId, IReadOnlyList<ContextItem> items)
+    {
+        foreach (var contributor in _materializer.Contributors().OfType<SessionMemoryContextContributor>())
+            contributor.RecordUsed(sessionId, items, DateTimeOffset.UtcNow, CancellationToken.None);
     }
 
     private static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,

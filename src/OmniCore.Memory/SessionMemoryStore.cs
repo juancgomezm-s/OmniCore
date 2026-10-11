@@ -89,6 +89,35 @@ public sealed class SessionMemoryStore : IMemoryStore
         }
     }
 
+    public int MarkUsed(MemoryScope scope, IReadOnlyCollection<string> memoryIds, DateTimeOffset usedAt,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(memoryIds);
+        scope.Validate();
+        if (memoryIds.Count > MaximumRecordsPerSession
+            || memoryIds.Any(string.IsNullOrWhiteSpace)
+            || memoryIds.Any(id => id.Length > 128))
+            throw new ArgumentException("Session memory usage ids are outside their supported bounds.", nameof(memoryIds));
+        cancellationToken.ThrowIfCancellationRequested();
+        var requested = memoryIds.ToHashSet(StringComparer.Ordinal);
+        if (requested.Count == 0) return 0;
+        var path = PathFor(scope);
+        lock (Gate(path))
+        {
+            var records = ReadFile(path, scope, cancellationToken).ToList();
+            var changed = 0;
+            for (var index = 0; index < records.Count; index++)
+            {
+                var record = records[index];
+                if (!requested.Contains(record.Id) || record.LastUsedAt >= usedAt) continue;
+                records[index] = record with { LastUsedAt = usedAt };
+                changed++;
+            }
+            if (changed > 0) WriteFile(path, records, cancellationToken);
+            return changed;
+        }
+    }
+
     private string PathFor(MemoryScope scope)
     {
         if (!Guid.TryParse(scope.Id, out var sessionId))

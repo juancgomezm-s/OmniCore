@@ -10,6 +10,18 @@ public sealed class SessionMemoryContextContributor(IMemoryStore store) : IConte
     private const int MaximumRecords = 24;
     private const int MaximumContentCharacters = 12_000;
 
+    public int RecordUsed(SessionId sessionId, IEnumerable<ContextItem> items, DateTimeOffset usedAt,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        var ids = items.Where(item => item.Kind == ContextItemKind.Memory
+                && item.Id.StartsWith("memory.", StringComparison.Ordinal))
+            .Select(item => item.Id["memory.".Length..])
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return store.MarkUsed(MemoryScope.ForSession(sessionId), ids, usedAt, cancellationToken);
+    }
+
     public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
         CancellationToken cancellationToken)
     {
