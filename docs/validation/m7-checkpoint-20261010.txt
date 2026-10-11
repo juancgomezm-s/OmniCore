@@ -69,3 +69,27 @@ need final review/acceptance. F6 explicit cleanup and seven-day retention servic
 automatic startup recovery/sweeping and its fail-closed orphan/tamper behavior remain to be
 completed and verified. M7 remains open, and no final suite or merge is represented by this
 checkpoint.
+
+### F6 startup-maintenance implementation — follow-up
+
+`WorktreeStartupRecoveryHost` is now called after Run/lane recovery, only with the last session's
+physically verified workspace root and a workspace journal reader. The workspace-wide journal is
+checked across matching sessions. Durable worktree bindings (active or terminal) are preserved;
+pre-`LaneWorktreeCreated` active lanes, ambiguous bindings, recent metadata, and altered roots are
+also retained. Cleanup eligibility requires durable `LaneProvisioning` followed by exactly one
+`LaneFailed`/`LaneCancelled` at least seven days old, with no `LaneStarted` or
+`LaneWorktreeCreated`; a mutable metadata timestamp alone never authorizes deletion. The existing
+cleanup path independently refuses dirty trees, lane commits, changed identity, reparse points,
+or unowned paths. The metadata/ref is retained for seven more days after cleanup; startup then
+uses the existing compare-and-delete ref sweep. Missing journal/root authority skips mutation.
+
+Targeted verification on this F6 implementation: `dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj
+--no-restore -v quiet -m:1` passed with 0 warnings and 0 errors; the two direct Git startup-sweep
+tests plus the `OmniServer` durable-root startup-hook test passed 3/3, 0 failed/skipped. The
+serial focus log at `C:\Users\juanc\.codex\m7-f6-startup-focus-20261010.log` has SHA256
+`F5597D44B9FD2D20D150C6165A07A134A10DA1CA5CD6DBB4983374F15FABB97C`. An initial fixture-only
+attempt failed Run recovery because it emitted `LaneCreated` without valid Task transitions; the
+corrected fixture now exercises provisioning failure with a valid durable Task/Lane sequence.
+No full regression was run at this intermediate point. Terminal journal-owned lanes are
+deliberately left for explicit cleanup because workflow Verify or user-directed integration may
+still need their worktree.

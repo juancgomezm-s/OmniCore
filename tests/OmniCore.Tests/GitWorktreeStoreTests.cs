@@ -478,6 +478,233 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Fact]
+    public async Task Startup_sweep_cleans_only_old_terminal_orphan_worktrees_and_keeps_active_or_dirty_data()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var terminal = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(), CancellationToken.None)).Worktree);
+        var active = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(), CancellationToken.None)).Worktree);
+        var dirtyOrphan = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(), CancellationToken.None)).Worktree);
+        var cleanOrphan = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(), CancellationToken.None)).Worktree);
+        var now = DateTimeOffset.UtcNow;
+        SetMetadataCreatedAt(terminal, now.AddDays(-9));
+        SetMetadataCreatedAt(active, now.AddDays(-9));
+        SetMetadataCreatedAt(dirtyOrphan, now.AddDays(-9));
+        SetMetadataCreatedAt(cleanOrphan, now.AddDays(-9));
+        File.WriteAllText(Path.Combine(dirtyOrphan.WorktreePath, "tracked.txt"), "keep user data\n");
+
+        var outcome = await WorktreeStartupRecoveryHost.SweepExpiredAsync(fixture.Repository, fixture.Data,
+            fixture.Request().WorkspaceId.ToString(), terminal.GitCommonDirectory,
+            new Dictionary<string, DateTimeOffset?>(StringComparer.Ordinal)
+            {
+                [terminal.OwnershipId] = now.AddDays(-8),
+                [active.OwnershipId] = null,
+            }, new HashSet<LaneId>(), new Dictionary<LaneId, DateTimeOffset>
+            {
+                [dirtyOrphan.LaneId] = now.AddDays(-8),
+                [cleanOrphan.LaneId] = now.AddDays(-8),
+            }, new HashSet<LaneId>(), new HashSet<string>(StringComparer.Ordinal),
+            now, CancellationToken.None);
+
+        Assert.True(outcome.Succeeded, outcome.ErrorCode?.ToString());
+        Assert.Equal(1, outcome.WorktreesRemoved);
+        Assert.Equal(3, outcome.WorktreesPreserved);
+        Assert.True(Directory.Exists(terminal.WorktreePath));
+        Assert.True(Directory.Exists(active.WorktreePath));
+        Assert.True(Directory.Exists(dirtyOrphan.WorktreePath));
+        Assert.False(Directory.Exists(cleanOrphan.WorktreePath));
+        Assert.Equal("keep user data\n", File.ReadAllText(Path.Combine(dirtyOrphan.WorktreePath, "tracked.txt")));
+        Assert.Equal(cleanOrphan.SnapshotCommit,
+            fixture.Git("rev-parse", "--verify", cleanOrphan.SnapshotRef + "^{commit}").Trim());
+    }
+
+    [Fact]
+    public async Task Startup_sweep_uses_verified_workspace_journal_and_keeps_active_lane_worktree()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write(".gitignore", ".omnicore/\n");
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(fixture.Repository);
+        var rootIdentity = WorkspaceRootIdentity.Establish(physicalRoot);
+        var paths = OmniHost.CreatePlatformPaths(fixture.Data);
+        var dataRoot = OmniHost.WorkspaceDataDirectory(paths, physicalRoot);
+        var request = fixture.Request() with
+        {
+            WorkspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalRoot)),
+            WorkspaceDataRoot = dataRoot,
+        };
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var terminal = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(request with { LaneId = LaneId.New() }, CancellationToken.None)).Worktree);
+        var active = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(request with { LaneId = LaneId.New() }, CancellationToken.None)).Worktree);
+        var provisioning = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(request with { LaneId = LaneId.New() }, CancellationToken.None)).Worktree);
+        var orphan = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(request with { LaneId = LaneId.New() }, CancellationToken.None)).Worktree);
+        var unknown = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(request with { LaneId = LaneId.New() }, CancellationToken.None)).Worktree);
+        var now = DateTimeOffset.UtcNow;
+        SetMetadataCreatedAt(unknown, now.AddDays(-8));
+
+        var eventStore = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var terminalTask = TaskId.New();
+        var terminalLane = terminal.LaneId;
+        var terminalExecution = ExecutionId.New();
+        var activeTask = TaskId.New();
+        var activeLane = active.LaneId;
+        var activeExecution = ExecutionId.New();
+        AddJournalEvent(eventStore, codecs, session, new SessionCreated(session, request.WorkspaceId.ToString(),
+            physicalRoot, ProfileId.New(), now));
+        AddJournalEvent(eventStore, codecs, session, new WorkspaceRootEstablished(session, physicalRoot, now,
+            rootIdentity));
+        AddJournalEvent(eventStore, codecs, session, new LaneWorktreeCreated(terminalTask, terminalLane,
+            terminalExecution, terminal.OwnershipId, terminal.RepositoryRoot, terminal.GitCommonDirectory,
+            terminal.WorktreePath, terminal.SnapshotCommit, terminal.SnapshotTree, FixtureArtifactRef(), FixtureArtifactRef()));
+        AddJournalEvent(eventStore, codecs, session, new LaneCompleted(terminalLane, null));
+        AddJournalEvent(eventStore, codecs, session, new LaneWorktreeCreated(activeTask, activeLane,
+            activeExecution, active.OwnershipId, active.RepositoryRoot, active.GitCommonDirectory,
+            active.WorktreePath, active.SnapshotCommit, active.SnapshotTree, FixtureArtifactRef(), FixtureArtifactRef()));
+        AddJournalEvent(eventStore, codecs, session, new LaneCreated(provisioning.LaneId, TaskId.New(), ProfileId.New()));
+        AddJournalEvent(eventStore, codecs, session, new LaneProvisioning(provisioning.LaneId));
+        var failedTask = TaskId.New();
+        AddJournalEventAt(eventStore, codecs, session, new LaneCreated(orphan.LaneId, failedTask, ProfileId.New()), now.AddDays(-8));
+        AddJournalEventAt(eventStore, codecs, session, new LaneProvisioning(orphan.LaneId), now.AddDays(-8));
+        AddJournalEventAt(eventStore, codecs, session, new LaneFailed(orphan.LaneId, "fixture failure"), now.AddDays(-8));
+        Assert.Contains(eventStore.ReadFrom(session, 1), envelope => codecs.Decode(envelope) is LaneCreated created
+            && created.LaneId == provisioning.LaneId);
+        Assert.DoesNotContain(eventStore.ReadFrom(session, 1), envelope => codecs.Decode(envelope) is LaneCompleted completed
+            && completed.LaneId == provisioning.LaneId);
+        Assert.NotEqual(terminal.LaneId, provisioning.LaneId);
+        Assert.True(WorkspaceRootIdentity.Verify(physicalRoot, rootIdentity));
+        Assert.Equal(request.WorkspaceId.ToString(),
+            WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalRoot)).ToString());
+        var inspected = await store.InspectAsync(physicalRoot, CancellationToken.None);
+        Assert.True(inspected.Succeeded, inspected.ErrorCode?.ToString());
+        Assert.Equal(terminal.GitCommonDirectory, inspected.Identity!.GitCommonDirectory);
+
+        var outcome = await WorktreeStartupRecoveryHost.SweepAsync(eventStore, codecs, physicalRoot,
+            paths, now, CancellationToken.None);
+
+        Assert.True(outcome.Succeeded,
+            $"error={outcome.ErrorCode}; removed={outcome.WorktreesRemoved}; preserved={outcome.WorktreesPreserved}; refs={outcome.SnapshotRefsPruned}; refFailures={outcome.SnapshotRefsFailed}");
+        Assert.Equal(1, outcome.WorktreesRemoved);
+        Assert.True(outcome.WorktreesPreserved >= 4);
+        Assert.True(Directory.Exists(terminal.WorktreePath));
+        Assert.True(Directory.Exists(active.WorktreePath));
+        Assert.True(Directory.Exists(provisioning.WorktreePath));
+        Assert.False(Directory.Exists(orphan.WorktreePath));
+        Assert.True(Directory.Exists(unknown.WorktreePath));
+        Assert.Equal(orphan.SnapshotCommit,
+            fixture.Git("rev-parse", "--verify", orphan.SnapshotRef + "^{commit}").Trim());
+    }
+
+    [Fact]
+    public async Task OmniServer_startup_runs_the_bounded_sweep_only_from_verified_last_session_root()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write(".gitignore", ".omnicore/\n");
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var root = ProjectIdentity.ResolvePhysicalWorkspaceRoot(fixture.Repository);
+        var rootIdentity = WorkspaceRootIdentity.Establish(root);
+        var paths = OmniHost.CreatePlatformPaths(fixture.Data);
+        var dataRoot = OmniHost.WorkspaceDataDirectory(paths, root);
+        var workspace = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root));
+        var request = new WorktreeCreateRequest(workspace, LaneId.New(), root, dataRoot);
+        var worktree = Assert.IsType<WorktreeIdentity>((await new GitWorktreeStore(new SystemProcessRuntime())
+            .CreateAsync(request, CancellationToken.None)).Worktree);
+        SetMetadataCreatedAt(worktree, DateTimeOffset.UtcNow.AddDays(-8));
+
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var now = DateTimeOffset.UtcNow;
+        AddJournalEvent(store, codecs, session, new SessionCreated(session, workspace.ToString(), root,
+            ProfileId.New(), now));
+        AddJournalEvent(store, codecs, session, new WorkspaceRootEstablished(session, root, now, rootIdentity));
+        AddJournalEvent(store, codecs, session, new RunCreated(run, session, "startup maintenance fixture",
+            RunMode.Plan, ExecutionStrategy.Direct, FailurePolicy.FailRun, new TaskBudget(1m, 1000, 1, 1),
+            TaskId.New(), now));
+        AddJournalEvent(store, codecs, session, new RunStarted(run));
+        var failedProvisioningAt = now.AddDays(-8);
+        var failedTask = new TaskCreated(TaskId.New(), run, "orphan provisioning fixture", [],
+            new TaskBudget(1m, 1000, 1, 1));
+        AddJournalEventAt(store, codecs, session, failedTask, failedProvisioningAt, run);
+        AddJournalEventAt(store, codecs, session, new TaskReady(failedTask.TaskId), failedProvisioningAt, run);
+        AddJournalEventAt(store, codecs, session,
+            new LaneCreated(worktree.LaneId, failedTask.TaskId, ProfileId.New()), failedProvisioningAt, run);
+        AddJournalEventAt(store, codecs, session, new TaskStarted(failedTask.TaskId, worktree.LaneId),
+            failedProvisioningAt, run);
+        AddJournalEventAt(store, codecs, session, new LaneProvisioning(worktree.LaneId), failedProvisioningAt, run);
+        AddJournalEventAt(store, codecs, session, new TaskFailed(failedTask.TaskId, "provisioning failed"),
+            failedProvisioningAt, run);
+        AddJournalEventAt(store, codecs, session, new LaneFailed(worktree.LaneId, "provisioning failed"),
+            failedProvisioningAt, run);
+        var stateFile = Path.Combine(fixture.Data, "last-session.txt");
+        File.WriteAllText(stateFile, session + "\n" + run);
+
+        var server = new OmniServer(store, codecs, new InMemoryAuditSink(), stateFile,
+            platformPathsFactory: () => paths);
+
+        Assert.True(server.LastRecoveryProblem() is null, server.LastRecoveryProblem());
+        Assert.Null(server.LastWorktreeMaintenanceProblem());
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal(worktree.SnapshotCommit,
+            fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim());
+    }
+
+    private static void AddJournalEvent(IEventStore store, IEventCodecRegistry codecs, SessionId session,
+        DomainEventPayload payload)
+    {
+        var codec = codecs.CodecFor(payload.Type());
+        store.Append(session, DomainEvent.Create(session, payload.Type(), payload.SchemaVersion(), null, null, null,
+            null, null, null, null, null, [], codec.Encode(payload)), DurabilityClass.Barrier, CancellationToken.None);
+    }
+
+    private static void AddJournalEventAt(IEventStore store, IEventCodecRegistry codecs, SessionId session,
+        DomainEventPayload payload, DateTimeOffset timestamp, RunId? runId = null)
+    {
+        var codec = codecs.CodecFor(payload.Type());
+        var lane = payload switch
+        {
+            LaneCreated created => created.LaneId,
+            TaskStarted started => started.LaneId,
+            LaneProvisioning provisioning => provisioning.LaneId,
+            LaneFailed failed => failed.LaneId,
+            _ => null,
+        };
+        var task = payload switch
+        {
+            TaskCreated created => created.TaskId,
+            TaskReady ready => ready.TaskId,
+            TaskStarted started => started.TaskId,
+            TaskFailed failed => failed.TaskId,
+            _ => null,
+        };
+        var envelope = DomainEvent.Stored(EventId.New(), session, 0, payload.Type(), payload.SchemaVersion(),
+            timestamp, null, null, runId, task, lane, null, null, null, [], codec.Encode(payload));
+        store.Append(session, envelope, DurabilityClass.Barrier, CancellationToken.None);
+    }
+
+    private static ArtifactRef FixtureArtifactRef() => new(ArtifactId.New(),
+        ContentHash.Sha256(new string('0', 64)), 0, "application/octet-stream", ArtifactKind.Other,
+        Sensitivity.Normal);
+
+    private static void SetMetadataCreatedAt(WorktreeIdentity identity, DateTimeOffset createdAt)
+    {
+        var metadata = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(identity.OwnershipMetadataPath))!;
+        var key = Assert.Single(metadata.AsObject(), item =>
+            string.Equals(item.Key, "CreatedAtUtc", StringComparison.OrdinalIgnoreCase)).Key;
+        metadata[key] = createdAt;
+        File.WriteAllText(identity.OwnershipMetadataPath, metadata.ToJsonString());
+    }
+
+    [Fact]
     public async Task Cancellation_before_git_work_preserves_the_repository()
     {
         using var fixture = new GitFixture();

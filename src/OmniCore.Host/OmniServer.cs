@@ -66,6 +66,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     /// </summary>
     private string? _recoveryProblem;
 
+    private string? _worktreeMaintenanceProblem;
+
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
@@ -136,6 +138,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         RecoverPendingEffects();
         RecoverPendingAgentOrchestration();
+        RecoverExpiredWorktreesAtStartup();
     }
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
@@ -158,6 +161,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         RecoverPendingEffects();
         RecoverPendingAgentOrchestration();
+        RecoverExpiredWorktreesAtStartup();
     }
 
     /// <summary>Composición común: tools Core + defaults por modo (modo Act del sim).</summary>
@@ -331,6 +335,29 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     {
         _recoveryProblem = reason;
         return HostRecoveryResult.Blocked(reason);
+    }
+
+    /// <summary>Runs bounded seven-day cleanup only after normal Run/lane recovery is clear and
+    /// the workspace root is revalidated from the journal. Maintenance failure is observable but
+    /// never weakens or blocks ordinary tool authorization.</summary>
+    private void RecoverExpiredWorktreesAtStartup()
+    {
+        if (_recoveryProblem is not null || _lastSessionId is not { } session
+            || _store is not IWorkspaceJournalReader) return;
+        try
+        {
+            var root = VerifiedWorkspaceRoot(session);
+            if (root is null) return;
+            var outcome = WorktreeStartupRecoveryHost.SweepAsync(_store, _codecs, root,
+                _platformPathsFactory(), DateTimeOffset.UtcNow, CancellationToken.None)
+                .GetAwaiter().GetResult();
+            _worktreeMaintenanceProblem = outcome.Succeeded ? null
+                : outcome.ErrorCode?.ToString() ?? "MaintenanceFailed";
+        }
+        catch (Exception)
+        {
+            _worktreeMaintenanceProblem = "MaintenanceFailed";
+        }
     }
 
     /// <summary>
@@ -1491,6 +1518,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     /// </summary>
     public string? LastRecoveryProblem() => _recoveryProblem;
 
+    /// <summary>Closed maintenance diagnostic for startup worktree cleanup; null means that the
+    /// sweep completed or was not applicable. It contains no Git/process output.</summary>
+    public string? LastWorktreeMaintenanceProblem() => _worktreeMaintenanceProblem;
+
     private CommandAck StartExplorerRun(WireEnvelope command, Dictionary<string, string> fields)
     {
         var objective = fields.TryGetValue("objective", out var value) ? value : null;
@@ -1886,7 +1917,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var run = _lastSnapshot is null ? "none" : "M2:" + _lastSnapshot!.TokenCount.ToString();
             return new SessionQueryResult("state", "{\"runtime\":\"omnicore\",\"milestone\":\"M2\","
                 + JsonObj.Field("runState", run)
-                + "," + JsonObj.Field("recovery", _recoveryProblem is null ? "ok" : "blocked") + "}");
+                + "," + JsonObj.Field("recovery", _recoveryProblem is null ? "ok" : "blocked")
+                + "," + JsonObj.Field("worktreeMaintenance", _worktreeMaintenanceProblem ?? "ok") + "}");
         }
 
         if (name == "sessionIdentity")
