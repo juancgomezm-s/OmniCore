@@ -30,6 +30,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// filesystem.patch exige lectura previa. null = semántica M2 (sin política de modelo).
     /// </summary>
     private readonly ModelCapabilityBoundary? _boundary;
+    private readonly IReadOnlyList<IToolIntentBoundary> _additionalBoundaries;
 
     private readonly IExecutableResolver _executableResolver;
 
@@ -51,6 +52,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _policy = policy;
         _workspaceRoot = "sim";
         _boundary = null;
+        _additionalBoundaries = [];
         _executableResolver = new SystemExecutableResolver();
         _weakSandboxConsent = new WeakSandboxConsentState();
     }
@@ -61,6 +63,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _policy = policy;
         _workspaceRoot = workspaceRoot;
         _boundary = null;
+        _additionalBoundaries = [];
         _executableResolver = new SystemExecutableResolver();
         _weakSandboxConsent = new WeakSandboxConsentState();
     }
@@ -81,12 +84,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         Func<InteractionRequested, string?>? interactionResponder, bool isInteractive,
         WeakSandboxConsentState? weakSandboxConsent = null, IArtifactStore? artifacts = null,
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
-        IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null)
+        IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null,
+        IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null)
     {
         _catalog = catalog;
         _policy = policy;
         _workspaceRoot = workspaceRoot;
         _boundary = boundary;
+        _additionalBoundaries = additionalBoundaries ?? [];
         _executableResolver = new SystemExecutableResolver();
         _weakSandboxConsent = weakSandboxConsent ?? new WeakSandboxConsentState();
         _audit = audit;
@@ -234,7 +239,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             return VoidBox.Instance;
         };
 
-        var runtime = new ToolRuntime(_catalog, _policy, emit, _boundary, _executableResolver);
+        var runtime = new ToolRuntime(_catalog, _policy, emit, _boundary, _executableResolver, _additionalBoundaries);
         var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now);
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.

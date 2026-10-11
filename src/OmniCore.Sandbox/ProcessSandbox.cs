@@ -48,7 +48,8 @@ public sealed record SandboxLaunchSpec(
     IReadOnlyDictionary<string, string> Environment,
     IReadOnlyList<SandboxAllowedPath> AllowedPaths,
     SandboxNetworkPolicy Network,
-    TimeSpan? Timeout = null);
+    TimeSpan? Timeout = null,
+    string? InitialStandardInput = null);
 
 /// <summary>Reports which strengths the current Sandbox implementation can provide.</summary>
 public sealed record SandboxCapabilities(

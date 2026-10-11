@@ -44,7 +44,7 @@ public sealed class ModelCapabilityDecision
 /// una categoría nunca otorga permisos por sí sola (spec §20, ADR-0044 §10.4).
 /// Vive junto a IPathBoundaryValidator en Abstractions (ADR-0009 §2.2) y es pura.
 /// </summary>
-public sealed class ModelCapabilityBoundary
+public sealed class ModelCapabilityBoundary : IToolIntentBoundary
 {
     /// <summary>Clasificación de tools Core por capacidad (ADR-0044 §3). Versionable y
     /// reemplazable en composición; la frontera no la inventa por nombre de modelo.</summary>

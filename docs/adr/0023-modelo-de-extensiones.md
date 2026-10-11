@@ -34,7 +34,7 @@ Una extensión puede aportar: **Tools, Commands, Skills, Hooks, ContextContribut
   "omnicoreApi": ">=1.0 <2.0",
   "provides": {
     "tools":               [{ "name": "compile", "schema": "schemas/compile.json" }],
-    "commands":            [{ "name": "prowin-compile", "kind": "Extension" }],
+    "commands":            [{ "name": "prowin-compile", "kind": "Extension", "tool": "compile" }],
     "skills":              ["skills/progress-compile"],
     "hooks":               [{ "point": "AfterTool", "capabilities": ["Observe"] }],
     "contextContributors": ["progress-dictionary"],

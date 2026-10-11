@@ -28,6 +28,35 @@ public sealed class CommandRegistryTests
     }
 
     [Fact]
+    public void Short_name_precedence_is_scope_ordered_but_a_less_trusted_source_cannot_hide_a_better_trusted_one()
+    {
+        var registry = new CommandRegistry();
+        var user = new Handler(new("user:review", "review", [], CommandKind.Prompt, "user",
+            [], new ComponentSource(SourceKind.Extension, ScopeLevel.User, TrustLevel.Trusted, "user", "1")));
+        var workspace = new Handler(new("workspace:review", "review", [], CommandKind.Prompt, "workspace",
+            [], new ComponentSource(SourceKind.Extension, ScopeLevel.Workspace, TrustLevel.Trusted, "workspace", "1")));
+        registry.Register(user);
+        registry.Register(workspace);
+
+        Assert.Same(workspace, registry.Resolve("review"));
+        Assert.Same(user, registry.Resolve("user:review"));
+
+        var lessTrustedWorkspace = new Handler(new("project:review", "review", [], CommandKind.Prompt, "project",
+            [], new ComponentSource(SourceKind.Extension, ScopeLevel.Workspace, TrustLevel.Project, "project", "1")));
+        var conflict = new CommandRegistry();
+        conflict.Register(user);
+        conflict.Register(lessTrustedWorkspace);
+        Assert.Throws<InvalidOperationException>(() => conflict.Resolve("review"));
+
+        var catalog = new CommandService(conflict).Catalog();
+        Assert.All(catalog.Commands, item =>
+        {
+            Assert.False(item.Enabled);
+            Assert.Contains("ambiguous", item.DisabledReason, StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Workflow_catalog_reports_authorization_and_request_returns_typed_workflow_intent()
     {
         var service = new CommandService();

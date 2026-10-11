@@ -12,6 +12,8 @@ public interface ITuiTurnHost
         System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId, Action<string> diagnostics,
         CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
+    Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
+        CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) => ExecuteAsync(input, diagnostics, cancellationToken);
     Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
@@ -41,6 +43,8 @@ public sealed class TuiTurnHost : ITuiTurnHost
         _runtime.DelegationAsync(delegationId, diagnostics, token);
     public Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId, Action<string> diagnostics,
         CancellationToken token) => _runtime.ExecuteWorkflowAsync(request, commandId, diagnostics, token);
+    public Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
+        CancellationToken token) => _runtime.ExecuteExtensionCommandAsync(prompt, toolName, diagnostics, token);
     public async Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
     {
         var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);

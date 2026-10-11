@@ -11,6 +11,8 @@ using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Sandbox;
 using OmniCore.Tools;
+using OmniCore.Extensions;
+using OmniCore.Memory;
 using System.Globalization;
 using System.Text.Json;
 
@@ -47,6 +49,33 @@ public sealed class OmniCliRuntime : IDisposable
 
     public static OmniCliRuntime Create(string workspaceRoot,
         Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota = null) => new(workspaceRoot, queryQuota);
+
+    /// <summary>Explicit CLI consent action bound to the exact project manifest hash and version.</summary>
+    public string SetProjectExtensionConsent(string extensionId, bool grant)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(extensionId);
+        var paths = OmniHost.CreatePlatformPaths();
+        if (!new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot))
+            throw new InvalidOperationException("Trust the workspace before granting project extension capabilities.");
+        var loader = new ExtensionManifestLoader();
+        var candidates = loader.Discover(Path.Combine(_workspaceRoot, ".omnicore", "extensions"), TrustLevel.Project,
+            workspaceTrusted: true);
+        var extension = candidates.SingleOrDefault(candidate => candidate.Manifest?.Id == extensionId)
+            ?? throw new InvalidOperationException("No matching project extension was discovered.");
+        var store = new ExtensionConsentStore(paths, _workspaceRoot);
+        if (!grant)
+        {
+            store.Revoke(extensionId);
+            return "Revoked project extension consent for " + extensionId + ".";
+        }
+        if (extension.Manifest is null || extension.Status is ExtensionDiscoveryStatus.InvalidManifest
+            or ExtensionDiscoveryStatus.IncompatibleApi)
+            throw new InvalidOperationException(extension.Diagnostic ?? "The extension cannot receive consent.");
+        var requested = new HashSet<string>(extension.Manifest.Requests?.Capabilities ?? [], StringComparer.Ordinal);
+        store.Grant(extension, requested);
+        return "Granted " + string.Join(", ", requested.Order(StringComparer.Ordinal)) + " to " + extensionId
+            + " for this workspace and manifest version.";
+    }
 
     private static async Task<ProviderQuotaSnapshot> QueryConfiguredQuotaAsync(string providerId, CancellationToken token)
     {
@@ -334,6 +363,12 @@ public sealed class OmniCliRuntime : IDisposable
                 if (!capabilities.TryAdd(toolId, capability))
                     throw new InvalidOperationException("Dynamic capability registration collides with a built-in tool id: " + toolId);
             }
+            foreach (var tool in catalog.RegisteredTools().Where(tool => tool.Descriptor.Source.Kind == SourceKind.Extension))
+            {
+                if (!capabilities.TryAdd(tool.Descriptor.Id.ToString(), ModelToolCapability.GeneralProcess))
+                    throw new InvalidOperationException("Extension capability registration collides with a built-in tool id: "
+                        + tool.Descriptor.Id);
+            }
         }
         return new ModelCapabilityBoundary(policy, capabilities, new FileReadRegistry(workspaceRoot));
     }
@@ -370,6 +405,14 @@ public sealed class OmniCliRuntime : IDisposable
 
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>
         RunTurnAsync("", false, diagnostics, token, delegationId: new DelegationId(Guid.Parse(delegationId)));
+
+    /// <summary>Runs an explicitly invoked extension tool through the ordinary Act Turn and ToolRuntime pipeline.</summary>
+    public Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
+        CancellationToken token)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
+        return RunTurnAsync(prompt, true, diagnostics, token, forcedInitialToolName: toolName);
+    }
 
     /// <summary>Runs the compiled Explore → Implement → Verify workflow through normal delegation and tool admission.</summary>
     public async Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId,
@@ -841,7 +884,7 @@ public sealed class OmniCliRuntime : IDisposable
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
-        DelegationId? delegationId = null)
+        DelegationId? delegationId = null, string? forcedInitialToolName = null)
     {
         if (delegationId is { } child)
         {
@@ -853,7 +896,7 @@ public sealed class OmniCliRuntime : IDisposable
             try
             {
                 return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
-                    routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId).ConfigureAwait(false);
+                    routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -866,7 +909,7 @@ public sealed class OmniCliRuntime : IDisposable
         try
         {
             return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
-                routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId).ConfigureAwait(false);
+                routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName).ConfigureAwait(false);
         }
         finally
         {
@@ -877,7 +920,7 @@ public sealed class OmniCliRuntime : IDisposable
     private async Task<int> RunTurnCoreAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
-        DelegationId? delegationId = null)
+        DelegationId? delegationId = null, string? forcedInitialToolName = null)
     {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
@@ -1403,6 +1446,26 @@ public sealed class OmniCliRuntime : IDisposable
                     worktreeIntegrationCoordinator: delegation is null
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(_workspaceRoot, paths, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
+            var extensionBoundaries = new List<IToolIntentBoundary>();
+            if (delegation is null && executingAct && workspaceConfig.Trusted)
+            {
+                try
+                {
+                    foreach (var extensionTool in ProjectExtensionTools.Load(_workspaceRoot, paths,
+                        workspaceTrusted: true, invoker: new ExtensionRpcProcessInvoker()))
+                    {
+                        hostTools.RegisterExtensionTool(extensionTool);
+                        if (extensionTool is ExtensionTool trustedExtensionTool)
+                            extensionBoundaries.Add(trustedExtensionTool.Boundary);
+                    }
+                }
+                catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
+                    or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    writeLine("Extension tool composition failed closed: " + failure.Message);
+                    return 1;
+                }
+            }
             if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
             {
                 var processTool = hostTools.Catalog().Find(new ToolId("process.exec"));
@@ -1434,12 +1497,20 @@ public sealed class OmniCliRuntime : IDisposable
             var interactionResponder = CreateInteractionResponder(writeLine, locale);
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox)
+                    audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox,
+                    extensionBoundaries)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     agentProfile, receiveMailbox);
+            var loadedProjectSkills = LoadActiveProjectSkills(server, workspaceConfig.Trusted, cancellationToken);
+            var activeSkillFingerprints = loadedProjectSkills.Select(skill => new ActiveSkillFingerprint(
+                skill.Skill.Manifest.Id!, skill.Skill.Manifest.Version!, ContentHash.Sha256(skill.ContentSha256))).ToArray();
+            var skillContributors = loadedProjectSkills.Select(skill =>
+                (IContextContributor)new SkillContextContributor(sessionId, skill)).ToArray();
+            var contentContributors = skillContributors.Cast<IContextContributor>().Append(
+                new SessionMemoryContextContributor(new SessionMemoryStore(workspaceData))).ToArray();
             var contributors = executingAct
-                ? Array.Empty<IContextContributor>()
-                : new IContextContributor[] { new WorkingStateContributor(workingState) };
+                ? contentContributors
+                : new IContextContributor[] { new WorkingStateContributor(workingState) }.Concat(contentContributors).ToArray();
             var materializer = new ContextMaterializer(tokenCounter, contributors);
             var questionnaireService = new QuestionnaireInteractionService(server.AcquireStore(),
                 server.AcquireCodecs(), artifacts);
@@ -1491,10 +1562,13 @@ public sealed class OmniCliRuntime : IDisposable
             int? EscalateOnStall() =>
                 TryEscalateAsync(loaded, model!, route.Id, usableContext, StallEscalationPrompt, true, writeLine,
                     cancellationToken, EscalationCause.ProgressStalled).GetAwaiter().GetResult();
+            var pendingForcedToolName = forcedInitialToolName;
             ExplorerTurn BuildTurn(ReasoningRequest? appliedReasoning, ReasoningResolution? resolution,
                 IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null,
                 ModelCapabilityBoundary? turnBoundary = null, ContextMaterializer? turnMaterializer = null)
             {
+                var requestedToolName = pendingForcedToolName;
+                pendingForcedToolName = null;
                 var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct,
                     appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution);
                 var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
@@ -1513,7 +1587,7 @@ public sealed class OmniCliRuntime : IDisposable
                     questionnaires: questionnaireService, questionnaireResponder: QuestionnaireResponder,
                     metaModelProvider: delegation is null ? provider : null, modelContextCapacity: modelDefinition?.ContextWindow,
                     recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
-                    userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: [],
+                    userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: activeSkillFingerprints,
                     quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
                         ? QuotaAdmission : null,
                     quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
@@ -1521,7 +1595,8 @@ public sealed class OmniCliRuntime : IDisposable
                     maximumGenerationRequestAttempts: (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts,
                     mailboxDeliveryCompleted: delegation is null ? null : server.ResolveMailboxDelivery,
                     stallEscalationUnavailable: delegation is null ? StallEscalationUnavailable : null,
-                    mutationEvidence: samples => RecordMutationEvidence(qualification, qualificationData, samples));
+                    mutationEvidence: samples => RecordMutationEvidence(qualification, qualificationData, samples),
+                    forcedInitialToolName: requestedToolName);
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
@@ -3069,6 +3144,37 @@ public sealed class OmniCliRuntime : IDisposable
         if (session is null) return null;
         var info = session.Credentials.ReadAccountInfo(session.SecretRef, CancellationToken.None);
         return info is null ? null : new(providerId, info.SubscriptionType, info.RateLimitTier, info.ExpiresAt);
+    }
+
+    private IReadOnlyList<LoadedSkill> LoadActiveProjectSkills(OmniServer server, bool workspaceTrusted,
+        CancellationToken cancellationToken)
+    {
+        if (!workspaceTrusted) return [];
+        var query = server.Query("skills", cancellationToken)?.Json;
+        if (string.IsNullOrWhiteSpace(query)) return [];
+        using var state = JsonDocument.Parse(query);
+        if (!state.RootElement.TryGetProperty("skills", out var entries)
+            || entries.ValueKind != JsonValueKind.Array) return [];
+        var requested = entries.EnumerateArray().Where(item => item.TryGetProperty("state", out var status)
+                && status.GetString() == SkillLifecycleState.Activated.ToString())
+            .Select(item => (Id: item.GetProperty("id").GetString()!,
+                Hash: item.GetProperty("manifestSha256").GetString()!)).ToArray();
+        if (requested.Length == 0) return [];
+        var loader = new SkillManifestLoader();
+        var discovered = SkillManifestLoader.ResolvePrecedence(loader.Discover(
+            Path.Combine(_workspaceRoot, ".omnicore", "skills"), ScopeLevel.Project, TrustLevel.Project,
+            workspaceTrusted: true));
+        var result = new List<LoadedSkill>();
+        foreach (var (id, hash) in requested)
+        {
+            var skill = discovered.SingleOrDefault(candidate => candidate.Manifest.Id == id
+                && candidate.State == SkillLifecycleState.Discovered)
+                ?? throw new InvalidDataException("An active skill is no longer available or has a precedence conflict.");
+            if (!string.Equals(skill.ManifestSha256, hash, StringComparison.Ordinal))
+                throw new InvalidDataException("An active skill changed during Run composition; activate it again.");
+            result.Add(loader.Activate(skill));
+        }
+        return result;
     }
 
     internal static ModelDefinition? ResolveExplicitModel(LoadedUserConfiguration loaded, string modelId)

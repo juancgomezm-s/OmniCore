@@ -46,6 +46,7 @@ public sealed class CliApp
         if (command == "model") return ModelPolicyCommands.Run(args);
         if (command == "worktree") return WorktreeCommands.RunAsync(args, CancellationToken.None);
         if (command == "trust") return RunTrust(args);
+        if (command == "extensions") return RunExtensions(args);
         if (command is "login" or "logout" && args.Length >= 2 && args[1] == "claude")
         {
             var providerArgs = args.Skip(2).Where(a => a != "--manual").ToArray();
@@ -133,6 +134,36 @@ public sealed class CliApp
         return Task.FromResult(0);
     }
 
+    private static Task<int> RunExtensions(string[] args)
+    {
+        if (args.Length == 1)
+        {
+            var query = Runtime.Connect(CancellationToken.None).Query("extensions", CancellationToken.None);
+            if (query is null)
+            {
+                Console.WriteLine(Loc().Resolve("cli.no_data", "command", "extensions"));
+                return Task.FromResult(1);
+            }
+            RenderDiagnostic("extensions", query.Json);
+            return Task.FromResult(0);
+        }
+        if (args.Length != 3 || args[1] is not ("trust" or "revoke"))
+        {
+            Console.WriteLine(Loc().Resolve("extensions.usage"));
+            return Task.FromResult(2);
+        }
+        try
+        {
+            Console.WriteLine(Runtime.SetProjectExtensionConsent(args[2], grant: args[1] == "trust"));
+            return Task.FromResult(0);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or ArgumentException)
+        {
+            Console.WriteLine("Extension consent failed closed: " + exception.Message);
+            return Task.FromResult(1);
+        }
+    }
+
     private static Task<int> RunTypedCommand(string[] args)
     {
         if (!CommandLineParser.TryParseArguments(args, out var parsed) || parsed is null)
@@ -144,7 +175,7 @@ public sealed class CliApp
         var client = Runtime.Connect(CancellationToken.None);
         // ADR-0024: el resto de ClientCommands (/help, /exit, /plan, /tasks, /events, /permissions, /cancel,
         // /interrupt) se resuelven a su ClientAction; /context y /tools conservan su render propio de abajo.
-        if (invocation.Name is not ("context" or "tools")
+        if (invocation.Name is not ("context" or "tools" or "extensions")
             && ClientCommandRegistry.Default.TryResolve(invocation, out var clientAction) && clientAction is not null)
         {
             var context = new ClientContext(client, Loc(), PermissionsListing);
@@ -153,7 +184,7 @@ public sealed class CliApp
             Console.WriteLine(result.Text);
             return Task.FromResult(0);
         }
-        if (invocation.Name is "context" or "tools")
+        if (invocation.Name is "context" or "tools" or "extensions")
         {
             if (invocation.Name == "tools")
             {
@@ -197,6 +228,8 @@ public sealed class CliApp
             }
             var text = outcome.GetProperty("text").GetString() ?? "";
             var origin = outcome.GetProperty("origin").GetString() ?? "";
+            if (outcome.TryGetProperty("toolName", out var toolName) && toolName.GetString() is { Length: > 0 } forcedTool)
+                return Runtime.ExecuteExtensionCommandAsync(text, forcedTool, Console.WriteLine, CancellationToken.None);
             Console.WriteLine("[" + origin + "]");
             return Runtime.AskAsync(text, Console.WriteLine, CancellationToken.None);
         }
@@ -211,9 +244,12 @@ public sealed class CliApp
     private static void RenderDiagnostic(string name, string json)
     {
         var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
-        Console.WriteLine(name == "context"
-            ? Loc().Resolve("cli.diagnostic.context")
-            : Loc().Resolve("cli.diagnostic.tools"));
+        Console.WriteLine(name switch
+        {
+            "context" => Loc().Resolve("cli.diagnostic.context"),
+            "tools" => Loc().Resolve("cli.diagnostic.tools"),
+            _ => Loc().Resolve("cli.diagnostic.extensions"),
+        });
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(json);
@@ -234,6 +270,19 @@ public sealed class CliApp
                         Console.WriteLine("  " + item.GetProperty("itemId").GetString() + " · "
                             + item.GetProperty("decision").GetString() + " · "
                             + item.GetProperty("reason").GetString());
+            }
+            else if (name == "extensions")
+            {
+                foreach (var extension in root.GetProperty("extensions").EnumerateArray())
+                {
+                    var id = extension.TryGetProperty("id", out var idValue) ? idValue.GetString() : null;
+                    var version = extension.TryGetProperty("version", out var versionValue) ? versionValue.GetString() : null;
+                    var status = extension.GetProperty("status").GetString();
+                    Console.WriteLine("  " + (id ?? "<invalid-manifest>")
+                        + (version is null ? "" : "@" + version) + " · " + status);
+                    if (extension.TryGetProperty("diagnostic", out var diagnostic) && diagnostic.ValueKind == System.Text.Json.JsonValueKind.String)
+                        Console.WriteLine("    " + diagnostic.GetString());
+                }
             }
             else
             {
@@ -556,6 +605,8 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("cli.usage.ask"));
         Console.WriteLine(Loc().Resolve("commands.context.help"));
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
+        Console.WriteLine(Loc().Resolve("commands.extensions.help"));
+        Console.WriteLine(Loc().Resolve("extensions.usage"));
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine(Loc().Resolve("commands.workflow.help"));
         Console.WriteLine(Loc().Resolve("cli.usage.model"));

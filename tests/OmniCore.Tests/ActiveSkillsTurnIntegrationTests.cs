@@ -13,6 +13,46 @@ namespace OmniCore.Tests;
 // Offline model; real context/journal/CAS pipeline, not authenticated provider usage.
 public sealed class ActiveSkillsTurnIntegrationTests
 {
+    [Fact]
+    public void Forced_extension_command_tool_is_selected_for_the_initial_model_request()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-extension-command-turn-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session);
+            var catalog = new FakeCatalog().Add(FakeTool.Read("ext.acme.progress.compile"));
+            var requests = new List<ModelRequest>();
+            var providerCalls = 0;
+            var turn = new ExplorerTurn((request, _) =>
+            {
+                requests.Add(request);
+                if (providerCalls++ == 0)
+                    return new ModelResponse([new ToolCallBlock(ToolCallId.New(), "fixture-call",
+                        "ext.acme.progress.compile", "{}")], StopReason.ToolUse,
+                        new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                return new ModelResponse([new TextBlock("fixture response")], StopReason.EndTurn,
+                    new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+            }, ScriptedToolExecutor.WithWorkspace(catalog,
+                ScriptedPermissionPolicy.WithTool("ext.acme.progress.compile", PermissionDecision.Allow), root), catalog,
+                new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+                store, codecs, new FileArtifactStore(root), new InMemoryAuditSink(), new RedactionPolicy(),
+                forcedInitialToolName: "ext.acme.progress.compile");
+            var result = turn.Ask("compile", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
+            Assert.Equal(2, requests.Count);
+            Assert.Equal("exact", requests[0].ToolChoice.Mode);
+            Assert.Equal("ext.acme.progress.compile", requests[0].ToolChoice.ToolName);
+            Assert.Equal("auto", requests[1].ToolChoice.Mode);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]

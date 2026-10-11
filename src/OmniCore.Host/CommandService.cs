@@ -10,7 +10,7 @@ public sealed class CommandRegistry
     private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "plan", "tasks", "mode", "cancel", "interrupt", "resume", "permissions", "context",
-        "help", "exit", "commands", "tools", "agents", "delegate", "join", "events",
+        "help", "exit", "commands", "tools", "extensions", "skills", "memory", "agents", "delegate", "join", "events",
     };
 
     /// <summary>¿Es un nombre reservado de Core? Los ClientCommands del cliente lo están todos (ADR-0024 §4).</summary>
@@ -47,13 +47,31 @@ public sealed class CommandRegistry
     public IReadOnlyList<CommandDescriptor> Descriptors() => _byId.Values.Select(item => item.Descriptor)
         .OrderBy(item => item.Id, StringComparer.Ordinal).ToArray();
 
+    public void RemoveSource(SourceKind kind)
+    {
+        foreach (var handler in _byId.Values.Where(item => item.Descriptor.Source.Kind == kind).ToArray())
+        {
+            _byId.Remove(handler.Descriptor.Id);
+            foreach (var name in new[] { handler.Descriptor.Name }.Concat(handler.Descriptor.Aliases))
+            {
+                if (!_byName.TryGetValue(name, out var candidates)) continue;
+                candidates.Remove(handler);
+                if (candidates.Count == 0) _byName.Remove(name);
+            }
+        }
+    }
+
     public ICommandHandler Resolve(string name)
     {
         if (_byId.TryGetValue(name, out var canonical)) return canonical;
         if (!_byName.TryGetValue(name, out var candidates))
             throw new InvalidOperationException("command.prompt_not_found:" + name);
-        if (candidates.Count != 1) throw new InvalidOperationException("command.ambiguous:" + name);
-        return candidates[0];
+        var mostSpecificScope = candidates.Max(candidate => candidate.Descriptor.Source.Scope);
+        var mostSpecific = candidates.Where(candidate => candidate.Descriptor.Source.Scope == mostSpecificScope).ToArray();
+        if (mostSpecific.Length != 1
+            || candidates.Any(candidate => candidate.Descriptor.Source.Trust < mostSpecific[0].Descriptor.Source.Trust))
+            throw new InvalidOperationException("command.ambiguous:" + name);
+        return mostSpecific[0];
     }
 }
 
@@ -91,6 +109,19 @@ public sealed class CommandService
     {
         var handler = _registry.Resolve(descriptor.Id);
         var enabled = handler.IsEnabled(context ?? new CommandContext(null, null, null, null), out var reason);
+        try
+        {
+            if (!ReferenceEquals(_registry.Resolve(descriptor.Name), handler))
+            {
+                enabled = false;
+                reason = "A more specific command source wins this short name.";
+            }
+        }
+        catch (InvalidOperationException exception) when (exception.Message.StartsWith("command.ambiguous:", StringComparison.Ordinal))
+        {
+            enabled = false;
+            reason = "This short name is ambiguous across command sources; use its canonical id.";
+        }
         return new CommandCatalogEntry(descriptor.Id, descriptor.Name, descriptor.Aliases,
             descriptor.Kind.ToString(), descriptor.Description, descriptor.Arguments,
             descriptor.Source.Kind + ":" + descriptor.Source.Owner + "@" + descriptor.Source.Version,

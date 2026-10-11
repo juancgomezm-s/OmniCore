@@ -225,6 +225,8 @@ public sealed class ExplorerTurn
     // ADR-0044 §4: destino de las muestras de mutación observadas por el ledger (telemetría).
     private readonly Action<IReadOnlyList<FileMutationSample>>? _mutationEvidence;
 
+    private readonly string? _forcedInitialToolName;
+
     // El watchdog y la directiva se evalúan en cada Turn: cada evento se decodifica una sola vez.
     private readonly MemoizedEventDecoder _stallDecoder;
 
@@ -246,7 +248,8 @@ public sealed class ExplorerTurn
         IReadOnlyList<IPreparedArtifact>? fingerprintArtifacts = null,
         Action<ToolCallId>? mailboxDeliveryCompleted = null,
         Func<string?>? stallEscalationUnavailable = null,
-        Action<IReadOnlyList<FileMutationSample>>? mutationEvidence = null)
+        Action<IReadOnlyList<FileMutationSample>>? mutationEvidence = null,
+        string? forcedInitialToolName = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -282,6 +285,9 @@ public sealed class ExplorerTurn
         _mailboxDeliveryCompleted = mailboxDeliveryCompleted;
         _stallEscalationUnavailable = stallEscalationUnavailable;
         _mutationEvidence = mutationEvidence;
+        if (forcedInitialToolName is not null && catalog.Find(new ToolId(forcedInitialToolName)) is null)
+            throw new ArgumentException("The forced command tool is not registered in this Turn.", nameof(forcedInitialToolName));
+        _forcedInitialToolName = forcedInitialToolName;
         _stallDecoder = new MemoizedEventDecoder(codecs);
         _metaModelProvider = metaModelProvider;
         _modelContextCapacity = modelContextCapacity;
@@ -573,6 +579,7 @@ public sealed class ExplorerTurn
         using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
             turnTask, laneId, turnId, ExecutionId: executionId));
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
+        var forcedToolName = isResume ? null : _forcedInitialToolName;
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
@@ -1048,7 +1055,7 @@ public sealed class ExplorerTurn
                         : preparedContext.Messages,
                     RenderContext(materialized),
                     VisibleTools(),
-                    ToolChoice.Auto(),
+                    forcedToolName is { } exactTool ? ToolChoice.Exact(exactTool) : ToolChoice.Auto(),
                     null, _selection.Reasoning, new CacheHints(4, "automatic"),
                     // None is an explicit outbound replay prohibition. Keep the checkpoint
                     // and its integrity/usage evidence, but never resend it (including resume).
@@ -1105,6 +1112,7 @@ public sealed class ExplorerTurn
                     using var generationAttempts = GenerationRequestAttemptScope.Enter();
                     providerEntered = true;
                     resolved = _complete(request, cancellationToken);
+                    forcedToolName = null;
                     continuation = resolved.State;
                     var stepResponse = VisibleAnswerText(resolved.Content) ?? string.Empty;
                     var stepCost = _pricing?.CostUsd(resolved.Usage, resolved.ReportedUsageFields);

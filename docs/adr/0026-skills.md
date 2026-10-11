@@ -61,10 +61,15 @@ Instrucciones, **context contributors** (fuera de proceso si la skill no es `Cor
 - `skill.yaml` puede declarar `permissions`, que actúan como **techo**. Es la misma capa `ExtensionBoundary` de ADR-0023 §6 y **nunca** amplía los permisos.
 - Una skill `Project` o `ThirdParty` que pide ejecutar procesos requiere consentimiento.
 
+### Estado M8 parcial (2026-10-11)
+
+`SkillManifestLoader` implementa discovery Project solo con workspace confiable, evaluación de activadores (path, extensión, language, framework, task type), prioridad y precedencia por scope/confianza con soporte `sealed`. La ClientAction `/skills` inspecciona metadata y ejecuta `load|release <id>` como comando al Host. La selección se almacena fuera del repo por SessionId y hash del manifest. En la composición CLI, el Host vuelve a verificar la selección, lee `instructions.md` solo al activar, acota su tamaño, crea `ContextItem(Kind=Skill)` con procedencia y registra hash de contenido en `skills.active` del fingerprint. Solo están implementados los skills Project de instrucciones; otras contribuciones y scopes siguen pendientes.
+
 ## Clasificación
 
 | Elemento | Categoría |
 |---|---|
 | `ContextItemKind.Skill` y el componente `skills.active` del fingerprint (ya existían) | **Necesario desde M1** (solo tipos) |
-| `SkillDescriptor`, estados del ciclo de vida, `SkillSelector`, reglas de activación y precedencia, `skill.load` | **Contract now / implementation later** (M8) |
+| Discovery Project, `Discovered/Eligible/Activated/Loaded/Released/Conflict`, activación explícita, precedencia Project sealed/trust, `ContextItem(Kind=Skill)` y procedencia/fingerprint de instrucciones | **Implementado parcialmente en M8** |
+| `SkillSelector` con presupuesto, index/model invocation, tools/workflows/validators/contributors/knowledge aportados, scopes BuiltIn/User/Workspace/Session | **Pendiente de M8** |
 | Detección avanzada de frameworks, skills con tests propios | **Deferable** |

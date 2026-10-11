@@ -18,8 +18,8 @@ public sealed class RuntimeSandboxProcessLauncher : ISandboxProcessLauncher
         if (launch.RequestedStrength != SandboxStrength.Weak)
             throw new NotSupportedException("The runtime process launcher only provides Weak process execution.");
         var process = _runtime.Launch(new ProcessLaunch(launch.Executable, launch.Arguments,
-            launch.WorkingDirectory ?? Environment.CurrentDirectory, launch.Environment, captureOutput: true),
-            cancellationToken);
+            launch.WorkingDirectory ?? Environment.CurrentDirectory, launch.Environment, captureOutput: true)
+            { InitialStandardInput = launch.InitialStandardInput }, cancellationToken);
         return ValueTask.FromResult<ISandboxProcessControl>(new Control(_runtime, process, launch.Timeout));
     }
 

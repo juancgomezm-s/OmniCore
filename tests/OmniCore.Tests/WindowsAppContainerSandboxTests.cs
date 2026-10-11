@@ -5,10 +5,85 @@ using System.Net;
 using System.Net.Sockets;
 using OmniCore.Abstractions;
 using OmniCore.Execution;
+using OmniCore.Extensions;
+using OmniCore.Host;
 using OmniCore.Sandbox;
+using TrustLevel = OmniCore.Domain.TrustLevel;
 
 public sealed class WindowsAppContainerSandboxTests
 {
+    [Fact]
+    public async Task Extension_JSON_RPC_runs_as_a_real_Strong_stdio_process()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("AppContainer integration tests run only on Windows.");
+            return;
+        }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable)
+        {
+            Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason);
+            return;
+        }
+
+        var package = Path.Combine(AppContext.BaseDirectory, "extension-rpc-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(package);
+        foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.*"))
+            File.Copy(file, Path.Combine(package, Path.GetFileName(file)));
+        try
+        {
+            File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+                manifestVersion: 1
+                id: fixture.rpc
+                version: 1.0.0
+                displayName: RPC fixture
+                publisher: tests
+                omnicoreApi: '1.0'
+                requests:
+                  capabilities: [tool.register]
+                  permissions:
+                    process:
+                      - executable: OmniCore.SandboxTestProcess.exe
+                provides:
+                  tools:
+                    - name: fixture
+                      schema: schema.json
+                runtime:
+                  kind: process
+                  command: OmniCore.SandboxTestProcess.exe
+                  args: [extension-rpc]
+                """);
+            File.WriteAllText(Path.Combine(package, "schema.json"), "{\"type\":\"object\"}");
+            var extension = Assert.Single(new ExtensionManifestLoader().Discover(package, TrustLevel.Trusted,
+                workspaceTrusted: true, consentedCapabilities: new HashSet<string>(["tool.register"], StringComparer.Ordinal)));
+            var invoker = new ExtensionRpcProcessInvoker(new WindowsAppContainerProcessLauncher());
+            var process = new OmniCore.Domain.ProcessClaim(Path.Combine(package, "OmniCore.SandboxTestProcess.exe"),
+                ["extension-rpc"], "ExtensionTool", WorkingDirectory: package);
+            var response = await invoker.InvokeAsync(extension, "tools/call", "{\"name\":\"fixture\"}",
+                new OmniCore.Domain.ResourceClaims([], [], [], process, []), TestContext.Current.CancellationToken);
+            Assert.Contains("fixture-ok", response);
+        }
+        finally { TryDelete(package); }
+    }
+
+    [Fact]
+    public void Process_runtime_writes_and_closes_one_shot_stdin_without_changing_null_input_callers()
+    {
+        var helper = HelperExecutable();
+        var runtime = new SystemProcessRuntime();
+        var handle = runtime.Launch(new ProcessLaunch(helper, ["stdin-echo"], AppContext.BaseDirectory,
+            new Dictionary<string, string>(), captureOutput: true) { InitialStandardInput = "hello-from-host" },
+            TestContext.Current.CancellationToken);
+        var result = runtime.Wait(handle, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("hello-from-host", result.Stdout);
+
+        var noInput = runtime.Launch(new ProcessLaunch(helper, ["claude-stream"], AppContext.BaseDirectory,
+            new Dictionary<string, string>(), captureOutput: true), TestContext.Current.CancellationToken);
+        Assert.Equal(0, runtime.Wait(noInput, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken).ExitCode);
+    }
+
     [Fact]
     public async Task Strong_process_reads_allowed_workspace_but_not_outside_file()
     {
