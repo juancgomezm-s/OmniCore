@@ -33,6 +33,8 @@ La entrega de commands añade `/commands` a `ClientCommandRegistry` y `ClientAct
 
 Base Extension: commit `510ccf314b11fda0e411f18a2a07a9e7e48f6318`, tree `1db217942ab7b4a886d774915cc3f11407f88aba`. Commands: commit `3d6142bc44c5832a5cba3530607420ecd65dcf0f`, tree `321ba5abd5189b1ac3d5411b09d954719a578d23`. Skills: commit `cd4279cf623562bcc5e8acc1e6f13f493d68016f`, tree `75acdba3f96bb5180087a0a6c550efe08d11f2fc`; árbol limpio al capturarlo. Base `e3cae2f0f35d230baeb1e72fd83041620bc476dd`. La rama de feature no se integró a `main`.
 
+Entrega Session Memory: commit `9f4c271d34e56c882e3f41ddcc88555d2f12becd`, tree `ba40299ddfece13d80e6d7d1ad8661db4d3cd643`; árbol limpio al capturarlo. La evidencia más reciente se conserva en la sección de abajo; esta entrega sigue M8 en construcción y no integra `main`.
+
 - `dotnet build OmniCore.slnx --no-restore -v:q`: exit 0, 0 warnings, 0 errors.
 - `dotnet test tests\OmniCore.Tests\OmniCore.Tests.csproj --no-restore --filter "FullyQualifiedName~ExtensionManifestTests" -v:q`: 13 total, 13 pass, 0 fail, 0 skipped. Incluye discovery/trust/consent, ceiling pre-policy, Ask pendiente/aprobado, Deny parent, paquete alterado durante PermissionRequested, y fallos JSON-RPC malformado/version/id/error/timeout sin payload remoto.
 - `dotnet test tests\OmniCore.Tests\OmniCore.Tests.csproj --no-build --no-restore --filter "FullyQualifiedName~Extension_JSON_RPC_runs_as_a_real_Strong_stdio_process|FullyQualifiedName~Process_runtime_writes_and_closes_one_shot_stdin" -v:q`: 2 total, 2 pass, 0 fail, 0 skipped. Un test lanza el fixture externo real por stdio bajo AppContainer Strong; el otro cubre input de una pasada y compatibilidad con input null.
