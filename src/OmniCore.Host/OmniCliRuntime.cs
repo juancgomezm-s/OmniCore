@@ -4,6 +4,7 @@ using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Execution;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Protocol;
@@ -32,6 +33,7 @@ public sealed class OmniCliRuntime : IDisposable
     private bool _providerDeprecationShown;
     internal SandboxStrength ProcessSandboxStrengthForTests { get; set; } = SandboxStrength.Strong;
     internal Func<OmniCore.Abstractions.IProcessRuntime>? ProcessRuntimeFactoryForTests { get; set; }
+    internal Func<string?>? ClaudeExecutableLocatorForTests { get; set; }
     internal Action<OmniServer, WorkflowRuntimeAuthorization>? BeforeWorkflowCompletionGateForTests { get; set; }
 
     private OmniCliRuntime(string workspaceRoot, Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota)
@@ -382,6 +384,7 @@ public sealed class OmniCliRuntime : IDisposable
         }
         try
         {
+            var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
             var server = Server();
             var authorization = server.AuthorizeWorkflowRequest(
                 new WorkflowRequested(new WorkflowRef(request.WorkflowId, request.Version), request.Arguments), commandId);
@@ -493,13 +496,45 @@ public sealed class OmniCliRuntime : IDisposable
                     diagnostics($"Workflow stopped at {stage}: {evidence.Reason}");
                     return 1;
                 }
+                if (contract.Definition.Stage == WorkflowStage.Verify
+                    && !server.VerifyAcceptedImplementationBinding(contract, authorization.Session,
+                        authorization.Run, own, token))
+                {
+                    server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
+                    diagnostics(locale == "en"
+                        ? "Workflow stopped at Verify: the accepted Implement worktree changed or its durable binding is unavailable."
+                        : "Flujo detenido en Verify: cambió el worktree Implement aceptado o no está disponible su vínculo durable.");
+                    return 1;
+                }
+                if (contract.Definition.Stage == WorkflowStage.Implement)
+                {
+                    var implementationWorktree = own.Select(server.AcquireCodecs().Decode)
+                        .OfType<LaneWorktreeCreated>()
+                        .SingleOrDefault(value => value.LaneId == contract.Lane);
+                    if (implementationWorktree is null)
+                    {
+                        diagnostics("Workflow stopped at Implement: isolated worktree ownership is unavailable.");
+                        return 1;
+                    }
+                    var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
+                        implementationWorktree.OwnershipId, token).ConfigureAwait(false);
+                    if (!preview.Succeeded)
+                    {
+                        diagnostics(locale == "en"
+                            ? "Workflow paused after Implement: the isolated result needs manual recovery before Verify."
+                            : "Flujo en pausa después de Implement: el resultado aislado requiere recuperación manual antes de Verify.");
+                        return 3;
+                    }
+                }
                 previousPlanItem = planItem.Id;
                 previousCompletionSequence = own.Single(evt => evt.TaskId == contract.Task
                     && server.AcquireCodecs().Decode(evt) is TaskCompleted).Sequence;
             }
             BeforeWorkflowCompletionGateForTests?.Invoke(server, authorization);
             server.CompleteWorkflowCompletionGate(authorization);
-            diagnostics("Workflow completed: Explore, Implement, and Verify are accepted and reconciled in the Plan.");
+            diagnostics(locale == "en"
+                ? "Workflow completed: Explore, Implement, and Verify are accepted; Verify used the exact owned Implement tree. Integration into the main workspace remains a separate authorized action."
+                : "Flujo completado: Explore, Implement y Verify fueron aceptados; Verify usó el árbol Implement exacto y propio. La integración al workspace principal sigue siendo una acción autorizada aparte.");
             return 0;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -894,11 +929,16 @@ public sealed class OmniCliRuntime : IDisposable
         WriteDiagnostics(workspaceConfig.Diagnostics, writeLine);
         var server = Server(workspaceData);
         var delegation = delegationId is null ? null : server.ReadCurrentDelegation(delegationId);
+        var externalDelegation = delegation is not null && server.LastSessionId() is { } externalSession
+            && server.LastRunId() is { } externalRun
+            && server.ResolveLaneAgentProfile(externalSession, externalRun, delegation.ChildLaneId)?.Executor
+                == AgentExecutorKind.ClaudeCode;
         WorkflowStageContract? workflowStage = delegation is null ? null
             : server.ReadWorkflowStageForTask(server.LastSessionId()!, server.LastRunId()!, delegation.ChildTaskId);
         // Explicit resume handlers (quota/route consent) own their semantics. Otherwise, only
         // restore the snapshot when the engine itself will continue an exact open Turn.
-        var openTurn = routingResume is null ? FindOpenTurnContinuation(server, delegation?.ChildLaneId) : null;
+        var openTurn = routingResume is null && !externalDelegation
+            ? FindOpenTurnContinuation(server, delegation?.ChildLaneId) : null;
         ModelDefinition? modelDefinition = null;
         ModelRoute? selectedRoute = routingResume?.Route;
         NoModelConfiguredException? noModel = null;
@@ -1069,11 +1109,30 @@ public sealed class OmniCliRuntime : IDisposable
             // ADR-0044 §6: sin TTY ni cliente interactivo no hay onboarding posible. Un modelo sin clasificar
             // quedaría en ObserveOnly, y un `act` que existe para modificar archivos termina con
             // ModelPolicyRequired en lugar de ampliar capacidad en silencio (ni de fingir que trabaja).
-            var delegatedWriter = delegation is not null
+            var delegatedProfile = delegation is not null
                 && server.LastSessionId() is { } admissionSession
                 && server.LastRunId() is { } admissionRun
-                && server.ResolveLaneAgentProfile(admissionSession, admissionRun, delegation.ChildLaneId) is { } delegatedProfile
+                ? server.ResolveLaneAgentProfile(admissionSession, admissionRun, delegation.ChildLaneId)
+                : null;
+            var delegatedWriter = delegatedProfile is not null
                 && !AgentPermissionScopeSubset.IsReadOnly(delegatedProfile.PermissionCeiling);
+            if (delegatedWriter && delegatedProfile!.Executor == AgentExecutorKind.ClaudeCode)
+            {
+                var externalKey = ModelPolicyKey.For("claude-code", delegatedProfile.ExternalModel!);
+                var classified = policyService.Get(externalKey, cancellationToken);
+                var requiredExternalCapabilities = new[] { ModelToolCapability.WorkspaceRead,
+                    ModelToolCapability.PatchExisting, ModelToolCapability.CreateFile,
+                    ModelToolCapability.ReplaceFile, ModelToolCapability.DeleteFile };
+                if (classified is null || requiredExternalCapabilities.Any(capability =>
+                        !classified.Policy.ToolPolicy.Allows(capability))
+                    || classified.Policy.MutationPolicy.Mode != FileMutationMode.Full)
+                {
+                    var required = new ModelPolicyRequiredException(externalKey, ModelToolCapability.PatchExisting);
+                    writeLine(Text(Localized("cli.runtime.command.error", ("command", "act"),
+                        ("message", Text(required.UserMessage)))));
+                    return 1;
+                }
+            }
             if ((act && delegation is null || delegatedWriter)
                 && !HasInteractionClient && !(UseConsoleInput && !Console.IsInputRedirected)
                 && IsUnclassified(policyService, storedSelection, modelDefinition, model, cancellationToken))
@@ -1493,6 +1552,40 @@ public sealed class OmniCliRuntime : IDisposable
                         || workflowStage?.Definition.Stage == WorkflowStage.Implement)
                         throw new InvalidOperationException("UnownedLaneWorkspaceUnavailable");
 
+                    if (work.Profile.Executor == AgentExecutorKind.ClaudeCode)
+                    {
+                        if (work.Worktree is null || work.TaskPacket is null)
+                            throw new InvalidOperationException("ExternalLaneRequiresOwnedWorktree");
+                        var external = ExecuteClaudeLane(server, work, laneRoot, artifacts,
+                            childInstruction, token);
+                        var externalGates = workspaceConfig.Settings?.Gates;
+                        if (external.StopReason == StopReason.EndTurn && externalGates is not null
+                            && (externalGates.Build is not null || externalGates.Test is not null
+                                || externalGates.Acceptance))
+                        {
+                            if (externalGates.Acceptance)
+                                throw new InvalidOperationException("LaneAcceptanceGateRequiresHumanResolution");
+                            if (external.TurnId is not { } externalTurn)
+                                throw new InvalidOperationException("LaneCompletionGateTurnUnavailable");
+                            using var gateExecution = ExecutionScope.Begin(new ExecutionScopeState(work.Run,
+                                work.Scope.TaskId, work.Delegation.ChildLaneId, externalTurn,
+                                ExecutionId: work.Scope.ExecutionId));
+                            var gateResults = new ConfiguredCompletionGates(new WorkspaceGatesYaml
+                            {
+                                Build = externalGates.Build,
+                                Test = externalGates.Test,
+                                Acceptance = false,
+                            }, laneRoot, work.Run, work.Delegation.ChildLaneId, work.Scope.TaskId,
+                                restrictions, audit, artifacts, interactionResponder, interactive, work.Profile)
+                                .Run(new EventStream(server.AcquireStore(), server.AcquireCodecs(), work.Session), token);
+                            if (gateResults.Any(gate => !gate.Passed))
+                                return new ExplorerTurn.TurnResult("Lane completion gate failed.", StopReason.Error,
+                                    external.Steps, external.Usage, external.ToolCalls, external.ResponseArtifactId)
+                                { TurnId = external.TurnId };
+                        }
+                        return external;
+                    }
+
                     var childTools = workflowStage is not null
                         ? ProcessRuntimeFactoryForTests is { } processRuntimeFactory
                             ? HostTools.WorkflowStageForTests(workflowStage.Definition.Stage, work.Profile,
@@ -1513,7 +1606,7 @@ public sealed class OmniCliRuntime : IDisposable
                             CompiledWorkflowCatalog.ExploreImplementVerify, processTool,
                             workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
                                 .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
-                            verifyCwd);
+                            workflowStage.VerifyCwd!, verifyCwd);
                         childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog());
                     }
                     var childExecutor = childRequiresActTools
@@ -1735,6 +1828,235 @@ public sealed class OmniCliRuntime : IDisposable
     /// ¿Resolvería la política efectiva de este modelo al fallback ObserveOnly? Refleja la resolución del Turn:
     /// una selección efímera segura o la ausencia de una política guardada para la clave exacta.
     /// </summary>
+    private ExplorerTurn.TurnResult ExecuteClaudeLane(OmniServer server, DelegationWork work,
+        string laneRoot, IArtifactStore artifacts, string instruction, CancellationToken cancellationToken)
+    {
+        var session = work.Session;
+        var run = work.Run;
+        var lane = work.Delegation.ChildLaneId;
+        var execution = work.Scope.ExecutionId ?? throw new InvalidDataException("ExternalLaneExecutionIdentityUnavailable");
+        var store = server.AcquireStore();
+        var codecs = server.AcquireCodecs();
+        var journal = store.ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray();
+        var decoded = journal.Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+        var bindings = decoded.Where(item => item.Event.ExecutionId == execution)
+            .Select(item => item.Payload).OfType<ExternalLaneSessionBound>().ToArray();
+        if (bindings.Length > 1) throw new InvalidDataException("ExternalLaneSessionBindingAmbiguous");
+        var binding = bindings.SingleOrDefault();
+        var receipts = decoded.Where(item => item.Event.ExecutionId == execution)
+            .Select(item => item.Payload).OfType<ExternalLaneUsageRecorded>().ToArray();
+        if (receipts.Length > 1) throw new InvalidDataException("ExternalLaneResultReceiptAmbiguous");
+
+        if (receipts.SingleOrDefault() is { } receipt)
+        {
+            if (binding is null || receipt.LaneId != lane || receipt.SessionId != binding.SessionId
+                || receipt.ResultRef.Kind != ArtifactKind.Other
+                || receipt.ResultRef.MediaType != "application/vnd.omnicore.agent-result+json"
+                || receipt.ResultRef.Sensitivity != Sensitivity.Sensitive
+                || artifacts.Verify(receipt.ResultRef.Hash, receipt.ResultRef.Size) != true
+                || artifacts.GetText(receipt.ResultRef.Hash) is not { } durableJson
+                || ClaudeLaneAgentResultValidator.Validate(durableJson) is not { } validated
+                || validated.Result.Outcome == AgentOutcome.Cancelled)
+                throw new InvalidDataException("ExternalLaneResultReceiptUnavailable");
+            var turn = decoded.Where(item => item.Event.ExecutionId == execution)
+                .Select(item => item.Payload).OfType<TurnStarted>().SingleOrDefault(start => start.LaneId == lane)
+                ?? throw new InvalidDataException("ExternalLaneCompletedTurnMissing");
+            if (!decoded.Any(item => item.Event.ExecutionId == execution
+                && item.Payload is TurnCompleted completed && completed.TurnId == turn.TurnId))
+                throw new InvalidDataException("ExternalLaneReceiptHasOpenTurn");
+            var rawInput = receipt.InputTokens ?? throw new InvalidDataException("ExternalLaneUsageMissing");
+            var rawOutput = receipt.OutputTokens ?? throw new InvalidDataException("ExternalLaneUsageMissing");
+            var receiptCacheRead = receipt.CacheReadInputTokens ?? 0;
+            var receiptCacheWrite = receipt.CacheCreationInputTokens ?? 0;
+            var totalInput = checked(rawInput + receiptCacheRead + receiptCacheWrite);
+            var receiptTokenUsage = new TokenUsage(totalInput, rawOutput, receiptCacheRead, receiptCacheWrite, 0);
+            var streamOutcome = new ClaudeLaneStreamOutcome(binding.SessionId, binding.Model, binding.Tools,
+                binding.Capabilities, false, validated.Result.Summary, durableJson,
+                new ClaudeLaneUsage(rawInput, rawOutput, receipt.CacheReadInputTokens,
+                    receipt.CacheCreationInputTokens, receipt.TotalCostUsd), [], receipt.EventCount,
+                receipt.StreamBytes, checked(rawInput + rawOutput), receipt.ToolUseCount);
+            return new ExplorerTurn.TurnResult(validated.Result.Summary, StopReason.EndTurn, 1, receiptTokenUsage,
+                Array.Empty<ExplorerTurn.ToolUseTrace>(), receipt.ResultRef.Hash.Value)
+            {
+                TurnId = turn.TurnId,
+                ExternalAgentResult = validated.Result,
+                ExternalResultSchemaId = validated.SchemaId,
+                ExternalResultRef = receipt.ResultRef,
+                ExternalLaneOutcome = streamOutcome,
+            };
+        }
+
+        var turnStarts = decoded.Where(item => item.Event.ExecutionId == execution)
+            .Select(item => (item.Event, Payload: item.Payload)).Where(item => item.Payload is TurnStarted start
+                && start.LaneId == lane).ToArray();
+        if (turnStarts.Length > 1) throw new InvalidDataException("ExternalLaneTurnAmbiguous");
+        TurnId turnId;
+        int stepIndex;
+        if (turnStarts.Length == 1)
+        {
+            var priorTurn = turnStarts[0];
+            var turn = (TurnStarted)priorTurn.Payload;
+            var ended = decoded.Any(item => item.Event.ExecutionId == execution && item.Payload switch
+            {
+                TurnCompleted completed => completed.TurnId == turn.TurnId,
+                TurnInterrupted interrupted => interrupted.TurnId == turn.TurnId,
+                TurnAbandoned abandoned => abandoned.TurnId == turn.TurnId,
+                _ => false,
+            });
+            if (ended || binding is null) throw new InvalidDataException("ExternalLaneRecoveryRequiresManualResolution");
+            turnId = turn.TurnId;
+            var openSteps = decoded.Where(item => item.Event.ExecutionId == execution)
+                .Select(item => item.Payload).OfType<ModelStepStarted>()
+                .Where(start => start.TurnId == turnId).ToArray();
+            var completedSteps = decoded.Where(item => item.Event.ExecutionId == execution)
+                .Select(item => item.Payload).OfType<ModelStepCompleted>()
+                .Where(done => done.TurnId == turnId).Select(done => done.StepIndex).ToHashSet();
+            if (openSteps.Length != 1 || completedSteps.Contains(openSteps[0].StepIndex))
+                throw new InvalidDataException("ExternalLaneRecoveryRequiresManualResolution");
+            stepIndex = openSteps[0].StepIndex;
+        }
+        else
+        {
+            if (binding is not null) throw new InvalidDataException("ExternalLaneRecoveryRequiresManualResolution");
+            turnId = TurnId.New();
+            stepIndex = 0;
+            var fingerprint = new ExecutionFingerprint("claude-code/" + work.Profile.ExternalModel,
+                "external-cli-fixed-policy-v1", "external-lane-builtins-v1", "task-packet-v1",
+                AgentProfileFingerprint.Hash(work.Profile).Value, "M7", "claude-code",
+                "stream-json-v1");
+            var scope = new ExecutionScopeState(run, work.Scope.TaskId, lane, turnId, ExecutionId: execution);
+            var startStream = new EventStream(store, codecs, session);
+            startStream.AppendBatch([
+                new TurnStarted(turnId, lane, fingerprint, work.TaskPacket!.SelectedProjectionRef,
+                    new TurnInstructionSnapshot(false, instruction)),
+                new ModelStepStarted(turnId, stepIndex, work.Profile.ExternalModel!,
+                    work.Budget.MaxTokens!.Value, "claude-code-fixed-tools", null, null,
+                    work.TaskPacket.SelectedProjectionRef),
+            ], DurabilityClass.Barrier, [scope, scope]);
+        }
+
+        var executable = ClaudeExecutableLocatorForTests?.Invoke() ?? new ClaudeCodeRuntimeLocator().Locate()
+            ?? throw new InvalidOperationException("ClaudeCodeRuntimeNotInstalled");
+        var selectedProjection = work.TaskPacket!.SelectedProjectionRef;
+        _ = new ContextInheritanceService(store, codecs, artifacts)
+            .CreateDelegationProjection(work.Session, work.Delegation.DelegationId);
+        if (selectedProjection.Kind != ArtifactKind.Other
+            || selectedProjection.MediaType != ContextInheritanceService.DelegationPacketMediaType
+            || selectedProjection.Sensitivity != Sensitivity.Sensitive
+            || selectedProjection.Size is <= 0 or > ContextInheritanceService.MaximumDelegationPacketBytes
+            || artifacts.Verify(selectedProjection.Hash, selectedProjection.Size) != true
+            || artifacts.GetText(selectedProjection.Hash) is not { } selectedProjectionJson)
+            throw new InvalidDataException("ExternalLaneSelectedProjectionUnavailable");
+        var invocation = ClaudeLaneInvocationBuilder.Build(work.Profile, work.TaskPacket,
+            selectedProjectionJson, executable, laneRoot, binding?.SessionId);
+        var processRuntime = ProcessRuntimeFactoryForTests?.Invoke() ?? SystemProcessRuntime.Instance();
+        var executor = new ClaudeLaneProcessExecutor(processRuntime);
+        var outcome = executor.ExecuteAsync(invocation.Executable, invocation.Arguments, laneRoot,
+            invocation.Environment, TimeSpan.FromMinutes(60), async (started, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                if (started.Model != work.Profile.ExternalModel)
+                    throw new InvalidDataException("ExternalLaneEffectiveModelMismatch");
+                var missingRequestedTools = ClaudeLaneInvocationBuilder.DescribeUnexpectedTools(
+                    invocation.RequestedTools, started.Tools);
+                if (missingRequestedTools.Count > 0)
+                    throw new InvalidDataException("ExternalLaneRequestedToolUnavailable:"
+                        + string.Join(',', missingRequestedTools));
+                if (!started.Tools.Contains("StructuredOutput", StringComparer.Ordinal))
+                    throw new InvalidDataException("ExternalLaneStructuredOutputUnavailable");
+                var unexpectedToolCategories = ClaudeLaneInvocationBuilder.DescribeUnexpectedTools(
+                    started.Tools, invocation.ExpectedTools);
+                if (unexpectedToolCategories.Count > 0)
+                    throw new InvalidDataException("ExternalLaneEffectiveToolSetMismatch:"
+                        + string.Join(',', unexpectedToolCategories));
+                var existing = store.ReadFrom(session, 1).Where(evt => evt.RunId == run)
+                    .Select(codecs.Decode).OfType<ExternalLaneSessionBound>()
+                    .Where(evt => evt.ExecutionId == execution).ToArray();
+                if (existing.Length == 0)
+                {
+                    var scope = new ExecutionScopeState(run, work.Scope.TaskId, lane, turnId,
+                        ExecutionId: execution);
+                    new EventStream(store, codecs, session).AppendBatch([
+                        new ExternalLaneSessionBound(execution, lane, started.SessionId,
+                            started.Model, started.Tools, started.Capabilities),
+                    ], DurabilityClass.Barrier, [scope]);
+                }
+                else if (existing.Length != 1 || !ExternalSessionEquals(existing[0], started))
+                    throw new InvalidDataException("ExternalLaneSessionBindingMismatch");
+                await ValueTask.CompletedTask;
+            }, cancellationToken, invocation.StreamLimits).ConfigureAwait(false).GetAwaiter().GetResult();
+        if (outcome.Failure is not null || outcome.Stream is null || outcome.AgentResult is null)
+            throw new InvalidOperationException("ExternalLaneProcessFailed:" + outcome.Failure
+                + (outcome.ProtocolError is { } protocolError ? ":" + protocolError : "")
+                + (outcome.Diagnostic is { } diagnostic ? ":" + diagnostic : ""));
+        var stream = outcome.Stream;
+        if (stream.Model != work.Profile.ExternalModel || stream.Usage.TotalCostUsd is null
+            || stream.Usage.InputTokens is null || stream.Usage.OutputTokens is null
+            || stream.TotalTokens > work.Budget.MaxTokens || stream.ToolUseCount > work.Budget.MaxToolCalls)
+            throw new InvalidDataException("ExternalLaneUsageOrModelMismatch");
+
+        var resultJson = ClaudeLaneAgentResultValidator.SerializeRedacted(outcome.AgentResult);
+        var resultPrepared = ((IArtifactPreparationStore)artifacts).PrepareText(resultJson,
+            "application/vnd.omnicore.agent-result+json", ArtifactKind.Other, Sensitivity.Sensitive);
+        var redactedResponse = new PiiRedactor().Redact(stream.ResultText ?? outcome.AgentResult.Summary);
+        if (redactedResponse.Length > 32_768) redactedResponse = redactedResponse[..32_768];
+        var inputTokens = stream.Usage.InputTokens.Value;
+        var outputTokens = stream.Usage.OutputTokens.Value;
+        var cacheRead = stream.Usage.CacheReadInputTokens ?? 0;
+        var cacheWrite = stream.Usage.CacheCreationInputTokens ?? 0;
+        var usage = new TokenUsage(checked(inputTokens + cacheRead + cacheWrite), outputTokens,
+            cacheRead, cacheWrite, 0);
+        var now = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+        var usageJson = ExplorerTurn.EncodeUsageResponse(redactedResponse, usage,
+            stream.Usage.TotalCostUsd, run, now);
+        var usagePrepared = ((IArtifactPreparationStore)artifacts).PrepareText(usageJson,
+            "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+        if (resultPrepared.Reference.Size is <= 0 or > 1_048_576
+            || usagePrepared.Reference.Size is <= 0 or > 1_048_576
+            || artifacts is not IArtifactPublicationLease publisher)
+            throw new InvalidDataException("ExternalLaneArtifactPublicationUnavailable");
+        var publication = publisher.AcquirePublicationLease(cancellationToken);
+        try
+        {
+            if (resultPrepared.Publish() != resultPrepared.Reference
+                || usagePrepared.Publish() != usagePrepared.Reference
+                || artifacts.Verify(resultPrepared.Reference.Hash, resultPrepared.Reference.Size) != true
+                || artifacts.Verify(usagePrepared.Reference.Hash, usagePrepared.Reference.Size) != true)
+                throw new InvalidDataException("ExternalLaneArtifactPublicationFailed");
+            var scope = new ExecutionScopeState(run, work.Scope.TaskId, lane, turnId, ExecutionId: execution);
+            var usageEvent = new ExternalLaneUsageRecorded(execution, lane, stream.SessionId,
+                stream.Usage.InputTokens, stream.Usage.OutputTokens, stream.Usage.CacheReadInputTokens,
+                stream.Usage.CacheCreationInputTokens, stream.Usage.TotalCostUsd, stream.ToolUseCount,
+                stream.EventCount, stream.StreamBytes, resultPrepared.Reference);
+            var completedStep = new ModelStepCompleted(turnId, stepIndex, usage, StopReason.EndTurn,
+                usagePrepared.Reference, now, stream.Usage.TotalCostUsd,
+                TokenUsageFields.Input | TokenUsageFields.Output | TokenUsageFields.CacheRead | TokenUsageFields.CacheWrite);
+            new EventStream(store, codecs, session).AppendBatch([
+                usageEvent,
+                completedStep,
+                new ModelCompleted(turnId, usagePrepared.Reference),
+                new TurnCompleted(turnId),
+            ], DurabilityClass.Barrier, [scope, scope, scope, scope]);
+        }
+        finally { publication.Dispose(); }
+        return new ExplorerTurn.TurnResult(outcome.AgentResult.Summary, StopReason.EndTurn, 1, usage,
+            Array.Empty<ExplorerTurn.ToolUseTrace>(), usagePrepared.Reference.Hash.Value)
+        {
+            TurnId = turnId,
+            ExternalAgentResult = outcome.AgentResult,
+            ExternalResultSchemaId = ClaudeLaneAgentResultValidator.SchemaId,
+            ExternalResultRef = resultPrepared.Reference,
+            ExternalLaneOutcome = stream,
+        };
+    }
+
+    private static bool ExternalSessionEquals(ExternalLaneSessionBound binding, ClaudeLaneSessionStarted started) =>
+        binding.SessionId == started.SessionId && binding.Model == started.Model
+        && binding.Tools.SequenceEqual(started.Tools, StringComparer.Ordinal)
+        && binding.Capabilities.Count == started.Capabilities.Count
+        && binding.Capabilities.All(item => started.Capabilities.TryGetValue(item.Key, out var value)
+            && value == item.Value);
+
     private static bool IsUnclassified(ModelPolicyService policyService, ModelSelectionState? selection,
         ModelDefinition? definition, string model, CancellationToken cancellationToken)
     {

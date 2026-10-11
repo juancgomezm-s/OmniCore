@@ -1,6 +1,30 @@
 using System.Diagnostics;
 using System.Net.Sockets;
 
+if (args.Length == 1 && args[0] == "stream")
+{
+    Console.WriteLine("streamed stdout line");
+    await Console.Out.FlushAsync();
+    await Console.Error.WriteAsync(new string('e', 1_100_000));
+    return 42;
+}
+
+if (args.Length == 1 && args[0] == "claude-stream-invalid")
+{
+    Console.WriteLine("not-json");
+    await Console.Out.FlushAsync();
+    return 0;
+}
+
+if (args.Length == 1 && args[0] is "claude-stream" or "claude-stream-fail")
+{
+    Console.WriteLine("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fixture-session\",\"model\":\"claude-haiku-5-5\",\"tools\":[\"Read\"]}");
+    await Console.Out.FlushAsync();
+    Console.WriteLine("{\"type\":\"result\",\"session_id\":\"fixture-session\",\"is_error\":false,\"result\":\"fixture result\",\"structured_output\":{\"outcome\":\"Succeeded\",\"summary\":\"fixture result\",\"findings\":[],\"filesChanged\":[],\"remainingIssues\":[],\"confidence\":\"Medium\",\"proposedPlanMutations\":[]}}");
+    await Console.Out.FlushAsync();
+    return args[0] == "claude-stream-fail" ? 7 : 0;
+}
+
 if (args.Length == 2 && args[0] == "read")
 {
     try

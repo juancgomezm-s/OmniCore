@@ -127,6 +127,23 @@ public sealed class ModelPolicyCliTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Claude_code_external_model_policy_requires_an_explicit_safe_key()
+    {
+        var dir = TempDir();
+        var set = new StringWriter();
+        Assert.Equal(0, await Run(new[] { "model", "policy", "set", "claude-code/claude-haiku-5-5",
+            "--category", "FullAgent" }, "", set, dir));
+        Assert.Contains("FullAgent rev=1", set.ToString());
+        var show = new StringWriter();
+        Assert.Equal(0, await Run(new[] { "model", "policy", "show", "claude-code/claude-haiku-5-5" },
+            "", show, dir));
+        Assert.Contains("FullAgent", show.ToString());
+        var invalid = new StringWriter();
+        Assert.Equal(2, await Run(new[] { "model", "policy", "set", "claude-code/--permission-mode",
+            "--category", "FullAgent" }, "", invalid, dir));
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Cancelled_onboarding_saves_nothing()
     {
         var dir = TempDir();

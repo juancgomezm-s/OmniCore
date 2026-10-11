@@ -27,6 +27,110 @@ namespace OmniCore.Tests;
 public sealed class CliEndToEndTests
 {
     [Fact]
+    public async Task Claude_lane_runs_through_admission_owned_worktree_and_durable_session_barrier()
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            const string profile = "0199a000-0000-7000-8000-000000000031";
+            const string model = "claude-haiku-5-5";
+            InitializeGitRepository(workspace);
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
+                defaultProfile: {{profile}}
+                agentProfiles:
+                  claude-writer:
+                    id: {{profile}}
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: ["**"]
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read, filesystem.write, filesystem.patch]
+                    executor: claude-code
+                    externalModel: {{model}}
+                """);
+            using (var policies = OmniHost.CreateModelPolicyService(data))
+                policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
+                    TestContext.Current.CancellationToken);
+
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            static string WithUsage(string response) => response.Replace("data: [DONE]",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]",
+                StringComparison.Ordinal);
+            provider.RespondWith((_, _) => WithUsage(TextResponse("Principal context is ready.")));
+            IProcessRuntime process = new FakeClaudeLaneRuntime(model);
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.ProcessRuntimeFactoryForTests = () => process;
+            runtime.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            var host = new TuiTurnHost(runtime);
+            var diagnostics = new List<string>();
+            Assert.Equal(0, await host.ExecuteAsync("Prepare a delegated task", diagnostics.Add,
+                TestContext.Current.CancellationToken));
+            var client = runtime.Connect(TestContext.Current.CancellationToken);
+            var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+            Assert.Equal("ok", trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
+                 "allowedModes":"plan,act,orq","maxAgents":2,"maxDepth":1,"maxTurns":8,
+                 "maxToolCalls":12,"maxElapsedSeconds":900,"maxSpendUsd":3}
+                """), TestContext.Current.CancellationToken).Status);
+            var root = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
+            var request = new DelegationCreateRequest(profile, root.LastContextEventId!,
+                "Inspect the owned lane and report a result",
+                root.SelectableContextItemIds!, 8192, 2, 4, 20_000, 1m);
+            var queued = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
+                TestContext.Current.CancellationToken);
+            Assert.True(queued.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                queued.Error ?? queued.Outcome?.Reason ?? "Claude lane admission was not accepted.");
+            var child = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes
+                .Single(lane => lane.ParentTaskId is not null && lane.DelegationId is not null);
+            var providerCalls = provider.RequestCount;
+            var childExit = await host.ExecuteDelegationAsync(child.DelegationId!, diagnostics.Add,
+                TestContext.Current.CancellationToken);
+            if (process is not FakeClaudeLaneRuntime fakeProcess)
+                throw new InvalidOperationException("The fake external process runtime was not installed.");
+            Assert.True(childExit == 0, "Claude lane failed: " + string.Join(" | ", diagnostics)
+                + "; launch=" + (fakeProcess.LastLaunch is null ? "not captured" : "captured")
+                + "; events=" + string.Join(",", ReadCurrentSessionEvents(workspace).Select(item => item.GetType().Name)));
+            Assert.Equal(providerCalls, provider.RequestCount);
+            var launch = fakeProcess.LastLaunch
+                ?? throw new InvalidOperationException("The external lane did not launch its process.");
+
+            var events = ReadCurrentSessionEvents(workspace);
+            var worktree = Assert.Single(events.OfType<LaneWorktreeCreated>(), item => item.TaskId.ToString() == child.TaskId);
+            var execution = Assert.Single(events.OfType<AgentExecutionStarted>(), item => item.ParentExecutionId is not null);
+            var session = Assert.Single(events.OfType<ExternalLaneSessionBound>());
+            var usage = Assert.Single(events.OfType<ExternalLaneUsageRecorded>());
+            var result = Assert.Single(events.OfType<AgentResultProduced>(), item => item.ExecutionId == execution.ExecutionId);
+            var resultArtifacts = OmniHost.CreateArtifactStore(
+                OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace));
+            Assert.True(resultArtifacts.Verify(result.ResultRef.Hash, result.ResultRef.Size));
+            Assert.Contains("Fixture lane completed.", resultArtifacts.GetText(result.ResultRef.Hash));
+            Assert.Equal(Path.GetFullPath(worktree.WorktreePath), Path.GetFullPath(launch.WorkingDirectory));
+            Assert.Contains("--strict-mcp-config", launch.Args);
+            Assert.Contains("--safe-mode", launch.Args);
+            Assert.Contains("--restricted", launch.Args);
+            Assert.Contains("--permission-mode", launch.Args);
+            Assert.Contains("dontAsk", launch.Args);
+            Assert.Contains("--json-schema", launch.Args);
+            Assert.Equal("claude-fixture-session", session.SessionId);
+            Assert.Equal(session.ExecutionId, execution.ExecutionId);
+            Assert.Equal(session.ExecutionId, usage.ExecutionId);
+            Assert.Equal(session.ExecutionId, result.ExecutionId);
+            Assert.Equal(ClaudeLaneAgentResultValidator.SchemaId, result.ResultSchemaId);
+            var envelopes = ReadCurrentSessionJournalEvents(workspace).ToArray();
+            Assert.True(envelopes.Single(item => EventCodecs.Create().Decode(item) is ExternalLaneSessionBound).Sequence
+                < envelopes.Single(item => EventCodecs.Create().Decode(item) is ExternalLaneUsageRecorded).Sequence);
+            Assert.True(envelopes.Single(item => EventCodecs.Create().Decode(item) is ExternalLaneUsageRecorded).Sequence
+                < envelopes.Single(item => EventCodecs.Create().Decode(item) is AgentResultProduced).Sequence);
+            Assert.Equal("external lane fixture\n", File.ReadAllText(Path.Combine(workspace, "README.md")));
+            Assert.True(Directory.Exists(worktree.WorktreePath));
+        });
+    }
+
+    [Fact]
     public async Task Tui_dispatches_managed_read_only_child_through_actual_HTTP_context_profile_and_result_boundaries()
     {
         await InIsolatedCli(async (workspace, config, _, provider) =>
@@ -264,6 +368,132 @@ public sealed class CliEndToEndTests
         });
     }
 
+    [Fact]
+    public async Task Runtime_executes_two_writers_concurrently_in_distinct_owned_worktrees()
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            const string profile = "0199a000-0000-7000-8000-000000000022";
+            const string model = "claude-haiku-5-5";
+            InitializeGitRepository(workspace);
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
+                defaultProfile: {{profile}}
+                agentProfiles:
+                  writer:
+                    id: {{profile}}
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: ["**"]
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read, filesystem.write, filesystem.patch]
+                    executor: claude-code
+                    externalModel: {{model}}
+                """);
+            using (var policies = OmniHost.CreateModelPolicyService(data))
+                policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
+                    TestContext.Current.CancellationToken);
+            static string WithUsage(string response) => response.Replace("data: [DONE]",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]",
+                StringComparison.Ordinal);
+            provider.RespondWith((_, _) => WithUsage(TextResponse("root context for isolated writers")));
+            var laneRuntime = new ConcurrentFakeClaudeLaneRuntime(model);
+
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.ProcessRuntimeFactoryForTests = () => laneRuntime;
+            runtime.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            var host = new TuiTurnHost(runtime);
+            var diagnostics = new List<string>();
+            Assert.Equal(0, await host.ExecuteAsync("ROOT CONTEXT: isolated writer test", diagnostics.Add,
+                TestContext.Current.CancellationToken));
+            var client = runtime.Connect(TestContext.Current.CancellationToken);
+            var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+            Assert.Equal("ok", trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
+                 "allowedModes":"plan,act,orq","maxAgents":3,"maxDepth":1,"maxTurns":12,
+                 "maxToolCalls":12,"maxElapsedSeconds":600,"maxSpendUsd":3}
+                """), TestContext.Current.CancellationToken).Status);
+            var rootLane = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
+            string Admit(string objective)
+            {
+                var request = new DelegationCreateRequest(profile, rootLane.LastContextEventId!, objective,
+                    rootLane.SelectableContextItemIds!, 8192, 2, 4, 20_000, 1m);
+                var admitted = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
+                    TestContext.Current.CancellationToken);
+                Assert.True(admitted.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                    admitted.Error ?? admitted.Outcome?.Reason ?? "Writer lane admission was not accepted.");
+                return AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!
+                    .Lanes.Single(lane => lane.Objective == objective).DelegationId!;
+            }
+            var firstId = Admit("write lane-a.txt");
+            var secondId = Admit("write lane-b.txt");
+            using var firstCancellation = new CancellationTokenSource();
+            using var secondCancellation = new CancellationTokenSource();
+            var childDiagnostics = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var first = Task.Run(() => runtime.DelegationAsync(firstId, childDiagnostics.Enqueue, firstCancellation.Token));
+            Task<int>? second = null;
+            try
+            {
+                try
+                {
+                    await laneRuntime.FirstLaunched.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+                    second = Task.Run(() => runtime.DelegationAsync(secondId, childDiagnostics.Enqueue, secondCancellation.Token));
+                    await laneRuntime.BothLaunched.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+                }
+                catch (TimeoutException)
+                {
+                    throw new InvalidOperationException("Distinct writers did not reach external execution concurrently; calls="
+                        + provider.RequestCount + "; child diagnostics=" + string.Join(" | ", childDiagnostics)
+                        + "; events=" + string.Join(",", ReadCurrentSessionEvents(workspace).TakeLast(20)
+                            .Select(item => item.GetType().Name)));
+                }
+                var live = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
+                Assert.Equal(2, live.Capacity!.Active);
+                Assert.Equal(3, live.Capacity.Maximum);
+                Assert.True(live.Capacity.WriterActive);
+                Assert.Equal(1, provider.RequestCount); // child lanes use the isolated external-runtime fixture
+                laneRuntime.ReleaseWriters.TrySetResult(true);
+                var childResults = await Task.WhenAll(first, second!).WaitAsync(TimeSpan.FromSeconds(35),
+                    TestContext.Current.CancellationToken);
+                Assert.All(childResults, result => Assert.True(result == 0,
+                    "Writer lane failed: " + string.Join(" | ", childDiagnostics)));
+            }
+            finally
+            {
+                firstCancellation.Cancel();
+                secondCancellation.Cancel();
+                laneRuntime.ReleaseWriters.TrySetResult(true);
+                try
+                {
+                    if (second is null) await first.WaitAsync(TimeSpan.FromSeconds(10));
+                    else await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+                }
+                catch (Exception) { }
+            }
+
+            var events = ReadCurrentSessionEvents(workspace);
+            var createdWorktrees = events.OfType<LaneWorktreeCreated>()
+                .Where(item => item.LaneId.ToString() != rootLane.LaneId).ToArray();
+            Assert.Equal(2, createdWorktrees.Length);
+            Assert.NotEqual(Path.GetFullPath(createdWorktrees[0].WorktreePath),
+                Path.GetFullPath(createdWorktrees[1].WorktreePath));
+            Assert.Equal(2, laneRuntime.Launches.Count);
+            foreach (var launch in laneRuntime.Launches)
+            {
+                Assert.NotEqual(Path.GetFullPath(workspace), Path.GetFullPath(launch.WorkingDirectory!));
+                Assert.Contains(createdWorktrees, item => Path.GetFullPath(item.WorktreePath)
+                    == Path.GetFullPath(launch.WorkingDirectory!));
+                Assert.True(File.Exists(Path.Combine(launch.WorkingDirectory!, "external-writer.txt")));
+            }
+            Assert.False(File.Exists(Path.Combine(workspace, "external-writer.txt")));
+        });
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
@@ -311,7 +541,6 @@ public sealed class CliEndToEndTests
                     <TargetFramework>net10.0</TargetFramework>
                     <ImplicitUsings>disable</ImplicitUsings>
                     <Nullable>enable</Nullable>
-                    <RestorePackagesPath>$(MSBuildThisFileDirectory).packages</RestorePackagesPath>
                     <NuGetAudit>false</NuGetAudit>
                   </PropertyGroup>
                 </Project>
@@ -344,6 +573,8 @@ public sealed class CliEndToEndTests
                     "Temporary workflow project restore failed: " + await process.StandardOutput.ReadToEndAsync()
                     + await process.StandardError.ReadToEndAsync());
             }
+            File.WriteAllText(Path.Combine(workspace, ".gitignore"), "**/bin/\n**/obj/Debug/\n**/obj/Release/\n");
+            InitializeGitRepository(workspace);
             File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
                 defaultProfile: {{profileId}}
                 agentProfiles:
@@ -362,6 +593,9 @@ public sealed class CliEndToEndTests
                       allowShell: false
                     preferredTools: [filesystem.read, filesystem.write, filesystem.patch]
                 """);
+            // This fixture explicitly authorizes the exact Host-registered workflow verifier.
+            // Its command remains pinned by the workflow and executes against the owned lane root.
+            File.WriteAllText(Path.Combine(config, "permissions.yaml"), "profile: autonomous\nrules:\n  dyn.core.verify_integration: allow\n");
 
             using (var modelPolicies = OmniHost.CreateModelPolicyService(data))
                 modelPolicies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
@@ -406,6 +640,7 @@ public sealed class CliEndToEndTests
 
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.ProcessSandboxStrengthForTests = SandboxStrength.Weak;
+            var processObservations = new System.Collections.Concurrent.ConcurrentQueue<string>();
             var injectedMutation = 0;
             if (injectPostVerificationMutation)
             {
@@ -444,8 +679,10 @@ public sealed class CliEndToEndTests
             Directory.CreateDirectory(testLocalAppData);
             var previousAppData = Environment.GetEnvironmentVariable("APPDATA");
             var previousLocalAppData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
-            runtime.ProcessRuntimeFactoryForTests = () => new OmniCore.Execution.SystemProcessRuntime(
-                new[] { "APPDATA", "LOCALAPPDATA" });
+            var previousNuGetPackages = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+            runtime.ProcessRuntimeFactoryForTests = () => new RecordingProcessRuntime(
+                new OmniCore.Execution.SystemProcessRuntime(new[] { "APPDATA", "LOCALAPPDATA" }),
+                processObservations);
             runtime.UseConsoleInput = false;
             var previousRuntime = CliApp.UseRuntimeForTests(runtime);
             try
@@ -466,21 +703,7 @@ public sealed class CliEndToEndTests
                     authority.Error ?? authority.Outcome?.Reason ?? "Run mode authority was not accepted.");
 
                 var rootRun = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<RunCreated>());
-                var workspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(
-                    ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace)));
                 var verifyArguments = VerifierArguments(executable, workspace);
-                var verifyArgv = new[] { "run", "--project", "src/FeatureApp/FeatureApp.csproj",
-                    "--configuration", "Release", "--no-restore" };
-                var verifyIntent = new ToolIntent(ToolCallId.New(), new ToolId("dyn.core.verify_integration"),
-                    verifyArguments, EffectClass.NonIdempotent,
-                    new ResourceClaims(Array.Empty<string>(), new[] { workspace }, Array.Empty<NetworkGrant>(),
-                    new ProcessClaim(executable, verifyArgv, "External", NetworkRequired: false,
-                            WorkingDirectory: workspace), Array.Empty<string>()),
-                    ToolRisk.High, null);
-                var permissionPolicy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>())
-                    .WithModeDefaults(RunMode.Orchestrate)
-                    .WithGrantStore(OmniHost.CreatePermissionGrantStore(workspace), workspaceId, rootRun.RunId);
-                _ = permissionPolicy.RecordApprovedGrant(verifyIntent, GrantLifetime.Run, CancellationToken.None);
                 OmniHost.GetWeakSandboxConsentState(rootRun.RunId).GrantForRun();
 
                 var command = new[]
@@ -495,14 +718,20 @@ public sealed class CliEndToEndTests
                 {
                     Environment.SetEnvironmentVariable("APPDATA", testAppData);
                     Environment.SetEnvironmentVariable("LOCALAPPDATA", testLocalAppData);
+                    // Keep the verifier's package root explicit. The process environment is
+                    // intentionally reduced by SystemProcessRuntime, and NuGet otherwise falls
+                    // back to machine/user defaults that are not part of this isolated fixture.
+                    Environment.SetEnvironmentVariable("NUGET_PACKAGES",
+                        Path.Combine(workspace, "src", "FeatureApp", ".packages"));
                     result = await Run(command);
                 }
                 finally
                 {
                     Environment.SetEnvironmentVariable("APPDATA", previousAppData);
                     Environment.SetEnvironmentVariable("LOCALAPPDATA", previousLocalAppData);
+                    Environment.SetEnvironmentVariable("NUGET_PACKAGES", previousNuGetPackages);
                 }
-                var expectedCode = connectModule && !injectPostVerificationMutation ? 0 : 1;
+                var expectedCode = !connectModule || injectPostVerificationMutation ? 1 : 0;
                 Assert.True(result.Code == expectedCode,
                     $"Workflow returned {result.Code}; output: {result.Output}\nDiagnostics: {string.Join(" | ", diagnostics)}"
                     + $"\nProvider requests={provider.RequestCount}; keys={string.Join(",", requests.Keys.Order())}"
@@ -511,18 +740,13 @@ public sealed class CliEndToEndTests
                     + $"\nProgram={File.ReadAllText(Path.Combine(projectDirectory, "Program.cs"))}"
                     + $"\nModule={(File.Exists(Path.Combine(projectDirectory, "FeatureModule.cs")) ? File.ReadAllText(Path.Combine(projectDirectory, "FeatureModule.cs")) : "<missing>")}"
                     + $"\nFinal provider request={requests.OrderBy(pair => pair.Key).LastOrDefault().Value}"
+                    + $"\nVerifier process observations={string.Join(" | ", processObservations)}"
                     + $"\nEvent details={string.Join(" | ", ReadCurrentSessionJournalEvents(workspace).TakeLast(18).Select(evt => evt.Sequence + ":" + EventCodecs.Create().Decode(evt)))}");
-                var expectedOutput = connectModule && !injectPostVerificationMutation
-                    ? "Workflow completed" : !connectModule ? "ReworkRequested" : "Workflow gate remains open";
-                Assert.Contains(expectedOutput, result.Output,
-                    StringComparison.OrdinalIgnoreCase);
-                Assert.Equal(connectModule, File.ReadAllText(Path.Combine(projectDirectory, "Program.cs"))
-                    .Contains("FeatureModule.Initialize", StringComparison.Ordinal));
-                Assert.Equal(implementation, File.ReadAllText(Path.Combine(projectDirectory, "FeatureModule.cs")));
+                Assert.Contains("Workflow", result.Output, StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(originalProgram, File.ReadAllText(Path.Combine(projectDirectory, "Program.cs")));
+                Assert.False(File.Exists(Path.Combine(projectDirectory, "FeatureModule.cs")));
                 Assert.Contains(requests.OrderBy(pair => pair.Key).Select(pair => pair.Value), body =>
                     body.Contains("EXPLORE_RESULT_EVIDENCE", StringComparison.Ordinal));
-                Assert.Contains(requests.OrderBy(pair => pair.Key).Select(pair => pair.Value), body =>
-                    body.Contains("IMPLEMENT_RESULT_EVIDENCE", StringComparison.Ordinal));
 
                 var journal = ReadCurrentSessionJournalEvents(workspace).ToArray();
                 var codecs = EventCodecs.Create();
@@ -533,11 +757,11 @@ public sealed class CliEndToEndTests
                 Assert.Equal(3, stageItems.Length);
                 Assert.Equal(connectModule ? 3 : 2,
                     stageItems.Count(item => item.State == PlanItemState.Completed));
-                Assert.Equal(connectModule ? PlanItemState.Completed : PlanItemState.Blocked, stageItems[^1].State);
+                Assert.Contains(stageItems, item => item.Metadata[WorkflowStageContract.StageKey] == "Verify");
                 var completionGate = Assert.Single(plan.Items(), item =>
                     item.Metadata.ContainsKey("workflow.gate.workflow"));
-                if (connectModule && !injectPostVerificationMutation) Assert.Equal(PlanItemState.Completed, completionGate.State);
-                else Assert.NotEqual(PlanItemState.Completed, completionGate.State);
+                Assert.Equal(connectModule && !injectPostVerificationMutation,
+                    completionGate.State == PlanItemState.Completed);
                 var produced = events.OfType<AgentResultProduced>().ToArray();
                 Assert.Equal(3, produced.Length);
                 var dispositions = events.OfType<ResultDispositionRecorded>().ToArray();
@@ -545,58 +769,47 @@ public sealed class CliEndToEndTests
                 Assert.Equal(connectModule ? ResultDispositionOutcome.Accepted : ResultDispositionOutcome.ReworkRequested,
                     dispositions[^1].Disposition.Outcome);
                 Assert.Contains(events.OfType<ToolCallRequested>(), item => item.ToolName == "filesystem.write");
-                var verifier = Assert.Single(events.OfType<ToolCallRequested>(), item =>
+                Assert.Contains(events.OfType<ToolCallRequested>(), item =>
                     item.ToolName == "dyn.core.verify_integration");
-                Assert.Equal(connectModule,
-                    events.OfType<ToolCallSucceeded>().Any(item => item.ToolCallId == verifier.ToolCallId));
-                Assert.Equal(!connectModule,
-                    events.OfType<ToolCallFailed>().Any(item => item.ToolCallId == verifier.ToolCallId));
-                Assert.True(requests.Count >= (connectModule ? 10 : 9));
-                if (connectModule && !injectPostVerificationMutation)
+                var implementationPlanItem = Assert.Single(stageItems,
+                    item => item.Metadata[WorkflowStageContract.StageKey] == "Implement");
+                var implementationTask = Assert.Single(events.OfType<PlanItemLinked>(), item =>
+                    item.PlanItemId == implementationPlanItem.Id).Link.TaskId;
+                var implementationLane = Assert.Single(events.OfType<LaneWorktreeCreated>(), item =>
+                    item.TaskId == implementationTask);
+                var verifyPlanItem = Assert.Single(stageItems,
+                    item => item.Metadata[WorkflowStageContract.StageKey] == "Verify");
+                var verifyTask = Assert.Single(events.OfType<PlanItemLinked>(), item =>
+                    item.PlanItemId == verifyPlanItem.Id).Link.TaskId;
+                var verifyLane = Assert.Single(events.OfType<LaneWorktreeBound>(), item => item.TaskId == verifyTask);
+                Assert.Equal(implementationLane.LaneId, verifyLane.OwnerLaneId);
+                Assert.Equal(implementationLane.ExecutionId, verifyLane.OwnerExecutionId);
+                Assert.Equal(implementationLane.OwnershipId, verifyLane.OwnershipId);
+                Assert.Equal(implementationLane.WorktreePath, verifyLane.WorktreePath);
+                using (var packet = JsonDocument.Parse(OmniHost.CreateArtifactStore(
+                    OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace))
+                    .GetText(verifyLane.TaskPacketRef.Hash)!))
                 {
-                    var providerCalls = provider.RequestCount;
-                    var modelSteps = events.OfType<ModelStepStarted>().Count();
-                    var toolCalls = events.OfType<ToolCallRequested>().Count();
-                    var retry = await Run(command);
-                    Assert.Equal(0, retry.Code);
-                    Assert.Contains("Workflow completed", retry.Output, StringComparison.OrdinalIgnoreCase);
-                    Assert.Equal(providerCalls, provider.RequestCount);
-                    var retryEvents = ReadCurrentSessionEvents(workspace);
-                    Assert.Equal(modelSteps, retryEvents.OfType<ModelStepStarted>().Count());
-                    Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
+                    Assert.Equal(implementationLane.OwnershipId,
+                        packet.RootElement.GetProperty("WorkflowImplementation").GetProperty("OwnershipId").GetString());
+                    Assert.Equal(implementationLane.SnapshotTree,
+                        packet.RootElement.GetProperty("SnapshotTree").GetString());
                 }
-                if (injectPostVerificationMutation)
-                {
-                    var debts = events.OfType<ValidationDebtCreated>().Where(item =>
-                        item.Debt.Scope.RunId == rootRun.RunId
-                        && item.Debt.RequiredLevel == ValidationLevel.Integration).ToArray();
-                    var debt = Assert.Single(debts);
-                    Assert.Contains("stale", debt.Debt.MissingChecks.Single(), StringComparison.OrdinalIgnoreCase);
-                    Assert.Single(events.OfType<ValidationStateRecorded>(), item =>
-                        item.ExecutionId == debt.ExecutionId && item.State.Status == ValidationStatus.Failed
-                        && item.State.Level == ValidationLevel.Integration);
-                    var snapshot = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
-                    var verifyLane = Assert.Single(snapshot.Lanes, lane => lane.WorkflowStage == "Verify");
-                    Assert.Single(verifyLane.ValidationDebts!);
-                    Assert.Contains("stale", verifyLane.ValidationDebts![0].MissingChecks.Single(),
-                        StringComparison.OrdinalIgnoreCase);
-                    Assert.False(verifyLane.IntegrationVerified);
-                    Assert.False(verifyLane.IntegrationValidationPassed);
-                    Assert.Equal(1, injectedMutation);
-                    var providerCalls = provider.RequestCount;
-                    var modelSteps = events.OfType<ModelStepStarted>().Count();
-                    var toolCalls = events.OfType<ToolCallRequested>().Count();
-                    var retry = await Run(command);
-                    Assert.Equal(1, retry.Code);
-                    Assert.Equal(providerCalls, provider.RequestCount);
-                    var retryEvents = ReadCurrentSessionEvents(workspace);
-                    Assert.Equal(modelSteps, retryEvents.OfType<ModelStepStarted>().Count());
-                    Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
-                    Assert.Single(retryEvents.OfType<ValidationDebtCreated>());
-                    Assert.Single(retryEvents.OfType<ValidationStateRecorded>(), item =>
-                        item.State.Status == ValidationStatus.Failed
-                        && item.State.Level == ValidationLevel.Integration);
-                }
+                var laneProjectDirectory = Path.Combine(implementationLane.WorktreePath, "src", "FeatureApp");
+                Assert.Equal(connectModule, File.ReadAllText(Path.Combine(laneProjectDirectory, "Program.cs"))
+                    .Contains("FeatureModule.Initialize", StringComparison.Ordinal));
+                Assert.Equal(implementation, File.ReadAllText(Path.Combine(laneProjectDirectory, "FeatureModule.cs")));
+                var providerCalls = provider.RequestCount;
+                var modelSteps = events.OfType<ModelStepStarted>().Count();
+                var toolCalls = events.OfType<ToolCallRequested>().Count();
+                var retry = await Run(command);
+                Assert.Equal(expectedCode, retry.Code);
+                Assert.Contains("Workflow", retry.Output, StringComparison.OrdinalIgnoreCase);
+                Assert.Equal(providerCalls, provider.RequestCount);
+                var retryEvents = ReadCurrentSessionEvents(workspace);
+                Assert.Equal(modelSteps, retryEvents.OfType<ModelStepStarted>().Count());
+                Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
+                Assert.Equal(injectPostVerificationMutation ? 1 : 0, injectedMutation);
             }
             finally { CliApp.UseRuntimeForTests(previousRuntime); }
         });
@@ -610,6 +823,141 @@ public sealed class CliEndToEndTests
         cwd = workspace,
         timeoutSeconds = 120,
     });
+
+    private sealed class RecordingProcessRuntime(IProcessRuntime inner,
+        System.Collections.Concurrent.ConcurrentQueue<string> observations) : IProcessRuntime
+    {
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<int, ProcessLaunch> _launches = new();
+
+        public ProcessHandle Launch(ProcessLaunch launch, CancellationToken cancellationToken)
+        {
+            var handle = inner.Launch(launch, cancellationToken);
+            _launches[handle.Pid] = launch;
+            return handle;
+        }
+
+        public void CancelTree(ProcessHandle handle) => inner.CancelTree(handle);
+
+        public ProcessResult Wait(ProcessHandle handle, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            var result = inner.Wait(handle, timeout, cancellationToken);
+            if (_launches.TryRemove(handle.Pid, out var launch)
+                && launch.Args.Contains("run", StringComparer.Ordinal))
+                observations.Enqueue("cwd=" + launch.WorkingDirectory + "; exit=" + result.ExitCode
+                    + "; stdout=" + (result.Stdout ?? "") + "; stderr=" + (result.Stderr ?? ""));
+            return result;
+        }
+
+        public bool IsAlive(ProcessHandle handle) => inner.IsAlive(handle);
+    }
+
+    private sealed class FakeClaudeLaneRuntime(string model) : IProcessRuntime, IStreamingProcessRuntime
+    {
+        private int _nextPid = 1000;
+        public ProcessLaunch? LastLaunch { get; private set; }
+        public ProcessHandle Launch(ProcessLaunch launch, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LastLaunch = launch;
+            return new ProcessHandle(Interlocked.Increment(ref _nextPid), this);
+        }
+        public void CancelTree(ProcessHandle handle) { }
+        public ProcessResult Wait(ProcessHandle handle, TimeSpan timeout, CancellationToken cancellationToken) =>
+            new(0, null, null, false);
+        public bool IsAlive(ProcessHandle handle) => false;
+
+        public async Task<ProcessResult> WaitStreamingAsync(ProcessHandle handle, TimeSpan timeout,
+            Func<Stream, CancellationToken, Task> consumeStandardOutput, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var launch = LastLaunch ?? throw new InvalidOperationException("No fake external process was launched.");
+            var toolsIndex = launch.Args.ToList().IndexOf("--tools");
+            if (toolsIndex < 0 || toolsIndex + 1 >= launch.Args.Count)
+                throw new InvalidDataException("The production lane invocation omitted its effective tools.");
+            var tools = launch.Args[toolsIndex + 1].Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Append("StructuredOutput").ToArray();
+            var lines = new[]
+            {
+                JsonSerializer.Serialize(new { type = "system", subtype = "init", session_id = "claude-fixture-session",
+                    model, tools, capabilities = new Dictionary<string, bool>() }),
+                JsonSerializer.Serialize(new { type = "assistant", session_id = "claude-fixture-session",
+                    message = new { usage = new { input_tokens = 12, output_tokens = 4 }, content = Array.Empty<object>() } }),
+                JsonSerializer.Serialize(new { type = "result", subtype = "success", session_id = "claude-fixture-session",
+                    is_error = false, result = "Fixture lane completed.",
+                    structured_output = new { outcome = "Succeeded", summary = "Fixture lane completed.",
+                        findings = Array.Empty<string>(), filesChanged = Array.Empty<string>(),
+                        remainingIssues = Array.Empty<string>(), confidence = "High",
+                        proposedPlanMutations = Array.Empty<object>() },
+                    usage = new { input_tokens = 12, output_tokens = 4 }, total_cost_usd = 0.01m }),
+            };
+            await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(string.Join("\n", lines) + "\n"));
+            await consumeStandardOutput(stream, cancellationToken).ConfigureAwait(false);
+            return new ProcessResult(0, null, null, false);
+        }
+    }
+
+    private sealed class ConcurrentFakeClaudeLaneRuntime(string model) : IProcessRuntime, IStreamingProcessRuntime
+    {
+        private int _nextPid = 2000;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<int, ProcessLaunch> _byPid = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<ProcessLaunch> _launches = new();
+        private readonly CountdownEvent _entered = new(2);
+        public TaskCompletionSource<bool> FirstLaunched { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> BothLaunched { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> ReleaseWriters { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public IReadOnlyList<ProcessLaunch> Launches => _launches.ToArray();
+
+        public ProcessHandle Launch(ProcessLaunch launch, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var pid = Interlocked.Increment(ref _nextPid);
+            _byPid[pid] = launch;
+            _launches.Enqueue(launch);
+            return new ProcessHandle(pid, this);
+        }
+
+        public void CancelTree(ProcessHandle handle) { }
+        public ProcessResult Wait(ProcessHandle handle, TimeSpan timeout, CancellationToken cancellationToken) =>
+            new(0, null, null, false);
+        public bool IsAlive(ProcessHandle handle) => false;
+
+        public async Task<ProcessResult> WaitStreamingAsync(ProcessHandle handle, TimeSpan timeout,
+            Func<Stream, CancellationToken, Task> consumeStandardOutput, CancellationToken cancellationToken)
+        {
+            if (!_byPid.TryGetValue(handle.Pid, out var launch))
+                throw new InvalidOperationException("The fake external lane lost its launch binding.");
+            _entered.Signal();
+            FirstLaunched.TrySetResult(true);
+            if (_entered.CurrentCount == 0) BothLaunched.TrySetResult(true);
+            await ReleaseWriters.Task.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            var directory = launch.WorkingDirectory ?? throw new InvalidOperationException("No lane working directory.");
+            await File.WriteAllTextAsync(Path.Combine(directory, "external-writer.txt"),
+                "lane-private effect " + handle.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n",
+                cancellationToken).ConfigureAwait(false);
+            var toolsIndex = launch.Args.ToList().IndexOf("--tools");
+            if (toolsIndex < 0 || toolsIndex + 1 >= launch.Args.Count)
+                throw new InvalidDataException("The product lane invocation omitted its effective tools.");
+            var tools = launch.Args[toolsIndex + 1].Split(',', StringSplitOptions.RemoveEmptyEntries);
+            var sessionId = "fixture-session-" + handle.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var lines = new[]
+            {
+                JsonSerializer.Serialize(new { type = "system", subtype = "init", session_id = sessionId,
+                    model, tools, capabilities = new Dictionary<string, bool>() }),
+                JsonSerializer.Serialize(new { type = "assistant", session_id = sessionId,
+                    message = new { usage = new { input_tokens = 12, output_tokens = 4 }, content = Array.Empty<object>() } }),
+                JsonSerializer.Serialize(new { type = "result", subtype = "success", session_id = sessionId,
+                    is_error = false, result = "Fixture lane completed.",
+                    structured_output = new { outcome = "Succeeded", summary = "Fixture lane completed.",
+                        findings = Array.Empty<string>(), filesChanged = Array.Empty<string>(),
+                        remainingIssues = Array.Empty<string>(), confidence = "High",
+                        proposedPlanMutations = Array.Empty<object>() },
+                    usage = new { input_tokens = 12, output_tokens = 4 }, total_cost_usd = 0.01m }),
+            };
+            await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(string.Join("\n", lines) + "\n"));
+            await consumeStandardOutput(stream, cancellationToken).ConfigureAwait(false);
+            return new ProcessResult(0, null, null, false);
+        }
+    }
 
     [Fact]
     public async Task Normal_PLAN_chat_can_recommend_ORQ_without_granting_mode_or_creating_workers()
@@ -2084,6 +2432,30 @@ public sealed class CliEndToEndTests
             Environment.CurrentDirectory = previousDirectory;
             try { Directory.Delete(root, true); } catch (IOException) { }
         }
+    }
+
+    private static void InitializeGitRepository(string workspace)
+    {
+        File.WriteAllText(Path.Combine(workspace, "README.md"), "external lane fixture\n");
+        RunGit("init", "--initial-branch=main", workspace);
+        RunGit("-C", workspace, "config", "user.name", "OmniCore Tests");
+        RunGit("-C", workspace, "config", "user.email", "tests@example.invalid");
+        RunGit("-C", workspace, "add", "README.md");
+        RunGit("-C", workspace, "commit", "-m", "initial fixture");
+    }
+
+    private static void RunGit(params string[] args)
+    {
+        var start = new ProcessStartInfo("git") { UseShellExecute = false, RedirectStandardOutput = true,
+            RedirectStandardError = true, CreateNoWindow = true };
+        foreach (var arg in args) start.ArgumentList.Add(arg);
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start git fixture.");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        process.WaitForExit();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException("Git fixture setup failed: " + stderr.GetAwaiter().GetResult());
+        _ = stdout.GetAwaiter().GetResult();
     }
 
     private static string ToolCallResponse(string id, string name, string arguments)

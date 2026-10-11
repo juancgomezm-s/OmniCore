@@ -26,6 +26,8 @@ internal static class AgentProfileFingerprint
         writer.WriteString("source", "resolved.configuration");
         writer.WriteString("name", profile.Name);
         writer.WriteNumber("revision", profile.Revision);
+        writer.WriteString("executor", profile.Executor.ToString());
+        if (profile.ExternalModel is not null) writer.WriteString("externalModel", profile.ExternalModel);
         writer.WriteStartObject("permissionCeiling");
         WriteStrings(writer, "reads", profile.PermissionCeiling.Reads);
         WriteStrings(writer, "writes", profile.PermissionCeiling.Writes);

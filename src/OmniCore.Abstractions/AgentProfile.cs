@@ -2,6 +2,13 @@ namespace OmniCore.Abstractions;
 
 using OmniCore.Domain;
 
+/// <summary>Explicit executor choice for delegated Lane profiles. Native remains the default.</summary>
+public enum AgentExecutorKind
+{
+    Native,
+    ClaudeCode,
+}
+
 /// <summary>
 /// Reusable, versioned agent configuration (ADR-0037 §8, ADR-0046 §2).
 /// Identity belongs to configuration, never to a Lane or AgentExecution. The ceiling
@@ -14,9 +21,12 @@ public sealed class AgentProfile
     public long Revision { get; }
     public PermissionScope PermissionCeiling { get; }
     public IReadOnlyList<ToolId> PreferredTools { get; }
+    public AgentExecutorKind Executor { get; }
+    public string? ExternalModel { get; }
 
     public AgentProfile(ProfileId id, string name, long revision, PermissionScope permissionCeiling,
-        IReadOnlyList<ToolId> preferredTools)
+        IReadOnlyList<ToolId> preferredTools, AgentExecutorKind executor = AgentExecutorKind.Native,
+        string? externalModel = null)
     {
         ArgumentNullException.ThrowIfNull(id);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -27,12 +37,20 @@ public sealed class AgentProfile
         if (preferredTools.Any(tool => tool is null || string.IsNullOrWhiteSpace(tool.ToString()))
             || preferredTools.Distinct().Count() != preferredTools.Count)
             throw new ArgumentException("Preferred tools must have complete, unique canonical identities.", nameof(preferredTools));
+        if (!Enum.IsDefined(executor)) throw new ArgumentOutOfRangeException(nameof(executor));
+        if (executor == AgentExecutorKind.ClaudeCode && (string.IsNullOrWhiteSpace(externalModel)
+            || externalModel.Length > 128 || externalModel.Any(char.IsControl)))
+            throw new ArgumentException("Claude Code profiles require an explicit external model.", nameof(externalModel));
+        if (executor == AgentExecutorKind.Native && externalModel is not null)
+            throw new ArgumentException("Native profiles cannot declare an external model.", nameof(externalModel));
 
         Id = id;
         Name = name;
         Revision = revision;
         PermissionCeiling = Freeze(permissionCeiling);
         PreferredTools = Array.AsReadOnly(preferredTools.ToArray());
+        Executor = executor;
+        ExternalModel = externalModel;
     }
 
     private static PermissionScope Freeze(PermissionScope scope)

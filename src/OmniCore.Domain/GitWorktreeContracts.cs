@@ -205,3 +205,8 @@ public sealed record WorktreeCleanupOutcome(bool Removed, GitWorktreeErrorCode? 
     public static WorktreeCleanupOutcome Success() => new(true, null);
     public static WorktreeCleanupOutcome Failure(GitWorktreeErrorCode error) => new(false, error);
 }
+
+/// <summary>Aggregate result of the explicit seven-day snapshot-reference retention sweep.
+/// Worktrees and ownership metadata are never deleted by this sweep.</summary>
+public sealed record WorktreeRetentionSweepOutcome(int Eligible, int Pruned, int Preserved, int Failed,
+    GitWorktreeErrorCode? Error = null);

@@ -157,6 +157,44 @@ public sealed class WorkflowToolFactoryTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
+    [Fact]
+    public void Workflow_verifier_keeps_declared_cwd_input_but_executes_in_host_selected_lane_root()
+    {
+        var declaredRoot = Path.Combine(Path.GetTempPath(), "omni-workflow-declared-" + Guid.NewGuid().ToString("N"));
+        var laneRoot = Path.Combine(Path.GetTempPath(), "omni-workflow-lane-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(declaredRoot);
+        Directory.CreateDirectory(laneRoot);
+        try
+        {
+            var workflow = CompiledWorkflowCatalog.ExploreImplementVerify;
+            var process = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+                includeProcessTools: true, includeControlTools: false).Catalog().Find(new ToolId("process.exec"))!;
+            var catalog = new FakeCatalog();
+            var verifier = WorkflowToolFactory.RegisterVerification(catalog, workflow, process,
+                "dotnet", ["run", "--project", "App.csproj"], declaredRoot, laneRoot);
+            var call = new ValidatedToolCall(ToolCallId.New(), verifier.Descriptor.Id, "verify",
+                "{\"executable\":\"dotnet\",\"argv\":[\"run\",\"--project\",\"App.csproj\"],\"cwd\":\""
+                    + JsonObj.Escape(declaredRoot) + "\",\"timeoutSeconds\":120}");
+
+            var prepared = Assert.IsType<Prepared>(verifier.Prepare(call,
+                new ToolPreparationContext(laneRoot, DateTimeOffset.UnixEpoch)));
+
+            Assert.Equal(Path.GetFullPath(laneRoot), prepared.Intent.Claims.Process!.WorkingDirectory);
+            Assert.Equal(Path.GetFullPath(laneRoot), prepared.Intent.Claims.Writes.Single());
+            Assert.Contains(JsonObj.Escape(laneRoot), prepared.Intent.NormalizedArgumentsJson, StringComparison.Ordinal);
+            var wrongDeclaredRoot = verifier.Prepare(new ValidatedToolCall(ToolCallId.New(), verifier.Descriptor.Id,
+                "wrong-root", call.NormalizedArgumentsJson.Replace(JsonObj.Escape(declaredRoot),
+                    JsonObj.Escape(laneRoot), StringComparison.Ordinal)),
+                new ToolPreparationContext(laneRoot, DateTimeOffset.UnixEpoch));
+            Assert.IsType<PreparationRejected>(wrongDeclaredRoot);
+        }
+        finally
+        {
+            Directory.Delete(declaredRoot, recursive: true);
+            Directory.Delete(laneRoot, recursive: true);
+        }
+    }
+
     private static EffectiveModelPolicy EffectiveObservePolicy()
     {
         var key = ModelPolicyKey.For("fixture", "fixture");

@@ -76,6 +76,50 @@ public sealed class WorktreeInspectionCliTests : IDisposable
         Assert.Empty(Directory.EnumerateFileSystemEntries(_repo));
     }
 
+    [Theory]
+    [InlineData("es", "Snapshots vencidos:")]
+    [InlineData("en", "Expired snapshots:")]
+    public async Task Snapshot_retention_cli_defaults_to_dry_run_and_requires_apply(string locale, string label)
+    {
+        await Git("init", "--template=");
+        await File.WriteAllTextAsync(Path.Combine(_repo, "sample.txt"), "base\n", TestContext.Current.CancellationToken);
+        await Git("add", "sample.txt");
+        await Git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "base");
+        var head = (await Git("rev-parse", "HEAD")).Output.Trim();
+        var refs = (await Git("show-ref")).Output;
+        var index = await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken);
+
+        var dryRun = await Cli(locale, "worktree", "retention", _repo);
+        Assert.Equal(0, dryRun.ExitCode);
+        Assert.Contains(label, dryRun.Output);
+        Assert.Contains("0", dryRun.Output);
+        Assert.Equal(refs, (await Git("show-ref")).Output);
+
+        var explicitApply = await Cli(locale, "worktree", "retention", _repo, "--apply");
+        Assert.Equal(0, explicitApply.ExitCode);
+        Assert.Equal(refs, (await Git("show-ref")).Output);
+        Assert.Equal(head, (await Git("rev-parse", "HEAD")).Output.Trim());
+        Assert.Equal(index, await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken));
+        Assert.Equal("base\n", await File.ReadAllTextAsync(Path.Combine(_repo, "sample.txt"), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Actual_cli_cleanup_requires_apply_and_retains_snapshot_ref()
+    {
+        var worktree = await CreateWorktree();
+        var refused = await Cli("en", "worktree", "cleanup", _repo, worktree.OwnershipId);
+        Assert.Equal(2, refused.ExitCode);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+
+        var removed = await Cli("en", "worktree", "cleanup", _repo, worktree.OwnershipId, "--apply");
+
+        Assert.Equal(0, removed.ExitCode);
+        Assert.Contains("retained for 7 days", removed.Output);
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal(worktree.SnapshotCommit,
+            (await Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}")).Output.Trim());
+    }
+
     [Fact]
     public void Inspection_strings_have_both_locales()
     {

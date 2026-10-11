@@ -10,7 +10,7 @@ using OmniCore.Abstractions;
 /// timeout y DESPUÉS recoge la salida (ya el proceso no existe → ReadToEnd no bloquea).
 /// CancelTree mata el árbol completo (Windows process group, ADR-0038 §4).
 /// </summary>
-public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFactory
+public sealed class SystemProcessRuntime : IProcessRuntime, IStreamingProcessRuntime, IProcessRuntimeFactory
 {
     private readonly Dictionary<int, Process> _alive = new();
 
@@ -185,6 +185,100 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IProcessRuntimeFacto
         }
 
         return new ProcessResult(exitCode, stdout, stderr, !completed);
+    }
+
+    public async Task<ProcessResult> WaitStreamingAsync(ProcessHandle handle, TimeSpan timeout,
+        Func<Stream, CancellationToken, Task> consumeStandardOutput, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(consumeStandardOutput);
+        if (!_alive.TryGetValue(handle.Pid, out var process))
+            return new ProcessResult(-1, null, null, true);
+        if (!process.StartInfo.RedirectStandardOutput || !process.StartInfo.RedirectStandardError)
+        {
+            CancelTree(handle);
+            throw new InvalidOperationException("Streaming capture was not enabled for this process.");
+        }
+
+        using var timeoutSource = new CancellationTokenSource();
+        timeoutSource.CancelAfter(timeout <= TimeSpan.Zero ? TimeSpan.FromMilliseconds(1) : timeout);
+        using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
+        var stderrTask = DrainCappedAsync(process.StandardError.BaseStream, 1_048_576, CancellationToken.None);
+        var stdoutTask = consumeStandardOutput(process.StandardOutput.BaseStream, linkedSource.Token);
+        var waitTask = process.WaitForExitAsync(linkedSource.Token);
+        var timedOut = false;
+        try
+        {
+            var first = await Task.WhenAny(waitTask, stdoutTask).ConfigureAwait(false);
+            if (first == stdoutTask && stdoutTask.IsFaulted) await stdoutTask.ConfigureAwait(false);
+            try { await waitTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                timedOut = true;
+                KillTree(process);
+                await WaitForExitAfterKillAsync(process).ConfigureAwait(false);
+            }
+            if (!timedOut) await stdoutTask.ConfigureAwait(false);
+            else
+            {
+                linkedSource.Cancel();
+                await ObserveAsync(stdoutTask).ConfigureAwait(false);
+            }
+            var stderr = await stderrTask.ConfigureAwait(false);
+            var exitCode = process.HasExited ? process.ExitCode : -1;
+            if (cancellationToken.IsCancellationRequested) throw new OperationCanceledException(cancellationToken);
+            return new ProcessResult(exitCode, null, stderr, timedOut);
+        }
+        catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            linkedSource.Cancel();
+            KillTree(process);
+            await WaitForExitAfterKillAsync(process).ConfigureAwait(false);
+            await ObserveAsync(stdoutTask).ConfigureAwait(false);
+            var stderr = await stderrTask.ConfigureAwait(false);
+            return new ProcessResult(process.HasExited ? process.ExitCode : -1, null, stderr, true);
+        }
+        catch
+        {
+            linkedSource.Cancel();
+            KillTree(process);
+            await WaitForExitAfterKillAsync(process).ConfigureAwait(false);
+            await ObserveAsync(stdoutTask).ConfigureAwait(false);
+            await ObserveAsync(stderrTask).ConfigureAwait(false);
+            throw;
+        }
+        finally
+        {
+            _alive.Remove(handle.Pid);
+            try { process.Dispose(); } catch (Exception) { }
+        }
+    }
+
+    private static async Task<string?> DrainCappedAsync(Stream stream, int cap, CancellationToken cancellationToken)
+    {
+        using var retained = new MemoryStream(Math.Min(cap, 8192));
+        var buffer = new byte[8192];
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (read == 0) break;
+            var keep = Math.Min(read, cap - (int)retained.Length);
+            if (keep > 0) retained.Write(buffer, 0, keep);
+        }
+        return retained.Length == 0 ? null : System.Text.Encoding.UTF8.GetString(retained.GetBuffer(), 0, (int)retained.Length);
+    }
+
+    private static async Task WaitForExitAfterKillAsync(Process process)
+    {
+        try
+        {
+            if (!process.HasExited) await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
+        catch (Exception) { }
+    }
+
+    private static async Task ObserveAsync(Task task)
+    {
+        try { await task.ConfigureAwait(false); } catch (Exception) { }
     }
 
     private static bool WaitForExitOrCancel(Process process, TimeSpan timeout, CancellationToken cancellationToken)

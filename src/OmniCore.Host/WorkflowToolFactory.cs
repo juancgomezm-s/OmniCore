@@ -4,6 +4,7 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Tools;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 /// <summary>A Host-registered, compiled workflow definition (ADR-0024/0027).</summary>
 public sealed record CompiledWorkflowDescriptor(WorkflowRef Reference, ComponentSource Source)
@@ -45,6 +46,14 @@ public static class WorkflowToolFactory
     /// <summary>Registers a verifier pinned to an explicit executable/argv and workspace directory.</summary>
     public static ITool RegisterVerification(FakeCatalog catalog, CompiledWorkflowDescriptor workflow,
         ITool processImplementation, string executable, IReadOnlyList<string> argv, string workspaceRoot)
+        => RegisterVerification(catalog, workflow, processImplementation, executable, argv, workspaceRoot,
+            workspaceRoot);
+
+    /// <summary>Pins the caller-visible declared cwd while executing the exact command in a
+    /// Host-selected effective workspace (for example, an owned Implement worktree during Verify).</summary>
+    public static ITool RegisterVerification(FakeCatalog catalog, CompiledWorkflowDescriptor workflow,
+        ITool processImplementation, string executable, IReadOnlyList<string> argv,
+        string declaredWorkspaceRoot, string effectiveWorkspaceRoot)
     {
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(processImplementation);
@@ -54,11 +63,12 @@ public static class WorkflowToolFactory
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         if (argv is null || argv.Count == 0 || argv.Count > 64 || argv.Any(value => value is null || value.Length > 2048))
             throw new ArgumentException("Verification argv must contain 1 to 64 bounded arguments.", nameof(argv));
-        var cwd = Path.GetFullPath(workspaceRoot);
+        var declaredCwd = Path.GetFullPath(declaredWorkspaceRoot);
+        var effectiveCwd = Path.GetFullPath(effectiveWorkspaceRoot);
         var tool = new WorkflowOwnedDynamicTool(workflow, "verify_integration",
             "Runs the workflow's exact declared integration check through process permissions and sandbox.",
             ModelToolCapability.ValidationProcess, processImplementation,
-            new VerificationBinding(executable, Array.AsReadOnly(argv.ToArray()), cwd, 120));
+            new VerificationBinding(executable, Array.AsReadOnly(argv.ToArray()), declaredCwd, effectiveCwd, 120));
         catalog.Add(tool);
         return tool;
     }
@@ -112,7 +122,18 @@ public static class WorkflowToolFactory
             if (_verification is { } binding && !MatchesVerification(call.NormalizedArgumentsJson, binding))
                 return new PreparationRejected("Integration check differs from the workflow's declared executable, argv, or workspace.", null,
                     ToolErrorCode.InvalidArguments);
-            var result = _implementation.Prepare(call, context);
+            var effectiveCall = call;
+            if (_verification is not null)
+            {
+                if (!TryReadVerificationArguments(call.NormalizedArgumentsJson, out var requested))
+                    return new PreparationRejected("Integration check arguments are invalid.", null,
+                        ToolErrorCode.InvalidArguments);
+                var arguments = JsonSerializer.Serialize(new VerificationToolArguments(requested.Executable,
+                    requested.Argv, Path.GetFullPath(context.WorkspaceRoot), requested.TimeoutSeconds,
+                    requested.NetworkRequired), VerificationToolArgumentsJsonContext.Default.VerificationToolArguments);
+                effectiveCall = new ValidatedToolCall(call.ToolCallId, call.ToolId, call.ProviderCallId, arguments);
+            }
+            var result = _implementation.Prepare(effectiveCall, context);
             if (result is not Prepared prepared) return result;
             if (prepared.Intent.ToolCallId != call.ToolCallId || !prepared.Intent.ToolId.Equals(Descriptor.Id)
                 || prepared.Intent.Effect != Descriptor.EffectClass || prepared.Intent.Risk != Descriptor.Risk)
@@ -123,9 +144,10 @@ public static class WorkflowToolFactory
                     || !process.Args.SequenceEqual(expected.Argv, StringComparer.Ordinal)
                     || process.NetworkRequired
                     || process.WorkingDirectory is not { } cwd
-                    || !string.Equals(cwd, expected.WorkspaceRoot, PathComparison())
+                    || !string.Equals(cwd, expected.EffectiveWorkspaceRoot, PathComparison())
+                    || !string.Equals(cwd, Path.GetFullPath(context.WorkspaceRoot), PathComparison())
                     || prepared.Intent.Claims.Writes.Count != 1
-                    || !string.Equals(prepared.Intent.Claims.Writes.Single(), expected.WorkspaceRoot,
+                    || !string.Equals(prepared.Intent.Claims.Writes.Single(), expected.EffectiveWorkspaceRoot,
                         PathComparison())))
                 return new PreparationRejected("Integration check claims do not match the pinned verifier.", null,
                     ToolErrorCode.InvalidArguments);
@@ -150,10 +172,33 @@ public static class WorkflowToolFactory
                 var requestedCwd = Path.GetFullPath(cwd.GetString()!);
                 return string.Equals(executable.GetString(), expected.Executable, StringComparison.Ordinal)
                     && arguments.SequenceEqual(expected.Argv, StringComparer.Ordinal)
-                    && string.Equals(requestedCwd, expected.WorkspaceRoot, PathComparison())
+                    && string.Equals(requestedCwd, expected.DeclaredWorkspaceRoot, PathComparison())
                     && seconds == expected.TimeoutSeconds;
             }
             catch (Exception failure) when (failure is JsonException or ArgumentException or NotSupportedException)
+            { return false; }
+        }
+
+        private static bool TryReadVerificationArguments(string json, out VerificationToolArguments arguments)
+        {
+            arguments = new VerificationToolArguments("", Array.Empty<string>(), "", 0, false);
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
+                var executable = root.GetProperty("executable").GetString();
+                var argv = root.GetProperty("argv").EnumerateArray().Select(value => value.GetString()!).ToArray();
+                var cwd = root.GetProperty("cwd").GetString();
+                var timeout = root.GetProperty("timeoutSeconds").GetInt32();
+                var network = root.TryGetProperty("networkRequired", out var networkValue)
+                    && networkValue.ValueKind == JsonValueKind.True;
+                if (string.IsNullOrWhiteSpace(executable) || string.IsNullOrWhiteSpace(cwd)
+                    || argv.Length is < 1 or > 64 || argv.Any(value => value is null || value.Length > 2048)
+                    || timeout is < 1 or > 86400) return false;
+                arguments = new VerificationToolArguments(executable, argv, cwd, timeout, network);
+                return true;
+            }
+            catch (Exception failure) when (failure is JsonException or InvalidOperationException or KeyNotFoundException)
             { return false; }
         }
 
@@ -178,5 +223,16 @@ public static class WorkflowToolFactory
     }
 
     private sealed record VerificationBinding(string Executable, IReadOnlyList<string> Argv,
-        string WorkspaceRoot, int TimeoutSeconds);
+        string DeclaredWorkspaceRoot, string EffectiveWorkspaceRoot, int TimeoutSeconds);
 }
+
+[JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Serialization)]
+[JsonSerializable(typeof(VerificationToolArguments))]
+internal sealed partial class VerificationToolArgumentsJsonContext : JsonSerializerContext;
+
+internal sealed record VerificationToolArguments(
+    [property: JsonPropertyName("executable")] string Executable,
+    [property: JsonPropertyName("argv")] IReadOnlyList<string> Argv,
+    [property: JsonPropertyName("cwd")] string Cwd,
+    [property: JsonPropertyName("timeoutSeconds")] int TimeoutSeconds,
+    [property: JsonPropertyName("networkRequired")] bool NetworkRequired);

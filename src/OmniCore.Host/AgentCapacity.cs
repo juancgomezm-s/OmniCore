@@ -154,6 +154,9 @@ internal sealed class AgentCapacity
         // Older callers therefore remain conservatively serialized against known roots too.
         // M7 callers provide the planned physical lane root: distinct known worktrees may
         // execute concurrently, while readers and writers on the same root exclude each other.
+        // Slot/budget admission is per Run, but physical write exclusion is Host-wide: another
+        // session or Run can target the same principal workspace. Every caller shares this
+        // scheduler for its EventStore, so a known physical collision must see all live leases.
         return !_active.Any(item => (item.DestinationRoot is null || waiter.DestinationRoot is null
                 || PathEquals(item.DestinationRoot, waiter.DestinationRoot))
             && (!item.ReadOnly || !waiter.ReadOnly));

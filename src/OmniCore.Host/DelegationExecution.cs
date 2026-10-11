@@ -14,6 +14,9 @@ internal sealed record DelegationWork(SessionId Session, RunId Run, Delegation D
 
 public sealed partial class OmniServer
 {
+    private sealed record VerifiedImplementationSource(LaneWorktreeCreated OriginalEvent,
+        WorktreeIdentity Identity, WorkflowImplementationBinding Binding);
+
     internal Delegation ReadCurrentDelegation(DelegationId id)
     {
         if (_lastSessionId is not { } session || _lastRunId is not { } run) throw new InvalidOperationException("No active Run.");
@@ -70,14 +73,35 @@ public sealed partial class OmniServer
                 return Ack(RuntimeCommandOutcome.Deferred("WorkspaceIdentityUnavailable"));
             }
             var initialFacts = initialRun.Select(_codecs.Decode).ToArray();
+            var initialTask = initialFacts.OfType<TaskCreated>()
+                .Single(evt => evt.TaskId == initialDelegation.ChildTaskId);
+            var workflowStage = ReadWorkflowStageForTask(session, run, initialTask.TaskId);
+            VerifiedImplementationSource? verifiedImplementation = null;
+            if (workflowStage?.Definition.Stage == WorkflowStage.Verify
+                && admittedProfile.Executor == AgentExecutorKind.ClaudeCode)
+                return Ack(RuntimeCommandOutcome.Deferred("WorkflowVerifierRequiresNativeToolPipeline"));
             if (readOnly) plannedLaneDestination = physicalRepositoryRoot;
+            if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
+            {
+                if (!AgentPermissionScopeSubset.IsWorkflowVerifierReadOnly(admittedProfile.PermissionCeiling))
+                    return Ack(RuntimeCommandOutcome.Deferred("WorkflowVerifyMustBeReadOnly"));
+                readOnly = true;
+                verifiedImplementation = ResolveVerifiedImplementationSource(session, run, workflowStage,
+                    initialRun, initialFacts, physicalRepositoryRoot, workspaceDataRoot, token);
+                if (verifiedImplementation is null)
+                    return Ack(RuntimeCommandOutcome.Deferred("WorkflowImplementationOwnershipUnavailable"));
+                plannedLaneDestination = verifiedImplementation.Identity.WorktreePath;
+            }
             var priorProvisioning = initialFacts.OfType<LaneProvisioning>()
                 .Any(payload => payload.LaneId == initialDelegation.ChildLaneId);
             var priorLaneStarted = initialFacts.OfType<LaneStarted>()
                 .Any(payload => payload.LaneId == initialDelegation.ChildLaneId);
             var priorWorktreeCount = initialFacts.OfType<LaneWorktreeCreated>()
                 .Count(payload => payload.LaneId == initialDelegation.ChildLaneId);
-            if (priorWorktreeCount > 1 || priorProvisioning && priorWorktreeCount == 0
+            var priorBoundCount = initialFacts.OfType<LaneWorktreeBound>()
+                .Count(payload => payload.LaneId == initialDelegation.ChildLaneId);
+            if (priorWorktreeCount + priorBoundCount > 1 || priorProvisioning
+                && priorWorktreeCount + priorBoundCount == 0
                 && !(readOnly && priorLaneStarted))
                 return Ack(RuntimeCommandOutcome.Deferred("LaneProvisioningRecoveryRequired"));
             if (priorWorktreeCount == 0 && initialProjection.State != RunState.Running)
@@ -118,16 +142,19 @@ public sealed partial class OmniServer
                     .FirstOrDefault();
                 if (firstPending != id) return Ack(RuntimeCommandOutcome.Deferred("QueuePredecessor"));
             }
-            var initialTask = initialFacts.OfType<TaskCreated>()
-                .Single(evt => evt.TaskId == initialDelegation.ChildTaskId);
             WorktreeIdentity? worktreeIdentity = null;
             TaskPacket? taskPacket = null;
             LaneWorktreeCreated? worktreeEvent = initialFacts.OfType<LaneWorktreeCreated>()
                 .SingleOrDefault(evt => evt.LaneId == initialDelegation.ChildLaneId);
-            var hadWorktreeEvent = worktreeEvent is not null;
+            LaneWorktreeBound? worktreeBoundEvent = initialFacts.OfType<LaneWorktreeBound>()
+                .SingleOrDefault(evt => evt.LaneId == initialDelegation.ChildLaneId);
+            if (worktreeEvent is not null && worktreeBoundEvent is not null)
+                return Ack(RuntimeCommandOutcome.Deferred("LaneOwnershipUnavailable"));
+            var hadWorktreeEvent = worktreeEvent is not null || worktreeBoundEvent is not null;
+            var existingBinding = (DomainEventPayload?)worktreeEvent ?? worktreeBoundEvent;
             var sharedReadOnlyFallback = false;
             ExecutionId? provisionedExecution = null;
-            if (worktreeEvent is null && initialDelegationHistory.Phase == PreM6RecordPhase.Created)
+            if (existingBinding is null && initialDelegationHistory.Phase == PreM6RecordPhase.Created)
             {
                 provisionedExecution = ExecutionId.New();
                 var provisioningScope = new ExecutionScopeState(run, initialTask.TaskId,
@@ -141,6 +168,7 @@ public sealed partial class OmniServer
                     if (_lastSessionId != session || _lastRunId != run
                         || currentProjection.State != RunState.Running
                         || currentFacts.OfType<LaneWorktreeCreated>().Any(evt => evt.LaneId == initialDelegation.ChildLaneId)
+                        || currentFacts.OfType<LaneWorktreeBound>().Any(evt => evt.LaneId == initialDelegation.ChildLaneId)
                         || currentFacts.OfType<LaneProvisioning>().Any(evt => evt.LaneId == initialDelegation.ChildLaneId))
                         return Ack(RuntimeCommandOutcome.Deferred("LaneProvisioningRecoveryRequired"));
                     new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {
@@ -156,10 +184,24 @@ public sealed partial class OmniServer
                 var compactWorkingState = WorkingStateProjector.Render(
                     WorkingStateProjector.Project(stateRun, statePlan));
                 var provisioner = new LaneWorktreeProvisioner(SystemProcessRuntime.Instance(), _artifacts!);
-                var provisioned = provisioner.CreateAsync(physicalRepositoryRoot, workspaceDataRoot, session, run, initialTask,
-                        initialDelegation, provisionedExecution!,
-                        admittedProfile, compactWorkingState, capacity.Cancellation.Token)
-                    .GetAwaiter().GetResult();
+                LaneWorktreeProvisionOutcome provisioned;
+                if (verifiedImplementation is { } verifiedSource)
+                {
+                    var latestSource = RecaptureImplementationBinding(verifiedSource, physicalRepositoryRoot,
+                        capacity.Cancellation.Token);
+                    if (latestSource is null || latestSource != verifiedSource.Binding)
+                        return Ack(RuntimeCommandOutcome.Deferred("WorkflowImplementationChanged"));
+                    provisioned = provisioner.BindVerifiedImplementation(verifiedSource.Identity, session,
+                        run, initialTask, initialDelegation, provisionedExecution!, admittedProfile,
+                        compactWorkingState, verifiedSource.Binding);
+                }
+                else
+                {
+                    provisioned = provisioner.CreateAsync(physicalRepositoryRoot, workspaceDataRoot, session, run, initialTask,
+                            initialDelegation, provisionedExecution!, admittedProfile, compactWorkingState,
+                            capacity.Cancellation.Token)
+                        .GetAwaiter().GetResult();
+                }
                 if (provisioned.Succeeded)
                     provisioned = provisioner.Publish(provisioned, capacity.Cancellation.Token);
                 if (!provisioned.Succeeded && readOnly
@@ -178,27 +220,56 @@ public sealed partial class OmniServer
                     taskPacketPublicationLease = provisioned.PublicationLease;
                     if (worktreeIdentity is null || taskPacket is null || provisioned.TaskPacketRef is null)
                         return Ack(RuntimeCommandOutcome.Deferred("LaneWorktreeProvisioningFailed"));
-                    worktreeEvent = new LaneWorktreeCreated(initialTask.TaskId, initialDelegation.ChildLaneId,
-                        provisionedExecution!, worktreeIdentity.OwnershipId, worktreeIdentity.RepositoryRoot,
-                        worktreeIdentity.GitCommonDirectory, worktreeIdentity.WorktreePath,
-                        worktreeIdentity.SnapshotCommit, worktreeIdentity.SnapshotTree,
-                        provisioned.TaskPacketRef, taskPacket.SelectedProjectionRef);
+                    if (verifiedImplementation is { } source)
+                    {
+                        var binding = source.Binding;
+                        worktreeBoundEvent = new LaneWorktreeBound(initialTask.TaskId,
+                            initialDelegation.ChildLaneId, provisionedExecution!, source.OriginalEvent.TaskId,
+                            source.OriginalEvent.LaneId, source.OriginalEvent.ExecutionId,
+                            worktreeIdentity.OwnershipId, worktreeIdentity.RepositoryRoot,
+                            worktreeIdentity.GitCommonDirectory, worktreeIdentity.WorktreePath,
+                            worktreeIdentity.SnapshotCommit, worktreeIdentity.SnapshotTree,
+                            provisioned.TaskPacketRef, taskPacket.SelectedProjectionRef,
+                            binding.WorkflowId, binding.WorkflowVersion, binding.Instance,
+                            binding.Tree, binding.Head, binding.Branch);
+                    }
+                    else
+                    {
+                        worktreeEvent = new LaneWorktreeCreated(initialTask.TaskId, initialDelegation.ChildLaneId,
+                            provisionedExecution!, worktreeIdentity.OwnershipId, worktreeIdentity.RepositoryRoot,
+                            worktreeIdentity.GitCommonDirectory, worktreeIdentity.WorktreePath,
+                            worktreeIdentity.SnapshotCommit, worktreeIdentity.SnapshotTree,
+                            provisioned.TaskPacketRef, taskPacket.SelectedProjectionRef);
+                    }
                 }
             }
-            else if (worktreeEvent is not null)
+            else if (existingBinding is not null)
             {
-                provisionedExecution = worktreeEvent.ExecutionId;
+                var ownershipId = worktreeEvent?.OwnershipId ?? worktreeBoundEvent!.OwnershipId;
+                provisionedExecution = worktreeEvent?.ExecutionId ?? worktreeBoundEvent!.ExecutionId;
                 var loaded = new GitWorktreeStore(SystemProcessRuntime.Instance())
-                    .LoadIdentityAsync(physicalRepositoryRoot, workspaceDataRoot, worktreeEvent.OwnershipId,
+                    .LoadIdentityAsync(physicalRepositoryRoot, workspaceDataRoot, ownershipId,
                         capacity.Cancellation.Token).GetAwaiter().GetResult();
                 if (!loaded.Succeeded || loaded.Worktree is not { } durableIdentity
-                    || !MatchesCreatedEvent(worktreeEvent, durableIdentity)
-                    || _artifacts?.Verify(worktreeEvent.TaskPacketRef.Hash, worktreeEvent.TaskPacketRef.Size) != true
-                    || _artifacts?.GetText(worktreeEvent.TaskPacketRef.Hash) is not { } packetText)
+                    || !(worktreeEvent is not null && MatchesCreatedEvent(worktreeEvent, durableIdentity)
+                        || worktreeBoundEvent is not null && verifiedImplementation is { } source
+                            && MatchesBoundEvent(worktreeBoundEvent, durableIdentity, source.OriginalEvent,
+                                source.Binding))
+                    || _artifacts?.Verify((worktreeEvent?.TaskPacketRef ?? worktreeBoundEvent!.TaskPacketRef).Hash,
+                        (worktreeEvent?.TaskPacketRef ?? worktreeBoundEvent!.TaskPacketRef).Size) != true
+                    || _artifacts?.GetText((worktreeEvent?.TaskPacketRef ?? worktreeBoundEvent!.TaskPacketRef).Hash)
+                        is not { } packetText)
                     return Ack(RuntimeCommandOutcome.Deferred("LaneOwnershipUnavailable"));
                 taskPacket = JsonSerializer.Deserialize(packetText, TaskPacketJsonContext.Default.TaskPacket);
-                if (taskPacket is null || !MatchesTaskPacket(worktreeEvent, taskPacket, session, run,
-                    initialTask, initialDelegation, _artifacts))
+                if (taskPacket is null || !(worktreeEvent is not null
+                        ? MatchesTaskPacket(worktreeEvent, taskPacket, session, run, initialTask, initialDelegation, _artifacts)
+                        : MatchesTaskPacket(worktreeBoundEvent!, taskPacket, session, run, initialTask,
+                            initialDelegation, _artifacts))
+                    || verifiedImplementation is { } verifiedSource
+                        && (verifiedSource.Binding != taskPacket.WorkflowImplementation
+                            || RecaptureImplementationBinding(verifiedSource, physicalRepositoryRoot,
+                                capacity.Cancellation.Token) != verifiedSource.Binding)
+                    || verifiedImplementation is null && taskPacket.WorkflowImplementation is not null)
                     return Ack(RuntimeCommandOutcome.Deferred("LaneOwnershipUnavailable"));
                 worktreeIdentity = durableIdentity;
             }
@@ -257,14 +328,27 @@ public sealed partial class OmniServer
                             created.Delegation.DelegationId)))
                         return Ack(RuntimeCommandOutcome.Deferred("ExecutionOwnershipUnavailable"));
                 }
-                else
+                else if (initialDelegationHistory.Phase == PreM6RecordPhase.Accepted)
                 {
                     if (history.Facts.OfType<DelegationCancellationRequested>().Any())
                         return Ack(RuntimeCommandOutcome.Deferred("CancellationRecoveryRequired"));
-                    // Only a settled, suspended Turn can be resumed; an unowned live invocation is not retried.
-                    if (OmniCliRuntime.FindOpenTurnStart(own, _codecs, run, delegation.ChildLaneId) is null)
+                    // External CLI recovery must be bound to its first durable init event or to
+                    // a final result receipt. Before init, effects are ambiguous and no rerun is safe.
+                    if (admittedProfile.Executor == AgentExecutorKind.ClaudeCode)
+                    {
+                        var childExecution = history.Facts.OfType<DelegationAccepted>().Single().ChildExecutionId;
+                        var hasExternalBinding = own.Select(_codecs.Decode).OfType<ExternalLaneSessionBound>()
+                            .Any(evt => evt.ExecutionId == childExecution && evt.LaneId == delegation.ChildLaneId);
+                        var hasExternalReceipt = own.Select(_codecs.Decode).OfType<ExternalLaneUsageRecorded>()
+                            .Any(evt => evt.ExecutionId == childExecution && evt.LaneId == delegation.ChildLaneId);
+                        if (!hasExternalBinding && !hasExternalReceipt)
+                            return Ack(RuntimeCommandOutcome.Deferred("ExternalLaneRecoveryRequiresManualResolution"));
+                    }
+                    else if (OmniCliRuntime.FindOpenTurnStart(own, _codecs, run, delegation.ChildLaneId) is null)
                         return Ack(RuntimeCommandOutcome.Deferred("ExecutionRecoveryRequired"));
                 }
+                else if (history.Facts.OfType<DelegationCancellationRequested>().Any())
+                    return Ack(RuntimeCommandOutcome.Deferred("CancellationRecoveryRequired"));
                 var profile = ResolveLaneAgentProfile(session, run, delegation.ChildLaneId)
                     ?? throw new InvalidOperationException("Child profile unavailable.");
                 var parentScope = AgentScope(run, facts, delegation.ParentExecutionId);
@@ -276,8 +360,9 @@ public sealed partial class OmniServer
                 var executionId = history.Phase == PreM6RecordPhase.Created ? provisionedExecution!
                     : history.Facts.OfType<DelegationAccepted>().Single().ChildExecutionId;
                 var scope = new ExecutionScopeState(run, task.TaskId, delegation.ChildLaneId, ExecutionId: executionId);
-                if (!sharedReadOnlyFallback && (worktreeEvent is null || worktreeIdentity is null || taskPacket is null
-                    || worktreeEvent.ExecutionId != executionId))
+                if (!sharedReadOnlyFallback && (existingBinding is null && worktreeEvent is null && worktreeBoundEvent is null
+                    || worktreeIdentity is null || taskPacket is null
+                    || (worktreeEvent?.ExecutionId ?? worktreeBoundEvent?.ExecutionId) != executionId))
                     return Ack(RuntimeCommandOutcome.Deferred("LaneOwnershipUnavailable"));
                 work = new(session, run, delegation, scope, profile, task.Objective, task.Budget,
                     worktreeIdentity, taskPacket, worktreeIdentity?.WorktreePath ?? physicalRepositoryRoot,
@@ -303,6 +388,7 @@ public sealed partial class OmniServer
                         new DelegationAccepted(delegation.ParentExecutionId, id, executionId),
                     };
                     if (!hadWorktreeEvent && worktreeEvent is not null) admissionEvents.Insert(0, worktreeEvent);
+                    if (!hadWorktreeEvent && worktreeBoundEvent is not null) admissionEvents.Insert(0, worktreeBoundEvent);
                     admissionEvents.AddRange(BindWorkflowStageExecution(session, run, task.TaskId,
                         delegation.ChildLaneId, executionId));
                     var scopes = admissionEvents.Select(evt => evt is DelegationAccepted
@@ -333,19 +419,45 @@ public sealed partial class OmniServer
                 var summary = new PiiRedactor().Redact(result.FinalText ?? "");
                 var issues = result.ToolCalls.Where(call => !call.Succeeded)
                     .Select(call => new PiiRedactor().Redact(call.ToolName + ": " + call.Summary)).ToArray();
-                var value = new DelegationResultDocument(1, "Succeeded", summary, [], issues);
-                var prepared = ((IArtifactPreparationStore)_artifacts!).PrepareText(JsonSerializer.Serialize(value, DelegationResultJson.Default.DelegationResultDocument),
-                    "application/vnd.omnicore.agent-result+json", ArtifactKind.Other, Sensitivity.Sensitive);
+                var resultSchemaId = result.ExternalAgentResult is not null
+                    ? ClaudeLaneAgentResultValidator.SchemaId : "core.explorer.v1";
+                var resultJson = result.ExternalAgentResult is { } externalResult
+                    ? ClaudeLaneAgentResultValidator.SerializeRedacted(externalResult)
+                    : JsonSerializer.Serialize(new DelegationResultDocument(1, "Succeeded", summary, [], issues),
+                        DelegationResultJson.Default.DelegationResultDocument);
                 using var lease = ((IArtifactPublicationLease)_artifacts!).AcquirePublicationLease(CancellationToken.None);
-                if (prepared.Publish() != prepared.Reference) throw new InvalidDataException("Result publication reference changed.");
+                ArtifactRef resultRef;
+                if (result.ExternalResultRef is { } externalResultRef)
+                {
+                    if (result.ExternalAgentResult is null || externalResultRef.Kind != ArtifactKind.Other
+                        || externalResultRef.MediaType != "application/vnd.omnicore.agent-result+json"
+                        || externalResultRef.Sensitivity != Sensitivity.Sensitive || externalResultRef.Size is <= 0 or > 1_048_576
+                        || _artifacts?.Verify(externalResultRef.Hash, externalResultRef.Size) != true
+                        || _artifacts.GetText(externalResultRef.Hash) is not { } durableExternalJson
+                        || ClaudeLaneAgentResultValidator.Validate(durableExternalJson) is null)
+                        throw new InvalidDataException("External agent result receipt is unavailable.");
+                    resultRef = externalResultRef;
+                }
+                else
+                {
+                    var prepared = ((IArtifactPreparationStore)_artifacts!).PrepareText(resultJson,
+                        "application/vnd.omnicore.agent-result+json", ArtifactKind.Other, Sensitivity.Sensitive);
+                    if (prepared.Reference.Size is <= 0 or > 1_048_576
+                        || prepared.Publish() != prepared.Reference)
+                        throw new InvalidDataException("Result publication reference changed.");
+                    resultRef = prepared.Reference;
+                }
                 var idExecution = work.Scope.ExecutionId!;
                 var parentScope = AgentScope(run, facts, work.Delegation.ParentExecutionId);
-                new EventStream(_store, _codecs, session).AppendBatch(new DomainEventPayload[] {
-                    new AgentExecutionCompleted(idExecution, work.Scope.LaneId!, work.Profile.Id, work.Delegation.ParentExecutionId,
-                        work.Delegation.Relation, work.Delegation.Supervision),
-                    new AgentResultProduced(idExecution, prepared.Reference, 1, "core.explorer.v1"),
-                    new DelegationReturned(work.Delegation.ParentExecutionId, id, prepared.Reference),
-                }, DurabilityClass.Barrier, new ExecutionScopeState?[] { work.Scope, work.Scope, parentScope });
+                var terminalEvents = new List<DomainEventPayload>();
+                terminalEvents.Add(new AgentExecutionCompleted(idExecution, work.Scope.LaneId!, work.Profile.Id,
+                    work.Delegation.ParentExecutionId, work.Delegation.Relation, work.Delegation.Supervision));
+                terminalEvents.Add(new AgentResultProduced(idExecution, resultRef, 1, resultSchemaId));
+                terminalEvents.Add(new DelegationReturned(work.Delegation.ParentExecutionId, id, resultRef));
+                var terminalScopes = terminalEvents.Select(evt => evt is DelegationReturned
+                    ? (ExecutionScopeState?)parentScope : work.Scope).ToArray();
+                new EventStream(_store, _codecs, session).AppendBatch(terminalEvents,
+                    DurabilityClass.Barrier, terminalScopes);
             }
             return Ack(RuntimeCommandOutcome.Accepted());
         }
@@ -374,6 +486,180 @@ public sealed partial class OmniServer
         && SamePhysicalPath(evt.WorktreePath, identity.WorktreePath)
         && evt.SnapshotCommit == identity.SnapshotCommit && evt.SnapshotTree == identity.SnapshotTree;
 
+    private VerifiedImplementationSource? ResolveVerifiedImplementationSource(SessionId session, RunId run,
+        WorkflowStageContract verifyContract, IReadOnlyList<DomainEvent> journal,
+        IReadOnlyList<DomainEventPayload> facts, string physicalRepositoryRoot, string workspaceDataRoot,
+        CancellationToken cancellationToken)
+    {
+        if (verifyContract.Definition.Stage != WorkflowStage.Verify) return null;
+        var plan = PlanProjection.Replay(_codecs, journal);
+        var verifyItem = plan.Items().SingleOrDefault(item => WorkflowStageContract.TryFromPlanItem(item, out var parsed)
+            && parsed!.Task == verifyContract.Task);
+        if (verifyItem is null || verifyItem.DependsOn.Count != 1
+            || !WorkflowStageContract.IsCanonicalAdmission(verifyContract, verifyItem, session, run,
+                journal, _codecs, _artifacts)) return null;
+        var implementItem = plan.Item(verifyItem.DependsOn[0]);
+        if (implementItem is null || implementItem.State != PlanItemState.Completed
+            || !WorkflowStageContract.TryFromPlanItem(implementItem, out var implementContract)
+            || implementContract!.Definition.Stage != WorkflowStage.Implement
+            || implementContract.Workflow != verifyContract.Workflow
+            || implementContract.Instance != verifyContract.Instance
+            || implementContract.Execution is not { } implementExecution
+            || !WorkflowStageContract.IsCanonicalAdmission(implementContract, implementItem, session, run,
+                journal, _codecs, _artifacts)) return null;
+
+        var sources = facts.OfType<LaneWorktreeCreated>()
+            .Where(value => value.LaneId == implementContract.Lane && value.TaskId == implementContract.Task).ToArray();
+        if (sources.Length != 1) return null;
+        var sourceEvent = sources[0];
+        var completed = journal.Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .Where(pair => pair.Payload is TaskCompleted item && item.TaskId == implementContract.Task).ToArray();
+        var sourceEnvelope = journal.SingleOrDefault(evt => _codecs.Decode(evt) is LaneWorktreeCreated created
+            && created == sourceEvent);
+        if (completed.Length != 1 || sourceEvent.ExecutionId != implementExecution
+            || sourceEnvelope is null || sourceEnvelope.Sequence >= completed[0].Event.Sequence)
+            return null;
+        var loaded = new GitWorktreeStore(SystemProcessRuntime.Instance())
+            .LoadIdentityAsync(physicalRepositoryRoot, workspaceDataRoot, sourceEvent.OwnershipId,
+                cancellationToken).GetAwaiter().GetResult();
+        if (!loaded.Succeeded || loaded.Worktree is not { } identity || !MatchesCreatedEvent(sourceEvent, identity))
+            return null;
+        var preview = new GitWorktreeStore(SystemProcessRuntime.Instance())
+            .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
+            .GetAwaiter().GetResult();
+        if (!preview.Succeeded || preview.Preview is not { } capture) return null;
+        var binding = new WorkflowImplementationBinding(verifyContract.Workflow.Id,
+            verifyContract.Workflow.Version, verifyContract.Instance,
+            implementContract.Task, implementContract.Lane, implementExecution, identity.OwnershipId,
+            capture.TheirsTree, capture.LaneHeadAtCapture, capture.LaneBranchAtCapture);
+        return new(sourceEvent, identity, binding);
+    }
+
+    private WorkflowImplementationBinding? RecaptureImplementationBinding(VerifiedImplementationSource source,
+        string physicalRepositoryRoot, CancellationToken cancellationToken)
+    {
+        var store = new GitWorktreeStore(SystemProcessRuntime.Instance());
+        var loaded = store.LoadIdentityAsync(physicalRepositoryRoot, source.Identity.WorkspaceDataRoot,
+            source.Identity.OwnershipId, cancellationToken).GetAwaiter().GetResult();
+        if (!loaded.Succeeded || loaded.Worktree is not { } identity
+            || !MatchesCreatedEvent(source.OriginalEvent, identity)) return null;
+        var preview = store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
+            .GetAwaiter().GetResult();
+        if (!preview.Succeeded || preview.Preview is not { } capture) return null;
+        return source.Binding with
+        {
+            Tree = capture.TheirsTree,
+            Head = capture.LaneHeadAtCapture,
+            Branch = capture.LaneBranchAtCapture,
+        };
+    }
+
+    internal bool VerifyAcceptedImplementationBinding(WorkflowStageContract verifyContract,
+        SessionId session, RunId run, IReadOnlyList<DomainEvent> journal, CancellationToken cancellationToken)
+    {
+        try
+        {
+            static bool RejectBinding(string _) => false;
+            if (verifyContract.Definition.Stage != WorkflowStage.Verify
+                || verifyContract.Execution is not { } verifyExecution) return RejectBinding("stage-or-execution");
+            var plan = PlanProjection.Replay(_codecs, journal.Where(evt => evt.RunId == run).ToArray());
+            var verifyItem = plan.Items().SingleOrDefault(item => WorkflowStageContract.TryFromPlanItem(item,
+                out var parsed) && parsed!.Task == verifyContract.Task);
+            if (verifyItem is null || verifyItem.DependsOn.Count != 1) return RejectBinding("plan-link");
+            var implementItem = plan.Item(verifyItem.DependsOn[0]);
+            if (implementItem is null || implementItem.State != PlanItemState.Completed
+                || !WorkflowStageContract.TryFromPlanItem(implementItem, out var implementContract)
+                || implementContract!.Definition.Stage != WorkflowStage.Implement
+                || implementContract.Workflow != verifyContract.Workflow
+                || implementContract.Instance != verifyContract.Instance
+                || implementContract.Execution is not { } implementExecution
+                || !WorkflowStageContract.IsCanonicalAdmission(implementContract, implementItem, session, run,
+                    journal, _codecs, _artifacts)) return RejectBinding("implement-contract");
+
+            var facts = journal.Where(evt => evt.SessionId == session && evt.RunId == run)
+                .Select(_codecs.Decode).ToArray();
+            var original = facts.OfType<LaneWorktreeCreated>().Where(evt => evt.LaneId == implementContract.Lane
+                && evt.TaskId == implementContract.Task && evt.ExecutionId == implementExecution).ToArray();
+            var bound = facts.OfType<LaneWorktreeBound>().Where(evt => evt.LaneId == verifyContract.Lane
+                && evt.TaskId == verifyContract.Task && evt.ExecutionId == verifyExecution).ToArray();
+            var verifyTask = facts.OfType<TaskCreated>().SingleOrDefault(evt => evt.TaskId == verifyContract.Task);
+            var verifyDelegation = facts.OfType<DelegationCreated>().Select(evt => evt.Delegation)
+                .SingleOrDefault(evt => evt.ChildTaskId == verifyContract.Task && evt.ChildLaneId == verifyContract.Lane);
+            if (original.Length != 1 || bound.Length != 1 || verifyTask is null || verifyDelegation is null
+                ) return RejectBinding("event-count-or-target-facts");
+            var identity = LoadIdentityForRecovery(session, original[0], cancellationToken);
+            var worktreeBinding = bound[0];
+            if (identity is null || !MatchesCreatedEvent(original[0], identity)
+                || !MatchesBoundEvent(worktreeBinding, identity, original[0],
+                    new WorkflowImplementationBinding(verifyContract.Workflow.Id, verifyContract.Workflow.Version,
+                        verifyContract.Instance, implementContract.Task, implementContract.Lane, implementExecution,
+                        original[0].OwnershipId, worktreeBinding.SourceTree, worktreeBinding.SourceHead,
+                        worktreeBinding.SourceBranch))) return RejectBinding("owner-or-binding-event");
+            var boundPacket = ReadTaskPacket(worktreeBinding.TaskPacketRef);
+            var binding = boundPacket?.WorkflowImplementation;
+            if (boundPacket is null || !MatchesTaskPacket(worktreeBinding, boundPacket, session, run,
+                    verifyTask, verifyDelegation, _artifacts)
+                || binding is null || binding.WorkflowId != verifyContract.Workflow.Id
+                || binding.WorkflowVersion != verifyContract.Workflow.Version
+                || binding.Instance != verifyContract.Instance || binding.TaskId != implementContract.Task
+                || binding.LaneId != implementContract.Lane || binding.ExecutionId != implementExecution
+                || binding.OwnershipId != original[0].OwnershipId) return RejectBinding("task-packet");
+            var preview = new GitWorktreeStore(SystemProcessRuntime.Instance())
+                .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
+                .GetAwaiter().GetResult();
+            return preview.Succeeded && preview.Preview is { } current
+                && binding.Tree == current.TheirsTree && binding.Head == current.LaneHeadAtCapture
+                && binding.Branch == current.LaneBranchAtCapture
+                && worktreeBinding.SourceTree == current.TheirsTree
+                && worktreeBinding.SourceHead == current.LaneHeadAtCapture
+                && worktreeBinding.SourceBranch == current.LaneBranchAtCapture
+                || RejectBinding("source-tree-recapture");
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
+            or ArgumentException or IOException or UnauthorizedAccessException or JsonException)
+        {
+            return false;
+        }
+    }
+
+    private WorktreeIdentity? LoadIdentityForRecovery(SessionId session, LaneWorktreeCreated created,
+        CancellationToken cancellationToken)
+    {
+        var verifiedRoot = VerifiedWorkspaceRoot(session);
+        if (verifiedRoot is null) return null;
+        var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(verifiedRoot);
+        var dataRoot = OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), physicalRoot);
+        var loaded = new GitWorktreeStore(SystemProcessRuntime.Instance())
+            .LoadIdentityAsync(physicalRoot, dataRoot, created.OwnershipId, cancellationToken)
+            .GetAwaiter().GetResult();
+        return loaded.Succeeded ? loaded.Worktree : null;
+    }
+
+    private TaskPacket? ReadTaskPacket(ArtifactRef reference)
+    {
+        if (_artifacts is null || reference.Kind != ArtifactKind.Other
+            || reference.MediaType != LaneWorktreeProvisioner.TaskPacketMediaType
+            || reference.Sensitivity != Sensitivity.Sensitive || reference.Size is <= 0 or > LaneWorktreeProvisioner.MaximumTaskPacketBytes
+            || !_artifacts.Verify(reference.Hash, reference.Size)) return null;
+        var json = _artifacts.GetText(reference.Hash);
+        if (json is null || System.Text.Encoding.UTF8.GetByteCount(json) > LaneWorktreeProvisioner.MaximumTaskPacketBytes)
+            return null;
+        return JsonSerializer.Deserialize(json, TaskPacketJsonContext.Default.TaskPacket);
+    }
+
+    private static bool MatchesBoundEvent(LaneWorktreeBound bound, WorktreeIdentity identity,
+        LaneWorktreeCreated original, WorkflowImplementationBinding workflow) =>
+        bound.LaneId != identity.LaneId && bound.OwnerLaneId == original.LaneId
+        && bound.OwnerTaskId == original.TaskId && bound.OwnerExecutionId == original.ExecutionId
+        && bound.OwnershipId == original.OwnershipId && bound.OwnershipId == identity.OwnershipId
+        && SamePhysicalPath(bound.RepositoryRoot, identity.RepositoryRoot)
+        && SamePhysicalPath(bound.GitCommonDirectory, identity.GitCommonDirectory)
+        && SamePhysicalPath(bound.WorktreePath, identity.WorktreePath)
+        && bound.SnapshotCommit == identity.SnapshotCommit && bound.SnapshotTree == identity.SnapshotTree
+        && bound.WorkflowId == workflow.WorkflowId && bound.WorkflowVersion == workflow.WorkflowVersion
+        && bound.WorkflowInstance == workflow.Instance && bound.SourceTree == workflow.Tree
+        && bound.SourceHead == workflow.Head && bound.SourceBranch == workflow.Branch;
+
     private static bool MatchesTaskPacket(LaneWorktreeCreated evt, TaskPacket packet, SessionId session,
         RunId run, TaskCreated task, Delegation delegation, IArtifactStore? artifacts) =>
         packet.SchemaVersion == 1 && packet.SessionId == session && packet.RunId == run
@@ -387,6 +673,31 @@ public sealed partial class OmniServer
         && SamePhysicalPath(packet.WorktreePath, evt.WorktreePath)
         && packet.SnapshotCommit == evt.SnapshotCommit && packet.SnapshotTree == evt.SnapshotTree
         && packet.Base == WorktreeBase.SnapshotOfWorkingTree
+        && packet.SelectedProjectionRef == delegation.PacketRef
+        && artifacts is not null && artifacts.Verify(evt.TaskPacketRef.Hash, evt.TaskPacketRef.Size)
+        && evt.TaskPacketRef.Kind == ArtifactKind.Other
+        && evt.TaskPacketRef.MediaType == LaneWorktreeProvisioner.TaskPacketMediaType
+        && evt.TaskPacketRef.Sensitivity == Sensitivity.Sensitive
+        && evt.TaskPacketRef.Size is > 0 and <= LaneWorktreeProvisioner.MaximumTaskPacketBytes;
+
+    private static bool MatchesTaskPacket(LaneWorktreeBound evt, TaskPacket packet, SessionId session,
+        RunId run, TaskCreated task, Delegation delegation, IArtifactStore? artifacts) =>
+        packet.SchemaVersion == 1 && packet.SessionId == session && packet.RunId == run
+        && packet.TaskId == task.TaskId && packet.LaneId == evt.LaneId
+        && packet.ExecutionId == evt.ExecutionId && packet.DelegationId == delegation.DelegationId
+        && packet.ParentExecutionId == delegation.ParentExecutionId && packet.ProfileId == delegation.ProfileId
+        && packet.Budget == task.Budget && packet.OwnershipId == evt.OwnershipId
+        && SamePhysicalPath(packet.RepositoryRoot, evt.RepositoryRoot)
+        && SamePhysicalPath(packet.GitCommonDirectory, evt.GitCommonDirectory)
+        && SamePhysicalPath(packet.WorktreePath, evt.WorktreePath)
+        && packet.SnapshotCommit == evt.SnapshotCommit && packet.SnapshotTree == evt.SnapshotTree
+        && packet.Base == WorktreeBase.SnapshotOfWorkingTree
+        && packet.WorkflowImplementation is { } workflow
+        && workflow.WorkflowId == evt.WorkflowId && workflow.WorkflowVersion == evt.WorkflowVersion
+        && workflow.Instance == evt.WorkflowInstance && workflow.TaskId == evt.OwnerTaskId
+        && workflow.LaneId == evt.OwnerLaneId && workflow.ExecutionId == evt.OwnerExecutionId
+        && workflow.OwnershipId == evt.OwnershipId && workflow.Tree == evt.SourceTree
+        && workflow.Head == evt.SourceHead && workflow.Branch == evt.SourceBranch
         && packet.SelectedProjectionRef == delegation.PacketRef
         && artifacts is not null && artifacts.Verify(evt.TaskPacketRef.Hash, evt.TaskPacketRef.Size)
         && evt.TaskPacketRef.Kind == ArtifactKind.Other

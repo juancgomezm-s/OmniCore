@@ -83,9 +83,10 @@ internal static class ChangedFilesReader
     private sealed record BatchDiff(string Id, string Path, string? RunId, string? LaneId,
         byte[]? Before, byte[]? After, bool Available, string? Reason);
 
-    // Batch integration has one journal effect for many paths. The manifest is revalidated by
-    // WorkspaceSnapshotStore, the same authority used by undo; raw protected JSON never crosses
-    // the protocol boundary. Row IDs include the path so each diff remains addressable.
+    // Batch integration has one journal effect for many paths. The durable manifest is decoded
+    // independently of Undo eligibility and never consults the live filesystem, so historical
+    // diffs survive compensation and workspace removal. Raw protected JSON never crosses the
+    // protocol boundary. Row IDs include the path so each diff remains addressable.
     private static IReadOnlyList<BatchDiff> BatchDiffs(IReadOnlyList<DomainEvent> events,
         IEventCodecRegistry codecs, SessionId session, IArtifactStore? artifacts)
     {
@@ -101,16 +102,31 @@ internal static class ChangedFilesReader
         var starts = decoded.Where(item => item.Payload is ToolCallStarted)
             .ToDictionary(item => ((ToolCallStarted)item.Payload).ToolCallId);
         var result = new List<BatchDiff>();
-        foreach (var item in decoded.Where(item => item.Payload is WorktreeIntegrationStateRecorded
-                     { State: WorktreeIntegrationState.Completed }))
+        var completions = decoded.Where(item => item.Payload is ToolCallSucceeded or ToolCallReconciled
+            { Outcome: ReconciliationOutcome.Applied }).Select(item => (item.Envelope, Id: item.Payload switch
+            {
+                ToolCallSucceeded success => success.ToolCallId,
+                ToolCallReconciled reconciled => reconciled.ToolCallId,
+                _ => (ToolCallId?)null,
+            })).Where(item => item.Id is not null).GroupBy(item => item.Id!)
+            .ToDictionary(group => group.Key, group => group.Last().Envelope);
+        var completedStates = decoded.Where(item => item.Payload is WorktreeIntegrationStateRecorded
+                { State: WorktreeIntegrationState.Completed })
+            .GroupBy(item => ((WorktreeIntegrationStateRecorded)item.Payload).ToolCallId)
+            .Select(group => group.Last());
+        foreach (var item in completedStates)
         {
             var state = (WorktreeIntegrationStateRecorded)item.Payload;
-            if (!starts.TryGetValue(state.ToolCallId, out var start) || !SameScope(start.Envelope, item.Envelope)) continue;
-            foreach (var entry in snapshots.BuildPlan(session, state.ToolCallId, includeCompensated: true).Entries.Where(row => row.State == "Ready"))
+            if (!starts.TryGetValue(state.ToolCallId, out var start) || !SameScope(start.Envelope, item.Envelope)
+                || !completions.TryGetValue(state.ToolCallId, out var completion)
+                || !SameScope(start.Envelope, completion)) continue;
+            var evidence = snapshots.ReadBatchEvidence(state.ToolCallId, (ToolCallStarted)start.Payload, state);
+            if (evidence is null) continue;
+            foreach (var entry in evidence)
             {
-                var diffId = entry.OriginalEffect + ":" + entry.RelativePath;
+                var diffId = state.ToolCallId + ":" + entry.RelativePath;
                 result.Add(new(diffId, OmniCliRuntime.RedactSensitive(entry.RelativePath),
-                    start.Envelope.RunId?.ToString(), start.Envelope.LaneId?.ToString(), entry.RestoreBytes,
+                    start.Envelope.RunId?.ToString(), start.Envelope.LaneId?.ToString(), entry.PreimageBytes,
                     entry.PostimageBytes, true, null));
             }
         }

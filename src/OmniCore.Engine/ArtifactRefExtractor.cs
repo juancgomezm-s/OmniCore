@@ -55,6 +55,15 @@ internal static class ArtifactRefExtractor
                 refs.Add(w.SelectedProjectionRef);
                 break;
 
+            case LaneWorktreeBound w:
+                refs.Add(w.TaskPacketRef);
+                refs.Add(w.SelectedProjectionRef);
+                break;
+
+            case ExternalLaneUsageRecorded external:
+                refs.Add(external.ResultRef);
+                break;
+
             // Lane/Turn events
             case TurnStarted t:
                 if (t.ContextSnapshotRef is not null) refs.Add(t.ContextSnapshotRef);

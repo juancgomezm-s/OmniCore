@@ -51,13 +51,19 @@ public sealed class UndoService
         var pending = FindUnfinishedUndo(events);
         if (pending is not null)
         {
+            if (effectId is not null && effectId != pending.OriginalEffect)
+                return new(UndoOutcome.Unsupported, effectId, [],
+                    "A different undo is pending recovery; select its recorded effect first.");
             EnsureRootIdentity();
             var classified = pending.Files.Select(file => ClassifyPending(file)).ToArray();
+            var recoveryOutcome = classified.Length > 0
+                && classified.All(file => file.Outcome == ReconciliationOutcome.Applied)
+                ? UndoOutcome.Applied : UndoOutcome.Unknown;
             if (!AppendTerminal(sessionId, pending.CommandId, pending.Attribution, pending.UndoId,
-                    pending.OriginalEffect, UndoOutcome.Unknown, classified))
+                    pending.OriginalEffect, recoveryOutcome, classified))
                 return new(UndoOutcome.Unknown, pending.OriginalEffect, classified,
                     "An interrupted undo was classified, but its recovery record was not durably confirmed.");
-            return new(UndoOutcome.Unknown, pending.OriginalEffect, classified,
+            return new(recoveryOutcome, pending.OriginalEffect, classified,
                 "A prior undo was interrupted; its targets were classified and no retry was attempted.");
         }
 
@@ -185,13 +191,13 @@ public sealed class UndoService
     {
         var path = _snapshots.ResolvePath(relative);
         VerifyAncestors(path);
-        if (!File.Exists(path))
-        {
-            if (Directory.Exists(path)) throw new InvalidOperationException("A directory occupies an undo target.");
-            return null;
-        }
-        var attributes = File.GetAttributes(path);
-        if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory | FileAttributes.ReadOnly)) != 0)
+        FileAttributes attributes;
+        try { attributes = File.GetAttributes(path); }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+        if ((attributes & FileAttributes.Directory) != 0)
+            throw new InvalidOperationException("A directory occupies an undo target.");
+        if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.ReadOnly)) != 0)
             throw new InvalidOperationException("Undo target topology is unsupported.");
         if (new FileInfo(path).Length > MaxImageBytes) throw new InvalidOperationException("Undo target exceeds its size bound.");
         using var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -278,13 +284,18 @@ public sealed class UndoService
                 if (file.QuarantinePath is not null)
                 {
                     var owned = _snapshots.ResolvePath(file.QuarantinePath);
-                    if (File.Exists(owned))
+                    FileAttributes attributes;
+                    var quarantineExists = true;
+                    try { attributes = File.GetAttributes(owned); }
+                    catch (FileNotFoundException) { attributes = default; quarantineExists = false; }
+                    catch (DirectoryNotFoundException) { attributes = default; quarantineExists = false; }
+                    if (quarantineExists)
                     {
-                        if (Hash(ReadCurrent(file.QuarantinePath)) != file.ExpectedBeforeUndoHash)
+                        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0
+                            || Hash(ReadCurrent(file.QuarantinePath)) != file.ExpectedBeforeUndoHash)
                             return new(file.RelativePath, ReconciliationOutcome.Conflict);
                         // Recovery is classification only. Preserve the journal-owned quarantine
                         // bytes until a future explicit cleanup lifecycle is authorized.
-                        return new(file.RelativePath, ReconciliationOutcome.Conflict);
                     }
                 }
                 return new(file.RelativePath, ReconciliationOutcome.Applied);

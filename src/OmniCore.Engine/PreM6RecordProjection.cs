@@ -24,6 +24,8 @@ public sealed class PreM6RecordProjection
     private readonly Dictionary<EventId, DomainEvent> _events = new();
     private readonly Dictionary<SessionId, IReadOnlyDictionary<EventId, DomainEvent>> _externalJournals = new();
     private readonly Dictionary<ExecutionId, AgentResultProduced> _latestResults = new();
+    private readonly Dictionary<ExecutionId, ExternalLaneSessionBound> _externalSessions = new();
+    private readonly HashSet<ExecutionId> _externalUsage = new();
     private readonly IEventCodecRegistry _codecs;
     private readonly SessionId _session;
     private readonly Func<SessionId, IReadOnlyList<DomainEvent>>? _externalEvents;
@@ -70,6 +72,39 @@ public sealed class PreM6RecordProjection
             case AgentExecutionFailed failed:
                 ValidateTerminal(evt, failed.ExecutionId, failed.LaneId, failed.ProfileId,
                     failed.ParentExecutionId, failed.Relation, failed.Supervision, failed); return;
+            case ExternalLaneSessionBound bound:
+                var boundExecution = RequireExecution(bound.ExecutionId);
+                var boundTask = _tasks[_lanes[boundExecution.LaneId].TaskId];
+                if (bound.LaneId != boundExecution.LaneId || !ValidExternalIdentifier(bound.SessionId, 512)
+                    || !ValidExternalIdentifier(bound.Model, 512) || bound.Tools is null || bound.Tools.Count > 1024
+                    || bound.Tools.Any(tool => !ValidExternalIdentifier(tool, 256))
+                    || bound.Tools.Distinct(StringComparer.Ordinal).Count() != bound.Tools.Count
+                    || bound.Capabilities is null || bound.Capabilities.Count > 128
+                    || bound.Capabilities.Any(capability => !ValidExternalIdentifier(capability.Key, 128))
+                    || evt.ExecutionId != bound.ExecutionId || evt.LaneId != bound.LaneId
+                    || evt.TaskId != boundTask.TaskId || evt.RunId != boundTask.RunId
+                    || evt.CorrelationId != boundTask.RunId || !_externalSessions.TryAdd(bound.ExecutionId, bound))
+                    throw Invalid("External session binding is invalid or duplicated.");
+                return;
+            case ExternalLaneUsageRecorded usage:
+                var usageExecution = RequireExecution(usage.ExecutionId);
+                var usageTask = _tasks[_lanes[usageExecution.LaneId].TaskId];
+                if (!_externalSessions.TryGetValue(usage.ExecutionId, out var sessionBinding)
+                    || sessionBinding.SessionId != usage.SessionId || usage.LaneId != usageExecution.LaneId
+                    || evt.ExecutionId != usage.ExecutionId || evt.LaneId != usage.LaneId
+                    || evt.TaskId != usageTask.TaskId || evt.RunId != usageTask.RunId
+                    || evt.CorrelationId != usageTask.RunId || !_externalUsage.Add(usage.ExecutionId)
+                    || usage.ResultRef is null || usage.ResultRef.Kind != ArtifactKind.Other
+                    || usage.ResultRef.MediaType != "application/vnd.omnicore.agent-result+json"
+                    || usage.ResultRef.Sensitivity != Sensitivity.Sensitive
+                    || usage.ResultRef.Size is <= 0 or > 1_048_576
+                    || usage.InputTokens is < 0 || usage.OutputTokens is < 0
+                    || usage.CacheReadInputTokens is < 0 || usage.CacheCreationInputTokens is < 0
+                    || usage.InputTokens is null || usage.OutputTokens is null || usage.TotalCostUsd is null
+                    || usage.TotalCostUsd is < 0 or > 100m || usage.ToolUseCount is < 0 or > 1024
+                    || usage.EventCount is < 1 or > 20_000 || usage.StreamBytes is < 1 or > 16_777_216)
+                    throw Invalid("External usage binding is invalid or duplicated.");
+                return;
         }
         if (payload is not IPreM6ContractEvent fact) return;
         fact.Validate();
@@ -193,6 +228,9 @@ public sealed class PreM6RecordProjection
             throw Invalid("Execution has no matching durable Task/Lane/Profile.");
         return execution;
     }
+
+    private static bool ValidExternalIdentifier(string? value, int limit) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= limit && !value.Any(char.IsControl);
 
     private void ValidateTerminal(DomainEvent evt, ExecutionId id, LaneId lane, ProfileId profile,
         ExecutionId? parent, ExecutionRelation relation, ExecutionSupervision supervision, DomainEventPayload payload)

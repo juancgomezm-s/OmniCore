@@ -29,7 +29,7 @@ public static class AgentProfileConfiguration
         foreach (var pair in profiles.Children)
         {
             var name = Scalar(pair.Key);
-            var entry = Mapping(pair.Value, ["id", "revision", "permissions", "preferredTools"]);
+            var entry = Mapping(pair.Value, ["id", "revision", "permissions", "preferredTools", "executor", "externalModel"]);
             var id = ProfileId.Parse(Scalar(Required(entry, "id")));
             if (!long.TryParse(Scalar(Required(entry, "revision")), NumberStyles.None,
                 CultureInfo.InvariantCulture, out var revision)) throw Invalid("Invalid profile revision.");
@@ -52,10 +52,25 @@ public static class AgentProfileConfiguration
                 "false" => false,
                 _ => throw Invalid("allowShell must be true or false."),
             };
-            definitions.Add(new AgentProfile(id, name, revision,
-                PermissionScope.With(Strings(Required(ceiling, "reads")), Strings(Required(ceiling, "writes")),
-                    process, network, Strings(Required(ceiling, "secrets")), shell),
-                Strings(Required(entry, "preferredTools")).Select(value => new ToolId(value)).ToArray()));
+            var executor = entry.Children.TryGetValue(new YamlScalarNode("executor"), out var executorNode)
+                ? Scalar(executorNode) switch
+                {
+                    "native" => AgentExecutorKind.Native,
+                    "claude-code" => AgentExecutorKind.ClaudeCode,
+                    _ => throw Invalid("executor must be native or claude-code."),
+                }
+                : AgentExecutorKind.Native;
+            var externalModel = entry.Children.TryGetValue(new YamlScalarNode("externalModel"), out var modelNode)
+                ? Scalar(modelNode) : null;
+            try
+            {
+                definitions.Add(new AgentProfile(id, name, revision,
+                    PermissionScope.With(Strings(Required(ceiling, "reads")), Strings(Required(ceiling, "writes")),
+                        process, network, Strings(Required(ceiling, "secrets")), shell),
+                    Strings(Required(entry, "preferredTools")).Select(value => new ToolId(value)).ToArray(),
+                    executor, externalModel));
+            }
+            catch (ArgumentException) { throw Invalid("Invalid profile executor configuration."); }
         }
         var registry = new AgentProfileRegistry(definitions);
         var selected = root.Children.TryGetValue(new YamlScalarNode("defaultProfile"), out var selectedNode)

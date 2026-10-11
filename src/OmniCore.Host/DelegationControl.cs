@@ -301,12 +301,17 @@ public sealed partial class OmniServer
 
     private AgentResult ReadAgentResult(AgentResultProduced produced)
     {
-        if (produced.ResultSchemaId != "core.explorer.v1" || _artifacts is null)
+        if (_artifacts is null)
             throw new InvalidDataException("Unsupported result schema.");
         var text = _artifacts.GetText(produced.ResultRef.Hash) ?? throw new InvalidDataException("Result artifact missing.");
         if (System.Text.Encoding.UTF8.GetByteCount(text) != produced.ResultRef.Size
             || !string.Equals(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))),
                 produced.ResultRef.Hash.Value, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Result artifact integrity mismatch.");
+        if (produced.ResultSchemaId == ClaudeLaneAgentResultValidator.SchemaId)
+            return ClaudeLaneAgentResultValidator.Validate(text)?.Result
+                ?? throw new InvalidDataException("Invalid external agent result.");
+        if (produced.ResultSchemaId != "core.explorer.v1")
+            throw new InvalidDataException("Unsupported result schema.");
         var document = JsonSerializer.Deserialize(text, DelegationResultJson.Default.DelegationResultDocument)
             ?? throw new InvalidDataException("Invalid result.");
         if (document.Version != 1 || document.Outcome != "Succeeded" || document.Summary is null

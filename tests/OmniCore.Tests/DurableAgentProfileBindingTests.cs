@@ -93,6 +93,22 @@ public sealed class DurableAgentProfileBindingTests
     }
 
     [Fact]
+    public void Claude_executor_is_an_explicit_user_profile_choice_and_part_of_its_fingerprint()
+    {
+        var native = AgentProfileConfiguration.Load(Yaml, ScopeLevel.User).Find(Id)!;
+        var externalYaml = Yaml.Replace("revision: 1", "revision: 1\n    executor: claude-code\n    externalModel: claude-haiku-5-5", StringComparison.Ordinal);
+        var external = AgentProfileConfiguration.Load(externalYaml, ScopeLevel.User).Find(Id)!;
+        Assert.Equal(AgentExecutorKind.Native, native.Executor);
+        Assert.Equal(AgentExecutorKind.ClaudeCode, external.Executor);
+        Assert.Equal("claude-haiku-5-5", external.ExternalModel);
+        Assert.NotEqual(AgentProfileFingerprint.Hash(native), AgentProfileFingerprint.Hash(external));
+        Assert.Throws<ArgumentException>(() => new AgentProfile(Id, "invalid", 1,
+            PermissionScope.With(["**"], [], [], [], [], false), [], AgentExecutorKind.ClaudeCode));
+        Assert.Throws<InvalidDataException>(() => AgentProfileConfiguration.Load(
+            Yaml.Replace("revision: 1", "revision: 1\n    executor: claude-code", StringComparison.Ordinal), ScopeLevel.User));
+    }
+
+    [Fact]
     public void Normal_loader_reads_only_User_file_and_absence_does_not_promote_workspace_configuration()
     {
         WithRoot(root =>

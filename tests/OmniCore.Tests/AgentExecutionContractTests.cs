@@ -53,6 +53,48 @@ public sealed class AgentExecutionContractTests
     }
 
     [Fact]
+    public void External_lane_session_is_durably_bound_before_usage_and_roots_its_result_artifact()
+    {
+        var codecs = EventCodecs.Create();
+        var store = new InMemoryEventStore();
+        var session = SessionId.New();
+        var stream = new EventStream(store, codecs, session);
+        var root = TestRun.Open(stream, session);
+        var taskId = TaskId.New();
+        var laneId = LaneId.New();
+        var profileId = ProfileId.New();
+        var executionId = ExecutionId.New();
+        stream.Append(new TaskCreated(taskId, root.RunId, "external", [], new TaskBudget(1m, 1000, 2, 3), root.RootTask));
+        var rootLane = store.ReadFrom(session, 1).Select(codecs.Decode).OfType<LaneCreated>()
+            .Single(lane => lane.LaneId == root.RootLane);
+        var parent = new AgentExecutionStarted(ExecutionId.New(), root.RootLane, rootLane.AgentProfile, null,
+            ExecutionRelation.Awaited, ExecutionSupervision.Unmanaged);
+        stream.Append(parent);
+        stream.Append(new LaneCreated(laneId, taskId, profileId));
+        stream.Append(new LaneProvisioning(laneId));
+        stream.Append(new LaneStarted(laneId));
+        stream.Append(new AgentExecutionStarted(executionId, laneId, profileId, parent.ExecutionId,
+            ExecutionRelation.Awaited, ExecutionSupervision.Managed));
+        var scope = new ExecutionScopeState(root.RunId, taskId, laneId, ExecutionId: executionId);
+        using (ExecutionScope.Begin(scope))
+        {
+            stream.Append(new ExternalLaneSessionBound(executionId, laneId, "session-123", "claude-haiku-5-5",
+                ["Read", "Glob"], new Dictionary<string, bool> { ["interrupt_receipt_v1"] = true }), DurabilityClass.Barrier);
+            var result = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('a', 64)), 256,
+                "application/vnd.omnicore.agent-result+json", ArtifactKind.Other, Sensitivity.Sensitive);
+            stream.Append(new ExternalLaneUsageRecorded(executionId, laneId, "session-123", 100, 20, 2, 0,
+                0.01m, 1, 4, 512, result), DurabilityClass.Barrier);
+        }
+        var journal = store.ReadFrom(session, 1);
+        var facts = journal.Select(codecs.Decode).ToArray();
+        Assert.Equal("session-123", Assert.Single(facts.OfType<ExternalLaneSessionBound>()).SessionId);
+        Assert.Equal("session-123", Assert.Single(facts.OfType<ExternalLaneUsageRecorded>()).SessionId);
+        Assert.Contains(journal.Single(evt => codecs.Decode(evt) is ExternalLaneUsageRecorded).ArtifactRefs,
+            artifact => artifact.MediaType == "application/vnd.omnicore.agent-result+json");
+        _ = PreM6RecordProjection.Replay(session, codecs, journal);
+    }
+
+    [Fact]
     public void Agent_execution_lifecycle_roundtrips_in_SQLite_without_completing_lane_task_or_run()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-agent-execution-" + Guid.NewGuid().ToString("N"));

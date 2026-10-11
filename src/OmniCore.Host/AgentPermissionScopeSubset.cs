@@ -17,6 +17,13 @@ internal static class AgentPermissionScopeSubset
         permissions.Writes.Count == 0 && permissions.Process.Count == 0
         && permissions.Network.Count == 0 && permissions.Secrets.Count == 0 && !permissions.AllowShell;
 
+    internal static bool IsWorkflowVerifierReadOnly(PermissionScope permissions) =>
+        // Verify composes a catalog containing the single Host-owned exact-check tool, never
+        // filesystem mutation tools. The profile's broad file-write ceiling is therefore not
+        // reachable in that catalog; shell, network and secret capabilities remain disallowed.
+        permissions.Network.Count == 0
+        && permissions.Secrets.Count == 0 && !permissions.AllowShell;
+
     private static bool Same(ProcessRule left, ProcessRule right) =>
         left.ExecutablePattern.Equals(right.ExecutablePattern, StringComparison.Ordinal)
         && left.ArgvPatterns.SequenceEqual(right.ArgvPatterns, StringComparer.Ordinal);

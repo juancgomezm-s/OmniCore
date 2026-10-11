@@ -63,6 +63,126 @@ public sealed class WorkspaceUndoTests
         Assert.Equal(after, File.ReadAllBytes(Path.Combine(fixture.Root, "target.txt")));
     }
 
+    [Fact]
+    public void Pending_undo_for_another_effect_is_left_unclassified_until_selected()
+    {
+        using var fixture = new Fixture();
+        var before = System.Text.Encoding.UTF8.GetBytes("before\n");
+        var after = System.Text.Encoding.UTF8.GetBytes("after\n");
+        File.WriteAllBytes(Path.Combine(fixture.Root, "a.txt"), after);
+        File.WriteAllBytes(Path.Combine(fixture.Root, "b.txt"), after);
+        var requested = fixture.AddSingleEffect("a.txt", before, after);
+        var pendingEffect = fixture.AddSingleEffect("b.txt", before, after);
+        fixture.AppendPendingUndo(pendingEffect, before, after);
+        var service = fixture.Service(PermissionDecision.Allow);
+
+        var mismatched = service.Undo(fixture.Session, requested, CancellationToken.None);
+
+        Assert.Equal(UndoOutcome.Unsupported, mismatched.Outcome);
+        Assert.Equal(after, File.ReadAllBytes(Path.Combine(fixture.Root, "a.txt")));
+        Assert.Equal(after, File.ReadAllBytes(Path.Combine(fixture.Root, "b.txt")));
+        Assert.DoesNotContain(fixture.Store.ReadFrom(fixture.Session, 1), item =>
+            fixture.Codecs.Decode(item) is UndoCompleted);
+
+        var selected = service.Undo(fixture.Session, pendingEffect, CancellationToken.None);
+        Assert.Equal(UndoOutcome.Unknown, selected.Outcome);
+        Assert.Equal(after, File.ReadAllBytes(Path.Combine(fixture.Root, "b.txt")));
+        Assert.IsType<UndoCompleted>(fixture.Codecs.Decode(fixture.Store.ReadFrom(fixture.Session, 1).Last()));
+    }
+
+    [Fact]
+    public void Pending_delete_recovery_preserves_quarantined_bytes_and_only_classifies()
+    {
+        using var fixture = new Fixture();
+        var after = System.Text.Encoding.UTF8.GetBytes("created by OmniCore\n");
+        File.WriteAllBytes(Path.Combine(fixture.Root, "created.txt"), after);
+        var effect = fixture.AddSingleEffect("created.txt", null, after);
+        const string quarantine = ".omni-undo-fixture-0";
+        fixture.AppendPendingUndo(effect, null, after, quarantine);
+        File.Move(Path.Combine(fixture.Root, "created.txt"), Path.Combine(fixture.Root, quarantine));
+
+        var service = fixture.Service(PermissionDecision.Allow);
+        var result = service.Undo(fixture.Session, effect, CancellationToken.None);
+
+        Assert.Equal(UndoOutcome.Applied, result.Outcome);
+        Assert.False(File.Exists(Path.Combine(fixture.Root, "created.txt")));
+        Assert.Equal(after, File.ReadAllBytes(Path.Combine(fixture.Root, quarantine)));
+        Assert.Contains(result.Files, file => file.RelativePath == "created.txt" && file.Outcome == ReconciliationOutcome.Applied);
+        Assert.Empty(service.Plan(fixture.Session).Entries);
+    }
+
+    [Fact]
+    public void Explicit_effect_id_selects_a_reversible_effect_from_an_older_workspace_session()
+    {
+        var parent = Path.Combine(Path.GetTempPath(), "omnicore-undo-old-session-" + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(parent, "workspace");
+        var data = Path.Combine(parent, "data");
+        var config = Path.Combine(parent, "config");
+        var previousData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var previousConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        Directory.CreateDirectory(root);
+        Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+        Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+        try
+        {
+            var paths = OmniHost.CreatePlatformPaths();
+            var workspaceData = OmniHost.WorkspaceDataDirectory(paths, root);
+            var codecs = EventCodecs.Create();
+            var store = new SqliteEventStore(Path.Combine(workspaceData, "journal.db"));
+            var artifacts = OmniHost.CreateArtifactStore(workspaceData);
+            var canonical = ProjectIdentity.CanonicalWorkspacePath(root);
+            var identity = WorkspaceRootIdentity.Establish(root);
+            var oldSession = SessionId.New();
+            var currentSession = SessionId.New();
+            var before = System.Text.Encoding.UTF8.GetBytes("before\n");
+            var after = System.Text.Encoding.UTF8.GetBytes("after\n");
+            File.WriteAllBytes(Path.Combine(root, "target.txt"), after);
+            var effect = ToolCallId.New();
+
+            void AppendSession(SessionId session, bool withEffect)
+            {
+                var stream = new EventStream(store, codecs, session);
+                stream.Append(new SessionCreated(session, WorkspaceId.Of(canonical).ToString(), root,
+                    ProfileId.New(), DateTimeOffset.UtcNow));
+                stream.Append(new WorkspaceRootEstablished(session, canonical, DateTimeOffset.UtcNow, identity));
+                var run = TestRun.Open(stream, session);
+                if (!withEffect) return;
+                var beforeRef = FilesystemPreimage.Capture(new ReconciliationSpec(FileVersion.VersionToken(before),
+                    FileVersion.VersionToken(after), null), artifacts, before).BeforeStateRef;
+                var afterRef = FilesystemPreimage.CaptureAfter(artifacts, after);
+                var execution = ExecutionId.New();
+                using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask,
+                    run.RootLane, TurnId.New(), effect, execution));
+                stream.Append(new ToolCallRequested(effect, "fixture", "filesystem.write", "{}"));
+                stream.Append(new ToolCallPrepared(effect, "{}"));
+                stream.Append(new PermissionEvaluated(effect, PermissionDecision.Allow, "{}", null));
+                stream.Append(new ToolCallAuthorized(effect));
+                stream.Append(new ToolCallStarted(effect, EffectClass.NonIdempotent,
+                    FilesystemReconciliationMetadata.Encode("target.txt", FileVersion.VersionToken(before),
+                        FileVersion.VersionToken(after)))
+                { TargetRef = "target.txt", BeforeStateRef = beforeRef, Reversibility = Reversibility.Reversible },
+                    DurabilityClass.Barrier);
+                stream.Append(new ToolCallSucceeded(effect, "{}") { AfterStateRef = afterRef });
+            }
+
+            AppendSession(oldSession, withEffect: true);
+            AppendSession(currentSession, withEffect: false);
+            store.Close();
+
+            var selected = WorktreeUndoHost.PlanForCli(root, effect.ToString());
+
+            Assert.NotNull(selected);
+            Assert.Equal(oldSession.ToString(), selected.SessionId);
+            Assert.Contains(selected.Entries, item => item.OriginalEffect == effect.ToString() && item.State == "Ready");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", previousData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", previousConfig);
+            try { if (Directory.Exists(parent)) Directory.Delete(parent, recursive: true); } catch { }
+        }
+    }
+
     private sealed class Fixture : IDisposable
     {
         public string Root { get; } = Path.Combine(Path.GetTempPath(), "omnicore-undo-test-" + Guid.NewGuid().ToString("N"));
@@ -87,7 +207,7 @@ public sealed class WorkspaceUndoTests
             Run = TestRun.Open(_stream, Session);
         }
 
-        public ToolCallId AddSingleEffect(string path, byte[] before, byte[] after)
+        public ToolCallId AddSingleEffect(string path, byte[]? before, byte[] after)
         {
             var call = ToolCallId.New();
             var beforeRef = FilesystemPreimage.Capture(new ReconciliationSpec(
@@ -108,6 +228,23 @@ public sealed class WorkspaceUndoTests
             { TargetRef = path, BeforeStateRef = beforeRef, Reversibility = Reversibility.Reversible }, DurabilityClass.Barrier);
             stream.Append(new ToolCallSucceeded(call, "{}") { AfterStateRef = afterRef });
             return call;
+        }
+
+        public void AppendPendingUndo(ToolCallId effect, byte[]? before, byte[] after, string? quarantinePath = null)
+        {
+            var source = Store.ReadFrom(Session, 1).Single(item => Codecs.Decode(item) is ToolCallStarted start
+                && start.ToolCallId == effect);
+            var payload = Assert.IsType<ToolCallStarted>(Codecs.Decode(source));
+            var attribution = new UndoAttribution(source.EventId, source.RunId, source.TaskId, source.LaneId,
+                source.TurnId, source.ExecutionId, ExecutionId.New());
+            var command = CommandId.New();
+            using var execution = ExecutionScope.Begin(new ExecutionScopeState(source.RunId, source.TaskId,
+                source.LaneId, source.TurnId, effect, attribution.UndoExecutionId));
+            using var cause = CausationScope.Begin(new CommandCausation(command));
+            _stream.Append(new UndoStarted(command, Guid.NewGuid().ToString("N"), effect, attribution,
+                [new UndoFileIntent(payload.TargetRef!, FileVersion.VersionToken(after), before is null
+                    ? FilesystemReconciliationMetadata.AbsentPreHash : FileVersion.VersionToken(before), quarantinePath)],
+                Identity), DurabilityClass.Barrier);
         }
 
         public SessionId AddForeignSessionWithSameEffect(ToolCallId call, byte[] before, byte[] after)

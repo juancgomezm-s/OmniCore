@@ -93,6 +93,16 @@ internal static class AgentLaneReader
                         if (summary.Length > 4096) summary = summary[..4096] + "…";
                     }
                 }
+                else if (result is { ResultSchemaId: ClaudeLaneAgentResultValidator.SchemaId }
+                    && artifacts?.Verify(result.ResultRef.Hash, result.ResultRef.Size) == true
+                    && artifacts.GetText(result.ResultRef.Hash) is { } externalJson
+                    && ClaudeLaneAgentResultValidator.Validate(externalJson)?.Result is { } externalResult)
+                {
+                    resultOutcome = externalResult.Outcome.ToString();
+                    summary = new PiiRedactor().Redact(externalResult.Summary);
+                    resultIssueCount = externalResult.RemainingIssues.Count;
+                    if (summary.Length > 4096) summary = summary[..4096] + "…";
+                }
                 var joins = execution is null ? [] : records.Records.Values.Where(h => h.OwnerExecutionId == execution.ExecutionId
                     && h.Phase == PreM6RecordPhase.Created).SelectMany(h => h.Facts.OfType<ExecutionJoinCreated>())
                     .Select(e => e.Join.JoinId.ToString()).ToArray();

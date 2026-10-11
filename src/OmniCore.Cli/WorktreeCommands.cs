@@ -1,6 +1,5 @@
 using OmniCore.Client;
 using OmniCore.Host;
-using OmniCore.Domain;
 
 namespace OmniCore.Cli;
 
@@ -16,10 +15,16 @@ public static class WorktreeCommands
             Console.WriteLine(loc.Resolve("worktree.inspect.usage"));
             Console.WriteLine(loc.Resolve("worktree.preview.usage"));
             Console.WriteLine(loc.Resolve("worktree.undo.usage"));
+            Console.WriteLine(loc.Resolve("worktree.cleanup.usage"));
+            Console.WriteLine(loc.Resolve("worktree.retention.usage"));
             return 0;
         }
         if (args.Length >= 2 && args[1] == "preview")
             return await PreviewAsync(args, loc, cancellationToken).ConfigureAwait(false);
+        if (args.Length >= 2 && args[1] == "retention")
+            return await RetentionAsync(args, loc, cancellationToken).ConfigureAwait(false);
+        if (args.Length >= 2 && args[1] == "cleanup")
+            return await CleanupAsync(args, loc, cancellationToken).ConfigureAwait(false);
         if (args.Length >= 2 && args[1] == "undo")
             return Undo(args, loc, cancellationToken);
         if (args.Length is < 2 or > 3 || args[1] != "inspect"
@@ -28,6 +33,8 @@ public static class WorktreeCommands
             Console.WriteLine(loc.Resolve("worktree.inspect.usage"));
             Console.WriteLine(loc.Resolve("worktree.preview.usage"));
             Console.WriteLine(loc.Resolve("worktree.undo.usage"));
+            Console.WriteLine(loc.Resolve("worktree.cleanup.usage"));
+            Console.WriteLine(loc.Resolve("worktree.retention.usage"));
             return 2;
         }
         try
@@ -97,29 +104,114 @@ public static class WorktreeCommands
         }
         try
         {
-            var effect = args.Length == 3 ? ToolCallId.Parse(args[2]) : (ToolCallId?)null;
+            var effect = args.Length == 3 ? args[2] : null;
             if (effect is null)
             {
-                var plan = WorktreeUndoHost.Plan(Environment.CurrentDirectory);
-                if (plan is null) { Console.WriteLine("No hay una sesión verificada de OmniCore para este workspace."); return 1; }
+                var plan = WorktreeUndoHost.PlanForCli(Environment.CurrentDirectory);
+                if (plan is null) { Console.WriteLine(loc.Resolve("worktree.undo.noSession")); return 1; }
                 foreach (var entry in plan.Entries)
-                    Console.WriteLine($"{entry.OriginalEffect}  {entry.State}  {EscapePath(entry.RelativePath)}");
-                Console.WriteLine("Selecciona un toolCallId con: omni worktree undo <toolCallId>");
+                    Console.WriteLine($"{entry.OriginalEffect}  {UndoState(loc, entry.State)}  {EscapePath(entry.RelativePath)}");
+                Console.WriteLine(loc.Resolve("worktree.undo.select"));
                 return 0;
             }
-            var result = WorktreeUndoHost.Undo(Environment.CurrentDirectory, effect, cancellationToken);
+            var result = WorktreeUndoHost.UndoForCli(Environment.CurrentDirectory, effect, cancellationToken);
             foreach (var file in result.Files)
-                Console.WriteLine($"{file.Outcome}  {EscapePath(file.RelativePath)}");
-            Console.WriteLine(result.Summary);
-            return result.Outcome switch { UndoOutcome.Applied or UndoOutcome.NoOp => 0, UndoOutcome.Conflict => 3, _ => 1 };
+                Console.WriteLine($"{UndoFileOutcome(loc, file.Outcome)}  {EscapePath(file.RelativePath)}");
+            Console.WriteLine(loc.Resolve("worktree.undo.outcome." + result.Outcome));
+            return result.Outcome switch { "Applied" or "NoOp" => 0, "Conflict" => 3, _ => 1 };
         }
-        catch (OperationCanceledException) { Console.WriteLine("Undo cancelado."); return 130; }
+        catch (OperationCanceledException) { Console.WriteLine(loc.Resolve("worktree.undo.cancelled")); return 130; }
         catch (Exception)
         {
             Console.WriteLine(loc.Resolve("worktree.undo.error"));
             return 1;
         }
     }
+
+    private static async Task<int> RetentionAsync(string[] args, Localization loc,
+        CancellationToken cancellationToken)
+    {
+        var dryRun = true;
+        var repositoryPath = Environment.CurrentDirectory;
+        var repositorySpecified = false;
+        for (var index = 2; index < args.Length; index++)
+        {
+            if (args[index] == "--apply" && dryRun) dryRun = false;
+            else if (!repositorySpecified && !args[index].StartsWith('-'))
+            {
+                repositoryPath = args[index];
+                repositorySpecified = true;
+            }
+            else
+            {
+                Console.WriteLine(loc.Resolve("worktree.retention.usage"));
+                return 2;
+            }
+        }
+        try
+        {
+            var result = await WorktreeRetentionHost.SweepAsync(repositoryPath, dryRun, cancellationToken)
+                .ConfigureAwait(false);
+            if (result.Error is { } error)
+            {
+                var key = "worktree.error." + error;
+                Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.error.GitCommandFailed"));
+                return 1;
+            }
+            Console.WriteLine(loc.Resolve("worktree.retention.summary", new Dictionary<string, string>
+            {
+                ["eligible"] = result.Eligible.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["pruned"] = result.Pruned.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["preserved"] = result.Preserved.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["failed"] = result.Failed.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            }));
+            if (dryRun && result.Eligible > 0)
+                Console.WriteLine(loc.Resolve("worktree.retention.applyHint"));
+            return result.Failed == 0 ? 0 : 1;
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine(loc.Resolve("worktree.retention.cancelled"));
+            return 130;
+        }
+    }
+
+    private static async Task<int> CleanupAsync(string[] args, Localization loc,
+        CancellationToken cancellationToken)
+    {
+        if (args.Length != 5 || string.IsNullOrWhiteSpace(args[2]) || args[2].StartsWith('-')
+            || !Guid.TryParseExact(args[3], "N", out _) || args[4] != "--apply")
+        {
+            Console.WriteLine(loc.Resolve("worktree.cleanup.usage"));
+            return 2;
+        }
+        try
+        {
+            var result = await WorktreeCleanupHost.CleanupAsync(args[2], args[3], cancellationToken)
+                .ConfigureAwait(false);
+            if (result.Removed)
+            {
+                Console.WriteLine(loc.Resolve("worktree.cleanup.removed"));
+                return 0;
+            }
+            var key = "worktree.error." + result.Error;
+            Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.cleanup.preserved"));
+            return result.Error?.ToString() == "WorktreeDirty" ? 3 : 1;
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine(loc.Resolve("worktree.cleanup.cancelled"));
+            return 130;
+        }
+    }
+
+    private static string UndoState(Localization localization, string state) =>
+        localization.Resolve(Localization.HasInBoth("worktree.undo.state." + state)
+            ? "worktree.undo.state." + state : "worktree.undo.state.Unsupported");
+
+    private static string UndoFileOutcome(Localization localization, string outcome) =>
+        localization.Resolve(Localization.HasInBoth("worktree.undo.fileOutcome." + outcome)
+            ? "worktree.undo.fileOutcome." + outcome : "worktree.undo.fileOutcome.Unresolvable");
 
     private static string EscapePath(string path) => string.Concat(path.Select(character => char.IsControl(character)
         ? "\\u" + ((int)character).ToString("x4", System.Globalization.CultureInfo.InvariantCulture) : character.ToString()));

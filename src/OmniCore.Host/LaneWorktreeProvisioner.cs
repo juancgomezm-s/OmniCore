@@ -68,6 +68,49 @@ internal sealed class LaneWorktreeProvisioner(IProcessRuntime processes, IArtifa
         return new(identity, packet, prepared.Reference, null, prepared);
     }
 
+    /// <summary>Creates a second, read-only workflow Lane binding to the already-owned Implement
+    /// worktree. It creates no directory or Git ref; the caller must prove the exact canonical
+    /// previous workflow stage and revalidate the captured tree before execution.</summary>
+    internal LaneWorktreeProvisionOutcome BindVerifiedImplementation(WorktreeIdentity identity,
+        SessionId session, RunId run, TaskCreated task, Delegation delegation, ExecutionId execution,
+        AgentProfile profile, string workingState, WorkflowImplementationBinding binding)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(binding);
+        if (!AgentPermissionScopeSubset.IsWorkflowVerifierReadOnly(profile.PermissionCeiling)
+            || binding.LaneId != identity.LaneId || binding.OwnershipId != identity.OwnershipId
+            || !IsOid(binding.Tree) || !IsOid(binding.Head))
+            return new(null, null, null, GitWorktreeErrorCode.OwnershipMismatch);
+
+        var objective = BoundText(task.Objective);
+        var boundedWorkingState = BoundText(workingState);
+        if (objective is null || boundedWorkingState is null
+            || delegation.PacketRef.Kind != ArtifactKind.Other
+            || delegation.PacketRef.MediaType != ContextInheritanceService.DelegationPacketMediaType
+            || delegation.PacketRef.Sensitivity != Sensitivity.Sensitive
+            || delegation.PacketRef.Size <= 0
+            || delegation.PacketRef.Size > ContextInheritanceService.MaximumDelegationPacketBytes
+            || !artifacts.Verify(delegation.PacketRef.Hash, delegation.PacketRef.Size)
+            || artifacts is not IArtifactPreparationStore preparation)
+            return new(identity, null, null, GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+
+        var packet = new TaskPacket(1, session, run, task.TaskId, delegation.ChildLaneId,
+            execution, delegation.DelegationId, delegation.ParentExecutionId, profile.Id,
+            objective, task.Budget, delegation.PacketRef, identity.OwnershipId,
+            identity.RepositoryRoot, identity.GitCommonDirectory, identity.WorktreePath,
+            identity.Head, identity.SnapshotCommit, identity.SnapshotTree,
+            WorktreeBase.SnapshotOfWorkingTree, boundedWorkingState, binding);
+        var json = JsonSerializer.Serialize(packet, TaskPacketJsonContext.Default.TaskPacket);
+        if (System.Text.Encoding.UTF8.GetByteCount(json) > MaximumTaskPacketBytes)
+            return new(identity, packet, null, GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+        var prepared = preparation.PrepareText(json, TaskPacketMediaType, ArtifactKind.Other, Sensitivity.Sensitive);
+        if (prepared.Reference.Kind != ArtifactKind.Other || prepared.Reference.MediaType != TaskPacketMediaType
+            || prepared.Reference.Sensitivity != Sensitivity.Sensitive
+            || prepared.Reference.Size is <= 0 or > MaximumTaskPacketBytes)
+            return new(identity, packet, null, GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+        return new(identity, packet, prepared.Reference, null, prepared);
+    }
+
     /// <summary>Publishes on the caller's synchronous Host thread and holds the CAS lease until
     /// the caller's journal Barrier. Publication leases are thread-bound; they must not cross the
     /// asynchronous Git provisioning boundary.</summary>
@@ -133,6 +176,7 @@ internal sealed class LaneWorktreeProvisioner(IProcessRuntime processes, IArtifa
         && durable.HeadCommit == identity.Head && durable.SnapshotCommit == identity.SnapshotCommit
         && durable.SnapshotTree == identity.SnapshotTree && durable.Base == WorktreeBase.SnapshotOfWorkingTree
         && durable.SelectedProjectionRef == expected.SelectedProjectionRef
+        && durable.WorkflowImplementation == expected.WorkflowImplementation
         && System.Text.Encoding.UTF8.GetByteCount(durable.Objective) <= 64 * 1024
         && System.Text.Encoding.UTF8.GetByteCount(durable.WorkingState) <= 64 * 1024;
 
@@ -145,6 +189,9 @@ internal sealed class LaneWorktreeProvisioner(IProcessRuntime processes, IArtifa
         var redacted = new PiiRedactor().Redact(value ?? string.Empty);
         return System.Text.Encoding.UTF8.GetByteCount(redacted) <= 64 * 1024 ? redacted : null;
     }
+
+    private static bool IsOid(string value) => value.Length is 40 or 64 && value.All(Uri.IsHexDigit);
+
 }
 
 [JsonSourceGenerationOptions(UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow)]

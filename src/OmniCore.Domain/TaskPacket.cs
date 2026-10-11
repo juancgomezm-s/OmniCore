@@ -26,7 +26,23 @@ public sealed record TaskPacket(
     string SnapshotCommit,
     string SnapshotTree,
     WorktreeBase Base,
-    string WorkingState);
+    string WorkingState,
+    WorkflowImplementationBinding? WorkflowImplementation = null);
+
+/// <summary>Exact accepted Implement lane whose current Git tree a workflow Verify lane is
+/// allowed to inspect. The tree/head/branch values are recaptured before Verify starts and after
+/// its declared check; they never authorize writes or integration into the principal workspace.</summary>
+public sealed record WorkflowImplementationBinding(
+    string WorkflowId,
+    string WorkflowVersion,
+    string Instance,
+    TaskId TaskId,
+    LaneId LaneId,
+    ExecutionId ExecutionId,
+    string OwnershipId,
+    string Tree,
+    string Head,
+    string? Branch);
 
 /// <summary>Canonical journal binding between a provisioning Lane and its private worktree.</summary>
 public sealed record LaneWorktreeCreated(

@@ -151,6 +151,13 @@ public sealed partial class OmniServer
                     RecordWorkflowGateEvidenceDebt(authorization, contract, execution);
                     throw new InvalidOperationException("Workflow gate remains open: " + evidence.Reason);
                 }
+                if (contract.Definition.Stage == WorkflowStage.Verify
+                    && !VerifyAcceptedImplementationBinding(contract, authorization.Session,
+                        authorization.Run, own, CancellationToken.None))
+                {
+                    RecordWorkflowGateEvidenceDebt(authorization, contract, execution);
+                    throw new InvalidOperationException("Workflow gate remains open: Verify did not validate the exact accepted Implement worktree.");
+                }
             }
 
             var tasks = TaskGraphProjection.Replay(_codecs, own);
@@ -163,7 +170,7 @@ public sealed partial class OmniServer
                     PlanMutation.Ready(gate.Id, MutationCause.Policy),
                     PlanMutation.Start(gate.Id, MutationCause.Policy),
                     PlanMutation.Complete(gate.Id, MutationCause.Policy,
-                        "Explore, Implement, and Verify accepted with current integration evidence."),
+                        "Explore, Implement, and Verify accepted against the exact owned Implement tree; principal-workspace integration remains separately authorized."),
                 })
             {
                 var current = PlanProjection.FromPayloads(projected);

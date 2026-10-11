@@ -406,6 +406,78 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Fact]
+    public async Task Snapshot_retention_prunes_only_removed_ownership_refs_after_seven_days()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var activeCreate = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var active = Assert.IsType<WorktreeIdentity>(activeCreate.Worktree);
+
+        Assert.True((await store.CleanupAsync(worktree.Ownership, CancellationToken.None)).Removed);
+        var refBefore = fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim();
+        var dataRoot = fixture.Request().WorkspaceDataRoot;
+        var workspaceId = fixture.Request().WorkspaceId.ToString();
+        var underRetention = await store.PruneExpiredSnapshotRefsAsync(fixture.Repository, dataRoot, workspaceId,
+            DateTimeOffset.UtcNow.AddDays(6), dryRun: false, CancellationToken.None);
+        Assert.Equal(0, underRetention.Eligible);
+        Assert.Equal(0, underRetention.Pruned);
+        Assert.Equal(refBefore, fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim());
+
+        var dryRun = await store.PruneExpiredSnapshotRefsAsync(fixture.Repository, dataRoot, workspaceId,
+            DateTimeOffset.UtcNow.AddDays(8), dryRun: true, CancellationToken.None);
+        Assert.Equal(1, dryRun.Eligible);
+        Assert.True(dryRun.Preserved >= 1);
+        Assert.Equal(0, dryRun.Pruned);
+        Assert.Equal(refBefore, fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim());
+
+        var applied = await store.PruneExpiredSnapshotRefsAsync(fixture.Repository, dataRoot, workspaceId,
+            DateTimeOffset.UtcNow.AddDays(8), dryRun: false, CancellationToken.None);
+        Assert.Equal(1, applied.Eligible);
+        Assert.Equal(1, applied.Pruned);
+        Assert.Equal(0, applied.Failed);
+        Assert.Equal(active.SnapshotCommit,
+            fixture.Git("rev-parse", "--verify", active.SnapshotRef + "^{commit}").Trim());
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        _ = fixture.GitExpectFailure("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}");
+        Assert.True((await store.CleanupAsync(active.Ownership, CancellationToken.None)).Removed);
+    }
+
+    [Fact]
+    public async Task Snapshot_retention_preserves_metadata_bound_to_another_workspace_id()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        Assert.True((await store.CleanupAsync(worktree.Ownership, CancellationToken.None)).Removed);
+        var referenceBefore = fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim();
+
+        var metadata = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(worktree.OwnershipMetadataPath))!;
+        var workspaceIdProperty = Assert.Single(metadata.AsObject(), item =>
+            string.Equals(item.Key, "WorkspaceId", StringComparison.OrdinalIgnoreCase)).Key;
+        metadata[workspaceIdProperty] = fixture.Request().WorkspaceId.ToString() == "0000000000000000"
+            ? "0000000000000001" : "0000000000000000";
+        File.WriteAllText(worktree.OwnershipMetadataPath, metadata.ToJsonString());
+
+        var outcome = await store.PruneExpiredSnapshotRefsAsync(fixture.Repository,
+            fixture.Request().WorkspaceDataRoot, fixture.Request().WorkspaceId.ToString(),
+            DateTimeOffset.UtcNow.AddDays(8), dryRun: false, CancellationToken.None);
+
+        Assert.Equal(0, outcome.Pruned);
+        Assert.Equal(1, outcome.Preserved);
+        Assert.Equal(referenceBefore,
+            fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim());
+    }
+
+    [Fact]
     public async Task Cancellation_before_git_work_preserves_the_repository()
     {
         using var fixture = new GitFixture();

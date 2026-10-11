@@ -21,6 +21,7 @@ public sealed class GitWorktreeStore
     private const int CapturedOutputLimit = 1_048_576;
     private const int MaxIntegrationFiles = 64;
     private const long MaxIntegrationImageBytes = 8L * 1024 * 1024;
+    public static readonly TimeSpan SnapshotReferenceRetention = TimeSpan.FromDays(7);
     private readonly IProcessRuntime _processes;
     private readonly RedactionPolicy _redaction;
 
@@ -705,9 +706,113 @@ public sealed class GitWorktreeStore
         if (status.Output.Length != 0) return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
         var remove = await Git(metadata.RepositoryRoot, ["worktree", "remove", "--", metadata.WorktreePath], null, cancellationToken);
         if (!remove.Success) return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
-        // Snapshot refs are retained for the ADR-0021 seven-day inspection window.
-        await PersistMetadata(metadata.DataRoot, ownership.MetadataPath, metadata with { State = "removed" }, cancellationToken);
+        // Snapshot refs are retained for seven days after successful physical removal.
+        await PersistMetadata(metadata.DataRoot, ownership.MetadataPath,
+            metadata with { State = "removed", RemovedAtUtc = DateTimeOffset.UtcNow }, cancellationToken);
         return WorktreeCleanupOutcome.Success();
+    }
+
+    /// <summary>Prunes only expired private snapshot refs for metadata records that already say
+    /// the owned worktree was removed. This never deletes worktree directories or metadata and
+    /// uses Git's expected-old-OID compare-and-delete form. Callers can request a dry run.</summary>
+    public async Task<WorktreeRetentionSweepOutcome> PruneExpiredSnapshotRefsAsync(string repositoryRoot,
+        string expectedWorkspaceDataRoot, string expectedWorkspaceId, DateTimeOffset nowUtc, bool dryRun,
+        CancellationToken cancellationToken)
+    {
+        string repo;
+        string dataRoot;
+        try
+        {
+            repo = Canonical(repositoryRoot);
+            dataRoot = Canonical(expectedWorkspaceDataRoot);
+        }
+        catch (Exception) { return new(0, 0, 0, 0, GitWorktreeErrorCode.InvalidPath); }
+        if (HasReparseDirectoryComponent(repo) || HasReparseDirectoryComponent(dataRoot)
+            || !IsWorkspaceId(expectedWorkspaceId))
+            return new(0, 0, 0, 0, GitWorktreeErrorCode.UnsafePath);
+        if (IsWithinOrEqual(repo, dataRoot) || IsWithinOrEqual(dataRoot, repo))
+            return new(0, 0, 0, 0, GitWorktreeErrorCode.PathOutsideDataRoot);
+        var inspected = await InspectAsync(repo, cancellationToken).ConfigureAwait(false);
+        if (!inspected.Succeeded || !PathEquals(inspected.Identity!.RepoRoot, repo))
+            return new(0, 0, 0, 0, inspected.ErrorCode ?? GitWorktreeErrorCode.OwnershipMismatch);
+
+        var metadataDirectory = Path.Combine(dataRoot, "worktree-metadata");
+        if (!Directory.Exists(metadataDirectory)) return new(0, 0, 0, 0);
+        if (HasReparseDirectoryComponent(metadataDirectory))
+            return new(0, 0, 0, 0, GitWorktreeErrorCode.UnsafePath);
+        var eligible = 0;
+        var pruned = 0;
+        var preserved = 0;
+        var failed = 0;
+        string[] metadataFiles;
+        try { metadataFiles = Directory.GetFiles(metadataDirectory, "*.json", SearchOption.TopDirectoryOnly); }
+        catch (Exception) { return new(0, 0, 0, 1, GitWorktreeErrorCode.OwnershipMismatch); }
+        foreach (var metadataPath in metadataFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            OwnershipMetadata? metadata;
+            try
+            {
+                if ((File.GetAttributes(metadataPath) & FileAttributes.ReparsePoint) != 0
+                    || HasReparseDirectoryComponent(metadataPath)) { preserved++; continue; }
+                var json = await File.ReadAllTextAsync(metadataPath, cancellationToken).ConfigureAwait(false);
+                metadata = JsonSerializer.Deserialize(json, GitWorktreeJsonContext.Default.OwnershipMetadata);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { failed++; continue; }
+            if (metadata is null || !IsExpiredRemovedOwnership(metadata, metadataPath, repo, dataRoot,
+                    expectedWorkspaceId, inspected.Identity!.GitCommonDirectory, nowUtc)) { preserved++; continue; }
+            if (metadata.SnapshotCommit is not { } snapshotCommit || !IsOid(snapshotCommit))
+            { preserved++; continue; }
+
+            var reference = await Git(repo, ["rev-parse", "--verify", metadata.SnapshotRef + "^{commit}"], null,
+                cancellationToken).ConfigureAwait(false);
+            if (!reference.Success || !string.Equals(reference.Output.Trim(), snapshotCommit,
+                    StringComparison.OrdinalIgnoreCase))
+            { preserved++; continue; }
+            var worktrees = await Git(repo, ["worktree", "list", "--porcelain"], null, cancellationToken)
+                .ConfigureAwait(false);
+            if (!worktrees.Success) { failed++; continue; }
+            if (worktrees.Output.Split('\n').Any(line => line.StartsWith("HEAD ", StringComparison.Ordinal)
+                    && string.Equals(line[5..].Trim(), snapshotCommit, StringComparison.OrdinalIgnoreCase)))
+            { preserved++; continue; }
+
+            eligible++;
+            if (dryRun) continue;
+            var delete = await Git(repo, ["update-ref", "-d", metadata.SnapshotRef, snapshotCommit], null,
+                cancellationToken).ConfigureAwait(false);
+            if (!delete.Success) { failed++; continue; }
+            pruned++;
+        }
+        return new(eligible, pruned, preserved, failed);
+    }
+
+    private static bool IsExpiredRemovedOwnership(OwnershipMetadata metadata, string metadataPath, string repo,
+        string dataRoot, string expectedWorkspaceId, string commonDirectory, DateTimeOffset nowUtc)
+    {
+        try
+        {
+            if (metadata.Version != 2 || metadata.State != "removed" || metadata.RemovedAtUtc is not { } removedAt
+                || nowUtc.ToUniversalTime() - removedAt.ToUniversalTime() < SnapshotReferenceRetention
+                || !Guid.TryParseExact(metadata.OwnershipId, "N", out _)
+                || !IsWorkspaceId(metadata.WorkspaceId) || metadata.WorkspaceId != expectedWorkspaceId
+                || !Guid.TryParseExact(metadata.LaneId, "D", out _)
+                || !Guid.TryParseExact(metadata.SnapshotId, "N", out _) || !IsOid(metadata.SnapshotCommit)
+                || !PathEquals(metadata.RepositoryRoot, repo) || !PathEquals(metadata.DataRoot, dataRoot)
+                || !PathEquals(metadata.GitCommonDirectory, commonDirectory)
+                || !PathEquals(metadata.MetadataPath, metadataPath)
+                || !PathEquals(metadata.MetadataPath, Path.Combine(dataRoot, "worktree-metadata",
+                    metadata.OwnershipId + ".json"))
+                || !PathEquals(metadata.WorktreePath, Path.Combine(dataRoot, "worktrees",
+                    SafeSegment(metadata.LaneId), metadata.OwnershipId))
+                || Directory.Exists(metadata.WorktreePath) || File.Exists(metadata.WorktreePath)
+                || metadata.SnapshotRef != SnapshotRefFor(metadata.WorkspaceId, metadata.LaneId, metadata.SnapshotId)
+                || !IsWithin(dataRoot, Canonical(metadata.WorktreePath))
+                || HasReparseDirectoryComponent(metadata.WorktreePath))
+                return false;
+            return true;
+        }
+        catch (Exception) { return false; }
     }
 
     private async Task<GitResult> CaptureIndexTree(string root, string tempDirectory, CancellationToken cancellationToken)
@@ -1356,7 +1461,7 @@ public sealed class GitWorktreeStore
     internal sealed record OwnershipMetadata(int Version, string OwnershipId, string WorkspaceId, string LaneId,
         string SnapshotId, string DataRoot, string RepositoryRoot, string GitCommonDirectory, string WorktreePath, string MetadataPath,
         string SnapshotRef, string Base, string Head, string? Branch, string? SnapshotTree, string? UserIndexTree,
-        string? SnapshotCommit, DateTimeOffset CreatedAtUtc, string State);
+        string? SnapshotCommit, DateTimeOffset CreatedAtUtc, string State, DateTimeOffset? RemovedAtUtc = null);
 
     private sealed class PrivateTempDirectory : IDisposable
     {

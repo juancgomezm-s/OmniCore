@@ -39,3 +39,33 @@ xUnit.net v3 In-Process Runner v4.0.1+8ed8aa354c (64-bit .NET 10.0.12)
   Finished:    OmniCore.Tests (ID = 'daa6f82956d504802b2e7f3d5c5ddc5dea67c7ba8d16a4add1d60935e3991bcb')
 === TEST EXECUTION SUMMARY ===
    OmniCore.Tests  Total: 71, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 35.754s
+
+## Cuarto checkpoint local — 2026-10-10
+
+Branch `codex/m7-isolation-20261010`; source HEAD before this documentation/checkpoint commit:
+`689ecfd9371d9c341a358a6fdb9529c5d273040d`. Remote feature tip at capture:
+`dab58da57ea677c5ceaf2d2ece80bea3287c0291`. This preserves the F3–F6 working tree for continued
+implementation; it is not final acceptance and is not merged to `main`.
+
+Available checks from the current WIP: the tests project build passed with 0 warnings/errors
+(SHA256 `C39A1EFA6D98DD7A3A0FAAF49C799A31E8041F453894DC817C74731E2D872021`); the focused
+synthetic Claude lane test passed 3/3 (SHA256
+`85005F09BD3745386B126109EB0B2018BDD817C81A8189A4775C572CDEC75164`). These fixtures use a
+fake runtime and are not evidence of provider invocation. The full suite is deferred until the
+remaining functional work is complete.
+
+Live CLI evidence is separate. `m7-f5-live-tools-corrected-20261010.log` records a real lane
+that bound a session, reported usage and result, and created the requested proof file in its
+owned worktree; the test itself failed because it read the result CAS from the wrong workspace
+directory. After correcting that test, `m7-f5-live-vertical-final-20261010.log` records a
+`NonZeroExit` after durable session binding and before a usage/result event. No successful,
+repeatable live acceptance is claimed. The first log SHA256 is
+`476C60EF41EE0D292A1207AC2AFB8640BD1EE57DBFFA1A1EF2762F3E5172910F`; the second is
+`CE6B720A3767C55C2A9F3C27245C765E34EAF857FA5149D3ED7DC77C42C21E9C`.
+
+F3 has focused evidence for worktree-backed Implement/Verify continuity and distinct writer
+roots. F4 undo and historical changed-file projection are present as working changes but still
+need final review/acceptance. F6 explicit cleanup and seven-day retention services exist;
+automatic startup recovery/sweeping and its fail-closed orphan/tamper behavior remain to be
+completed and verified. M7 remains open, and no final suite or merge is represented by this
+checkpoint.

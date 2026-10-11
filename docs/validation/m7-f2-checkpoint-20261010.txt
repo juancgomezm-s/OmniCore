@@ -50,8 +50,9 @@ Historical failures retained in m7-preview-checkpoint-20261010.txt and external 
 - Grouped CLI/client run initially had 70 pass and 1 timeout. The exact group later passed 71/71.
 - One host-recovery test run detected a casing mismatch in the protected-CAS purpose; the
   purpose now derives from canonical physical root and the final reopen test passes.
-- An earlier host test run passed recovery assertions but its temporary SQLite cleanup failed
-  because pooled connections retained the journal; ClearAllPools was added before final run.
+- An earlier host test run failed during temporary SQLite cleanup; that run does not establish
+  whether its recovery assertions passed. A repeat exposed the protected-CAS casing mismatch.
+  ClearAllPools and canonical-root purpose handling were applied before the final reported run.
 None of these preliminary runs is counted as a final pass.
 
 Known boundaries: leases coordinate Host writers, not external editors. Create publication uses

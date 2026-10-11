@@ -40,3 +40,33 @@ public record AgentExecutionFailed(ExecutionId ExecutionId, LaneId LaneId, Profi
     public EventType Type() => EventType.Of("agent_execution.failed");
     public int SchemaVersion() => 1;
 }
+
+/// <summary>Durable, read-only association of a workflow lane with an already-owned worktree.
+/// Ownership remains with OwnerLaneId/OwnerExecutionId; this event never creates or transfers it.</summary>
+public sealed record LaneWorktreeBound(TaskId TaskId, LaneId LaneId, ExecutionId ExecutionId,
+    TaskId OwnerTaskId, LaneId OwnerLaneId, ExecutionId OwnerExecutionId, string OwnershipId,
+    string RepositoryRoot, string GitCommonDirectory, string WorktreePath, string SnapshotCommit,
+    string SnapshotTree, ArtifactRef TaskPacketRef, ArtifactRef SelectedProjectionRef,
+    string WorkflowId, string WorkflowVersion, string WorkflowInstance,
+    string SourceTree, string SourceHead, string? SourceBranch) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("lane.worktree_bound");
+    public int SchemaVersion() => 1;
+}
+
+/// <summary>Durable binding to an external CLI session emitted at its first validated init event.</summary>
+public sealed record ExternalLaneSessionBound(ExecutionId ExecutionId, LaneId LaneId, string SessionId,
+    string Model, IReadOnlyList<string> Tools, IReadOnlyDictionary<string, bool> Capabilities) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("external_lane.session_bound");
+    public int SchemaVersion() => 1;
+}
+
+/// <summary>Bounded usage reported by the external CLI after its final result event.</summary>
+public sealed record ExternalLaneUsageRecorded(ExecutionId ExecutionId, LaneId LaneId, string SessionId,
+    long? InputTokens, long? OutputTokens, long? CacheReadInputTokens, long? CacheCreationInputTokens,
+    decimal? TotalCostUsd, int ToolUseCount, int EventCount, long StreamBytes, ArtifactRef ResultRef) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("external_lane.usage_recorded");
+    public int SchemaVersion() => 1;
+}

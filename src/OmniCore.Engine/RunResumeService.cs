@@ -26,16 +26,19 @@ public sealed class RunResumeService
     private readonly string _workspaceRoot;
 
     private readonly Func<SessionId, RunId, LaneWorktreeCreated, string?>? _laneWorkspaceRootResolver;
+    private readonly Func<SessionId, RunId, LaneWorktreeBound, string?>? _laneWorkspaceBoundRootResolver;
 
     public RunResumeService(IEventStore store, IEventCodecRegistry codecs,
         IFilesystemReconciler? reconciler, string workspaceRoot,
-        Func<SessionId, RunId, LaneWorktreeCreated, string?>? laneWorkspaceRootResolver = null)
+        Func<SessionId, RunId, LaneWorktreeCreated, string?>? laneWorkspaceRootResolver = null,
+        Func<SessionId, RunId, LaneWorktreeBound, string?>? laneWorkspaceBoundRootResolver = null)
     {
         _store = store;
         _codecs = codecs;
         _fsReconciler = reconciler;
         _workspaceRoot = workspaceRoot;
         _laneWorkspaceRootResolver = laneWorkspaceRootResolver;
+        _laneWorkspaceBoundRootResolver = laneWorkspaceBoundRootResolver;
     }
 
     /// <summary>
@@ -416,9 +419,14 @@ public sealed class RunResumeService
                 .OfType<LaneCreated>().Where(evt => evt.TaskId == rootTask).Select(evt => evt.LaneId).ToArray();
             if (rootLanes.Length == 1 && rootLanes[0] == laneId) return _workspaceRoot;
             if (_laneWorkspaceRootResolver is null) return null;
-            var bindings = runEvents.Where(evt => evt.LaneId == laneId)
-                .Select(_codecs.Decode).OfType<LaneWorktreeCreated>().ToArray();
-            return bindings.Length == 1 ? _laneWorkspaceRootResolver(sessionId, runId, bindings[0]) : null;
+            var laneFacts = runEvents.Where(evt => evt.LaneId == laneId)
+                .Select(_codecs.Decode).ToArray();
+            var created = laneFacts.OfType<LaneWorktreeCreated>().ToArray();
+            var bound = laneFacts.OfType<LaneWorktreeBound>().ToArray();
+            if (created.Length + bound.Length != 1) return null;
+            if (created.Length == 1)
+                return _laneWorkspaceRootResolver?.Invoke(sessionId, runId, created[0]);
+            return _laneWorkspaceBoundRootResolver?.Invoke(sessionId, runId, bound[0]);
         }
         catch (Exception)
         {

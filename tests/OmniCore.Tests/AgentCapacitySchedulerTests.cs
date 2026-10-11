@@ -81,6 +81,26 @@ public sealed class AgentCapacitySchedulerTests
     }
 
     [Fact]
+    public void Physical_destination_exclusion_is_shared_across_sessions_and_runs()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        var capacity = AgentCapacity.For(fx.Store);
+        var otherSession = SessionId.New();
+        var otherRun = RunId.New();
+        var root = Path.Combine(Path.GetTempPath(), "m7-capacity-cross-run-" + Guid.NewGuid().ToString("N"));
+        using var first = capacity.TryAcquire(fx.Session, fx.Run, DelegationId.New(), 3, 10,
+            readOnly: false, CancellationToken.None, destinationRoot: root);
+        Assert.NotNull(first);
+        Assert.Null(capacity.TryAcquire(otherSession, otherRun, DelegationId.New(), 3, 10,
+            readOnly: true, CancellationToken.None, destinationRoot: root));
+        Assert.Null(capacity.TryAcquire(otherSession, otherRun, DelegationId.New(), 3, 10,
+            readOnly: false, CancellationToken.None, destinationRoot: root));
+        using var independent = capacity.TryAcquire(otherSession, otherRun, DelegationId.New(), 3, 10,
+            readOnly: false, CancellationToken.None, destinationRoot: Path.Combine(root, "owned-lane"));
+        Assert.NotNull(independent);
+    }
+
+    [Fact]
     public void Unknown_destination_is_a_wildcard_against_known_destinations()
     {
         using var fx = new DelegationAdmissionTests.Fixture();

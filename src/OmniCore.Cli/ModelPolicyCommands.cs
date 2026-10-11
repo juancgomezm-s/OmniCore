@@ -703,6 +703,22 @@ public sealed class ModelPolicyCommands
 
     private ModelPolicyKeyDto? ResolveKeyOrError(string modelId, out int exitCode)
     {
+        const string externalPrefix = "claude-code/";
+        if (modelId.StartsWith(externalPrefix, StringComparison.Ordinal))
+        {
+            var externalModel = modelId[externalPrefix.Length..];
+            if (externalModel.Length is > 0 and <= 128
+                && externalModel[0] != '-'
+                && externalModel.All(character => char.IsAsciiLetterOrDigit(character)
+                    || character is '-' or '_' or '.' or ':'))
+            {
+                exitCode = 0;
+                return new ModelPolicyKeyDto("claude-code", externalModel);
+            }
+            _output.WriteLine("modelo de ejecutor externo no válido: '" + modelId + "'.");
+            exitCode = 2;
+            return null;
+        }
         var model = FindModel(modelId);
         if (model is null)
         {
@@ -738,6 +754,7 @@ public sealed class ModelPolicyCommands
         _output.WriteLine("  omni model refresh  consulta el catálogo ChatGPT actual sin generar ni usar API keys");
         _output.WriteLine("  omni model select <m>       selecciona y abre onboarding si no hay política");
         _output.WriteLine("  omni model policy set <m> --category <c> [--revision N] [--note \"t\"]");
+        _output.WriteLine("  omni model policy set claude-code/<modelo> --category FullAgent [--revision N] [--note \"t\"]");
         _output.WriteLine("  omni model policy delete <m> [--revision N]");
         _output.WriteLine("  omni model qualify <m> [--suite quick] [--yes] [--max-cost USD] [--probe-timeout s]  ejecuta la suite y recomienda");
     }

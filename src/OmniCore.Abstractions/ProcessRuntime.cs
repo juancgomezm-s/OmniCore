@@ -19,6 +19,15 @@ public interface IProcessRuntime
     bool IsAlive(ProcessHandle handle);
 }
 
+/// <summary>Optional bounded streaming boundary for protocol-driven child processes. Existing
+/// process consumers keep using Wait; callers that need a durable first-event barrier use this
+/// interface and must still validate the final process exit code.</summary>
+public interface IStreamingProcessRuntime
+{
+    Task<ProcessResult> WaitStreamingAsync(ProcessHandle handle, TimeSpan timeout,
+        Func<Stream, CancellationToken, Task> consumeStandardOutput, CancellationToken cancellationToken);
+}
+
 /// <summary>Información de lanzamiento de un proceso.</summary>
 public sealed class ProcessLaunch
 {

@@ -362,6 +362,11 @@ public sealed class ExplorerTurn
         /// <summary>Episodio de estancamiento registrado al cerrar este Turn (ADR-0048), si lo hubo.</summary>
         public StallOutcome? Stall { get; init; }
         public string? FinalText { get; }
+        /// <summary>Validated result returned by a non-native Lane executor, when applicable.</summary>
+        public AgentResult? ExternalAgentResult { get; init; }
+        public string? ExternalResultSchemaId { get; init; }
+        public ArtifactRef? ExternalResultRef { get; init; }
+        internal ClaudeLaneStreamOutcome? ExternalLaneOutcome { get; init; }
 
         public StopReason StopReason { get; }
 
@@ -1838,7 +1843,7 @@ public sealed class ExplorerTurn
         return "{\"argumentsHash\":\"" + digest + "\"}";
     }
 
-    private static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,
+    internal static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,
         RunId runId, string day, string? providerStateDescriptor = null, string? visibleContent = null)
     {
         var costJson = cost is null ? "null" : "\""

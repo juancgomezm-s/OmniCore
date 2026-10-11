@@ -204,56 +204,83 @@ public sealed partial class WorkspaceSnapshotStore
     private void AddBatchRows(List<UndoPlanEntry> rows, SessionId session, ToolCallId id,
         DomainEvent envelope, ToolCallStarted start, WorktreeIntegrationStateRecorded state, UndoAttribution attribution)
     {
+        var evidence = ReadBatchEvidence(id, start, state);
+        if (evidence is null) return;
+        rows.AddRange(evidence.Select(file => new UndoPlanEntry(id, file.RelativePath, "Ready", Hash(file.PostimageBytes),
+            file.PreimageBytes, Hash(file.PreimageBytes), envelope.Sequence, start.BeforeStateRef, null,
+            ScopeId(envelope), file.PostimageBytes, attribution, null)));
+    }
+
+    /// <summary>
+    /// Validates an integration's durable journal/CAS evidence without consulting the current
+    /// filesystem or deciding whether the effect remains eligible for Undo. Historical diff
+    /// readers use this after the workspace has changed or the effect has been compensated.
+    /// </summary>
+    internal IReadOnlyList<BatchEvidenceFile>? ReadBatchEvidence(ToolCallId id, ToolCallStarted start,
+        WorktreeIntegrationStateRecorded state)
+    {
         try
         {
             if (start.BeforeStateRef is null || _artifacts is not IProtectedArtifactStore protectedStore
                 || start.BeforeStateRef.Size > MaxBatchBytes * 2
+                || start.BeforeStateRef.MediaType != "application/json"
                 || string.IsNullOrWhiteSpace(start.ReconciliationJson)
-                || Encoding.UTF8.GetByteCount(start.ReconciliationJson) > MaxBatchBytes * 2) return;
+                || Encoding.UTF8.GetByteCount(start.ReconciliationJson) > MaxBatchBytes * 2) return null;
+            using (var metadataDocument = JsonDocument.Parse(start.ReconciliationJson)) EnsureNoDuplicates(metadataDocument.RootElement);
             var metadata = JsonSerializer.Deserialize(start.ReconciliationJson, BatchJson.Default.BatchMetadata);
             if (metadata is null || metadata.Kind != "worktree.integration.batch" || metadata.Version != 1
-                || start.BeforeStateRef.Size > MaxBatchBytes * 2
                 || metadata.ToolCallId != id.ToString() || metadata.Files is null || metadata.Files.Length is < 1 or > MaxFiles
                 || !PathEquals(metadata.WorkspaceRoot, _workspaceRoot) || !Guid.TryParseExact(metadata.OwnershipId, "N", out _)
+                || !IsSha256(metadata.ProposalId) || !IsGitOid(metadata.WorkspaceHead) || !IsGitOid(metadata.LaneHead)
+                || metadata.GitCommonDirectory is null || !Path.IsPathFullyQualified(metadata.GitCommonDirectory)
+                || state.State != WorktreeIntegrationState.Completed || state.ToolCallId != id
                 || state.OwnershipId != metadata.OwnershipId || state.ProposalId != metadata.ProposalId
-                || metadata.Files.Length != state.Files!.Count) return;
+                || metadata.Files.Any(claim => claim is null) || state.Files is null
+                || state.Files.Any(status => status is null) || metadata.Files.Length != state.Files.Count) return null;
             var purpose = "m7-worktree-integration:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
                 ProjectIdentity.CanonicalWorkspacePath(_workspaceRoot) + "\n" + metadata.OwnershipId + "\n" + metadata.ProposalId))).ToLowerInvariant();
             var json = protectedStore.GetProtectedText(start.BeforeStateRef, purpose);
-            if (Encoding.UTF8.GetByteCount(json) > MaxBatchBytes * 2) return;
+            if (Encoding.UTF8.GetByteCount(json) > MaxBatchBytes * 2) return null;
             using var document = JsonDocument.Parse(json);
             EnsureNoDuplicates(document.RootElement);
             var payload = JsonSerializer.Deserialize(json, BatchJson.Default.BatchPayload);
             if (payload is null || payload.Version != 1 || payload.OwnershipId != metadata.OwnershipId
                 || payload.ProposalId != metadata.ProposalId || !PathEquals(payload.WorkspaceRoot, _workspaceRoot)
-                || payload.Files is null || payload.Files.Length != metadata.Files.Length || payload.Files.Length > MaxFiles) return;
+                || payload.Files is null || payload.Files.Any(file => file is null)
+                || payload.Files.Length != metadata.Files.Length || payload.Files.Length > MaxFiles) return null;
             if (metadata.GitCommonDirectory != payload.GitCommonDirectory
                 || metadata.WorkspaceHead != payload.WorkspaceHead || metadata.WorkspaceBranch != payload.WorkspaceBranch
-                || metadata.LaneHead != payload.LaneHead || metadata.LaneBranch != payload.LaneBranch) return;
+                || metadata.LaneHead != payload.LaneHead || metadata.LaneBranch != payload.LaneBranch) return null;
             long batchBytes = 0;
-            var verifiedRows = new List<UndoPlanEntry>(payload.Files.Length);
+            var paths = new HashSet<string>(OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            var verifiedRows = new List<BatchEvidenceFile>(payload.Files.Length);
             for (var index = 0; index < payload.Files.Length; index++)
             {
                 var file = payload.Files[index]; var claim = metadata.Files[index];
                 var status = state.Files[index];
                 if (status.Outcome != ReconciliationOutcome.Applied || file.RelativePath != claim.RelativePath
                     || status.RelativePath != file.RelativePath || !FilesystemReconciliationMetadata.IsSaneRelativePath(file.RelativePath)
+                    || !paths.Add(file.RelativePath)
                     || _redaction.IsSecretPath(file.RelativePath)
                     || claim.ExpectedPreSha256 != file.ExpectedPreSha256 || claim.ExpectedPostSha256 != file.ExpectedPostSha256
+                    || claim.ExpectedPreMode != file.ExpectedPreMode || claim.ExpectedPostMode != file.ExpectedPostMode
                     || claim.ExpectedPreMode is not (null or "100644") || claim.ExpectedPostMode is not (null or "100644")
                     || claim.ExpectedPreMode is not null && claim.ExpectedPostMode is not null && claim.ExpectedPreMode != claim.ExpectedPostMode)
-                    return;
+                    return null;
                 var pre = Decode(file.Preimage, file.ExpectedPreSha256);
                 var post = Decode(file.Postimage, file.ExpectedPostSha256);
                 batchBytes = checked(batchBytes + Size(pre) + Size(post));
-                if (Size(pre) > MaxImageBytes || Size(post) > MaxImageBytes || batchBytes > MaxBatchBytes) return;
-                verifiedRows.Add(new UndoPlanEntry(id, file.RelativePath, "Ready", Hash(post), pre,
-                    Hash(pre), envelope.Sequence, start.BeforeStateRef, null, ScopeId(envelope), post, attribution, null));
+                if (Size(pre) > MaxImageBytes || Size(post) > MaxImageBytes || batchBytes > MaxBatchBytes) return null;
+                verifiedRows.Add(new BatchEvidenceFile(file.RelativePath, pre, post));
             }
-            rows.AddRange(verifiedRows);
+            return verifiedRows;
         }
-        catch (Exception ex) when (IsDataFailure(ex) || ex is CryptographicException) { }
+        catch (Exception ex) when (IsDataFailure(ex) || ex is CryptographicException) { return null; }
     }
+
+    private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
+    private static bool IsGitOid(string? value) => value is { Length: 40 or 64 } && value.All(Uri.IsHexDigit);
 
     private byte[]? Decode(DurableImage? image, string? expectedHash)
     {
@@ -307,6 +334,7 @@ public sealed partial class WorkspaceSnapshotStore
     private sealed record DurableFileImage(string RelativePath, string? ExpectedPreSha256, string? ExpectedPostSha256,
         string? ExpectedPreMode, string? ExpectedPostMode, DurableImage? Preimage, DurableImage? Postimage);
     private sealed record DurableImage(string Text, string Encoding);
+    internal sealed record BatchEvidenceFile(string RelativePath, byte[]? PreimageBytes, byte[]? PostimageBytes);
     [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow)]
     [JsonSerializable(typeof(BatchMetadata))][JsonSerializable(typeof(BatchPayload))]
     private sealed partial class BatchJson : JsonSerializerContext;

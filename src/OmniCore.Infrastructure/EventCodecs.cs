@@ -63,6 +63,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.AgentExecutionStarted())
             .Plus(Typed.AgentExecutionCompleted())
             .Plus(Typed.AgentExecutionFailed())
+            .Plus(Typed.ExternalLaneSessionBound())
+            .Plus(Typed.ExternalLaneUsageRecorded())
             .Plus(Typed.DelegationCreated())
             .Plus(Typed.DelegationAccepted())
             .Plus(Typed.DelegationReturned())
@@ -101,6 +103,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.LaneCreated())
             .Plus(Typed.LaneProvisioning())
             .Plus(Typed.LaneWorktreeCreated())
+            .Plus(Typed.LaneWorktreeBound())
             .Plus(Typed.LaneStarted())
             .Plus(Typed.LaneBlocked())
             .Plus(Typed.LaneUnblocked())
@@ -414,6 +417,8 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(AgentExecutionStarted))]
 [JsonSerializable(typeof(AgentExecutionCompleted))]
 [JsonSerializable(typeof(AgentExecutionFailed))]
+[JsonSerializable(typeof(ExternalLaneSessionBound))]
+[JsonSerializable(typeof(ExternalLaneUsageRecorded))]
 [JsonSerializable(typeof(DelegationCreated))]
 [JsonSerializable(typeof(DelegationAccepted))]
 [JsonSerializable(typeof(DelegationReturned))]
@@ -452,6 +457,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(LaneCreated))]
 [JsonSerializable(typeof(LaneProvisioning))]
 [JsonSerializable(typeof(LaneWorktreeCreated))]
+[JsonSerializable(typeof(LaneWorktreeBound))]
 [JsonSerializable(typeof(LaneStarted))]
 [JsonSerializable(typeof(LaneBlocked))]
 [JsonSerializable(typeof(LaneUnblocked))]
@@ -743,6 +749,12 @@ public sealed class Typed
     public static CodecPair AgentExecutionFailed() =>
         Of(EventType.Of("agent_execution.failed"), EventJsonContext.Default.AgentExecutionFailed);
 
+    public static CodecPair ExternalLaneSessionBound() =>
+        Of(EventType.Of("external_lane.session_bound"), EventJsonContext.Default.ExternalLaneSessionBound);
+
+    public static CodecPair ExternalLaneUsageRecorded() =>
+        Of(EventType.Of("external_lane.usage_recorded"), EventJsonContext.Default.ExternalLaneUsageRecorded);
+
     public static CodecPair TaskReady() =>
         Of(EventType.Of("task.ready"), EventJsonContext.Default.TaskReady);
 
@@ -775,6 +787,9 @@ public sealed class Typed
 
     public static CodecPair LaneWorktreeCreated() =>
         Of(EventType.Of("lane.worktree_created"), EventJsonContext.Default.LaneWorktreeCreated);
+
+    public static CodecPair LaneWorktreeBound() =>
+        Of(EventType.Of("lane.worktree_bound"), EventJsonContext.Default.LaneWorktreeBound);
 
     public static CodecPair LaneStarted() =>
         Of(EventType.Of("lane.started"), EventJsonContext.Default.LaneStarted);

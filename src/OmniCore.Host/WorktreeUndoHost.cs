@@ -10,6 +10,26 @@ using OmniCore.Tools;
 /// verified workspace root and selects only a session whose durable root identity matches it.</summary>
 public static class WorktreeUndoHost
 {
+    /// <summary>CLI-safe scalar projection; keeps Domain's typed undo contracts behind Host.</summary>
+    public static WorktreeUndoPlanView? PlanForCli(string workspacePath, string? effectId = null)
+    {
+        var effect = effectId is null ? null : ToolCallId.Parse(effectId);
+        using var composition = Open(workspacePath, effect);
+        var plan = composition?.Service.Plan(composition.Session, effect);
+        return plan is null ? null : new WorktreeUndoPlanView(plan.SessionId.ToString(),
+            plan.Entries.Select(entry => new WorktreeUndoPlanEntryView(entry.OriginalEffect.ToString(),
+                entry.State, entry.RelativePath)).ToArray());
+    }
+
+    /// <summary>CLI-safe scalar projection; no Domain enum leaks into the CLI assembly.</summary>
+    public static WorktreeUndoResultView UndoForCli(string workspacePath, string effectId,
+        CancellationToken cancellationToken)
+    {
+        var result = Undo(workspacePath, ToolCallId.Parse(effectId), cancellationToken);
+        return new WorktreeUndoResultView(result.Outcome.ToString(), result.Files.Select(file =>
+            new WorktreeUndoFileStateView(file.Outcome.ToString(), file.RelativePath)).ToArray());
+    }
+
     public static UndoPlan? Plan(string workspacePath, ToolCallId? effectId = null)
     {
         using var composition = Open(workspacePath, effectId);
@@ -86,3 +106,8 @@ public static class WorktreeUndoHost
         public void Dispose() => store.Close();
     }
 }
+
+public sealed record WorktreeUndoPlanView(string SessionId, IReadOnlyList<WorktreeUndoPlanEntryView> Entries);
+public sealed record WorktreeUndoPlanEntryView(string OriginalEffect, string State, string RelativePath);
+public sealed record WorktreeUndoResultView(string Outcome, IReadOnlyList<WorktreeUndoFileStateView> Files);
+public sealed record WorktreeUndoFileStateView(string Outcome, string RelativePath);
