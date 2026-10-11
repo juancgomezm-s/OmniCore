@@ -13,12 +13,14 @@ public sealed class SessionMemoryStore : IMemoryStore
     private const int MaximumRecordsPerSession = 500;
     private const long MaximumFileBytes = 4 * 1024 * 1024;
     private static readonly ConcurrentDictionary<string, object> Gates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _dataDirectory;
     private readonly string _root;
 
     public SessionMemoryStore(string workspaceDataDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceDataDirectory);
-        _root = Path.Combine(Path.GetFullPath(workspaceDataDirectory), "session-memory");
+        _dataDirectory = Path.GetFullPath(workspaceDataDirectory);
+        _root = Path.Combine(_dataDirectory, "session-memory");
     }
 
     public IReadOnlyList<MemoryRecord> Read(MemoryScope scope, CancellationToken cancellationToken)
@@ -122,13 +124,16 @@ public sealed class SessionMemoryStore : IMemoryStore
     {
         if (!Guid.TryParse(scope.Id, out var sessionId))
             throw new ArgumentException("Session memory requires a canonical SessionId.", nameof(scope));
-        return Path.Combine(_root, sessionId.ToString("N") + ".json");
+        var path = Path.Combine(_root, sessionId.ToString("N") + ".json");
+        RejectReparsePointAncestors(path);
+        return path;
     }
 
-    private static IReadOnlyList<MemoryRecord> ReadFile(string path, MemoryScope scope,
+    private IReadOnlyList<MemoryRecord> ReadFile(string path, MemoryScope scope,
         CancellationToken cancellationToken)
     {
         if (!File.Exists(path)) return [];
+        RejectReparsePointAncestors(path);
         if (new FileInfo(path).Length > MaximumFileBytes)
             throw new InvalidDataException("The Session memory file exceeds the size limit.");
         try
@@ -183,16 +188,18 @@ public sealed class SessionMemoryStore : IMemoryStore
         }
     }
 
-    private static void WriteFile(string path, List<MemoryRecord> records, CancellationToken cancellationToken)
+    private void WriteFile(string path, List<MemoryRecord> records, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        RejectReparsePointAncestors(path);
         var temporary = path + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 JsonSerializer.Serialize(stream, records.ToArray(), MemoryJsonContext.Default.MemoryRecordArray);
             cancellationToken.ThrowIfCancellationRequested();
+            RejectReparsePointAncestors(path);
             File.Move(temporary, path, overwrite: true);
         }
         finally
@@ -202,6 +209,24 @@ public sealed class SessionMemoryStore : IMemoryStore
     }
 
     private static object Gate(string path) => Gates.GetOrAdd(path, static _ => new object());
+
+    private void RejectReparsePointAncestors(string targetPath)
+    {
+        var current = Path.GetFullPath(targetPath);
+        var root = Path.GetPathRoot(_dataDirectory)!;
+        while (!string.IsNullOrEmpty(current))
+        {
+            if (File.Exists(current) || Directory.Exists(current))
+            {
+                if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Session memory cannot use a reparse point in its storage path.");
+            }
+            if (string.Equals(current, root, OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) break;
+            current = Path.GetDirectoryName(current)!;
+        }
+    }
+
     private static string Normalize(string content) => string.Join(' ', content.Normalize(NormalizationForm.FormKC)
         .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToUpperInvariant();
 }

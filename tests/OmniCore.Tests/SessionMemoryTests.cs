@@ -108,6 +108,38 @@ public sealed class SessionMemoryTests
     }
 
     [Fact]
+    public void Store_rejects_reparse_points_under_its_data_directory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-reparse-" + Guid.NewGuid().ToString("N"));
+        var data = Path.Combine(root, "data");
+        var outside = Path.Combine(root, "outside");
+        var memoryDirectory = Path.Combine(data, "session-memory");
+        Directory.CreateDirectory(data);
+        Directory.CreateDirectory(outside);
+        try
+        {
+            try { Directory.CreateSymbolicLink(memoryDirectory, outside); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                               or PlatformNotSupportedException or NotSupportedException)
+            {
+                return;
+            }
+
+            var store = new SessionMemoryStore(data);
+            Assert.Throws<InvalidDataException>(() => store.Read(MemoryScope.ForSession(SessionId.New()),
+                CancellationToken.None));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+        }
+        finally
+        {
+            if (Directory.Exists(memoryDirectory)) Directory.Delete(memoryDirectory);
+            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+            if (Directory.Exists(data)) Directory.Delete(data, recursive: true);
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Last_used_tracks_only_memory_items_in_the_completed_context_and_never_moves_backwards()
     {
         var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-last-used-" + Guid.NewGuid().ToString("N"));
