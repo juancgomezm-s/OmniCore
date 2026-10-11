@@ -81,7 +81,7 @@ public static class AnimationCatalog
         var tick = (int)((frame % 120 + 120) % 120);
         for (var x = 0; x < width; x++)
         {
-            if (x == 0) { cells[x] = new(ascii ? "O" : "Ω", moving ? 2 + tick / 4 % 4 : 5); continue; }
+            if (x == 0) { cells[x] = new(ascii ? "*" : "✦", moving ? 2 + tick / 4 % 4 : 5); continue; }
             if (x == 1 || !moving) { cells[x] = new(" ", 0); continue; }
             if (effect == "braille-spinner")
             {

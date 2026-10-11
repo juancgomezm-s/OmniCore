@@ -160,20 +160,22 @@ razonamiento inferido. `Tools` incluye llamadas solicitadas: su etiqueta es
 «Herramientas», no una afirmación de ejecución o progreso confirmado.
 
 El catálogo C# contiene `omega-pulse`, `orbit-dots`, `block-wave`, `conveyor` y
-`braille-spinner`, con `Ω` Unicode por defecto y sin depender de Node/Pi/Nerd Fonts.
+`braille-spinner`, con `✦` Unicode por defecto y sin depender de Node/Pi/Nerd Fonts.
+El identificador `omega-pulse` se conserva por compatibilidad con preferencias
+guardadas; su símbolo visible también es `✦`. El fallback ASCII es `*`.
 `braille-spinner` reproduce el ciclo compacto de diez frames del
 [Loader nativo de Pi](https://github.com/earendil-works/pi/blob/main/packages/tui/src/components/loader.ts),
-no un efecto de la extensión: puntos azules junto al Ω, en una sola celda.
+no un efecto de la extensión: puntos azules junto a ✦, en una sola celda.
 Se selecciona con `/animation braille-spinner` (todas las fases) o
 `/animation waiting:braille-spinner` (sólo espera), y también desde F4.
 Respeta el intervalo configurado de OmniCore; ASCII usa `| / - \` y movimiento
-reducido/OFF conserva sólo el Ω estático. Los defaults anteriores no cambian.
+reducido/OFF conserva sólo ✦ estático. Los efectos predeterminados no cambian.
 Inspiración visual: [pi-animations](https://github.com/arpagon/pi-animations), MIT;
 el catálogo es una implementación nativa, sin su parche de componentes ni sus
 temporizadores globales. Animaciones grandes y catálogo externo completo no
 forman parte de este primer bloque.
 
-- F4 → **Ω Indicadores y animaciones**, o `/animation showcase`: vista previa y
+- F4 → **✦ Indicadores y animaciones**, o `/animation showcase`: vista previa y
   selección de efecto por fase. Enter cambia la opción; Esc devuelve el foco.
 - `/animation on|off`, `reduced|full`, `fast|normal|slow` y `ascii|unicode`:
   movimiento, intervalos de 100/200/300 ms y fallback de caracteres.

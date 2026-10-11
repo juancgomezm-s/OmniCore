@@ -852,7 +852,8 @@ public sealed class TuiWiringTests
                 }
                 else if (scene == "activity")
                 {
-                    Assert.Contains("Ω", text);
+                    Assert.Contains("✦", text);
+                    Assert.DoesNotContain("Ω", text);
                     Assert.DoesNotContain("π", text);
                     Assert.True(fx.App.Activity!.Visible);
                     var composer = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
@@ -864,7 +865,8 @@ public sealed class TuiWiringTests
                 }
                 else if (scene is "animations" or "animations-braille")
                 {
-                    Assert.Contains("Ω Indicadores y animaciones", text);
+                    Assert.Contains("✦ Indicadores y animaciones", text);
+                    Assert.DoesNotContain("Ω", text);
                     Assert.Contains("Razonamiento reportado", text);
                     Assert.Contains("Movimiento reducido", text);
                     Assert.DoesNotContain("pi-pulse", text);
@@ -1369,7 +1371,7 @@ public sealed class TuiWiringTests
         Click(fx, "Indicadores y animaciones");
         fx.Wait(() => fx.App.Overlay!.SubViews.Any(v => v.Id == "animation-preview"), "vista previa visible");
         var preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
-        Assert.Equal("Ω", preview.SubViews.First().Text);
+        Assert.Equal("✦", preview.SubViews.First().Text);
         Click(fx, "Razonamiento reportado");
         Assert.Equal("block-wave", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Reasoning);
         Click(fx, "Movimiento reducido");
@@ -1408,7 +1410,7 @@ public sealed class TuiWiringTests
         fx.Wait(() => spinner.Text != first, "ciclo braille en movimiento");
         Type(fx, "/animation reduced");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer!.Text == "", "movimiento reducido aplicado");
-        Assert.Equal("Ω", fx.App.Activity.SubViews.First().Text);
+        Assert.Equal("✦", fx.App.Activity.SubViews.First().Text);
         Assert.Equal(" ", spinner.Text);
         fx.Invoke(() => { for (var tick = 0; tick < 12; tick++) fx.App.AnimateActivity(); });
         Assert.Equal(" ", spinner.Text);
@@ -1434,7 +1436,7 @@ public sealed class TuiWiringTests
         var frozen = fx.App.Activity!.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray();
         fx.Invoke(() => { for (var tick = 0; tick < 12; tick++) fx.App.AnimateActivity(); });
         Assert.Equal(frozen, fx.App.Activity.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray());
-        Assert.Equal("Ω", frozen[0].Text);
+        Assert.Equal("✦", frozen[0].Text);
         Assert.True(fx.App.Activity.Visible);
         Assert.Equal(1, host.Calls);
         Type(fx, "borrador");

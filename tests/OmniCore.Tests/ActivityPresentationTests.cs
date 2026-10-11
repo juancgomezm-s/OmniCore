@@ -82,7 +82,7 @@ public sealed class ActivityPresentationTests
     [InlineData("block-wave")]
     [InlineData("conveyor")]
     [InlineData("braille-spinner")]
-    public void Frames_are_bounded_deterministic_native_and_omega_branded(string effect)
+    public void Frames_are_bounded_deterministic_native_and_star_branded(string effect)
     {
         foreach (var width in new[] { -1, 0, 1, 2, 3, 11, 80, 1000 })
         foreach (var frame in new long[] { -1, 0, 1, 20, long.MaxValue })
@@ -91,11 +91,12 @@ public sealed class ActivityPresentationTests
             Assert.Equal(Math.Clamp(width, 0, 80), cells.Count);
             Assert.Equal(cells, AnimationCatalog.Render(effect, frame, width));
             Assert.All(cells, cell => { Assert.InRange(cell.Intensity, 0, 5); Assert.DoesNotContain('\x1b', cell.Glyph); });
-            if (width > 0) Assert.Equal("Ω", cells[0].Glyph);
+            if (width > 0) Assert.Equal("✦", cells[0].Glyph);
         }
         Assert.NotEqual(AnimationCatalog.Render(effect, 0, 11), AnimationCatalog.Render(effect, 5, 11));
         Assert.Equal(AnimationCatalog.Render(effect, 0, 11, false), AnimationCatalog.Render(effect, 20, 11, false));
         Assert.All(AnimationCatalog.Render(effect, 0, 11, ascii: true), cell => Assert.All(cell.Glyph, ch => Assert.InRange((int)ch, 32, 126)));
+        Assert.Equal("*", AnimationCatalog.Render(effect, 0, 11, ascii: true)[0].Glyph);
     }
 
     [Fact]

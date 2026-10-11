@@ -75,7 +75,7 @@ public sealed partial class TuiApp
                 "Enlarge the terminal for the preview.\n/animation on/off · reduced/full · fast/normal/slow"));
             return;
         }
-        var frame = OverlayFrame(Ui("Ω Indicadores y animaciones", "Ω Activity and animations"), 14);
+        var frame = OverlayFrame(Ui("✦ Indicadores y animaciones", "✦ Activity and animations"), 14);
         var notice = new Label { Id = "animation-notice", X = 2, Y = 1, Width = Dim.Fill(2), Height = 1 };
         if (_animationStore.Notice is not null)
             notice.Text = Ui("Configuración inválida · usando valores seguros", "Invalid settings · using safe defaults");
@@ -125,7 +125,7 @@ public sealed partial class TuiApp
             enabled.Text = Ui("Animaciones", "Animations") + " · " + (_animationPreferences.Enabled ? "ON" : "OFF");
             reduced.Text = Ui("Movimiento reducido", "Reduced motion") + " · " + (_animationPreferences.ReducedMotion ? "ON" : "OFF");
             speed.Text = Ui("Intervalo", "Interval") + " · " + _animationPreferences.IntervalMilliseconds + " ms";
-            ascii.Text = Ui("Caracteres", "Characters") + " · " + (_animationPreferences.Ascii ? "ASCII" : "Unicode Ω");
+            ascii.Text = Ui("Caracteres", "Characters") + " · " + (_animationPreferences.Ascii ? "ASCII *" : "Unicode ✦");
             description.Text = _previewEffect + Ui(" · vista previa", " · preview");
             RenderAnimationPreview();
         }

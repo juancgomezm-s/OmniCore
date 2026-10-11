@@ -492,7 +492,7 @@ public sealed partial class TuiApp
         "/reasoning" => Ui("Preferencia persistente, selección del Run o impulso de un turno", "Persistent preference, Run selection, or one-turn boost"),
         "/models" => Ui("Seleccionar modelo", "Select model"),
         "/preferences" => Ui("Abrir configuración", "Open settings"),
-        "/animation" => Ui("Ω Indicadores y vista previa", "Ω Activity and preview"),
+        "/animation" => Ui("✦ Indicadores y vista previa", "✦ Activity and preview"),
         "/login" => Ui("Cuenta y conexión ChatGPT", "ChatGPT account and connection"),
         "/sidebar" => Ui("Mostrar u ocultar panel lateral", "Toggle workspace panel"),
         "/fuente" => Ui("Mostrar u ocultar ejemplos Markdown originales", "Show or hide original Markdown examples"),
@@ -1559,7 +1559,7 @@ public sealed partial class TuiApp
         account.Accepted += (_, _) => { CloseOverlay(); ShowAccount(); };
         var providers = new Button { Id = "settings-provider-connections", X = 2, Y = 8, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Conexiones API de providers", "Provider API connections") };
         providers.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(); };
-        var animations = new Button { Id = "settings-animations", X = 2, Y = 10, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Ω Indicadores y animaciones", "Ω Activity and animations") };
+        var animations = new Button { Id = "settings-animations", X = 2, Y = 10, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("✦ Indicadores y animaciones", "✦ Activity and animations") };
         animations.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); };
         var close = new Button { Id = "settings-close", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
         close.Accepted += (_, _) => CloseOverlay();
