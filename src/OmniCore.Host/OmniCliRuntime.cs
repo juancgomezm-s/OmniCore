@@ -362,6 +362,12 @@ public sealed class OmniCliRuntime : IDisposable
                 if (!capabilities.TryAdd(toolId, capability))
                     throw new InvalidOperationException("Dynamic capability registration collides with a built-in tool id: " + toolId);
             }
+            foreach (var tool in catalog.RegisteredTools().Where(tool => tool.Descriptor.Source.Kind == SourceKind.Extension))
+            {
+                if (!capabilities.TryAdd(tool.Descriptor.Id.ToString(), ModelToolCapability.GeneralProcess))
+                    throw new InvalidOperationException("Extension capability registration collides with a built-in tool id: "
+                        + tool.Descriptor.Id);
+            }
         }
         return new ModelCapabilityBoundary(policy, capabilities, new FileReadRegistry(workspaceRoot));
     }
@@ -1431,13 +1437,18 @@ public sealed class OmniCliRuntime : IDisposable
                     worktreeIntegrationCoordinator: delegation is null
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(_workspaceRoot, paths, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
+            var extensionBoundaries = new List<IToolIntentBoundary>();
             if (delegation is null && executingAct && workspaceConfig.Trusted)
             {
                 try
                 {
                     foreach (var extensionTool in ProjectExtensionTools.Load(_workspaceRoot, paths,
                         workspaceTrusted: true, invoker: new ExtensionRpcProcessInvoker()))
+                    {
                         hostTools.RegisterExtensionTool(extensionTool);
+                        if (extensionTool is ExtensionTool trustedExtensionTool)
+                            extensionBoundaries.Add(trustedExtensionTool.Boundary);
+                    }
                 }
                 catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
                     or InvalidOperationException or UnauthorizedAccessException)
@@ -1477,7 +1488,8 @@ public sealed class OmniCliRuntime : IDisposable
             var interactionResponder = CreateInteractionResponder(writeLine, locale);
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox)
+                    audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox,
+                    extensionBoundaries)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     agentProfile, receiveMailbox);
             var contributors = executingAct

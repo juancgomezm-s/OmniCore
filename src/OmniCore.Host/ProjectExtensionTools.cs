@@ -30,7 +30,7 @@ public static class ProjectExtensionTools
                 using var schema = JsonDocument.Parse(File.ReadAllText(schemaFile));
                 if (schema.RootElement.ValueKind != JsonValueKind.Object)
                     throw new InvalidDataException("Extension tool schemas must be JSON objects: " + declaration.Schema);
-                tools.Add(new ExtensionTool(extension, declaration, schema.RootElement.GetRawText(), invoker));
+                tools.Add(new ExtensionTool(extension, declaration, schema.RootElement.GetRawText(), invoker, workspaceRoot));
             }
         }
         return tools;

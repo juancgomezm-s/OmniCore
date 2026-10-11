@@ -10,9 +10,10 @@ public sealed class ExtensionTool : ITool
     private readonly DiscoveredExtension _extension;
     private readonly ExtensionToolManifest _tool;
     private readonly IExtensionRpcInvoker _invoker;
+    public ExtensionBoundary Boundary { get; }
 
     public ExtensionTool(DiscoveredExtension extension, ExtensionToolManifest tool, string schemaJson,
-        IExtensionRpcInvoker invoker)
+        IExtensionRpcInvoker invoker, string workspaceRoot)
     {
         _extension = extension ?? throw new ArgumentNullException(nameof(extension));
         _tool = tool ?? throw new ArgumentNullException(nameof(tool));
@@ -25,6 +26,8 @@ public sealed class ExtensionTool : ITool
             new InputSchema(schemaJson), ["extension", id], readOnly: false, destructive: false,
             ToolRisk.High, new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust, id, version),
             ToolProtection.None, EffectClass.NonIdempotent);
+        Boundary = new ExtensionBoundary(extension.Manifest.Requests?.Permissions ?? new ExtensionPermissionManifest(),
+            id, workspaceRoot, Descriptor.Source);
     }
 
     public ToolDescriptor Descriptor { get; }
@@ -41,9 +44,18 @@ public sealed class ExtensionTool : ITool
                 ToolErrorCode.InvalidArguments);
         }
         var runtime = _extension.Manifest!.Runtime!;
-        var process = new ProcessClaim(runtime.Command!, runtime.Args ?? [], "ExtensionTool",
-            NetworkRequired: false, WorkingDirectory: _extension.Directory);
-        var claims = new ResourceClaims([], [], [], process, []);
+        var executable = Path.GetFullPath(Path.IsPathRooted(runtime.Command!)
+            ? runtime.Command! : Path.Combine(_extension.Directory, runtime.Command!));
+        var process = new ProcessClaim(executable, runtime.Args ?? [], "ExtensionTool",
+            NetworkRequired: false, WorkingDirectory: context.WorkspaceRoot);
+        var permissions = _extension.Manifest.Requests?.Permissions;
+        var claims = new ResourceClaims(permissions?.Paths?.Read ?? [], permissions?.Paths?.Write ?? [],
+            (permissions?.Network ?? []).Select(ParseNetwork).ToArray(), process, []);
+        var boundary = Boundary.Evaluate(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
+            EffectClass.NonIdempotent, claims, ToolRisk.High, reconciliation: null));
+        if (!boundary.Allowed)
+            return new PreparationRejected(boundary.Reason ?? "Extension intent exceeds requests.permissions.", null,
+                ToolErrorCode.PermissionDenied);
         return new Prepared(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
             EffectClass.NonIdempotent, claims, ToolRisk.High, reconciliation: null));
     }
@@ -58,23 +70,33 @@ public sealed class ExtensionTool : ITool
         {
             var parameters = "{\"name\":\"" + Escape(_tool.Name!) + "\""
                 + ",\"arguments\":" + intent.Intent.NormalizedArgumentsJson + "}";
-            var response = await _invoker.InvokeAsync(_extension, "tools/call", parameters, cancellationToken)
+            var response = await _invoker.InvokeAsync(_extension, "tools/call", parameters, intent.Intent.Claims, cancellationToken)
                 .ConfigureAwait(false);
             using var document = JsonDocument.Parse(response);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("jsonrpc", out var version)
-                || version.GetString() != "2.0" || !root.TryGetProperty("result", out var result))
+                || version.ValueKind != JsonValueKind.String || version.GetString() != "2.0"
+                || !root.TryGetProperty("result", out var result))
                 throw new InvalidDataException("The extension returned an invalid JSON-RPC response.");
             var resultJson = result.GetRawText();
             return new ToolResult("Extension tool completed.", resultJson, null, resultJson.Length, false,
                 EffectOutcome.Applied);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or NotSupportedException)
+        catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or NotSupportedException
+            or TimeoutException or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
         {
-            return new ToolResult("Extension tool failed: " + ex.Message, null, null, 0, false,
+            return new ToolResult("Extension tool failed safely (" + ex.GetType().Name + ").", null, null, 0, false,
                 EffectOutcome.Unknown, isError: true, ToolErrorCode.ToolFailure);
         }
+    }
+
+    private static NetworkGrant ParseNetwork(string value)
+    {
+        var separator = value.LastIndexOf(':');
+        if (separator > 0 && int.TryParse(value[(separator + 1)..], out var port))
+            return new NetworkGrant(value[..separator], port);
+        return new NetworkGrant(value, null);
     }
 
     private static string Escape(string value)

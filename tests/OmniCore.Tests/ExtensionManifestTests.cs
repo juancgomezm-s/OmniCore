@@ -79,6 +79,8 @@ public sealed class ExtensionManifestTests
         Assert.False(boundary.AllowsPath("src/main.p", write: true));
         Assert.True(boundary.AllowsPath("output/build.log", write: true));
         Assert.False(boundary.AllowsPath("private/credentials.txt", write: false));
+        Assert.False(boundary.AllowsPath("../outside/credentials.txt", write: false));
+        Assert.False(boundary.AllowsPath("C:/outside/credentials.txt", write: true));
     }
 
     [Fact]
@@ -188,9 +190,121 @@ public sealed class ExtensionManifestTests
             File.WriteAllText(Path.Combine(root, "schemas", "compile.json"), "{\"changed\":true}");
             var launcher = new CountingSandboxLauncher();
             var invoker = new ExtensionRpcProcessInvoker(launcher);
+            var process = new OmniCore.Domain.ProcessClaim(Path.Combine(root, "runtime.exe"), ["--omnicore-extension"],
+                "ExtensionTool", WorkingDirectory: root);
             await Assert.ThrowsAsync<InvalidDataException>(() => invoker.InvokeAsync(extension, "tools/call",
-                "{}", CancellationToken.None));
+                "{}", new OmniCore.Domain.ResourceClaims([], [], [], process, []), CancellationToken.None));
             Assert.Equal(0, launcher.Starts);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Package_change_during_permission_ask_stops_before_Strong_process_start()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-ask-tamper-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(workspace, ".omnicore", "extensions", "fixture.rpc");
+        Directory.CreateDirectory(package);
+        var schemaPath = Path.Combine(package, "schema.json");
+        File.WriteAllText(schemaPath, "{\"type\":\"object\"}");
+        var executable = Environment.ProcessPath!;
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), $$"""
+            manifestVersion: 1
+            id: fixture.rpc
+            version: 1.0.0
+            displayName: Fixture RPC
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              tools:
+                - name: mutate
+                  schema: schema.json
+            requests:
+              capabilities: [tool.register]
+              permissions:
+                process:
+                  - executable: {{System.Text.Json.JsonSerializer.Serialize(Path.GetFileName(executable))}}
+            runtime:
+              kind: process
+              command: {{System.Text.Json.JsonSerializer.Serialize(executable)}}
+              args: []
+            """);
+        try
+        {
+            var extension = Assert.Single(new ExtensionManifestLoader().Discover(Path.Combine(workspace, ".omnicore", "extensions"),
+                TrustLevel.Project, workspaceTrusted: true, new HashSet<string>(["tool.register"], StringComparer.Ordinal)));
+            var launcher = new CountingSandboxLauncher();
+            var tool = new ExtensionTool(extension, extension.Manifest!.Provides!.Tools!.Single(),
+                File.ReadAllText(schemaPath), new ExtensionRpcProcessInvoker(launcher), workspace);
+            var policy = new PackageMutatingPermissionPolicy(
+                ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.mutate", PermissionDecision.Allow)
+                    .WithModeDefaults(OmniCore.Domain.RunMode.Act), schemaPath);
+            var executor = new ScriptedToolExecutor(new FakeCatalog().Add(tool), policy, workspace,
+                null, null, null, false, additionalBoundaries: [tool.Boundary]);
+            var result = executor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id,
+                "tamper-after-prepare", "{}"), userApprovesAsk: true, CancellationToken.None);
+            Assert.False(result.Succeeded);
+            Assert.Contains(result.Events, item => item is OmniCore.Domain.PermissionRequested);
+            Assert.Contains(result.Events, item => item is OmniCore.Domain.PermissionGranted);
+            Assert.Equal(0, launcher.Starts);
+            Assert.DoesNotContain("changed", result.Summary, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("version")]
+    [InlineData("id")]
+    [InlineData("error")]
+    [InlineData("timeout")]
+    public void JSON_RPC_protocol_failures_are_closed_before_returning_to_the_model(string fixture)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-protocol-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(workspace, ".omnicore", "extensions", "fixture.rpc");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "test fixture");
+        File.WriteAllText(Path.Combine(package, "schema.json"), "{\"type\":\"object\"}");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.rpc
+            version: 1.0.0
+            displayName: Fixture RPC
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              tools:
+                - name: call
+                  schema: schema.json
+            requests:
+              capabilities: [tool.register]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        try
+        {
+            var extension = Assert.Single(new ExtensionManifestLoader().Discover(Path.Combine(workspace, ".omnicore", "extensions"),
+                TrustLevel.Project, workspaceTrusted: true, new HashSet<string>(["tool.register"], StringComparer.Ordinal)));
+            var launcher = new ProtocolFixtureLauncher(fixture);
+            var rpc = new ExtensionRpcProcessInvoker(launcher);
+            var tool = new ExtensionTool(extension, extension.Manifest!.Provides!.Tools!.Single(),
+                File.ReadAllText(Path.Combine(package, "schema.json")), rpc, workspace);
+            var executor = new ScriptedToolExecutor(new FakeCatalog().Add(tool),
+                ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.call", PermissionDecision.Allow), workspace,
+                null, null, null, false, additionalBoundaries: [tool.Boundary]);
+            var result = executor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id,
+                "protocol-" + fixture, "{}"), userApprovesAsk: false, CancellationToken.None);
+            Assert.False(result.Succeeded);
+            Assert.DoesNotContain("REMOTE_SECRET", result.Summary, StringComparison.Ordinal);
+            Assert.Contains("failed safely", result.Summary, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(1, launcher.Starts);
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -198,34 +312,71 @@ public sealed class ExtensionManifestTests
     [Fact]
     public void Extension_process_runs_only_after_permission_pipeline_authorizes_the_tool_intent()
     {
-        var extension = new DiscoveredExtension("C:\\fixture", new ExtensionManifest
+        var manifest = new ExtensionManifest
         {
             ManifestVersion = 1, Id = "fixture.rpc", Version = "1.0", DisplayName = "fixture", Publisher = "tests",
-            OmnicoreApi = "1.0", Runtime = new ExtensionRuntimeManifest
+            OmnicoreApi = "1.0", Requests = new ExtensionRequestsManifest
+            {
+                Capabilities = ["tool.register"], Permissions = new ExtensionPermissionManifest
+                { Process = [new ExtensionProcessPermissionManifest { Executable = Environment.ProcessPath! }] },
+            }, Runtime = new ExtensionRuntimeManifest
             { Kind = "process", Command = Environment.ProcessPath!, Args = [] },
-        }, ExtensionDiscoveryStatus.Ready, null, new string('b', 64), new string('c', 64), TrustLevel.Trusted);
+        };
+        var extension = new DiscoveredExtension("C:\\fixture", manifest, ExtensionDiscoveryStatus.Ready, null,
+            new string('b', 64), new string('c', 64), TrustLevel.Project);
         var rpc = new CountingRpcClient();
         var tool = new ExtensionTool(extension, new ExtensionToolManifest { Name = "compile", Schema = "schema.json" },
-            "{\"type\":\"object\"}", rpc);
-        var denied = ScriptedToolExecutor.WithWorkspace(new FakeCatalog().Add(tool),
-            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Deny), "C:\\workspace")
+            "{\"type\":\"object\"}", rpc, "C:\\workspace");
+        var deniedExecutor = new ScriptedToolExecutor(new FakeCatalog().Add(tool),
+            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Deny), "C:\\workspace",
+            null, null, null, false, additionalBoundaries: [tool.Boundary]);
+        var denied = deniedExecutor
             .ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id, "call-1", "{}"),
                 userApprovesAsk: false, CancellationToken.None);
         Assert.False(denied.Succeeded);
         Assert.Equal(0, rpc.Invocations);
 
-        var permitted = ScriptedToolExecutor.WithWorkspace(new FakeCatalog().Add(tool),
-            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Allow), "C:\\workspace")
+        var askExecutor = new ScriptedToolExecutor(new FakeCatalog().Add(tool),
+            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Allow)
+                .WithModeDefaults(OmniCore.Domain.RunMode.Act), "C:\\workspace",
+            null, null, null, false, additionalBoundaries: [tool.Boundary]);
+        var pending = askExecutor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id,
+            "call-2", "{}"), userApprovesAsk: false, CancellationToken.None);
+        Assert.False(pending.Succeeded);
+        Assert.Contains(pending.Events, item => item is OmniCore.Domain.PermissionRequested);
+        Assert.Equal(0, rpc.Invocations);
+        var permitted = askExecutor
             .ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id, "call-2", "{}"),
-                userApprovesAsk: false, CancellationToken.None);
+                userApprovesAsk: true, CancellationToken.None);
         Assert.True(permitted.Succeeded, permitted.Summary);
+        Assert.Equal(1, rpc.Invocations);
+
+        var restricted = new ScriptedToolExecutor(new FakeCatalog().Add(tool),
+            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Allow)
+                .WithUserPolicyTool("ext.fixture.rpc.compile", PermissionDecision.Deny)
+                .WithModeDefaults(OmniCore.Domain.RunMode.Act), "C:\\workspace",
+            null, null, null, false, additionalBoundaries: [tool.Boundary]);
+        var deniedByParent = restricted.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id,
+            "call-3", "{}"), userApprovesAsk: true, CancellationToken.None);
+        Assert.False(deniedByParent.Succeeded);
+        Assert.Equal(1, rpc.Invocations);
+
+        var narrowerBoundary = new ExtensionBoundary(new ExtensionPermissionManifest(), "fixture.rpc",
+            "C:\\workspace", tool.Descriptor.Source);
+        var ceilingRuntime = new ScriptedToolExecutor(new FakeCatalog().Add(tool),
+            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Allow), "C:\\workspace",
+            null, null, null, false, additionalBoundaries: [narrowerBoundary]);
+        var outsideCeiling = ceilingRuntime.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(),
+            tool.Descriptor.Id, "call-outside-ceiling", "{}"), userApprovesAsk: true, CancellationToken.None);
+        Assert.False(outsideCeiling.Succeeded);
+        Assert.DoesNotContain(outsideCeiling.Events, item => item is OmniCore.Domain.PermissionEvaluated);
         Assert.Equal(1, rpc.Invocations);
     }
 
     private sealed class NeverInvokedRpcClient : IExtensionRpcInvoker
     {
         public System.Threading.Tasks.Task<string> InvokeAsync(DiscoveredExtension extension, string method,
-            string parametersJson, CancellationToken cancellationToken) =>
+            string parametersJson, OmniCore.Domain.ResourceClaims authorizedClaims, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Prepare/discovery must not launch extension processes.");
     }
 
@@ -233,7 +384,7 @@ public sealed class ExtensionManifestTests
     {
         public int Invocations { get; private set; }
         public System.Threading.Tasks.Task<string> InvokeAsync(DiscoveredExtension extension, string method,
-            string parametersJson, CancellationToken cancellationToken)
+            string parametersJson, OmniCore.Domain.ResourceClaims authorizedClaims, CancellationToken cancellationToken)
         {
             Invocations++;
             return System.Threading.Tasks.Task.FromResult("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"output\":\"ok\"}}");
@@ -248,6 +399,47 @@ public sealed class ExtensionManifestTests
             Starts++;
             throw new InvalidOperationException("Tampered package must be rejected before process start.");
         }
+    }
+
+    private sealed class ProtocolFixtureLauncher(string fixture) : ISandboxProcessLauncher
+    {
+        public int Starts { get; private set; }
+        public ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch, CancellationToken cancellationToken)
+        {
+            Starts++;
+            var (stdout, timedOut) = fixture switch
+            {
+                "malformed" => ("{broken", false),
+                "version" => ("{\"jsonrpc\":2,\"id\":\"1\",\"result\":{}}", false),
+                "id" => ("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}", false),
+                "error" => ("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"error\":{\"message\":\"REMOTE_SECRET\"}}", false),
+                "timeout" => ("", true),
+                _ => throw new ArgumentOutOfRangeException(nameof(fixture)),
+            };
+            return ValueTask.FromResult<ISandboxProcessControl>(new ProtocolFixtureControl(stdout, timedOut));
+        }
+    }
+
+    private sealed class ProtocolFixtureControl(string stdout, bool timedOut) : ISandboxProcessControl
+    {
+        public ValueTask<SandboxProcessOutput> WaitForExitAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new SandboxProcessOutput(0,
+                [new SandboxOutputChunk(SandboxOutputStream.StandardOutput, stdout)], timedOut));
+        public ValueTask TerminateAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class PackageMutatingPermissionPolicy(IPermissionPolicy inner, string packageFile) : IPermissionPolicy
+    {
+        public OmniCore.Domain.PermissionDecisionRecord Evaluate(ToolIntent intent)
+        {
+            var decision = inner.Evaluate(intent);
+            File.WriteAllText(packageFile, "{\"changed\":true}");
+            return decision;
+        }
+        public AuthorizedToolIntent Authorize(ToolIntent intent) => inner.Authorize(intent);
+        public AuthorizedToolIntent AuthorizeApproved(ToolIntent intent, OmniCore.Domain.GrantId? approvedGrant) =>
+            inner.AuthorizeApproved(intent, approvedGrant);
     }
 
     private const string Manifest = """
@@ -265,7 +457,7 @@ public sealed class ExtensionManifestTests
           capabilities: [tool.register]
           permissions:
             process:
-              - executable: prowin.exe
+              - executable: acme-progress-ext.exe
             network: [api.example.com]
             paths:
               read: ['**/*.p']

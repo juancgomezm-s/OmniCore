@@ -39,6 +39,8 @@ public sealed class ToolRuntime
 
     private readonly ModelCapabilityBoundary? _boundary;
 
+    private readonly IReadOnlyList<IToolIntentBoundary> _additionalBoundaries;
+
     private readonly IExecutableResolver? _executableResolver;
 
     public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit)
@@ -59,12 +61,20 @@ public sealed class ToolRuntime
 
     public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit,
         ModelCapabilityBoundary? boundary, IExecutableResolver? executableResolver)
+        : this(catalog, policy, emit, boundary, executableResolver, [])
+    {
+    }
+
+    public ToolRuntime(FakeCatalog catalog, IPermissionPolicy policy, Func<DomainEventPayload, VoidBox> emit,
+        ModelCapabilityBoundary? boundary, IExecutableResolver? executableResolver,
+        IReadOnlyList<IToolIntentBoundary> additionalBoundaries)
     {
         _catalog = catalog;
         _policy = policy;
         _emit = emit;
         _boundary = boundary;
         _executableResolver = executableResolver;
+        _additionalBoundaries = additionalBoundaries ?? [];
     }
 
     /// <summary>Resultado de ejecutar o rechazar una raw tool call del modelo.</summary>
@@ -181,6 +191,21 @@ public sealed class ToolRuntime
         // para que Security autorice el ejecutable real, nunca el nombre solicitado (ADR-0015).
         if (intent.Claims.Process is { } processClaim)
         {
+            if (tool.Descriptor.Source.Kind == SourceKind.Extension)
+            {
+                // ExtensionTool resolves its executable from the hash-bound package and the Host
+                // revalidates that identity before Strong launch. SystemExecutableResolver
+                // intentionally rejects workspace-local executables, so do not search PATH or
+                // relax that resolver for ordinary tools.
+                if (!Path.IsPathRooted(processClaim.Executable))
+                {
+                    const string reason = "Extension process claims must name the resolved package executable";
+                    _emit(new ToolCallRejected(validated.ToolCallId, reason, ToolErrorCode.PermissionDenied));
+                    return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
+                }
+            }
+            else
+            {
             if (_executableResolver is null)
             {
                 const string reason = "No hay resolver de ejecutables configurado; proceso rechazado por seguridad";
@@ -201,6 +226,7 @@ public sealed class ToolRuntime
                 _emit(new ToolCallRejected(validated.ToolCallId, ex.Message, ToolErrorCode.ProcessFailure));
                 return new Outcome(false, ex.Message, ToolCallState.Rejected, EffectOutcome.None);
             }
+            }
         }
 
         // 1b. Frontera de capacidad del modelo (ADR-0044 §5): antes del Permission Engine. Con
@@ -208,10 +234,10 @@ public sealed class ToolRuntime
         // La frontera restringe; jamás autoriza (INV-018): una tool fuera del techo de la
         // categoría muere aquí aunque el Permission Engine la permitiría.
         var boundaryAsk = false;
-        if (_boundary is not null)
+        foreach (var activeBoundary in ActiveBoundaries())
         {
-            var boundaryDecision = _boundary!.Evaluate(intent);
-            boundaryAsk = boundaryDecision.RequiresAsk;
+            var boundaryDecision = activeBoundary.Evaluate(intent);
+            boundaryAsk |= boundaryDecision.RequiresAsk;
             if (!boundaryDecision.Allowed)
             {
                 _emit(new ToolCallRejected(validated.ToolCallId,
@@ -356,9 +382,9 @@ public sealed class ToolRuntime
     {
         // 4a. Frontera de capacidad otra vez antes de ejecutar (ADR-0044 §5): el intent ya está
         // autorizado; si el techo cambió o la primera evaluación se saltó, Authorized → Failed.
-        if (_boundary is not null)
+        foreach (var activeBoundary in ActiveBoundaries())
         {
-            var boundaryDecision = _boundary!.Evaluate(intent);
+            var boundaryDecision = activeBoundary.Evaluate(intent);
             if (!boundaryDecision.Allowed)
             {
                 _emit(new ToolCallFailed(call.ToolCallId,
@@ -542,6 +568,12 @@ public sealed class ToolRuntime
                 ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null });
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
         return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect);
+    }
+
+    private IEnumerable<IToolIntentBoundary> ActiveBoundaries()
+    {
+        if (_boundary is not null) yield return _boundary;
+        foreach (var boundary in _additionalBoundaries) yield return boundary;
     }
 
     private static bool IsTrustedIntegrationTool(ITool tool) =>

@@ -42,6 +42,9 @@ public sealed class WindowsAppContainerSandboxTests
                 omnicoreApi: '1.0'
                 requests:
                   capabilities: [tool.register]
+                  permissions:
+                    process:
+                      - executable: OmniCore.SandboxTestProcess.exe
                 provides:
                   tools:
                     - name: fixture
@@ -55,8 +58,10 @@ public sealed class WindowsAppContainerSandboxTests
             var extension = Assert.Single(new ExtensionManifestLoader().Discover(package, TrustLevel.Trusted,
                 workspaceTrusted: true, consentedCapabilities: new HashSet<string>(["tool.register"], StringComparer.Ordinal)));
             var invoker = new ExtensionRpcProcessInvoker(new WindowsAppContainerProcessLauncher());
+            var process = new OmniCore.Domain.ProcessClaim(Path.Combine(package, "OmniCore.SandboxTestProcess.exe"),
+                ["extension-rpc"], "ExtensionTool", WorkingDirectory: package);
             var response = await invoker.InvokeAsync(extension, "tools/call", "{\"name\":\"fixture\"}",
-                TestContext.Current.CancellationToken);
+                new OmniCore.Domain.ResourceClaims([], [], [], process, []), TestContext.Current.CancellationToken);
             Assert.Contains("fixture-ok", response);
         }
         finally { TryDelete(package); }

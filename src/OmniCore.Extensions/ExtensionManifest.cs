@@ -1,5 +1,6 @@
 namespace OmniCore.Extensions;
 
+using OmniCore.Abstractions;
 using OmniCore.Domain;
 using YamlDotNet.Serialization;
 
@@ -120,32 +121,91 @@ public sealed record DiscoveredExtension(string Directory, ExtensionManifest? Ma
 public interface IExtensionRpcInvoker
 {
     Task<string> InvokeAsync(DiscoveredExtension extension, string method, string parametersJson,
-        CancellationToken cancellationToken);
+        ResourceClaims authorizedClaims, CancellationToken cancellationToken);
 }
 
 /// <summary>
 /// ExtensionBoundary is an intersection ceiling. It verifies the requests declared by an
 /// extension; it never creates a permission grant or turns an Ask into Allow.
 /// </summary>
-public sealed class ExtensionBoundary
+public sealed class ExtensionBoundary : IToolIntentBoundary
 {
     private readonly ExtensionPermissionManifest _ceiling;
+    private readonly string _extensionId;
+    private readonly string _workspaceRoot;
+    private readonly ComponentSource _source;
 
-    public ExtensionBoundary(ExtensionPermissionManifest ceiling) =>
+    public ExtensionBoundary(ExtensionPermissionManifest ceiling, string extensionId = "", string workspaceRoot = "",
+        ComponentSource? source = null)
+    {
         _ceiling = ceiling ?? throw new ArgumentNullException(nameof(ceiling));
+        _extensionId = extensionId;
+        _workspaceRoot = string.IsNullOrWhiteSpace(workspaceRoot) ? "" : Path.GetFullPath(workspaceRoot);
+        _source = source ?? new ComponentSource(SourceKind.Extension, ScopeLevel.Project, TrustLevel.Project,
+            extensionId, "1");
+    }
 
-    public bool AllowsProcess(string executable) => _ceiling.Process?.Any(rule =>
-        string.Equals(rule.Executable, executable, StringComparison.OrdinalIgnoreCase)) == true;
+    public bool AllowsProcess(string executable)
+    {
+        var normalized = executable.Replace('\\', '/');
+        var fileName = Path.GetFileName(normalized);
+        return _ceiling.Process?.Any(rule => rule.Executable is { Length: > 0 } pattern
+            && (ExtensionPathPattern.IsMatch(pattern, normalized)
+                || ExtensionPathPattern.IsMatch(pattern, fileName))) == true;
+    }
 
-    public bool AllowsNetwork(string host) => _ceiling.Network?.Any(pattern =>
-        string.Equals(pattern, host, StringComparison.OrdinalIgnoreCase)) == true;
+    public bool AllowsNetwork(string host)
+    {
+        var separator = host.LastIndexOf(':');
+        var hostname = separator > 0 && int.TryParse(host[(separator + 1)..], out _) ? host[..separator] : host;
+        return _ceiling.Network?.Any(pattern => ExtensionPathPattern.IsMatch(pattern, host)
+            || ExtensionPathPattern.IsMatch(pattern, hostname)) == true;
+    }
 
     public bool AllowsPath(string path, bool write)
     {
         var patterns = write ? _ceiling.Paths?.Write : _ceiling.Paths?.Read;
         if (patterns is null) return false;
         var normalized = path.Replace('\\', '/');
+        if (Path.IsPathRooted(normalized) || normalized.Split('/').Any(part => part is ".." or ".")) return false;
+        if (_workspaceRoot.Length > 0)
+        {
+            var target = Path.GetFullPath(Path.Combine(_workspaceRoot, normalized));
+            var relative = Path.GetRelativePath(_workspaceRoot, target);
+            if (Path.IsPathRooted(relative) || relative == ".."
+                || relative.StartsWith(".." + Path.DirectorySeparatorChar,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return false;
+        }
         return patterns.Any(pattern => ExtensionPathPattern.IsMatch(pattern, normalized));
+    }
+
+    /// <summary>Per-tool ceiling checked by ToolRuntime both before permissions and before Execute.</summary>
+    public ModelCapabilityDecision Evaluate(ToolIntent intent)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        if (!intent.ToolId.ToString().StartsWith("ext." + _source.Owner + ".", StringComparison.Ordinal))
+            return ModelCapabilityDecision.Allow();
+        if (_source.Kind != SourceKind.Extension || _source.Scope != ScopeLevel.Project
+            || _source.Trust is TrustLevel.Untrusted or TrustLevel.ThirdParty
+            || (_extensionId.Length > 0 && !string.Equals(_source.Owner, _extensionId, StringComparison.Ordinal))
+            || !intent.ToolId.ToString().StartsWith("ext." + _source.Owner + ".", StringComparison.Ordinal))
+            return ModelCapabilityDecision.Reject("extension source or scope is outside its declared boundary", null);
+        if (!AllowsClaims(intent.Claims))
+            return ModelCapabilityDecision.Reject("extension intent exceeds requests.permissions", null);
+        return ModelCapabilityDecision.Allow();
+    }
+
+    public bool AllowsClaims(ResourceClaims claims)
+    {
+        ArgumentNullException.ThrowIfNull(claims);
+        return claims.Secrets.Count == 0
+            && claims.Process is { } process && AllowsProcess(process.Executable)
+                && (_workspaceRoot.Length == 0 || process.WorkingDirectory is { Length: > 0 } cwd
+                    && string.Equals(Path.GetFullPath(cwd), _workspaceRoot,
+                        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            && claims.Network.All(network => AllowsNetwork(network.Host + (network.Port is { } port ? ":" + port : "")))
+            && claims.Reads.All(path => AllowsPath(path, write: false))
+            && claims.Writes.All(path => AllowsPath(path, write: true));
     }
 }
 

@@ -40,6 +40,7 @@ public sealed class ExtensionManifestLoader
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         var fullRoot = Path.GetFullPath(root);
         if (!Directory.Exists(fullRoot)) return [];
+        if (HasReparsePointInAncestors(fullRoot)) return [];
         var result = new List<DiscoveredExtension>();
         foreach (var file in EnumerateManifestsWithoutFollowingLinks(fullRoot)
             .Order(StringComparer.OrdinalIgnoreCase))
@@ -92,6 +93,18 @@ public sealed class ExtensionManifestLoader
     private static IEnumerable<string> EnumerateManifestsWithoutFollowingLinks(string root) =>
         EnumerateManifestsAndPackageFiles(root).Where(path =>
             string.Equals(Path.GetFileName(path), ManifestFileName, StringComparison.OrdinalIgnoreCase));
+
+    private static bool HasReparsePointInAncestors(string path)
+    {
+        var current = Path.GetFullPath(path);
+        while (true)
+        {
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) return true;
+            var parent = Path.GetDirectoryName(current);
+            if (parent is null || parent == current) return false;
+            current = parent;
+        }
+    }
 
     private static IEnumerable<string> EnumerateManifestsAndPackageFiles(string root)
     {
@@ -150,7 +163,8 @@ public sealed class ExtensionManifestLoader
             && (permissions.Process?.Any(process => string.IsNullOrWhiteSpace(process.Executable)) == true
                 || permissions.Network?.Any(string.IsNullOrWhiteSpace) == true
                 || permissions.Paths?.Read?.Any(string.IsNullOrWhiteSpace) == true
-                || permissions.Paths?.Write?.Any(string.IsNullOrWhiteSpace) == true))
+                || permissions.Paths?.Write?.Any(string.IsNullOrWhiteSpace) == true
+                || permissions.Paths?.Read?.Concat(permissions.Paths?.Write ?? []).Any(UnsafeRelativePattern) == true))
             throw new InvalidDataException("The extension permission ceiling contains an empty rule.");
         if (manifest.Provides?.Tools?.Any(tool => string.IsNullOrWhiteSpace(tool.Name)
             || string.IsNullOrWhiteSpace(tool.Schema)) == true)
@@ -164,6 +178,15 @@ public sealed class ExtensionManifestLoader
         if (manifest.Provides?.ContextContributors?.Count > 0) requiredCapabilities.Add("context.contribute");
         if (requiredCapabilities.Any(capability => !requests.Contains(capability)))
             throw new InvalidDataException("The manifest does not request a capability required by its declared components.");
+        if (manifest.Provides?.Tools?.Count > 0 && manifest.Requests?.Permissions?.Process?.Count is not > 0)
+            throw new InvalidDataException("A process-backed extension tool must declare its runtime executable in requests.permissions.process.");
+    }
+
+    private static bool UnsafeRelativePattern(string path)
+    {
+        var normalized = path.Replace('\\', '/');
+        return Path.IsPathRooted(path) || normalized.StartsWith('/')
+            || normalized.Split('/').Any(segment => segment is ".." or ".");
     }
 
     private static void ValidateKeys(string yaml)
