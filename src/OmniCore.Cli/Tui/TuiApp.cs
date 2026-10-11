@@ -70,6 +70,7 @@ public sealed partial class TuiApp
     private bool _catalogFresh;
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
     private readonly ITuiLocalEngineHost _localEngines;
+    private readonly ITuiClaudeAccountHost _claudeAccounts;
     private string WorkspaceSelectionId => ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory);
     private string? _selectedModel;
     private string? _observedModel;
@@ -117,7 +118,8 @@ public sealed partial class TuiApp
 
     public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? providerConnections = null,
         string? animationSettingsPath = null, LocaleSelection? localeSelection = null,
-        ITuiLocalEngineHost? localEngines = null, Action<string>? localeChanged = null)
+        ITuiLocalEngineHost? localEngines = null, Action<string>? localeChanged = null,
+        ITuiClaudeAccountHost? claudeAccounts = null)
     {
         _client = client;
         _localeSelection = localeSelection;
@@ -131,6 +133,7 @@ public sealed partial class TuiApp
         _turnHost = turnHost;
         _providerConnectionHost = providerConnections ?? TuiProviderConnectionHost.Create();
         _localEngines = localEngines ?? new TuiLocalEngineHost();
+        _claudeAccounts = claudeAccounts ?? TuiClaudeAccountHost.Create();
         _animationStore = new(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath());
         _animationPreferences = _animationStore.Load();
         RefreshSidebarPreferences();
@@ -159,9 +162,11 @@ public sealed partial class TuiApp
     }
 
     public static int Run(IOmniClient client, string locale = "es", ITuiTurnHost? turnHost = null,
-        LocaleSelection? localeSelection = null, Action<string>? localeChanged = null)
+        LocaleSelection? localeSelection = null, Action<string>? localeChanged = null,
+        ITuiClaudeAccountHost? claudeAccounts = null)
     {
-        var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection, localeChanged: localeChanged);
+        var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection,
+            localeChanged: localeChanged, claudeAccounts: claudeAccounts);
         using var application = Application.Create();
         application.Init();
         return app.RunWith(application);
@@ -241,6 +246,7 @@ public sealed partial class TuiApp
     internal bool PollOnce()
     {
         while (_uiActions.TryDequeue(out var action)) action();
+        ReflowPreferencesIfNeeded();
         PollEvents();
         return true;
     }
@@ -294,6 +300,7 @@ public sealed partial class TuiApp
         else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
         else if (code == "F4") { ShowPreferences(); key.Handled = true; }
         else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
+        else if (code == "Esc" && HandleSessionPreferencesEscape()) { key.Handled = true; }
         else if (code == "Esc" && _preferencesReturnToCategory) { ReturnFromPreferencesSubpage(); key.Handled = true; }
         else if (code == "Esc" && _preferencesCenterActive) { HandlePreferencesEscape(); key.Handled = true; }
         else if (code == "Esc" && _overlay is not null) { CloseOverlay(); key.Handled = true; }
@@ -1498,9 +1505,11 @@ public sealed partial class TuiApp
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         if (view.Id == "omni-composer") surface = "#293648";
         else if (view.Id == "omni-composer-accent") surface = "#B47CE7";
-        else if (view.Id == "omni-panel") surface = "#202C3B";
+        else if (view.Id == "omni-panel" || view is FrameView
+            && view.Id?.StartsWith("session-preferences", StringComparison.Ordinal) == true) surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = "#344559";
-        else if (view.Id is "omni-model-list" or "tools-list") surface = "#142636";
+        else if (view.Id is "omni-model-list" or "tools-list" or "session-preferences-list") surface = "#142636";
+        else if (view.Id == "session-preferences-details") surface = "#1B2836";
         else if (view.Id == "preferences-panel") surface = "#202C3B";
         else if (view.Id == "preferences-categories") surface = "#142636";
         else if (view.Id == "preferences-search") surface = "#102331";
@@ -1577,42 +1586,46 @@ public sealed partial class TuiApp
         {
             _account ??= _accountOverride ?? new TuiAccountHost();
             var status = _account.Status();
-            var frame = OverlayFrame(Ui("Cuenta ChatGPT", "ChatGPT account"), 14);
+            var frame = OverlayFrame(AccountUi("title.chatgpt"), 14);
             frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = status.LoggedIn
-                ? Ui("Cuenta: ", "Account: ") + status.AccountIdMasked + (status.Expired ? Ui(" · sesión expirada", " · session expired") : Ui(" · conectada", " · connected"))
-                : Ui("Sin sesión iniciada", "Not signed in") });
-            frame.Add(new Label { X = 2, Y = 3, Width = Dim.Fill(2), Text = Ui("No necesitas introducir una API key aquí.", "No API key is required here.") });
-            var browser = new Button { X = 2, Y = 5, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Iniciar sesión · enlace de navegador", "Sign in · browser link") };
+                ? status.AccountIdMasked + (status.Expired ? " · " + AccountUi("status.expired") : " · " + AccountUi("status.connected"))
+                : AccountUi("status.disconnected") });
+            frame.Add(new Label { X = 2, Y = 3, Width = Dim.Fill(2), Text = AccountUi("account.noApiKey") });
+            var browser = new Button { X = 2, Y = 5, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.browserLogin") };
             browser.Accepted += (_, _) => StartLogin(false);
-            var device = new Button { X = 2, Y = 7, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = Ui("Iniciar sesión · código de dispositivo", "Sign in · device code") };
+            var device = new Button { X = 2, Y = 7, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.deviceLogin") };
             device.Accepted += (_, _) => StartLogin(true);
             frame.Add(browser, device);
             if (status.LoggedIn)
             {
-                var logout = new Button { X = 2, Y = 9, Text = Ui("Cerrar sesión…", "Sign out…") };
+                var logout = new Button { X = 2, Y = 9, Text = AccountUi("action.logout") };
                 logout.Accepted += (_, _) => ConfirmLogout(); frame.Add(logout);
             }
-            var back = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = Ui("Volver", "Back") };
+            var back = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = AccountUi("action.back") };
             back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
             frame.Add(back); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+            _preferencesReturnToCategory = true;
+            _returnToChatGptAccount = false;
             (status.LoggedIn ? (status.Expired ? browser : back) : browser).SetFocus();
         }
-        catch (Exception) { ShowMessage(Ui("No se pudo leer la sesión. Revisa omni doctor.", "Could not read the session. Check omni doctor.")); }
+        catch (Exception) { ShowMessage(AccountUi("error.readAccount")); }
     }
 
     private void ConfirmLogout()
     {
         CloseOverlay();
-        var frame = OverlayFrame(Ui("¿Cerrar sesión ChatGPT?", "Sign out of ChatGPT?"), 8);
-        var confirm = new Button { X = 2, Y = 3, Text = Ui("Sí, cerrar sesión", "Yes, sign out") };
+        var frame = OverlayFrame(AccountUi("account.logoutQuestion"), 8);
+        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = AccountUi("account.logoutQuestion") });
+        var confirm = new Button { X = 2, Y = 3, Text = AccountUi("action.confirmLogout") };
         confirm.Accepted += (_, _) =>
         {
             try { _account!.Logout(); CloseOverlay(); ShowAccount(); }
-            catch (Exception) { ShowMessage(Ui("No se pudo cerrar la sesión.", "Could not sign out.")); }
+            catch (Exception) { ShowMessage(AccountUi("error.logout")); }
         };
-        var cancel = new Button { X = 2, Y = 5, Text = Ui("Cancelar", "Cancel") };
+        var cancel = new Button { X = 2, Y = 5, Text = AccountUi("action.cancel") };
         cancel.Accepted += (_, _) => { CloseOverlay(); ShowAccount(); };
-        frame.Add(confirm, cancel); ApplyTheme(frame); _overlay = frame; _window!.Add(frame); cancel.SetFocus();
+        frame.Add(confirm, cancel); ApplyTheme(frame); _overlay = frame; _window!.Add(frame);
+        _preferencesReturnToCategory = true; _returnToChatGptAccount = true; cancel.SetFocus();
     }
 
     private void StartLogin(bool deviceCode)
@@ -1620,26 +1633,27 @@ public sealed partial class TuiApp
         CloseOverlay();
         var cancellation = new CancellationTokenSource();
         _loginCancellation = cancellation;
-        var frame = OverlayFrame(Ui("Login ChatGPT", "ChatGPT login"), 16);
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = Ui("Abre el enlace y completa la autorización. Esc cancela.", "Open the link and authorize. Esc cancels.") });
+        var frame = OverlayFrame(AccountUi("title.chatgpt"), 16);
+        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = AccountUi("help.login") });
         // Read-only, selectable OAuth instructions; no editing or document model is needed.
 #pragma warning disable CS0618
         var progress = new TextView { X = 2, Y = 4, Width = Dim.Fill(2), Height = Dim.Fill(4), ReadOnly = true, WordWrap = true,
-            Text = Ui("Preparando autorización…", "Preparing authorization…") };
+            Text = AccountUi("chatgpt.phase.preparing") };
 #pragma warning restore CS0618
-        var cancel = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = Ui("Cancelar", "Cancel") };
+        var cancel = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = AccountUi("action.cancel") };
         cancel.Accepted += (_, _) => { CloseOverlay(); ShowAccount(); };
-        frame.Add(progress, cancel); ApplyTheme(frame); _overlay = frame; _window!.Add(frame); cancel.SetFocus();
+        frame.Add(progress, cancel); ApplyTheme(frame); _overlay = frame; _window!.Add(frame);
+        _preferencesReturnToCategory = true; _returnToChatGptAccount = true; cancel.SetFocus();
         void Update(Action action) => _uiActions.Enqueue(() => { if (ReferenceEquals(_overlay, frame) && !cancellation.IsCancellationRequested) action(); });
         _ = Task.Run(async () =>
         {
             try
             {
                 var result = await _account!.LoginAsync(deviceCode, text => Update(() => progress.Text = text), cancellation.Token);
-                Update(() => { CloseOverlay(); ShowMessage(result.LoggedIn ? Ui("Sesión iniciada correctamente.", "Successfully signed in.") : Ui("No se inició la sesión.", "Sign-in did not complete.")); });
+                Update(() => { CloseOverlay(); ShowMessage(result.LoggedIn ? AccountUi("result.loginOk") : AccountUi("result.loginFailed")); });
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
-            catch (Exception) { Update(() => { CloseOverlay(); ShowMessage(Ui("No se pudo iniciar sesión. Reintenta o utiliza código de dispositivo; revisa omni doctor.", "Sign-in failed. Retry or use device code; check omni doctor.")); }); }
+            catch (Exception) { Update(() => { CloseOverlay(); ShowMessage(AccountUi("error.login")); }); }
             finally { cancellation.Dispose(); }
         });
     }
@@ -2005,6 +2019,7 @@ public sealed partial class TuiApp
         var login = _loginCancellation;
         _loginCancellation = null;
         if (login is not null) { try { login.Cancel(); } catch (ObjectDisposedException) { } }
+        CancelClaudeLoginOperation();
         // Draw contexts can still reference the outgoing panel's adornments. Retire it
         // immediately, but dispose after a subsequent completed frame, never inside Accepted.
         _window.Remove(_overlay); _retiredOverlays.Add(_overlay); _overlay = null; _activeInteraction = null;

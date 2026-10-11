@@ -31,7 +31,7 @@ namespace OmniCore.Tests;
 /// contraste, solapamientos visuales) queda como validación manual pendiente: estas pruebas
 /// verifican cableado, no experiencia visual.</para>
 /// </summary>
-public sealed class TuiWiringTests
+public sealed partial class TuiWiringTests
 {
     // Test-only fallback: production construction always uses the real Host facade.
     private sealed class EmptyTuiProviderConnectionHost : ITuiProviderConnectionHost
@@ -185,12 +185,19 @@ public sealed class TuiWiringTests
         var operation = fx.App.ProviderConnectionTask!;
 
         fx.InjectKey(new Key(KeyCode.Esc));
-        fx.Wait(() => fx.App.Overlay is null, "cerrar el formulario cancela el overlay");
+        fx.Wait(() => fx.App.Overlay is { } overlay
+            && Descendants(overlay).Any(view => view.Id == "preferences-back"),
+            "Esc cancela el formulario y vuelve a la categoría de preferencias");
         fx.Wait(() => host.ConnectCancellationObserved.Task.IsCompleted, "token del Host cancelado al cerrar");
         host.ConnectGate!.TrySetResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected, null, null));
         operation.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken).GetAwaiter().GetResult();
         fx.Invoke(() => fx.App.PollOnce());
-        Assert.Null(fx.App.Overlay);
+        var returned = fx.App.Overlay;
+        Assert.NotNull(returned);
+        var returnedText = OverlayText(returned!);
+        Assert.Contains("Cuentas y conexiones", returnedText);
+        Assert.DoesNotContain("Estado: Conectado", returnedText);
+        Assert.DoesNotContain("fixture-cancelled-key-12345", returnedText);
     });
 
     [Fact]
@@ -1671,7 +1678,7 @@ public sealed class TuiWiringTests
                 "Escape vuelve del centro al índice");
             ChoosePreferenceCategory(fx, "context_memory");
             ClickId(fx, "preferences-context-open");
-            fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "preferences-inspection"),
+            fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "session-preferences-details"),
                 "consulta de contexto de sólo lectura visible");
             fx.InjectKey(new Key(KeyCode.Esc));
             fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "preferences-panel"),
@@ -3062,7 +3069,7 @@ public sealed class TuiWiringTests
             ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null,
             IOmniClient? client = null, ITuiProviderConnectionHost? providerConnections = null,
             ITuiLocalEngineHost? localEngines = null, LocaleSelection? localeSelection = null,
-            Action<string>? localeChanged = null)
+            Action<string>? localeChanged = null, ITuiClaudeAccountHost? claudeAccounts = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -3082,7 +3089,7 @@ public sealed class TuiWiringTests
                     providerConnections ?? EmptyTuiProviderConnectionHost.Instance,
                     Path.Combine(Root, "tui-animations.json"), localeSelection: localeSelection,
                     localEngines: localEngines ?? new TuiLocalEngineHost(Path.Combine(Root, "fixture-local-engines")),
-                    localeChanged: localeChanged);
+                    localeChanged: localeChanged, claudeAccounts: claudeAccounts ?? new ClaudeAccountsFixture());
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);

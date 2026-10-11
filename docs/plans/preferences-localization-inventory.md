@@ -71,6 +71,25 @@ La evidencia agrupada y los fallos corregidos se conservan en
 siguiente se mantiene para comparar la migración; esta tabla de incremento tiene precedencia
 para el estado actual. P3–P7 no están cerrados.
 
+### Incremento de cuentas y operaciones de sesión (11 de octubre de 2026)
+
+Este incremento sustituye los pendientes correspondientes de la tabla anterior; no modifica la
+línea base histórica ni implica que el catálogo completo esté traducido.
+
+| Superficie / archivos | Entrega y verificación | Pendiente explícito |
+|---|---|---|
+| `TuiApp.Preferences` | Reflow 80↔120 y alto, búsqueda, categoría, selección/viewport y foco; vista previa francesa conservada | Accesibilidad/ASCII exhaustiva y resize de cada formulario |
+| `TuiApp.AccountPreferences`, `TuiClaudeAccountHost` | Claude configurado, provider exacto, pista enmascarada, expiración frente a credencial muerta, listado local, login cancelable y logout confirmado | Configurar nuevas identidades OAuth desde formulario; login real requiere entorno/usuario |
+| `TuiApp.ProviderConnections`, `TuiProviderConnectionHost` | Botones según capacidades reales, proveedores no soportados explicados, notice wire sin dependencia CLI→Domain | Adaptadores de conexión/discovery para familias que el backend aún no implementa |
+| `TuiApp.SessionPreferences`, `SessionPreferencesPresentation` | Listas/detalles desplazables y allowlist; memoria añadir/olvidar; skills activar/liberar; consentimiento de extensiones; Enter no muta | Contexto: más recorridos visuales y clasificación/traducción de diagnósticos técnicos; comandos/M8 restantes |
+| `OmniServer` queries/comandos de sesión | Guardas aditivas de sesión/hash para memoria/skills; consentimiento confiable por id/version/manifest/paquete, revalidación, tipos JSON estrictos y rechazo de duplicados | No se amplían scopes, autoridad, MCP, hooks ni memoria global |
+| `AccountsPreferencesResources`, `SessionPreferencesResources` | Recursos propios nuevos en cuatro idiomas, sin fallback y placeholders con paridad | Los datos de usuario, modelo y paquetes conservan idioma original; el legado general sigue parcial |
+| `ClientCommandResources`, `ClientActions`, `TuiApp.Tools` | Ayuda/descripciones del registro compartido, usos/rechazos de skills/memory, catálogo de herramientas y 14 descripciones builtin en es/en/fr/it | Aliases localizados, CLI humana restante y contrato de traducción de extensiones |
+
+Validación: 105 casos focales distintos con resultado final PASS al reconciliar batch y replays;
+31/31 en el recorrido UI final, y 62/62 de arquitectura. Los conteos se solapan y no son una
+suite completa. [Evidencia, fallos corregidos y capturas](../validation/preferences-accounts-session-20261011.md).
+
 ## Registro por superficie
 
 Estado inicial de todos los grupos: pendiente de migración completa a cuatro idiomas. «Parcial» se refiere a comportamiento existente, no a aceptación del rediseño.

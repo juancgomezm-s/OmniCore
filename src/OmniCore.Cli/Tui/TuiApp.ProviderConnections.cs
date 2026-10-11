@@ -26,15 +26,17 @@ public sealed partial class TuiApp
         }
         catch (Exception)
         {
-            ShowMessage(Ui("No se pudo leer el estado de las conexiones API.",
-                "Could not read provider connection status."));
+            ShowMessage(AccountUi("error.readApi"));
             return;
         }
 
-        var frame = OverlayFrame(Ui("Conexiones API de providers", "Provider API connections"), 18);
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2),
-            Text = Ui("El estado y las fechas vienen del Host.", "Status and timestamps come from the Host.") });
-        var list = new ListView { Id = "provider-connection-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = 7,
+        var frameHeight = Math.Clamp(_window.Frame.Height - 4, 18, 30);
+        var frame = OverlayFrame(AccountUi("title.api"), frameHeight);
+        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = 2,
+            Text = AccountUi("help.providerState") });
+        var actionY = frameHeight - 6;
+        var statusY = actionY - 2;
+        var list = new ListView { Id = "provider-connection-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = frameHeight - 13,
             CanFocus = rows.Length > 0, ShowMarks = false };
         list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(rows.Select(ProviderConnectionRowText)));
         if (rows.Length > 0)
@@ -43,20 +45,20 @@ public sealed partial class TuiApp
                 : Array.FindIndex(rows, row => row.ProviderId == selectedProviderId);
             list.SelectedItem = selectedIndex >= 0 ? selectedIndex : 0;
         }
-        var status = new Label { Id = "provider-connection-status", X = 2, Y = 12,
+        var status = new Label { Id = "provider-connection-status", X = 2, Y = statusY,
             Width = Dim.Fill(4), Height = 1, Text = activity ?? (rows.Length == 0
-                ? Ui("No hay providers configurados.", "No providers are configured.") : "") };
+                ? AccountUi("status.noProviders") : "") };
 
-        var connect = new Button { Id = "provider-connect", X = 2, Y = 14, Width = Dim.Percent(46),
-            Text = Ui("Conectar…", "Connect…") };
-        var test = new Button { Id = "provider-test", X = Pos.Right(connect) + 1, Y = 14,
-            Width = Dim.Percent(46), Text = Ui("Probar", "Test") };
-        var discover = new Button { Id = "provider-discover", X = 2, Y = 15, Width = Dim.Percent(46),
-            Text = Ui("Descubrir modelos", "Discover models") };
-        var disconnect = new Button { Id = "provider-disconnect", X = Pos.Right(discover) + 1, Y = 15,
-            Width = Dim.Percent(46), Text = Ui("Desconectar", "Disconnect") };
+        var connect = new Button { Id = "provider-connect", X = 2, Y = actionY, Width = Dim.Percent(46),
+            Text = AccountUi("action.connect") };
+        var test = new Button { Id = "provider-test", X = Pos.Right(connect) + 1, Y = actionY,
+            Width = Dim.Percent(46), Text = AccountUi("action.test") };
+        var discover = new Button { Id = "provider-discover", X = 2, Y = actionY + 1, Width = Dim.Percent(46),
+            Text = AccountUi("action.discover") };
+        var disconnect = new Button { Id = "provider-disconnect", X = Pos.Right(discover) + 1, Y = actionY + 1,
+            Width = Dim.Percent(46), Text = AccountUi("action.disconnect") };
         var back = new Button { Id = "provider-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
-            Text = Ui("Volver", "Back") };
+            Text = AccountUi("action.back") };
         back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
 
         ProviderConnectionMenuRow? SelectedRow() => list.SelectedItem is { } index
@@ -70,7 +72,10 @@ public sealed partial class TuiApp
             discover.Enabled = selected?.CanDiscoverModels == true;
             disconnect.Enabled = selected?.CanDisconnect == true;
             if (selected is not null && activity is null)
-                status.Text = ProviderConnectionDates(selected);
+                status.Text = selected.NoticeWire is { } notice
+                    ? _localization.ResolveWire(notice)
+                    : selected.CanConnect || selected.CanTest || selected.CanDiscoverModels || selected.CanDisconnect
+                        ? ProviderConnectionDates(selected) : AccountUi("help.noProviderAction");
         }
 
         list.ValueChanged += (_, _) => RefreshActions();
@@ -107,12 +112,11 @@ public sealed partial class TuiApp
                 });
         };
 
-        frame.Add(list, status, connect, test, discover, disconnect, back,
-            new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(3),
-                Text = Ui("↑↓ elegir · Esc cerrar", "↑↓ select · Esc close") });
+        frame.Add(list, status, connect, test, discover, disconnect, back);
         ApplyTheme(frame);
         _overlay = frame;
         _window.Add(frame);
+        _preferencesReturnToCategory = true;
         RefreshActions();
         if (rows.Length > 0) list.SetFocus(); else back.SetFocus();
     }
@@ -121,9 +125,9 @@ public sealed partial class TuiApp
     {
         var method = row.Method switch
         {
-            ProviderConnectionMethod.ApiKey => Ui("API key", "API key"),
-            ProviderConnectionMethod.Subscription => Ui("suscripción", "subscription"),
-            _ => Ui("sin método", "no method"),
+            ProviderConnectionMethod.ApiKey => AccountUi("method.apiKey"),
+            ProviderConnectionMethod.Subscription => AccountUi("method.subscription"),
+            _ => AccountUi("method.none"),
         };
         return row.ProviderId + " · " + method + " · " + ProviderConnectionStateText(row.State)
             + ProviderConnectionDates(row, includeLead: true);
@@ -134,12 +138,12 @@ public sealed partial class TuiApp
         var values = new List<string>();
         if (row.ValidatedAt is { } validated)
             values.Add((row.State == ProviderConnectionState.Connected
-                ? Ui("verificada ", "validated ") : Ui("último OK ", "last successful check "))
+                ? AccountUi("date.validated") : AccountUi("date.lastOk"))
                 + FormatProviderTimestamp(validated));
         if (row.DiscoveredAt is { } discovered)
-            values.Add(Ui("modelos ", "models ") + FormatProviderTimestamp(discovered));
+            values.Add(AccountUi("date.models") + FormatProviderTimestamp(discovered));
         return values.Count == 0
-            ? includeLead ? "" : Ui("Sin mediciones registradas.", "No measurements recorded.")
+            ? includeLead ? "" : AccountUi("date.none")
             : (includeLead ? " · " : "") + string.Join(" · ", values);
     }
 
@@ -148,35 +152,35 @@ public sealed partial class TuiApp
 
     private string ProviderConnectionStateText(ProviderConnectionState state) => state switch
     {
-        ProviderConnectionState.Connected => Ui("Conectado", "Connected"),
-        ProviderConnectionState.NotConfigured => Ui("Sin configurar", "Not configured"),
-        ProviderConnectionState.Expired => Ui("Expirado", "Expired"),
-        ProviderConnectionState.Invalid => Ui("Inválido", "Invalid"),
-        ProviderConnectionState.Unreachable => Ui("Sin conexión", "Unreachable"),
-        _ => Ui("Desconocido", "Unknown"),
+        ProviderConnectionState.Connected => AccountUi("state.connected"),
+        ProviderConnectionState.NotConfigured => AccountUi("state.notConfigured"),
+        ProviderConnectionState.Expired => AccountUi("state.expired"),
+        ProviderConnectionState.Invalid => AccountUi("state.invalid"),
+        ProviderConnectionState.Unreachable => AccountUi("state.unreachable"),
+        _ => AccountUi("state.unknown"),
     };
 
     private void ShowProviderApiKey(string providerId)
     {
         if (_window is null || _overlay is not null) return;
-        var frame = OverlayFrame(Ui("Conectar provider", "Connect provider"), 12);
+        var frame = OverlayFrame(AccountUi("title.connect"), 12);
         frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2),
-            Text = Ui("La API key se entrega directamente al Host.", "The API key is sent directly to the Host.") });
+            Text = AccountUi("help.apiKey") });
         var key = _providerApiKeyField = new TextField { Id = "provider-api-key", X = 2, Y = 4,
             Width = Dim.Fill(4), Secret = true, Text = "" };
         var validate = new CheckBox { Id = "provider-validate-key", X = 2, Y = 6,
-            Text = Ui("Verificar ahora con la API del provider", "Validate now with the provider API"),
+            Text = AccountUi("action.validate"),
             Value = CheckState.UnChecked };
         var status = new Label { Id = "provider-key-status", X = 2, Y = 8,
             Width = Dim.Fill(4), Height = 1, Text = "" };
         var save = new Button { Id = "provider-key-save", X = 2, Y = Pos.AnchorEnd(2),
-            Text = Ui("Guardar", "Save") };
+            Text = AccountUi("action.save") };
         save.Accepted += (_, _) =>
         {
             var apiKey = key.Text?.ToString() ?? "";
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                status.Text = Ui("Escribe una API key.", "Enter an API key.");
+                status.Text = AccountUi("result.enterKey");
                 key.SetFocus();
                 return;
             }
@@ -190,12 +194,13 @@ public sealed partial class TuiApp
                     .ConfigureAwait(false));
         };
         var cancel = new Button { Id = "provider-key-cancel", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
-            Text = Ui("Cancelar", "Cancel") };
+            Text = AccountUi("action.cancel") };
         cancel.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(selectedProviderId: providerId); };
         frame.Add(key, validate, status, save, cancel);
         ApplyTheme(frame);
         _overlay = frame;
         _window.Add(frame);
+        _preferencesReturnToCategory = true;
         key.SetFocus();
     }
 
@@ -206,7 +211,7 @@ public sealed partial class TuiApp
         var cancellation = new CancellationTokenSource();
         var token = cancellation.Token;
         _providerConnectionCancellation = cancellation;
-        status.Text = Ui("Procesando conexión…", "Processing connection…");
+        status.Text = AccountUi("result.connecting");
         foreach (var button in frame.SubViews.OfType<Button>()) button.Enabled = false;
 
         _providerConnectionTask = Task.Run(async () =>
@@ -220,7 +225,7 @@ public sealed partial class TuiApp
                         || !ReferenceEquals(_providerConnectionCancellation, cancellation)) return;
                     _providerConnectionCancellation = null;
                     var summary = result is null
-                        ? Ui("Conexión eliminada.", "Connection removed.")
+                        ? AccountUi("result.removed")
                         : ProviderOperationSummary(result);
                     CloseOverlay();
                     ShowProviderConnections(summary, providerId);
@@ -235,8 +240,7 @@ public sealed partial class TuiApp
                         || !ReferenceEquals(_providerConnectionCancellation, cancellation)) return;
                     _providerConnectionCancellation = null;
                     CloseOverlay();
-                    ShowProviderConnections(Ui("La operación falló. Revisa la configuración del provider.",
-                        "The operation failed. Check the provider configuration."), providerId);
+                    ShowProviderConnections(AccountUi("result.failed"), providerId);
                 });
             }
             finally { cancellation.Dispose(); }
@@ -245,18 +249,17 @@ public sealed partial class TuiApp
 
     private string ProviderOperationSummary(ProviderConnectionMenuResult result)
     {
-        var values = new List<string> { Ui("Estado: ", "Status: ") + ProviderConnectionStateText(result.State) };
+        var values = new List<string> { AccountUi("result.state") + ProviderConnectionStateText(result.State) };
         if (result.ValidatedAt is { } validated)
-            values.Add(Ui("validada ", "validated ") + FormatProviderTimestamp(validated));
+            values.Add(AccountUi("date.validated") + FormatProviderTimestamp(validated));
         if (result.DiscoveredAt is { } discovered)
-            values.Add(Ui("modelos ", "models ") + FormatProviderTimestamp(discovered));
+            values.Add(AccountUi("date.models") + FormatProviderTimestamp(discovered));
         if (result.RegisteredModels is { } models)
         {
-            values.Add(Ui($"Modelos registrados: {models}", $"Models registered: {models}"));
-            values.Add(Ui($"Ventanas de cuota reportadas: {result.QuotaWindows}",
-                $"Quota windows reported: {result.QuotaWindows}"));
+            values.Add(_localization.Resolve("accounts.ui.result.registered", new Dictionary<string, string> { ["0"] = models.ToString(CultureInfo.InvariantCulture) }));
+            values.Add(_localization.Resolve("accounts.ui.result.quota", new Dictionary<string, string> { ["0"] = result.QuotaWindows.ToString(CultureInfo.InvariantCulture) }));
         }
-        if (result.Truncated) values.Add(Ui("El catálogo reportado fue acotado.", "The reported catalog was capped."));
+        if (result.Truncated) values.Add(AccountUi("result.truncated"));
         return string.Join(" · ", values);
     }
 

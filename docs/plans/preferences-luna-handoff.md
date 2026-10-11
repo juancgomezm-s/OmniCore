@@ -61,3 +61,28 @@ estado implementado. Próximos encargos amplios, sin iniciar trabajo adicional a
 Antes de cada tanda se implementa el paquete y sus casos de prueba. Al integrar se reproduce
 el grupo afectado; un fallo de UI no justifica repetir toda la suite de OAuth o del motor.
 La traducción de las páginas heredadas y aliases sigue abierta y debe registrarse por superficie.
+
+## Segunda tanda paralela: cuentas y operaciones de sesión
+
+Continuación autorizada por el usuario sobre `ca6f725`, en el mismo worktree y con main ya
+contenido en la rama. Los dos agentes Luna conservan razonamiento alto. No hay nuevas ramas,
+login real, inferencia ni modificaciones de configuración personal en esta tanda.
+
+| Responsable | Entrega asignada | Propiedad |
+|---|---|---|
+| Luna `preferences_ui_high` | Reflow en vivo, navegación de cuentas ChatGPT/Claude/API, cancelación y selección exacta | Parciales Preferences, AccountPreferences, ProviderConnections, TuiApp, fachada Claude, recursos y pruebas de cuentas |
+| Luna `locale_runtime_high` | Contexto, memoria Session, skills y consentimiento de extensiones con datos tipados | SessionPreferences, recursos/presentación compartida, regiones de query/comandos de OmniServer y pruebas asociadas |
+| Coordinador | Integración de catálogos, ayuda de comandos y herramientas en cuatro idiomas, auditoría, evidencia | Localization, ClientActions (copy), ClientCommandResources, TuiApp.Tools, pruebas de idiomas y documentación |
+
+Se escriben implementación y pruebas antes de compilar el conjunto. El coordinador revisa
+arquitectura, identidad de proveedor/sesión/paquete, efectos de las acciones y layouts pequeños.
+Los agentes no hacen staging ni commits. Las pruebas usan servicios falsos o directorios
+temporales aislados; listar cuentas no renueva tokens ni abre red. Las imágenes de evidencia
+proceden del buffer real del driver Terminal.Gui con datos sintéticos, no del escritorio.
+
+Esta tanda no cierra todo P3–P7: no implementa adaptadores API inexistentes, supervisión de
+motores, editores completos de políticas/grants, mantenimiento, aliases ni toda la traducción
+heredada. Los resultados verificados se registran en el inventario y en
+[la evidencia de cuentas y sesión](../validation/preferences-accounts-session-20261011.md):
+105 casos focales distintos con resultado final PASS, 31/31 en el recorrido UI final,
+4/4 tras el ajuste visual y 62/62 de arquitectura (conteos solapados, no sumarlos).

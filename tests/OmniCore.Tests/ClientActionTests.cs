@@ -189,7 +189,7 @@ public sealed class ClientActionTests
         Run("skills", Context(client), "release", "progress.compile");
         using var released = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("skills.release", released.RootElement.GetProperty("cmd").GetString());
-        Assert.Contains("Usage", Run("skills", Context(client), "other", "x").Text);
+        Assert.Equal("Uso: /skills [load|release <skill-id>]", Run("skills", Context(client), "other", "x").Text);
     }
 
     [Fact]
@@ -210,7 +210,7 @@ public sealed class ClientActionTests
         using var forget = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("memory.session.forget", forget.RootElement.GetProperty("cmd").GetString());
         Assert.Equal("abc123", forget.RootElement.GetProperty("memoryId").GetString());
-        Assert.Contains("Usage", Run("memory", Context(client), "workspace").Text);
+        Assert.Equal("Uso: /memory session [add <texto>|forget <memory-id>]", Run("memory", Context(client), "workspace").Text);
     }
 
     [Fact]

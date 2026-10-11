@@ -50,7 +50,11 @@ public sealed record ProviderConnectionMenuRow(
     bool CanDisconnect,
     bool CanDiscoverModels,
     DateTimeOffset? ValidatedAt,
-    DateTimeOffset? DiscoveredAt);
+    DateTimeOffset? DiscoveredAt)
+{
+    /// <summary>Localizable wire notice without a Domain type crossing into the renderer.</summary>
+    public string? NoticeWire => Notice?.Render();
+}
 
 /// <summary>Resultado de una acción del menú de conexiones (solo estado y detalle; nunca la credencial).</summary>
 public sealed record ProviderConnectionMenuResult(

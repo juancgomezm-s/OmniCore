@@ -194,9 +194,15 @@ de P2 y la configuración local de P3. Se implementaron dos paquetes amplios con
 alto; después se compiló y validó el conjunto. La evidencia de compilación, pruebas, capturas y
 correcciones está en [el registro del bloque](../validation/preferences-batch-20261011.md).
 
-No se declara cerrado P2: están verificados layouts iniciales 80×25 y 120×35, pero queda
-recomponer el centro al cruzar el umbral de ancho con el menú abierto y completar su recorrido
-de accesibilidad. Tampoco se cierran P3–P7: faltan Claude/API por capabilities, edición más profunda
-de políticas y seguridad, vistas/acciones M8 tipadas, diagnóstico y localización exhaustiva de
-pantallas e invocaciones heredadas. El [inventario actualizado](preferences-localization-inventory.md)
-separa cada entrega de estos pendientes. No se usan porcentajes sin inventario.
+La segunda tanda, también con dos Luna en alto, añade reflow 80↔120 con búsqueda, selección,
+viewport y foco conservados; cuentas Claude sobre identidad OAuth ya configurada; acciones API
+por capacidades; y páginas tipadas de contexto, memoria Session, skills y extensiones. Se amplía
+la traducción de cuentas, herramientas y ayuda de comandos a es/en/fr/it. La revisión y los
+resultados están en [el registro de cuentas y sesión](../validation/preferences-accounts-session-20261011.md).
+
+P2 no se declara cerrado por faltar el recorrido completo de accesibilidad/ASCII y adaptación
+de todas las subpáginas. P3 conserva pendientes de adaptadores API, supervisión local y estados
+completos; P4, editores profundos de políticas/seguridad; P5, comandos y diagnóstico/datos; P6,
+traducción exhaustiva e invocaciones localizadas; P7, cierre del producto. El
+[inventario actualizado](preferences-localization-inventory.md) separa entregas verificadas de
+estos pendientes. No se usan porcentajes sin inventario.

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Drawing;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
@@ -19,6 +20,8 @@ public sealed partial class TuiApp
     private bool _preferencesReturnToCategory;
     private string _preferencesDraftLocale = "es";
     private string _preferencesOriginalLocale = "";
+    private int _preferencesLastLayoutWidth = -1;
+    private int _preferencesLastLayoutHeight = -1;
     private UiLocalePreferencesSnapshot? _preferencesLocaleSnapshot;
     private LocalEnginePreferencesSnapshot? _localEngineSnapshot;
     private string? _localEngineNotice;
@@ -34,6 +37,8 @@ public sealed partial class TuiApp
     private void ShowPreferences(string? categoryId = null, bool categoryPage = false)
     {
         if (_window is null || _overlay is not null) return;
+        _preferencesLastLayoutWidth = _window.Frame.Width;
+        _preferencesLastLayoutHeight = _window.Frame.Height;
         _preferencesCenterActive = true;
         _preferencesCategoryPage = categoryPage;
         if (categoryId is not null) _preferencesCategory = categoryId;
@@ -230,13 +235,33 @@ public sealed partial class TuiApp
                 {
                     _account ??= _accountOverride ?? new TuiAccountHost();
                     var state = _account.Status();
-                    var status = state.LoggedIn ? state.AccountIdMasked + " · " + Pref(state.Expired ? "expired" : "connected") : Pref("disconnected");
+                    var status = state.LoggedIn ? state.AccountIdMasked + " · " + AccountUi(state.Expired ? "status.expired" : "status.connected") : AccountUi("status.disconnected");
+                    AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(); });
                     Add(new Label { Id = "preferences-account-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = status });
                 }
-                catch { Add(new Label { X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("unavailable") }); }
-                AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(); });
-                Add(new Label { Id = "preferences-api-heading", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("api_title") });
-                AddAction("preferences-api-open", "api_open", y, () => { CloseOverlay(); ShowProviderConnections(); });
+                catch
+                {
+                    AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(); });
+                    Add(new Label { Id = "preferences-account-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = AccountUi("status.unavailable") });
+                }
+                var claudeOpen = new Button { Id = "preferences-claude-open", X = 2, Y = y++,
+                    Width = Dim.Fill(3), TextAlignment = Alignment.Start, Text = AccountUi("action.manageClaude") };
+                claudeOpen.Accepted += (_, _) => { CloseOverlay(); ShowClaudeAccounts(); };
+                Add(claudeOpen);
+                string claudeSummary;
+                try
+                {
+                    var rows = _claudeAccounts.List(CancellationToken.None);
+                    claudeSummary = rows.Count == 0 ? AccountUi("status.noRows")
+                        : string.Join(" · ", rows.Select(row => row.ProviderId + ": "
+                            + AccountUi(row.UnavailableReasonKey is null ? row.Dead ? "status.dead" : row.Expired ? "status.expired"
+                                : row.SignedIn ? "status.connected" : "status.notConfigured" : "status.unavailable")));
+                }
+                catch { claudeSummary = AccountUi("status.unavailable"); }
+                Add(new Label { Id = "preferences-claude-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = claudeSummary });
+                AddAction("preferences-api-open", "api_open", y++, () => { CloseOverlay(); ShowProviderConnections(); });
+                Add(new Label { Id = "preferences-api-status", X = 2, Y = y, Width = Dim.Fill(4), Height = 1,
+                    Text = AccountUi("help.providerState") });
                 break;
             case "local_engines":
                 ShowLocalEngineList(contentPanel, y);
@@ -306,6 +331,53 @@ public sealed partial class TuiApp
         if (focus is not null) focus.SetFocus(); else back.SetFocus();
     }
 
+    private void ReflowPreferencesIfNeeded()
+    {
+        if (_window is null || _overlay is null || !_preferencesCenterActive || _preferencesReturnToCategory)
+            return;
+        var width = _window.Frame.Width;
+        var height = _window.Frame.Height;
+        if (width == _preferencesLastLayoutWidth && height == _preferencesLastLayoutHeight) return;
+
+        var focusId = FindFocusedPreferenceView(_overlay)?.Id;
+        var listStates = DescendantViews(_overlay).OfType<ListView>()
+            .Where(view => !string.IsNullOrEmpty(view.Id))
+            .ToDictionary(view => view.Id!, view => (view.SelectedItem, view.Viewport.Y), StringComparer.Ordinal);
+        var categoryPage = _preferencesCategoryPage;
+        _preferencesLastLayoutWidth = width;
+        _preferencesLastLayoutHeight = height;
+        CloseOverlay();
+        ShowPreferences(_preferencesCategory, categoryPage);
+
+        if (_overlay is null) return;
+        foreach (var state in listStates)
+        {
+            if (FindPreferenceView(_overlay, state.Key) is not ListView list) continue;
+            if (state.Value.SelectedItem is int selected && list.Source is { } source && selected >= 0 && selected < source.Count)
+                list.SelectedItem = selected;
+            var viewport = list.Viewport;
+            var maxTop = Math.Max(0, (list.Source?.Count ?? 0) - viewport.Height);
+            list.Viewport = new Rectangle(viewport.X, Math.Clamp(state.Value.Y, 0, maxTop), viewport.Width, viewport.Height);
+        }
+        if (!string.IsNullOrEmpty(focusId)) FindPreferenceView(_overlay, focusId)?.SetFocus();
+    }
+
+    private static View? FindFocusedPreferenceView(View root)
+    {
+        foreach (var child in root.SubViews)
+            if (FindFocusedPreferenceView(child) is { } focused) return focused;
+        // HasFocus can be true on a container because focus is somewhere beneath it.
+        // Only record a focus target that can actually receive focus, after checking children.
+        return root.CanFocus && root.HasFocus ? root : null;
+    }
+
+    private static IEnumerable<View> DescendantViews(View root)
+    {
+        yield return root;
+        foreach (var child in root.SubViews)
+            foreach (var descendant in DescendantViews(child)) yield return descendant;
+    }
+
     private void RunPreferenceAction(string actionId)
     {
         switch (actionId)
@@ -315,10 +387,10 @@ public sealed partial class TuiApp
                 var inspection = tools is null ? null : ToolsInspectionJson.Decode(tools);
                 if (inspection is null) ShowMessage(Pref("unavailable")); else ShowTools(inspection);
                 return;
-            case ClientActionIds.ContextInspect: ShowPreferenceInspection("context"); return;
-            case ClientActionIds.ExtensionsInspect: ShowPreferenceInspection("extensions"); return;
-            case ClientActionIds.SkillsInspect: ShowPreferenceInspection("skills"); return;
-            case ClientActionIds.MemorySession: ShowPreferenceInspection("memory.session"); return;
+            case ClientActionIds.ContextInspect: CloseOverlay(); ShowSessionPreferences("context"); return;
+            case ClientActionIds.ExtensionsInspect: CloseOverlay(); ShowSessionPreferences("extensions"); return;
+            case ClientActionIds.SkillsInspect: CloseOverlay(); ShowSessionPreferences("skills"); return;
+            case ClientActionIds.MemorySession: CloseOverlay(); ShowSessionPreferences("memory.session"); return;
             case ClientActionIds.PermissionsList:
                 ShowPreferenceText(Pref("permissions_open"), CliApp.PermissionsListing()); return;
             default: ShowMessage(Pref("unavailable")); return;
@@ -655,6 +727,7 @@ public sealed partial class TuiApp
 
     private void ReturnFromPreferencesSubpage()
     {
+        if (_returnToClaudeAccounts || _returnToChatGptAccount) { ReturnFromAccountSubpage(); return; }
         CloseOverlay();
         ShowPreferences(_preferencesCategory, categoryPage: true);
     }
