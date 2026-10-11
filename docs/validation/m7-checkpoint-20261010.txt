@@ -1,4 +1,6 @@
-M7 first checkpoint — Windows 2026-10-10
+HISTORICAL CHECKPOINT — M7 first checkpoint, Windows 2026-10-10.
+This record describes an intermediate state; the current closure evidence is in
+`m7-isolation-20261010.md`.
 Verified source commit: 6718fd15613e5ac77103568e40e342ebf5ade59a
 
 m7-build-20261010.log
@@ -65,10 +67,10 @@ repeatable live acceptance is claimed. The first log SHA256 is
 
 F3 has focused evidence for worktree-backed Implement/Verify continuity and distinct writer
 roots. F4 undo and historical changed-file projection are present as working changes but still
-need final review/acceptance. F6 explicit cleanup and seven-day retention services exist;
-automatic startup recovery/sweeping and its fail-closed orphan/tamper behavior remain to be
-completed and verified. M7 remains open, and no final suite or merge is represented by this
-checkpoint.
+need final review/acceptance at the time of this checkpoint. F6 explicit cleanup and seven-day
+retention services existed; automatic startup recovery/sweeping and fail-closed orphan/tamper
+behavior had not yet been completed. M7 was open at that historical point; this statement is
+superseded by the later closure evidence in the acta.
 
 ### F6 startup-maintenance implementation — follow-up
 
@@ -98,3 +100,28 @@ still need their worktree.
 Older live logs included a closed `ConfigurationRejected` category (`m7-f5-live-vertical-diagnostic-20261010.log`); raw stderr was intentionally not persisted, so the exact cause of the later `NonZeroExit` remains unproven. Invocation now explicitly passes `--setting-sources ""` to exclude user/project/local settings while inheriting authenticated CLI environment. The installed CLI accepted this with `--version` (exit 0). The CLI end-to-end test uses real Claude only when `OMNI_M7_LIVE_CLAUDE_ACCEPTANCE=1`; its default path remains the fake process runtime. After this change one bounded live acceptance passed (exit 0): durable session, usage and result were recorded; `m7-lane-proof.txt` was created in the temporary lane worktree and absent from the principal workspace. Bounds were max $1, two turns, four tool calls and 20,000 tokens. The pass proves one functioning live path, not repeatability or full F5 qualification.
 
 The build preceding these focused checks passed with 0 warnings/errors. Invocation/process contract tests passed 6/6 (log SHA256 `4AFD7B120C2D6F83C24DA83A2937C41702A2F408D56546D358CCF3720BA3EA47`); fake end-to-end smoke passed 1/1 (`2204710BC2C0CAF13085D079C31176BF145F4DAAB76FB6F14390677378EBE9D5`); one live acceptance passed 1/1 (`FBC8605AB7632AA6F00C5BADC8E5E25C7291D6346218ECB43E909B1705A95A24`). Logs are outside the repository at `C:\Users\juanc\.codex\m7-f5-settings-*20261010.log` and `m7-f5-live-settings-fixed-20261010.log`. No full regression was run for this focused settings/diagnostic change.
+
+FINAL M7 ACCEPTANCE — Windows, 2026-10-11
+Code/test commit: fe16e92c724cb52bc90abc5a044ad18b65fed74f
+Source tree: 5b1bfdaac5e41ddd19ead68c831f73de92eec8b3
+Test tree:   1df1a5fe58551e6def0b1e1d77ef7546d9a26777
+
+Final integral on the functional source immediately before the scalar CLI-to-Host DTO boundary:
+3776 total, 0 errors, 0 failed, 4 skipped, exit 0, 2141.149s.
+Log: C:\Users\juanc\.codex\m7-final2-integral-20261010.log
+SHA256: AAD303274C7D797E155AC86B2967AD5EF8AAAD8693B87E1DCBD0D5A17F6E3A69
+The 4 skips are Windows symlink fixtures denied by the environment. The integral is not represented
+as having run on the later src/tests tree; the later change only maps cleanup/discard/retention
+outcomes to scalar Host DTOs to preserve the CLI assembly boundary.
+
+Post-boundary verification: `dotnet build OmniCore.slnx --no-restore` exit 0
+(log SHA256 6AE2435ADBDAE1F130EAD7701126A9296FD2F4744584387153C19FF943DEEB41);
+architecture 56/56 (SHA256 9A53B87D6D5EFC4EC22F1896FAB3A978460CC67AE6C39F2F24CB9BAB68D199A6);
+WorktreeInspectionCliTests 16/16 (SHA256 473332737210324E02BD7833440C064EE1FFC4C18A0FF647381AD9910CFD4F06).
+The first architecture run caught an unwanted CLI reference to Domain; the scalar Host projections
+resolved it, and the complete architecture suite passed. A method-filter invocation that selected
+zero tests is not counted.
+
+Earlier bounded real Claude acceptance: 1/1 under a $0.50 first invocation reservation and $1 total
+Task ceiling; see acta `m7-isolation-20261010.md` and the official usage/cost-tracking reference
+there. No repeat provider call was made for final accounting changes.
