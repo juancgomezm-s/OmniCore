@@ -658,6 +658,61 @@ public sealed class GitWorktreeStoreTests
             fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim());
     }
 
+    [Fact]
+    public async Task OmniServer_without_last_session_sweeps_only_after_configured_root_matches_old_journal()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write(".gitignore", ".omnicore/\n");
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var root = ProjectIdentity.ResolvePhysicalWorkspaceRoot(fixture.Repository);
+        var rootIdentity = WorkspaceRootIdentity.Establish(root);
+        var paths = OmniHost.CreatePlatformPaths(fixture.Data);
+        var dataRoot = OmniHost.WorkspaceDataDirectory(paths, root);
+        var workspace = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root));
+        var worktree = Assert.IsType<WorktreeIdentity>((await new GitWorktreeStore(new SystemProcessRuntime())
+            .CreateAsync(new WorktreeCreateRequest(workspace, LaneId.New(), root, dataRoot), CancellationToken.None)).Worktree);
+        SetMetadataCreatedAt(worktree, DateTimeOffset.UtcNow.AddDays(-8));
+
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var createdAt = DateTimeOffset.UtcNow.AddDays(-8);
+        AddJournalEvent(store, codecs, session, new SessionCreated(session, workspace.ToString(), root,
+            ProfileId.New(), createdAt));
+        AddJournalEvent(store, codecs, session, new WorkspaceRootEstablished(session, root, createdAt, rootIdentity));
+        AddJournalEvent(store, codecs, session, new RunCreated(run, session, "orphan startup fixture",
+            RunMode.Plan, ExecutionStrategy.Direct, FailurePolicy.FailRun, new TaskBudget(1m, 1000, 1, 1),
+            TaskId.New(), createdAt));
+        AddJournalEvent(store, codecs, session, new RunStarted(run));
+        var failedTask = new TaskCreated(TaskId.New(), run, "old provisioning failure", [],
+            new TaskBudget(1m, 1000, 1, 1));
+        AddJournalEventAt(store, codecs, session, failedTask, createdAt, run);
+        AddJournalEventAt(store, codecs, session, new TaskReady(failedTask.TaskId), createdAt, run);
+        AddJournalEventAt(store, codecs, session, new LaneCreated(worktree.LaneId, failedTask.TaskId, ProfileId.New()), createdAt, run);
+        AddJournalEventAt(store, codecs, session, new TaskStarted(failedTask.TaskId, worktree.LaneId), createdAt, run);
+        AddJournalEventAt(store, codecs, session, new LaneProvisioning(worktree.LaneId), createdAt, run);
+        AddJournalEventAt(store, codecs, session, new TaskFailed(failedTask.TaskId, "provisioning failed"), createdAt, run);
+        AddJournalEventAt(store, codecs, session, new LaneFailed(worktree.LaneId, "provisioning failed"), createdAt, run);
+
+        // There is no last-session pointer at startup. The configured root arrives only after
+        // the server constructor, and the sweep must use that root plus historical durable proof.
+        var stateFile = Path.Combine(fixture.Data, "absent-last-session.txt");
+        var server = new OmniServer(store, codecs, new InMemoryAuditSink(), stateFile,
+            platformPathsFactory: () => paths);
+        Assert.Null(server.LastSessionId());
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+
+        server.ConfigureWorkspaceRoot(root);
+
+        Assert.Null(server.LastWorktreeMaintenanceProblem());
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal(worktree.SnapshotCommit,
+            fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim());
+    }
+
     private static void AddJournalEvent(IEventStore store, IEventCodecRegistry codecs, SessionId session,
         DomainEventPayload payload)
     {
@@ -778,7 +833,7 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Fact]
-    public async Task Cleanup_preserves_clean_worktree_with_new_lane_commits()
+    public async Task Cleanup_removes_clean_lane_only_after_its_commit_is_reachable_from_workspace_head()
     {
         using var fixture = new GitFixture();
         fixture.Init();
@@ -794,13 +849,81 @@ public sealed class GitWorktreeStoreTests
         var laneHead = fixture.Git("-C", worktree.WorktreePath, "rev-parse", "HEAD").Trim();
         Assert.NotEqual(worktree.SnapshotCommit, laneHead);
         Assert.Empty(fixture.Git("-C", worktree.WorktreePath, "status", "--porcelain"));
+        fixture.Git("merge", "--ff-only", laneHead);
+
+        var cleanup = await store.CleanupAsync(worktree.Ownership, CancellationToken.None);
+
+        Assert.True(cleanup.Removed);
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal(laneHead, fixture.Git("rev-parse", "HEAD").Trim());
+        Assert.Equal(worktree.SnapshotCommit, fixture.Git("rev-parse", worktree.SnapshotRef).Trim());
+    }
+
+    [Fact]
+    public async Task Explicit_discard_archives_dirty_lane_tree_before_removal_and_retention()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var path = Path.Combine(worktree.WorktreePath, "untracked output.txt");
+        File.WriteAllText(path, "archive this output\n");
+        var discarded = await store.DiscardAsync(worktree.Ownership, CancellationToken.None);
+        Assert.True(discarded.Removed, discarded.Error?.ToString());
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        var retainedRef = Assert.Single(fixture.Git("for-each-ref", "--format=%(refname)",
+            "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.Equal("archive this output\n", fixture.Git("show", retainedRef + ":untracked output.txt"));
+        var metadataJson = File.ReadAllText(worktree.Ownership.MetadataPath);
+        using (var metadata = System.Text.Json.JsonDocument.Parse(metadataJson))
+            Assert.Equal("discard", metadata.RootElement.GetProperty("RetainedLaneDisposition").GetString());
+    }
+
+    [Fact]
+    public async Task Explicit_discard_refuses_ignored_outputs_that_would_not_be_in_retained_tree()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write(".gitignore", ".local-output\n");
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var ignored = Path.Combine(worktree.WorktreePath, ".local-output");
+        File.WriteAllText(ignored, "keep this file\n");
+
+        var discarded = await store.DiscardAsync(worktree.Ownership, CancellationToken.None);
+        Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, discarded.Error);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal("keep this file\n", File.ReadAllText(ignored));
+        Assert.Empty(fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+    }
+
+    [Fact]
+    public async Task Cleanup_preserves_clean_worktree_with_unmerged_lane_commit()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "tracked.txt"), "unmerged lane edit\n");
+        fixture.Git("-C", worktree.WorktreePath, "add", "tracked.txt");
+        fixture.Git("-C", worktree.WorktreePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "--quiet", "-m", "lane result");
+        var laneHead = fixture.Git("-C", worktree.WorktreePath, "rev-parse", "HEAD").Trim();
 
         var cleanup = await store.CleanupAsync(worktree.Ownership, CancellationToken.None);
 
         Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, cleanup.Error);
         Assert.True(Directory.Exists(worktree.WorktreePath));
         Assert.Equal(laneHead, fixture.Git("-C", worktree.WorktreePath, "rev-parse", "HEAD").Trim());
-        Assert.Equal("committed lane edit\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, "tracked.txt")));
         Assert.Equal(worktree.SnapshotCommit, fixture.Git("rev-parse", worktree.SnapshotRef).Trim());
     }
 
@@ -869,9 +992,19 @@ public sealed class GitWorktreeStoreTests
         Assert.Equal("user file\n", File.ReadAllText(Path.Combine(fixture.Repository, "keep.txt")));
         Assert.Equal(originalIndex, File.ReadAllBytes(Path.Combine(fixture.Repository, ".git", "index")));
         Assert.Equal(originalHead, fixture.Git("rev-parse", "HEAD").Trim());
-        Assert.Contains(events, evt => evt is WorktreeIntegrationStateRecorded
-            { State: WorktreeIntegrationState.Completed });
+        var completedIntegration = Assert.IsType<WorktreeIntegrationStateRecorded>(Assert.Single(events,
+            evt => evt is WorktreeIntegrationStateRecorded { State: WorktreeIntegrationState.Completed }));
+        Assert.Equal(preview.Preview!.TheirsTree, completedIntegration.LaneTreeAtCapture);
+        Assert.Equal(preview.Preview.LaneHeadAtCapture, completedIntegration.LaneHeadAtCapture);
+        Assert.True(completedIntegration.CompleteLaneResult);
         Assert.True(artifacts.Verify(spec!.BeforeStateRef!.Hash, spec.BeforeStateRef.Size));
+
+        // Cleanup never treats a successful earlier integration as authorization to discard
+        // edits made to the lane afterward. The source worktree and those edits remain owned.
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "edit.txt"), "later lane edit\n");
+        var cleanupAfterLaneEdit = await store.CleanupAsync(worktree.Ownership, CancellationToken.None);
+        Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, cleanupAfterLaneEdit.Error);
+        Assert.Equal("later lane edit\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, "edit.txt")));
 
         // A directory at a deleted-file target is not the deleted postimage. It must not be
         // collapsed to the same null hash as a genuinely absent file during recovery.
@@ -883,6 +1016,216 @@ public sealed class GitWorktreeStoreTests
         Assert.Contains(Assert.IsType<WorktreeIntegrationStateRecorded>(recovery.SupplementalEvent).Files!,
             file => file.RelativePath == "remove.txt" && file.Outcome == ReconciliationOutcome.Conflict);
     }
+
+    [Fact]
+    public async Task Host_cleanup_archives_and_removes_only_a_fully_integrated_terminal_lane()
+    {
+        var scenario = await CreateCleanupScenario();
+        var session = Assert.IsType<SessionCreated>(scenario.Journal.ReadEvents(EventType.Of("session.created"))
+            .Select(scenario.Codecs.Decode).Single());
+        var journalPayloads = scenario.Journal.ReadFrom(session.SessionId, 1).Select(envelope =>
+            (Envelope: envelope, Payload: scenario.Codecs.Decode(envelope))).ToArray();
+        var toolStarted = Assert.IsType<ToolCallStarted>(journalPayloads.Single(item => item.Payload is ToolCallStarted).Payload);
+        var integrationCompleted = Assert.IsType<WorktreeIntegrationStateRecorded>(journalPayloads.Single(item =>
+            item.Payload is WorktreeIntegrationStateRecorded state && state.State == WorktreeIntegrationState.Completed).Payload);
+        var rootEstablished = Assert.IsType<WorkspaceRootEstablished>(journalPayloads.Single(item =>
+            item.Payload is WorkspaceRootEstablished).Payload);
+        var snapshots = new WorkspaceSnapshotStore(scenario.Fixture.Repository, scenario.Journal, scenario.Codecs,
+            scenario.Artifacts, rootEstablished.DurableIdentity, verifyPhysicalRoot: false);
+        Assert.Equal(2, snapshots.ReadBatchEvidence(toolStarted.ToolCallId, toolStarted, integrationCompleted)?.Count);
+        var undoPlan = snapshots.BuildPlan(session.SessionId, toolStarted.ToolCallId);
+        Assert.Equal(2, undoPlan.Entries.Count);
+        Assert.All(undoPlan.Entries, entry => Assert.Equal("Ready", entry.State));
+        Assert.Equal(2, ChangedFilesReader.Read(scenario.Journal, scenario.Codecs, session.SessionId,
+            scenario.Artifacts).Files.Count);
+
+        var outcome = await WorktreeCleanupHost.CleanupWithDependenciesAsync(scenario.Fixture.Repository,
+            scenario.Fixture.Data, scenario.Worktree.OwnershipId, scenario.Journal, scenario.Codecs,
+            scenario.Artifacts, scenario.Git, CancellationToken.None);
+
+        Assert.True(outcome.Removed, outcome.Error?.ToString());
+        Assert.False(Directory.Exists(scenario.Worktree.WorktreePath));
+        var retained = scenario.Fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes");
+        var retainedRef = Assert.Single(retained.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.Equal(scenario.Preview.TheirsTree, scenario.Fixture.Git("show", "-s", "--format=%T", retainedRef).Trim());
+        Assert.Equal(scenario.Preview.LaneHeadAtCapture,
+            scenario.Fixture.Git("rev-parse", "--verify", retainedRef + "^1").Trim());
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Host_cleanup_preserves_lane_when_proposal_is_partial_or_a_consumer_is_active(
+        bool subset, bool activeConsumer)
+    {
+        var scenario = await CreateCleanupScenario(subset, activeConsumer);
+        var before = File.ReadAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt"));
+        var outcome = await WorktreeCleanupHost.CleanupWithDependenciesAsync(scenario.Fixture.Repository,
+            scenario.Fixture.Data, scenario.Worktree.OwnershipId, scenario.Journal, scenario.Codecs,
+            scenario.Artifacts, scenario.Git, CancellationToken.None);
+
+        Assert.False(outcome.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, outcome.Error);
+        Assert.True(Directory.Exists(scenario.Worktree.WorktreePath));
+        Assert.Equal(before, File.ReadAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt")));
+        Assert.Empty(scenario.Fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+    }
+
+    [Fact]
+    public async Task Host_cleanup_keeps_lane_after_an_edit_since_the_integrated_capture()
+    {
+        var scenario = await CreateCleanupScenario();
+        File.WriteAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt"), "after integration\n");
+
+        var outcome = await WorktreeCleanupHost.CleanupWithDependenciesAsync(scenario.Fixture.Repository,
+            scenario.Fixture.Data, scenario.Worktree.OwnershipId, scenario.Journal, scenario.Codecs,
+            scenario.Artifacts, scenario.Git, CancellationToken.None);
+
+        Assert.False(outcome.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorkspaceChanged, outcome.Error);
+        Assert.Equal("after integration\n", File.ReadAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt")));
+        Assert.True(Directory.Exists(scenario.Worktree.WorktreePath));
+    }
+
+    private static async Task<CleanupScenario> CreateCleanupScenario(bool subset = false, bool activeConsumer = false)
+    {
+        var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("sample.txt", "base\n");
+        fixture.Write("second.txt", "second base\n");
+        fixture.CommitAll("base");
+        var git = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>(
+            (await git.CreateAsync(fixture.Request(), CancellationToken.None)).Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "sample.txt"), "lane result\n");
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "second.txt"), "second result\n");
+        var previewOutcome = await git.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(previewOutcome.Succeeded, previewOutcome.Error?.ToString());
+        var preview = previewOutcome.Preview!;
+        var artifacts = new FileArtifactStore(Path.Combine(fixture.Root, "artifacts"));
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, git);
+        var paths = subset ? new[] { "sample.txt" } : preview.Changes.Select(change => change.RelativePath).ToArray();
+        var (tool, authorized, context, executionEvents) = MakeIntegrationCall(fixture.Repository, artifacts,
+            coordinator, worktree.OwnershipId, preview.ProposalId, paths);
+        ReconciliationSpec? spec = null;
+        WorktreeIntegrationStateRecorded? completed = null;
+        if (subset)
+        {
+            Assert.Throws<InvalidOperationException>(() => tool.DescribeReconciliation(authorized, context, CancellationToken.None));
+            Assert.Equal("lane result\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, "sample.txt")));
+        }
+        else
+        {
+            spec = Assert.IsType<ReconciliationSpec>(tool.DescribeReconciliation(authorized, context, CancellationToken.None));
+            var result = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+            Assert.False(result.IsError, result.Summary);
+            completed = Assert.Single(executionEvents.OfType<WorktreeIntegrationStateRecorded>(),
+                state => state.State == WorktreeIntegrationState.Completed);
+        }
+
+        var journal = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var rootTask = TaskId.New();
+        var rootLane = LaneId.New();
+        var rootExecution = ExecutionId.New();
+        var childTask = TaskId.New();
+        var childExecution = ExecutionId.New();
+        var now = DateTimeOffset.UtcNow;
+        AddJournalEvent(journal, codecs, session, new SessionCreated(session, worktree.WorkspaceId.ToString(),
+            fixture.Repository, ProfileId.New(), now));
+        AddJournalEvent(journal, codecs, session, new WorkspaceRootEstablished(session,
+            ProjectIdentity.CanonicalWorkspacePath(fixture.Repository), now,
+            WorkspaceRootIdentity.Establish(fixture.Repository)));
+        AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+            new RunCreated(run, session, "cleanup fixture", RunMode.Act, ExecutionStrategy.Direct,
+                FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), rootTask, now));
+        AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+            new TaskCreated(rootTask, run, "root", [], new TaskBudget(null, null, null, null)));
+        AppendScoped(journal, codecs, session, run, childTask, worktree.LaneId, childExecution,
+            new TaskCreated(childTask, run, "lane", [], new TaskBudget(null, null, null, null)));
+        AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+            new LaneCreated(rootLane, rootTask, ProfileId.New()));
+        AppendScoped(journal, codecs, session, run, childTask, worktree.LaneId, childExecution,
+            new LaneCreated(worktree.LaneId, childTask, ProfileId.New()));
+        AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+            new TaskStarted(rootTask, rootLane));
+        AppendScoped(journal, codecs, session, run, childTask, worktree.LaneId, childExecution,
+            new TaskStarted(childTask, worktree.LaneId));
+        var selectedProjection = artifacts.PutText("{}", ContextInheritanceService.DelegationPacketMediaType,
+            ArtifactKind.Other, Sensitivity.Sensitive);
+        var taskPacket = new TaskPacket(1, session, run, childTask, worktree.LaneId, childExecution,
+            DelegationId.New(), rootExecution, ProfileId.New(), "cleanup fixture lane",
+            new TaskBudget(null, null, null, null), selectedProjection, worktree.OwnershipId,
+            worktree.RepositoryRoot, worktree.GitCommonDirectory, worktree.WorktreePath,
+            worktree.Head, worktree.SnapshotCommit, worktree.SnapshotTree,
+            WorktreeBase.SnapshotOfWorkingTree, "bounded cleanup fixture working state");
+        var packetJson = System.Text.Json.JsonSerializer.Serialize(taskPacket, TaskPacketJsonContext.Default.TaskPacket);
+        var packetRef = artifacts.PutText(packetJson, LaneWorktreeProvisioner.TaskPacketMediaType,
+            ArtifactKind.Other, Sensitivity.Sensitive);
+        AppendScoped(journal, codecs, session, run, childTask, worktree.LaneId, childExecution,
+            new LaneWorktreeCreated(childTask, worktree.LaneId, childExecution, worktree.OwnershipId,
+                fixture.Repository, worktree.GitCommonDirectory, worktree.WorktreePath, worktree.SnapshotCommit,
+                worktree.SnapshotTree, packetRef, selectedProjection));
+        if (activeConsumer)
+        {
+            var pendingTask = TaskId.New(); var pendingLane = LaneId.New();
+            var pendingExecution = ExecutionId.New();
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new TaskCreated(pendingTask, run, "pending verify", [], new TaskBudget(null, null, null, null)));
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new LaneCreated(pendingLane, pendingTask, ProfileId.New()));
+        }
+
+        if (spec is not null && completed is not null)
+        {
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new ToolCallRequested(authorized.Intent.ToolCallId, "fixture", "worktree.integrate",
+                    authorized.Intent.NormalizedArgumentsJson));
+            var startState = Assert.IsType<WorktreeIntegrationStateRecorded>(spec.StartedEntityEvent);
+            var started = new ToolCallStarted(authorized.Intent.ToolCallId, EffectClass.Reconcilable,
+                spec.DurableMetadataJson)
+            {
+                BeforeStateRef = spec.BeforeStateRef,
+                Reversibility = Reversibility.Unknown,
+            };
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution, startState);
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution, started);
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution, completed);
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new ToolCallSucceeded(authorized.Intent.ToolCallId, "{}"));
+        }
+        AppendScoped(journal, codecs, session, run, childTask, worktree.LaneId, childExecution,
+            new LaneCompleted(worktree.LaneId, null));
+        AppendScoped(journal, codecs, session, run, childTask, worktree.LaneId, childExecution,
+            new TaskCompleted(childTask, null));
+        AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+            new LaneCompleted(rootLane, null));
+        AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+            new TaskCompleted(rootTask, null));
+        return new CleanupScenario(fixture, git, worktree, preview, journal, codecs, artifacts);
+    }
+
+    private static void AppendScoped(IEventStore store, IEventCodecRegistry codecs, SessionId session,
+        RunId run, TaskId task, LaneId lane, ExecutionId execution, DomainEventPayload payload)
+    {
+        var codec = codecs.CodecFor(payload.Type());
+        var callId = payload switch
+        {
+            ToolCallRequested value => value.ToolCallId,
+            ToolCallStarted value => value.ToolCallId,
+            ToolCallSucceeded value => value.ToolCallId,
+            WorktreeIntegrationStateRecorded value => value.ToolCallId,
+            _ => (ToolCallId?)null,
+        };
+        var envelope = DomainEvent.Create(session, payload.Type(), payload.SchemaVersion(), null, run, run,
+            task, lane, new TurnId(execution.Value), null, callId, [], codec.Encode(payload), execution);
+        store.Append(session, envelope, DurabilityClass.Barrier, CancellationToken.None);
+    }
+
+    private sealed record CleanupScenario(GitFixture Fixture, GitWorktreeStore Git, WorktreeIdentity Worktree,
+        WorktreeIntegrationPreview Preview, InMemoryEventStore Journal, IEventCodecRegistry Codecs, IArtifactStore Artifacts);
 
     [Fact]
     public async Task Integration_batch_policy_preflight_rejects_excess_file_budget_before_barrier_or_artifact()
@@ -957,15 +1300,13 @@ public sealed class GitWorktreeStoreTests
         var codecs = EventCodecs.Create();
         var stream = new EventStream(journal, codecs, session);
         var callId = authorized.Intent.ToolCallId;
-        var statuses = preview.Preview.Changes.Select(change => new WorktreeIntegrationFileStatus(
-            change.RelativePath, ReconciliationOutcome.NotApplied)).ToArray();
+        var startedState = Assert.IsType<WorktreeIntegrationStateRecorded>(spec.StartedEntityEvent);
         stream.AppendBatch([
             new ToolCallRequested(callId, "fixture", "worktree.integrate", authorized.Intent.NormalizedArgumentsJson),
             new ToolCallPrepared(callId, "{}"),
             new PermissionEvaluated(callId, PermissionDecision.Allow, "{}", null),
             new ToolCallAuthorized(callId),
-            new WorktreeIntegrationStateRecorded(callId, worktree.OwnershipId, preview.Preview.ProposalId,
-                WorktreeIntegrationState.Started, statuses),
+            startedState,
             new ToolCallStarted(callId, EffectClass.Reconcilable, spec.DurableMetadataJson)
             {
                 BeforeStateRef = spec.BeforeStateRef,
@@ -1455,7 +1796,8 @@ public sealed class GitWorktreeStoreTests
             File.WriteAllText(path, text);
         }
 
-        public WorktreeCreateRequest Request() => new(WorkspaceId.Of(Repository), LaneId.New(), Repository, Data);
+        public WorktreeCreateRequest Request() => new(WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(Repository)),
+            LaneId.New(), Repository, Data);
 
         public string Git(params string[] args) => RunGit(false, args);
         public string GitExpectFailure(params string[] args) => RunGit(true, args);

@@ -162,6 +162,12 @@ public sealed record WorktreeOwnership(string MetadataPath, string OwnershipId, 
     string DataRoot, string RepositoryRoot, string GitCommonDirectory, string WorktreePath,
     string SnapshotRef, string SnapshotCommit);
 
+/// <summary>Host-journal proof for the single destructive cleanup path that may retire a dirty
+/// lane. Infrastructure still rechecks ownership, HEAD and the exact current tree before it
+/// archives and removes the worktree; this is never exposed as a generic force option.</summary>
+public sealed record WorktreeIntegratedCleanupProof(string OwnershipId, string ProposalId,
+    string LaneTree, string LaneHead, string ToolCallId, bool CompleteLaneResult);
+
 public enum GitWorktreeErrorCode
 {
     NoRepository,

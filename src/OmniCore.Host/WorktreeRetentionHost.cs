@@ -8,6 +8,14 @@ using OmniCore.Infrastructure;
 /// bounded seven-day snapshot-ref sweep. It never accepts an ownership metadata path.</summary>
 public static class WorktreeRetentionHost
 {
+    /// <summary>Scalar projection for the CLI boundary; Domain error enums stay inside Host.</summary>
+    public static async Task<WorktreeRetentionCliOutcome> SweepForCliAsync(string workspacePath, bool dryRun,
+        CancellationToken cancellationToken)
+    {
+        var result = await SweepAsync(workspacePath, dryRun, cancellationToken).ConfigureAwait(false);
+        return new(result.Eligible, result.Pruned, result.Preserved, result.Failed, result.Error?.ToString());
+    }
+
     public static async Task<WorktreeRetentionSweepOutcome> SweepAsync(string workspacePath, bool dryRun,
         CancellationToken cancellationToken)
     {
@@ -22,3 +30,6 @@ public static class WorktreeRetentionHost
             .ConfigureAwait(false);
     }
 }
+
+public sealed record WorktreeRetentionCliOutcome(int Eligible, int Pruned, int Preserved, int Failed,
+    string? Error);

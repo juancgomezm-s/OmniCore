@@ -19,7 +19,10 @@ public sealed record AgentLaneSnapshot(string LaneId, string TaskId, string? Par
     string? WorkflowGateReason = null, string? ResultOutcome = null,
     IReadOnlyList<AgentValidationDebtSnapshot>? ValidationDebts = null,
     AgentLaneHeartbeatSnapshot? Heartbeat = null,
-    IReadOnlyList<AgentTranscriptEntry>? Transcript = null);
+    IReadOnlyList<AgentTranscriptEntry>? Transcript = null,
+    ExternalLaneActivitySnapshot? ExternalActivity = null);
+public sealed record ExternalLaneActivitySnapshot(int ToolUseCount, int ToolResultCount,
+    int PermissionDenialCount, int ApiRetryCount, int StreamDeltaCount);
 public sealed record AgentValidationDebtSnapshot(string DebtId, string RequiredLevel,
     IReadOnlyList<string> MissingChecks);
 public sealed record AgentLaneHeartbeatSnapshot(string State, string? TurnId,
@@ -64,5 +67,6 @@ public static class AgentsJson
 [JsonSerializable(typeof(AgentLaneHeartbeatSnapshot))]
 [JsonSerializable(typeof(AgentHeartbeatSnapshot))]
 [JsonSerializable(typeof(AgentTranscriptEntry))]
+[JsonSerializable(typeof(ExternalLaneActivitySnapshot))]
 [JsonSerializable(typeof(FanOutGroupSnapshot))]
 internal partial class AgentsJsonContext : JsonSerializerContext;

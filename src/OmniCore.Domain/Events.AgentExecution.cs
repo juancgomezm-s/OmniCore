@@ -62,11 +62,43 @@ public sealed record ExternalLaneSessionBound(ExecutionId ExecutionId, LaneId La
     public int SchemaVersion() => 1;
 }
 
+/// <summary>Durable ceiling reserved before one external CLI invocation. Reservations are never
+/// refunded: an interrupted process may already have consumed its entire allowance.</summary>
+public sealed record ExternalLaneInvocationReserved(ExecutionId ExecutionId, LaneId LaneId,
+    int AttemptNumber, string? SessionId, decimal ReservedCostUsd, long ReservedTokens,
+    int ReservedTurns, int ReservedToolCalls) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("external_lane.invocation_reserved");
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>Bounded usage reported by the external CLI after its final result event.</summary>
 public sealed record ExternalLaneUsageRecorded(ExecutionId ExecutionId, LaneId LaneId, string SessionId,
     long? InputTokens, long? OutputTokens, long? CacheReadInputTokens, long? CacheCreationInputTokens,
-    decimal? TotalCostUsd, int ToolUseCount, int EventCount, long StreamBytes, ArtifactRef ResultRef) : DomainEventPayload
+    decimal? TotalCostUsd, int ToolUseCount, int EventCount, long StreamBytes, ArtifactRef ResultRef,
+    int ApiRetryCount = 0, int PermissionDenialCount = 0, int ToolResultCount = 0,
+    int StreamDeltaCount = 0, bool UsageCoverageComplete = true) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("external_lane.usage_recorded");
+    public int SchemaVersion() => 3;
+}
+
+/// <summary>Sanitized counts of external CLI activity. Arguments and tool output are never journaled.</summary>
+public sealed record ExternalLaneActivityObserved(ExecutionId ExecutionId, LaneId LaneId, string SessionId,
+    int ToolUseCount, int ToolResultCount, int PermissionDenialCount, int ApiRetryCount, int StreamDeltaCount,
+    int EventCount, long StreamBytes) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("external_lane.activity_observed");
     public int SchemaVersion() => 1;
+}
+
+/// <summary>Durable lane result awaiting an explicit human acceptance decision.</summary>
+public sealed record LaneAcceptancePending(TaskId TaskId, LaneId LaneId, ExecutionId ExecutionId,
+    TurnId TurnId, InteractionId InteractionId, ArtifactRef ResultRef, string ResultSchemaId) : DomainEventPayload
+{
+    public string LaneTreeAtAcceptance { get; init; } = "";
+    public string LaneHeadAtAcceptance { get; init; } = "";
+    public string? LaneBranchAtAcceptance { get; init; }
+    public EventType Type() => EventType.Of("lane.acceptance_pending");
+    public int SchemaVersion() => 2;
 }

@@ -366,6 +366,9 @@ public sealed class ExplorerTurn
         public AgentResult? ExternalAgentResult { get; init; }
         public string? ExternalResultSchemaId { get; init; }
         public ArtifactRef? ExternalResultRef { get; init; }
+        /// <summary>Result artifact preserved while a child lane waits for explicit human acceptance.</summary>
+        public ArtifactRef? DurableAcceptedResultRef { get; init; }
+        public string? DurableAcceptedResultSchemaId { get; init; }
         internal ClaudeLaneStreamOutcome? ExternalLaneOutcome { get; init; }
 
         public StopReason StopReason { get; }
@@ -699,16 +702,19 @@ public sealed class ExplorerTurn
             var runBudget = payloads.OfType<RunCreated>().SingleOrDefault()?.Budget;
             if (runBudget is null) return;
             var turns = payloads.OfType<TurnStarted>().Select(item => item.TurnId).Distinct().ToArray();
-            var tools = payloads.OfType<ToolCallRequested>().Select(item => item.ToolCallId).Distinct().ToArray();
+            var toolUseCount = checked(payloads.OfType<ToolCallRequested>().Select(item => item.ToolCallId)
+                .Distinct().LongCount() + ExternalLaneAccounting.ToolUseCount(
+                    payloads.OfType<ExternalLaneUsageRecorded>(), payloads.OfType<ExternalLaneActivityObserved>()));
             var allocations = RunBudgetPool.For(_store).ReadChildAllocations(journal, _codecs,
                 _artifacts, _store, _spendReservations, sessionId, runId, laneId);
             var addingTurn = newTurn && !turns.Contains(turnId) ? 1L : 0L;
-            var addingTool = newToolCall is { } id && !tools.Contains(id) ? 1L : 0L;
+            var addingTool = newToolCall is { } id
+                && !payloads.OfType<ToolCallRequested>().Any(item => item.ToolCallId == id) ? 1L : 0L;
             if (runBudget.MaxTurns is { } maxTurns
                 && checked(turns.LongLength + allocations.Turns + addingTurn) > maxTurns)
                 throw new BudgetExceededException("límite de turnos del Run alcanzado");
             if (runBudget.MaxToolCalls is { } maxTools
-                && checked(tools.LongLength + allocations.ToolCalls + addingTool) > maxTools)
+                && checked(toolUseCount + allocations.ToolCalls + addingTool) > maxTools)
                 throw new BudgetExceededException("límite de herramientas del Run alcanzado");
         }
 
@@ -1737,6 +1743,8 @@ public sealed class ExplorerTurn
         IReadOnlyList<DomainEvent>? stepCompletions = evidenceEvents?.Where(evt => evt.Type.ToString() == "model_step.completed").ToArray();
         IReadOnlyList<DomainEvent>? unsentSteps = evidenceEvents?.Where(evt => evt.Type.ToString() == "model_step.not_dispatched").ToArray();
         IReadOnlyList<DomainEvent>? completions = evidenceEvents?.Where(evt => evt.Type.ToString() == "model.completed").ToArray();
+        IReadOnlyList<DomainEvent>? externalLaneReceipts = evidenceEvents?
+            .Where(evt => evt.Type.ToString() == "external_lane.usage_recorded").ToArray();
         if (evidenceEvents is null && includeWorkspaceDaily && _store is IWorkspaceJournalReader store)
         {
             try
@@ -1745,6 +1753,7 @@ public sealed class ExplorerTurn
                 stepCompletions = store.ReadEvents(EventType.Of("model_step.completed"));
                 unsentSteps = store.ReadEvents(EventType.Of("model_step.not_dispatched"));
                 completions = store.ReadEvents(EventType.Of("model.completed"));
+                externalLaneReceipts = store.ReadEvents(EventType.Of("external_lane.usage_recorded"));
             }
             catch (Exception)
             {
@@ -1764,10 +1773,13 @@ public sealed class ExplorerTurn
                 .Where(evt => evt.Type.ToString().Equals("model_step.completed", StringComparison.Ordinal)).ToArray();
             unsentSteps = stream.EventsSince(1)
                 .Where(evt => evt.Type.ToString() == "model_step.not_dispatched").ToArray();
+            externalLaneReceipts = stream.EventsSince(1)
+                .Where(evt => evt.Type.ToString() == "external_lane.usage_recorded").ToArray();
         }
 
         var snapshot = new CanonicalSpendReader(_codecs, artifacts).ReadPrimary(
-            (stepStarts ?? []).Concat(stepCompletions ?? []).Concat(unsentSteps ?? []).Concat(completions),
+            (stepStarts ?? []).Concat(stepCompletions ?? []).Concat(unsentSteps ?? []).Concat(completions)
+                .Concat(externalLaneReceipts ?? []),
             sessionId, runId, today,
             _spendReservations is not null
                 ? (evt, step) => RunBudgetPool.For(_store).OwnsPendingPrimary(evt, step, _spendReservations)

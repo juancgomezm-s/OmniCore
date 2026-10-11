@@ -108,4 +108,45 @@ public sealed class RunTokenBudgetReaderTests
         Assert.Equal(known, result.Limitation is null);
         Assert.Equal(result, RunTokenBudgetReader.Read(events.Concat(events).ToArray(), codecs, run, 100));
     }
+
+    [Fact]
+    public void Claude_aggregate_usage_receipt_accounts_for_cache_tokens_without_fabricating_attempt_evidence()
+    {
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var task = TaskId.New();
+        var lane = LaneId.New();
+        var execution = ExecutionId.New();
+        var turn = TurnId.New();
+        var result = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('a', 64)), 128,
+            "application/vnd.omnicore.agent-result+json", ArtifactKind.Other, Sensitivity.Sensitive);
+        var start = new ModelStepStarted(turn, 0, "claude-haiku-5-5", 1000, "claude-code", null, null, null);
+        var receipt = new ExternalLaneUsageRecorded(execution, lane, "session-123", 100, 20, 2, 3,
+            0.01m, 1, 8, 2048, result);
+        var complete = new ModelStepCompleted(turn, 0, new TokenUsage(105, 20, 2, 3, 0),
+            StopReason.EndTurn, null, "2026-10-10", 0.01m,
+            TokenUsageFields.Input | TokenUsageFields.Output | TokenUsageFields.CacheRead | TokenUsageFields.CacheWrite);
+        var events = new DomainEventPayload[] { start, receipt, complete }.Select(payload => DomainEvent.Create(
+            session, payload.Type(), payload.SchemaVersion(), null, run, run, task, lane,
+            payload is ModelStepStarted or ModelStepCompleted ? turn : null, null, null, [],
+            codecs.CodecFor(payload.Type()).Encode(payload), execution)).ToArray();
+
+        var budget = RunTokenBudgetReader.Read(events, codecs, run, 1000);
+        Assert.Equal(875, budget.Remaining);
+        Assert.Null(budget.Limitation);
+        Assert.Equal(125, budget.ObservedSettledTokens);
+
+        var resumedReceiptEvents = Encode([start,
+            receipt with { UsageCoverageComplete = false }, complete], codecs, session, run);
+        var resumedBudget = RunTokenBudgetReader.Read(resumedReceiptEvents, codecs, run, 1000);
+        Assert.Null(resumedBudget.Remaining);
+        Assert.NotNull(resumedBudget.Limitation);
+        Assert.Null(resumedBudget.ObservedSettledTokens);
+
+        var missingReceipt = RunTokenBudgetReader.Read(events.Where(evt => codecs.Decode(evt)
+            is not ExternalLaneUsageRecorded).ToArray(), codecs, run, 1000);
+        Assert.Null(missingReceipt.Remaining);
+        Assert.Equal("generation attempt usage coverage unknown", missingReceipt.Limitation);
+    }
 }

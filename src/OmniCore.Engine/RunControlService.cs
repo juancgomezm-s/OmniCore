@@ -445,11 +445,12 @@ public sealed class RunControlService
                 .Cast<ExecutionScopeState?>().ToArray();
             stream.AppendBatch(batch, DurabilityClass.Standard, scopes);
         }
-        else if (request.Kind == InteractionKind.ModelRouteConsent
+        else if (request.Kind is InteractionKind.ModelRouteConsent or InteractionKind.AcceptanceConfirmation
             && pendingRequest?.Envelope.RunId is { } routeRun)
         {
-            // Keep the durable resolution and resume marker attached to the exact Run that
-            // requested consent. Replay requires this provenance before AwaitingInput→Running.
+            // Keep the durable resolution (and optional resume marker) attached to the exact
+            // originating Run/task/lane/execution. Lane acceptance is resumed by its exact
+            // delegation; attributing its response to the root lane breaks that binding.
             var requestScope = new ExecutionScopeState(routeRun, pendingRequest.Envelope.TaskId,
                 pendingRequest.Envelope.LaneId, pendingRequest.Envelope.TurnId,
                 ExecutionId: pendingRequest.Envelope.ExecutionId);

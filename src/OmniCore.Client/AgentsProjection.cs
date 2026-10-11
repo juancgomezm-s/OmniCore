@@ -114,6 +114,11 @@ public static class AgentPresentation
                 rows.Add(new(L("Pulso · ", "Heartbeat · ") + heartbeat.State,
                     heartbeat.State is "WaitingForCapacity" or "WaitingForResponse" or "Reasoning" or "Tools"
                         ? ThemeRole.Attention : ThemeRole.Muted));
+            if (lane.ExternalActivity is { } externalActivity)
+                rows.Add(new(L("Actividad externa final · herramientas ", "Final external activity · tools ")
+                    + externalActivity.ToolUseCount + "/" + externalActivity.ToolResultCount
+                    + L(" · reintentos ", " · retries ") + externalActivity.ApiRetryCount,
+                    externalActivity.PermissionDenialCount > 0 ? ThemeRole.Attention : ThemeRole.Muted));
             if (lane.ValidationDebts is { Count: > 0 } debts)
             {
                 rows.Add(new(L("Deuda de validación · ", "Validation debt · ")
@@ -134,6 +139,14 @@ public static class AgentPresentation
                     + (detailHeartbeat.TurnId is { } heartbeatTurn ? " · Turn " + heartbeatTurn : "")
                     + (detailHeartbeat.LastProgressAt is { } progress ? " · " + progress.ToString("O", System.Globalization.CultureInfo.InvariantCulture) : " · unknown")
                     + " · " + detailHeartbeat.Source, ThemeRole.Muted));
+            if (lane.ExternalActivity is { } activityDetail)
+                rows.Add(new(L("Actividad externa final: ", "Final external activity: ")
+                    + L("usos ", "uses ") + activityDetail.ToolUseCount
+                    + L(", resultados ", ", results ") + activityDetail.ToolResultCount
+                    + L(", denegaciones ", ", denials ") + activityDetail.PermissionDenialCount
+                    + L(", reintentos API ", ", API retries ") + activityDetail.ApiRetryCount
+                    + L(", deltas ", ", deltas ") + activityDetail.StreamDeltaCount,
+                    activityDetail.PermissionDenialCount > 0 ? ThemeRole.Attention : ThemeRole.Muted));
             if (lane.ParentExecutionId is { } parent) rows.Add(new("Parent " + parent, ThemeRole.Muted));
             if (lane.DelegationId is { } delegation) rows.Add(new("Delegation " + delegation + " · " + lane.DelegationState, ThemeRole.Muted));
             if (lane.Budget is { } budget)

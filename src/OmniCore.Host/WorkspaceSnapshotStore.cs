@@ -228,7 +228,7 @@ public sealed partial class WorkspaceSnapshotStore
                 || Encoding.UTF8.GetByteCount(start.ReconciliationJson) > MaxBatchBytes * 2) return null;
             using (var metadataDocument = JsonDocument.Parse(start.ReconciliationJson)) EnsureNoDuplicates(metadataDocument.RootElement);
             var metadata = JsonSerializer.Deserialize(start.ReconciliationJson, BatchJson.Default.BatchMetadata);
-            if (metadata is null || metadata.Kind != "worktree.integration.batch" || metadata.Version != 1
+            if (metadata is null || metadata.Kind != "worktree.integration.batch" || metadata.Version is not (1 or 2)
                 || metadata.ToolCallId != id.ToString() || metadata.Files is null || metadata.Files.Length is < 1 or > MaxFiles
                 || !PathEquals(metadata.WorkspaceRoot, _workspaceRoot) || !Guid.TryParseExact(metadata.OwnershipId, "N", out _)
                 || !IsSha256(metadata.ProposalId) || !IsGitOid(metadata.WorkspaceHead) || !IsGitOid(metadata.LaneHead)
@@ -244,13 +244,19 @@ public sealed partial class WorkspaceSnapshotStore
             using var document = JsonDocument.Parse(json);
             EnsureNoDuplicates(document.RootElement);
             var payload = JsonSerializer.Deserialize(json, BatchJson.Default.BatchPayload);
-            if (payload is null || payload.Version != 1 || payload.OwnershipId != metadata.OwnershipId
+            if (payload is null || payload.Version != metadata.Version || payload.OwnershipId != metadata.OwnershipId
                 || payload.ProposalId != metadata.ProposalId || !PathEquals(payload.WorkspaceRoot, _workspaceRoot)
                 || payload.Files is null || payload.Files.Any(file => file is null)
                 || payload.Files.Length != metadata.Files.Length || payload.Files.Length > MaxFiles) return null;
             if (metadata.GitCommonDirectory != payload.GitCommonDirectory
                 || metadata.WorkspaceHead != payload.WorkspaceHead || metadata.WorkspaceBranch != payload.WorkspaceBranch
                 || metadata.LaneHead != payload.LaneHead || metadata.LaneBranch != payload.LaneBranch) return null;
+            if (metadata.Version == 2 && (!IsGitOid(metadata.LaneTreeAtCapture)
+                || metadata.LaneTreeAtCapture != payload.LaneTreeAtCapture
+                || metadata.CompleteLaneResult != payload.CompleteLaneResult
+                || state.LaneTreeAtCapture != metadata.LaneTreeAtCapture
+                || state.LaneHeadAtCapture != metadata.LaneHead
+                || state.CompleteLaneResult != metadata.CompleteLaneResult)) return null;
             long batchBytes = 0;
             var paths = new HashSet<string>(OperatingSystem.IsWindows()
                 ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
@@ -325,12 +331,14 @@ public sealed partial class WorkspaceSnapshotStore
 
     private sealed record BatchMetadata(string Kind, int Version, string ToolCallId, string OwnershipId, string ProposalId,
         string WorkspaceRoot, string GitCommonDirectory, string WorkspaceHead, string? WorkspaceBranch,
-        string LaneHead, string? LaneBranch, BatchClaim[] Files);
+        string LaneHead, string? LaneBranch, BatchClaim[] Files, string? LaneTreeAtCapture = null,
+        bool CompleteLaneResult = false);
     private sealed record BatchClaim(string RelativePath, string? ExpectedPreSha256, string? ExpectedPostSha256,
         string? ExpectedPreMode, string? ExpectedPostMode);
     private sealed record BatchPayload(int Version, string OwnershipId, string ProposalId, string WorkspaceRoot,
         string GitCommonDirectory, string WorkspaceHead, string? WorkspaceBranch, string LaneHead,
-        string? LaneBranch, DurableFileImage[] Files);
+        string? LaneBranch, DurableFileImage[] Files, string? LaneTreeAtCapture = null,
+        bool CompleteLaneResult = false);
     private sealed record DurableFileImage(string RelativePath, string? ExpectedPreSha256, string? ExpectedPostSha256,
         string? ExpectedPreMode, string? ExpectedPostMode, DurableImage? Preimage, DurableImage? Postimage);
     private sealed record DurableImage(string Text, string Encoding);

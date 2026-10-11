@@ -78,10 +78,12 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         if (policyRefusal is not null)
             throw new ToolPreflightException(policyRefusal.Code, policyRefusal.Message);
 
-        var payload = new BatchPayload(1, args.OwnershipId, capture.Preview.ProposalId,
+        var completeLaneResult = capture.Preview.Changes.Select(change => change.RelativePath)
+            .ToHashSet(PathComparer).SetEquals(args.Paths);
+        var payload = new BatchPayload(2, args.OwnershipId, capture.Preview.ProposalId,
             workspace, identity.GitCommonDirectory, capture.Preview.WorkspaceHeadAtCapture,
             capture.Preview.WorkspaceBranchAtCapture, capture.Preview.LaneHeadAtCapture,
-            capture.Preview.LaneBranchAtCapture, images.ToArray());
+            capture.Preview.LaneBranchAtCapture, images.ToArray(), capture.Preview.TheirsTree, completeLaneResult);
         var payloadJson = JsonSerializer.Serialize(payload, ManifestJson.Default.BatchPayload);
         // The protected artifact is loaded as a bounded UTF-8 document during recovery/undo.
         // Reject before CAS publication and before ToolRuntime can commit its start Barrier.
@@ -95,12 +97,13 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         if (reference.Size > MaxBatchBytes * 2 || !_artifacts.Verify(reference.Hash, reference.Size))
             throw new InvalidOperationException("Integration artifact failed verification.");
 
-        var metadata = new BatchMetadata("worktree.integration.batch", 1, authorized.Intent.ToolCallId.ToString(), args.OwnershipId,
+        var metadata = new BatchMetadata("worktree.integration.batch", 2, authorized.Intent.ToolCallId.ToString(), args.OwnershipId,
             capture.Preview.ProposalId, workspace, identity.GitCommonDirectory,
             capture.Preview.WorkspaceHeadAtCapture, capture.Preview.WorkspaceBranchAtCapture,
             capture.Preview.LaneHeadAtCapture, capture.Preview.LaneBranchAtCapture,
             images.Select(image => new BatchClaim(image.RelativePath, image.ExpectedPreSha256,
-                image.ExpectedPostSha256, image.ExpectedPreMode, image.ExpectedPostMode)).ToArray());
+                image.ExpectedPostSha256, image.ExpectedPreMode, image.ExpectedPostMode)).ToArray(),
+            capture.Preview.TheirsTree, completeLaneResult);
         var durableMetadata = JsonSerializer.Serialize(metadata, ManifestJson.Default.BatchMetadata);
         _prepared[authorized.Intent.ToolCallId.ToString()] = new(metadata, reference);
         return new ReconciliationSpec(null, null, null)
@@ -110,7 +113,12 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
             StartedEntityEvent = new WorktreeIntegrationStateRecorded(authorized.Intent.ToolCallId,
                 args.OwnershipId, capture.Preview.ProposalId, WorktreeIntegrationState.Started,
                 images.Select(image => new WorktreeIntegrationFileStatus(image.RelativePath,
-                    ReconciliationOutcome.NotApplied)).ToArray()),
+                    ReconciliationOutcome.NotApplied)).ToArray())
+            {
+                LaneTreeAtCapture = capture.Preview.TheirsTree,
+                LaneHeadAtCapture = capture.Preview.LaneHeadAtCapture,
+                CompleteLaneResult = completeLaneResult,
+            },
             Reversibility = Reversibility.Unknown,
         };
     }
@@ -159,7 +167,7 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
             cancellationToken.ThrowIfCancellationRequested();
             using (var document = JsonDocument.Parse(metadataJson)) EnsureNoDuplicateProperties(document.RootElement);
             var metadata = JsonSerializer.Deserialize(metadataJson, ManifestJson.Default.BatchMetadata);
-            if (metadata is null || metadata.Kind != "worktree.integration.batch" || metadata.Version != 1
+            if (metadata is null || metadata.Kind != "worktree.integration.batch" || metadata.Version is not (1 or 2)
                 || metadata.Files is null || metadata.Files.Length is < 1 or > MaxFiles
                 || beforeStateRef is null || !_artifacts.Verify(beforeStateRef.Hash, beforeStateRef.Size))
                 return FilesystemReconciliation.Unresolvable("integration metadata or protected manifest unavailable");
@@ -220,9 +228,8 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
             var result = allApplied ? FilesystemReconciliation.Applied("every integration target matches its postimage")
                 : allPre ? FilesystemReconciliation.NotApplied("every integration target matches its preimage")
                 : FilesystemReconciliation.Conflict("integration targets have mixed or unexpected states");
-            return result with { SupplementalEvent = new WorktreeIntegrationStateRecorded(
-                ToolCallId.Parse(metadata.ToolCallId), metadata.OwnershipId, metadata.ProposalId,
-                entityState, results) };
+            return result with { SupplementalEvent = StateEvent(ToolCallId.Parse(metadata.ToolCallId),
+                metadata, entityState, results) };
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception)
@@ -245,7 +252,8 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
             || metadata.WorkspaceHead != capture.Preview.WorkspaceHeadAtCapture
             || metadata.WorkspaceBranch != capture.Preview.WorkspaceBranchAtCapture
             || metadata.LaneHead != capture.Preview.LaneHeadAtCapture
-            || metadata.LaneBranch != capture.Preview.LaneBranchAtCapture)
+            || metadata.LaneBranch != capture.Preview.LaneBranchAtCapture
+            || metadata.LaneTreeAtCapture != capture.Preview.TheirsTree)
             return Terminal(context, authorized, metadata, WorktreeIntegrationState.Conflict,
                 ReconciliationOutcome.Conflict, "Integration identity changed; no files were written.");
 
@@ -292,8 +300,8 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         }
         if (statuses.Any(status => status.Outcome != ReconciliationOutcome.NotApplied))
         {
-            context.EmitEvent?.Invoke(new WorktreeIntegrationStateRecorded(authorized.Intent.ToolCallId,
-                metadata.OwnershipId, metadata.ProposalId, WorktreeIntegrationState.Conflict, statuses));
+            context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
+                WorktreeIntegrationState.Conflict, statuses));
             return ToolResult.Error(ToolErrorCode.StaleWrite,
                 "One or more integration targets changed; no integration files were written.");
         }
@@ -302,8 +310,8 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         var refusal = ValidatePolicy(payload.Files, context.ReadRegistry);
         if (refusal is not null)
         {
-            context.EmitEvent?.Invoke(new WorktreeIntegrationStateRecorded(authorized.Intent.ToolCallId,
-                metadata.OwnershipId, metadata.ProposalId, WorktreeIntegrationState.NotApplied, statuses));
+            context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
+                WorktreeIntegrationState.NotApplied, statuses));
             return ToolResult.Error(refusal.Code, refusal.Message);
         }
 
@@ -342,32 +350,32 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         catch (StaleIntegrationTargetException) when (!touched)
         {
             var classified = ClassifyNow(targets);
-            context.EmitEvent?.Invoke(new WorktreeIntegrationStateRecorded(authorized.Intent.ToolCallId,
-                metadata.OwnershipId, metadata.ProposalId, WorktreeIntegrationState.Conflict, classified));
+            context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
+                WorktreeIntegrationState.Conflict, classified));
             return ToolResult.Error(ToolErrorCode.StaleWrite,
                 "An integration target changed before it could be written; no target was overwritten.");
         }
         catch (Exception) when (!touched)
         {
             var classified = ClassifyNow(targets);
-            context.EmitEvent?.Invoke(new WorktreeIntegrationStateRecorded(authorized.Intent.ToolCallId,
-                metadata.OwnershipId, metadata.ProposalId, WorktreeIntegrationState.Conflict, classified));
+            context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
+                WorktreeIntegrationState.Conflict, classified));
             return ToolResult.Error(ToolErrorCode.ToolFailure,
                 "Integration could not safely begin; no target was overwritten.");
         }
         catch (Exception) when (touched)
         {
             var classified = ClassifyNow(targets);
-            context.EmitEvent?.Invoke(new WorktreeIntegrationStateRecorded(authorized.Intent.ToolCallId,
-                metadata.OwnershipId, metadata.ProposalId, WorktreeIntegrationState.Conflict, classified));
+            context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
+                WorktreeIntegrationState.Conflict, classified));
             return new ToolResult("Integration was interrupted; recovery will classify every target.", null,
                 null, 0, false, EffectOutcome.Unknown, isError: true, ToolErrorCode.UnknownEffect);
         }
 
         var applied = targets.Select(target => new WorktreeIntegrationFileStatus(target.Image.RelativePath,
             ReconciliationOutcome.Applied)).ToArray();
-        context.EmitEvent?.Invoke(new WorktreeIntegrationStateRecorded(authorized.Intent.ToolCallId,
-            metadata.OwnershipId, metadata.ProposalId, WorktreeIntegrationState.Completed, applied));
+        context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
+            WorktreeIntegrationState.Completed, applied));
         return new ToolResult("Integration proposal applied to the workspace.", null, null, 0, false,
             EffectOutcome.Applied);
     }
@@ -375,11 +383,19 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
     private ToolResult Terminal(ToolExecutionContext context, AuthorizedToolIntent intent, BatchMetadata metadata,
         WorktreeIntegrationState state, ReconciliationOutcome outcome, string summary)
     {
-        context.EmitEvent?.Invoke(new WorktreeIntegrationStateRecorded(intent.Intent.ToolCallId,
-            metadata.OwnershipId, metadata.ProposalId, state,
+        context.EmitEvent?.Invoke(StateEvent(intent.Intent.ToolCallId, metadata, state,
             metadata.Files.Select(file => new WorktreeIntegrationFileStatus(file.RelativePath, outcome)).ToArray()));
         return ToolResult.Error(ToolErrorCode.StaleWrite, summary);
     }
+
+    private static WorktreeIntegrationStateRecorded StateEvent(ToolCallId toolCallId, BatchMetadata metadata,
+        WorktreeIntegrationState state, IReadOnlyList<WorktreeIntegrationFileStatus> files) =>
+        new(toolCallId, metadata.OwnershipId, metadata.ProposalId, state, files)
+        {
+            LaneTreeAtCapture = metadata.LaneTreeAtCapture ?? "",
+            LaneHeadAtCapture = metadata.LaneHead,
+            CompleteLaneResult = metadata.CompleteLaneResult,
+        };
 
     private List<WorktreeIntegrationFileStatus> ClassifyNow(
         IReadOnlyList<(DurableFileImage Image, string FullPath, byte[]? Pre, byte[]? Post)> targets) =>
@@ -591,8 +607,11 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         using (var document = JsonDocument.Parse(json)) EnsureNoDuplicateProperties(document.RootElement);
         var payload = JsonSerializer.Deserialize(json, ManifestJson.Default.BatchPayload)
             ?? throw new InvalidOperationException("Protected integration manifest is invalid.");
-        if (payload.Version != 1 || payload.Files is null || payload.Files.Length is < 1 or > MaxFiles)
+        if (payload.Version is not (1 or 2) || payload.Files is null || payload.Files.Length is < 1 or > MaxFiles)
             throw new InvalidOperationException("Protected integration manifest version/size is invalid.");
+        if (!IsOid(payload.LaneHead) || payload.Version == 2
+            && (payload.LaneTreeAtCapture is not { } laneTree || !IsOid(laneTree)))
+            throw new InvalidOperationException("Protected integration lane binding is invalid.");
         return payload;
     }
 
@@ -614,8 +633,8 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
     private static void VerifyMetadataMatchesPayload(BatchMetadata metadata, BatchPayload payload,
         ArtifactRef reference)
     {
-        if (metadata.Kind != "worktree.integration.batch" || metadata.Version != 1
-            || payload.Version != 1 || metadata.ToolCallId.Length == 0
+        if (metadata.Kind != "worktree.integration.batch" || metadata.Version is not (1 or 2)
+            || payload.Version != metadata.Version || metadata.ToolCallId.Length == 0
             || metadata.OwnershipId != payload.OwnershipId || metadata.ProposalId != payload.ProposalId
             || !PathEquals(metadata.WorkspaceRoot, payload.WorkspaceRoot)
             || !PathEquals(metadata.GitCommonDirectory, payload.GitCommonDirectory)
@@ -624,6 +643,10 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
             || metadata.LaneHead != payload.LaneHead || metadata.LaneBranch != payload.LaneBranch
             || metadata.Files.Length != payload.Files.Length)
             throw new InvalidOperationException("Integration manifest identity mismatch.");
+        if (metadata.Version == 2 && (!IsOid(metadata.LaneTreeAtCapture ?? "")
+            || metadata.LaneTreeAtCapture != payload.LaneTreeAtCapture
+            || metadata.CompleteLaneResult != payload.CompleteLaneResult))
+            throw new InvalidOperationException("Integration lane binding mismatch.");
         for (var i = 0; i < metadata.Files.Length; i++)
         {
             var claim = metadata.Files[i]; var image = payload.Files[i];
@@ -635,9 +658,50 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         if (reference.Size > MaxBatchBytes * 2) throw new InvalidOperationException("Integration artifact exceeds the safe manifest limit.");
     }
 
+    internal static bool ManifestAuthorizesIntegratedCleanup(IArtifactStore artifacts, string workspaceRoot,
+        WorktreeIdentity identity, WorktreeIntegrationStateRecorded state, ToolCallStarted started,
+        string requestedArgumentsJson)
+    {
+        try
+        {
+            if (state.State != WorktreeIntegrationState.Completed || !state.CompleteLaneResult
+                || !IsOid(state.LaneTreeAtCapture) || !IsOid(state.LaneHeadAtCapture)
+                || started.ToolCallId != state.ToolCallId || started.BeforeStateRef is not { } reference
+                || reference.Size > MaxBatchBytes * 2 || !artifacts.Verify(reference.Hash, reference.Size)
+                || artifacts is not IProtectedArtifactStore protectedStore || started.ReconciliationJson is null)
+                return false;
+            var metadata = JsonSerializer.Deserialize(started.ReconciliationJson, ManifestJson.Default.BatchMetadata);
+            if (metadata is null || metadata.Version != 2 || metadata.ToolCallId != state.ToolCallId.ToString()
+                || metadata.OwnershipId != identity.OwnershipId || metadata.ProposalId != state.ProposalId
+                || !PathEquals(metadata.WorkspaceRoot, workspaceRoot)
+                || !PathEquals(metadata.GitCommonDirectory, identity.GitCommonDirectory)
+                || metadata.LaneHead != state.LaneHeadAtCapture
+                || metadata.LaneTreeAtCapture != state.LaneTreeAtCapture || !metadata.CompleteLaneResult)
+                return false;
+            var arguments = ParseArguments(requestedArgumentsJson);
+            if (arguments.OwnershipId != state.OwnershipId || arguments.ProposalId != state.ProposalId
+                || !arguments.Paths.ToHashSet(PathComparer).SetEquals(state.Files?.Select(file => file.RelativePath) ?? []))
+                return false;
+            var payload = ParsePayload(protectedStore.GetProtectedText(reference,
+                Purpose(workspaceRoot, identity.OwnershipId, state.ProposalId)));
+            VerifyMetadataMatchesPayload(metadata, payload, reference);
+            return payload.Version == 2 && payload.OwnershipId == identity.OwnershipId
+                && payload.ProposalId == state.ProposalId && PathEquals(payload.WorkspaceRoot, workspaceRoot)
+                && PathEquals(payload.GitCommonDirectory, identity.GitCommonDirectory)
+                && payload.LaneHead == state.LaneHeadAtCapture && payload.LaneTreeAtCapture == state.LaneTreeAtCapture
+                && payload.CompleteLaneResult
+                && payload.Files.Select(file => file.RelativePath).ToHashSet(PathComparer)
+                    .SetEquals(state.Files?.Select(file => file.RelativePath) ?? []);
+        }
+        catch (Exception) { return false; }
+    }
+
     private static string Purpose(string root, string ownershipId, string proposalId) =>
         "m7-worktree-integration:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
             ProjectIdentity.CanonicalWorkspacePath(root) + "\n" + ownershipId + "\n" + proposalId))).ToLowerInvariant();
+
+    private static bool IsOid(string value) => value.Length is 40 or 64
+        && value.All(character => Uri.IsHexDigit(character));
 
     private static bool PathEquals(string left, string right) => string.Equals(Path.GetFullPath(left),
         Path.GetFullPath(right), PathComparer == StringComparer.OrdinalIgnoreCase
@@ -661,10 +725,12 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         string? ExpectedPostSha256, string? ExpectedPreMode, string? ExpectedPostMode);
     private sealed record BatchMetadata(string Kind, int Version, string ToolCallId, string OwnershipId, string ProposalId,
         string WorkspaceRoot, string GitCommonDirectory, string WorkspaceHead, string? WorkspaceBranch,
-        string LaneHead, string? LaneBranch, BatchClaim[] Files);
+        string LaneHead, string? LaneBranch, BatchClaim[] Files, string? LaneTreeAtCapture = null,
+        bool CompleteLaneResult = false);
     private sealed record BatchPayload(int Version, string OwnershipId, string ProposalId, string WorkspaceRoot,
         string GitCommonDirectory, string WorkspaceHead, string? WorkspaceBranch, string LaneHead,
-        string? LaneBranch, DurableFileImage[] Files);
+        string? LaneBranch, DurableFileImage[] Files, string? LaneTreeAtCapture = null,
+        bool CompleteLaneResult = false);
     private sealed record PreparedBatch(BatchMetadata Metadata, ArtifactRef Artifact);
     private sealed class StaleIntegrationTargetException : Exception { }
     private enum TargetKind { Missing, RegularFile, Directory, Unsafe }

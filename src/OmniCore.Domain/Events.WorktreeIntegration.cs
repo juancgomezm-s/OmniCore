@@ -17,6 +17,9 @@ public sealed record WorktreeIntegrationStateRecorded(ToolCallId ToolCallId, str
     string ProposalId, WorktreeIntegrationState State,
     IReadOnlyList<WorktreeIntegrationFileStatus>? Files = null) : DomainEventPayload
 {
+    public string LaneTreeAtCapture { get; init; } = "";
+    public string LaneHeadAtCapture { get; init; } = "";
+    public bool CompleteLaneResult { get; init; }
     public EventType Type() => EventType.Of("worktree.integration_state.recorded");
-    public int SchemaVersion() => 1;
+    public int SchemaVersion() => 2;
 }

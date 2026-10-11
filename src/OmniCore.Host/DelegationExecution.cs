@@ -24,6 +24,56 @@ public sealed partial class OmniServer
             .OfType<DelegationCreated>().Single(e => e.Delegation.DelegationId == id).Delegation;
     }
 
+    private bool HasExactlyBoundOpenExternalStep(IReadOnlyList<DomainEvent> events, LaneId lane,
+        ExecutionId execution)
+    {
+        var decoded = events.Where(evt => evt.RunId == _lastRunId && evt.LaneId == lane
+                && evt.ExecutionId == execution)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        if (decoded.Select(item => item.Payload).OfType<ExternalLaneSessionBound>().Count() != 1
+            || decoded.Any(item => item.Payload is ExternalLaneUsageRecorded)) return false;
+        var starts = decoded.Where(item => item.Payload is ModelStepStarted)
+            .Select(item => (item.Event, Start: (ModelStepStarted)item.Payload)).ToArray();
+        var completed = decoded.Select(item => item.Payload).OfType<ModelStepCompleted>()
+            .Select(item => (item.TurnId, item.StepIndex)).ToHashSet();
+        var open = starts.Where(item => !completed.Contains((item.Start.TurnId, item.Start.StepIndex))).ToArray();
+        if (open.Length != 1) return false;
+        var turnId = open[0].Start.TurnId;
+        return !decoded.Any(item => item.Payload switch
+        {
+            TurnCompleted terminal => terminal.TurnId == turnId,
+            TurnInterrupted terminal => terminal.TurnId == turnId,
+            TurnAbandoned terminal => terminal.TurnId == turnId,
+            _ => false,
+        });
+    }
+
+    private bool HasDurableLaneAcceptance(IReadOnlyList<DomainEvent> events, TaskId task, LaneId lane,
+        ExecutionId execution)
+    {
+        var scoped = events.Where(evt => evt.RunId == _lastRunId && evt.TaskId == task
+            && evt.LaneId == lane && evt.ExecutionId == execution)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        var pending = scoped.Where(item => item.Payload is LaneAcceptancePending).ToArray();
+        if (pending.Length != 1) return false;
+        var acceptance = (LaneAcceptancePending)pending[0].Payload;
+        if (acceptance.TaskId != task || acceptance.LaneId != lane || acceptance.ExecutionId != execution
+            || acceptance.ResultRef.Kind != ArtifactKind.Other
+            || acceptance.ResultRef.MediaType != "application/vnd.omnicore.agent-result+json"
+            || acceptance.ResultRef.Sensitivity != Sensitivity.Sensitive
+            || acceptance.ResultRef.Size is <= 0 or > 1_048_576) return false;
+        var requests = scoped.Where(item => item.Payload is InteractionRequested request
+            && request.InteractionId == acceptance.InteractionId && request.Kind == InteractionKind.AcceptanceConfirmation)
+            .ToArray();
+        if (requests.Length != 1) return false;
+        var resolutions = scoped.Select(item => item.Payload).OfType<InteractionResolved>()
+            .Where(item => item.InteractionId == acceptance.InteractionId).ToArray();
+        var expired = scoped.Select(item => item.Payload).OfType<InteractionExpired>()
+            .Any(item => item.InteractionId == acceptance.InteractionId);
+        return !expired && resolutions.Length <= 1
+            && resolutions.All(item => item.OptionId is "accept" or "revise");
+    }
+
     /// <summary>Trusted Host composition only. FIFO, one actual slot; every provider/tool boundary
     /// still passes Explorer's routing, profile and hierarchical budget guards.</summary>
     internal CommandAck ExecuteDelegation(DelegationId id,
@@ -310,8 +360,15 @@ public sealed partial class OmniServer
                 var supervisor = facts.OfType<AgentExecutionStarted>()
                     .SingleOrDefault(e => e.ExecutionId == delegation.ParentExecutionId);
                 if (supervisor is null) return Ack(RuntimeCommandOutcome.Deferred("SupervisorUnavailable"));
+                var childHasOpenModelStep = HasOpenModelStep(own, delegation.ChildLaneId);
+                var canResumeBoundExternal = childHasOpenModelStep
+                    && admittedProfile.Executor == AgentExecutorKind.ClaudeCode
+                    && history.Phase == PreM6RecordPhase.Accepted
+                    && history.Facts.OfType<DelegationAccepted>().SingleOrDefault() is { } acceptedBinding
+                    && HasExactlyBoundOpenExternalStep(own, delegation.ChildLaneId, acceptedBinding.ChildExecutionId);
                 if (HasOpenModelStep(own, supervisor.LaneId) || HasOpenToolCall(own, supervisor.LaneId)
-                    || HasOpenModelStep(own, delegation.ChildLaneId) || HasOpenToolCall(own, delegation.ChildLaneId))
+                    || childHasOpenModelStep && !canResumeBoundExternal
+                    || HasOpenToolCall(own, delegation.ChildLaneId))
                     return Ack(RuntimeCommandOutcome.Deferred("ExecutionBoundaryRequired"));
                 if (history.Phase == PreM6RecordPhase.Created)
                 {
@@ -344,7 +401,9 @@ public sealed partial class OmniServer
                         if (!hasExternalBinding && !hasExternalReceipt)
                             return Ack(RuntimeCommandOutcome.Deferred("ExternalLaneRecoveryRequiresManualResolution"));
                     }
-                    else if (OmniCliRuntime.FindOpenTurnStart(own, _codecs, run, delegation.ChildLaneId) is null)
+                    else if (OmniCliRuntime.FindOpenTurnStart(own, _codecs, run, delegation.ChildLaneId) is null
+                        && !HasDurableLaneAcceptance(own, delegation.ChildTaskId, delegation.ChildLaneId,
+                            history.Facts.OfType<DelegationAccepted>().Single().ChildExecutionId))
                         return Ack(RuntimeCommandOutcome.Deferred("ExecutionRecoveryRequired"));
                 }
                 else if (history.Facts.OfType<DelegationCancellationRequested>().Any())
@@ -419,15 +478,28 @@ public sealed partial class OmniServer
                 var summary = new PiiRedactor().Redact(result.FinalText ?? "");
                 var issues = result.ToolCalls.Where(call => !call.Succeeded)
                     .Select(call => new PiiRedactor().Redact(call.ToolName + ": " + call.Summary)).ToArray();
-                var resultSchemaId = result.ExternalAgentResult is not null
-                    ? ClaudeLaneAgentResultValidator.SchemaId : "core.explorer.v1";
+                var resultSchemaId = result.DurableAcceptedResultSchemaId
+                    ?? (result.ExternalAgentResult is not null
+                        ? ClaudeLaneAgentResultValidator.SchemaId : "core.explorer.v1");
                 var resultJson = result.ExternalAgentResult is { } externalResult
                     ? ClaudeLaneAgentResultValidator.SerializeRedacted(externalResult)
                     : JsonSerializer.Serialize(new DelegationResultDocument(1, "Succeeded", summary, [], issues),
                         DelegationResultJson.Default.DelegationResultDocument);
                 using var lease = ((IArtifactPublicationLease)_artifacts!).AcquirePublicationLease(CancellationToken.None);
                 ArtifactRef resultRef;
-                if (result.ExternalResultRef is { } externalResultRef)
+                if (result.DurableAcceptedResultRef is { } acceptedResultRef)
+                {
+                    if (acceptedResultRef.Kind != ArtifactKind.Other
+                        || acceptedResultRef.MediaType != "application/vnd.omnicore.agent-result+json"
+                        || acceptedResultRef.Sensitivity != Sensitivity.Sensitive
+                        || acceptedResultRef.Size is <= 0 or > 1_048_576
+                        || _artifacts?.Verify(acceptedResultRef.Hash, acceptedResultRef.Size) != true
+                        || _artifacts.GetText(acceptedResultRef.Hash) is not { } acceptedJson
+                        || !ValidAcceptedResult(acceptedJson, resultSchemaId))
+                        throw new InvalidDataException("Accepted lane result receipt is unavailable.");
+                    resultRef = acceptedResultRef;
+                }
+                else if (result.ExternalResultRef is { } externalResultRef)
                 {
                     if (result.ExternalAgentResult is null || externalResultRef.Kind != ArtifactKind.Other
                         || externalResultRef.MediaType != "application/vnd.omnicore.agent-result+json"
@@ -478,6 +550,14 @@ public sealed partial class OmniServer
         finally { taskPacketPublicationLease?.Dispose(); capacity?.Dispose(); }
         CommandAck Ack(RuntimeCommandOutcome outcome) => CommandOutcomeAck(messageId, "ok", null, outcome, session, before, commandId);
     }
+
+    private static bool ValidAcceptedResult(string json, string schemaId) => schemaId switch
+    {
+        ClaudeLaneAgentResultValidator.SchemaId => ClaudeLaneAgentResultValidator.Validate(json) is not null,
+        "core.explorer.v1" => JsonSerializer.Deserialize(json,
+            DelegationResultJson.Default.DelegationResultDocument) is { Version: 1 },
+        _ => false,
+    };
 
     private static bool MatchesCreatedEvent(LaneWorktreeCreated evt, WorktreeIdentity identity) =>
         evt.OwnershipId == identity.OwnershipId && evt.LaneId == identity.LaneId

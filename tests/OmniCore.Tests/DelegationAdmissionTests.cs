@@ -206,6 +206,23 @@ public sealed class DelegationAdmissionTests
         Assert.Contains("Sin sesión", AgentPresentation.Describe(projection.Snapshot, "es"));
     }
 
+    [Fact]
+    public void Agent_inspector_localizes_final_external_activity_counters()
+    {
+        var lane = new AgentLaneSnapshot("lane", "task", null, "fixture", "Completed", "Completed",
+            "profile", 1, "execution", null, "Completed", null, null, "claude-haiku-5-5", null,
+            false, ExternalActivity: new ExternalLaneActivitySnapshot(3, 2, 1, 4, 32));
+        var snapshot = new AgentsSnapshot("session", "run", 1, false, [lane]);
+        var spanish = AgentPresentation.Describe(snapshot, "es");
+        var english = AgentPresentation.Describe(snapshot, "en");
+        Assert.Contains("Actividad externa final", spanish);
+        Assert.Contains("usos 3", spanish);
+        Assert.Contains("denegaciones 1", spanish);
+        Assert.Contains("Final external activity", english);
+        Assert.Contains("uses 3", english);
+        Assert.Contains("denials 1", english);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

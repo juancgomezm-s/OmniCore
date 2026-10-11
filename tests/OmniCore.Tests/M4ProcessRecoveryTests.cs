@@ -61,7 +61,10 @@ public sealed class M4ProcessRecoveryTests
         var pid = child.Id;
         var stdout = child.StandardOutput.ReadToEndAsync();
         var stderr = child.StandardError.ReadToEndAsync();
-        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        // This fixture performs 200 durable turns in a child process before verifying recovery.
+        // A two-minute wall-clock ceiling can kill a healthy child after ~190 turns on Windows
+        // under the complete serial suite, before it reaches the actual recovery assertions.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var output = "";
         try { await child.WaitForExitAsync(deadline.Token); }
         catch

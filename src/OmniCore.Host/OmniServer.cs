@@ -68,6 +68,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private string? _worktreeMaintenanceProblem;
 
+    private bool _worktreeStartupRecoveryAttempted;
+
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
@@ -113,7 +115,15 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _newSessionRoutingPolicy = frozen;
     }
 
-    public void ConfigureWorkspaceRoot(string workspaceRoot) => _workspaceRoot = Path.GetFullPath(workspaceRoot);
+    public void ConfigureWorkspaceRoot(string workspaceRoot)
+    {
+        _workspaceRoot = Path.GetFullPath(workspaceRoot);
+        // A host can start without a last-session pointer (first launch, or a removed state
+        // file). Once the caller supplies its physically established workspace, recovery may
+        // still find old provisioning failures in that workspace's durable journal history.
+        // The sweeper independently verifies the root binding and ownership before any cleanup.
+        RecoverExpiredWorktreesAtStartup();
+    }
 
     internal void ConfigurePlatformPaths(Func<IPlatformPaths> factory) =>
         _platformPathsFactory = factory ?? throw new ArgumentNullException(nameof(factory));
@@ -342,12 +352,33 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     /// never weakens or blocks ordinary tool authorization.</summary>
     private void RecoverExpiredWorktreesAtStartup()
     {
-        if (_recoveryProblem is not null || _lastSessionId is not { } session
+        if (_worktreeStartupRecoveryAttempted || _recoveryProblem is not null
             || _store is not IWorkspaceJournalReader) return;
+        string? root;
+        if (_lastSessionId is { } session)
+        {
+            // Once a session exists, only its durable root binding is authoritative. Never
+            // substitute a later configured cwd if that binding is missing or invalid.
+            root = VerifiedWorkspaceRoot(session);
+            if (root is null) { _worktreeStartupRecoveryAttempted = true; return; }
+        }
+        else
+        {
+            // ConfigureWorkspaceRoot is called only after the CLI has resolved the physical
+            // workspace. SweepAsync still requires matching durable WorkspaceRootEstablished
+            // records and exact repository identity; a caller-provided path alone cannot
+            // authorize cleanup.
+            root = _workspaceRoot;
+            if (root is null) return;
+            if (!HasHistoricalWorkspaceSession(root))
+            {
+                _worktreeStartupRecoveryAttempted = true;
+                return;
+            }
+        }
+        _worktreeStartupRecoveryAttempted = true;
         try
         {
-            var root = VerifiedWorkspaceRoot(session);
-            if (root is null) return;
             var outcome = WorktreeStartupRecoveryHost.SweepAsync(_store, _codecs, root,
                 _platformPathsFactory(), DateTimeOffset.UtcNow, CancellationToken.None)
                 .GetAwaiter().GetResult();
@@ -357,6 +388,24 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         catch (Exception)
         {
             _worktreeMaintenanceProblem = "MaintenanceFailed";
+        }
+    }
+
+    private bool HasHistoricalWorkspaceSession(string workspaceRoot)
+    {
+        if (_store is not IWorkspaceJournalReader reader) return false;
+        try
+        {
+            var canonicalRoot = ProjectIdentity.CanonicalWorkspacePath(workspaceRoot);
+            var workspaceId = WorkspaceId.Of(canonicalRoot).ToString();
+            return reader.ReadEvents(EventType.Of("session.created")).Any(envelope =>
+                _codecs.Decode(envelope) is SessionCreated created
+                && string.Equals(created.WorkspaceId, workspaceId, StringComparison.Ordinal));
+        }
+        catch (Exception)
+        {
+            // A journal read failure cannot authorize cleanup. The sweep remains skipped.
+            return false;
         }
     }
 
@@ -2320,12 +2369,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     else
                     {
                         var session = RequireSession();
+                        var optionId = fields.TryGetValue("optionId", out var option) ? option : "";
                         var sequenceBeforeResponse = _store.CurrentSequence(session);
                         outcomeSession = session;
                         outcomeSequenceBefore = sequenceBeforeResponse;
+                        if (optionId == "accept") EnsureLaneAcceptanceFresh(session, interaction);
                         lock (_modeAuthorityMutationGate)
-                            control.Respond(session, interaction,
-                                fields.TryGetValue("optionId", out var o) ? o : "", command.MessageId);
+                            control.Respond(session, interaction, optionId, command.MessageId);
                         AuditEffectResolutions(session, sequenceBeforeResponse, interaction);
                         if (control.UnreconciledEffects(session).Count == 0) _recoveryProblem = null;
                     }
@@ -3007,6 +3057,61 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 WorkspaceRootIdentity.Establish(physicalRoot)));
         }
         new EventStream(_store, _codecs, session).AppendBatch(creation, DurabilityClass.Barrier);
+    }
+
+    private void EnsureLaneAcceptanceFresh(SessionId session, InteractionId interaction)
+    {
+        var events = _store.ReadFrom(session, 1);
+        var scoped = events.Select(envelope => (Envelope: envelope, Payload: _codecs.Decode(envelope)))
+            .Where(item => item.Payload is LaneAcceptancePending pending && pending.InteractionId == interaction)
+            .ToArray();
+        if (scoped.Length == 0) return;
+        if (scoped.Length != 1 || scoped[0].Payload is not LaneAcceptancePending acceptance
+            || scoped[0].Envelope.TaskId != acceptance.TaskId
+            || scoped[0].Envelope.LaneId != acceptance.LaneId
+            || scoped[0].Envelope.ExecutionId != acceptance.ExecutionId)
+            throw new FormatException("lane acceptance ownership is ambiguous");
+        var pendingEvent = scoped[0].Envelope;
+        var requestEvents = events.Select(envelope => (Envelope: envelope, Payload: _codecs.Decode(envelope)))
+            .Where(item => item.Payload is InteractionRequested request
+                && request.InteractionId == interaction && request.Kind == InteractionKind.AcceptanceConfirmation)
+            .ToArray();
+        if (requestEvents.Length != 1 || requestEvents[0].Envelope.TaskId != pendingEvent.TaskId
+            || requestEvents[0].Envelope.LaneId != pendingEvent.LaneId
+            || requestEvents[0].Envelope.ExecutionId != pendingEvent.ExecutionId
+            || requestEvents[0].Envelope.RunId != pendingEvent.RunId)
+            throw new FormatException("lane acceptance interaction scope mismatch");
+        var bindings = events.Select(envelope => (Envelope: envelope, Payload: _codecs.Decode(envelope)))
+            .Where(item => item.Payload is LaneWorktreeCreated created
+                && created.TaskId == acceptance.TaskId && created.LaneId == acceptance.LaneId
+                && created.ExecutionId == acceptance.ExecutionId
+                && item.Envelope.TaskId == acceptance.TaskId && item.Envelope.LaneId == acceptance.LaneId
+                && item.Envelope.ExecutionId == acceptance.ExecutionId
+                && item.Envelope.RunId == pendingEvent.RunId)
+            .Select(item => (LaneWorktreeCreated)item.Payload!).ToArray();
+        if (bindings.Length != 1 || _workspaceRoot is null)
+            throw new FormatException("lane acceptance worktree binding unavailable");
+        string root;
+        try { root = ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot); }
+        catch (Exception) { throw new FormatException("lane acceptance workspace unavailable"); }
+        var dataRoot = OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), root);
+        var binding = bindings[0];
+        var git = new GitWorktreeStore(SystemProcessRuntime.Instance());
+        var loaded = git.LoadIdentityAsync(root, dataRoot, binding.OwnershipId, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        if (!loaded.Succeeded || loaded.Worktree is not { } identity
+            || !string.Equals(identity.WorktreePath, binding.WorktreePath,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+            || !string.Equals(identity.GitCommonDirectory, binding.GitCommonDirectory,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            throw new FormatException("lane acceptance worktree ownership mismatch");
+        var preview = git.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), CancellationToken.None)
+            .GetAwaiter().GetResult();
+        if (!preview.Succeeded || preview.Preview is not { } current
+            || !string.Equals(current.TheirsTree, acceptance.LaneTreeAtAcceptance, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(current.LaneHeadAtCapture, acceptance.LaneHeadAtAcceptance, StringComparison.OrdinalIgnoreCase)
+            || current.LaneBranchAtCapture != acceptance.LaneBranchAtAcceptance)
+            throw new FormatException("lane acceptance source changed; review the lane again");
     }
 
     private CommandAck ResumeSim(WireEnvelope command)

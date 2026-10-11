@@ -28,10 +28,13 @@ internal static class UltraCodeExecutionGuard
         if (turns.Length + allocations.Turns > grant.Limits.MaxTurns
             || newTurn && !turns.Contains(turn) && turns.Length + allocations.Turns >= grant.Limits.MaxTurns)
             throw Denied("límite de turnos alcanzado");
-        var tools = own.Select(codecs.Decode).OfType<ToolCallRequested>().Select(call => call.ToolCallId).Distinct().ToArray();
-        if (tools.Length + allocations.ToolCalls > grant.Limits.MaxToolCalls
+        var payloads = own.Select(codecs.Decode).ToArray();
+        var tools = payloads.OfType<ToolCallRequested>().Select(call => call.ToolCallId).Distinct().ToArray();
+        var externalTools = CountExternalToolUses(payloads);
+        var usedTools = checked((long)tools.Length + externalTools);
+        if (usedTools + allocations.ToolCalls > grant.Limits.MaxToolCalls
             || toolCall is not null && !tools.Contains(toolCall)
-            && tools.Length + allocations.ToolCalls >= grant.Limits.MaxToolCalls)
+            && usedTools + allocations.ToolCalls >= grant.Limits.MaxToolCalls)
             throw Denied("límite de herramientas alcanzado");
         var reader = new CanonicalSpendReader(codecs, artifacts);
         var day = now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
@@ -48,6 +51,32 @@ internal static class UltraCodeExecutionGuard
                 throw Denied("límite de gasto insuficiente");
         }
         catch (OverflowException) { throw Denied("consumo no representable"); }
+    }
+
+    private static long CountExternalToolUses(IReadOnlyList<DomainEventPayload> payloads)
+    {
+        var receipts = payloads.OfType<ExternalLaneUsageRecorded>().ToArray();
+        var activities = payloads.OfType<ExternalLaneActivityObserved>().ToArray();
+        if (receipts.Any(item => item.ToolUseCount < 0) || activities.Any(item => item.ToolUseCount < 0)
+            || receipts.GroupBy(item => (item.ExecutionId, item.LaneId)).Any(group => group.Count() != 1)
+            || activities.GroupBy(item => (item.ExecutionId, item.LaneId)).Any(group => group.Count() != 1))
+            throw Denied("actividad externa inválida");
+        var activityByExecution = activities.ToDictionary(item => (item.ExecutionId, item.LaneId));
+        var receiptKeys = receipts.Select(item => (item.ExecutionId, item.LaneId)).ToHashSet();
+        long count = 0;
+        foreach (var receipt in receipts)
+        {
+            var key = (receipt.ExecutionId, receipt.LaneId);
+            if (activityByExecution.TryGetValue(key, out var activity)
+                && activity.ToolUseCount != receipt.ToolUseCount)
+                throw Denied("actividad externa y recibo no coinciden");
+            count = checked(count + (activityByExecution.TryGetValue(key, out activity)
+                ? activity.ToolUseCount : receipt.ToolUseCount));
+        }
+        foreach (var activity in activities)
+            if (!receiptKeys.Contains((activity.ExecutionId, activity.LaneId)))
+                count = checked(count + activity.ToolUseCount);
+        return count;
     }
 
     private static BudgetExceededException Denied(string reason) => new("UltraCode: " + reason);

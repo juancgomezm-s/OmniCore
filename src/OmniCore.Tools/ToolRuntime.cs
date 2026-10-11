@@ -563,14 +563,33 @@ public sealed class ToolRuntime
                 || state.Files is null || string.IsNullOrWhiteSpace(reconciliation.DurableMetadataJson)) return false;
             using var document = System.Text.Json.JsonDocument.Parse(reconciliation.DurableMetadataJson);
             var root = document.RootElement;
-            if (root.ValueKind != System.Text.Json.JsonValueKind.Object || root.EnumerateObject().Count() != 12
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
                 || root.GetProperty("kind").GetString() != "worktree.integration.batch"
-                || root.GetProperty("version").GetInt32() != 1
+                || !root.TryGetProperty("version", out var versionElement)
+                || versionElement.ValueKind != System.Text.Json.JsonValueKind.Number
+                || !versionElement.TryGetInt32(out var version) || version is not (1 or 2)
+                || root.EnumerateObject().Count() != (version == 1 ? 12 : 14)
                 || root.GetProperty("toolCallId").GetString() != intent.ToolCallId.ToString()
                 || root.GetProperty("ownershipId").GetString() != state.OwnershipId
                 || root.GetProperty("proposalId").GetString() != state.ProposalId
                 || !Guid.TryParseExact(state.OwnershipId, "N", out _)
                 || state.ProposalId.Length != 64 || state.ProposalId.Any(ch => !Uri.IsHexDigit(ch))) return false;
+            var expectedMetadataFields = version == 1
+                ? new[] { "kind", "version", "toolCallId", "ownershipId", "proposalId", "workspaceRoot",
+                    "gitCommonDirectory", "workspaceHead", "workspaceBranch", "laneHead", "laneBranch", "files" }
+                : new[] { "kind", "version", "toolCallId", "ownershipId", "proposalId", "workspaceRoot",
+                    "gitCommonDirectory", "workspaceHead", "workspaceBranch", "laneHead", "laneBranch", "files",
+                    "laneTreeAtCapture", "completeLaneResult" };
+            if (!root.EnumerateObject().Select(property => property.Name).ToHashSet(StringComparer.Ordinal)
+                .SetEquals(expectedMetadataFields)) return false;
+            if (version == 2
+                && (!root.TryGetProperty("laneTreeAtCapture", out var laneTree)
+                    || laneTree.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !IsGitObjectId(laneTree.GetString())
+                    || !root.TryGetProperty("completeLaneResult", out var completeLaneResult)
+                    || completeLaneResult.ValueKind is not (System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False)
+                    || state.LaneTreeAtCapture != laneTree.GetString()
+                    || state.CompleteLaneResult != completeLaneResult.GetBoolean())) return false;
             var claims = new HashSet<string>(PathComparer);
             var rootPath = Path.GetFullPath(context.WorkspaceRoot);
             foreach (var target in intent.Claims.Writes)
@@ -586,6 +605,8 @@ public sealed class ToolRuntime
             foreach (var file in files.EnumerateArray())
             {
                 if (file.ValueKind != System.Text.Json.JsonValueKind.Object || file.EnumerateObject().Count() != 5
+                    || !file.EnumerateObject().Select(property => property.Name).ToHashSet(StringComparer.Ordinal)
+                        .SetEquals(["relativePath", "expectedPreSha256", "expectedPostSha256", "expectedPreMode", "expectedPostMode"])
                     || !file.TryGetProperty("relativePath", out var path) || path.ValueKind != System.Text.Json.JsonValueKind.String
                     || !durablePaths.Add(path.GetString()!)) return false;
             }
@@ -599,6 +620,9 @@ public sealed class ToolRuntime
 
     private static StringComparer PathComparer => OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    private static bool IsGitObjectId(string? value) => value is { Length: 40 or 64 }
+        && value.All(Uri.IsHexDigit);
 
     public static ToolRuntime For(FakeCatalog catalog, IPermissionPolicy policy,
         Func<DomainEventPayload, VoidBox> emit) => new ToolRuntime(catalog, policy, emit);

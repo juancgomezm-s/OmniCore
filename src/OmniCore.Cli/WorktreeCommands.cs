@@ -16,6 +16,7 @@ public static class WorktreeCommands
             Console.WriteLine(loc.Resolve("worktree.preview.usage"));
             Console.WriteLine(loc.Resolve("worktree.undo.usage"));
             Console.WriteLine(loc.Resolve("worktree.cleanup.usage"));
+            Console.WriteLine(loc.Resolve("worktree.discard.usage"));
             Console.WriteLine(loc.Resolve("worktree.retention.usage"));
             return 0;
         }
@@ -25,6 +26,8 @@ public static class WorktreeCommands
             return await RetentionAsync(args, loc, cancellationToken).ConfigureAwait(false);
         if (args.Length >= 2 && args[1] == "cleanup")
             return await CleanupAsync(args, loc, cancellationToken).ConfigureAwait(false);
+        if (args.Length >= 2 && args[1] == "discard")
+            return await DiscardAsync(args, loc, cancellationToken).ConfigureAwait(false);
         if (args.Length >= 2 && args[1] == "undo")
             return Undo(args, loc, cancellationToken);
         if (args.Length is < 2 or > 3 || args[1] != "inspect"
@@ -34,6 +37,7 @@ public static class WorktreeCommands
             Console.WriteLine(loc.Resolve("worktree.preview.usage"));
             Console.WriteLine(loc.Resolve("worktree.undo.usage"));
             Console.WriteLine(loc.Resolve("worktree.cleanup.usage"));
+            Console.WriteLine(loc.Resolve("worktree.discard.usage"));
             Console.WriteLine(loc.Resolve("worktree.retention.usage"));
             return 2;
         }
@@ -150,7 +154,7 @@ public static class WorktreeCommands
         }
         try
         {
-            var result = await WorktreeRetentionHost.SweepAsync(repositoryPath, dryRun, cancellationToken)
+            var result = await WorktreeRetentionHost.SweepForCliAsync(repositoryPath, dryRun, cancellationToken)
                 .ConfigureAwait(false);
             if (result.Error is { } error)
             {
@@ -187,7 +191,7 @@ public static class WorktreeCommands
         }
         try
         {
-            var result = await WorktreeCleanupHost.CleanupAsync(args[2], args[3], cancellationToken)
+            var result = await WorktreeCleanupHost.CleanupForCliAsync(args[2], args[3], cancellationToken)
                 .ConfigureAwait(false);
             if (result.Removed)
             {
@@ -196,7 +200,36 @@ public static class WorktreeCommands
             }
             var key = "worktree.error." + result.Error;
             Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.cleanup.preserved"));
-            return result.Error?.ToString() == "WorktreeDirty" ? 3 : 1;
+            return result.Error == "WorktreeDirty" ? 3 : 1;
+        }
+        catch (OperationCanceledException)
+        {
+            Console.WriteLine(loc.Resolve("worktree.cleanup.cancelled"));
+            return 130;
+        }
+    }
+
+    private static async Task<int> DiscardAsync(string[] args, Localization loc,
+        CancellationToken cancellationToken)
+    {
+        if (args.Length != 5 || string.IsNullOrWhiteSpace(args[2]) || args[2].StartsWith('-')
+            || !Guid.TryParseExact(args[3], "N", out _) || args[4] != "--apply")
+        {
+            Console.WriteLine(loc.Resolve("worktree.discard.usage"));
+            return 2;
+        }
+        try
+        {
+            var result = await WorktreeCleanupHost.DiscardForCliAsync(args[2], args[3], cancellationToken)
+                .ConfigureAwait(false);
+            if (result.Removed)
+            {
+                Console.WriteLine(loc.Resolve("worktree.discard.removed"));
+                return 0;
+            }
+            var key = "worktree.error." + result.Error;
+            Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.cleanup.preserved"));
+            return result.Error == "WorktreeDirty" ? 3 : 1;
         }
         catch (OperationCanceledException)
         {

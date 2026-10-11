@@ -64,7 +64,10 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.AgentExecutionCompleted())
             .Plus(Typed.AgentExecutionFailed())
             .Plus(Typed.ExternalLaneSessionBound())
+            .Plus(Typed.ExternalLaneInvocationReserved())
+            .Plus(Typed.ExternalLaneActivityObserved())
             .Plus(Typed.ExternalLaneUsageRecorded())
+            .Plus(Typed.LaneAcceptancePending())
             .Plus(Typed.DelegationCreated())
             .Plus(Typed.DelegationAccepted())
             .Plus(Typed.DelegationReturned())
@@ -184,6 +187,10 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("task.created"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("external_lane.usage_recorded"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("external_lane.usage_recorded"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("lane.acceptance_pending"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("worktree.integration_state.recorded"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_requested"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_approved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_completed"), 1));
@@ -418,7 +425,10 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(AgentExecutionCompleted))]
 [JsonSerializable(typeof(AgentExecutionFailed))]
 [JsonSerializable(typeof(ExternalLaneSessionBound))]
+[JsonSerializable(typeof(ExternalLaneInvocationReserved))]
+[JsonSerializable(typeof(ExternalLaneActivityObserved))]
 [JsonSerializable(typeof(ExternalLaneUsageRecorded))]
+[JsonSerializable(typeof(LaneAcceptancePending))]
 [JsonSerializable(typeof(DelegationCreated))]
 [JsonSerializable(typeof(DelegationAccepted))]
 [JsonSerializable(typeof(DelegationReturned))]
@@ -752,8 +762,18 @@ public sealed class Typed
     public static CodecPair ExternalLaneSessionBound() =>
         Of(EventType.Of("external_lane.session_bound"), EventJsonContext.Default.ExternalLaneSessionBound);
 
+    public static CodecPair ExternalLaneInvocationReserved() =>
+        Of(EventType.Of("external_lane.invocation_reserved"), EventJsonContext.Default.ExternalLaneInvocationReserved);
+
+    public static CodecPair ExternalLaneActivityObserved() =>
+        Of(EventType.Of("external_lane.activity_observed"), EventJsonContext.Default.ExternalLaneActivityObserved);
+
     public static CodecPair ExternalLaneUsageRecorded() =>
-        Of(EventType.Of("external_lane.usage_recorded"), EventJsonContext.Default.ExternalLaneUsageRecorded);
+        Of(EventType.Of("external_lane.usage_recorded"), EventJsonContext.Default.ExternalLaneUsageRecorded,
+            currentVersion: 3);
+
+    public static CodecPair LaneAcceptancePending() =>
+        Of(EventType.Of("lane.acceptance_pending"), EventJsonContext.Default.LaneAcceptancePending, currentVersion: 2);
 
     public static CodecPair TaskReady() =>
         Of(EventType.Of("task.ready"), EventJsonContext.Default.TaskReady);
@@ -885,7 +905,8 @@ public sealed class Typed
         Of(EventType.Of("toolcall.cancelled"), EventJsonContext.Default.ToolCallCancelled);
 
     public static CodecPair WorktreeIntegrationStateRecorded() =>
-        Of(EventType.Of("worktree.integration_state.recorded"), EventJsonContext.Default.WorktreeIntegrationStateRecorded);
+        Of(EventType.Of("worktree.integration_state.recorded"), EventJsonContext.Default.WorktreeIntegrationStateRecorded,
+            currentVersion: 2);
 
     public static CodecPair UndoStarted() =>
         Of(EventType.Of("workspace.undo.started"), EventJsonContext.Default.UndoStarted);

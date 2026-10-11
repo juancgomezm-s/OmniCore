@@ -64,6 +64,10 @@ internal static class ArtifactRefExtractor
                 refs.Add(external.ResultRef);
                 break;
 
+            case LaneAcceptancePending acceptance:
+                refs.Add(acceptance.ResultRef);
+                break;
+
             // Lane/Turn events
             case TurnStarted t:
                 if (t.ContextSnapshotRef is not null) refs.Add(t.ContextSnapshotRef);

@@ -16,6 +16,64 @@ namespace OmniCore.Tests;
 /// <summary>Real private SQLite/CAS with offline providers; no authenticated usage claim.</summary>
 public sealed class RunTokenBudgetAdmissionTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void External_lane_usage_coverage_controls_cost_only_generation(bool coverageComplete)
+    {
+        using var fx = new Fixture(tokenLimit: null, maxCost: 1m);
+        var resultRef = fx.Artifacts.PutText("{}", "application/vnd.omnicore.agent-result+json",
+            ArtifactKind.Other, Sensitivity.Sensitive);
+        var execution = ExecutionId.New();
+        var lane = fx.Run.RootLane;
+        var turn = TurnId.New();
+        const string day = "2026-10-10";
+        const decimal reportedCost = 0.01m;
+        var tokenUsage = new TokenUsage(100, 20, 0, 0, 0);
+        var usageJson = $$"""{"omnicoreUsage":1,"response":"fixture","runId":"{{fx.Run.RunId}}","day":"{{day}}","costUsd":"0.01","input":100,"output":20,"cacheRead":0,"cacheWrite":0,"reasoning":0}""";
+        var usageRef = fx.Artifacts.PutText(usageJson, "application/vnd.omnicore.model-usage+json",
+            ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+        var started = new ModelStepStarted(turn, 0, "claude-haiku-5-5", 4096,
+            "claude-code-fixed-tools", null, null, usageRef);
+        var completed = new ModelStepCompleted(turn, 0, tokenUsage, StopReason.EndTurn, usageRef, day,
+            reportedCost, TokenUsageFields.Input | TokenUsageFields.Output);
+        var receipt = new ExternalLaneUsageRecorded(execution, lane, "claude-session", 100, 20, 0, 0,
+            reportedCost, 0, 3, 512, resultRef, UsageCoverageComplete: coverageComplete);
+        fx.Store.AppendBatch(fx.Session, [
+            Envelope(started, fx, lane, turn, execution, [usageRef]),
+            Envelope(completed, fx, lane, turn, execution, [usageRef]),
+            Envelope(receipt, fx, lane, turn, execution, [resultRef]),
+        ], DurabilityClass.Standard, CancellationToken.None);
+
+        var spend = new CanonicalSpendReader(fx.Codecs, fx.Artifacts).ReadPrimary(
+            fx.Store.ReadFrom(fx.Session, 1), fx.Session, fx.Run.RunId, "2026-10-10");
+        Assert.Equal(!coverageComplete, spend.Incomplete);
+        Assert.Equal(0.01m, spend.RunUsd);
+
+        var result = fx.MakeTurn(pricing: new ModelPricing(1m, 1m)).Ask("must not send", "system", fx.Session, fx.Run.RunId,
+            fx.Run.RootLane, "", TestContext.Current.CancellationToken);
+        if (!coverageComplete)
+        {
+            Assert.NotEqual(StopReason.EndTurn, result.StopReason);
+            Assert.Equal(0, fx.Calls);
+        }
+        else
+        {
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
+            Assert.Equal(1, fx.Calls);
+        }
+        var recordedStarts = fx.Store.ReadFrom(fx.Session, 1).Select(fx.Codecs.Decode)
+            .OfType<ModelStepStarted>().ToArray();
+        Assert.Equal(coverageComplete ? 2 : 1, recordedStarts.Length);
+        Assert.Contains(recordedStarts, item => item.TurnId == turn && item.StepIndex == 0
+            && item.ToolMode == "claude-code-fixed-tools");
+    }
+
+    private static DomainEvent Envelope(DomainEventPayload payload, Fixture fx, LaneId lane, TurnId turn,
+        ExecutionId execution, IReadOnlyList<ArtifactRef> refs) => DomainEvent.Create(fx.Session, payload.Type(),
+        payload.SchemaVersion(), null, fx.Run.RunId, fx.Run.RunId, fx.Run.RootTask, lane, turn,
+        null, null, refs, fx.Codecs.CodecFor(payload.Type()).Encode(payload), execution);
+
     [Fact]
     public void Native_http_retry_keeps_final_response_usage_but_unknown_total_after_sqlite_reopen()
     {
@@ -194,13 +252,13 @@ public sealed class RunTokenBudgetAdmissionTests
         public TestRun.Opened Run { get; }
         public FileArtifactStore Artifacts { get; }
         public int Calls;
-        public Fixture(long limit)
+        public Fixture(long? tokenLimit, decimal? maxCost = null)
         {
             Directory.CreateDirectory(Root);
             Store = new SqliteEventStore(Path.Combine(Root, "journal.db"));
             Artifacts = new FileArtifactStore(Path.Combine(Root, "cas"));
             Run = TestRun.Open(new EventStream(Store, Codecs, Session), Session,
-                taskBudget: new TaskBudget(null, limit, null, null));
+                taskBudget: new TaskBudget(maxCost, tokenLimit, null, null));
         }
         public ExplorerTurn MakeTurn(long? capacity = 8192, long? attempts = 1, long? output = 1024,
             bool uncertain = false, TokenUsageFields fields = TokenUsageFields.All,

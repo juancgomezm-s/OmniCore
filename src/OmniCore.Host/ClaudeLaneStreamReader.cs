@@ -11,7 +11,8 @@ internal sealed record ClaudeLaneStreamLimits(int MaximumLineBytes = 1_048_576,
     int MaximumTotalBytes = 16_777_216, int MaximumEvents = 20_000,
     int MaximumTools = 1_024, int MaximumToolNameCharacters = 256,
     int MaximumIdentifierCharacters = 512, long? MaximumTokens = null,
-    int? MaximumToolCalls = null, decimal? MaximumCostUsd = null)
+    int? MaximumToolCalls = null, decimal? MaximumCostUsd = null,
+    decimal? MaximumReportedCostUsd = null)
 {
     public void Validate()
     {
@@ -20,7 +21,8 @@ internal sealed record ClaudeLaneStreamLimits(int MaximumLineBytes = 1_048_576,
             || MaximumEvents is < 1 or > 20_000 || MaximumTools is < 1 or > 1_024
             || MaximumToolNameCharacters is < 1 or > 256
             || MaximumIdentifierCharacters is < 16 or > 512
-            || MaximumTokens is <= 0 || MaximumToolCalls is <= 0 || MaximumCostUsd is <= 0)
+            || MaximumTokens is <= 0 || MaximumToolCalls is <= 0 || MaximumCostUsd is <= 0
+            || MaximumReportedCostUsd is <= 0)
             throw new ArgumentOutOfRangeException(nameof(ClaudeLaneStreamLimits));
     }
 }
@@ -28,11 +30,20 @@ internal sealed record ClaudeLaneStreamLimits(int MaximumLineBytes = 1_048_576,
 internal sealed record ClaudeLaneUsage(long? InputTokens, long? OutputTokens,
     long? CacheReadInputTokens, long? CacheCreationInputTokens, decimal? TotalCostUsd);
 
+internal enum ClaudeLaneProgressKind { StreamProgress, ApiRetry, PermissionDenied, ToolActivity }
+internal sealed record ClaudeLaneProgress(ClaudeLaneProgressKind Kind, int ObservedCount);
+
 internal sealed record ClaudeLaneStreamOutcome(string SessionId, string Model, IReadOnlyList<string> Tools,
     IReadOnlyDictionary<string, bool> Capabilities, bool IsError, string? ResultText,
     string? StructuredOutputJson, ClaudeLaneUsage Usage,
     IReadOnlyList<string> PermissionDenials, int EventCount, long StreamBytes,
-    long TotalTokens, int ToolUseCount);
+    long TotalTokens, int ToolUseCount)
+{
+    public int ApiRetryCount { get; init; }
+    public int PermissionDenialCount { get; init; }
+    public int ToolResultCount { get; init; }
+    public int StreamDeltaCount { get; init; }
+}
 
 internal enum ClaudeLaneStreamErrorCode
 {
@@ -50,12 +61,21 @@ internal enum ClaudeLaneStreamErrorCode
     DuplicateTerminal,
     MissingTerminal,
     BudgetExceeded,
+    BudgetUsageUnavailable,
+    BudgetCounterOverflow,
+    UsageCoverageUnavailable,
+    RepeatedMessageUsageMismatch,
 }
 
-internal sealed class ClaudeLaneStreamException(ClaudeLaneStreamErrorCode code)
+internal sealed record ClaudeLaneBudgetEvidence(string Dimension, long? ObservedCount = null,
+    long? LimitCount = null, decimal? ObservedCostUsd = null, decimal? LimitCostUsd = null);
+
+internal sealed class ClaudeLaneStreamException(ClaudeLaneStreamErrorCode code,
+    ClaudeLaneBudgetEvidence? budgetEvidence = null)
     : Exception("Claude stream-json protocol validation failed.")
 {
     public ClaudeLaneStreamErrorCode Code { get; } = code;
+    public ClaudeLaneBudgetEvidence? BudgetEvidence { get; } = budgetEvidence;
 }
 
 /// <summary>Strict bounded parser for Claude CLI stream-json. The init callback is awaited before
@@ -66,7 +86,8 @@ internal static class ClaudeLaneStreamReader
 
     internal static async ValueTask<ClaudeLaneStreamOutcome> ReadAsync(Stream stdout,
         Func<ClaudeLaneSessionStarted, CancellationToken, ValueTask> onSessionStarted,
-        ClaudeLaneStreamLimits? limits = null, CancellationToken cancellationToken = default)
+        ClaudeLaneStreamLimits? limits = null, CancellationToken cancellationToken = default,
+        Func<ClaudeLaneProgress, CancellationToken, ValueTask>? onProgress = null)
     {
         ArgumentNullException.ThrowIfNull(stdout);
         ArgumentNullException.ThrowIfNull(onSessionStarted);
@@ -91,7 +112,7 @@ internal static class ClaudeLaneStreamReader
                     var value = buffer[index];
                     if (value == (byte)'\n')
                     {
-                        await ProcessLineAsync(line.WrittenMemory, state, bounds, bytes, onSessionStarted,
+                        await ProcessLineAsync(line.WrittenMemory, state, bounds, bytes, onSessionStarted, onProgress,
                             cancellationToken).ConfigureAwait(false);
                         line.Clear();
                         continue;
@@ -102,7 +123,7 @@ internal static class ClaudeLaneStreamReader
                 }
             }
             if (line.WrittenCount > 0)
-                await ProcessLineAsync(line.WrittenMemory, state, bounds, bytes, onSessionStarted,
+                await ProcessLineAsync(line.WrittenMemory, state, bounds, bytes, onSessionStarted, onProgress,
                     cancellationToken).ConfigureAwait(false);
             if (state.Init is null) throw Error(ClaudeLaneStreamErrorCode.InitRequired);
             if (state.Terminal is null) throw Error(ClaudeLaneStreamErrorCode.MissingTerminal);
@@ -114,6 +135,7 @@ internal static class ClaudeLaneStreamReader
     private static async ValueTask ProcessLineAsync(ReadOnlyMemory<byte> bytes, ParseState state,
         ClaudeLaneStreamLimits limits, long streamBytes,
         Func<ClaudeLaneSessionStarted, CancellationToken, ValueTask> onSessionStarted,
+        Func<ClaudeLaneProgress, CancellationToken, ValueTask>? onProgress,
         CancellationToken cancellationToken)
     {
         var source = bytes.ToArray();
@@ -163,7 +185,41 @@ internal static class ClaudeLaneStreamReader
             }
             if (type != "result")
             {
-                if (type == "assistant") ObserveAssistantUsage(document.RootElement, state, limits);
+                // Claude emits protocol lifecycle events as `type=system, subtype=...`.
+                // Accept the top-level spellings as well for compatible recorded streams,
+                // but account for the canonical system envelope used by the CLI.
+                var activityType = type == "system"
+                    ? String(document.RootElement, "subtype", required: false, 64) ?? ""
+                    : type;
+                switch (activityType)
+                {
+                    case "assistant":
+                    {
+                        var before = state.ToolUseCount;
+                        ObserveAssistantUsage(document.RootElement, state, limits);
+                        if (state.ToolUseCount != before && onProgress is not null)
+                            await onProgress(new(ClaudeLaneProgressKind.ToolActivity, state.ToolUseCount), cancellationToken).ConfigureAwait(false);
+                        break;
+                    }
+                    case "user": ObserveToolResults(document.RootElement, state); break;
+                    case "stream_event":
+                        Increment(ref state.StreamDeltaCount);
+                        if (onProgress is not null && state.StreamDeltaCount % 32 == 0)
+                            await onProgress(new(ClaudeLaneProgressKind.StreamProgress, state.StreamDeltaCount), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "api_retry":
+                        Increment(ref state.ApiRetryCount);
+                        if (onProgress is not null)
+                            await onProgress(new(ClaudeLaneProgressKind.ApiRetry, state.ApiRetryCount), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "permission_denied":
+                        Increment(ref state.PermissionDenialCount);
+                        _ = ReadSafeToolName(document.RootElement, limits);
+                        if (onProgress is not null)
+                            await onProgress(new(ClaudeLaneProgressKind.PermissionDenied, state.PermissionDenialCount), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "tool_result": Increment(ref state.ToolResultCount); break;
+                }
                 return;
             }
             var resultSession = String(document.RootElement, "session_id", required: true, limits.MaximumIdentifierCharacters);
@@ -179,24 +235,49 @@ internal static class ClaudeLaneStreamReader
             if (document.RootElement.TryGetProperty("structured_output", out var structuredElement))
                 structured = structuredElement.GetRawText();
             var usage = ParseUsage(document.RootElement, out var cost);
-            if (state.InputTokens is not null || state.OutputTokens is not null)
-                usage = usage with { InputTokens = state.InputTokens, OutputTokens = state.OutputTokens };
-            if (limits.MaximumTokens is not null && (usage.InputTokens is null || usage.OutputTokens is null)
-                || limits.MaximumCostUsd is not null && cost is null)
-                throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded);
-            if (usage.InputTokens is { } finalInput && usage.OutputTokens is { } finalOutput
-                && (finalInput > long.MaxValue - finalOutput
-                    || limits.MaximumTokens is { } maxFinalTokens && finalInput + finalOutput > maxFinalTokens))
-                throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded);
-            if ((state.InputTokens ?? 0) > long.MaxValue - (state.OutputTokens ?? 0))
-                throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded);
-            if (limits.MaximumCostUsd is { } maximumCost && cost is { } actualCost && actualCost > maximumCost)
-                throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded);
+            // Assistant usage is per-message input/cache usage. output_tokens there is
+            // provisional; use the terminal result for generated output tokens.
+            if (state.InputTokens is not null)
+                usage = usage with { InputTokens = state.InputTokens,
+                    CacheReadInputTokens = state.CacheReadInputTokens,
+                    CacheCreationInputTokens = state.CacheCreationInputTokens };
+            if (limits.MaximumTokens is not null && (usage.InputTokens is null || usage.OutputTokens is null))
+                throw Error(ClaudeLaneStreamErrorCode.BudgetUsageUnavailable,
+                    new("tokens-usage-unavailable", LimitCount: limits.MaximumTokens));
+            var reportedCostLimit = limits.MaximumReportedCostUsd ?? limits.MaximumCostUsd;
+            if (reportedCostLimit is not null && cost is null)
+                throw Error(ClaudeLaneStreamErrorCode.BudgetUsageUnavailable,
+                    new("cost-usage-unavailable", LimitCostUsd: reportedCostLimit));
+            var reportedTotal = 0L;
+            if (usage.InputTokens is { } finalInput && usage.OutputTokens is { } finalOutput)
+            {
+                if (!TryTotalTokens(finalInput, finalOutput, usage.CacheReadInputTokens ?? 0,
+                    usage.CacheCreationInputTokens ?? 0, out reportedTotal))
+                    throw Error(ClaudeLaneStreamErrorCode.BudgetCounterOverflow,
+                        new("tokens-overflow", LimitCount: limits.MaximumTokens));
+                if (limits.MaximumTokens is { } maxFinalTokens && reportedTotal > maxFinalTokens)
+                    throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded,
+                        new("tokens", reportedTotal, maxFinalTokens));
+            }
+            else if (limits.MaximumTokens is not null)
+                throw Error(ClaudeLaneStreamErrorCode.BudgetUsageUnavailable,
+                    new("tokens-usage-unavailable", LimitCount: limits.MaximumTokens));
+            var observedTotal = reportedTotal;
+            if (reportedCostLimit is { } maximumCost && cost is { } actualCost && actualCost > maximumCost)
+                throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded,
+                    new("cost", ObservedCostUsd: actualCost, LimitCostUsd: maximumCost));
             var denials = ParseDenials(document.RootElement, limits);
+            var denialCount = checked(state.PermissionDenialCount + denials.Count);
             state.Terminal = new(state.Init.SessionId, state.Init.Model, state.Init.Tools, state.Init.Capabilities,
                 isErrorElement.GetBoolean(), resultText, structured,
                 usage with { TotalCostUsd = cost }, denials, 0, streamBytes,
-                (state.InputTokens ?? 0) + (state.OutputTokens ?? 0), state.ToolUseCount);
+                observedTotal, state.ToolUseCount)
+            {
+                ApiRetryCount = state.ApiRetryCount,
+                PermissionDenialCount = denialCount,
+                ToolResultCount = state.ToolResultCount,
+                StreamDeltaCount = state.StreamDeltaCount,
+            };
         }
     }
 
@@ -239,17 +320,49 @@ internal static class ClaudeLaneStreamReader
         if (message.TryGetProperty("usage", out var usage))
         {
             if (usage.ValueKind != JsonValueKind.Object) throw Error(ClaudeLaneStreamErrorCode.InvalidResult);
-            var input = OptionalNonnegativeInt64(usage, "input_tokens") ?? 0;
-            var output = OptionalNonnegativeInt64(usage, "output_tokens") ?? 0;
-            try
+            var messageId = String(message, "id", required: true, limits.MaximumIdentifierCharacters)!;
+            var messageUsage = new AssistantMessageUsage(
+                OptionalNonnegativeInt64(usage, "input_tokens") ?? 0,
+                OptionalNonnegativeInt64(usage, "output_tokens") ?? 0,
+                OptionalNonnegativeInt64(usage, "cache_read_input_tokens") ?? 0,
+                OptionalNonnegativeInt64(usage, "cache_creation_input_tokens") ?? 0);
+            if (state.AssistantMessageUsageById.TryGetValue(messageId, out var priorUsage))
             {
-                state.InputTokens = checked((state.InputTokens ?? 0) + input);
-                state.OutputTokens = checked((state.OutputTokens ?? 0) + output);
+                // Claude emits one AssistantMessage per content block. Usage is repeated for
+                // blocks sharing message.id, so count that message exactly once. A changed
+                // usage payload for the same id is ambiguous and fails closed.
+                if (priorUsage != messageUsage)
+                    throw Error(ClaudeLaneStreamErrorCode.RepeatedMessageUsageMismatch,
+                        new("tokens-duplicate-message-usage"));
             }
-            catch (OverflowException) { throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded); }
-            if (limits.MaximumTokens is { } maxTokens
-                && state.InputTokens.Value > maxTokens - state.OutputTokens.Value)
-                throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded);
+            else
+            {
+                state.AssistantMessageUsageById.Add(messageId, messageUsage);
+                try
+                {
+                    state.InputTokens = checked((state.InputTokens ?? 0) + messageUsage.InputTokens);
+                    state.CacheReadInputTokens = checked((state.CacheReadInputTokens ?? 0) + messageUsage.CacheReadInputTokens);
+                    state.CacheCreationInputTokens = checked((state.CacheCreationInputTokens ?? 0) + messageUsage.CacheCreationInputTokens);
+                }
+                catch (OverflowException)
+                {
+                    throw Error(ClaudeLaneStreamErrorCode.BudgetCounterOverflow,
+                        new("tokens-overflow", LimitCount: limits.MaximumTokens));
+                }
+                // Assistant output is only a placeholder. Enforce known input/cache now and
+                // the exact full token budget once the terminal result supplies output usage.
+                if (limits.MaximumTokens is { } maxTokens)
+                {
+                    if (!TryTotalTokens(state.InputTokens.Value, 0,
+                        state.CacheReadInputTokens.Value, state.CacheCreationInputTokens.Value,
+                        out var observedTokens))
+                        throw Error(ClaudeLaneStreamErrorCode.BudgetCounterOverflow,
+                            new("tokens-overflow", LimitCount: maxTokens));
+                    if (observedTokens > maxTokens)
+                        throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded,
+                            new("tokens", observedTokens, maxTokens));
+                }
+            }
         }
         if (message.TryGetProperty("content", out var content))
         {
@@ -259,10 +372,13 @@ internal static class ClaudeLaneStreamReader
                 if (block.ValueKind == JsonValueKind.Object && block.TryGetProperty("type", out var kind)
                     && kind.ValueKind == JsonValueKind.String && kind.GetString() == "tool_use")
                 {
-                    if (state.ToolUseCount == int.MaxValue) throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded);
+                    if (state.ToolUseCount == int.MaxValue)
+                        throw Error(ClaudeLaneStreamErrorCode.BudgetCounterOverflow,
+                            new("tool-calls-overflow", LimitCount: limits.MaximumToolCalls));
                     state.ToolUseCount++;
                     if (limits.MaximumToolCalls is { } maximum && state.ToolUseCount > maximum)
-                        throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded);
+                        throw Error(ClaudeLaneStreamErrorCode.BudgetExceeded,
+                            new("tool-calls", state.ToolUseCount, maximum));
                 }
             }
         }
@@ -298,11 +414,42 @@ internal static class ClaudeLaneStreamReader
         foreach (var item in denied.EnumerateArray())
         {
             if (item.ValueKind != JsonValueKind.Object) throw Error(ClaudeLaneStreamErrorCode.InvalidResult);
-            var tool = String(item, "tool_name", true, limits.MaximumToolNameCharacters);
-            var reason = String(item, "reason", false, limits.MaximumIdentifierCharacters) ?? "";
-            result.Add(reason.Length == 0 ? tool! : tool + ": " + reason);
+            result.Add(ReadSafeToolName(item, limits));
         }
         return result;
+    }
+
+    private static string ReadSafeToolName(JsonElement item, ClaudeLaneStreamLimits limits)
+    {
+        var tool = String(item, "tool_name", true, limits.MaximumToolNameCharacters)!;
+        _ = String(item, "reason", false, limits.MaximumIdentifierCharacters);
+        return tool.Length <= 64 && tool.All(character => char.IsAsciiLetterOrDigit(character)
+            || character is '_' or '-') ? tool : "ExternalTool";
+    }
+
+    private static void ObserveToolResults(JsonElement root, ParseState state)
+    {
+        if (!root.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object
+            || !message.TryGetProperty("content", out var content)) return;
+        if (content.ValueKind != JsonValueKind.Array) throw Error(ClaudeLaneStreamErrorCode.InvalidResult);
+        foreach (var block in content.EnumerateArray())
+            if (block.ValueKind == JsonValueKind.Object && block.TryGetProperty("type", out var kind)
+                && kind.ValueKind == JsonValueKind.String && kind.GetString() == "tool_result")
+                Increment(ref state.ToolResultCount);
+    }
+
+    private static void Increment(ref int value)
+    {
+        if (value == int.MaxValue) throw Error(ClaudeLaneStreamErrorCode.BudgetCounterOverflow,
+            new("activity-counter-overflow"));
+        value++;
+    }
+
+    private static bool TryTotalTokens(long input, long output, long cacheRead, long cacheCreation,
+        out long total)
+    {
+        try { total = checked(checked(input + output) + checked(cacheRead + cacheCreation)); return true; }
+        catch (OverflowException) { total = 0; return false; }
     }
 
     private static long? OptionalNonnegativeInt64(JsonElement parent, string name)
@@ -351,14 +498,24 @@ internal static class ClaudeLaneStreamReader
             foreach (var child in element.EnumerateArray()) EnsureUniqueMembers(child);
     }
 
-    private static ClaudeLaneStreamException Error(ClaudeLaneStreamErrorCode code) => new(code);
+    private static ClaudeLaneStreamException Error(ClaudeLaneStreamErrorCode code,
+        ClaudeLaneBudgetEvidence? budgetEvidence = null) => new(code, budgetEvidence);
     private sealed class ParseState
     {
         public ClaudeLaneSessionStarted? Init;
         public ClaudeLaneStreamOutcome? Terminal;
         public int EventCount;
         public long? InputTokens;
-        public long? OutputTokens;
+        public long? CacheReadInputTokens;
+        public long? CacheCreationInputTokens;
+        public readonly Dictionary<string, AssistantMessageUsage> AssistantMessageUsageById = new(StringComparer.Ordinal);
         public int ToolUseCount;
+        public int ApiRetryCount;
+        public int PermissionDenialCount;
+        public int ToolResultCount;
+        public int StreamDeltaCount;
     }
+
+    private sealed record AssistantMessageUsage(long InputTokens, long OutputTokens,
+        long CacheReadInputTokens, long CacheCreationInputTokens);
 }

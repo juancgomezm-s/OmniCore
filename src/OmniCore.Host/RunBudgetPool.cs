@@ -106,7 +106,10 @@ internal sealed class RunBudgetPool
             var laneEvents = events.Where(evt => evt.RunId == run && evt.LaneId == lane).ToArray();
             var laneFacts = laneEvents.Select(codecs.Decode).ToArray();
             var usedTurns = laneFacts.OfType<TurnStarted>().Select(item => item.TurnId).Distinct().LongCount();
-            var usedTools = laneFacts.OfType<ToolCallRequested>().Select(item => item.ToolCallId).Distinct().LongCount();
+            var usedTools = checked(laneFacts.OfType<ToolCallRequested>().Select(item => item.ToolCallId)
+                .Distinct().LongCount() + ExternalLaneAccounting.ToolUseCount(
+                laneFacts.OfType<ExternalLaneUsageRecorded>(),
+                laneFacts.OfType<ExternalLaneActivityObserved>()));
             turns = checked(turns + Math.Max(0, (long)(task.Budget.MaxTurns ?? 0) - usedTurns));
             tools = checked(tools + Math.Max(0, (long)(task.Budget.MaxToolCalls ?? 0) - usedTools));
 

@@ -60,6 +60,14 @@ internal static class AgentLaneReader
                 }
                 var taskEvents = own.Where(e => e.TaskId == lane.TaskId).ToArray();
                 var taskFacts = taskEvents.Select(codecs.Decode).ToArray();
+                var laneActivities = execution is null ? [] : taskFacts.OfType<ExternalLaneActivityObserved>()
+                    .Where(item => item.LaneId == lane.LaneId && item.ExecutionId == execution.ExecutionId).ToArray();
+                if (laneActivities.Length > 1)
+                    throw new InvalidDataException("External lane activity receipt is ambiguous.");
+                var externalActivity = laneActivities.SingleOrDefault() is { } activity
+                    ? new ExternalLaneActivitySnapshot(activity.ToolUseCount, activity.ToolResultCount,
+                        activity.PermissionDenialCount, activity.ApiRetryCount, activity.StreamDeltaCount)
+                    : null;
                 var tokenState = RunTokenBudgetReader.Read(taskEvents, codecs, run, definition.Budget.MaxTokens);
                 decimal? costUsed = null;
                 if (artifacts is not null)
@@ -75,7 +83,10 @@ internal static class AgentLaneReader
                 var budget = new AgentBudgetSnapshot(definition.Budget.MaxCostUsd, costUsed,
                     definition.Budget.MaxTokens, tokenState.Limitation is null ? tokenState.ObservedSettledTokens : null,
                     definition.Budget.MaxTurns, taskFacts.OfType<TurnStarted>().Select(t => t.TurnId).Distinct().Count(),
-                    definition.Budget.MaxToolCalls, taskFacts.OfType<ToolCallRequested>().Select(t => t.ToolCallId).Distinct().Count());
+                    definition.Budget.MaxToolCalls, checked((int)(taskFacts.OfType<ToolCallRequested>()
+                        .Select(t => t.ToolCallId).Distinct().LongCount()
+                        + ExternalLaneAccounting.ToolUseCount(taskFacts.OfType<ExternalLaneUsageRecorded>(),
+                            taskFacts.OfType<ExternalLaneActivityObserved>()))));
                 var result = execution is null ? null : payloads.OfType<AgentResultProduced>().LastOrDefault(e => e.ExecutionId == execution.ExecutionId);
                 var disposition = result is null ? null : payloads.OfType<ResultDispositionRecorded>()
                     .LastOrDefault(e => e.Disposition.ResultRef == result.ResultRef)?.Disposition.Outcome.ToString();
@@ -180,7 +191,7 @@ internal static class AgentLaneReader
                 var progressEvent = own.LastOrDefault(evt => evt.RunId == run && evt.LaneId == lane.LaneId
                     && codecs.Decode(evt) is TurnStarted or ModelStepStarted or AssistantMessageRecorded
                         or ToolCallRequested or ToolCallSucceeded or ToolCallFailed or InteractionRequested
-                        or InteractionResolved);
+                        or InteractionResolved or ExternalLaneActivityObserved);
                 var waitingForCapacity = delegation is not null
                     && capacity.WaitingDelegations.Contains(delegation.DelegationId);
                 var openMailboxReceive = execution is not null && scopedFacts
@@ -223,7 +234,7 @@ internal static class AgentLaneReader
                     integrationVerified, integrationValidationPassed, gateEvidenceCount,
                     workflowStage?.Workflow.Id, workflowStage?.Definition.Name, workflowStage?.Instance,
                     workflowEvidence?.Passed, workflowEvidence?.Reason, resultOutcome, validationDebts,
-                    heartbeat, transcript));
+                    heartbeat, transcript, externalActivity));
             }
             var waiting = capacity.WaitingDelegations.Select(id => id.ToString()).Order(StringComparer.Ordinal).ToArray();
             var fanOutGroups = payloads.OfType<FanOutGroupCreated>().Select(created =>

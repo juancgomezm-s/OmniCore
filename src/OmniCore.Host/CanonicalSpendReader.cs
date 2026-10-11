@@ -129,24 +129,26 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
         var artifacts = _artifacts;
         decimal? session = 0m, daily = 0m, run = 0m;
         var incomplete = false;
-        IReadOnlyList<DomainEvent> stepStarts = events.Where(e => e.Type.ToString() == "model_step.started").ToArray();
-        IReadOnlyList<DomainEvent> stepCompletions = events.Where(e => e.Type.ToString() == "model_step.completed").ToArray();
-        IReadOnlyList<DomainEvent> unsentSteps = events.Where(e => e.Type.ToString() == "model_step.not_dispatched").ToArray();
-        IReadOnlyList<DomainEvent> completions = events.Where(e => e.Type.ToString() == "model.completed").ToArray();
+        var eventList = events.ToArray();
+        IReadOnlyList<DomainEvent> stepStarts = eventList.Where(e => e.Type.ToString() == "model_step.started").ToArray();
+        IReadOnlyList<DomainEvent> stepCompletions = eventList.Where(e => e.Type.ToString() == "model_step.completed").ToArray();
+        IReadOnlyList<DomainEvent> unsentSteps = eventList.Where(e => e.Type.ToString() == "model_step.not_dispatched").ToArray();
+        IReadOnlyList<DomainEvent> completions = eventList.Where(e => e.Type.ToString() == "model.completed").ToArray();
         stepStarts ??= Array.Empty<DomainEvent>();
         stepCompletions ??= Array.Empty<DomainEvent>();
         var startedKeys = new HashSet<(string Session, string Turn, int Index)>();
         var startedRuns = new Dictionary<(string Session, string Turn, int Index), string>();
         var startedEvents = new Dictionary<(string Session, string Turn, int Index), DomainEvent>();
         var startedPayloads = new Dictionary<(string Session, string Turn, int Index), ModelStepStarted>();
+        var externalStarts = new HashSet<(string Session, string Turn, int Index)>();
+        var externalCompletions = new Dictionary<(string Session, string Turn, int Index),
+            (DomainEvent Event, ModelStepCompleted Payload)>();
         foreach (var evt in stepStarts)
         {
             try
             {
                 if (_codecs.Decode(evt) is not ModelStepStarted started || started.StepIndex < 0
                     || started.ContextBudget <= 0 || string.IsNullOrWhiteSpace(started.ModelId)
-                    || !Enum.TryParse<ToolMode>(started.ToolMode, out var toolMode)
-                    || !Enum.IsDefined(toolMode)
                     || evt.TurnId is null || evt.TurnId.ToString() != started.TurnId.ToString()
                     || evt.RunId is null
                     || !startedKeys.Add((evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)))
@@ -154,9 +156,17 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
                     incomplete = true;
                     continue;
                 }
-                startedRuns[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = evt.RunId!.ToString();
-                startedEvents[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = evt;
-                startedPayloads[(evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex)] = started;
+                var key = (evt.SessionId.ToString(), started.TurnId.ToString(), started.StepIndex);
+                if (Enum.TryParse<ToolMode>(started.ToolMode, out var toolMode) && Enum.IsDefined(toolMode))
+                {
+                    // Native model steps retain their established enum validation.
+                }
+                else if (started.ToolMode == "claude-code-fixed-tools" && evt.ExecutionId is not null
+                    && evt.LaneId is not null) externalStarts.Add(key);
+                else { incomplete = true; continue; }
+                startedRuns[key] = evt.RunId!.ToString();
+                startedEvents[key] = evt;
+                startedPayloads[key] = started;
             }
             catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
                 or FormatException or ArgumentException)
@@ -223,9 +233,13 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
             }
             var cost = completed.CostUsd.Value;
             if (cost < 0) { incomplete = true; continue; }
-            if (completed.Day == today) daily = AddHistoricalSpend(daily, cost);
-            if (evt.SessionId == sessionId) session = AddHistoricalSpend(session, cost);
-            if (evt.SessionId == sessionId && evt.RunId == runId) run = AddHistoricalSpend(run, cost);
+            if (externalStarts.Contains(key)) externalCompletions[key] = (evt, completed);
+            else
+            {
+                if (completed.Day == today) daily = AddHistoricalSpend(daily, cost);
+                if (evt.SessionId == sessionId) session = AddHistoricalSpend(session, cost);
+                if (evt.SessionId == sessionId && evt.RunId == runId) run = AddHistoricalSpend(run, cost);
+            }
         }
         var unsentKeys = new HashSet<(string Session, string Turn, int Index)>();
         foreach (var evt in unsentSteps ?? Array.Empty<DomainEvent>())
@@ -308,6 +322,73 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
             if (record.Day == today) daily = AddHistoricalSpend(daily, cost);
             if (evt.SessionId == sessionId) session = AddHistoricalSpend(session, cost);
             if (evt.SessionId == sessionId && evt.RunId == runId) run = AddHistoricalSpend(run, cost);
+        }
+        var externalReceiptKeys = new HashSet<(string Session, string Turn, int Index)>();
+        foreach (var evt in eventList.Where(e => e.Type.ToString() == "external_lane.usage_recorded"))
+        {
+            ExternalLaneUsageRecorded? receipt;
+            try { receipt = _codecs.Decode(evt) as ExternalLaneUsageRecorded; }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException)
+            {
+                incomplete = true;
+                continue;
+            }
+            if (receipt is null || evt.RunId is null || evt.LaneId != receipt.LaneId
+                || evt.ExecutionId != receipt.ExecutionId || string.IsNullOrWhiteSpace(receipt.SessionId)
+                || receipt.TotalCostUsd is null || receipt.TotalCostUsd < 0m
+                || receipt.ToolUseCount < 0 || receipt.EventCount < 0 || receipt.StreamBytes < 0
+                || receipt.InputTokens is < 0 || receipt.OutputTokens is < 0
+                || receipt.CacheReadInputTokens is < 0 || receipt.CacheCreationInputTokens is < 0
+                || !artifacts.Verify(receipt.ResultRef.Hash, receipt.ResultRef.Size))
+            {
+                incomplete = true;
+                continue;
+            }
+            var matchingSteps = externalStarts.Where(key => key.Session == evt.SessionId.ToString()
+                && startedEvents.TryGetValue(key, out var start)
+                && start.ExecutionId == receipt.ExecutionId && start.RunId == evt.RunId
+                && start.LaneId == receipt.LaneId && evt.TurnId?.ToString() == key.Turn).ToArray();
+            if (matchingSteps.Length != 1 || !externalCompletions.TryGetValue(matchingSteps[0], out var externalStep)
+                || !externalReceiptKeys.Add(matchingSteps[0]))
+            {
+                incomplete = true;
+                continue;
+            }
+            long expectedInput;
+            try
+            {
+                expectedInput = receipt.InputTokens is { } input && receipt.CacheReadInputTokens is { } cacheRead
+                    && receipt.CacheCreationInputTokens is { } cacheWrite
+                    ? checked(input + cacheRead + cacheWrite) : -1;
+            }
+            catch (OverflowException) { incomplete = true; continue; }
+            if (receipt.InputTokens is null || receipt.OutputTokens is null
+                || externalStep.Payload.Usage != new TokenUsage(expectedInput, receipt.OutputTokens.Value,
+                    receipt.CacheReadInputTokens ?? 0, receipt.CacheCreationInputTokens ?? 0, 0)
+                || externalStep.Payload.CostUsd != receipt.TotalCostUsd)
+            {
+                incomplete = true;
+                continue;
+            }
+            // A resumed external session can return a valid final result while earlier request
+            // usage remains unknowable. Retain the known receipt cost, but block capped writes.
+            if (!receipt.UsageCoverageComplete) incomplete = true;
+            var externalCost = receipt.TotalCostUsd.Value;
+            if (evt.Timestamp.UtcDateTime.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) == today)
+                daily = AddHistoricalSpend(daily, externalCost);
+            if (evt.SessionId == sessionId) session = AddHistoricalSpend(session, externalCost);
+            if (evt.SessionId == sessionId && evt.RunId == runId) run = AddHistoricalSpend(run, externalCost);
+        }
+        foreach (var key in externalStarts.Where(key => !externalReceiptKeys.Contains(key)))
+        {
+            // The one open external step currently owned by the active dispatcher is expected
+            // during crash recovery; its already-reserved usage remains unknown, but should not
+            // prevent the exact bound session from consuming only its second reserved allowance.
+            // Any other open external attempt stays an unresolved run-level accounting debt.
+            if (!startedEvents.TryGetValue(key, out var origin) || !startedPayloads.TryGetValue(key, out var payload)
+                || ownedPendingPrimary?.Invoke(origin, payload) != true)
+                incomplete = true;
         }
         return new Snapshot(session, daily, run,
             incomplete || session is null || daily is null || run is null);

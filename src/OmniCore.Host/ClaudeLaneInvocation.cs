@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+using OmniCore.Security;
 
 internal sealed record ClaudeLaneInvocation(string Executable, IReadOnlyList<string> Arguments,
     IReadOnlyDictionary<string, string> Environment, IReadOnlyList<string> RequestedTools,
@@ -31,13 +32,19 @@ internal static class ClaudeLaneInvocationBuilder
         return "UntrustedToolIdentifier";
     }
 
-    internal static ClaudeLaneInvocation Build(AgentProfile profile, TaskPacket packet, string selectedProjectionJson,
-        string executable, string laneRoot, string? resumeSessionId)
+    internal static ClaudeLaneInvocation Build(AgentProfile profile, TaskPacket packet,
+        EffectiveModelPolicy effectivePolicy, string selectedProjectionJson,
+        string executable, string laneRoot, string? resumeSessionId, IPermissionPolicy permissionPolicy,
+        decimal? maximumReportedCostUsd = null)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(packet);
+        ArgumentNullException.ThrowIfNull(effectivePolicy);
         if (profile.Executor != AgentExecutorKind.ClaudeCode || string.IsNullOrWhiteSpace(profile.ExternalModel))
             throw new InvalidOperationException("ExternalExecutorNotSelected");
+        var expectedPolicyKey = ModelPolicyKey.For("claude-code", profile.ExternalModel);
+        if (!effectivePolicy.Key.Equals(expectedPolicyKey))
+            throw new InvalidDataException("ExternalLaneModelPolicyBindingMismatch");
         if (!SamePath(laneRoot, packet.WorktreePath) || packet.Base != WorktreeBase.SnapshotOfWorkingTree
             || string.IsNullOrWhiteSpace(packet.OwnershipId) || packet.TaskId.Value == Guid.Empty
             || string.IsNullOrWhiteSpace(selectedProjectionJson) || selectedProjectionJson.Length > 1_048_576)
@@ -49,11 +56,39 @@ internal static class ClaudeLaneInvocationBuilder
             || budget.MaxTokens is not > 0 || budget.MaxToolCalls is not > 0 || budget.MaxTurns is not > 0)
             throw new InvalidDataException("ExternalLaneBudgetRequired");
 
+        // Claude's tool allow-list cannot express OmniCore's arbitrary read/write glob
+        // intersection without changing its permission semantics. Until a lossless mapper is
+        // available, support only a whole-lane ceiling; narrow scopes fail closed before launch.
+        if (!WholeLaneScope(profile.PermissionCeiling.Reads)
+            || profile.PermissionCeiling.Writes.Count > 0
+                && !WholeLaneScope(profile.PermissionCeiling.Writes))
+            throw new InvalidDataException("ExternalLanePermissionScopeUnsupported");
+
+        var tools = effectivePolicy.ToolPolicy.CapabilityCeiling;
         var builtinTools = new List<string>();
-        if (profile.PermissionCeiling.Reads.Count > 0) builtinTools.AddRange(["Read", "Glob", "Grep"]);
-        if (packet.WorkflowImplementation is null && profile.PermissionCeiling.Writes.Count > 0)
+        var canRead = tools.Contains(ModelToolCapability.WorkspaceRead);
+        if (canRead) builtinTools.Add("Read");
+        if (canRead && tools.Contains(ModelToolCapability.Search)) builtinTools.AddRange(["Glob", "Grep"]);
+        var writerRequested = packet.WorkflowImplementation is null && profile.PermissionCeiling.Writes.Count > 0;
+        var writeCapabilitySet = new[]
+        {
+            ModelToolCapability.PatchExisting,
+            ModelToolCapability.CreateFile,
+            ModelToolCapability.ReplaceFile,
+            ModelToolCapability.DeleteFile,
+        };
+        var effectiveWriteCapabilities = writeCapabilitySet.Count(tools.Contains);
+        if (writerRequested && effectiveWriteCapabilities is > 0 and < 4
+            || writerRequested && effectiveWriteCapabilities == 4
+                && effectivePolicy.MutationPolicy.Mode != FileMutationMode.Full)
+            throw new InvalidDataException("ExternalLaneWritePolicyUnavailable");
+        if (writerRequested && effectiveWriteCapabilities == 4)
             builtinTools.AddRange(["Write", "Edit"]);
+        if (packet.WorkflowImplementation is not null && profile.PermissionCeiling.Writes.Count > 0
+            && effectiveWriteCapabilities > 0)
+            throw new InvalidDataException("ExternalLaneVerifierMustBeReadOnly");
         if (builtinTools.Count == 0) throw new InvalidDataException("ExternalLaneHasNoDeclaredTools");
+        ValidateUnderlyingPermissionPolicy(permissionPolicy, laneRoot, builtinTools.Contains("Write", StringComparer.Ordinal));
         var packetJson = JsonSerializer.Serialize(packet, TaskPacketJsonContext.Default.TaskPacket);
         if (System.Text.Encoding.UTF8.GetByteCount(packetJson) > LaneWorktreeProvisioner.MaximumTaskPacketBytes)
             throw new InvalidDataException("ExternalLanePacketTooLarge");
@@ -97,8 +132,13 @@ internal static class ClaudeLaneInvocationBuilder
             args.Add("--resume");
             args.Add(resumeSessionId);
         }
+        var reportedCostLimit = maximumReportedCostUsd ?? budget.MaxCostUsd;
+        if (reportedCostLimit is not { } totalCostLimit
+            || totalCostLimit < budget.MaxCostUsd.Value || totalCostLimit > 100m)
+            throw new InvalidDataException("ExternalLaneReportedCostLimitInvalid");
         var limits = new ClaudeLaneStreamLimits(MaximumTokens: budget.MaxTokens,
-            MaximumToolCalls: budget.MaxToolCalls, MaximumCostUsd: budget.MaxCostUsd);
+            MaximumToolCalls: budget.MaxToolCalls, MaximumCostUsd: budget.MaxCostUsd,
+            MaximumReportedCostUsd: totalCostLimit);
         limits.Validate();
         var expectedTools = builtinTools.Append("StructuredOutput").ToArray();
         return new(executable, args.AsReadOnly(), new Dictionary<string, string>(),
@@ -108,4 +148,43 @@ internal static class ClaudeLaneInvocationBuilder
     private static bool SamePath(string left, string right) => string.Equals(
         ProjectIdentity.CanonicalWorkspacePath(left), ProjectIdentity.CanonicalWorkspacePath(right),
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private static bool WholeLaneScope(IReadOnlyList<string> patterns) => patterns.Count == 1
+        && patterns[0] == "**";
+
+    internal static void ValidateUnderlyingPermissionPolicy(IPermissionPolicy permissionPolicy,
+        string laneRoot, bool includeWrites)
+    {
+        ArgumentNullException.ThrowIfNull(permissionPolicy);
+        var root = Path.GetFullPath(laneRoot);
+        var probe = Path.Combine(root, ".omnicore-external-lane-policy-probe");
+        var claimsByTool = new (string Tool, ResourceClaims Claims)[]
+        {
+            ("filesystem.read", new ResourceClaims([probe], [], [], null, [])),
+            ("filesystem.search", new ResourceClaims([probe], [], [], null, [])),
+        };
+        var intents = claimsByTool.ToList();
+        if (includeWrites)
+        {
+            var writeClaims = new ResourceClaims([], [probe], [], null, []);
+            intents.Add(("filesystem.patch", writeClaims));
+            intents.Add(("filesystem.write", writeClaims));
+        }
+        foreach (var (tool, claims) in intents)
+        {
+            var intent = new ToolIntent(ToolCallId.New(), new ToolId(tool), "{}", EffectClass.None,
+                claims, ToolRisk.Low, null);
+            var decision = permissionPolicy.Evaluate(intent);
+            // External CLI execution has no OmniCore per-call approval boundary. Ask therefore
+            // fails closed just like Deny; only an already authorized policy/grant can proceed.
+            if (decision.Final != PermissionDecision.Allow)
+                throw new InvalidDataException("ExternalLanePermissionDenied:" + tool + ":" + decision.Final);
+            // An OmniCore grant authorizes the exact claims embedded in this probe. Passing that
+            // authorization to a CLI configured for the whole lane would broaden its scope.
+            // External execution cannot re-prompt per path, so only policy-wide allows are usable.
+            if (decision.AppliedGrant is not null || decision.Layers.Any(layer =>
+                layer.Layer is "permission-grant" or "interaction"))
+                throw new InvalidDataException("ExternalLanePermissionScopeUnsupported:" + tool);
+        }
+    }
 }

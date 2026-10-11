@@ -30,7 +30,8 @@ internal enum ClaudeLaneProcessDiagnostic
 internal sealed record ClaudeLaneProcessOutcome(ClaudeLaneStreamOutcome? Stream,
     AgentResult? AgentResult, ClaudeLaneProcessFailure? Failure, int ExitCode,
     ClaudeLaneStreamErrorCode? ProtocolError = null,
-    ClaudeLaneProcessDiagnostic? Diagnostic = null);
+    ClaudeLaneProcessDiagnostic? Diagnostic = null,
+    ClaudeLaneBudgetEvidence? BudgetEvidence = null);
 
 /// <summary>Runs a fully specified argv process through the Host process boundary, feeds stdout
 /// directly into the bounded parser, and returns success only after both protocol EOF and exit 0.</summary>
@@ -39,7 +40,8 @@ internal sealed class ClaudeLaneProcessExecutor(IProcessRuntime runtime)
     internal async Task<ClaudeLaneProcessOutcome> ExecuteAsync(string executable, IReadOnlyList<string> args,
         string workingDirectory, IReadOnlyDictionary<string, string> environment, TimeSpan timeout,
         Func<ClaudeLaneSessionStarted, CancellationToken, ValueTask> onSessionStarted,
-        CancellationToken cancellationToken, ClaudeLaneStreamLimits? streamLimits = null)
+        CancellationToken cancellationToken, ClaudeLaneStreamLimits? streamLimits = null,
+        Func<ClaudeLaneProgress, CancellationToken, ValueTask>? onProgress = null)
     {
         ArgumentNullException.ThrowIfNull(runtime);
         if (runtime is not IStreamingProcessRuntime streaming)
@@ -57,7 +59,7 @@ internal sealed class ClaudeLaneProcessExecutor(IProcessRuntime runtime)
                 try
                 {
                     parsed = await ClaudeLaneStreamReader.ReadAsync(stdout, onSessionStarted,
-                        streamLimits, token).ConfigureAwait(false);
+                        streamLimits, token, onProgress).ConfigureAwait(false);
                 }
                 catch (ClaudeLaneStreamException exception) when (exception.Code == ClaudeLaneStreamErrorCode.InitRequired)
                 {
@@ -70,7 +72,8 @@ internal sealed class ClaudeLaneProcessExecutor(IProcessRuntime runtime)
         catch (ClaudeLaneStreamException exception)
         {
             // Surface only a closed protocol enum, never stream text or provider stderr.
-            return new(null, null, ClaudeLaneProcessFailure.InvalidProtocol, -1, exception.Code);
+            return new(null, null, ClaudeLaneProcessFailure.InvalidProtocol, -1, exception.Code,
+                BudgetEvidence: exception.BudgetEvidence);
         }
         if (process.TimedOut) return new(null, null, ClaudeLaneProcessFailure.TimedOut, process.ExitCode);
         if (process.ExitCode != 0) return new(null, null, ClaudeLaneProcessFailure.NonZeroExit,

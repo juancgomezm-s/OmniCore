@@ -35,6 +35,25 @@ public sealed class SessionObservabilityTests
         new(TelemetryKind.Delta, signal, 1, DateTimeOffset.UtcNow, _run, laneId: _lane, turnId: _turn));
 
     [Fact]
+    public void External_retry_and_permission_denial_publish_content_free_live_activity()
+    {
+        var hub = Hub();
+        var before = _store.CurrentSequence(_session);
+        hub.ObserveExternal(_session, _turn, _run, _lane,
+            new ClaudeLaneProgress(ClaudeLaneProgressKind.ApiRetry, 1));
+        var retry = Assert.Single(hub.Activities(_session));
+        Assert.Equal(ChatActivityPhase.WaitingForResponse, retry.Phase);
+        Assert.Contains("api-retry", retry.Source);
+        Assert.True(retry.ObservedInProcess);
+        hub.ObserveExternal(_session, _turn, _run, _lane,
+            new ClaudeLaneProgress(ClaudeLaneProgressKind.PermissionDenied, 1));
+        var denial = Assert.Single(hub.Activities(_session));
+        Assert.Equal(ChatActivityPhase.WaitingForApproval, denial.Phase);
+        Assert.Contains("permission-denied", denial.Source);
+        Assert.Equal(before, _store.CurrentSequence(_session));
+    }
+
+    [Fact]
     public void Spend_is_idempotent_and_final_summary_cache_and_reasoning_are_not_added_twice()
     {
         Add(Spend()); Add(Spend()); Add(new ModelCompleted(_turn, null));

@@ -105,10 +105,13 @@ public sealed partial class OmniServer
                 if (primary.Incomplete || meta.Incomplete || primary.RunUsd is null || meta.RunUsd is null)
                     return Deferred("SpendAccountingUnavailable");
                 var spent = primary.RunUsd.Value + meta.RunUsd.Value;
+                var usedToolCalls = checked(payloads.OfType<ToolCallRequested>().LongCount()
+                    + ExternalLaneAccounting.ToolUseCount(payloads.OfType<ExternalLaneUsageRecorded>(),
+                        payloads.OfType<ExternalLaneActivityObserved>()));
                 if ((long)request.MaxTurns + allocations.Turns
                         + payloads.OfType<TurnStarted>().LongCount() > limits.MaxTurns
                     || (long)request.MaxToolCalls + allocations.ToolCalls
-                        + payloads.OfType<ToolCallRequested>().LongCount() > limits.MaxToolCalls
+                        + usedToolCalls > limits.MaxToolCalls
                     || request.MaxCostUsd + allocations.CostUsd
                         + spent > limits.MaxSpendUsd)
                     return Deferred("CoordinationBudgetLimit");
@@ -126,7 +129,7 @@ public sealed partial class OmniServer
                 if (rootBudget.MaxTurns is { } turns && (long)request.MaxTurns + allocations.Turns
                     + payloads.OfType<TurnStarted>().LongCount() > turns) return Deferred("ParentTurnBudgetLimit");
                 if (rootBudget.MaxToolCalls is { } calls && (long)request.MaxToolCalls + allocations.ToolCalls
-                    + payloads.OfType<ToolCallRequested>().LongCount() > calls) return Deferred("ParentToolBudgetLimit");
+                    + usedToolCalls > calls) return Deferred("ParentToolBudgetLimit");
                 var childTask = new TaskCreated(TaskId.New(), run, request.Objective, Array.Empty<TaskDependency>(),
                     new TaskBudget(request.MaxCostUsd, request.MaxTokens, request.MaxTurns, request.MaxToolCalls), projection.RootTask);
                 var childLane = new LaneCreated(LaneId.New(), childTask.TaskId, profile.Id,

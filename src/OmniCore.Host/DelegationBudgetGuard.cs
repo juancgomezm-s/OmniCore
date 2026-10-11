@@ -43,7 +43,9 @@ internal static class DelegationBudgetGuard
         var turns = facts.OfType<TurnStarted>().Count();
         if (turns + (newTurn && !facts.OfType<TurnStarted>().Any(t => t.TurnId == turn) ? 1 : 0) > budget.MaxTurns)
             throw new InvalidOperationException("Child Turn budget exhausted.");
-        var tools = facts.OfType<ToolCallRequested>().Count();
+        var tools = checked((long)facts.OfType<ToolCallRequested>().Count()
+            + ExternalLaneAccounting.ToolUseCount(facts.OfType<ExternalLaneUsageRecorded>(),
+                facts.OfType<ExternalLaneActivityObserved>()));
         if (tools + (tool is not null && !facts.OfType<ToolCallRequested>().Any(t => t.ToolCallId == tool) ? 1 : 0) > budget.MaxToolCalls)
             throw new InvalidOperationException("Child tool budget exhausted.");
         var pool = RunBudgetPool.For(store);

@@ -201,6 +201,36 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
                 phase == ChatActivityPhase.AnswerText, observedInProcess: true);
         }
     }
+
+    /// <summary>Transient, content-free observations from a bounded external lane stream.</summary>
+    internal void ObserveExternal(SessionId session, TurnId turn, RunId run, LaneId lane,
+        ClaudeLaneProgress progress)
+    {
+        var phase = progress.Kind switch
+        {
+            ClaudeLaneProgressKind.StreamProgress => ChatActivityPhase.Reasoning,
+            ClaudeLaneProgressKind.ApiRetry => ChatActivityPhase.WaitingForResponse,
+            ClaudeLaneProgressKind.PermissionDenied => ChatActivityPhase.WaitingForApproval,
+            ClaudeLaneProgressKind.ToolActivity => ChatActivityPhase.Tools,
+            _ => throw new ArgumentOutOfRangeException(nameof(progress)),
+        };
+        var cause = progress.Kind switch
+        {
+            ClaudeLaneProgressKind.StreamProgress => "stream-progress",
+            ClaudeLaneProgressKind.ApiRetry => "api-retry",
+            ClaudeLaneProgressKind.PermissionDenied => "permission-denied",
+            ClaudeLaneProgressKind.ToolActivity => "tool-activity",
+            _ => "unknown",
+        };
+        lock (_gate)
+        {
+            var state = State(session);
+            Synchronize(session, state);
+            Publish(state, session.ToString(), turn.ToString(), run.ToString(), lane.ToString(), phase,
+                DateTimeOffset.UtcNow, "external-lane:" + cause + ":" + progress.ObservedCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                observedInProcess: true);
+        }
+    }
     internal ProviderQuotaSnapshot? Quota(SessionId session, string provider)
     {
         lock (_gate) return State(session).Quotas.GetValueOrDefault(provider);

@@ -443,16 +443,38 @@ public sealed class RunResumeService
         {
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             var root = doc.RootElement;
-            if (!root.TryGetProperty("kind", out var kind) || kind.GetString() != "worktree.integration.batch")
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !root.TryGetProperty("kind", out var kind) || kind.GetString() != "worktree.integration.batch")
                 return false;
-            if (!root.TryGetProperty("version", out var version) || version.GetInt32() != 1
+            if (!root.TryGetProperty("version", out var version) || version.ValueKind != System.Text.Json.JsonValueKind.Number
+                || !version.TryGetInt32(out var schemaVersion) || schemaVersion is not (1 or 2)
+                || root.EnumerateObject().Count() != (schemaVersion == 1 ? 12 : 14)
                 || !root.TryGetProperty("ownershipId", out var owner) || owner.ValueKind != System.Text.Json.JsonValueKind.String
                 || !root.TryGetProperty("proposalId", out var proposal) || proposal.ValueKind != System.Text.Json.JsonValueKind.String
                 || !root.TryGetProperty("files", out var files) || files.ValueKind != System.Text.Json.JsonValueKind.Array
                 || files.GetArrayLength() is < 1 or > 64) return false;
+            var expectedMetadataFields = schemaVersion == 1
+                ? new[] { "kind", "version", "toolCallId", "ownershipId", "proposalId", "workspaceRoot",
+                    "gitCommonDirectory", "workspaceHead", "workspaceBranch", "laneHead", "laneBranch", "files" }
+                : new[] { "kind", "version", "toolCallId", "ownershipId", "proposalId", "workspaceRoot",
+                    "gitCommonDirectory", "workspaceHead", "workspaceBranch", "laneHead", "laneBranch", "files",
+                    "laneTreeAtCapture", "completeLaneResult" };
+            if (!root.EnumerateObject().Select(property => property.Name).ToHashSet(StringComparer.Ordinal)
+                .SetEquals(expectedMetadataFields)) return false;
+            if (schemaVersion == 2
+                && (!root.TryGetProperty("laneTreeAtCapture", out var laneTree)
+                    || laneTree.ValueKind != System.Text.Json.JsonValueKind.String
+                    || laneTree.GetString() is not { Length: 40 or 64 } tree || !tree.All(Uri.IsHexDigit)
+                    || !root.TryGetProperty("completeLaneResult", out var completeLaneResult)
+                    || completeLaneResult.ValueKind is not (System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False)))
+                return false;
             ownershipId = owner.GetString() ?? ""; proposalId = proposal.GetString() ?? "";
             foreach (var file in files.EnumerateArray())
                 if (!file.TryGetProperty("relativePath", out var path)
+                    || file.ValueKind != System.Text.Json.JsonValueKind.Object
+                    || file.EnumerateObject().Count() != 5
+                    || !file.EnumerateObject().Select(property => property.Name).ToHashSet(StringComparer.Ordinal)
+                        .SetEquals(["relativePath", "expectedPreSha256", "expectedPostSha256", "expectedPreMode", "expectedPostMode"])
                     || path.ValueKind != System.Text.Json.JsonValueKind.String
                     || string.IsNullOrWhiteSpace(path.GetString()) || !paths.Add(path.GetString()!)) return false;
             return ownershipId.Length == 32 && proposalId.Length == 64;

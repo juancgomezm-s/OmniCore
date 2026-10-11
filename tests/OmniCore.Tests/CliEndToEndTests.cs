@@ -65,7 +65,7 @@ public sealed class CliEndToEndTests
             provider.RespondWith((_, _) => WithUsage(TextResponse("Principal context is ready.")));
             IProcessRuntime process = liveClaudeAcceptance
                 ? new SystemProcessRuntime()
-                : new FakeClaudeLaneRuntime(model);
+                : new FakeClaudeLaneRuntime(model, includeToolActivity: true);
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.ProcessRuntimeFactoryForTests = () => process;
             runtime.ClaudeExecutableLocatorForTests = () => liveClaudeAcceptance
@@ -77,17 +77,19 @@ public sealed class CliEndToEndTests
                 TestContext.Current.CancellationToken));
             var client = runtime.Connect(TestContext.Current.CancellationToken);
             var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
-            Assert.Equal("ok", trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+            var modeAck = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
                 {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
                  "allowedModes":"plan,act,orq","maxAgents":2,"maxDepth":1,"maxTurns":8,
                  "maxToolCalls":12,"maxElapsedSeconds":900,"maxSpendUsd":3}
-                """), TestContext.Current.CancellationToken).Status);
+                """), TestContext.Current.CancellationToken);
+            Assert.True(modeAck.Status == "ok", modeAck.Error ?? "Run mode selection was rejected.");
             var root = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
             var request = new DelegationCreateRequest(profile, root.LastContextEventId!,
                 liveClaudeAcceptance
                     ? "Create m7-lane-proof.txt in this worktree with exactly one line: isolated lane proof. Then report the result."
                     : "Inspect the owned lane and report a result",
-                root.SelectableContextItemIds!, 8192, 2, 4, 20_000, 1m);
+                root.SelectableContextItemIds!, 8192, liveClaudeAcceptance ? 4 : 2,
+                liveClaudeAcceptance ? 8 : 4, liveClaudeAcceptance ? 40_000 : 20_000, 1m);
             var queued = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
                 TestContext.Current.CancellationToken);
             Assert.True(queued.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
@@ -109,6 +111,7 @@ public sealed class CliEndToEndTests
             var session = Assert.Single(events.OfType<ExternalLaneSessionBound>());
             var usage = Assert.Single(events.OfType<ExternalLaneUsageRecorded>());
             var result = Assert.Single(events.OfType<AgentResultProduced>(), item => item.ExecutionId == execution.ExecutionId);
+            Assert.True(usage.UsageCoverageComplete);
             var resultArtifacts = OmniHost.CreateArtifactStore(
                 OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace));
             Assert.True(resultArtifacts.Verify(result.ResultRef.Hash, result.ResultRef.Size));
@@ -118,6 +121,17 @@ public sealed class CliEndToEndTests
             if (liveClaudeAcceptance)
             {
                 Assert.Equal(model, session.Model);
+                var reservation = Assert.Single(events.OfType<ExternalLaneInvocationReserved>());
+                Assert.Equal(1, reservation.AttemptNumber);
+                Assert.Null(reservation.SessionId);
+                Assert.Equal(0.5m, reservation.ReservedCostUsd);
+                Assert.Equal(20_000L, reservation.ReservedTokens);
+                Assert.Equal(2, reservation.ReservedTurns);
+                Assert.Equal(4, reservation.ReservedToolCalls);
+                Assert.InRange(usage.TotalCostUsd ?? decimal.MaxValue, 0m, reservation.ReservedCostUsd);
+                Assert.InRange((usage.InputTokens ?? long.MaxValue) + (usage.OutputTokens ?? long.MaxValue),
+                    0L, reservation.ReservedTokens);
+                Assert.InRange(usage.ToolUseCount, 0, reservation.ReservedToolCalls);
                 Assert.Equal("isolated lane proof\n", File.ReadAllText(Path.Combine(worktree.WorktreePath,
                     "m7-lane-proof.txt")));
                 Assert.False(File.Exists(Path.Combine(workspace, "m7-lane-proof.txt")));
@@ -135,6 +149,16 @@ public sealed class CliEndToEndTests
                 Assert.Contains("dontAsk", launch.Args);
                 Assert.Contains("--json-schema", launch.Args);
                 Assert.Equal("claude-fixture-session", session.SessionId);
+                var reservation = Assert.Single(events.OfType<ExternalLaneInvocationReserved>());
+                Assert.Equal((0.5m, 10_000L, 1, 2), (reservation.ReservedCostUsd,
+                    reservation.ReservedTokens, reservation.ReservedTurns, reservation.ReservedToolCalls));
+                Assert.Equal(1, ExternalLaneAccounting.ToolUseCount([usage]));
+                var runCreated = Assert.Single(events.OfType<RunCreated>());
+                var runBudget = RunTokenBudgetReader.Read(ReadCurrentSessionJournalEvents(workspace), EventCodecs.Create(),
+                    runCreated.RunId, 8192);
+                Assert.Equal(21L, runBudget.ObservedSettledTokens);
+                Assert.Equal(8171L, runBudget.Remaining);
+                Assert.Null(runBudget.Limitation);
             }
             Assert.Equal(session.ExecutionId, execution.ExecutionId);
             Assert.Equal(session.ExecutionId, usage.ExecutionId);
@@ -147,6 +171,329 @@ public sealed class CliEndToEndTests
                 < envelopes.Single(item => EventCodecs.Create().Decode(item) is AgentResultProduced).Sequence);
             Assert.Equal("external lane fixture\n", File.ReadAllText(Path.Combine(workspace, "README.md")));
             Assert.True(Directory.Exists(worktree.WorktreePath));
+        });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Claude_dispatcher_resumes_bound_session_without_claiming_uncertain_usage(bool resumeCompletes)
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            const string profile = "0199a000-0000-7000-8000-000000000033";
+            const string model = "claude-haiku-5-5";
+            InitializeGitRepository(workspace);
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
+                defaultProfile: {{profile}}
+                agentProfiles:
+                  claude-writer:
+                    id: {{profile}}
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: ["**"]
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read, filesystem.write, filesystem.patch]
+                    executor: claude-code
+                    externalModel: {{model}}
+                """);
+            using (var policies = OmniHost.CreateModelPolicyService(data))
+                policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
+                    TestContext.Current.CancellationToken);
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            provider.RespondWith((_, _) => UsageTextResponse("Root context ready."));
+            var firstProcess = new FakeClaudeLaneRuntime(model, failAfterInit: true);
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.ProcessRuntimeFactoryForTests = () => firstProcess;
+            runtime.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            var host = new TuiTurnHost(runtime);
+            Assert.Equal(0, await host.ExecuteAsync("Prepare resumable lane", _ => { },
+                TestContext.Current.CancellationToken));
+            var client = runtime.Connect(TestContext.Current.CancellationToken);
+            var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+            var modeAck = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
+                 "allowedModes":"plan,act,orq","maxAgents":2,"maxDepth":1,"maxTurns":8,
+                 "maxToolCalls":12,"maxElapsedSeconds":900,"maxSpendUsd":3}
+                """), TestContext.Current.CancellationToken);
+            Assert.True(modeAck.Status == "ok", modeAck.Error ?? "Run mode selection was rejected.");
+            var rootLane = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
+            var request = new DelegationCreateRequest(profile, rootLane.LastContextEventId!,
+                "Resume the owned lane and return a result", rootLane.SelectableContextItemIds!, 8192, 2, 4, 20_000, 1m);
+            var queued = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, queued.Outcome?.Kind);
+            var child = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes
+                .Single(item => item.ParentTaskId is not null && item.DelegationId is not null);
+
+            Assert.NotEqual(0, await host.ExecuteDelegationAsync(child.DelegationId!, _ => { },
+                TestContext.Current.CancellationToken));
+            var firstLaunch = Assert.IsType<ProcessLaunch>(firstProcess.LastLaunch);
+            Assert.DoesNotContain("--resume", firstLaunch.Args);
+            var firstEvents = ReadCurrentSessionEvents(workspace);
+            var bound = Assert.Single(firstEvents.OfType<ExternalLaneSessionBound>());
+            Assert.Equal("claude-fixture-session", bound.SessionId);
+            var firstReservation = Assert.Single(firstEvents.OfType<ExternalLaneInvocationReserved>());
+            Assert.Equal((1, (string?)null, 0.5m, 10_000L, 1, 2),
+                (firstReservation.AttemptNumber, firstReservation.SessionId, firstReservation.ReservedCostUsd,
+                    firstReservation.ReservedTokens, firstReservation.ReservedTurns, firstReservation.ReservedToolCalls));
+            var childStartedEnvelopes = ReadCurrentSessionJournalEvents(workspace)
+                .Where(item => item.LaneId == bound.LaneId && item.ExecutionId == bound.ExecutionId).ToArray();
+            Assert.Single(childStartedEnvelopes.Select(EventCodecs.Create().Decode).OfType<ModelStepStarted>());
+            Assert.Empty(childStartedEnvelopes.Select(EventCodecs.Create().Decode).OfType<ModelStepCompleted>());
+            runtime.Dispose();
+
+            var resumedProcess = new FakeClaudeLaneRuntime(model, failAfterInit: !resumeCompletes);
+            var reopened = OmniCliRuntime.Create(workspace);
+            reopened.ProcessRuntimeFactoryForTests = () => resumedProcess;
+            reopened.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            var reopenedHost = new TuiTurnHost(reopened);
+            var resumedExit = await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, _ => { },
+                TestContext.Current.CancellationToken);
+            var resumedLaunch = Assert.IsType<ProcessLaunch>(resumedProcess.LastLaunch);
+            Assert.Contains("--resume", resumedLaunch.Args);
+            var resumedArgs = resumedLaunch.Args.ToList();
+            Assert.Equal("claude-fixture-session", resumedArgs[resumedArgs.IndexOf("--resume") + 1]);
+            Assert.Equal("0.5", resumedArgs[resumedArgs.IndexOf("--max-budget-usd") + 1]);
+            Assert.Equal("1", resumedArgs[resumedArgs.IndexOf("--max-turns") + 1]);
+            var events = ReadCurrentSessionEvents(workspace);
+            Assert.Collection(events.OfType<ExternalLaneInvocationReserved>().OrderBy(item => item.AttemptNumber),
+                first => Assert.Equal(1, first.AttemptNumber), second =>
+                {
+                    Assert.Equal(2, second.AttemptNumber);
+                    Assert.Equal(bound.SessionId, second.SessionId);
+                    Assert.Equal((0.5m, 10_000L, 1, 2), (second.ReservedCostUsd, second.ReservedTokens,
+                        second.ReservedTurns, second.ReservedToolCalls));
+                });
+            if (!resumeCompletes)
+            {
+                Assert.NotEqual(0, resumedExit);
+                Assert.Empty(events.OfType<ExternalLaneUsageRecorded>());
+                Assert.Empty(ReadCurrentSessionJournalEvents(workspace)
+                    .Where(item => item.LaneId == bound.LaneId && item.ExecutionId == bound.ExecutionId)
+                    .Select(EventCodecs.Create().Decode).OfType<ModelStepCompleted>());
+                reopened.Dispose();
+                var thirdProcess = new FakeClaudeLaneRuntime(model);
+                var thirdRuntime = OmniCliRuntime.Create(workspace);
+                thirdRuntime.ProcessRuntimeFactoryForTests = () => thirdProcess;
+                thirdRuntime.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+                var thirdHost = new TuiTurnHost(thirdRuntime);
+                Assert.NotEqual(0, await thirdHost.ExecuteDelegationAsync(child.DelegationId!, _ => { },
+                    TestContext.Current.CancellationToken));
+                Assert.Null(thirdProcess.LastLaunch);
+                Assert.Equal(2, ReadCurrentSessionEvents(workspace).OfType<ExternalLaneInvocationReserved>().Count());
+                thirdRuntime.Dispose();
+                return;
+            }
+            Assert.Equal(0, resumedExit);
+            var usage = Assert.Single(events.OfType<ExternalLaneUsageRecorded>());
+            Assert.Equal(bound.SessionId, usage.SessionId);
+            Assert.False(usage.UsageCoverageComplete);
+            var childCompletedEnvelopes = ReadCurrentSessionJournalEvents(workspace)
+                .Where(item => item.LaneId == bound.LaneId && item.ExecutionId == bound.ExecutionId).ToArray();
+            Assert.Single(childCompletedEnvelopes.Select(EventCodecs.Create().Decode).OfType<TurnCompleted>());
+            Assert.Single(childCompletedEnvelopes.Select(EventCodecs.Create().Decode).OfType<ModelStepCompleted>());
+
+            var envelopes = ReadCurrentSessionJournalEvents(workspace);
+            var run = Assert.Single(events.OfType<RunCreated>()).RunId;
+            var budget = RunTokenBudgetReader.Read(envelopes, EventCodecs.Create(), run, 8192);
+            Assert.Null(budget.Remaining);
+            Assert.Equal("generation attempt usage coverage unknown", budget.Limitation);
+            Assert.Null(budget.ObservedSettledTokens);
+            Assert.Equal(0, await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, _ => { },
+                TestContext.Current.CancellationToken));
+            Assert.Equal(resumedLaunch, resumedProcess.LastLaunch);
+            reopened.Dispose();
+        });
+    }
+
+    [Theory]
+    [InlineData("accept")]
+    [InlineData("revise")]
+    public async Task Lane_acceptance_after_reopen_revalidates_tree_and_never_relaunches_executor(string option)
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            const string profile = "0199a000-0000-7000-8000-000000000032";
+            const string model = "claude-haiku-5-5";
+            InitializeGitRepository(workspace);
+            Directory.CreateDirectory(Path.Combine(workspace, ".omnicore"));
+            File.WriteAllText(Path.Combine(workspace, ".omnicore", "settings.yaml"),
+                "gates:\n  acceptance: true\n");
+            var workspaceTrust = await Run("trust");
+            Assert.Equal(0, workspaceTrust.Code);
+            Assert.Contains("confiable", workspaceTrust.Output, StringComparison.OrdinalIgnoreCase);
+            Assert.True(new WorkspaceTrustStore(OmniHost.CreatePlatformPaths()).IsTrusted(workspace));
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
+                defaultProfile: {{profile}}
+                agentProfiles:
+                  claude-writer:
+                    id: {{profile}}
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: ["**"]
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read, filesystem.write, filesystem.patch]
+                    executor: claude-code
+                    externalModel: {{model}}
+                """);
+            using (var policies = OmniHost.CreateModelPolicyService(data))
+                policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
+                    TestContext.Current.CancellationToken);
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            provider.RespondWith((_, _) => UsageTextResponse("Parent is ready."));
+            var firstProcess = new FakeClaudeLaneRuntime(model);
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.ProcessRuntimeFactoryForTests = () => firstProcess;
+            runtime.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            var host = new TuiTurnHost(runtime);
+            Assert.Equal(0, await host.ExecuteAsync("Prepare acceptance lane", _ => { }, TestContext.Current.CancellationToken));
+            var client = runtime.Connect(TestContext.Current.CancellationToken);
+            var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+            var modeAck = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
+                 "allowedModes":"plan,act,orq","maxAgents":2,"maxDepth":1,"maxTurns":8,
+                 "maxToolCalls":12,"maxElapsedSeconds":900,"maxSpendUsd":3}
+                """), TestContext.Current.CancellationToken);
+            Assert.True(modeAck.Status == "ok", modeAck.Error ?? "Run mode selection was rejected.");
+            var rootLane = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
+            var request = new DelegationCreateRequest(profile, rootLane.LastContextEventId!,
+                "Inspect the lane and return a short result", rootLane.SelectableContextItemIds!,
+                8192, 2, 4, 20_000, 1m);
+            var queued = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()), TestContext.Current.CancellationToken);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, queued.Outcome?.Kind);
+            var child = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes
+                .Single(item => item.ParentTaskId is not null && item.DelegationId is not null);
+            var firstExit = await host.ExecuteDelegationAsync(child.DelegationId!, _ => { }, TestContext.Current.CancellationToken);
+            Assert.Equal(3, firstExit);
+            var firstEvents = ReadCurrentSessionEvents(workspace);
+            var pending = Assert.Single(firstEvents.OfType<LaneAcceptancePending>());
+            var worktree = Assert.Single(firstEvents.OfType<LaneWorktreeCreated>(), item => item.LaneId == pending.LaneId);
+            Assert.NotNull(firstProcess.LastLaunch);
+
+            runtime.Dispose();
+            var resumedProcess = new FakeClaudeLaneRuntime(model);
+            var reopened = OmniCliRuntime.Create(workspace);
+            reopened.ProcessRuntimeFactoryForTests = () => resumedProcess;
+            reopened.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            var reopenedHost = new TuiTurnHost(reopened);
+            var reopenedClient = reopened.Connect(TestContext.Current.CancellationToken);
+            var reopenedTrusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(reopenedClient);
+
+            var laneOutput = Path.Combine(worktree.WorktreePath, "later-edit.txt");
+            File.WriteAllText(laneOutput, "changed after acceptance prompt\n");
+            var staleAccept = reopenedTrusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
+                + "\"cmd\":\"interaction.respond\",\"interactionId\":\"" + pending.InteractionId
+                + "\",\"optionId\":\"accept\"}"), TestContext.Current.CancellationToken);
+            Assert.Equal("error", staleAccept.Status);
+            Assert.DoesNotContain(ReadCurrentSessionEvents(workspace), item => item is InteractionResolved resolved
+                && resolved.InteractionId == pending.InteractionId);
+
+            if (option == "revise")
+            {
+                var revise = reopenedTrusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
+                    + "\"cmd\":\"interaction.respond\",\"interactionId\":\"" + pending.InteractionId
+                    + "\",\"optionId\":\"revise\"}"), TestContext.Current.CancellationToken);
+                Assert.Equal("ok", revise.Status);
+                Assert.Equal("revise", Assert.Single(ReadCurrentSessionEvents(workspace).OfType<InteractionResolved>(),
+                    item => item.InteractionId == pending.InteractionId).OptionId);
+                Assert.NotEqual(0, await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, _ => { },
+                    TestContext.Current.CancellationToken));
+                Assert.Null(resumedProcess.LastLaunch);
+                reopened.Dispose();
+                return;
+            }
+
+            File.Delete(laneOutput);
+
+            var accept = reopenedTrusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
+                + "\"cmd\":\"interaction.respond\",\"interactionId\":\"" + pending.InteractionId
+                + "\",\"optionId\":\"accept\"}"), TestContext.Current.CancellationToken);
+            Assert.Equal("ok", accept.Status);
+            Assert.Equal("accept", Assert.Single(ReadCurrentSessionEvents(workspace).OfType<InteractionResolved>(),
+                item => item.InteractionId == pending.InteractionId).OptionId);
+
+            Assert.Equal(0, await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, _ => { },
+                TestContext.Current.CancellationToken));
+            Assert.Null(resumedProcess.LastLaunch);
+            reopened.Dispose();
+        });
+    }
+
+    [Fact]
+    public async Task User_filesystem_write_deny_blocks_external_lane_before_process_launch()
+    {
+        await InIsolatedCli(async (workspace, config, data, provider) =>
+        {
+            const string profile = "0199a000-0000-7000-8000-000000000041";
+            const string model = "claude-haiku-5-5";
+            InitializeGitRepository(workspace);
+            File.WriteAllText(Path.Combine(config, "permissions.yaml"), "profile: autonomous\nrules:\n  filesystem.write: deny\n");
+            File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
+                defaultProfile: {{profile}}
+                agentProfiles:
+                  claude-writer:
+                    id: {{profile}}
+                    revision: 1
+                    permissions:
+                      reads: ["**"]
+                      writes: ["**"]
+                      process: []
+                      network: []
+                      secrets: []
+                      allowShell: false
+                    preferredTools: [filesystem.read, filesystem.write, filesystem.patch]
+                    executor: claude-code
+                    externalModel: {{model}}
+                """);
+            using (var policies = OmniHost.CreateModelPolicyService(data))
+                policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
+                    TestContext.Current.CancellationToken);
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            provider.RespondWith((_, _) => UsageTextResponse("root context"));
+            var process = new FakeClaudeLaneRuntime(model);
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.ProcessRuntimeFactoryForTests = () => process;
+            runtime.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
+            var host = new TuiTurnHost(runtime);
+            var diagnostics = new List<string>();
+            Assert.Equal(0, await host.ExecuteAsync("Prepare a delegated task", diagnostics.Add,
+                TestContext.Current.CancellationToken));
+            var client = runtime.Connect(TestContext.Current.CancellationToken);
+            var trusted = Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
+            var modeAck = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
+                {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
+                 "allowedModes":"plan,act,orq","maxAgents":2,"maxDepth":1,"maxTurns":8,
+                 "maxToolCalls":12,"maxElapsedSeconds":900,"maxSpendUsd":3}
+                """), TestContext.Current.CancellationToken);
+            Assert.True(modeAck.Status == "ok", modeAck.Error ?? "Run mode selection was rejected.");
+            var root = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
+            var request = new DelegationCreateRequest(profile, root.LastContextEventId!,
+                "write one file", root.SelectableContextItemIds!, 8192, 2, 4, 20_000, 1m);
+            var queued = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
+                TestContext.Current.CancellationToken);
+            Assert.True(queued.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                queued.Error ?? queued.Outcome?.Reason ?? "Writer lane admission was not accepted.");
+            var child = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes
+                .Single(lane => lane.ParentTaskId is not null && lane.DelegationId is not null);
+            var exit = await runtime.DelegationAsync(child.DelegationId!, diagnostics.Add,
+                TestContext.Current.CancellationToken);
+            Assert.NotEqual(0, exit);
+            Assert.Null(process.LastLaunch);
+            Assert.Contains(diagnostics, item => item.Contains("ExternalLanePermissionDenied:filesystem.write:Deny",
+                StringComparison.Ordinal));
+            Assert.Empty(ReadCurrentSessionEvents(workspace).OfType<ExternalLaneSessionBound>());
         });
     }
 
@@ -871,7 +1218,7 @@ public sealed class CliEndToEndTests
         public bool IsAlive(ProcessHandle handle) => inner.IsAlive(handle);
     }
 
-    private sealed class FakeClaudeLaneRuntime(string model) : IProcessRuntime, IStreamingProcessRuntime
+    private sealed class FakeClaudeLaneRuntime(string model, bool failAfterInit = false, bool includeToolActivity = false) : IProcessRuntime, IStreamingProcessRuntime
     {
         private int _nextPid = 1000;
         public ProcessLaunch? LastLaunch { get; private set; }
@@ -896,20 +1243,40 @@ public sealed class CliEndToEndTests
                 throw new InvalidDataException("The production lane invocation omitted its effective tools.");
             var tools = launch.Args[toolsIndex + 1].Split(',', StringSplitOptions.RemoveEmptyEntries)
                 .Append("StructuredOutput").ToArray();
-            var lines = new[]
+            if (failAfterInit)
+            {
+                var init = JsonSerializer.Serialize(new { type = "system", subtype = "init",
+                    session_id = "claude-fixture-session", model, tools,
+                    capabilities = new Dictionary<string, bool>() });
+                await using var initStream = new MemoryStream(Encoding.UTF8.GetBytes(init + "\n"));
+                await consumeStandardOutput(initStream, cancellationToken).ConfigureAwait(false);
+                // The first process is lost immediately after its durable init/session barrier.
+                // This leaves the dispatcher with a real open step and a session it may resume.
+                throw new IOException("fixture process disappeared after session binding");
+            }
+            var lines = new List<string>
             {
                 JsonSerializer.Serialize(new { type = "system", subtype = "init", session_id = "claude-fixture-session",
                     model, tools, capabilities = new Dictionary<string, bool>() }),
-                JsonSerializer.Serialize(new { type = "assistant", session_id = "claude-fixture-session",
-                    message = new { usage = new { input_tokens = 12, output_tokens = 4 }, content = Array.Empty<object>() } }),
-                JsonSerializer.Serialize(new { type = "result", subtype = "success", session_id = "claude-fixture-session",
+            };
+            if (includeToolActivity)
+            {
+                lines.Add(JsonSerializer.Serialize(new { type = "assistant", session_id = "claude-fixture-session",
+                    message = new { content = new object[] { new { type = "tool_use", id = "fixture-read-1",
+                        name = "Read", input = new { file_path = "README.md" } } } } }));
+                lines.Add(JsonSerializer.Serialize(new { type = "user", session_id = "claude-fixture-session",
+                    message = new { content = new object[] { new { type = "tool_result", tool_use_id = "fixture-read-1",
+                        is_error = false, content = "fixture content" } } } }));
+            }
+            lines.Add(JsonSerializer.Serialize(new { type = "assistant", session_id = "claude-fixture-session",
+                message = new { id = "fixture-message", usage = new { input_tokens = 12, output_tokens = 4 }, content = Array.Empty<object>() } }));
+            lines.Add(JsonSerializer.Serialize(new { type = "result", subtype = "success", session_id = "claude-fixture-session",
                     is_error = false, result = "Fixture lane completed.",
                     structured_output = new { outcome = "Succeeded", summary = "Fixture lane completed.",
                         findings = Array.Empty<string>(), filesChanged = Array.Empty<string>(),
                         remainingIssues = Array.Empty<string>(), confidence = "High",
                         proposedPlanMutations = Array.Empty<object>() },
-                    usage = new { input_tokens = 12, output_tokens = 4 }, total_cost_usd = 0.01m }),
-            };
+                    usage = new { input_tokens = 12, output_tokens = 4 }, total_cost_usd = 0.01m }));
             await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(string.Join("\n", lines) + "\n"));
             await consumeStandardOutput(stream, cancellationToken).ConfigureAwait(false);
             return new ProcessResult(0, null, null, false);
@@ -957,14 +1324,15 @@ public sealed class CliEndToEndTests
             var toolsIndex = launch.Args.ToList().IndexOf("--tools");
             if (toolsIndex < 0 || toolsIndex + 1 >= launch.Args.Count)
                 throw new InvalidDataException("The product lane invocation omitted its effective tools.");
-            var tools = launch.Args[toolsIndex + 1].Split(',', StringSplitOptions.RemoveEmptyEntries);
+            var tools = launch.Args[toolsIndex + 1].Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Append("StructuredOutput").ToArray();
             var sessionId = "fixture-session-" + handle.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture);
             var lines = new[]
             {
                 JsonSerializer.Serialize(new { type = "system", subtype = "init", session_id = sessionId,
                     model, tools, capabilities = new Dictionary<string, bool>() }),
                 JsonSerializer.Serialize(new { type = "assistant", session_id = sessionId,
-                    message = new { usage = new { input_tokens = 12, output_tokens = 4 }, content = Array.Empty<object>() } }),
+                    message = new { id = "fixture-message", usage = new { input_tokens = 12, output_tokens = 4 }, content = Array.Empty<object>() } }),
                 JsonSerializer.Serialize(new { type = "result", subtype = "success", session_id = sessionId,
                     is_error = false, result = "Fixture lane completed.",
                     structured_output = new { outcome = "Succeeded", summary = "Fixture lane completed.",
@@ -2544,6 +2912,10 @@ public sealed class CliEndToEndTests
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}", "",
             "data: [DONE]", "");
     }
+
+    private static string UsageTextResponse(string text) => TextResponse(text).Replace("data: [DONE]",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]",
+        StringComparison.Ordinal);
 
     private static async Task<(int Code, string Output)> Run(params string[] args)
     {

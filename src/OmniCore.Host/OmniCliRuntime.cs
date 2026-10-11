@@ -1534,7 +1534,7 @@ public sealed class OmniCliRuntime : IDisposable
                     ? TurnInstruction(RunMode.Act) + " " + stageInstruction : stageInstruction;
                 var childSnapshot = new TurnInstructionSnapshot(
                     workflowStage?.Definition.Stage != WorkflowStage.Implement, childInstruction);
-                var ack = server.ExecuteDelegation(delegationId, (work, token) =>
+                ExplorerTurn.TurnResult ExecuteLane(DelegationWork work, CancellationToken token)
                 {
                     var laneRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(work.EffectiveRoot);
                     var childWorkingState = work.TaskPacket?.WorkingState ?? work.WorkingState;
@@ -1552,19 +1552,27 @@ public sealed class OmniCliRuntime : IDisposable
                         || workflowStage?.Definition.Stage == WorkflowStage.Implement)
                         throw new InvalidOperationException("UnownedLaneWorkspaceUnavailable");
 
+                    if (ResumeLaneAcceptance(server, work, artifacts, token) is { } acceptedLaneResult)
+                        return acceptedLaneResult;
+
                     if (work.Profile.Executor == AgentExecutorKind.ClaudeCode)
                     {
                         if (work.Worktree is null || work.TaskPacket is null)
                             throw new InvalidOperationException("ExternalLaneRequiresOwnedWorktree");
+                        var externalPolicyKey = ModelPolicyKey.For("claude-code", work.Profile.ExternalModel!);
+                        var externalHarness = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 5,
+                            GuidanceLevel.Off, 1, PlanControl.RuntimeDriven, 1);
+                        var externalPolicy = policyService.Effective(externalPolicyKey, externalHarness, token);
+                        var externalPermissionPolicy = new AgentProfilePermissionPolicy(
+                            OmniHost.CreateGrantAwarePolicy(RunMode.Act, restrictions, laneRoot, work.Run, audit),
+                            work.Profile, new PathBoundaryValidator(), laneRoot);
                         var external = ExecuteClaudeLane(server, work, laneRoot, artifacts,
-                            childInstruction, token);
+                            childInstruction, externalPolicy, externalPermissionPolicy, token);
                         var externalGates = workspaceConfig.Settings?.Gates;
                         if (external.StopReason == StopReason.EndTurn && externalGates is not null
                             && (externalGates.Build is not null || externalGates.Test is not null
                                 || externalGates.Acceptance))
                         {
-                            if (externalGates.Acceptance)
-                                throw new InvalidOperationException("LaneAcceptanceGateRequiresHumanResolution");
                             if (external.TurnId is not { } externalTurn)
                                 throw new InvalidOperationException("LaneCompletionGateTurnUnavailable");
                             using var gateExecution = ExecutionScope.Begin(new ExecutionScopeState(work.Run,
@@ -1582,7 +1590,11 @@ public sealed class OmniCliRuntime : IDisposable
                                 return new ExplorerTurn.TurnResult("Lane completion gate failed.", StopReason.Error,
                                     external.Steps, external.Usage, external.ToolCalls, external.ResponseArtifactId)
                                 { TurnId = external.TurnId };
+                            if (externalGates.Acceptance)
+                                return PersistLaneAcceptance(server, work, external, artifacts, token);
                         }
+                        else if (external.StopReason == StopReason.EndTurn && externalGates?.Acceptance == true)
+                            return PersistLaneAcceptance(server, work, external, artifacts, token);
                         return external;
                     }
 
@@ -1626,8 +1638,6 @@ public sealed class OmniCliRuntime : IDisposable
                     if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
                         && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))
                     {
-                        if (laneGates.Acceptance)
-                            throw new InvalidOperationException("LaneAcceptanceGateRequiresHumanResolution");
                         var durableTurn = server.AcquireStore().ReadFrom(work.Session, 1)
                             .Where(evt => evt.RunId == work.Run && evt.LaneId == work.Delegation.ChildLaneId)
                             .Select(server.AcquireCodecs().Decode).OfType<TurnStarted>().LastOrDefault();
@@ -1652,13 +1662,42 @@ public sealed class OmniCliRuntime : IDisposable
                             return new ExplorerTurn.TurnResult("Lane completion gate failed.", StopReason.Error,
                                 childResult.Steps, childResult.Usage, childResult.ToolCalls, childResult.ResponseArtifactId)
                             { TurnId = childResult.TurnId };
+                        if (laneGates.Acceptance)
+                            return PersistLaneAcceptance(server, work, childResult, artifacts, token);
                     }
                     if (workflowStage is not null && childResult.StopReason == StopReason.Error)
                         writeLine("Workflow child Turn failed: " + RedactSensitive(childResult.FinalText
                             ?? childResult.FailureDiagnostic ?? "no diagnostic was returned"));
                     return childResult;
-                },
+                }
+                var ack = server.ExecuteDelegation(delegationId, ExecuteLane,
                     cancellationToken, waitForCapacity: true);
+                if (ack.Status == "ok" && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted
+                    && FindPendingLaneAcceptance(server.AcquireStore(), server.AcquireCodecs(), sessionId, runId,
+                        server.ReadCurrentDelegation(delegationId).ChildTaskId,
+                        server.ReadCurrentDelegation(delegationId).ChildLaneId) is { } laneAcceptance)
+                {
+                    if (!interactive)
+                    {
+                        writeLine(InputRequiredJson(laneAcceptance.InteractionId, "AcceptanceConfirmation"));
+                        return 3;
+                    }
+                    var selected = ReadAcceptanceOption(writeLine, locale);
+                    if (selected is null)
+                    {
+                        writeLine(InputRequiredJson(laneAcceptance.InteractionId, "AcceptanceConfirmation"));
+                        return 3;
+                    }
+                    var response = server.RespondToInteraction(laneAcceptance.InteractionId, selected);
+                    if (response.Status != "ok")
+                    {
+                        writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "AcceptanceConfirmation"),
+                            ("error", response.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
+                        return 1;
+                    }
+                    ack = server.ExecuteDelegation(delegationId, ExecuteLane,
+                        cancellationToken, waitForCapacity: true);
+                }
                 if (ack.Error is not null) writeLine(ack.Error);
                 if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred) writeLine("Deferred · " + ack.Outcome.Reason);
                 return ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Deferred ? 0 : 1;
@@ -1829,7 +1868,9 @@ public sealed class OmniCliRuntime : IDisposable
     /// una selección efímera segura o la ausencia de una política guardada para la clave exacta.
     /// </summary>
     private ExplorerTurn.TurnResult ExecuteClaudeLane(OmniServer server, DelegationWork work,
-        string laneRoot, IArtifactStore artifacts, string instruction, CancellationToken cancellationToken)
+        string laneRoot, IArtifactStore artifacts, string instruction,
+        EffectiveModelPolicy effectivePolicy, IPermissionPolicy effectivePermissionPolicy,
+        CancellationToken cancellationToken)
     {
         var session = work.Session;
         var run = work.Run;
@@ -1843,9 +1884,16 @@ public sealed class OmniCliRuntime : IDisposable
             .Select(item => item.Payload).OfType<ExternalLaneSessionBound>().ToArray();
         if (bindings.Length > 1) throw new InvalidDataException("ExternalLaneSessionBindingAmbiguous");
         var binding = bindings.SingleOrDefault();
+        var reservations = decoded.Where(item => item.Event.ExecutionId == execution)
+            .Select(item => item.Payload).OfType<ExternalLaneInvocationReserved>().ToArray();
         var receipts = decoded.Where(item => item.Event.ExecutionId == execution)
             .Select(item => item.Payload).OfType<ExternalLaneUsageRecorded>().ToArray();
         if (receipts.Length > 1) throw new InvalidDataException("ExternalLaneResultReceiptAmbiguous");
+        var activityRecords = decoded.Where(item => item.Event.ExecutionId == execution)
+            .Select(item => item.Payload).OfType<ExternalLaneActivityObserved>().ToArray();
+        if (activityRecords.Length > 1) throw new InvalidDataException("ExternalLaneActivityReceiptAmbiguous");
+        if (activityRecords.Length == 1 && receipts.Length == 0)
+            throw new InvalidDataException("ExternalLaneRecoveryRequiresManualResolution");
 
         if (receipts.SingleOrDefault() is { } receipt)
         {
@@ -1874,7 +1922,22 @@ public sealed class OmniCliRuntime : IDisposable
                 binding.Capabilities, false, validated.Result.Summary, durableJson,
                 new ClaudeLaneUsage(rawInput, rawOutput, receipt.CacheReadInputTokens,
                     receipt.CacheCreationInputTokens, receipt.TotalCostUsd), [], receipt.EventCount,
-                receipt.StreamBytes, checked(rawInput + rawOutput), receipt.ToolUseCount);
+                receipt.StreamBytes, checked(rawInput + rawOutput + receiptCacheRead + receiptCacheWrite), receipt.ToolUseCount)
+            {
+                ApiRetryCount = activityRecords.SingleOrDefault()?.ApiRetryCount ?? receipt.ApiRetryCount,
+                PermissionDenialCount = activityRecords.SingleOrDefault()?.PermissionDenialCount
+                    ?? receipt.PermissionDenialCount,
+                ToolResultCount = activityRecords.SingleOrDefault()?.ToolResultCount ?? receipt.ToolResultCount,
+                StreamDeltaCount = activityRecords.SingleOrDefault()?.StreamDeltaCount ?? receipt.StreamDeltaCount,
+            };
+            if (activityRecords.SingleOrDefault() is { } activity
+                && (activity.LaneId != lane || activity.SessionId != binding.SessionId
+                    || activity.ToolUseCount != receipt.ToolUseCount
+                    || activity.ApiRetryCount != receipt.ApiRetryCount
+                    || activity.PermissionDenialCount != receipt.PermissionDenialCount
+                    || activity.ToolResultCount != receipt.ToolResultCount
+                    || activity.StreamDeltaCount != receipt.StreamDeltaCount))
+                throw new InvalidDataException("ExternalLaneActivityReceiptMismatch");
             return new ExplorerTurn.TurnResult(validated.Result.Summary, StopReason.EndTurn, 1, receiptTokenUsage,
                 Array.Empty<ExplorerTurn.ToolUseTrace>(), receipt.ResultRef.Hash.Value)
             {
@@ -1892,6 +1955,7 @@ public sealed class OmniCliRuntime : IDisposable
         if (turnStarts.Length > 1) throw new InvalidDataException("ExternalLaneTurnAmbiguous");
         TurnId turnId;
         int stepIndex;
+        ExecutionFingerprint? newTurnFingerprint = null;
         if (turnStarts.Length == 1)
         {
             var priorTurn = turnStarts[0];
@@ -1920,20 +1984,14 @@ public sealed class OmniCliRuntime : IDisposable
             if (binding is not null) throw new InvalidDataException("ExternalLaneRecoveryRequiresManualResolution");
             turnId = TurnId.New();
             stepIndex = 0;
-            var fingerprint = new ExecutionFingerprint("claude-code/" + work.Profile.ExternalModel,
+            newTurnFingerprint = new ExecutionFingerprint("claude-code/" + work.Profile.ExternalModel,
                 "external-cli-fixed-policy-v1", "external-lane-builtins-v1", "task-packet-v1",
                 AgentProfileFingerprint.Hash(work.Profile).Value, "M7", "claude-code",
                 "stream-json-v1");
-            var scope = new ExecutionScopeState(run, work.Scope.TaskId, lane, turnId, ExecutionId: execution);
-            var startStream = new EventStream(store, codecs, session);
-            startStream.AppendBatch([
-                new TurnStarted(turnId, lane, fingerprint, work.TaskPacket!.SelectedProjectionRef,
-                    new TurnInstructionSnapshot(false, instruction)),
-                new ModelStepStarted(turnId, stepIndex, work.Profile.ExternalModel!,
-                    work.Budget.MaxTokens!.Value, "claude-code-fixed-tools", null, null,
-                    work.TaskPacket.SelectedProjectionRef),
-            ], DurabilityClass.Barrier, [scope, scope]);
         }
+
+        var invocationQuota = ExternalLaneBudgetReservations.Next(work.TaskPacket!.Budget,
+            reservations, execution, lane, binding?.SessionId, resuming: turnStarts.Length == 1);
 
         var executable = ClaudeExecutableLocatorForTests?.Invoke() ?? new ClaudeCodeRuntimeLocator().Locate()
             ?? throw new InvalidOperationException("ClaudeCodeRuntimeNotInstalled");
@@ -1947,8 +2005,35 @@ public sealed class OmniCliRuntime : IDisposable
             || artifacts.Verify(selectedProjection.Hash, selectedProjection.Size) != true
             || artifacts.GetText(selectedProjection.Hash) is not { } selectedProjectionJson)
             throw new InvalidDataException("ExternalLaneSelectedProjectionUnavailable");
-        var invocation = ClaudeLaneInvocationBuilder.Build(work.Profile, work.TaskPacket,
-            selectedProjectionJson, executable, laneRoot, binding?.SessionId);
+        var invocationPacket = work.TaskPacket with { Budget = invocationQuota.Budget };
+        var reportedCostCeiling = binding is null
+            ? invocationQuota.Budget.MaxCostUsd
+            : work.TaskPacket.Budget.MaxCostUsd;
+        var invocation = ClaudeLaneInvocationBuilder.Build(work.Profile, invocationPacket, effectivePolicy,
+            selectedProjectionJson, executable, laneRoot, invocationQuota.SessionId, effectivePermissionPolicy,
+            maximumReportedCostUsd: reportedCostCeiling);
+        if (newTurnFingerprint is not null)
+        {
+            // Complete all deterministic policy, packet, runtime and argv validation before
+            // creating an open model step. A denied capability is a no-dispatch, not uncertain
+            // model consumption that blocks the Run during recovery.
+            var scope = new ExecutionScopeState(run, work.Scope.TaskId, lane, turnId, ExecutionId: execution);
+            new EventStream(store, codecs, session).AppendBatch([
+                new TurnStarted(turnId, lane, newTurnFingerprint, selectedProjection,
+                    new TurnInstructionSnapshot(false, instruction)),
+                new ModelStepStarted(turnId, stepIndex, work.Profile.ExternalModel!,
+                    invocationQuota.Budget.MaxTokens!.Value, "claude-code-fixed-tools", null, null,
+                    selectedProjection),
+                ExternalLaneBudgetReservations.ToEvent(execution, lane, invocationQuota),
+            ], DurabilityClass.Barrier, [scope, scope, scope]);
+        }
+        else
+        {
+            var scope = new ExecutionScopeState(run, work.Scope.TaskId, lane, turnId, ExecutionId: execution);
+            new EventStream(store, codecs, session).AppendBatch([
+                ExternalLaneBudgetReservations.ToEvent(execution, lane, invocationQuota),
+            ], DurabilityClass.Barrier, [scope]);
+        }
         var processRuntime = ProcessRuntimeFactoryForTests?.Invoke() ?? SystemProcessRuntime.Instance();
         var executor = new ClaudeLaneProcessExecutor(processRuntime);
         var outcome = executor.ExecuteAsync(invocation.Executable, invocation.Arguments, laneRoot,
@@ -1984,16 +2069,47 @@ public sealed class OmniCliRuntime : IDisposable
                 else if (existing.Length != 1 || !ExternalSessionEquals(existing[0], started))
                     throw new InvalidDataException("ExternalLaneSessionBindingMismatch");
                 await ValueTask.CompletedTask;
-            }, cancellationToken, invocation.StreamLimits).ConfigureAwait(false).GetAwaiter().GetResult();
+            }, cancellationToken, invocation.StreamLimits, (progress, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                _server!.Observability.ObserveExternal(session, turnId, run, lane, progress);
+                return ValueTask.CompletedTask;
+            }).ConfigureAwait(false).GetAwaiter().GetResult();
+        if (outcome.Stream is { } observedStream)
+        {
+            var activityScope = new ExecutionScopeState(run, work.Scope.TaskId, lane, turnId,
+                ExecutionId: execution);
+            new EventStream(store, codecs, session).AppendBatch([
+                new ExternalLaneActivityObserved(execution, lane, observedStream.SessionId,
+                    observedStream.ToolUseCount, observedStream.ToolResultCount,
+                    observedStream.PermissionDenialCount, observedStream.ApiRetryCount,
+                    observedStream.StreamDeltaCount, observedStream.EventCount, observedStream.StreamBytes),
+            ], DurabilityClass.Barrier, [activityScope]);
+        }
         if (outcome.Failure is not null || outcome.Stream is null || outcome.AgentResult is null)
             throw new InvalidOperationException("ExternalLaneProcessFailed:" + outcome.Failure
                 + ":exit=" + outcome.ExitCode.ToString(CultureInfo.InvariantCulture)
                 + (outcome.ProtocolError is { } protocolError ? ":" + protocolError : "")
+                + (outcome.BudgetEvidence is { } budgetEvidence
+                    ? ":budget=" + budgetEvidence.Dimension
+                        + (budgetEvidence.ObservedCount is { } observedCount
+                            ? ",observed=" + observedCount.ToString(CultureInfo.InvariantCulture) : "")
+                        + (budgetEvidence.LimitCount is { } limitCount
+                            ? ",limit=" + limitCount.ToString(CultureInfo.InvariantCulture) : "")
+                        + (budgetEvidence.ObservedCostUsd is { } observedCost
+                            ? ",observedUsd=" + observedCost.ToString("G29", CultureInfo.InvariantCulture) : "")
+                        + (budgetEvidence.LimitCostUsd is { } limitCost
+                            ? ",limitUsd=" + limitCost.ToString("G29", CultureInfo.InvariantCulture) : "")
+                    : "")
                 + (outcome.Diagnostic is { } diagnostic ? ":" + diagnostic : ""));
         var stream = outcome.Stream;
+        if (stream.ApiRetryCount > 0)
+            throw new InvalidDataException("ExternalLaneUsageCoverageUnavailableAfterApiRetry");
         if (stream.Model != work.Profile.ExternalModel || stream.Usage.TotalCostUsd is null
             || stream.Usage.InputTokens is null || stream.Usage.OutputTokens is null
-            || stream.TotalTokens > work.Budget.MaxTokens || stream.ToolUseCount > work.Budget.MaxToolCalls)
+            || stream.TotalTokens > invocationQuota.Budget.MaxTokens
+            || stream.ToolUseCount > invocationQuota.Budget.MaxToolCalls
+            || stream.Usage.TotalCostUsd > reportedCostCeiling)
             throw new InvalidDataException("ExternalLaneUsageOrModelMismatch");
 
         var resultJson = ClaudeLaneAgentResultValidator.SerializeRedacted(outcome.AgentResult);
@@ -2028,7 +2144,9 @@ public sealed class OmniCliRuntime : IDisposable
             var usageEvent = new ExternalLaneUsageRecorded(execution, lane, stream.SessionId,
                 stream.Usage.InputTokens, stream.Usage.OutputTokens, stream.Usage.CacheReadInputTokens,
                 stream.Usage.CacheCreationInputTokens, stream.Usage.TotalCostUsd, stream.ToolUseCount,
-                stream.EventCount, stream.StreamBytes, resultPrepared.Reference);
+                stream.EventCount, stream.StreamBytes, resultPrepared.Reference,
+                stream.ApiRetryCount, stream.PermissionDenialCount, stream.ToolResultCount,
+                stream.StreamDeltaCount, UsageCoverageComplete: binding is null);
             var completedStep = new ModelStepCompleted(turnId, stepIndex, usage, StopReason.EndTurn,
                 usagePrepared.Reference, now, stream.Usage.TotalCostUsd,
                 TokenUsageFields.Input | TokenUsageFields.Output | TokenUsageFields.CacheRead | TokenUsageFields.CacheWrite);
@@ -2586,6 +2704,219 @@ public sealed class OmniCliRuntime : IDisposable
             "4" or "reject" => "reject",
             _ => null,
         };
+    }
+
+    private static ExplorerTurn.TurnResult? ResumeLaneAcceptance(OmniServer server, DelegationWork work,
+        IArtifactStore artifacts, CancellationToken cancellationToken)
+    {
+        var store = server.AcquireStore();
+        var codecs = server.AcquireCodecs();
+        var journal = store.ReadFrom(work.Session, 1).Where(evt => evt.RunId == work.Run).ToArray();
+        var pending = journal.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Event.TaskId == work.Scope.TaskId && item.Event.LaneId == work.Delegation.ChildLaneId
+                && item.Event.ExecutionId == work.Scope.ExecutionId)
+            .Select(item => item.Payload).OfType<LaneAcceptancePending>().ToArray();
+        if (pending.Length == 0) return null;
+        if (pending.Length != 1 || pending[0].TaskId != work.Scope.TaskId
+            || pending[0].LaneId != work.Delegation.ChildLaneId
+            || pending[0].ExecutionId != work.Scope.ExecutionId)
+            throw new InvalidDataException("LaneAcceptanceBindingAmbiguous");
+        var acceptance = pending[0];
+        var lanePreview = CaptureLaneAcceptancePreview(work, cancellationToken);
+        if (acceptance.LaneTreeAtAcceptance.Length is not (40 or 64)
+            || !string.Equals(lanePreview.TheirsTree, acceptance.LaneTreeAtAcceptance, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(lanePreview.LaneHeadAtCapture, acceptance.LaneHeadAtAcceptance, StringComparison.OrdinalIgnoreCase)
+            || lanePreview.LaneBranchAtCapture != acceptance.LaneBranchAtAcceptance)
+            throw new InvalidDataException("LaneAcceptanceWorkspaceChanged");
+        var requests = journal.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Payload is InteractionRequested request
+                && request.InteractionId == acceptance.InteractionId
+                && request.Kind == InteractionKind.AcceptanceConfirmation)
+            .ToArray();
+        if (requests.Length != 1 || requests[0].Event.TaskId != work.Scope.TaskId
+            || requests[0].Event.LaneId != work.Delegation.ChildLaneId
+            || requests[0].Event.ExecutionId != work.Scope.ExecutionId)
+            throw new InvalidDataException("LaneAcceptanceInteractionUnavailable");
+        var scopedResponses = journal.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Payload switch
+            {
+                InteractionResolved resolved => resolved.InteractionId == acceptance.InteractionId,
+                InteractionExpired expired => expired.InteractionId == acceptance.InteractionId,
+                _ => false,
+            }).ToArray();
+        if (scopedResponses.Any(item => item.Event.TaskId != work.Scope.TaskId
+            || item.Event.LaneId != work.Delegation.ChildLaneId
+            || item.Event.ExecutionId != work.Scope.ExecutionId))
+            throw new InvalidDataException("LaneAcceptanceResolutionScopeMismatch");
+        var resolutions = scopedResponses.Select(item => item.Payload).OfType<InteractionResolved>().ToArray();
+        var expired = scopedResponses.Any(item => item.Payload is InteractionExpired);
+        if (resolutions.Length > 1 || expired && resolutions.Length > 0)
+            throw new InvalidDataException("LaneAcceptanceResolutionAmbiguous");
+        var pendingResponse = resolutions.Length == 0 && !expired;
+        var accepted = resolutions.Length == 1 && resolutions[0].OptionId == "accept";
+        var declined = resolutions.Length == 1 && resolutions[0].OptionId == "revise";
+        if (!pendingResponse && !accepted && !declined)
+            throw new InvalidDataException("LaneAcceptanceResolutionInvalid");
+        if (!pendingResponse && declined)
+            return new ExplorerTurn.TurnResult("La lane requiere revisión.", StopReason.Error, 0,
+                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ExplorerTurn.ToolUseTrace>(), null)
+            { TurnId = acceptance.TurnId, FailureDiagnostic = "LaneAcceptanceDeclined" };
+        if (acceptance.ResultRef.Kind != ArtifactKind.Other
+            || acceptance.ResultRef.MediaType != "application/vnd.omnicore.agent-result+json"
+            || acceptance.ResultRef.Sensitivity != Sensitivity.Sensitive
+            || acceptance.ResultRef.Size is <= 0 or > 1_048_576
+            || artifacts.Verify(acceptance.ResultRef.Hash, acceptance.ResultRef.Size) != true
+            || artifacts.GetText(acceptance.ResultRef.Hash) is not { } json)
+            throw new InvalidDataException("LaneAcceptanceResultUnavailable");
+        string summary;
+        AgentResult? externalResult = null;
+        if (acceptance.ResultSchemaId == ClaudeLaneAgentResultValidator.SchemaId)
+        {
+            externalResult = ClaudeLaneAgentResultValidator.Validate(json)?.Result
+                ?? throw new InvalidDataException("LaneAcceptanceResultUnavailable");
+            summary = externalResult.Summary;
+        }
+        else if (acceptance.ResultSchemaId == "core.explorer.v1")
+        {
+            var document = JsonSerializer.Deserialize(json, DelegationResultJson.Default.DelegationResultDocument);
+            if (document is not { Version: 1, Outcome: "Succeeded" })
+                throw new InvalidDataException("LaneAcceptanceResultUnavailable");
+            summary = new PiiRedactor().Redact(document.Summary);
+        }
+        else throw new InvalidDataException("LaneAcceptanceResultSchemaUnsupported");
+        return new ExplorerTurn.TurnResult(summary,
+            pendingResponse ? StopReason.InputRequired : StopReason.EndTurn, 0,
+            new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ExplorerTurn.ToolUseTrace>(), acceptance.ResultRef.Hash.Value,
+            pendingResponse ? acceptance.InteractionId : null)
+        {
+            TurnId = acceptance.TurnId,
+            ExternalAgentResult = externalResult,
+            ExternalResultSchemaId = acceptance.ResultSchemaId,
+            DurableAcceptedResultRef = acceptance.ResultRef,
+            DurableAcceptedResultSchemaId = acceptance.ResultSchemaId,
+        };
+    }
+
+    private static InteractionRequested? FindPendingLaneAcceptance(IEventStore store,
+        IEventCodecRegistry codecs, SessionId session, RunId run, TaskId task, LaneId lane)
+    {
+        var events = store.ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray();
+        var pendingEvents = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Event.TaskId == task && item.Event.LaneId == lane
+                && item.Payload is LaneAcceptancePending pending && pending.TaskId == task && pending.LaneId == lane)
+            .ToArray();
+        if (pendingEvents.Any(item => item.Event.ExecutionId != ((LaneAcceptancePending)item.Payload).ExecutionId))
+            throw new InvalidDataException("LaneAcceptanceBindingAmbiguous");
+        var pendingIds = pendingEvents.ToDictionary(item => ((LaneAcceptancePending)item.Payload).InteractionId,
+            item => ((LaneAcceptancePending)item.Payload).ExecutionId);
+        var requests = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Event.TaskId == task && item.Event.LaneId == lane
+                && item.Payload is InteractionRequested request
+                    && request.Kind == InteractionKind.AcceptanceConfirmation
+                    && pendingIds.TryGetValue(request.InteractionId, out var execution)
+                    && item.Event.ExecutionId == execution)
+            .ToArray();
+        var completed = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Event.TaskId == task && item.Event.LaneId == lane
+                && (item.Payload switch
+                {
+                    InteractionResolved resolved => (InteractionId?)resolved.InteractionId,
+                    InteractionExpired expired => expired.InteractionId,
+                    _ => null,
+                }) is { } interactionId
+                && pendingIds.TryGetValue(interactionId, out var execution) && item.Event.ExecutionId == execution)
+            .Select(item => item.Payload switch
+            {
+                InteractionResolved resolved => resolved.InteractionId,
+                InteractionExpired expired => expired.InteractionId,
+                _ => default,
+            }).ToHashSet();
+        var pendingRequests = requests.Where(item => !completed.Contains(
+            ((InteractionRequested)item.Payload).InteractionId)).ToArray();
+        if (pendingRequests.Length > 1)
+            throw new InvalidDataException("LaneAcceptanceInteractionAmbiguous");
+        return pendingRequests.Length == 0 ? null : (InteractionRequested)pendingRequests[0].Payload;
+    }
+
+    private static ExplorerTurn.TurnResult PersistLaneAcceptance(OmniServer server, DelegationWork work,
+        ExplorerTurn.TurnResult result, IArtifactStore artifacts, CancellationToken cancellationToken)
+    {
+        IDisposable? publicationLease = null;
+        try
+        {
+        if (ResumeLaneAcceptance(server, work, artifacts, cancellationToken) is { } existing) return existing;
+        var lanePreview = CaptureLaneAcceptancePreview(work, cancellationToken);
+        if (result.TurnId is not { } turnId)
+            throw new InvalidDataException("LaneAcceptanceTurnUnavailable");
+        var schemaId = result.ExternalResultSchemaId ?? "core.explorer.v1";
+        ArtifactRef resultRef;
+        if (result.ExternalResultRef is { } externalRef)
+        {
+            if (schemaId != ClaudeLaneAgentResultValidator.SchemaId
+                || externalRef.Kind != ArtifactKind.Other
+                || externalRef.MediaType != "application/vnd.omnicore.agent-result+json"
+                || externalRef.Sensitivity != Sensitivity.Sensitive
+                || externalRef.Size is <= 0 or > 1_048_576
+                || artifacts.Verify(externalRef.Hash, externalRef.Size) != true
+                || artifacts.GetText(externalRef.Hash) is not { } externalJson
+                || ClaudeLaneAgentResultValidator.Validate(externalJson) is null)
+                throw new InvalidDataException("LaneAcceptanceResultUnavailable");
+            resultRef = externalRef;
+        }
+        else
+        {
+            var summary = new PiiRedactor().Redact(result.FinalText ?? "");
+            var issues = result.ToolCalls.Where(call => !call.Succeeded)
+                .Select(call => new PiiRedactor().Redact(call.ToolName + ": " + call.Summary)).ToArray();
+            var json = JsonSerializer.Serialize(new DelegationResultDocument(1, "Succeeded", summary, [], issues),
+                DelegationResultJson.Default.DelegationResultDocument);
+            if (artifacts is not IArtifactPreparationStore preparations
+                || artifacts is not IArtifactPublicationLease publications)
+                throw new InvalidDataException("LaneAcceptanceArtifactPublicationUnavailable");
+            var prepared = preparations.PrepareText(json, "application/vnd.omnicore.agent-result+json",
+                ArtifactKind.Other, Sensitivity.Sensitive);
+            if (prepared.Reference.Size is <= 0 or > 1_048_576)
+                throw new InvalidDataException("LaneAcceptanceArtifactTooLarge");
+            publicationLease = publications.AcquirePublicationLease(cancellationToken);
+            if (prepared.Publish() != prepared.Reference
+                || artifacts.Verify(prepared.Reference.Hash, prepared.Reference.Size) != true)
+                throw new InvalidDataException("LaneAcceptanceArtifactPublicationFailed");
+            resultRef = prepared.Reference;
+        }
+        var interactionId = InteractionId.New();
+        var interaction = new InteractionRequested(interactionId, InteractionKind.AcceptanceConfirmation,
+            "{\"operation\":\"lane.acceptance\",\"reason\":\"La lane terminó y requiere confirmación humana\"}",
+            "[{\"id\":\"accept\",\"intent\":\"allow\"},{\"id\":\"revise\",\"intent\":\"deny\"}]",
+            "revise", null, work.Delegation.ChildLaneId, work.Scope.TaskId, null, 0, 1);
+        var pending = new LaneAcceptancePending(work.Scope.TaskId
+            ?? throw new InvalidDataException("LaneAcceptanceTaskUnavailable"), work.Delegation.ChildLaneId,
+            work.Scope.ExecutionId ?? throw new InvalidDataException("LaneAcceptanceExecutionUnavailable"),
+            turnId, interactionId, resultRef, schemaId)
+        {
+            LaneTreeAtAcceptance = lanePreview.TheirsTree,
+            LaneHeadAtAcceptance = lanePreview.LaneHeadAtCapture,
+            LaneBranchAtAcceptance = lanePreview.LaneBranchAtCapture,
+        };
+        var scope = new ExecutionScopeState(work.Run, work.Scope.TaskId, work.Delegation.ChildLaneId,
+            turnId, ExecutionId: work.Scope.ExecutionId);
+        new EventStream(server.AcquireStore(), server.AcquireCodecs(), work.Session).AppendBatch(
+            [interaction, pending], DurabilityClass.Barrier, [scope, scope]);
+        return ResumeLaneAcceptance(server, work, artifacts, cancellationToken)
+            ?? throw new InvalidDataException("LaneAcceptanceRequestWasNotPersisted");
+        }
+        finally { publicationLease?.Dispose(); }
+    }
+
+    private static WorktreeIntegrationPreview CaptureLaneAcceptancePreview(DelegationWork work,
+        CancellationToken cancellationToken)
+    {
+        var identity = work.Worktree ?? throw new InvalidDataException("LaneAcceptanceWorktreeUnavailable");
+        var outcome = new GitWorktreeStore(SystemProcessRuntime.Instance())
+            .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
+            .GetAwaiter().GetResult();
+        if (!outcome.Succeeded || outcome.Preview is null || outcome.Preview.TheirsTree.Length is not (40 or 64))
+            throw new InvalidDataException("LaneAcceptanceTreeUnavailable:" + outcome.Error);
+        return outcome.Preview;
     }
 
     private static QuestionnairePromptDto ToQuestionnairePromptDto(QuestionnaireSchema schema) =>

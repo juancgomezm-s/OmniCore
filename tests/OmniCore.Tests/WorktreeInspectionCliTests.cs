@@ -121,6 +121,25 @@ public sealed class WorktreeInspectionCliTests : IDisposable
     }
 
     [Fact]
+    public async Task Actual_cli_discard_requires_apply_and_retains_dirty_lane_output()
+    {
+        var worktree = await CreateWorktree();
+        await File.WriteAllTextAsync(Path.Combine(worktree.WorktreePath, "lane-output.txt"), "retained output\n",
+            TestContext.Current.CancellationToken);
+        var refused = await Cli("en", "worktree", "discard", _repo, worktree.OwnershipId);
+        Assert.Equal(2, refused.ExitCode);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+
+        var discarded = await Cli("en", "worktree", "discard", _repo, worktree.OwnershipId, "--apply");
+        Assert.Equal(0, discarded.ExitCode);
+        Assert.Contains("archived and removed", discarded.Output);
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        var retainedRef = Assert.Single((await Git("for-each-ref", "--format=%(refname)",
+            "refs/omnicore/retained-lanes")).Output.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.Equal("retained output\n", (await Git("show", retainedRef + ":lane-output.txt")).Output);
+    }
+
+    [Fact]
     public void Inspection_strings_have_both_locales()
     {
         var keys = Localization.SpanishKeys.Where(key => key.StartsWith("worktree.", StringComparison.Ordinal)).ToArray();
