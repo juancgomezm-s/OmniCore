@@ -204,14 +204,26 @@ cambio del mecanismo de extensiones M8.
 `/tools` resuelve la misma `tools.inspect` del registro de acciones del cliente.
 El handler conserva el JSON completo para clientes textuales y añade una
 proyección tipada (`ToolsInspection`) para la TUI, sin el recorte de 1.800
-caracteres de los avisos genéricos. No cambia la consulta ni la política del Host.
+caracteres de los avisos genéricos. La consulta añade `description` de la definición
+original de cada herramienta; no cambia la política ni los prompts del Host.
 El catálogo se presenta en un panel de sólo lectura con filtro, lista desplazable
-y detalle seleccionable/desplazable de ID, origen, efecto, decisión y visibilidad.
+y detalle seleccionable/desplazable. Primero muestra qué hace la herramienta y la
+restricción explicada; después, ID, origen, efecto, decisión técnica y definición
+original. Las herramientas integradas tienen descripciones es/en en el cliente;
+las externas conservan la descripción del autor, marcada como idioma original.
+Sin descripción se indica explícitamente. El filtro busca también esas descripciones.
 Las herramientas no visibles permanecen en la inspección; visibilidad no
 equivale a autorización de ejecución. Enter enfoca el detalle, Ctrl+F el filtro
 y Esc cierra y devuelve el foco al composer. El panel se adapta al resize.
 Un catálogo vacío, una consulta ausente y datos inválidos tienen mensajes distintos;
 no se descartan filas inválidas silenciosamente ni se inventan permisos.
+
+Es un catálogo de diagnóstico, no una pantalla de activación ni ejecución. El panel
+lo indica. Las reglas `allow`/`ask`/`deny` por herramienta existen en el
+`permissions.yaml` del **usuario**, no en el workspace (ADR-0037/0039); no superan
+los límites del modo o del modelo. `/permissions` lista grants, no habilita tools.
+La visibilidad reportada no garantiza que la herramienta esté en cada prompt ni
+representa una evaluación completa de permisos sobre una llamada concreta.
 
 ## Integración y evidencia reproducible
 

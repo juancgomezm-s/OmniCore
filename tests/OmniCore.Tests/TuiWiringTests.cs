@@ -1668,7 +1668,19 @@ public sealed class TuiWiringTests
         Assert.Equal(expected.RootElement.GetProperty("tools").GetArrayLength(), list.Source!.Count);
         Assert.Contains(list.Source.ToList().Cast<object>(), item => item.ToString()!.Contains("filesystem.read"));
         Assert.DoesNotContain("visibleName", OverlayText(fx.App.Overlay));
+        Assert.Contains("Consulta: no ejecuta ni activa/desactiva", OverlayText(fx.App.Overlay));
+        var detail = fx.App.Overlay.SubViews.OfType<StyledTextPresenter>().Single();
+        Assert.Contains("Te pide información", detail.Text);
+        Assert.Contains("permissions.yaml", detail.Text);
+        Assert.Contains("/permissions lista autorizaciones", detail.Text);
         Assert.True(list.HasFocus);
+        var search = fx.App.Overlay.SubViews.OfType<TextField>().Single();
+        KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "filtro por descripción");
+        fx.Invoke(() => search.Text = "Lee el contenido");
+        fx.Wait(() => list.Source.Count == 1 && detail.Text.ToString().Contains("filesystem.read"), "descripción española busca herramienta");
+        Assert.Contains("sin modificarlo", detail.Text);
+        fx.Invoke(() => search.Text = "");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => list.HasFocus, "volver al catálogo completo");
         KeyWithEffect(fx, KeyCode.End, () => list.SelectedItem == list.Source.Count - 1, "última herramienta accesible");
         Assert.Equal(journalCount, fx.Server.SubscribeSince(0).Count);
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc cierra catálogo");
@@ -1703,6 +1715,7 @@ public sealed class TuiWiringTests
         {
             visibleName = $"tool.{index:00}", toolId = $"id.{index:00}", source,
             effectClass = "Write", decision = "reject:PLAN mode", visible = false,
+            description = "Descripción externa: acción y pingüino.",
         });
         var client = new ToolQueryClient(fx.Server, System.Text.Json.JsonSerializer.Serialize(new { mode = "Plan", tools = entries }));
         fx.StartTui(client: client, initialColumns: 80, initialRows: 25);
@@ -1718,12 +1731,16 @@ public sealed class TuiWiringTests
         Assert.Contains(source, detail.Text);
         Assert.Contains("No visible", detail.Text);
         Assert.Contains("reject:PLAN mode", detail.Text);
+        Assert.Contains("Bloqueada en Plan", detail.Text);
+        Assert.Contains("Descripción externa: acción y pingüino.", detail.Text);
         Assert.Contains("no equivale a permiso", detail.Text);
         KeyWithEffect(fx, KeyCode.Enter, () => detail.HasFocus, "Enter sólo enfoca detalle");
         KeyWithEffect(fx, KeyCode.PageDown, () => detail.Viewport.Y > 0, "detalle largo desplaza sin cortar campos");
         KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "Ctrl+F vuelve al filtro");
         fx.Invoke(() => search.Text = "TOOL.39");
         fx.Wait(() => list.Source.Count == 1, "filtro sin distinguir mayúsculas");
+        fx.Invoke(() => search.Text = "pingüino");
+        fx.Wait(() => list.Source.Count == 40, "descripciones externas también se buscan");
         fx.Invoke(() => search.Text = "sin-coincidencias");
         fx.Wait(() => list.Source.Count == 0 && detail.Text.ToString().Contains("Sin coincidencias"), "vacío explícito");
         fx.Invoke(() => search.Text = "");

@@ -4,7 +4,11 @@ namespace OmniCore.Client;
 
 /// <summary>Read-only diagnostic metadata reported by the Host, not execution authority.</summary>
 public sealed record ToolInspectionRow(string VisibleName, string ToolId, string Source,
-    string EffectClass, string Decision, bool Visible);
+    string EffectClass, string Decision, bool Visible)
+{
+    /// <summary>Original catalog text, not a prompt or execution permission. Older hosts may omit it.</summary>
+    public string? Description { get; init; }
+}
 
 /// <summary>The complete tool catalog, independent of any terminal or desktop UI.</summary>
 public sealed record ToolsInspection(string? Mode, IReadOnlyList<ToolInspectionRow> Tools);
@@ -36,7 +40,8 @@ public static class ToolsInspectionJson
                     || Text(tool, "decision") is not { } decision
                     || !tool.TryGetProperty("visible", out var visible)
                     || visible.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
-                rows.Add(new(name, id, source, effect, decision, visible.GetBoolean()));
+                rows.Add(new(name, id, source, effect, decision, visible.GetBoolean())
+                    { Description = Text(tool, "description") });
             }
             return new(mode, rows.AsReadOnly());
         }
@@ -46,4 +51,28 @@ public static class ToolsInspectionJson
     private static string? Text(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() : null;
+}
+
+/// <summary>Human explanations only; never changes model definitions or permission decisions.</summary>
+public static class ToolInspectionPresentation
+{
+    public static string Description(ToolInspectionRow row, Localization text)
+    {
+        var key = "client.tool." + row.ToolId + ".description";
+        // Do not attribute a built-in explanation to a plugin with a similar name.
+        if (row.Source == "BuiltIn:BuiltIn:Core:core@1" && Localization.HasInBoth(key))
+            return text.Resolve(key);
+        return string.IsNullOrWhiteSpace(row.Description) ? text.Resolve("client.tools.description.missing")
+            : text.Resolve("client.tools.description.original") + row.Description;
+    }
+
+    public static string Decision(ToolInspectionRow row, Localization text) => text.Resolve(row.Decision switch
+    {
+        "reject:PLAN mode" => "client.tools.policy.plan",
+        "reject:ModelCapabilityBoundary" => "client.tools.policy.boundary",
+        "ask:ModelCapabilityBoundary" => "client.tools.policy.boundary_ask",
+        "ask:permission policy" => "client.tools.policy.ask",
+        "permission policy" => "client.tools.policy.evaluate",
+        _ => "client.tools.policy.unknown",
+    });
 }

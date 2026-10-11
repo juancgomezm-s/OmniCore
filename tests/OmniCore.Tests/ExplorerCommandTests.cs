@@ -88,6 +88,7 @@ public sealed class ExplorerCommandTests
         Assert.Equal(EffectClass.Reconcilable, catalog.Find(new ToolId("custom.reconcilable"))!
             .Descriptor.EffectClass);
         Assert.Equal("Reconcilable", entry.GetProperty("effectClass").GetString());
+        Assert.Equal(catalog.Definitions().Single().Description, entry.GetProperty("description").GetString());
     }
 
     [Fact]
@@ -159,6 +160,13 @@ public sealed class ExplorerCommandTests
         using var document = System.Text.Json.JsonDocument.Parse(json);
         Assert.Equal("Plan", document.RootElement.GetProperty("mode").GetString());
         var tools = document.RootElement.GetProperty("tools").EnumerateArray().ToArray();
+        foreach (var tool in tools)
+        {
+            var id = tool.GetProperty("toolId").GetString()!;
+            Assert.Equal(OmniHost.CreateActTools().Catalog().Find(new ToolId(id))!.Descriptor.Description,
+                tool.GetProperty("description").GetString());
+            Assert.True(Localization.HasInBoth("client.tool." + id + ".description"), id);
+        }
         Assert.Contains(tools, tool => tool.GetProperty("decision").GetString() == "reject:PLAN mode");
         Assert.DoesNotContain(tools, tool => tool.GetProperty("visible").GetBoolean()
             && tool.GetProperty("effectClass").GetString() != "None");

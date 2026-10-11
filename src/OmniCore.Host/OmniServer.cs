@@ -2012,6 +2012,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     : "permission policy";
                 entries.Add("{" + JsonObj.Field("visibleName", definition.Name) + ","
                     + JsonObj.Field("toolId", descriptor.Id.ToString()) + ","
+                    + JsonObj.Field("description", definition.Description) + ","
                     + JsonObj.Field("source", descriptor.Source.Kind + ":" + descriptor.Source.Scope
                         + ":" + descriptor.Source.Trust + ":" + descriptor.Source.Owner
                         + "@" + descriptor.Source.Version) + ","
