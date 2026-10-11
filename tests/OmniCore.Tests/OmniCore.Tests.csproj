@@ -13,6 +13,7 @@
     <ProjectReference Include="..\..\src\OmniCore.Cli\OmniCore.Cli.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Context\OmniCore.Context.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Models\OmniCore.Models.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Memory\OmniCore.Memory.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Execution\OmniCore.Execution.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Extensions\OmniCore.Extensions.csproj" />
     <ProjectReference Include="..\..\src\OmniCore.Security\OmniCore.Security.csproj" />

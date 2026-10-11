@@ -12,6 +12,7 @@ using OmniCore.Security;
 using OmniCore.Sandbox;
 using OmniCore.Tools;
 using OmniCore.Extensions;
+using OmniCore.Memory;
 using System.Globalization;
 using System.Text.Json;
 
@@ -1497,9 +1498,11 @@ public sealed class OmniCliRuntime : IDisposable
                 skill.Skill.Manifest.Id!, skill.Skill.Manifest.Version!, ContentHash.Sha256(skill.ContentSha256))).ToArray();
             var skillContributors = loadedProjectSkills.Select(skill =>
                 (IContextContributor)new SkillContextContributor(sessionId, skill)).ToArray();
+            var contentContributors = skillContributors.Cast<IContextContributor>().Append(
+                new SessionMemoryContextContributor(new SessionMemoryStore(workspaceData))).ToArray();
             var contributors = executingAct
-                ? skillContributors
-                : new IContextContributor[] { new WorkingStateContributor(workingState) }.Concat(skillContributors).ToArray();
+                ? contentContributors
+                : new IContextContributor[] { new WorkingStateContributor(workingState) }.Concat(contentContributors).ToArray();
             var materializer = new ContextMaterializer(tokenCounter, contributors);
             var questionnaireService = new QuestionnaireInteractionService(server.AcquireStore(),
                 server.AcquireCodecs(), artifacts);

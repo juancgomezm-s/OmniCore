@@ -130,6 +130,14 @@ public interface IContextEventSink
     ValueTask AppendAsync(DomainEventPayload payload, CancellationToken cancellationToken);
 }
 
+/// <summary>Durable memory store port. M8 materializes Session scope; wider scopes remain disabled until M10.</summary>
+public interface IMemoryStore
+{
+    IReadOnlyList<MemoryRecord> Read(MemoryScope scope, CancellationToken cancellationToken);
+    MemoryRecord Add(MemoryRecord record, CancellationToken cancellationToken);
+    bool Remove(MemoryScope scope, string memoryId, CancellationToken cancellationToken);
+}
+
 /// <summary>Optional journal-owned synchronous boundary. Publishes prepared bytes
 /// and the referencing event under one short lease; never carries the lease across await.</summary>
 public interface IContextArtifactPublicationSink : IContextEventSink

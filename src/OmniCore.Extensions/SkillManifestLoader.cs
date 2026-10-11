@@ -14,8 +14,11 @@ public sealed class SkillManifestLoader
     public const string ManifestFileName = "skill.yaml";
     public const string InstructionsFileName = "instructions.md";
     private const int MaximumInstructionsCharacters = 65_536;
-    private static readonly IDeserializer Deserializer = new StaticDeserializerBuilder(new SkillYamlStaticContext())
+    // Fixed manifest DTO graph; see ExtensionManifestLoader and upstream issue #1124. M8 has no AOT binary.
+#pragma warning disable IL3050
+    private static readonly IDeserializer Deserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
+#pragma warning restore IL3050
 
     public IReadOnlyList<DiscoveredSkill> Discover(string root, ScopeLevel scope = ScopeLevel.Project,
         TrustLevel trust = TrustLevel.Project, bool workspaceTrusted = false)

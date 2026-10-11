@@ -13,8 +13,13 @@ public sealed class ExtensionManifestLoader
 {
     public const string ManifestFileName = "omnicore-extension.yaml";
     private const string HostApiVersion = "1.0";
-    private static readonly IDeserializer Deserializer = new StaticDeserializerBuilder(new ExtensionYamlStaticContext())
+    // YamlDotNet 18.1's StaticDeserializerBuilder currently leaves custom StaticContext.GetTypeResolver()
+    // ungenerated in normal project builds (upstream issue #1124). Keep strict key validation below,
+    // and use the runtime builder for this fixed manifest DTO graph. M8 does not publish an AOT binary.
+#pragma warning disable IL3050
+    private static readonly IDeserializer Deserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance).Build();
+#pragma warning restore IL3050
 
     public ExtensionManifest Load(string yaml)
     {

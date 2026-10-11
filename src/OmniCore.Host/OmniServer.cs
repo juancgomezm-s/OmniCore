@@ -10,6 +10,7 @@ using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
 using OmniCore.Extensions;
+using OmniCore.Memory;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -598,6 +599,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         if (commandName is "skills.activate" or "skills.release")
             return ChangeSessionSkillActivation(command, commandName, fields);
+        if (commandName is "memory.session.add" or "memory.session.forget")
+            return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
 
         if (commandName == "sim")
         {
@@ -1853,6 +1856,46 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             }
     }
 
+    private CommandAck ChangeSessionMemory(WireEnvelope command, string commandName,
+        IReadOnlyDictionary<string, string> fields, bool trustedUserAction, CancellationToken cancellationToken)
+    {
+        if (!trustedUserAction)
+            return new CommandAck(command.MessageId, "error", "Session memory changes require a trusted user action.",
+                RuntimeCommandOutcome.Rejected());
+        if (_lastSessionId is not { } session || _workspaceRoot is null)
+            return new CommandAck(command.MessageId, "error", "An existing Session and Workspace are required.",
+                RuntimeCommandOutcome.Rejected());
+        try
+        {
+            var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
+            var scope = MemoryScope.ForSession(session);
+            if (commandName == "memory.session.forget")
+            {
+                var id = fields.GetValueOrDefault("memoryId") ?? "";
+                return store.Remove(scope, id, cancellationToken)
+                    ? new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted())
+                    : new CommandAck(command.MessageId, "error", "No Session memory item has that id.", RuntimeCommandOutcome.Rejected());
+            }
+
+            var content = fields.GetValueOrDefault("content") ?? "";
+            if (content.Length > 4096 || string.IsNullOrWhiteSpace(content))
+                throw new ArgumentException("Session memory content must contain 1 to 4096 characters.");
+            var redacted = new PiiRedactor().Redact(content);
+            if (!string.Equals(content, redacted, StringComparison.Ordinal))
+                throw new InvalidOperationException("Sensitive-looking content was rejected and not stored.");
+            var record = new MemoryRecord(Guid.NewGuid().ToString("N"), scope, MemoryKind.Fact, content,
+                0.7, 1.0, MemorySource.UserStated, DateTimeOffset.UtcNow, null,
+                MemoryExpirationKind.WithScope, ["user-stated"], [], null);
+            _ = store.Add(record, cancellationToken);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+            or InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return new CommandAck(command.MessageId, "error", exception.Message, RuntimeCommandOutcome.Rejected());
+        }
+    }
+
     private CommandAck ChangeSessionSkillActivation(WireEnvelope command, string commandName,
         IReadOnlyDictionary<string, string> fields)
     {
@@ -1990,6 +2033,27 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             });
             return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
                 + ",\"skills\":[" + string.Join(",", entries) + "]}");
+        }
+        if (name is "memory" or "memory.session")
+        {
+            if (_workspaceRoot is null || _lastSessionId is not { } session)
+                return new SessionQueryResult("memory.session", "{\"scope\":\"Session\",\"session\":null,\"records\":[]}");
+            var scope = MemoryScope.ForSession(session);
+            var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
+            var records = store.Read(scope, cancellationToken);
+            var entries = records.Select(record => "{" + string.Join(",", new[]
+            {
+                JsonObj.Field("id", record.Id),
+                JsonObj.Field("kind", record.Kind.ToString()),
+                JsonObj.Field("content", new PiiRedactor().Redact(record.Content)),
+                JsonObj.Field("source", record.Source.ToString()),
+                "\"importance\":" + record.Importance.ToString("R", CultureInfo.InvariantCulture),
+                "\"confidence\":" + record.Confidence.ToString("R", CultureInfo.InvariantCulture),
+                JsonObj.Field("createdAt", record.CreatedAt.ToString("O", CultureInfo.InvariantCulture)),
+                "\"tags\":[" + string.Join(",", record.Tags.Select(tag => "\"" + JsonObj.Escape(tag) + "\"")) + "]",
+            }) + "}");
+            return new SessionQueryResult("memory.session", "{\"scope\":\"Session\","
+                + JsonObj.Field("session", session.ToString()) + ",\"records\":[" + string.Join(",", entries) + "]}");
         }
         if (name == "modePreference")
         {

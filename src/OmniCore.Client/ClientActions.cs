@@ -15,6 +15,7 @@ public static class ClientActionIds
     public const string ExtensionsInspect = "extensions.inspect";
     public const string CommandsInspect = "commands.inspect";
     public const string SkillsInspect = "skills.inspect";
+    public const string MemorySession = "memory.session";
     public const string PermissionsList = "permissions.list";
     public const string RunInterrupt = "run.interrupt";
     public const string RunCancel = "run.cancel";
@@ -67,6 +68,7 @@ public sealed class ClientCommandRegistry
             new("extensions", ClientActionIds.ExtensionsInspect, "client.command.extensions"),
             new("commands", ClientActionIds.CommandsInspect, "client.command.commands"),
             new("skills", ClientActionIds.SkillsInspect, "client.command.skills"),
+            new("memory", ClientActionIds.MemorySession, "client.command.memory"),
             new("permissions", ClientActionIds.PermissionsList, "client.command.permissions"),
             new("interrupt", ClientActionIds.RunInterrupt, "client.command.interrupt"),
             new("cancel", ClientActionIds.RunCancel, "client.command.cancel"),
@@ -123,6 +125,7 @@ public sealed class ClientActionHandler : IClientActionHandler
             ClientActionIds.ExtensionsInspect => Query(context, "extensions"),
             ClientActionIds.CommandsInspect => Query(context, "commands"),
             ClientActionIds.SkillsInspect => Skills(invocation, context),
+            ClientActionIds.MemorySession => Memory(invocation, context),
             ClientActionIds.ViewTasks => Tasks(context, cancellationToken),
             ClientActionIds.ViewEvents => Events(context),
             ClientActionIds.PermissionsList => new ClientActionResult(context.Permissions?.Invoke()
@@ -190,6 +193,32 @@ public sealed class ClientActionHandler : IClientActionHandler
         return current.Text == context.Text.Resolve("client.no_data")
             ? new ClientActionResult(invocation.Arguments[0] == "load" ? "Skill activated for this Session." : "Skill released from this Session.")
             : current;
+    }
+
+    private static ClientActionResult Memory(ClientActionInvocation invocation, ClientContext context)
+    {
+        if (invocation.Arguments.Count == 1 && invocation.Arguments[0] == "session")
+            return Query(context, "memory.session");
+        if (invocation.Arguments.Count >= 3 && invocation.Arguments[0] == "session"
+            && invocation.Arguments[1] == "add")
+        {
+            var content = string.Join(" ", invocation.Arguments.Skip(2));
+            return SendMemory(context, "memory.session.add", "content", content);
+        }
+        if (invocation.Arguments.Count == 3 && invocation.Arguments[0] == "session"
+            && invocation.Arguments[1] == "forget")
+            return SendMemory(context, "memory.session.forget", "memoryId", invocation.Arguments[2]);
+        return new ClientActionResult("Usage: /memory session [add <text>|forget <memory-id>]");
+    }
+
+    private static ClientActionResult SendMemory(ClientContext context, string command, string field, string value)
+    {
+        if (context.Client is not ITrustedUserActionClient trusted)
+            return new ClientActionResult("Session memory changes require a trusted in-process user action.");
+        var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field(field, value) + "}";
+        var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+        if (ack.Status != "ok") return new ClientActionResult(ack.Error ?? "Session memory change was rejected.");
+        return Query(context, "memory.session");
     }
 
     private static ClientActionResult Tasks(ClientContext context, CancellationToken cancellationToken)

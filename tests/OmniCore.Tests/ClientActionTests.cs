@@ -8,7 +8,7 @@ namespace OmniCore.Tests;
 /// <summary>ADR-0024 §3 / ADR-0025 §1: los ClientCommands resuelven a una ClientAction que ejecuta un handler.</summary>
 public sealed class ClientActionTests
 {
-    private sealed class FakeClient : IOmniClient
+    private sealed class FakeClient : IOmniClient, ITrustedUserActionClient
     {
         internal Dictionary<string, string?> Queries { get; } = new(StringComparer.Ordinal);
         internal List<string> Sent { get; } = [];
@@ -19,6 +19,8 @@ public sealed class ClientActionTests
             Sent.Add(command.PayloadJson);
             return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
         }
+
+        public CommandAck SendUserAction(WireEnvelope command, CancellationToken cancellationToken) => Send(command, cancellationToken);
 
         public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => Events;
 
@@ -50,6 +52,7 @@ public sealed class ClientActionTests
             ["extensions"] = ClientActionIds.ExtensionsInspect,
             ["commands"] = ClientActionIds.CommandsInspect,
             ["skills"] = ClientActionIds.SkillsInspect,
+            ["memory"] = ClientActionIds.MemorySession,
             ["permissions"] = ClientActionIds.PermissionsList, ["interrupt"] = ClientActionIds.RunInterrupt,
             ["cancel"] = ClientActionIds.RunCancel,
         };
@@ -153,6 +156,27 @@ public sealed class ClientActionTests
         using var released = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("skills.release", released.RootElement.GetProperty("cmd").GetString());
         Assert.Contains("Usage", Run("skills", Context(client), "other", "x").Text);
+    }
+
+    [Fact]
+    public void Memory_command_queries_and_uses_trusted_user_actions_for_changes()
+    {
+        var client = new FakeClient();
+        client.Queries["memory.session"] = "{\"records\":[{\"content\":\"fixture\"}]}";
+
+        Assert.Contains("fixture", Run("memory", Context(client), "session").Text);
+        Assert.Contains("fixture", Run("memory", Context(client), "session", "add", "keep the test focused").Text);
+        using (var add = JsonDocument.Parse(client.Sent[0]))
+        {
+            Assert.Equal("memory.session.add", add.RootElement.GetProperty("cmd").GetString());
+            Assert.Equal("keep the test focused", add.RootElement.GetProperty("content").GetString());
+        }
+
+        Run("memory", Context(client), "session", "forget", "abc123");
+        using var forget = JsonDocument.Parse(client.Sent[1]);
+        Assert.Equal("memory.session.forget", forget.RootElement.GetProperty("cmd").GetString());
+        Assert.Equal("abc123", forget.RootElement.GetProperty("memoryId").GetString());
+        Assert.Contains("Usage", Run("memory", Context(client), "workspace").Text);
     }
 
     [Fact]
