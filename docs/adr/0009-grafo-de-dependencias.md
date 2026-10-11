@@ -51,7 +51,7 @@ Cli               ← Client, Host, Protocol   (Terminal.Gui y Spectre.Console s
    - *Test nuevo en M1:* las referencias IL de `omni.dll` son solo `OmniCore.Protocol`, `OmniCore.Client` y `OmniCore.Host`, y la superficie pública de Host se limita a la fábrica del host y del cliente.
    - *Test vigente (rev. 3):* los paquetes `Terminal.Gui` y `Spectre.Console*` solo pueden aparecer en `OmniCore.Cli` (ADR-0030 §6).
 5. **Proyectos futuros previstos** (se agregan con su frontera cuando lleguen, no antes):
-   - `OmniCore.Extensions` (M8): host de extensiones fuera de proceso (Extension API por JSON-RPC, ADR-0023). Ejecuta tools, commands, skills, hooks y contributors de fuentes no `Core`. Depende de Abstractions y Domain.
+   - `OmniCore.Extensions` (M8): host de extensiones fuera de proceso (Extension API por JSON-RPC, ADR-0023). Ejecuta tools, commands, skills, hooks y contributors de fuentes no `Core`. Depende de Abstractions y Domain. El proyecto se materializó en M8; sus dependencias y la tabla `Allowed` del test de arquitectura declaran exactamente esas dos aristas. Sandbox se adapta desde Host/Execution y Security conserva autoridad de permiso.
    - `OmniCore.Memory` (M8+): implementación de `IMemoryStore` y `MemoryContextContributor` (ADR-0028). Depende solo de Abstractions y Domain. **Ningún proyecto del Core lo referencia**: lo compone Host de forma opcional.
 6. **Commands (ADR-0024):**
    - Los contratos (`CommandDescriptor`, `ICommandHandler`) viven en Abstractions.

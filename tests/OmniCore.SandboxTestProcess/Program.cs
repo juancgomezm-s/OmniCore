@@ -16,6 +16,25 @@ if (args.Length == 1 && args[0] == "claude-stream-invalid")
     return 0;
 }
 
+if (args.Length == 1 && args[0] == "extension-rpc")
+{
+    var request = Console.ReadLine();
+    if (request is null) return 25;
+    using var document = System.Text.Json.JsonDocument.Parse(request);
+    var root = document.RootElement;
+    if (root.GetProperty("jsonrpc").GetString() != "2.0"
+        || root.GetProperty("method").GetString() != "tools/call"
+        || root.GetProperty("id").GetString() != "1") return 26;
+    Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"fixture-ok\"}]}}");
+    return 0;
+}
+
+if (args.Length == 1 && args[0] == "stdin-echo")
+{
+    Console.Write(Console.ReadLine());
+    return 0;
+}
+
 if (args.Length == 1 && args[0] is "claude-stream" or "claude-stream-fail")
 {
     Console.WriteLine("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fixture-session\",\"model\":\"claude-haiku-5-5\",\"tools\":[\"Read\"]}");

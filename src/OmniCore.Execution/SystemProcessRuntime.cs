@@ -59,6 +59,7 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IStreamingProcessRun
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
         }
+        if (launch.InitialStandardInput is not null) psi.RedirectStandardInput = true;
 
         psi.CreateNewProcessGroup = true;
 
@@ -66,6 +67,28 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IStreamingProcessRun
         if (process is null)
         {
             throw new InvalidOperationException("Fallo al lanzar: " + launch.Executable);
+        }
+
+        if (launch.InitialStandardInput is { } initialInput)
+        {
+            if (initialInput.Length > 262_144)
+            {
+                process.Kill(entireProcessTree: true);
+                process.Dispose();
+                throw new ArgumentException("Initial process input exceeds the size limit.", nameof(launch));
+            }
+            try
+            {
+                process.StandardInput.Write(initialInput);
+                process.StandardInput.WriteLine();
+                process.StandardInput.Close();
+            }
+            catch
+            {
+                try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                process.Dispose();
+                throw;
+            }
         }
 
         if (launch.DiscardOutput)

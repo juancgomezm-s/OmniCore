@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />
+    <ProjectReference Include="..\OmniCore.Domain\OmniCore.Domain.csproj" />
+    <PackageReference Include="Vecc.YamlDotNet.Analyzers.StaticGenerator" />
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+</Project>

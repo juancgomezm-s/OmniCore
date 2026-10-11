@@ -47,6 +47,9 @@ public sealed class ProcessLaunch
     /// </summary>
     public bool DiscardOutput { get; init; }
 
+    /// <summary>Optional bounded one-shot UTF-8 input, written and closed immediately after launch.</summary>
+    public string? InitialStandardInput { get; init; }
+
     public ProcessLaunch(string executable, IReadOnlyList<string> args, string workingDirectory,
         IReadOnlyDictionary<string, string> environment, bool captureOutput)
     {

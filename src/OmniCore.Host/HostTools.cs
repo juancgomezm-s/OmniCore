@@ -2,6 +2,7 @@ namespace OmniCore.Host;
 
 using OmniCore.Abstractions;
 using OmniCore.Engine;
+using OmniCore.Domain;
 using OmniCore.Execution;
 using OmniCore.Sandbox;
 using OmniCore.Tools;
@@ -116,6 +117,15 @@ public sealed class HostTools
             includeMutationTools: false, includeProcessTools: false, artifactReadTool: artifactReadTool);
 
     public FakeCatalog Catalog() => _catalog;
+
+    /// <summary>Registers a source-namespaced extension tool after consented Host composition.</summary>
+    public void RegisterExtensionTool(ITool tool)
+    {
+        ArgumentNullException.ThrowIfNull(tool);
+        if (tool.Descriptor.Source.Kind != SourceKind.Extension || tool.Descriptor.Source.Trust == TrustLevel.Untrusted)
+            throw new InvalidOperationException("Only a trusted Extension source may enter a session tool catalog.");
+        _catalog.Add(tool);
+    }
 
     public PlanProposeTool PlanPropose() => _planPropose;
 }

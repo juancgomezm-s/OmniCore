@@ -12,6 +12,7 @@ public static class ClientActionIds
     public const string ViewEvents = "view.events";
     public const string ContextInspect = "context.inspect";
     public const string ToolsInspect = "tools.inspect";
+    public const string ExtensionsInspect = "extensions.inspect";
     public const string PermissionsList = "permissions.list";
     public const string RunInterrupt = "run.interrupt";
     public const string RunCancel = "run.cancel";
@@ -61,6 +62,7 @@ public sealed class ClientCommandRegistry
             new("events", ClientActionIds.ViewEvents, "client.command.events"),
             new("context", ClientActionIds.ContextInspect, "client.command.context"),
             new("tools", ClientActionIds.ToolsInspect, "client.command.tools"),
+            new("extensions", ClientActionIds.ExtensionsInspect, "client.command.extensions"),
             new("permissions", ClientActionIds.PermissionsList, "client.command.permissions"),
             new("interrupt", ClientActionIds.RunInterrupt, "client.command.interrupt"),
             new("cancel", ClientActionIds.RunCancel, "client.command.cancel"),
@@ -114,6 +116,7 @@ public sealed class ClientActionHandler : IClientActionHandler
             ClientActionIds.ViewPlan => Query(context, "workingState"),
             ClientActionIds.ContextInspect => Query(context, "context"),
             ClientActionIds.ToolsInspect => Query(context, "tools"),
+            ClientActionIds.ExtensionsInspect => Query(context, "extensions"),
             ClientActionIds.ViewTasks => Tasks(context, cancellationToken),
             ClientActionIds.ViewEvents => Events(context),
             ClientActionIds.PermissionsList => new ClientActionResult(context.Permissions?.Invoke()

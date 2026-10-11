@@ -47,6 +47,8 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
         }
         if (launch.RequestedStrength != SandboxStrength.Strong)
             throw new NotSupportedException("This launcher is only for Strong sandbox requests.");
+        if (launch.InitialStandardInput?.Length > 262_144)
+            throw new ArgumentException("Initial process input exceeds the size limit.", nameof(launch));
         if (launch.Timeout is { } timeout && timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(launch), "The process timeout must be positive.");
         if (!OperatingSystem.IsWindows())
@@ -119,6 +121,7 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
             var commandLine = BuildCommandLine(executable, launch.Arguments);
             AppContainerNative.CreateSuspendedProcess(
                 executable, commandLine, workingDirectory, launch.Environment, tempDirectory, securityCapabilities,
+                launch.InitialStandardInput,
                 out stdoutRead, out stderrRead, out job, out process);
             return ValueTask.FromResult<ISandboxProcessControl>(
                 new AppContainerProcessControl(process!, job!, stdoutRead!, stderrRead!, aclLease!, tempDirectory,
@@ -701,14 +704,15 @@ internal static partial class AppContainerNative
 
     internal static bool CreateSuspendedProcess(string application, string commandLine, string workingDirectory,
         IReadOnlyDictionary<string, string> requestedEnvironment, string tempDirectory,
-        SecurityCapabilitiesBuffer securityCapabilities, out SafeFileHandle? stdoutRead,
+        SecurityCapabilitiesBuffer securityCapabilities, string? initialStandardInput, out SafeFileHandle? stdoutRead,
         out SafeFileHandle? stderrRead, out SafeFileHandle? job, out SafeProcessHandle? process)
     {
         stdoutRead = stderrRead = null; job = null; process = null;
         var startupSize = (nuint)0;
         InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref startupSize);
         var attributes = Marshal.AllocHGlobal(checked((int)startupSize));
-        IntPtr stdoutWrite = IntPtr.Zero, stderrWrite = IntPtr.Zero, threadHandle = IntPtr.Zero;
+        IntPtr stdoutWrite = IntPtr.Zero, stderrWrite = IntPtr.Zero, stdinRead = IntPtr.Zero,
+            stdinWrite = IntPtr.Zero, threadHandle = IntPtr.Zero;
         IntPtr processHandle = IntPtr.Zero, jobHandle = IntPtr.Zero;
         var processCreated = false;
         try
@@ -729,18 +733,25 @@ internal static partial class AppContainerNative
             stderrRead = new SafeFileHandle(stderrReadRaw, true);
             if (!SetHandleInformation(stderrReadRaw, HandleFlagInherit, 0))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to protect stderr pipe.");
-            var handleList = Marshal.AllocHGlobal(IntPtr.Size * 2);
+            if (initialStandardInput is not null && !CreatePipe(out stdinRead, out stdinWrite, ref pipeAttributes, 0))
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to create stdin pipe.");
+            if (stdinWrite != IntPtr.Zero && !SetHandleInformation(stdinWrite, HandleFlagInherit, 0))
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to protect stdin pipe.");
+            var handleList = Marshal.AllocHGlobal(IntPtr.Size * (initialStandardInput is null ? 2 : 3));
             try
             {
                 Marshal.WriteIntPtr(handleList, 0, stdoutWrite);
                 Marshal.WriteIntPtr(handleList, IntPtr.Size, stderrWrite);
+                if (initialStandardInput is not null)
+                    Marshal.WriteIntPtr(handleList, IntPtr.Size * 2, stdinRead);
                 if (!UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributeHandleList, handleList,
-                    (nuint)(IntPtr.Size * 2), IntPtr.Zero, IntPtr.Zero))
+                    (nuint)(IntPtr.Size * (initialStandardInput is null ? 2 : 3)), IntPtr.Zero, IntPtr.Zero))
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to restrict inherited handles.");
                 var startup = new StartupInfoEx
                 {
                     StartupInfo = new StartupInfo { Cb = (uint)Marshal.SizeOf<StartupInfoEx>(), Flags = StartfUseStdHandles,
-                        StdInput = IntPtr.Zero, StdOutput = stdoutWrite, StdError = stderrWrite },
+                        StdInput = initialStandardInput is null ? IntPtr.Zero : stdinRead,
+                        StdOutput = stdoutWrite, StdError = stderrWrite },
                     AttributeList = attributes
                 };
                 var startupPointer = Marshal.AllocHGlobal(Marshal.SizeOf<StartupInfoEx>());
@@ -778,11 +789,20 @@ internal static partial class AppContainerNative
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to assign AppContainer process to its Job Object.");
             CloseHandle(stdoutWrite); stdoutWrite = IntPtr.Zero;
             CloseHandle(stderrWrite); stderrWrite = IntPtr.Zero;
+            if (stdinRead != IntPtr.Zero) { CloseHandle(stdinRead); stdinRead = IntPtr.Zero; }
             process = new SafeProcessHandle(processHandle, true); processHandle = IntPtr.Zero;
             job = new SafeFileHandle(jobHandle, true); jobHandle = IntPtr.Zero;
             if (ResumeThread(threadHandle) == ResumeFailed)
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to resume AppContainer process.");
             CloseHandle(threadHandle); threadHandle = IntPtr.Zero;
+            if (initialStandardInput is not null)
+            {
+                using var inputHandle = new SafeFileHandle(stdinWrite, ownsHandle: true);
+                stdinWrite = IntPtr.Zero;
+                using var input = new FileStream(inputHandle, FileAccess.Write, 4096, isAsync: false);
+                input.Write(Encoding.UTF8.GetBytes(initialStandardInput));
+                input.WriteByte((byte)'\n');
+            }
             return true;
         }
         catch
@@ -796,6 +816,8 @@ internal static partial class AppContainerNative
             }
             if (jobHandle != IntPtr.Zero) CloseHandle(jobHandle);
             if (threadHandle != IntPtr.Zero) CloseHandle(threadHandle);
+            if (stdinRead != IntPtr.Zero) CloseHandle(stdinRead);
+            if (stdinWrite != IntPtr.Zero) CloseHandle(stdinWrite);
             process?.Dispose(); job?.Dispose(); stdoutRead?.Dispose(); stderrRead?.Dispose();
             throw;
         }

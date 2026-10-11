@@ -9,6 +9,7 @@ using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
+using OmniCore.Extensions;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
 using System.Runtime.CompilerServices;
@@ -1879,6 +1880,33 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var json = "{\"commands\":[" + string.Join(",", names.Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "],"
                 + "\"catalog\":" + CommandCatalogJson.Encode(catalog) + "}";
             return new SessionQueryResult("commands", json);
+        }
+        if (name == "extensions")
+        {
+            if (_workspaceRoot is null) return new SessionQueryResult(name, "{\"extensions\":[]}");
+            var trusted = new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(_workspaceRoot);
+            var root = Path.Combine(_workspaceRoot, ".omnicore", "extensions");
+            var loader = new ExtensionManifestLoader();
+            var discovered = loader.Discover(root, TrustLevel.Project, trusted);
+            if (trusted)
+            {
+                var consents = new ExtensionConsentStore(_platformPathsFactory(), _workspaceRoot);
+                var byExtension = discovered.Where(extension => extension.Manifest?.Id is not null)
+                    .ToDictionary(extension => extension.Manifest!.Id!, consents.ConsentedCapabilities, StringComparer.Ordinal);
+                discovered = loader.DiscoverWithConsents(root, TrustLevel.Project, trusted, byExtension);
+            }
+            var entries = discovered.Select(extension => "{" + string.Join(",", new[]
+            {
+                extension.Manifest?.Id is { } id ? JsonObj.Field("id", id) : "\"id\":null",
+                extension.Manifest?.Version is { } version ? JsonObj.Field("version", version) : "\"version\":null",
+                extension.Manifest?.DisplayName is { } displayName ? JsonObj.Field("displayName", displayName) : "\"displayName\":null",
+                JsonObj.Field("trust", extension.Trust.ToString()),
+                JsonObj.Field("status", extension.Status.ToString()),
+                JsonObj.Field("manifestSha256", extension.ManifestSha256),
+                JsonObj.Field("packageSha256", extension.PackageSha256),
+                extension.Diagnostic is { } diagnostic ? JsonObj.Field("diagnostic", diagnostic) : "\"diagnostic\":null",
+            }) + "}");
+            return new SessionQueryResult(name, "{\"extensions\":[" + string.Join(",", entries) + "]}");
         }
         if (name == "modePreference")
         {

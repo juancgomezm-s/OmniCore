@@ -11,6 +11,7 @@ using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Sandbox;
 using OmniCore.Tools;
+using OmniCore.Extensions;
 using System.Globalization;
 using System.Text.Json;
 
@@ -47,6 +48,33 @@ public sealed class OmniCliRuntime : IDisposable
 
     public static OmniCliRuntime Create(string workspaceRoot,
         Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota = null) => new(workspaceRoot, queryQuota);
+
+    /// <summary>Explicit CLI consent action bound to the exact project manifest hash and version.</summary>
+    public string SetProjectExtensionConsent(string extensionId, bool grant)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(extensionId);
+        var paths = OmniHost.CreatePlatformPaths();
+        if (!new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot))
+            throw new InvalidOperationException("Trust the workspace before granting project extension capabilities.");
+        var loader = new ExtensionManifestLoader();
+        var candidates = loader.Discover(Path.Combine(_workspaceRoot, ".omnicore", "extensions"), TrustLevel.Project,
+            workspaceTrusted: true);
+        var extension = candidates.SingleOrDefault(candidate => candidate.Manifest?.Id == extensionId)
+            ?? throw new InvalidOperationException("No matching project extension was discovered.");
+        var store = new ExtensionConsentStore(paths, _workspaceRoot);
+        if (!grant)
+        {
+            store.Revoke(extensionId);
+            return "Revoked project extension consent for " + extensionId + ".";
+        }
+        if (extension.Manifest is null || extension.Status is ExtensionDiscoveryStatus.InvalidManifest
+            or ExtensionDiscoveryStatus.IncompatibleApi)
+            throw new InvalidOperationException(extension.Diagnostic ?? "The extension cannot receive consent.");
+        var requested = new HashSet<string>(extension.Manifest.Requests?.Capabilities ?? [], StringComparer.Ordinal);
+        store.Grant(extension, requested);
+        return "Granted " + string.Join(", ", requested.Order(StringComparer.Ordinal)) + " to " + extensionId
+            + " for this workspace and manifest version.";
+    }
 
     private static async Task<ProviderQuotaSnapshot> QueryConfiguredQuotaAsync(string providerId, CancellationToken token)
     {
@@ -1403,6 +1431,21 @@ public sealed class OmniCliRuntime : IDisposable
                     worktreeIntegrationCoordinator: delegation is null
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(_workspaceRoot, paths, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
+            if (delegation is null && executingAct && workspaceConfig.Trusted)
+            {
+                try
+                {
+                    foreach (var extensionTool in ProjectExtensionTools.Load(_workspaceRoot, paths,
+                        workspaceTrusted: true, invoker: new ExtensionRpcProcessInvoker()))
+                        hostTools.RegisterExtensionTool(extensionTool);
+                }
+                catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
+                    or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    writeLine("Extension tool composition failed closed: " + failure.Message);
+                    return 1;
+                }
+            }
             if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
             {
                 var processTool = hostTools.Catalog().Find(new ToolId("process.exec"));
