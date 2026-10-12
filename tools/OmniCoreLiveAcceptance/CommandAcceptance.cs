@@ -81,6 +81,7 @@ internal sealed partial class AcceptanceRunner
                     "model" => textResources.Resolve("cli.usage.model"),
                     "ask" => textResources.Resolve("cli.usage.ask"),
                     "act" => textResources.Resolve("cli.usage.act"),
+                    "resolve" => textResources.Resolve("interaction.resolve.usage"),
                     "explain" or "explore" => textResources.Resolve("cli.usage.explain")
                         + " | " + textResources.Resolve("commands.explain.help"),
                     _ => null,
