@@ -127,7 +127,7 @@ public sealed class M2WiringTests
             var exit = OmniCliRuntime.Doctor("en", output.Add, (key, args) => Localization.English().Resolve(key, args));
 
             Assert.True(exit == 0, string.Join(Environment.NewLine, output));
-            Assert.Contains(output, line => line.Contains("OpenAIResponses", StringComparison.Ordinal));
+            Assert.Contains(output, line => line.Contains("OpenAI Responses", StringComparison.Ordinal));
             Assert.DoesNotContain(output, line => line.Contains("not implemented yet", StringComparison.Ordinal));
         }
         finally

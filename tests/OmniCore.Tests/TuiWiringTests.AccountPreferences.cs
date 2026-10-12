@@ -40,6 +40,7 @@ public sealed partial class TuiWiringTests
         public IReadOnlyList<ProviderConnectionMenuRow> Rows { get; init; } = [];
         public int ListCalls { get; private set; }
         public int OperationCalls { get; private set; }
+        public string? LastProviderId { get; private set; }
         public IReadOnlyList<ProviderConnectionMenuRow> List(CancellationToken cancellationToken)
         { cancellationToken.ThrowIfCancellationRequested(); ListCalls++; return Rows; }
         public Task<ProviderConnectionMenuResult> ConnectAsync(string apiKey, bool validate, CancellationToken cancellationToken)
@@ -50,7 +51,40 @@ public sealed partial class TuiWiringTests
         { OperationCalls++; return Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Unknown, null, null)); }
         public Task<ProviderConnectionMenuResult> DiscoverAsync(string providerId, CancellationToken cancellationToken)
         { OperationCalls++; return Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Unknown, null, null)); }
-        public void Disconnect(string providerId, CancellationToken cancellationToken) => OperationCalls++;
+        public void Disconnect(string providerId, CancellationToken cancellationToken)
+        { OperationCalls++; LastProviderId = providerId; }
+    }
+
+    private sealed class LocalEngineSupervisorFixture : ITuiLocalEngineSupervisor
+    {
+        private int _reads;
+        private int _ensureCalls;
+        private int _stopCalls;
+        public int EnsureCalls => Volatile.Read(ref _ensureCalls);
+        public int StopCalls => Volatile.Read(ref _stopCalls);
+        public string? LastProviderId { get; private set; }
+        public LocalEngineRuntimeStatus Status { get; set; } = new("fixture-engine", "managed", false, false,
+            "localEngines.runtime.managedUnowned");
+        public ManualResetEventSlim? EnsureGate { get; set; }
+        public int ReadCalls => Volatile.Read(ref _reads);
+
+        public IReadOnlyList<LocalEngineRuntimeStatus> Read(CancellationToken cancellationToken)
+        { cancellationToken.ThrowIfCancellationRequested(); Interlocked.Increment(ref _reads); return [Status]; }
+
+        public LocalEngineRuntimeActionResult EnsureReady(string providerId, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _ensureCalls); LastProviderId = providerId;
+            EnsureGate?.Wait(cancellationToken);
+            Status = new(providerId, "managed", true, true, "localEngines.runtime.managedRunning");
+            return new(true, Status.StateKey);
+        }
+
+        public LocalEngineRuntimeActionResult Stop(string providerId, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _stopCalls); LastProviderId = providerId;
+            Status = new(providerId, "managed", true, false, "localEngines.runtime.managedStopped");
+            return new(true, Status.StateKey);
+        }
     }
 
     [Fact]
@@ -158,6 +192,93 @@ public sealed partial class TuiWiringTests
         Assert.False(disconnect.Enabled);
         Assert.Equal(0, providers.OperationCalls);
         ExportPreferenceFrame(fx, 80, 25, "accounts-api", "anthropic");
+    });
+
+    [Fact]
+    public void Provider_disconnect_requires_explicit_confirmation_and_uses_the_selected_id() => RunTuiTest(fx =>
+    {
+        var providers = new ProviderConnectionsFixture
+        {
+            Rows = [new("anthropic-team", ProviderConnectionMethod.ApiKey, ProviderConnectionState.Connected,
+                BillingMode.MeteredCurrency, null, null, false, false, true, false, null, null)],
+        };
+        fx.StartTui(providerConnections: providers, initialColumns: 80, initialRows: 25);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro visible");
+        ChoosePreferenceCategory(fx, "accounts_connections");
+        ClickId(fx, "preferences-api-open");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "API visible");
+        ClickId(fx, "provider-disconnect");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-disconnect-confirm"), "confirmación visible");
+        Assert.Equal(0, providers.OperationCalls);
+        ClickId(fx, "provider-disconnect-cancel");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "cancelación devuelve a la conexión");
+        Assert.Equal(0, providers.OperationCalls);
+        ClickId(fx, "provider-disconnect");
+        ClickId(fx, "provider-disconnect-confirm");
+        fx.Wait(() => providers.OperationCalls == 1
+            && Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "desconexión explícita completa");
+        Assert.Equal("anthropic-team", providers.LastProviderId);
+    });
+
+    [Fact]
+    public void Local_engine_page_is_read_only_until_confirmed_and_targets_selected_provider_for_start_and_stop() => RunTuiTest(fx =>
+    {
+        var host = new TuiLocalEngineHost(Path.Combine(fx.Root, "local-runtime-fixture"));
+        var snapshot = host.Read(CancellationToken.None);
+        host.Save(new("fixture-engine", "managed", "auto", "C:/fixture/server.exe", [], null, 15),
+            snapshot.Revision, CancellationToken.None);
+        var supervisor = new LocalEngineSupervisorFixture();
+        fx.StartTui(localEngines: host, localEngineSupervisor: supervisor, initialColumns: 80, initialRows: 25);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro visible");
+        ChoosePreferenceCategory(fx, "local_engines");
+        Assert.Equal(0, supervisor.EnsureCalls);
+        Assert.Equal(0, supervisor.StopCalls);
+        Assert.True(supervisor.ReadCalls > 0);
+        ClickId(fx, "local-engine-runtime");
+        ClickId(fx, "local-engine-runtime-confirm");
+        fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("Active and managed", StringComparison.Ordinal)
+            || OverlayText(fx.App.Overlay!).Contains("Activo y administrado", StringComparison.Ordinal),
+            "acción confirmada inicia el provider elegido");
+        Assert.Equal(1, supervisor.EnsureCalls);
+        Assert.Equal("fixture-engine", supervisor.LastProviderId);
+        Assert.Equal(0, supervisor.StopCalls);
+        ClickId(fx, "local-engine-runtime-cancel");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "local-engine-runtime"),
+            "volver a motores locales");
+        ClickId(fx, "local-engine-runtime");
+        ClickId(fx, "local-engine-runtime-confirm");
+        fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("Managed by this instance", StringComparison.Ordinal)
+            || OverlayText(fx.App.Overlay!).Contains("Administrado por esta instancia", StringComparison.Ordinal),
+            "detención confirmada del proceso propio");
+        Assert.Equal(1, supervisor.StopCalls);
+        Assert.Equal("fixture-engine", supervisor.LastProviderId);
+    });
+
+    [Fact]
+    public void Dismissing_local_engine_runtime_result_discards_late_completion_from_overlay() => RunTuiTest(fx =>
+    {
+        var host = new TuiLocalEngineHost(Path.Combine(fx.Root, "local-runtime-late-fixture"));
+        var snapshot = host.Read(CancellationToken.None);
+        host.Save(new("fixture-engine", "managed", "auto", "C:/fixture/server.exe", [], null, 15),
+            snapshot.Revision, CancellationToken.None);
+        using var gate = new ManualResetEventSlim();
+        var supervisor = new LocalEngineSupervisorFixture { EnsureGate = gate };
+        fx.StartTui(localEngines: host, localEngineSupervisor: supervisor, initialColumns: 80, initialRows: 25);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro visible");
+        ChoosePreferenceCategory(fx, "local_engines");
+        ClickId(fx, "local-engine-runtime");
+        ClickId(fx, "local-engine-runtime-confirm");
+        fx.Wait(() => supervisor.EnsureCalls == 1, "operación confirmada iniciada fuera del hilo TUI");
+        ClickId(fx, "local-engine-runtime-cancel");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "local-engine-runtime"),
+            "overlay devuelto a la lista antes del resultado");
+        gate.Set();
+        fx.Wait(() => supervisor.ReadCalls > 0 && fx.App.Overlay is not null,
+            "TUI estable tras completar operación tardía");
+        fx.Wait(() => fx.App.LocalEngineRuntimeTask?.IsCompleted == true, "resultado host ya completó");
+        Thread.Sleep(600); // Allow the UI poll to process the queued late completion.
+        Assert.DoesNotContain(Descendants(fx.App.Overlay!).OfType<Label>(), view =>
+            view.Id == "local-engine-runtime-result");
     });
 
     [Fact]

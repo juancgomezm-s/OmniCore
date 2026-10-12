@@ -57,7 +57,7 @@ public sealed class UiLocalePreferencesTests
     }
 
     [Fact]
-    public void New_preferences_category_copy_is_real_in_all_four_locales_and_legacy_fallback_is_reported()
+    public void Preferences_and_legacy_copy_are_real_in_all_four_locales_without_fallback()
     {
         Assert.Equal(9, PreferenceCategoryCatalog.All.Count);
         Assert.Equal(27, PreferenceCategoryCatalog.Keys.Count);
@@ -76,9 +76,10 @@ public sealed class UiLocalePreferencesTests
         }
 
         var frenchLegacy = new Localization("fr").ResolveDetailed("tool.process.exec.running");
-        Assert.True(frenchLegacy.UsedFallback);
-        Assert.Equal("en", frenchLegacy.ResourceLocale);
-        Assert.Equal("Running {executable}", frenchLegacy.Text);
+        Assert.False(frenchLegacy.UsedFallback);
+        Assert.Equal("fr", frenchLegacy.ResourceLocale);
+        Assert.Contains("{executable}", frenchLegacy.Text);
+        Assert.NotEqual(Localization.English().Resolve("tool.process.exec.running"), frenchLegacy.Text);
         Assert.False(new Localization("fr").ResolveDetailed(PreferenceCategoryCatalog.All[0].TitleKey).UsedFallback);
     }
 

@@ -42,12 +42,13 @@ public sealed partial class TuiApp
             + "\n\n" + ToolUi("control")
             + "\n\nID: " + ToolDisplayText(row.ToolId)
             + "\n" + ToolUi("source") + ToolDisplayText(row.Source)
-            + "\n" + ToolUi("effect") + ToolDisplayText(row.EffectClass)
-            + "\n" + ToolUi("policy") + ToolDisplayText(row.Decision)
+            + "\n" + ToolUi("effect") + ToolDisplayText(UiCompletionResources.EnumLabel("effect", row.EffectClass, _locale))
+            + "\n" + ToolUi("policy") + ToolInspectionPresentation.Decision(row, _localization)
             + (string.IsNullOrWhiteSpace(row.Description) ? "" : "\n" + ToolUi("original") + ToolDisplayText(row.Description));
         void UpdateDetail()
         {
-            summary.Text = ToolUi("mode") + ToolDisplayText(snapshot.Mode ?? ToolUi("unknown"))
+            summary.Text = ToolUi("mode") + ToolDisplayText(snapshot.Mode is { } mode
+                    ? UiCompletionResources.EnumLabel("toolMode", mode, _locale) : ToolUi("unknown"))
                 + $" · {rows.Length}/{snapshot.Tools.Count} · " + ToolUi("read_only");
             detail.Text = list.SelectedItem is int index && index >= 0 && index < rows.Length
                 ? Detail(rows[index])

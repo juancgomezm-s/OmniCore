@@ -1109,7 +1109,7 @@ public sealed class CliEndToEndTests
                     + $"\nFinal provider request={requests.OrderBy(pair => pair.Key).LastOrDefault().Value}"
                     + $"\nVerifier process observations={string.Join(" | ", processObservations)}"
                     + $"\nEvent details={string.Join(" | ", ReadCurrentSessionJournalEvents(workspace).TakeLast(18).Select(evt => evt.Sequence + ":" + EventCodecs.Create().Decode(evt)))}");
-                Assert.Contains("Workflow", result.Output, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("Flujo", result.Output, StringComparison.OrdinalIgnoreCase);
                 Assert.Equal(originalProgram, File.ReadAllText(Path.Combine(projectDirectory, "Program.cs")));
                 Assert.False(File.Exists(Path.Combine(projectDirectory, "FeatureModule.cs")));
                 Assert.Contains(requests.OrderBy(pair => pair.Key).Select(pair => pair.Value), body =>
@@ -1171,7 +1171,7 @@ public sealed class CliEndToEndTests
                 var toolCalls = events.OfType<ToolCallRequested>().Count();
                 var retry = await Run(command);
                 Assert.Equal(expectedCode, retry.Code);
-                Assert.Contains("Workflow", retry.Output, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("Flujo", retry.Output, StringComparison.OrdinalIgnoreCase);
                 Assert.Equal(providerCalls, provider.RequestCount);
                 var retryEvents = ReadCurrentSessionEvents(workspace);
                 Assert.Equal(modelSteps, retryEvents.OfType<ModelStepStarted>().Count());
@@ -1916,7 +1916,7 @@ public sealed class CliEndToEndTests
                 "profile: balanced\nrules:\n  filesystem.write: ask\n");
             var doctor = await Run("doctor");
             Assert.True(doctor.Code == 0, doctor.Output);
-            Assert.Contains("Permisos: perfil Balanced; reglas de usuario: 1", doctor.Output);
+            Assert.Contains("Permisos: perfil Equilibrado; reglas de usuario: 1", doctor.Output);
 
             // doctor sondea el servidor local (una conexión TCP que el provider de prueba cuenta como petición).
             var requests = provider.RequestCount;
@@ -1962,8 +1962,11 @@ public sealed class CliEndToEndTests
             var help = await Run("/help");
             Assert.Equal(0, help.Code);
             Assert.Contains("Comandos disponibles:", help.Output);
-            foreach (var name in new[] { "/help", "/exit", "/plan", "/tasks", "/events", "/permissions", "/cancel" })
-                Assert.Contains(name + " — ", help.Output);
+            foreach (var name in new[] { "help", "exit", "plan", "tasks", "events", "permissions", "cancel" })
+            {
+                var displayed = OmniCore.Protocol.HumanCommandAliases.DisplayName(name, "es");
+                Assert.Contains("/" + displayed + (displayed == name ? "" : " (/" + name + ")") + " — ", help.Output);
+            }
             Assert.DoesNotContain("prompt_not_found", help.Output);
 
             Assert.Contains("Hasta pronto.", (await Run("/exit")).Output);
@@ -2007,8 +2010,8 @@ public sealed class CliEndToEndTests
                 "defaultModel: small-model\nlocked: [defaultModel]\n");
             var doctor = await Run("doctor");
             Assert.Equal(0, doctor.Code);
-            Assert.Contains("defaultModel ← User", doctor.Output);
-            Assert.Contains("defaultModel: ignorado en Workspace (locked «defaultModel» en User)", doctor.Output);
+            Assert.Contains("defaultModel ← Usuario", doctor.Output);
+            Assert.Contains("defaultModel: se ignora en Workspace (bloqueada «defaultModel» en Usuario)", doctor.Output);
             AssertNoLeaks(doctor.Output);
             provider.RespondWith((_, _) => TextResponse("dos"));
             Assert.Equal(0, (await Run("ask", "segunda")).Code);
@@ -2367,7 +2370,8 @@ public sealed class CliEndToEndTests
             var requests = provider.RequestCount;
             var refused = await Run("act", "implementa el objetivo");
             Assert.Equal(1, refused.Code);
-            Assert.Contains("modelPolicy.required", refused.Output); // este runtime no tiene resolvedor de textos
+            Assert.Contains("«scripted-model» no tiene una política de modelo", refused.Output);
+            Assert.DoesNotContain("modelPolicy.required", refused.Output);
             Assert.Equal(requests, provider.RequestCount);
 
             // M3: exercise the real Act path and verify the scripted provider response is rendered.
@@ -2389,12 +2393,12 @@ public sealed class CliEndToEndTests
 
             var policySet = await Run("model", "policy", "set", "scripted-model", "--category", "PatchOnly", "--note", "e2e");
             Assert.Equal(0, policySet.Code);
-            Assert.Contains("PatchOnly", policySet.Output);
+            Assert.Contains("Sólo parches", policySet.Output);
             AssertNoLeaks(policySet.Output);
 
             var policyShow = await Run("model", "policy", "show", "scripted-model");
             Assert.Equal(0, policyShow.Code);
-            Assert.Contains("PatchOnly", policyShow.Output);
+            Assert.Contains("Sólo parches", policyShow.Output);
             AssertNoLeaks(policyShow.Output);
 
             var select = await Run("model", "select", "scripted-model");

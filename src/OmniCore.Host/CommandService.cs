@@ -14,7 +14,7 @@ public sealed class CommandRegistry
     };
 
     /// <summary>¿Es un nombre reservado de Core? Los ClientCommands del cliente lo están todos (ADR-0024 §4).</summary>
-    public static bool IsReserved(string name) => ReservedNames.Contains(name);
+    public static bool IsReserved(string name) => ReservedNames.Contains(name) || HumanCommandAliases.IsReserved(name);
 
     private readonly Dictionary<string, ICommandHandler> _byId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<ICommandHandler>> _byName = new(StringComparer.OrdinalIgnoreCase);
@@ -29,7 +29,7 @@ public sealed class CommandRegistry
         var names = new[] { descriptor.Name }.Concat(descriptor.Aliases).ToArray();
         foreach (var name in names)
         {
-            if (ReservedNames.Contains(name))
+            if (IsReserved(name))
                 throw new InvalidOperationException("CommandRegistrationRejected: reserved Core command " + name);
             if (_byName.TryGetValue(name, out var candidates) && candidates.Any(candidate => candidate.Descriptor.Source.Scope == descriptor.Source.Scope
                 && candidate.Descriptor.Source.Trust == descriptor.Source.Trust))
@@ -125,7 +125,7 @@ public sealed class CommandService
         return new CommandCatalogEntry(descriptor.Id, descriptor.Name, descriptor.Aliases,
             descriptor.Kind.ToString(), descriptor.Description, descriptor.Arguments,
             descriptor.Source.Kind + ":" + descriptor.Source.Owner + "@" + descriptor.Source.Version,
-            enabled, enabled ? null : reason);
+            enabled, enabled ? null : reason) { UiDescriptions = descriptor.UiDescriptions };
     }).ToArray());
 
     private static CommandRegistry CreateDefaultRegistry()
@@ -149,7 +149,7 @@ public sealed class CommandService
             var target = arguments.Count == 0 ? "." : string.Join(" ", arguments);
             var prompt = "Explain the repository content at the path " + target
                 + ". Ground the explanation in files you inspect; distinguish observed facts from inference."
-                + " Respond in Spanish unless the user explicitly requests another language.";
+                + " Follow the user's language and any explicit response-language request; do not infer it from UI settings.";
             return ValueTask.FromResult<HostCommandOutcome>(new PromptCommandRequested(prompt,
                 "PromptCommand(core:explain@1)"));
         }

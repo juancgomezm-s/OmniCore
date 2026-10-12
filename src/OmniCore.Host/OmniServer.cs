@@ -2179,6 +2179,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     id is not null ? JsonObj.Field("id", id) : "\"id\":null",
                     extension.Manifest?.Version is { } version ? JsonObj.Field("version", version) : "\"version\":null",
                     extension.Manifest?.DisplayName is { } displayName ? JsonObj.Field("displayName", displayName) : "\"displayName\":null",
+                    "\"uiResources\":" + ExtensionUiResourcesJson.Encode(extension.Manifest?.UiResources),
                     JsonObj.Field("trust", extension.Trust.ToString()),
                     JsonObj.Field("status", extension.Status.ToString()),
                     JsonObj.Field("manifestSha256", extension.ManifestSha256),
@@ -2396,6 +2397,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 entries.Add("{" + JsonObj.Field("visibleName", definition.Name) + ","
                     + JsonObj.Field("toolId", descriptor.Id.ToString()) + ","
                     + JsonObj.Field("description", definition.Description) + ","
+                    + "\"uiDescriptions\":" + ExtensionUiResourcesJson.EncodeDescriptions((tool as ExtensionTool)?.UiDescriptions) + ","
                     + JsonObj.Field("source", descriptor.Source.Kind + ":" + descriptor.Source.Scope
                         + ":" + descriptor.Source.Trust + ":" + descriptor.Source.Owner
                         + "@" + descriptor.Source.Version) + ","

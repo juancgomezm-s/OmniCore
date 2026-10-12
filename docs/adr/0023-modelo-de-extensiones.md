@@ -106,6 +106,21 @@ Aparece en `ToolDescriptor`, `CommandDescriptor`, `SkillDescriptor`, `HookRegist
 3. **Compatibilidad:** si el Host no satisface `omnicoreApi`, la extensión no se carga y aparece en `/extensions` como incompatible.
 4. **Actualizaciones:** si una versión nueva amplía `requests`, se pide consentimiento de nuevo.
 
+### 7. Recursos de interfaz opcionales (preferencias/P6)
+
+El manifest puede incluir `uiResources`, un objeto cuyos miembros son `es`, `en`, `fr` o `it`.
+Cada idioma contiene un mapa de cadenas literales. Se admiten exclusivamente
+`extension.displayName`, `extension.description`, `command.<nombre declarado>.description`
+y `tool.<nombre declarado>.description`. Se rechazan idiomas no soportados, claves no declaradas,
+valores no textuales, controles salvo salto/tabulación, más de 128 entradas por idioma y cadenas
+vacías o superiores a 2048 caracteres. Un manifest anterior sin recursos sigue siendo válido.
+
+Los catálogos de consulta exponen estas traducciones de forma aditiva; no sustituyen descripciones
+canónicas enviadas al modelo ni instrucciones de skills. La presentación filtra propiedades,
+limita longitud y no interpola ni ejecuta texto del paquete. Un idioma ausente muestra el original
+con una indicación localizada. Al formar parte del manifest, cambiar los recursos también cambia
+su hash y exige revalidar el consentimiento existente; no crea permisos nuevos.
+
 ## Clasificación
 
 | Elemento | Categoría |

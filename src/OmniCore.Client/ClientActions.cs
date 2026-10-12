@@ -98,7 +98,9 @@ public sealed class ClientCommandRegistry
     public bool TryResolve(CommandInvocation invocation, out ClientActionInvocation? action)
     {
         action = null;
-        if (invocation is null || !_byName.TryGetValue(invocation.Name, out var command)) return false;
+        if (invocation is null) return false;
+        invocation = HumanCommandAliases.Normalize(invocation);
+        if (!_byName.TryGetValue(invocation.Name, out var command)) return false;
         action = new ClientActionInvocation(command.ActionId, invocation.Arguments, invocation.InvocationOrigin);
         return true;
     }
@@ -146,7 +148,9 @@ public sealed class ClientActionHandler : IClientActionHandler
         foreach (var command in ClientCommandRegistry.Default.Commands)
         {
             shown.Add(command.Name);
-            lines.Add("  /" + command.Name + " — " + context.Text.Resolve(command.DescriptionKey));
+            var localized = HumanCommandAliases.DisplayName(command.Name, context.Text.Locale);
+            lines.Add("  /" + localized + (localized == command.Name ? "" : " (/" + command.Name + ")")
+                + " — " + context.Text.Resolve(command.DescriptionKey));
         }
         // Los commands del Host (ADR-0024 §3) vienen del mismo catálogo que usa el autocompletado.
         foreach (var entry in HostCommands(context))
@@ -158,22 +162,8 @@ public sealed class ClientActionHandler : IClientActionHandler
     private static IEnumerable<(string Name, string Description)> HostCommands(ClientContext context)
     {
         var json = context.Client.Query("commands", CancellationToken.None)?.Json;
-        if (string.IsNullOrWhiteSpace(json)) yield break;
-        System.Text.Json.JsonDocument? document = null;
-        try { document = System.Text.Json.JsonDocument.Parse(json); }
-        catch (System.Text.Json.JsonException) { }
-        using (document)
-        {
-            if (document is null || !document.RootElement.TryGetProperty("catalog", out var catalog)
-                || !catalog.TryGetProperty("commands", out var commands)
-                || commands.ValueKind != System.Text.Json.JsonValueKind.Array) yield break;
-            foreach (var command in commands.EnumerateArray())
-            {
-                if (!command.TryGetProperty("name", out var name) || name.GetString() is not { Length: > 0 } text) continue;
-                var description = command.TryGetProperty("description", out var value) ? value.GetString() ?? "" : "";
-                yield return (text, description);
-            }
-        }
+        return CommandCatalogPresentation.Read(json, context.Text).Where(row => row.Source != "Core")
+            .Select(row => (row.DisplayName == row.Name ? row.Name : row.DisplayName + " (/" + row.Name + ")", row.Description));
     }
 
     private static ClientActionResult InspectTools(ClientContext context, CancellationToken cancellationToken)

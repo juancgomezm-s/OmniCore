@@ -8,6 +8,7 @@ public sealed record ToolInspectionRow(string VisibleName, string ToolId, string
 {
     /// <summary>Original catalog text, not a prompt or execution permission. Older hosts may omit it.</summary>
     public string? Description { get; init; }
+    public IReadOnlyDictionary<string, string>? UiDescriptions { get; init; }
 }
 
 /// <summary>The complete tool catalog, independent of any terminal or desktop UI.</summary>
@@ -41,7 +42,7 @@ public static class ToolsInspectionJson
                     || !tool.TryGetProperty("visible", out var visible)
                     || visible.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
                 rows.Add(new(name, id, source, effect, decision, visible.GetBoolean())
-                    { Description = Text(tool, "description") });
+                    { Description = Text(tool, "description"), UiDescriptions = ExternalUiResources.ReadDescriptions(tool, "uiDescriptions") });
             }
             return new(mode, rows.AsReadOnly());
         }
@@ -62,6 +63,7 @@ public static class ToolInspectionPresentation
         // Do not attribute a built-in explanation to a plugin with a similar name.
         if (row.Source == "BuiltIn:BuiltIn:Core:core@1" && Localization.HasInBoth(key))
             return text.Resolve(key);
+        if (row.UiDescriptions?.GetValueOrDefault(text.Locale) is { Length: > 0 } translation) return translation;
         return string.IsNullOrWhiteSpace(row.Description) ? text.Resolve("client.tools.description.missing")
             : text.Resolve("client.tools.description.original") + row.Description;
     }

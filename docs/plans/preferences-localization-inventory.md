@@ -1,5 +1,8 @@
 # Inventario de preferencias y localización
 
+Estado vigente: [tanda de cierre del 12 de octubre](../validation/preferences-completion-20261012.md).
+Los incrementos y tablas iniciales de este documento se conservan como historia, no como cola actual.
+
 Línea base del plan del 11 de octubre de 2026, sobre la consolidación de TUI, M8 y rescate OAuth. Este inventario controla cobertura: cada grupo se desglosa en entradas concretas al implementarlo. Un grupo pendiente no cuenta como traducido por tener un título en los cuatro idiomas.
 
 ## Medición inicial
@@ -122,3 +125,29 @@ Estado inicial de todos los grupos: pendiente de migración completa a cuatro id
 Cada grupo se expande con: archivo y símbolo, clave estable o literal de origen, pantalla/comando, estado del flujo, alcance, propietario, recursos es/en/fr/it, acción canónica/alias, prueba y estado de revisión. Un texto de tercero se marca como tal y no se cuenta como traducción propia terminada.
 
 Antes del cierre deben quedar cero entradas propias pendientes y cero fallbacks propios en los recorridos. Las exclusiones se justifican individualmente como datos, IDs, código o contenido ajeno. No se permiten exclusiones masivas por carpeta ni copias automáticas de español usadas como supuesto francés/italiano.
+
+## Inventario de la tanda de cierre
+
+Cada fila identifica implementación, comportamiento y evidencia automatizada. Los resultados
+definitivos, fallos intermedios y límites se registran en el documento de cierre, no se suman entre tandas.
+
+| Superficie / archivos | Acciones y alcance | Recursos y pruebas |
+|---|---|---|
+| `TuiApp.Preferences`, `PreferenceCategoryCatalog` | Nueve categorías; búsqueda, reflow, preview y persistencia Usuario; cancelación sin perder conversación | `PreferencesUiResources`, `UiLocalePreferencesTests`, recorridos `TuiWiringTests` |
+| `TuiApp.AccountPreferences`, `ProviderConnections` | Cuentas configuradas, capacidades API; login explícito/cancelable y logout confirmado; selección exacta | `AccountsPreferencesResources`, pruebas de cuentas y fixture HTTP; ninguna cuenta real |
+| `TuiLocalEngineHost`, `TuiLocalEngineSupervisor`, `OmniCliRuntime` | Attach/managed; guardar y eliminar config; iniciar/detener sólo supervisor propietario; runtime revalida bajo lease | Recursos `local_*` y runtime en es/en/fr/it; `TuiLocalEngineDeletionTests`, `LocalServerTests`, `PolicyPreferencesAliasAndRuntimeLeaseTests` |
+| `ModelCatalogPreferencesHost`, `TuiApp.ModelCatalogPreferences` | Alta/edición/eliminación de modelos User, aliases y referencias; ID literal; decimal de parámetros según idioma | `ModelCatalogPreferencesResources`, Host tests y frames/editor UI en los cuatro idiomas |
+| `PolicyPreferencesHost`, `TuiApp.PolicyPreferences` | Preferencia User, límites, rutas, preferencia local, escalación, políticas existentes; borradores y revisión | `PolicyPreferencesResources`, `PreferenceInputTests`, `PreferencesOperationsTests`, formularios estrecho/ancho |
+| `SecurityPreferencesHost`, `FilePermissionGrantStore`, `TuiApp.SecurityPreferences` | Perfil/reglas Usuario, trust del área actual, revocación confirmada; no crear grants desde preferencias; escritores coordinados | `SecurityPreferencesResources`, `UiCompletionResources`, `PermissionGrantConcurrencyTests`, cancelación de borrador y pruebas de seguridad |
+| `DiagnosticsPreferencesHost`, `TuiApp.DiagnosticsPreferences` | Configuración offline, journal existente, GC preview/confirmado; no crear datos al consultar | `DiagnosticsPreferencesResources`, pruebas de ausencia de efectos y ámbito exacto |
+| `TuiApp.CommandPreferences`, `CommandCatalogPresentation` | Catálogo Host real, búsqueda, origen, bloqueo y preparación sin ejecutar ni sobrescribir borrador | Recursos `catalog.*`, pruebas de presentación y recorridos en cuatro idiomas |
+| Memoria, skills, extensiones y contexto | Continúan los flujos tipados del bloque anterior; datos/IDs originales, envoltura y estados propios traducidos | `SessionPreferencesResources`, `SessionPreferencesPresentation`, pruebas de sesión/M8 y contratos de manifiestos |
+| `Localization`, `LegacyLocaleResources`, `ShellUiResources` | Resolución propia es/en/fr/it sin herencia silenciosa del inglés; encabezado, ayuda, foco, estado, interacción y proyecciones | `LegacyLocaleCoverageTests`, `PreferencesLocaleContractTests`, `ShellLocalizationTests`, `TuiPresentationTests` |
+| `OperationalCommandResources`, `OperationalHostResources`, `RuntimeCompletionResources` | CLI humana, doctor, worktrees, cuotas, políticas, mantenimiento, errores propios y aceptación; DTO Host sin fuga Domain→CLI | Pruebas de CLI/locale, JSON estable y arquitectura |
+| `HumanCommandAliases`, parsers Client/CLI/TUI | Alias humanos reservados y acentos; comandos canónicos compatibles; argumentos libres/JSON/rutas intactos | `HumanCommandAliasTests`, `ClientCommandLocalizationTests`, completado y ejecución de preferencias en cuatro idiomas |
+| Manifest `uiResources` y `ExternalUiResources` | Recursos opcionales acotados, claves de comandos/herramientas declaradas, consentimiento por hash | ADR0023, `ExtensionManifestTests`, `CommandCatalogPresentationTests` |
+
+Exclusiones concretas: nombres y texto del usuario/modelo; contenido de archivos y paquetes;
+IDs canónicos de tool/model/provider/run/clave YAML; valores de JSON/wire; diagnósticos técnicos
+externos presentados como originales. No se cuentan como traducciones propias ni se envían a
+servicios de traducción. La falta de backend de las funciones futuras se describe en el cierre.

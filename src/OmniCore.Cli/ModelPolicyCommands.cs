@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
@@ -85,6 +84,8 @@ public sealed class ModelPolicyCommands
         var reader = input ?? Console.In;
         var writer = output ?? Console.Out;
         var tty = interactive ?? (!Console.IsInputRedirected && !Console.IsOutputRedirected);
+        var loc = selectedLocalization ?? new Localization(LocaleSelectionResolver.Resolve(
+            null, Environment.GetEnvironmentVariable("OMNI_LOCALE"), null).Locale);
         // null → DefaultPlatformPaths aplica OMNICORE_DATA_DIR o el directorio de la plataforma.
         // providers.yaml/models.yaml del usuario, nunca del cwd (INV-029, ADR-0039).
         using var host = ModelPolicyHost.Create(dataDirectoryOverride, registryOverride);
@@ -94,18 +95,25 @@ public sealed class ModelPolicyCommands
             {
                 var catalog = await new TuiAccountHost().ListModelsAsync(cancellationToken,
                     args.Contains("--diagnose") ? writer.WriteLine : null).ConfigureAwait(false);
-                var changed = host.ApplyChatGptCatalog(catalog, ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), cancellationToken);
-                writer.WriteLine("ChatGPT: " + catalog.Count + " modelos disponibles");
-                foreach (var model in catalog) writer.WriteLine(model.Id + " · " + model.DisplayName);
-                if (changed is not null) writer.WriteLine(changed);
+                var changed = host.ApplyChatGptCatalogWithChange(catalog,
+                    ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), cancellationToken);
+                writer.WriteLine(loc.Resolve("cli.model.refresh.count", "count",
+                    catalog.Count.ToString(CultureInfo.InvariantCulture)));
+                foreach (var model in catalog)
+                    writer.WriteLine(loc.Resolve("cli.model.refresh.item", new Dictionary<string, string>
+                    { ["id"] = model.Id, ["name"] = model.DisplayName }));
+                if (changed is { ReplacementModelId: null })
+                    writer.WriteLine(loc.Resolve("cli.model.refresh.no_models"));
+                else if (changed is not null)
+                    writer.WriteLine(loc.Resolve("cli.model.refresh.replaced", new Dictionary<string, string>
+                    { ["previous"] = changed.PreviousModelId,
+                      ["replacement"] = changed.ReplacementModelId! }));
                 return 0;
             }
-            catch (Exception) { writer.WriteLine("No se pudo consultar el catálogo ChatGPT. Selección conservada."); return 1; }
+            catch (Exception) { writer.WriteLine(loc.Resolve("cli.model.refresh.failed")); return 1; }
         }
         // Mismo data dir y registro: la cualificación comparte el user.db del usuario (M5).
         using var qualification = ModelQualificationHost.Create(dataDirectoryOverride, registryOverride);
-        var loc = selectedLocalization ?? new Localization(LocaleSelectionResolver.Resolve(
-            null, Environment.GetEnvironmentVariable("OMNI_LOCALE"), null).Locale);
         // Workspace del CLI: el directorio actual (una selección vigente por proyecto).
         var workspace = "cli|" + Path.GetFullPath(".");
         var commands = new ModelPolicyCommands(host, qualification, loc, reader, writer, tty,
@@ -142,7 +150,7 @@ public sealed class ModelPolicyCommands
 
     private int List()
     {
-        _output.WriteLine("Modelos del registro y estado de su política (clave exacta):");
+        _output.WriteLine(_loc.Resolve("cli.model.policy.list.header"));
         var found = false;
         foreach (var model in _host.Models)
         {
@@ -150,14 +158,15 @@ public sealed class ModelPolicyCommands
             var key = KeyFor(model);
             var stored = _host.Get(key, _cancellationToken);
             var status = stored is null
-                ? "sin política → onboarding en la próxima selección (fallback ObserveOnly)"
-                : stored.Category + " rev=" + stored.Revision;
+                ? _loc.Resolve("cli.model.policy.list.status.none", "category",
+                    LocalizeModelValue(_loc, "category", "ObserveOnly"))
+                : LocalizeModelValue(_loc, "category", stored.Category) + " rev=" + stored.Revision;
             _output.WriteLine("  " + model.Id + " [" + key + "] → " + status);
         }
 
         if (!found)
         {
-            _output.WriteLine("  (sin modelos configurados; ejecuta 'omni doctor')");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.list.unconfigured"));
         }
 
         return 0;
@@ -169,7 +178,7 @@ public sealed class ModelPolicyCommands
     {
         if (args.Length < 3)
         {
-            _output.WriteLine("uso: omni model select <modelo>");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.select.usage"));
             return 1;
         }
 
@@ -183,10 +192,11 @@ public sealed class ModelPolicyCommands
         var result = _host.Select(_workspaceId, key, modelId, ephemeralSafe: false, _cancellationToken);
         if (!result.NeedsOnboarding)
         {
-            _output.WriteLine("Seleccionado: " + modelId
-                + (result.IsEphemeralSafe ? " (modo seguro efímero)" : "")
-                + " → " + result.Policy!.Category
-                + " rev=" + result.Policy.Revision);
+            _output.WriteLine(_loc.Resolve(result.IsEphemeralSafe
+                ? "cli.model.policy.select.safe_done" : "cli.model.policy.select.done",
+                new Dictionary<string, string> { ["model"] = modelId,
+                    ["category"] = LocalizeModelValue(_loc, "category", result.Policy!.Category),
+                    ["revision"] = result.Policy.Revision.ToString(CultureInfo.InvariantCulture) }));
             return 0;
         }
 
@@ -195,21 +205,20 @@ public sealed class ModelPolicyCommands
         {
             // Sin TTY no se puede preguntar: ObserveOnly solo para esta selección.
             _host.Select(_workspaceId, key, modelId, ephemeralSafe: true, _cancellationToken);
-            _output.WriteLine("Sin terminal interactiva: " + modelId
-                + " queda en modo seguro ObserveOnly por esta selección. Ejecuta 'omni model select "
-                + modelId + "' en una TTY para clasificarlo.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.select.noninteractive", new Dictionary<string, string>
+            { ["model"] = modelId, ["category"] = LocalizeModelValue(_loc, "category", "ObserveOnly") }));
             return 0;
         }
 
         return Onboard(key, modelId);
     }
 
-    private static string RecommendedChoice(string category) => category switch
+    private string RecommendedChoice(string category) => category switch
     {
-        "ObserveOnly" => "1) ObserveOnly",
-        "PatchOnly" => "2) PatchOnly",
-        "ScopedCoder" => "3) ScopedCoder",
-        "FullAgent" => "4) FullAgent",
+        "ObserveOnly" => "1) " + LocalizeModelValue(_loc, "category", category),
+        "PatchOnly" => "2) " + LocalizeModelValue(_loc, "category", category),
+        "ScopedCoder" => "3) " + LocalizeModelValue(_loc, "category", category),
+        "FullAgent" => "4) " + LocalizeModelValue(_loc, "category", category),
         _ => category,
     };
 
@@ -218,48 +227,47 @@ public sealed class ModelPolicyCommands
     {
         var draft = _host.Draft(key, _cancellationToken);
         _output.WriteLine("");
-        _output.WriteLine("Onboarding de política — " + key);
-        _output.WriteLine("Una categoría es un TECHO de autonomía, nunca un permiso: el Permission");
-        _output.WriteLine("Engine sigue decidiendo cada operación. Sin política, el fallback es");
-        _output.WriteLine("ObserveOnly (lectura; ninguna escritura).");
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.title", "key", key.ToString()));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.explanation"));
         _output.WriteLine("");
-        _output.WriteLine("  1) ObserveOnly  — leer, listar, buscar, resolver referencias, proponer plan.");
-        _output.WriteLine("  2) PatchOnly    — lo anterior + parche estructurado sobre archivos ya leídos.");
-        _output.WriteLine("  3) ScopedCoder  — parche + crear + build/test acotado a la Task.");
-        _output.WriteLine("  4) FullAgent    — techo explícito del usuario (todas las capacidades).");
-        _output.WriteLine("  s) Modo seguro una vez — ObserveOnly solo por esta selección.");
-        _output.WriteLine("  c) Cancelar — no se guarda ni selecciona nada.");
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.option.observe"));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.option.patch"));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.option.scoped"));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.option.full"));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.option.safe"));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.option.cancel"));
         foreach (var warning in draft.Warnings)
         {
-            _output.WriteLine("  aviso: " + warning);
+            _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.warning", "warning", warning));
         }
 
-        _output.WriteLine(draft.HasQualificationEvidence
-            ? "Recomendación según la cualificación: " + RecommendedChoice(draft.RecommendedCategory) + "."
-            : "Recomendación sin evidencia de cualificación: 1) ObserveOnly.");
+        _output.WriteLine(_loc.Resolve(draft.HasQualificationEvidence
+            ? "cli.model.policy.onboarding.recommendation"
+            : "cli.model.policy.onboarding.no_evidence", "choice", RecommendedChoice(draft.RecommendedCategory)));
         while (true)
         {
-            _output.Write("Elige 1-4, s o c: ");
+            _output.Write(_loc.Resolve("cli.model.policy.onboarding.choose"));
             _output.Flush();
             _cancellationToken.ThrowIfCancellationRequested();
             var choice = _input.ReadLine()?.Trim();
             if (choice is null || choice.Length == 0)
             {
                 _output.WriteLine("");
-                _output.WriteLine("Entrada cerrada: se cancela sin guardar nada (fallback ObserveOnly).");
+                _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.eof"));
                 return 1;
             }
 
             if (choice == "c")
             {
-                _output.WriteLine("Cancelado: no se guardó política ni selección.");
+                _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.cancelled"));
                 return 1;
             }
 
             if (choice == "s")
             {
                 _host.Select(_workspaceId, key, modelId, ephemeralSafe: true, _cancellationToken);
-                _output.WriteLine("Seleccionado " + modelId + " en modo seguro ObserveOnly (solo esta selección).");
+                _output.WriteLine(_loc.Resolve("cli.model.policy.onboarding.safe", new Dictionary<string, string>
+                { ["model"] = modelId, ["category"] = LocalizeModelValue(_loc, "category", "ObserveOnly") }));
                 return 0;
             }
 
@@ -274,12 +282,13 @@ public sealed class ModelPolicyCommands
                 };
                 var stored = _host.Set(key, 0, category, null, _cancellationToken);
                 _host.Select(_workspaceId, key, modelId, ephemeralSafe: false, _cancellationToken);
-                _output.WriteLine("Política guardada: " + category + " rev=" + stored.Revision
-                    + ". Seleccionado: " + modelId);
+                _output.WriteLine(_loc.Resolve("cli.model.policy.saved.selection", new Dictionary<string, string>
+                { ["category"] = LocalizeModelValue(_loc, "category", category), ["revision"] = stored.Revision.ToString(CultureInfo.InvariantCulture),
+                  ["model"] = modelId }));
                 return 0;
             }
 
-            _output.WriteLine("Opción no válida: '" + choice + "'.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.invalid_choice", "choice", choice));
         }
     }
 
@@ -289,7 +298,7 @@ public sealed class ModelPolicyCommands
     {
         if (args.Length < 3)
         {
-            _output.WriteLine("uso: omni model policy show|set|delete|history <modelo> [...]");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.usage"));
             return 1;
         }
 
@@ -301,7 +310,7 @@ public sealed class ModelPolicyCommands
 
         if (args.Length < 4)
         {
-            _output.WriteLine("uso: omni model policy " + action + " <modelo>");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.action_usage", "action", action));
             return 1;
         }
 
@@ -355,13 +364,13 @@ public sealed class ModelPolicyCommands
 
         if (modelId is null || category is null)
         {
-            _output.WriteLine("uso: omni model policy set <modelo> --category ObserveOnly|PatchOnly|ScopedCoder|FullAgent [--revision N] [--note \"texto\"]");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.set.usage"));
             return 1;
         }
 
         if (category is not ("ObserveOnly" or "PatchOnly" or "ScopedCoder" or "FullAgent"))
         {
-            _output.WriteLine("categoría no válida: '" + category + "' (Custom se configura con campos explícitos; usa 1-4 del onboarding)");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.invalid_category", "category", category));
             return 1;
         }
 
@@ -377,14 +386,16 @@ public sealed class ModelPolicyCommands
         try
         {
             var stored = _host.Set(key, expected, category, note, _cancellationToken);
-            _output.WriteLine("Política guardada: " + modelId + " → " + category + " rev=" + stored.Revision);
+            _output.WriteLine(_loc.Resolve("cli.model.policy.saved", new Dictionary<string, string>
+            { ["model"] = modelId, ["category"] = LocalizeModelValue(_loc, "category", category),
+              ["revision"] = stored.Revision.ToString(CultureInfo.InvariantCulture) }));
             return 0;
         }
         catch (ModelPolicyRevisionConflict ex)
         {
-            _output.WriteLine("Conflicto de revisión (nada se guardó): esperaba " + ex.ExpectedRevision
-                + ", la vigente es " + ex.ActualRevision + ". Re-intenta con --revision "
-                + ex.ActualRevision + " solo si revisaste el cambio concurrente.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.revision_conflict", new Dictionary<string, string>
+            { ["expected"] = ex.ExpectedRevision.ToString(CultureInfo.InvariantCulture),
+              ["actual"] = ex.ActualRevision.ToString(CultureInfo.InvariantCulture) }));
             return 2;
         }
     }
@@ -394,36 +405,32 @@ public sealed class ModelPolicyCommands
         var stored = _host.Get(key, _cancellationToken);
         if (stored is null)
         {
-            _output.WriteLine(modelId + " no tiene política guardada: fallback ObserveOnly y onboarding"
-                + " en la próxima selección.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.no_saved_fallback", "model", modelId));
             return 1;
         }
 
-        var sb = new StringBuilder();
-        sb.Append(modelId).Append(" → ").Append(stored.Category)
-            .Append(" rev=").Append(stored.Revision).Append('\n');
-        sb.Append("  tools: modo=").Append(stored.ToolMode)
-            .Append(" visibles=").Append(stored.MaxVisibleTools)
-            .Append(" discovery=").Append(stored.AllowToolDiscovery).Append('\n');
-        sb.Append("  capacidades: ");
-        foreach (var capability in stored.CapabilityCeiling)
+        _output.WriteLine(_loc.Resolve("cli.model.policy.show.head", new Dictionary<string, string>
+        { ["model"] = modelId, ["category"] = LocalizeModelValue(_loc, "category", stored.Category),
+          ["revision"] = stored.Revision.ToString(CultureInfo.InvariantCulture) }));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.show.tools", new Dictionary<string, string>
+        { ["mode"] = LocalizeModelValue(_loc, "toolMode", stored.ToolMode), ["visible"] = stored.MaxVisibleTools.ToString(CultureInfo.InvariantCulture),
+          ["discovery"] = stored.AllowToolDiscovery.ToString(CultureInfo.InvariantCulture) }));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.show.capabilities", "value",
+            string.Join(", ", stored.CapabilityCeiling.Select(value =>
+                LocalizeModelValue(_loc, "capability", value)))));
+        _output.WriteLine(_loc.Resolve("cli.model.policy.show.mutation", new Dictionary<string, string>
         {
-            sb.Append(capability).Append(' ');
-        }
-
-        sb.Append('\n');
-        sb.Append("  mutación: modo=").Append(stored.MutationMode)
-            .Append(" delete=").Append(stored.DeletePolicy)
-            .Append(" mover=").Append(stored.MoveOrRenamePolicy)
-            .Append(" archivos/turno=").Append(stored.MaxFilesPerTurn)
-            .Append(" líneas/turno=").Append(stored.MaxChangedLinesPerTurn)
-            .Append(" ratio=").Append(stored.MaxRewriteRatio).Append('\n');
+            ["mode"] = LocalizeModelValue(_loc, "mutationMode", stored.MutationMode),
+            ["delete"] = LocalizeModelValue(_loc, "destructivePolicy", stored.DeletePolicy),
+            ["move"] = LocalizeModelValue(_loc, "destructivePolicy", stored.MoveOrRenamePolicy),
+            ["files"] = stored.MaxFilesPerTurn.ToString(CultureInfo.InvariantCulture),
+            ["lines"] = stored.MaxChangedLinesPerTurn.ToString(CultureInfo.InvariantCulture),
+            ["ratio"] = stored.MaxRewriteRatio.ToString(CultureInfo.InvariantCulture),
+        }));
         if (stored.Note is not null)
         {
-            sb.Append("  nota: ").Append(stored.Note).Append('\n');
+            _output.WriteLine(_loc.Resolve("cli.model.policy.show.note", "value", stored.Note));
         }
-
-        _output.Write(sb.ToString());
         return 0;
     }
 
@@ -441,7 +448,7 @@ public sealed class ModelPolicyCommands
         var existing = _host.Get(key, _cancellationToken);
         if (existing is null)
         {
-            _output.WriteLine(modelId + " no tiene política guardada.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.no_saved", "model", modelId));
             return 1;
         }
 
@@ -449,14 +456,14 @@ public sealed class ModelPolicyCommands
         try
         {
             _host.Delete(key, expected, _cancellationToken);
-            _output.WriteLine("Política eliminada: " + modelId + " (el historial se conserva). La próxima");
-            _output.WriteLine("selección de esta configuración reabre el onboarding.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.deleted", "model", modelId));
             return 0;
         }
         catch (ModelPolicyRevisionConflict ex)
         {
-            _output.WriteLine("Conflicto de revisión (nada se eliminó): esperaba " + ex.ExpectedRevision
-                + ", la vigente es " + ex.ActualRevision + ".");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.delete_conflict", new Dictionary<string, string>
+            { ["expected"] = ex.ExpectedRevision.ToString(CultureInfo.InvariantCulture),
+              ["actual"] = ex.ActualRevision.ToString(CultureInfo.InvariantCulture) }));
             return 2;
         }
     }
@@ -466,14 +473,16 @@ public sealed class ModelPolicyCommands
         var history = _host.History(key, _cancellationToken);
         if (history.Count == 0)
         {
-            _output.WriteLine(modelId + " sin historial.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.no_history", "model", modelId));
             return 1;
         }
 
         foreach (var change in history)
         {
-            _output.WriteLine("  rev=" + change.Revision + " " + change.ChangeKind
-                + " en " + change.ChangedAt.ToString("yyyy-MM-dd HH:mm:ss"));
+            _output.WriteLine(_loc.Resolve("cli.model.policy.history.entry", new Dictionary<string, string>
+            { ["revision"] = change.Revision.ToString(CultureInfo.InvariantCulture),
+              ["kind"] = LocalizeChangeKind(_loc, change.ChangeKind),
+              ["date"] = change.ChangedAt.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) }));
         }
 
         return 0;
@@ -640,8 +649,8 @@ public sealed class ModelPolicyCommands
         // Estado (ADR-0007 §4): Unknown → Declared → ProvisionallyClassified → Qualified.
         _output.WriteLine(_loc.Resolve("cli.model.qualify.state", new Dictionary<string, string>
         {
-            ["previous"] = result.PreviousState,
-            ["state"] = result.NewState,
+            ["previous"] = LocalizeModelValue(_loc, "qualificationState", result.PreviousState),
+            ["state"] = LocalizeModelValue(_loc, "qualificationState", result.NewState),
             ["revision"] = result.ProfileRevision.ToString(CultureInfo.InvariantCulture),
             ["key"] = result.KeyHash[..12] + "…",
         }));
@@ -652,8 +661,8 @@ public sealed class ModelPolicyCommands
             _output.WriteLine(_loc.Resolve("cli.model.qualify.probe.line", new Dictionary<string, string>
             {
                 ["id"] = probe.Id,
-                ["kind"] = probe.Kind,
-                ["status"] = probe.Status,
+                ["kind"] = LocalizeModelValue(_loc, "probeKind", probe.Kind),
+                ["status"] = LocalizeModelValue(_loc, "probeStatus", probe.Status),
                 ["score"] = probe.Score.ToString("0.00", CultureInfo.InvariantCulture),
                 ["cost"] = probe.CostUsd is { } cost
                     ? cost.ToString("0.0000", CultureInfo.InvariantCulture) + " USD"
@@ -666,22 +675,22 @@ public sealed class ModelPolicyCommands
         {
             _output.WriteLine(_loc.Resolve("cli.model.qualify.trait.line", new Dictionary<string, string>
             {
-                ["trait"] = trait.Trait,
+                ["trait"] = LocalizeModelValue(_loc, "trait", trait.Trait),
                 ["value"] = trait.Value.ToString("0.00", CultureInfo.InvariantCulture),
                 ["confidence"] = trait.Confidence.ToString("0.0", CultureInfo.InvariantCulture),
                 ["samples"] = trait.Samples.ToString(CultureInfo.InvariantCulture),
-                ["source"] = trait.Source,
+                ["source"] = LocalizeModelValue(_loc, "traitSource", trait.Source),
             }));
         }
 
         // Recomendación (ADR-0044 §6): evidencia → categoría recomendada, nunca auto-ampliada.
         _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.header",
-            "category", result.RecommendedCategory));
+            "category", LocalizeModelValue(_loc, "category", result.RecommendedCategory)));
         _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.mutation", new Dictionary<string, string>
         {
-            ["mode"] = result.RecommendedMutationMode,
-            ["delete"] = result.RecommendedDeletePolicy,
-            ["move"] = result.RecommendedMoveOrRenamePolicy,
+            ["mode"] = LocalizeModelValue(_loc, "mutationMode", result.RecommendedMutationMode),
+            ["delete"] = LocalizeModelValue(_loc, "destructivePolicy", result.RecommendedDeletePolicy),
+            ["move"] = LocalizeModelValue(_loc, "destructivePolicy", result.RecommendedMoveOrRenamePolicy),
             ["files"] = result.RecommendedMaxFilesPerTurn.ToString(CultureInfo.InvariantCulture),
             ["lines"] = result.RecommendedMaxChangedLinesPerTurn.ToString(CultureInfo.InvariantCulture),
             ["ratio"] = result.RecommendedMaxRewriteRatio.ToString("0.00", CultureInfo.InvariantCulture),
@@ -695,6 +704,7 @@ public sealed class ModelPolicyCommands
             new Dictionary<string, string>
             {
                 ["model"] = modelId,
+                // Executable examples retain the parser's canonical enum values.
                 ["category"] = result.RecommendedCategory,
             }));
         return 0;
@@ -714,15 +724,14 @@ public sealed class ModelPolicyCommands
                 exitCode = 0;
                 return new ModelPolicyKeyDto("claude-code", externalModel);
             }
-            _output.WriteLine("modelo de ejecutor externo no válido: '" + modelId + "'.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.external_invalid", "model", modelId));
             exitCode = 2;
             return null;
         }
         var model = FindModel(modelId);
         if (model is null)
         {
-            _output.WriteLine("modelo desconocido: '" + modelId
-                + "'. 'omni model list' muestra los modelos del registro.");
+            _output.WriteLine(_loc.Resolve("cli.model.policy.unknown_model", "model", modelId));
             exitCode = 2;
             return null;
         }
@@ -747,14 +756,44 @@ public sealed class ModelPolicyCommands
     private static ModelPolicyKeyDto KeyFor(ModelRegistryModelDescriptor model) =>
         new(model.ProviderId, model.Id);
 
+    internal static string LocalizeModelValue(Localization localization, string kind, string value)
+    {
+        var known = kind switch
+        {
+            "category" => value is "ObserveOnly" or "PatchOnly" or "ScopedCoder" or "FullAgent" or "Custom",
+            "toolMode" => value is "Direct" or "Discovered" or "Code",
+            "mutationMode" => value is "None" or "PatchExisting" or "PatchAndCreate" or "Full",
+            "destructivePolicy" => value is "Deny" or "Ask" or "Allow",
+            "capability" => value is "WorkspaceRead" or "Search" or "ReferenceResolve" or "PlanProposal"
+                or "PatchExisting" or "CreateFile" or "ReplaceFile" or "DeleteFile" or "MoveOrRename"
+                or "ValidationProcess" or "GeneralProcess" or "Shell" or "Network" or "AgentMailboxWait",
+            "qualificationState" => value is "Unknown" or "Declared" or "ProvisionallyClassified"
+                or "Qualified" or "Calibrated" or "Stale",
+            "probeKind" => value is "Reading" or "Reasoning" or "StructuredOutput",
+            "probeStatus" => value is "Passed" or "Failed" or "Error" or "Timeout" or "NotRun",
+            "trait" => value is "InstructionFollowing" or "StructuredOutputReliability",
+            "traitSource" => value is "empirical",
+            _ => false,
+        };
+        return known ? localization.Resolve($"cli.model.value.{kind}.{value}") : value;
+    }
+
+    internal static string LocalizeChangeKind(Localization localization, string changeKind) => changeKind switch
+    {
+        "created" or "Created" => localization.Resolve("cli.model.policy.history.change.created"),
+        "updated" or "Updated" => localization.Resolve("cli.model.policy.history.change.updated"),
+        "deleted" or "Deleted" => localization.Resolve("cli.model.policy.history.change.deleted"),
+        _ => changeKind,
+    };
+
     private void Usage()
     {
-        _output.WriteLine("uso: omni model list | refresh | select <modelo> | policy show|set|delete|history <modelo> | qualify <modelo>");
-        _output.WriteLine("  omni model refresh  consulta el catálogo ChatGPT actual sin generar ni usar API keys");
-        _output.WriteLine("  omni model select <m>       selecciona y abre onboarding si no hay política");
-        _output.WriteLine("  omni model policy set <m> --category <c> [--revision N] [--note \"t\"]");
-        _output.WriteLine("  omni model policy set claude-code/<modelo> --category FullAgent [--revision N] [--note \"t\"]");
-        _output.WriteLine("  omni model policy delete <m> [--revision N]");
-        _output.WriteLine("  omni model qualify <m> [--suite quick] [--yes] [--max-cost USD] [--probe-timeout s]  ejecuta la suite y recomienda");
+        _output.WriteLine(_loc.Resolve("cli.model.usage"));
+        _output.WriteLine(_loc.Resolve("cli.model.help.refresh"));
+        _output.WriteLine(_loc.Resolve("cli.model.help.select"));
+        _output.WriteLine(_loc.Resolve("cli.model.help.policy_set"));
+        _output.WriteLine(_loc.Resolve("cli.model.help.external"));
+        _output.WriteLine(_loc.Resolve("cli.model.help.delete"));
+        _output.WriteLine(_loc.Resolve("cli.model.help.qualify"));
     }
 }

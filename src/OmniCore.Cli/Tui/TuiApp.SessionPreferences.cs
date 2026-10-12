@@ -68,8 +68,7 @@ public sealed partial class TuiApp
                 break;
             case "extensions":
                 foreach (var extension in data.Extensions)
-                    _sessionPreferencesRows.Add(new((string.IsNullOrWhiteSpace(extension.DisplayName)
-                        ? SessionPref("extension.unidentified") : SessionPreferencesPresentation.SafeText(extension.DisplayName, 100))
+                    _sessionPreferencesRows.Add(new(ExtensionName(extension)
                         + (string.IsNullOrWhiteSpace(extension.Id) ? "" : " · " + SessionPreferencesPresentation.SafeText(extension.Id, 80)),
                         ExtensionDetails(extension), extension));
                 break;
@@ -220,31 +219,52 @@ public sealed partial class TuiApp
 
     private string ContextItemDetails(ContextItemPresentation item) => string.Join(Environment.NewLine,
         Safe(item.Id), SessionPref("item.kind") + ": " + EnumLabel("context.kind", item.Kind),
-        SessionPref("item.source") + ": " + Safe(item.Source ?? SessionPref("unknown")),
-        SessionPref("item.scope") + ": " + Safe(item.Scope ?? SessionPref("unknown")),
+        SessionPref("item.source") + ": " + (item.Source is { } source
+            ? UiCompletionResources.EnumLabel("source", source, _locale) : SessionPref("unknown")),
+        SessionPref("item.scope") + ": " + EnumLabel("scope", item.Scope ?? SessionPref("unknown")),
         SessionPref("item.tokens") + ": " + (item.Tokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? SessionPref("unknown")),
         SessionPref("item.accuracy") + ": " + (item.TokenAccuracy is { } accuracy ? EnumLabel("token_accuracy", accuracy) : SessionPref("unknown")),
-        SessionPref("item.priority") + ": " + Safe(item.Priority ?? SessionPref("unknown")),
+        SessionPref("item.priority") + ": " + (item.Priority is { } priority
+            ? UiCompletionResources.EnumLabel("contextPriority", priority, _locale) : SessionPref("unknown")),
         SessionPref("item.sensitive") + ": " + Bool(item.Sensitive),
         item.References.Count == 0 ? "" : SessionPref("item.refs") + ": " + Safe(string.Join(", ", item.References), 512));
 
     private string ContextDiagnosticDetails(ContextDiagnosticPresentation item) => string.Join(Environment.NewLine,
         Safe(item.ItemId), SessionPref("item.reason") + ": " + (item.Reason is { } reason ? Safe(reason) : EnumLabel("context.decision", item.Decision)),
-        SessionPref("item.source") + ": " + Safe(item.Source ?? SessionPref("unknown")),
-        SessionPref("item.scope") + ": " + Safe(item.Scope ?? SessionPref("unknown")),
+        SessionPref("item.source") + ": " + (item.Source is { } source
+            ? UiCompletionResources.EnumLabel("source", source, _locale) : SessionPref("unknown")),
+        SessionPref("item.scope") + ": " + EnumLabel("scope", item.Scope ?? SessionPref("unknown")),
         SessionPref("item.tokens") + ": " + (item.Tokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? SessionPref("unknown")),
         SessionPref("item.sensitive") + ": " + Bool(item.Sensitive));
 
-    private string ExtensionDetails(ExtensionPresentation extension) => string.Join(Environment.NewLine,
-        string.IsNullOrWhiteSpace(extension.DisplayName) ? SessionPref("extension.unidentified") : Safe(extension.DisplayName),
-        string.IsNullOrWhiteSpace(extension.Id) ? "" : SessionPref("id") + ": " + Safe(extension.Id),
-        SessionPref("extension.version") + ": " + Safe(extension.Version ?? SessionPref("unknown")),
-        SessionPref("extension.status") + ": " + EnumLabel("extension.state", extension.Status),
-        SessionPref("extension.requested") + ": " + (extension.RequestedCapabilities.Count == 0 ? SessionPref("unknown") : Safe(string.Join(", ", extension.RequestedCapabilities), 512)),
-        SessionPref("extension.consented") + ": " + (extension.ConsentedCapabilities.Count == 0 ? SessionPref("no") : Safe(string.Join(", ", extension.ConsentedCapabilities), 512)),
-        SessionPref("extension.hash") + ":", SessionPref("manifest_hash") + " " + Safe(extension.ManifestSha256, 128),
-        SessionPref("package_hash") + " " + Safe(extension.PackageSha256, 128),
-        extension.AmbiguousId ? SessionPref("extension.ambiguous") : "");
+    private string ExtensionName(ExtensionPresentation extension)
+    {
+        var text = extension.TextFor(_locale)?.DisplayName;
+        if (!string.IsNullOrWhiteSpace(text)) return Safe(text, 100);
+        return _localization.Resolve("uiCompletion.external.originalName") + ": " + Safe(extension.DisplayName, 100);
+    }
+
+    private string ExtensionDetails(ExtensionPresentation extension)
+    {
+        var lines = new List<string>
+        {
+            ExtensionName(extension),
+            string.IsNullOrWhiteSpace(extension.Id) ? "" : SessionPref("id") + ": " + Safe(extension.Id),
+            SessionPref("extension.version") + ": " + Safe(extension.Version ?? SessionPref("unknown")),
+            SessionPref("extension.status") + ": " + EnumLabel("extension.state", extension.Status),
+            SessionPref("extension.requested") + ": " + (extension.RequestedCapabilities.Count == 0 ? SessionPref("unknown") : Safe(string.Join(", ", extension.RequestedCapabilities), 512)),
+            SessionPref("extension.consented") + ": " + (extension.ConsentedCapabilities.Count == 0 ? SessionPref("no") : Safe(string.Join(", ", extension.ConsentedCapabilities), 512)),
+            SessionPref("extension.hash") + ":", SessionPref("manifest_hash") + " " + Safe(extension.ManifestSha256, 128),
+            SessionPref("package_hash") + " " + Safe(extension.PackageSha256, 128),
+            extension.AmbiguousId ? SessionPref("extension.ambiguous") : "",
+        };
+        var description = extension.TextFor(_locale)?.Description;
+        if (!string.IsNullOrWhiteSpace(description)) lines.Insert(1, Safe(description, 1024));
+        else if (extension.UiResources?.Values.Select(value => value.Description)
+            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) is { } originalDescription)
+            lines.Insert(1, _localization.Resolve("uiCompletion.external.originalDescription") + ": " + Safe(originalDescription, 1024));
+        return string.Join(Environment.NewLine, lines);
+    }
 
     private string SkillDetails(SkillPresentation skill) => string.Join(Environment.NewLine,
         Safe(skill.DisplayName), SessionPref("id") + ": " + Safe(skill.Id), SessionPref("skill.version") + ": " + Safe(skill.Version ?? SessionPref("unknown")),

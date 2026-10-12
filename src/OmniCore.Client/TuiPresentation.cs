@@ -41,15 +41,26 @@ public sealed record TuiLayoutModel(TuiLayoutMode Mode, bool SidebarVisible, int
 public sealed record StatusLinePresentation(string Left, string Right)
 {
     /// <summary>Formats only reported data; unknown/not-supported quota is an em dash, never an estimate.</summary>
-    public static StatusLinePresentation From(StatusLineModel model)
+    public static StatusLinePresentation From(StatusLineModel model, string locale = "es")
     {
-        var left = model.Mode + (StringComparer.OrdinalIgnoreCase.Equals(model.ProductEffort, "ultracode")
+        var text = new Localization(locale);
+        var left = ModeLabel(model.Mode, locale) + (StringComparer.OrdinalIgnoreCase.Equals(model.ProductEffort, "ultracode")
             ? " · UltraCode" : "");
         if (!string.IsNullOrWhiteSpace(model.AppliedReasoning))
-            left += " · reasoning " + model.AppliedReasoning;
+            left += " · " + text.Resolve("tui.status.reasoning") + " " + model.AppliedReasoning;
         var right = string.IsNullOrWhiteSpace(model.Quota) ? "—" : model.Quota;
-        if (model.PendingInteractions is > 0) right += " · ! " + model.PendingInteractions + " pending";
+        if (model.PendingInteractions is > 0)
+            right += " · ! " + text.Resolve(model.PendingInteractions == 1 ? "tui.status.pending_one" : "tui.status.pending", "count",
+                model.PendingInteractions.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         return new(left, right);
+    }
+
+    public static string ModeLabel(string mode, string locale)
+    {
+        var code = mode.ToLowerInvariant();
+        return code is "plan" or "act" or "orchestrate"
+            ? new Localization(locale).Resolve("status.mode." + code)
+            : mode;
     }
 }
 

@@ -259,6 +259,11 @@ public sealed partial class TuiWiringTests
             && row.Contains("modelos 2026-10-08 12:00 UTC", StringComparison.Ordinal));
 
         Click(fx, "Desconectar");
+        fx.Wait(() => fx.App.Overlay is { } confirm
+            && Descendants(confirm).Any(view => view.Id == "provider-disconnect-confirm"),
+            "confirmación explícita de desconexión visible");
+        Assert.Equal(2, handler.Requests.Count); // Only the preceding probe and discovery; confirmation adds no request.
+        ClickId(fx, "provider-disconnect-confirm");
         fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Conexión eliminada"),
             "disconnect vuelve al listado");
         Assert.Null(store.Load("credentials/anthropic-b", TestContext.Current.CancellationToken));
@@ -512,7 +517,7 @@ public sealed partial class TuiWiringTests
         Assert.True(fx.App.SidebarComposition.Collapsed > 0);
         Type(fx, "/sidebar settings");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "ajustes del panel");
-        Assert.Contains("Scope: Workspace", OverlayText(fx.App.Overlay!));
+        Assert.Contains("Alcance: Área de trabajo", OverlayText(fx.App.Overlay!));
         Assert.Contains(fx.App.Overlay!.SubViews.OfType<Button>(), b => b.Text == "Visibilidad");
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cierra ajustes");
         var preferences = SidebarPreferencesJson.Decode(fx.Server.Query("sidebarSettings", CancellationToken.None)!.Json)!;
@@ -558,7 +563,7 @@ public sealed partial class TuiWiringTests
         if (!noColor) Assert.Contains(frame.Cast<Terminal.Gui.Drawing.Cell>(), cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#F1D58A"));
         else Assert.All(frame.Cast<Terminal.Gui.Drawing.Cell>().Where(cell => cell.Grapheme == "◐"), cell => Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Foreground));
         fx.Invoke(() => fx.App.Sidebar!.SubViews.OfType<Button>().Single(b => b.Id == "sidebar-details").InvokeCommand(Command.Accept));
-        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Cache read: 30"), "detalle de consumo desplegable");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Lectura de caché: 30"), "detalle de consumo desplegable");
         Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
         Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
         Assert.Contains("fixture/sidebar-model", fx.App.SidebarSession!.Text.ToString());
@@ -861,7 +866,7 @@ public sealed partial class TuiWiringTests
             if (scene == "animations-braille") marker = "braille-spinner";
             if (scene == "tools") marker = "Herramientas";
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
-            if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
+            if (scene == "sidebar" && !text.Contains("Espacio de trabajo", StringComparison.Ordinal)) return;
             try
             {
                 Assert.Equal(rows, cells.GetLength(0));
@@ -871,7 +876,7 @@ public sealed partial class TuiWiringTests
                 if (scene != "table") Assert.DoesNotContain("┌", text);
                 if (scene == "sidebar-settings")
                 {
-                    Assert.Contains("Scope: Workspace", text); Assert.Contains("core.context", text);
+                    Assert.Contains("Alcance: Área de trabajo", text); Assert.Contains("core.context", text);
                     Assert.Contains("Visibilidad", text); Assert.Contains("Prioridad", text);
                     Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
                     var buttons = fx.App.Overlay.SubViews.OfType<Button>().ToArray();
@@ -1001,7 +1006,7 @@ public sealed partial class TuiWiringTests
                         string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme)).Contains("Enter enviar", StringComparison.Ordinal));
                     Assert.True(helpRow > inputRow, "ayudas debajo del panel de mensaje");
                     Assert.True(fx.App.Composer!.HasFocus);
-                    if (scene == "sidebar") Assert.Contains("Workspace", text);
+                    if (scene == "sidebar") Assert.Contains("Espacio de trabajo", text);
                 }
                 var destination = Environment.GetEnvironmentVariable("OMNICORE_TUI_SNAPSHOT_DIR");
                 if (string.IsNullOrWhiteSpace(destination)) return;
@@ -1926,6 +1931,10 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/models ", "Enter completa prefijo sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
+        fx.Invoke(() => fx.App.Composer.Text = "/modelos");
+        fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "alias localizado exacto");
+        KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == "/modelos ", "conserva alias localizado sin ejecutarlo");
+        Assert.Null(fx.App.Overlay);
         fx.Invoke(() => fx.App.Composer.Text = "/pl");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "helper reabierto");
         KeyWithEffect(fx, KeyCode.Esc, () => !fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "Esc cierra solo sugerencias");
@@ -2010,7 +2019,7 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => detail.Text.ToString().Contains("id.39"), "detalle seleccionado actualizado");
         Assert.Contains(source, detail.Text);
         Assert.Contains("No visible", detail.Text);
-        Assert.Contains("reject:PLAN mode", detail.Text);
+        Assert.Contains(Localization.Spanish().Resolve("client.tools.policy.plan"), detail.Text);
         Assert.Contains("Bloqueada en Plan", detail.Text);
         Assert.Contains("Descripción externa: acción y pingüino.", detail.Text);
         Assert.Contains("no equivale a permiso", detail.Text);
@@ -2766,7 +2775,7 @@ public sealed partial class TuiWiringTests
         });
     }
 
-    private static void ChoosePreferenceCategory(TuiFixture fx, string categoryId)
+    private static void ChoosePreferenceCategory(TuiFixture fx, string categoryId, string locale = "es")
     {
         fx.Invoke(() =>
         {
@@ -2776,7 +2785,7 @@ public sealed partial class TuiWiringTests
             list.SelectedItem = index;
             list.InvokeCommand(Command.Accept);
         });
-        var selected = PreferenceCategoryCatalog.Resolve(new Localization("es"))
+        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale))
             .Single(category => category.Id == categoryId);
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains(selected.Title, StringComparison.Ordinal) == true,
             "categoría de preferencias visible: " + categoryId);
@@ -2787,6 +2796,7 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "models_execution");
         Click(fx, "Modelos y políticas");
+        ClickId(fx, "policy-preferences-model-policies");
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Modelos") == true, "mantenimiento de modelos visible");
     }
 
@@ -3069,7 +3079,11 @@ public sealed partial class TuiWiringTests
             ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null,
             IOmniClient? client = null, ITuiProviderConnectionHost? providerConnections = null,
             ITuiLocalEngineHost? localEngines = null, LocaleSelection? localeSelection = null,
-            Action<string>? localeChanged = null, ITuiClaudeAccountHost? claudeAccounts = null)
+            Action<string>? localeChanged = null, ITuiClaudeAccountHost? claudeAccounts = null,
+            ITuiLocalEngineSupervisor? localEngineSupervisor = null,
+            IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
+            IDiagnosticsPreferencesFacade? diagnosticsPreferences = null,
+            IModelCatalogPreferencesHost? modelCatalogPreferences = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -3089,7 +3103,13 @@ public sealed partial class TuiWiringTests
                     providerConnections ?? EmptyTuiProviderConnectionHost.Instance,
                     Path.Combine(Root, "tui-animations.json"), localeSelection: localeSelection,
                     localEngines: localEngines ?? new TuiLocalEngineHost(Path.Combine(Root, "fixture-local-engines")),
-                    localeChanged: localeChanged, claudeAccounts: claudeAccounts ?? new ClaudeAccountsFixture());
+                    localeChanged: localeChanged, claudeAccounts: claudeAccounts ?? new ClaudeAccountsFixture(),
+                    localEngineSupervisor: localEngineSupervisor,
+                    policyPreferences: policyPreferences ?? PolicyPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
+                    securityPreferences: securityPreferences ?? SecurityPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
+                    diagnosticsPreferences: diagnosticsPreferences ?? DiagnosticsPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")));
+                App.SetModelCatalogPreferencesHost(modelCatalogPreferences ?? ModelCatalogPreferencesHost.Create(
+                    Path.Combine(Root, "fixture-model-catalog"), Workspace, Path.Combine(Root, "fixture-model-catalog-data")));
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);

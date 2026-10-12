@@ -30,20 +30,40 @@ public sealed class WorkspaceTrustStore
     }
 
     public void SetTrusted(string workspaceRoot, bool trusted)
+        => WriteTrust(workspaceRoot, expectedCurrent: null, trusted);
+
+    /// <summary>Changes trust only if the caller's inspected state is still current.</summary>
+    public void SetTrustedIfUnchanged(string workspaceRoot, bool expectedCurrent, bool trusted)
+        => WriteTrust(workspaceRoot, expectedCurrent, trusted);
+
+    private void WriteTrust(string workspaceRoot, bool? expectedCurrent, bool trusted)
     {
         var canonical = Canonical(workspaceRoot);
         var id = WorkspaceId.Of(canonical).ToString();
+        using var lease = ConfigurationWriteLease.Acquire(_file);
         var data = Read();
+        var current = data.Workspaces?.TryGetValue(id, out var existing) == true
+            && existing.Trusted && string.Equals(existing.CanonicalPath, canonical, PathComparison);
+        if (expectedCurrent is not null && expectedCurrent.Value != current)
+            throw new InvalidOperationException("Workspace trust changed; reload before saving.");
         data.Workspaces ??= new Dictionary<string, TrustEntryYaml>(StringComparer.Ordinal);
         data.Workspaces[id] = new TrustEntryYaml { CanonicalPath = canonical, Trusted = trusted };
         Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
-        var temp = _file + ".tmp";
-        File.WriteAllText(temp, Serializer.Serialize(data));
-        File.Move(temp, _file, true);
+        var temp = _file + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(temp, Serializer.Serialize(data));
+            File.Move(temp, _file, true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
     }
 
     private TrustFileYaml Read()
     {
+        ConfigurationWriteLease.EnsureNoLinks(_file);
         if (!File.Exists(_file)) return new TrustFileYaml { Workspaces = new Dictionary<string, TrustEntryYaml>() };
         try { return Deserializer.Deserialize<TrustFileYaml>(File.ReadAllText(_file)) ?? new TrustFileYaml(); }
         catch (YamlException ex) { throw new InvalidDataException("trust.yaml inválido.", ex); }
@@ -414,8 +434,12 @@ public static class ScopedSettingsLoader
 
     private static YamlMappingNode? LocalRoot(IPlatformPaths paths, string workspaceRoot)
     {
-        var text = SidebarConfiguration.ReadFile(Path.Combine(OmniHost.WorkspaceDataDirectory(paths, workspaceRoot),
-            "settings.yaml"));
+        // A scoped-settings query must remain observational: WorkspaceDirectory() creates its
+        // target, so derive the same deterministic path without provisioning workspace data.
+        var canonical = ProjectIdentity.CanonicalWorkspacePath(ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot));
+        var workspaceId = WorkspaceId.Of(canonical).ToString();
+        var localSettings = Path.Combine(paths.DataDirectory, "workspaces", workspaceId, "settings.yaml");
+        var text = SidebarConfiguration.ReadFile(localSettings);
         if (string.IsNullOrWhiteSpace(text)) return null;
         var diagnostics = new List<ConfigDiagnostic>();
         YamlMappingNode? root = null;

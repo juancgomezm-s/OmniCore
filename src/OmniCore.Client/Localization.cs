@@ -8,7 +8,7 @@ public enum LocaleSelectionSource { CommandLine, Environment, UserSetting, Defau
 public sealed record LocaleSelection(string Locale, LocaleSelectionSource Source, string? InvalidValue = null)
 {
     public bool HasProcessOverride => Source is LocaleSelectionSource.CommandLine or LocaleSelectionSource.Environment;
-    public bool HasCompleteLegacyCatalog => Locale is "es" or "en";
+    public bool HasCompleteLegacyCatalog => Locale is "es" or "en" or "fr" or "it";
 }
 
 public static class LocaleSelectionResolver
@@ -32,8 +32,8 @@ public sealed record LocalizationResolution(string Text, string RequestedLocale,
 
 /// <summary>
 /// Resolver de texto localizado (ADR-0040): el servidor envía claves + argumentos; el cliente
-/// resuelve los recursos de preferencias es/en/fr/it y los recursos heredados es/en (es por defecto).
-/// Las claves heredadas sin traducción caen a en y luego a la clave literal; ResolveDetailed lo informa.
+/// resuelve los recursos propios es/en/fr/it (es por defecto).
+/// Las claves desconocidas conservan un fallback defensivo; ResolveDetailed lo informa.
 /// Los prompts al modelo y los datos técnicos no se traducen.
 /// </summary>
 public sealed class Localization
@@ -89,6 +89,24 @@ public sealed class Localization
     /// <summary>Resolves a key and reports whether a legacy key used a fallback resource.</summary>
     public LocalizationResolution ResolveDetailed(string key)
     {
+        if (RuntimeCompletionResources.TryTranslate(Locale, key, out var runtimeCompletionText))
+            return new(runtimeCompletionText, Locale, Locale, false);
+        if (ModelCatalogPreferencesResources.TryTranslate(Locale, key, out var modelCatalogText))
+            return new(modelCatalogText, Locale, Locale, false);
+        if (OperationalCommandResources.TryTranslate(Locale, key, out var operationText))
+            return new(operationText, Locale, Locale, false);
+        if (OperationalHostResources.TryTranslate(Locale, key, out var hostText))
+            return new(hostText, Locale, Locale, false);
+        if (UiCompletionResources.TryTranslate(Locale, key, out var completionText))
+            return new(completionText, Locale, Locale, false);
+        if (PolicyPreferencesResources.TryTranslate(Locale, key, out var policyText))
+            return new(policyText, Locale, Locale, false);
+        if (SecurityPreferencesResources.TryTranslate(Locale, key, out var securityText))
+            return new(securityText, Locale, Locale, false);
+        if (DiagnosticsPreferencesResources.TryTranslate(Locale, key, out var diagnosticsText))
+            return new(diagnosticsText, Locale, Locale, false);
+        if (ShellUiResources.TryTranslate(Locale, key, out var shellText))
+            return new(shellText, Locale, Locale, false);
         if (SessionPreferencesResources.TryTranslate(Locale, key, out var sessionText))
             return new(sessionText, Locale, Locale, false);
         if (AccountsPreferencesResources.TryTranslate(Locale, key, out var accountText))
@@ -101,6 +119,8 @@ public sealed class Localization
             return new(preferencesText, Locale, Locale, false);
         if (PreferenceCategoryCatalog.TryTranslate(Locale, key, out var categoryText))
             return new(categoryText, Locale, Locale, false);
+        if (LegacyLocaleResources.TryTranslate(Locale, key, out var legacyText))
+            return new(legacyText, Locale, Locale, false);
         var text = Resources(key, out var resourceLocale);
         return new(text, Locale, resourceLocale, resourceLocale != Locale);
     }
@@ -115,6 +135,15 @@ public sealed class Localization
         var open = text.IndexOf('(');
         var key = open < 0 ? text : text[..open];
         if (!_es.ContainsKey(key) && !_en.ContainsKey(key)
+            && !RuntimeCompletionResources.ContainsKey(key)
+            && !ModelCatalogPreferencesResources.ContainsKey(key)
+            && !OperationalCommandResources.ContainsKey(key)
+            && !OperationalHostResources.ContainsKey(key)
+            && !UiCompletionResources.ContainsKey(key)
+            && !PolicyPreferencesResources.ContainsKey(key)
+            && !SecurityPreferencesResources.ContainsKey(key)
+            && !DiagnosticsPreferencesResources.ContainsKey(key)
+            && !ShellUiResources.ContainsKey(key)
             && !SessionPreferencesResources.ContainsKey(key)
             && !AccountsPreferencesResources.ContainsKey(key)
             && !ClientCommandResources.ContainsKey(key)

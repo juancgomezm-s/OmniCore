@@ -15,6 +15,8 @@ public interface ITuiLocalEngineHost
     LocalEnginePreferencesSnapshot Read(CancellationToken cancellationToken);
     LocalEnginePreferencesSnapshot Save(LocalEngineConfigurationDraft draft, string expectedRevision,
         CancellationToken cancellationToken);
+    LocalEnginePreferencesSnapshot Delete(string providerId, string expectedRevision,
+        CancellationToken cancellationToken);
 }
 
 public sealed record LocalEnginePreferencesSnapshot(string Revision,
@@ -22,7 +24,7 @@ public sealed record LocalEnginePreferencesSnapshot(string Revision,
 
 public sealed record LocalEngineConfigurationRow(string ProviderId, string Mode, string BaseUrl,
     string? Executable, IReadOnlyList<string> Arguments, string? WorkingDirectory,
-    int ReadinessTimeoutSeconds, bool CanEdit, string? UnavailableReasonKey);
+    int ReadinessTimeoutSeconds, bool CanEdit, string? UnavailableReasonKey, bool CanDelete = false);
 
 /// <summary>Arguments are literal argv elements, never a shell command or a credential field.</summary>
 public sealed record LocalEngineConfigurationDraft(string ProviderId, string Mode, string BaseUrl,
@@ -42,11 +44,15 @@ public sealed class LocalEngineConfigurationException(string code) : InvalidOper
 public sealed class TuiLocalEngineHost : ITuiLocalEngineHost
 {
     private readonly string _directory;
+    private readonly ITuiLocalEngineSupervisor? _supervisor;
     private string ProvidersFile => Path.Combine(_directory, "providers.yaml");
     private string ModelsFile => Path.Combine(_directory, "models.yaml");
 
-    public TuiLocalEngineHost(string? configDirectory = null) =>
+    public TuiLocalEngineHost(string? configDirectory = null, ITuiLocalEngineSupervisor? supervisor = null)
+    {
         _directory = Path.GetFullPath(configDirectory ?? OmniHost.CreatePlatformPaths().ConfigDirectory);
+        _supervisor = supervisor;
+    }
 
     public LocalEnginePreferencesSnapshot Read(CancellationToken cancellationToken)
     {
@@ -144,6 +150,60 @@ public sealed class TuiLocalEngineHost : ITuiLocalEngineHost
             or InvalidDataException or YamlException) { throw Error("unavailable"); }
     }
 
+    public LocalEnginePreferencesSnapshot Delete(string providerId, string expectedRevision,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            var initial = ReadFiles();
+            RequireRevision(initial, expectedRevision);
+            using var lease = ProviderConfigurationLease.Acquire(_directory);
+            cancellationToken.ThrowIfCancellationRequested();
+            var original = ReadFiles();
+            RequireRevision(original, expectedRevision);
+            var loaded = Load(original.Providers, original.Models);
+            var provider = loaded.Registry.Provider(providerId);
+            var configured = loaded.Providers?.Providers?.GetValueOrDefault(providerId);
+            if (provider?.LocalHost is null || configured?.Host is null) throw Error("notRemovable");
+            if (loaded.Models?.Models?.Any(pair => string.Equals(pair.Value.Provider, providerId,
+                    StringComparison.Ordinal)) == true)
+                throw Error("modelsReferencingEngine");
+            var runtime = _supervisor?.Read(cancellationToken)
+                .FirstOrDefault(row => string.Equals(row.ProviderId, providerId, StringComparison.Ordinal));
+            // Do not race a confirmed start/stop or remove config for a live owned process.
+            if (configured.Host == "managed" && runtime is { ManagedOwned: true }
+                && (runtime.Running || runtime.Transitioning))
+                throw Error("managedRunning");
+
+            var root = Parse(original.Providers ?? throw Error("notRemovable"));
+            if (!root.Children.TryGetValue(new YamlScalarNode("providers"), out var providerNode)
+                || providerNode is not YamlMappingNode providers
+                || !providers.Children.Remove(new YamlScalarNode(providerId)))
+                throw Error("notRemovable");
+            var updated = Serialize(root);
+            if (Encoding.UTF8.GetByteCount(updated) > 256 * 1024) throw Error("configurationInvalid");
+            _ = Load(updated, original.Models);
+            cancellationToken.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(_directory);
+            var temporary = ProvidersFile + ".tmp-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                File.WriteAllText(temporary, updated, new UTF8Encoding(false));
+                cancellationToken.ThrowIfCancellationRequested();
+                RequireRevision(ReadFiles(), expectedRevision);
+                File.Move(temporary, ProvidersFile, overwrite: true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+            return Read(cancellationToken);
+        }
+        catch (LocalEngineConfigurationException) { throw; }
+        catch (ConfigValidationException) { throw Error("configurationInvalid"); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or InvalidDataException or YamlException) { throw Error("unavailable"); }
+    }
+
     private (string? Providers, string? Models) ReadFiles()
     {
         static string? ReadFile(string path)
@@ -169,7 +229,7 @@ public sealed class TuiLocalEngineHost : ITuiLocalEngineHost
             sensitive ? null : managed?.Executable, sensitive ? [] : arguments,
             sensitive ? null : managed?.WorkingDirectory, managed?.ReadinessTimeoutSeconds
                 ?? (int)LocalHostConfig.DefaultReadinessTimeout.TotalSeconds,
-            !sensitive, sensitive ? Key("sensitive") : null);
+            !sensitive, sensitive ? Key("sensitive") : null, !sensitive && configured?.Host is not null);
     }
 
     private static void ValidateDraft(LocalEngineConfigurationDraft draft)

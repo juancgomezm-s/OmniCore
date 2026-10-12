@@ -12,6 +12,8 @@ public sealed partial class TuiApp
     private CancellationTokenSource? _providerConnectionCancellation;
     private Task? _providerConnectionTask;
     private TextField? _providerApiKeyField;
+    private bool _returnToProviderConnections;
+    private string? _returnProviderId;
 
     internal Task? ProviderConnectionTask => _providerConnectionTask;
 
@@ -59,7 +61,11 @@ public sealed partial class TuiApp
             Width = Dim.Percent(46), Text = AccountUi("action.disconnect") };
         var back = new Button { Id = "provider-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
             Text = AccountUi("action.back") };
-        back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
+        back.Accepted += (_, _) =>
+        {
+            _returnToProviderConnections = false; _returnProviderId = null;
+            CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true);
+        };
 
         ProviderConnectionMenuRow? SelectedRow() => list.SelectedItem is { } index
             && index >= 0 && index < rows.Length ? rows[index] : null;
@@ -104,12 +110,7 @@ public sealed partial class TuiApp
         disconnect.Accepted += (_, _) =>
         {
             if (SelectedRow() is { CanDisconnect: true } selected)
-                StartProviderConnectionOperation(frame, status, selected.ProviderId, async token =>
-                {
-                    await Task.Run(() => _providerConnectionHost.Disconnect(selected.ProviderId, token), token)
-                        .ConfigureAwait(false);
-                    return null;
-                });
+                ShowProviderDisconnectConfirmation(selected);
         };
 
         frame.Add(list, status, connect, test, discover, disconnect, back);
@@ -119,6 +120,40 @@ public sealed partial class TuiApp
         _preferencesReturnToCategory = true;
         RefreshActions();
         if (rows.Length > 0) list.SetFocus(); else back.SetFocus();
+    }
+
+    private void ShowProviderDisconnectConfirmation(ProviderConnectionMenuRow row)
+    {
+        if (_window is null || _overlay is null || !row.CanDisconnect) return;
+        CloseOverlay();
+        var frame = OverlayFrame(AccountUi("action.disconnect") + " · " + row.ProviderId, 12);
+        var question = new Label { Id = "provider-disconnect-question", X = 2, Y = 2,
+            Width = Dim.Fill(4), Height = 3, Text = AccountUi("api.disconnectConfirm") };
+        var status = new Label { Id = "provider-disconnect-status", X = 2, Y = 6,
+            Width = Dim.Fill(4), Height = 2, Text = "" };
+        var cancel = new Button { Id = "provider-disconnect-cancel", X = 2, Y = Pos.AnchorEnd(2), Text = AccountUi("action.cancel") };
+        cancel.Accepted += (_, _) =>
+        {
+            _returnToProviderConnections = false;
+            CloseOverlay(); ShowProviderConnections(selectedProviderId: row.ProviderId);
+        };
+        var confirm = new Button { Id = "provider-disconnect-confirm", X = Pos.AnchorEnd(19),
+            Y = Pos.AnchorEnd(2), Text = AccountUi("action.confirmDisconnect") };
+        confirm.Accepted += (_, _) =>
+        {
+            _returnToProviderConnections = false;
+            StartProviderConnectionOperation(frame, status, row.ProviderId, async token =>
+            {
+                await Task.Run(() => _providerConnectionHost.Disconnect(row.ProviderId, token), token)
+                    .ConfigureAwait(false);
+                return null;
+            });
+        };
+        frame.Add(question, status, cancel, confirm);
+        ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+        _preferencesReturnToCategory = true;
+        _returnToProviderConnections = true; _returnProviderId = row.ProviderId;
+        confirm.SetFocus();
     }
 
     private string ProviderConnectionRowText(ProviderConnectionMenuRow row)

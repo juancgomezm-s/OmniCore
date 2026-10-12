@@ -32,7 +32,8 @@ internal static class LocaleArgumentParser
                 continue;
             }
 
-            if (argument == "--locale")
+            var localeOption = new[] { "--locale", "--idioma", "--langue", "--lingua" };
+            if (localeOption.Contains(argument, StringComparer.OrdinalIgnoreCase))
             {
                 if (index + 1 >= args.Length || args[index + 1].StartsWith("-", StringComparison.Ordinal))
                 {
@@ -45,9 +46,9 @@ internal static class LocaleArgumentParser
                 continue;
             }
 
-            if (argument.StartsWith("--locale=", StringComparison.Ordinal))
+            if (localeOption.Any(option => argument.StartsWith(option + "=", StringComparison.OrdinalIgnoreCase)))
             {
-                locale = argument[9..];
+                locale = argument[(argument.IndexOf('=') + 1)..];
                 continue;
             }
 

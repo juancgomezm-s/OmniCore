@@ -21,12 +21,12 @@
    valor se diagnostica y termina con código 2 antes de despachar el comando. La vista General puede
    previsualizar y cancelar el cambio sin mutar variables de entorno; la TUI comunica el idioma
    efectivo al CLI/Host y los overrides de proceso mantienen su precedencia.
-   - El catálogo heredado de `OmniCore.Client` tiene recursos `es` y `en`. Un recurso ausente cae
-     a `en` y, si tampoco existe, a la clave literal.
-   - Las 9 categorías de preferencias (27 claves) ya tienen copy propio en `es`, `en`, `fr` e `it`.
-     Esto no significa que el resto de la interfaz esté traducido a francés o italiano: hasta migrar
-     cada clave heredada, esos idiomas usan fallback inglés. `ResolveDetailed` expone el locale del
-     recurso y si se usó fallback. La cobertura completa sigue pendiente del plan de localización.
+   - La ampliación P6 incorpora francés e italiano para las 533 claves distintas del catálogo
+     heredado, además de los catálogos por dominio de preferencias, shell y CLI. Las claves
+     desconocidas conservan fallback defensivo. `ResolveDetailed` informa el idioma del recurso
+     y si se usó fallback; las pruebas de claves propias exigen resolución directa y paridad de
+     argumentos en los cuatro idiomas. La evidencia del recorrido, no el número de claves,
+     determina la cobertura de una superficie.
    - `ui.locale` en `settings.yaml` usa uno de los códigos canónicos `es`, `en`, `fr` o `it`,
      como fija el esquema. Los overrides de proceso (`--locale` y `OMNI_LOCALE`) también aceptan
      etiquetas regionales como `fr-CA` y las normalizan a `fr`; las variantes no canónicas en
@@ -37,6 +37,16 @@
    - los identificadores.
 5. **Contenido del modelo:** los mensajes que produce el modelo se muestran tal cual. El idioma de respuesta sigue al del usuario, por instrucción en el prompt.
 6. **`--json`:** emite las claves y los argumentos, no texto traducido, porque es un contrato de máquina.
+7. **Invocaciones humanas:** `HumanCommandAliases` mantiene las grafías es/en/fr/it y sus
+   variantes sin acento, sin retirar los comandos canónicos. Sólo normaliza la cabeza y posiciones
+   de gramática finita; nunca traduce prompts, rutas, argumentos libres o JSON. Los alias nuevos
+   se reservan frente a extensiones. Los nombres canónicos Host `explain` y `orq-auth` mantienen
+   su precedencia existente. `--idioma`, `--langue` y `--lingua` son alias de `--locale`;
+   `--` protege los argumentos del proceso hijo.
+8. **Texto de extensiones:** el manifest admite `uiResources` opcional, por idioma y clave
+   estable. Las traducciones literales no alteran prompts, capacidades ni consentimiento. Sin
+   traducción, la envoltura de UI identifica el texto como original del paquete; no se envía a
+   traducción remota ni se afirma que ese contenido externo esté traducido.
 
 Los ejemplos en inglés de los ADR 0031–0034 son ilustrativos; el texto real sale de los recursos.
 

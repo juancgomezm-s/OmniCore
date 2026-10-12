@@ -200,9 +200,20 @@ por capacidades; y páginas tipadas de contexto, memoria Session, skills y exten
 la traducción de cuentas, herramientas y ayuda de comandos a es/en/fr/it. La revisión y los
 resultados están en [el registro de cuentas y sesión](../validation/preferences-accounts-session-20261011.md).
 
-P2 no se declara cerrado por faltar el recorrido completo de accesibilidad/ASCII y adaptación
-de todas las subpáginas. P3 conserva pendientes de adaptadores API, supervisión local y estados
-completos; P4, editores profundos de políticas/seguridad; P5, comandos y diagnóstico/datos; P6,
-traducción exhaustiva e invocaciones localizadas; P7, cierre del producto. El
-[inventario actualizado](preferences-localization-inventory.md) separa entregas verificadas de
-estos pendientes. No se usan porcentajes sin inventario.
+La tanda de cierre del 12 de octubre implementa los formularios restantes de catálogo,
+políticas, seguridad y diagnóstico; control de motores propios; invocaciones localizadas;
+catálogos propios en cuatro idiomas y recursos opcionales de extensiones. Incorpora además las
+correcciones detectadas al integrar concurrencia, foco, scroll, cancelación y arquitectura.
+
+El estado de validación, comandos reproducibles, capturas y límites está en
+[el registro de cierre](../validation/preferences-completion-20261012.md). Ese registro y el
+[inventario actualizado](preferences-localization-inventory.md) tienen precedencia sobre los
+pendientes históricos de las tandas anteriores. Las funciones que carecen de backend —nuevas
+identidades OAuth, adaptadores API adicionales, MCP, hooks y memoria global— no se convierten
+en pendientes ocultos de UI ni se declaran construidas. La aceptación del escritorio real se
+mantiene distinguida de la validación del driver, sin bloquear el cierre del código verificable.
+
+El cierre automatizado terminó con compilación sin advertencias ni errores, arquitectura
+62/62 y paquete final 20/20. Los fallos de la regresión amplia fueron corregidos y verificados
+en lotes focales; no se presenta esa reconciliación como una segunda ejecución completa.
+Permanece pendiente la aceptación interactiva en una ventana real del terminal.

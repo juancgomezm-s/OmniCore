@@ -19,7 +19,7 @@ public static class UsagePresentation
         _ => Missing,
     };
 
-    public static string? Remaining(Metric<QuotaInfo> quota)
+    public static string? Remaining(Metric<QuotaInfo> quota, string locale = "en")
     {
         if (quota.Availability == MetricAvailability.NotApplicable) return null;
         if (quota.Availability is not (MetricAvailability.Reported or MetricAvailability.Stale) || quota.Value is null)
@@ -28,7 +28,7 @@ public static class UsagePresentation
         switch (info.Kind)
         {
             case QuotaKind.Credits when info.Remaining is { } credits:
-                return "credits $" + credits.ToString("0.00", CultureInfo.InvariantCulture);
+                return Ui(locale, "credits") + " $" + credits.ToString("0.00", CultureInfo.InvariantCulture);
             case QuotaKind.RateLimitWindow when info.Remaining is { } left && info.Limit is { } limit && limit > 0:
                 var percent = (int)Math.Floor(left / limit * 100m);
                 return info.Unit + " " + percent.ToString(CultureInfo.InvariantCulture) + "%";
@@ -41,7 +41,7 @@ public static class UsagePresentation
 
     /// <summary>Account/subscription readings stay distinct from response token/request rate limits.
     /// Unknown values remain unknown; the full snapshot retains source, account, measurement date and resets.</summary>
-    public static string? AccountQuota(ProviderQuotaSnapshot? quota)
+    public static string? AccountQuota(ProviderQuotaSnapshot? quota, string locale = "en")
     {
         if (quota is null || quota.Availability == MetricAvailability.NotApplicable) return null;
         var prefix = quota.ProviderId;
@@ -58,7 +58,7 @@ public static class UsagePresentation
             var text = reported && metric.Value is { } value && double.IsFinite(value) && value is >= 0 and <= 100
                 ? value.ToString("0.##", CultureInfo.InvariantCulture) + "%" : Missing;
             var stale = quota.Availability == MetricAvailability.Stale || metric.Availability == MetricAvailability.Stale;
-            parts.Add(prefix + " " + label + " remaining " + text + (stale ? " stale" : ""));
+            parts.Add(prefix + " " + label + " " + Ui(locale, "remaining") + " " + text + (stale ? " " + Ui(locale, "stale") : ""));
         }
         foreach (var credit in quota.Credits)
         {
@@ -66,12 +66,12 @@ public static class UsagePresentation
             var amount = credit.Amount;
             var text = amount.Availability is MetricAvailability.Reported or MetricAvailability.Stale
                 && amount.Value is >= 0 ? amount.Value.Value.ToString("0.##", CultureInfo.InvariantCulture) : Missing;
-            var scope = credit.Scope == CreditScope.AccountBalance ? "account balance" : "key limit";
+            var scope = Ui(locale, credit.Scope == CreditScope.AccountBalance ? "accountBalance" : "keyLimit");
             var stale = quota.Availability == MetricAvailability.Stale || amount.Availability == MetricAvailability.Stale;
             parts.Add(prefix + " " + scope + " " + text + " " + credit.Unit
-                + (credit.Currency is null ? "" : " " + credit.Currency) + (stale ? " stale" : ""));
+                + (credit.Currency is null ? "" : " " + credit.Currency) + (stale ? " " + Ui(locale, "stale") : ""));
         }
-        return parts.Count == 0 ? prefix + " quota " + Missing : string.Join(" · ", parts);
+        return parts.Count == 0 ? prefix + " " + Ui(locale, "quota") + " " + Missing : string.Join(" · ", parts);
     }
 
     public static string? Account(AccountConnectionSnapshot? account, Localization localization)
@@ -85,24 +85,27 @@ public static class UsagePresentation
         });
     }
 
-    public static string Tokens(TokenTotals totals)
+    public static string Tokens(TokenTotals totals, string locale = "en")
     {
         if (totals.Input < 0 || totals.Output < 0 || totals.CacheRead < 0 || totals.CacheWrite < 0)
-            return "session " + Missing + " tok";
+            return TokenLabel(locale, Missing);
         long total;
         try { total = checked(totals.Input + totals.Output); }
-        catch (OverflowException) { return "session " + Missing + " tok"; }
-        if (total < 1000) return "session " + total.ToString(CultureInfo.InvariantCulture) + " tok";
+        catch (OverflowException) { return TokenLabel(locale, Missing); }
+        if (total < 1000) return TokenLabel(locale, total.ToString(CultureInfo.InvariantCulture));
         var thousands = Math.Round(total / 1000d, 1);
-        return "session " + thousands.ToString("0.#", CultureInfo.InvariantCulture) + "k tok";
+        return TokenLabel(locale, thousands.ToString("0.#", CultureInfo.InvariantCulture) + "k");
     }
 
-    public static string Tokens(Metric<TokenTotals> measurement) => measurement.Availability switch
+    public static string Tokens(Metric<TokenTotals> measurement, string locale = "en") => measurement.Availability switch
     {
-        MetricAvailability.Reported or MetricAvailability.Stale when measurement.Value is not null => Tokens(measurement.Value),
-        MetricAvailability.Estimated when measurement.Value is not null => "≈" + Tokens(measurement.Value),
-        _ => "session " + Missing + " tok",
+        MetricAvailability.Reported or MetricAvailability.Stale when measurement.Value is not null => Tokens(measurement.Value, locale),
+        MetricAvailability.Estimated when measurement.Value is not null => "≈" + Tokens(measurement.Value, locale),
+        _ => TokenLabel(locale, Missing),
     };
+
+    private static string Ui(string locale, string key) => new Localization(locale).Resolve("uiCompletion.usage." + key);
+    private static string TokenLabel(string locale, string value) => Ui(locale, "session") + " " + value + " " + Ui(locale, "tokenAbbreviation");
 
     private static string Dollars(decimal amount) =>
         "$" + amount.ToString(amount >= 0.01m ? "0.00" : "0.0000", CultureInfo.InvariantCulture);

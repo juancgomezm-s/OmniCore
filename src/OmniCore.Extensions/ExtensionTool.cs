@@ -11,6 +11,9 @@ public sealed class ExtensionTool : ITool
     private readonly ExtensionToolManifest _tool;
     private readonly IExtensionRpcInvoker _invoker;
     public ExtensionBoundary Boundary { get; }
+    public IReadOnlyDictionary<string, string>? UiDescriptions => _extension.Manifest?.UiResources?
+        .Where(pair => pair.Value.ContainsKey("tool." + _tool.Name + ".description"))
+        .ToDictionary(pair => pair.Key, pair => pair.Value["tool." + _tool.Name + ".description"], StringComparer.Ordinal);
 
     public ExtensionTool(DiscoveredExtension extension, ExtensionToolManifest tool, string schemaJson,
         IExtensionRpcInvoker invoker, string workspaceRoot)

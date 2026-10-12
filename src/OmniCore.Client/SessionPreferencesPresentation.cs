@@ -26,7 +26,11 @@ public sealed record ContextDiagnosticPresentation(string ItemId, string Decisio
 
 public sealed record ExtensionPresentation(string Id, string DisplayName, string? Version, string Trust,
     string Status, string ManifestSha256, string PackageSha256, string ConsentHash,
-    IReadOnlyList<string> RequestedCapabilities, IReadOnlyList<string> ConsentedCapabilities, bool AmbiguousId = false);
+    IReadOnlyList<string> RequestedCapabilities, IReadOnlyList<string> ConsentedCapabilities, bool AmbiguousId = false)
+{
+    public IReadOnlyDictionary<string, ExtensionUiText>? UiResources { get; init; }
+    public ExtensionUiText? TextFor(string locale) => UiResources?.GetValueOrDefault(OmniCore.Protocol.UiLocaleCodes.NormalizeOrDefault(locale));
+}
 
 public sealed record SkillPresentation(string Id, string DisplayName, string? Version, string Scope,
     string Trust, string State, string ManifestSha256, bool Sealed, IReadOnlyList<string> Tools, bool ModelInvocable);
@@ -112,7 +116,8 @@ public static class SessionPreferencesPresentation
         return new(id, String(item, "displayName") ?? id, String(item, "version"),
             String(item, "trust") ?? "Unknown", String(item, "status") ?? "Unknown",
             String(item, "manifestSha256") ?? "", String(item, "packageSha256") ?? "", String(item, "consentHash") ?? "",
-            Strings(item, "requestedCapabilities"), Strings(item, "consentedCapabilities"), Boolean(item, "ambiguousId") ?? false);
+            Strings(item, "requestedCapabilities"), Strings(item, "consentedCapabilities"), Boolean(item, "ambiguousId") ?? false)
+        { UiResources = ExternalUiResources.ReadExtension(item) };
     }
 
     private static SkillPresentation? DecodeSkill(JsonElement item)

@@ -25,12 +25,15 @@ public sealed partial class TuiApp
     private UiLocalePreferencesSnapshot? _preferencesLocaleSnapshot;
     private LocalEnginePreferencesSnapshot? _localEngineSnapshot;
     private string? _localEngineNotice;
+    private string? _localEngineSelectedProviderId;
+    private Task<LocalEngineRuntimeActionResult>? _localEngineRuntimeTask;
     private Label? _preferencesNotice;
     private Button? _preferencesReload;
 
     internal string PreferencesLocale => _locale;
     internal string PreferencesDraftLocale => _preferencesDraftLocale;
     internal UiLocalePreferencesSnapshot? PreferencesLocaleSnapshot => _preferencesLocaleSnapshot;
+    internal Task? LocalEngineRuntimeTask => _localEngineRuntimeTask;
 
     private string Pref(string key) => _localization.Resolve("preferences.ui." + key);
 
@@ -103,7 +106,7 @@ public sealed partial class TuiApp
             var emptySearch = new Label { Id = "preferences-empty-search", X = 2, Y = 5,
                 Width = wide ? 30 : Dim.Fill(4), Height = 2, Text = Pref("no_matches"), Visible = matches.Count == 0 };
             var notice = new Label { Id = "preferences-notice", X = 2, Y = Pos.AnchorEnd(4),
-                Width = Dim.Fill(4), Height = 3, Text = Pref("coverage_partial") };
+                Width = Dim.Fill(4), Height = 3, Text = _localization.Resolve("shell.preferences_language_note") };
             var categoryBack = new Button { Id = "preferences-close", X = 2, Y = Pos.AnchorEnd(2), Text = Pref("close") };
             categoryBack.Accepted += (_, _) => ClosePreferenceCenter();
             categoryList.SetSource(new ObservableCollection<string>(matches.Select(item => item.Title)));
@@ -236,12 +239,12 @@ public sealed partial class TuiApp
                     _account ??= _accountOverride ?? new TuiAccountHost();
                     var state = _account.Status();
                     var status = state.LoggedIn ? state.AccountIdMasked + " · " + AccountUi(state.Expired ? "status.expired" : "status.connected") : AccountUi("status.disconnected");
-                    AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(); });
+                    AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(fromPreferences: true); });
                     Add(new Label { Id = "preferences-account-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = status });
                 }
                 catch
                 {
-                    AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(); });
+                    AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(fromPreferences: true); });
                     Add(new Label { Id = "preferences-account-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = AccountUi("status.unavailable") });
                 }
                 var claudeOpen = new Button { Id = "preferences-claude-open", X = 2, Y = y++,
@@ -267,11 +270,15 @@ public sealed partial class TuiApp
                 ShowLocalEngineList(contentPanel, y);
                 break;
             case "models_execution":
-                AddAction("preferences-models-open", "models_open", y, () => { CloseOverlay(); ShowModelPolicies(refreshCatalog: false); });
+                AddAction("preferences-models-open", "models_open", y, () => { CloseOverlay(); ShowPolicyPreferences("models_execution"); });
+                var catalogButton = new Button { Id = "preferences-model-catalog-open", X = 2, Y = y + 2,
+                    Width = Dim.Fill(3), TextAlignment = Alignment.Start, Text = _localization.Resolve("modelCatalogPreferences.open") };
+                catalogButton.Accepted += (_, _) => { CloseOverlay(); ShowModelCatalogPreferences(); };
+                Add(catalogButton);
                 break;
             case "tools_security":
                 AddAction("preferences-tools-open", "tools_open", y, () => RunPreferenceAction(ClientActionIds.ToolsInspect)); y += 2;
-                AddAction("preferences-permissions-open", "permissions_open", y++, () => RunPreferenceAction(ClientActionIds.PermissionsList));
+                AddAction("preferences-permissions-open", "permissions_open", y++, () => { CloseOverlay(); ShowSecurityPreferences("tools_security"); });
                 Add(new Label { X = 2, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("permissions_hint") });
                 break;
             case "interface":
@@ -285,7 +292,7 @@ public sealed partial class TuiApp
                 if (_turnUsage is { } usage)
                 {
                     var tokens = usage.SessionTokenMeasurement is { } measurement
-                        ? UsagePresentation.Tokens(measurement) : Pref("usage_unknown");
+                        ? UsagePresentation.Tokens(measurement, _locale) : Pref("usage_unknown");
                     var cost = UsagePresentation.Cost(usage.SessionCost);
                     Add(new Label { Id = "preferences-usage-value", X = 2, Y = y, Width = Dim.Fill(4), Height = 2,
                         Text = tokens + (cost is null ? "" : " · " + cost) + " · " + usage.AsOf.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'", System.Globalization.CultureInfo.InvariantCulture) });
@@ -297,10 +304,14 @@ public sealed partial class TuiApp
             case "extensions_skills":
                 Add(new Label { X = 2, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("extensions_hint") }); y += 2;
                 AddAction("preferences-extensions-open", "extensions_open", y++, () => RunPreferenceAction(ClientActionIds.ExtensionsInspect));
-                AddAction("preferences-skills-open", "skills_open", y, () => RunPreferenceAction(ClientActionIds.SkillsInspect));
+                AddAction("preferences-skills-open", "skills_open", y++, () => RunPreferenceAction(ClientActionIds.SkillsInspect));
+                var commandsButton = new Button { Id = "preferences-commands-open", X = 2, Y = y,
+                    Width = Dim.Fill(4), TextAlignment = Alignment.Start, Text = _localization.Resolve("catalog.title") };
+                commandsButton.Accepted += (_, _) => ShowCommandPreferences();
+                Add(commandsButton);
                 break;
             case "diagnostics_data":
-                Add(new Label { X = 2, Y = y++, Width = Dim.Fill(4), Height = 2, Text = Pref("diagnostics_hint") });
+                AddAction("preferences-diagnostics-open", "diagnostics_open", y, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); });
                 break;
         }
         frame.Add(_preferencesNotice);
@@ -327,7 +338,12 @@ public sealed partial class TuiApp
         else frame.Add(contentPanel, back, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
             Width = Dim.Fill(3), Height = 1, Text = Pref("help_detail") });
         ApplyTheme(frame); _overlay = frame; _window.Add(frame);
-        var focus = controls.OfType<View>().FirstOrDefault(view => view.CanFocus);
+        View? focus = controls.OfType<View>().FirstOrDefault(view => view.CanFocus);
+        if (selected.Id == "local_engines")
+        {
+            var engineList = FindPreferenceView(frame, "local-engine-list");
+            if (engineList?.CanFocus == true) focus = engineList;
+        }
         if (focus is not null) focus.SetFocus(); else back.SetFocus();
     }
 
@@ -535,6 +551,7 @@ public sealed partial class TuiApp
 
     private void ShowLocalEngineList(View contentPanel, int y)
     {
+        // Re-read on each visit so external edits and revision conflicts have a recovery path.
         try { _localEngineSnapshot = _localEngines.Read(CancellationToken.None); }
         catch { _localEngineSnapshot = null; }
         var snapshot = _localEngineSnapshot;
@@ -544,41 +561,192 @@ public sealed partial class TuiApp
                 Height = 2, Text = LocalEngineError("unavailable") });
             return;
         }
-        foreach (var diagnostic in snapshot.Diagnostics)
-        {
-            var key = diagnostic.StartsWith("localEngines.error.", StringComparison.Ordinal)
-                ? diagnostic["localEngines.error.".Length..] : "unavailable";
-            contentPanel.Add(new Label { Id = "local-engine-diagnostic", X = 2, Y = y, Width = Dim.Fill(4),
-                Height = 2, Text = LocalEngineError(key) });
-            y += 2;
-        }
         var rows = snapshot.Engines.ToArray();
+        var listHeight = Math.Max(2, Math.Min(6, contentPanel.Frame.Height - y - 10));
         var list = new ListView { Id = "local-engine-list", X = 2, Y = y,
-            Width = Dim.Fill(4), Height = 3,
+            Width = Dim.Fill(4), Height = listHeight,
             CanFocus = rows.Length > 0, ShowMarks = false };
         list.SetSource(new ObservableCollection<string>(rows.Select(row => LocalEngineRowText(row))));
-        if (rows.Length > 0) list.SelectedItem = 0;
-        y += 4;
-        var notice = new Label { Id = "local-engine-notice", X = 2, Y = y,
-            Width = Dim.Fill(4), Height = 2, Text = _localEngineNotice ?? Pref("local_reload") };
-        var add = new Button { Id = "local-engine-add", X = 2, Y = y + 2,
-            Width = Dim.Fill(4), TextAlignment = Alignment.Start, Text = Pref("local_add"),
+        var selectedIndex = _localEngineSelectedProviderId is null ? -1
+            : Array.FindIndex(rows, row => row.ProviderId == _localEngineSelectedProviderId);
+        if (rows.Length > 0) list.SelectedItem = selectedIndex >= 0 ? selectedIndex : 0;
+        var listBottom = y + listHeight;
+        var status = new Label { Id = "local-engine-runtime-status", X = 2, Y = listBottom + 1,
+            Width = Dim.Fill(4), Height = 2, Text = LocalEngineStatusText(SelectedRow()) };
+        var actionY = listBottom + 3;
+        var add = new Button { Id = "local-engine-add", X = 2, Y = actionY,
+            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_add"),
             Enabled = snapshot.Diagnostics.Count == 0 };
         add.Accepted += (_, _) => ShowLocalEngineEditor(snapshot, null);
-        var edit = new Button { Id = "local-engine-edit", X = 2, Y = y + 3,
-            Width = Dim.Fill(4), TextAlignment = Alignment.Start, Text = Pref("local_edit") };
-        edit.Enabled = rows.Any(row => row.CanEdit);
-        edit.Accepted += (_, _) =>
+        var edit = new Button { Id = "local-engine-edit", X = Pos.Right(add) + 1, Y = actionY,
+            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_edit") };
+        var runtime = new Button { Id = "local-engine-runtime", X = 2, Y = actionY + 1,
+            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_runtime_check") };
+        var delete = new Button { Id = "local-engine-delete", X = Pos.Right(runtime) + 1, Y = actionY + 1,
+            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_delete") };
+        var notice = new Label { Id = "local-engine-notice", X = 2, Y = Pos.AnchorEnd(2),
+            Width = Dim.Fill(4), Height = 1, Text = _localEngineNotice ?? LocalEngineDiagnostics(snapshot) };
+        void SyncSelection()
+        {
+            var row = SelectedRow();
+            var runtimeState = ReadLocalEngineRuntimeStatus(row);
+            _localEngineSelectedProviderId = row?.ProviderId;
+            edit.Enabled = row?.CanEdit == true;
+            delete.Enabled = row?.CanDelete == true;
+            runtime.Enabled = _localEngineSupervisor is not null && row is not null
+                && runtimeState is not null && !runtimeState.Transitioning;
+            runtime.Text = row?.Mode == "attach" ? Pref("local_runtime_check")
+                : runtimeState is { ManagedOwned: true, Running: true } ? Pref("local_runtime_stop") : Pref("local_runtime_start");
+            status.Text = LocalEngineStatusText(row, runtimeState);
+        }
+        LocalEngineConfigurationRow? SelectedRow() => list.SelectedItem is int index
+            && index >= 0 && index < rows.Length ? rows[index] : null;
+        void OpenEditor()
         {
             if (list.SelectedItem is int index && index >= 0 && index < rows.Length)
+            {
+                _localEngineSelectedProviderId = rows[index].ProviderId;
                 ShowLocalEngineEditor(snapshot, rows[index]);
+            }
+        }
+        edit.Accepted += (_, _) => OpenEditor();
+        list.Accepted += (_, args) => { args.Handled = true; OpenEditor(); };
+        list.ValueChanged += (_, _) => SyncSelection();
+        runtime.Accepted += (_, _) =>
+        {
+            if (SelectedRow() is { } row && _localEngineSupervisor is not null)
+            {
+                var state = ReadLocalEngineRuntimeStatus(row);
+                var stop = row.Mode == "managed" && state is { ManagedOwned: true, Running: true };
+                ShowLocalEngineRuntimeConfirmation(row, stop);
+            }
         };
-        list.ValueChanged += (_, _) => edit.Enabled = list.SelectedItem is int index
-            && index >= 0 && index < rows.Length && rows[index].CanEdit;
+        delete.Accepted += (_, _) =>
+        {
+            if (SelectedRow() is { CanDelete: true } row)
+                ShowLocalEngineDeleteConfirmation(row, snapshot);
+        };
         if (rows.Length == 0)
             contentPanel.Add(new Label { Id = "local-engine-empty", X = 2, Y = y - 1,
                 Width = Dim.Fill(4), Height = 1, Text = Pref("local_empty") });
-        contentPanel.Add(list, notice, add, edit);
+        contentPanel.Add(list, status, notice, add, edit, runtime, delete);
+        SyncSelection();
+    }
+
+    private string LocalEngineDiagnostics(LocalEnginePreferencesSnapshot snapshot)
+    {
+        if (snapshot.Diagnostics.Count > 0)
+        {
+            var key = snapshot.Diagnostics[0].StartsWith("localEngines.error.", StringComparison.Ordinal)
+                ? snapshot.Diagnostics[0]["localEngines.error.".Length..] : "unavailable";
+            return LocalEngineError(key);
+        }
+        return _localEngineSupervisor is null ? Pref("local_runtime_supervisorUnavailable") : Pref("local_reload");
+    }
+
+    private string LocalEngineStatusText(LocalEngineConfigurationRow? row)
+    {
+        if (row is null) return Pref("local_runtime_select");
+        if (_localEngineSupervisor is null) return Pref("local_runtime_supervisorUnavailable");
+        return LocalEngineStatusText(row, ReadLocalEngineRuntimeStatus(row));
+    }
+
+    private string LocalEngineStatusText(LocalEngineConfigurationRow? row, LocalEngineRuntimeStatus? status)
+    {
+        if (status is null) return LocalEngineRuntimeText("error_unavailable");
+        return LocalEngineRuntimeTextFromWire(status.StateKey);
+    }
+
+    private LocalEngineRuntimeStatus? ReadLocalEngineRuntimeStatus(LocalEngineConfigurationRow? row)
+    {
+        if (row is null || _localEngineSupervisor is null) return null;
+        try { return _localEngineSupervisor.Read(CancellationToken.None)
+            .FirstOrDefault(item => item.ProviderId == row.ProviderId); }
+        catch { return null; }
+    }
+
+    private string LocalEngineRuntimeText(string key) => _localization.Resolve("preferences.ui.local_runtime_" + key);
+
+    private string LocalEngineRuntimeTextFromWire(string key)
+    {
+        const string prefix = "localEngines.runtime.";
+        return key.StartsWith(prefix, StringComparison.Ordinal)
+            ? LocalEngineRuntimeText(key[prefix.Length..].Replace('.', '_')) : LocalEngineRuntimeText("error_unavailable");
+    }
+
+    private void ShowLocalEngineDeleteConfirmation(LocalEngineConfigurationRow row,
+        LocalEnginePreferencesSnapshot snapshot)
+    {
+        if (_window is null || _overlay is null) return;
+        CloseOverlay();
+        var frame = OverlayFrame(Pref("local_title") + " › " + row.ProviderId, 12);
+        var message = new Label { Id = "local-engine-delete-question", X = 2, Y = 2,
+            Width = Dim.Fill(4), Height = 3, Text = Pref("local_error_removeConfirm") };
+        var status = new Label { Id = "local-engine-delete-status", X = 2, Y = 6,
+            Width = Dim.Fill(4), Height = 2, Text = "" };
+        var cancel = new Button { Id = "local-engine-delete-cancel", X = 2, Y = Pos.AnchorEnd(2), Text = Pref("local_cancel") };
+        cancel.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("local_engines", categoryPage: true); };
+        var confirm = new Button { Id = "local-engine-delete-confirm", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = Pref("local_confirm") };
+        confirm.Accepted += (_, _) =>
+        {
+            try
+            {
+                _localEngineSnapshot = _localEngines.Delete(row.ProviderId, snapshot.Revision, CancellationToken.None);
+                _localEngineSelectedProviderId = null;
+                _localEngineNotice = Pref("local_error_deleteSuccess");
+                CloseOverlay(); ShowPreferences("local_engines", categoryPage: true);
+            }
+            catch (LocalEngineConfigurationException error)
+            {
+                var key = error.MessageKey.StartsWith("localEngines.error.", StringComparison.Ordinal)
+                    ? error.MessageKey["localEngines.error.".Length..] : "unavailable";
+                status.Text = LocalEngineError(key);
+            }
+            catch { status.Text = LocalEngineError("unavailable"); }
+        };
+        frame.Add(message, status, cancel, confirm);
+        ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true; confirm.SetFocus();
+    }
+
+    private void ShowLocalEngineRuntimeConfirmation(LocalEngineConfigurationRow row, bool stop)
+    {
+        if (_window is null || _overlay is null || _localEngineSupervisor is null) return;
+        CloseOverlay();
+        var frame = OverlayFrame(Pref("local_title") + " › " + row.ProviderId, 12);
+        var messageKey = stop ? "local_runtime_stopConfirm" : row.Mode == "managed"
+            ? "local_runtime_startConfirm" : "local_runtime_readyConfirm";
+        var message = new Label { Id = "local-engine-runtime-question", X = 2, Y = 2,
+            Width = Dim.Fill(4), Height = 3, Text = Pref(messageKey) };
+        var status = new Label { Id = "local-engine-runtime-result", X = 2, Y = 6,
+            Width = Dim.Fill(4), Height = 2, Text = "" };
+        var cancel = new Button { Id = "local-engine-runtime-cancel", X = 2, Y = Pos.AnchorEnd(2), Text = Pref("local_cancel") };
+        cancel.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("local_engines", categoryPage: true); };
+        var confirm = new Button { Id = "local-engine-runtime-confirm", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = Pref("local_confirm") };
+        confirm.Accepted += (_, _) =>
+        {
+            if (_localEngineRuntimeTask is { IsCompleted: false }) return;
+            confirm.Enabled = false;
+            cancel.Text = Pref("local_runtime_close");
+            message.Text = Pref("local_runtime_dismiss");
+            status.Text = Pref("local_runtime_runningAction");
+            var supervisor = _localEngineSupervisor;
+            var operation = Task.Run(() => stop
+                ? supervisor.Stop(row.ProviderId, CancellationToken.None)
+                : supervisor.EnsureReady(row.ProviderId, CancellationToken.None));
+            _localEngineRuntimeTask = operation;
+            _ = operation.ContinueWith(completed => _uiActions.Enqueue(() =>
+            {
+                if (!ReferenceEquals(_overlay, frame)) return;
+                confirm.Enabled = true;
+                if (completed.IsCompletedSuccessfully)
+                    status.Text = LocalEngineRuntimeTextFromWire(completed.Result.StateKey);
+                else status.Text = LocalEngineRuntimeText("actionFailed");
+                if (completed.IsCompletedSuccessfully && completed.Result.Success)
+                    _localEngineNotice = LocalEngineRuntimeTextFromWire(completed.Result.StateKey);
+            }), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        };
+        frame.Add(message, status, cancel, confirm);
+        ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true; confirm.SetFocus();
     }
 
     private string LocalEngineRowText(LocalEngineConfigurationRow row)
@@ -728,6 +896,13 @@ public sealed partial class TuiApp
     private void ReturnFromPreferencesSubpage()
     {
         if (_returnToClaudeAccounts || _returnToChatGptAccount) { ReturnFromAccountSubpage(); return; }
+        if (_returnToProviderConnections)
+        {
+            _returnToProviderConnections = false;
+            var providerId = _returnProviderId;
+            CloseOverlay(); ShowProviderConnections(selectedProviderId: providerId);
+            return;
+        }
         CloseOverlay();
         ShowPreferences(_preferencesCategory, categoryPage: true);
     }

@@ -135,7 +135,7 @@ public sealed class ModelQualificationCliTests
                 new[] { "model", "qualify", "qwen-test", "--yes", "--probe-timeout", seconds }, "", output, dir);
 
             Assert.Equal(expectedCode, code);
-            if (expectedCode == 0) Assert.Contains("Qualified", output.ToString());
+            if (expectedCode == 0) Assert.Contains("Cualificado", output.ToString());
             else Assert.Contains("timeout", output.ToString());
         }
         finally
@@ -224,19 +224,19 @@ public sealed class ModelQualificationCliTests
             var text = output.ToString();
 
             // Transición de estado (ADR-0007 §4) y probes.
-            Assert.Contains("Declared", text);
-            Assert.Contains("Qualified", text);
+            Assert.Contains("Declarado", text);
+            Assert.Contains("Cualificado", text);
             Assert.Contains("reading-basic", text);
-            Assert.Contains("Passed", text);
+            Assert.Contains("Correcto", text);
 
             // Traits empíricos guardados.
-            Assert.Contains("InstructionFollowing", text);
-            Assert.Contains("StructuredOutputReliability", text);
+            Assert.Contains("Seguimiento de instrucciones", text);
+            Assert.Contains("Fiabilidad de salida estructurada", text);
 
             // Recomendación visible con el hint del flujo explícito (ADR-0044 §9).
-            Assert.Contains("PatchOnly", text);
+            Assert.Contains("Sólo parches", text);
             Assert.Contains("omni model policy set qwen-test --category PatchOnly", text);
-            Assert.Contains("no se cambió ninguna política", text);
+            Assert.Contains("no cambió ninguna política", text);
 
             // La suite corrió de verdad contra el provider scripteado.
             Assert.Equal(10, provider.RequestCount);
@@ -258,10 +258,10 @@ public sealed class ModelQualificationCliTests
     }
 
     [Theory]
-    [InlineData("es", "coste desconocido")]
-    [InlineData("en", "cost unavailable")]
+    [InlineData("es", "coste desconocido", "Cualificado")]
+    [InlineData("en", "cost unavailable", "Qualified")]
     public async Task Qualify_displays_unknown_cost_for_http_response_without_usage(string locale,
-        string expectedCostLabel)
+        string expectedCostLabel, string expectedQualifiedState)
     {
         var dir = TempDir();
         await using var provider = new ScriptedHttpProvider();
@@ -279,7 +279,7 @@ public sealed class ModelQualificationCliTests
 
             Assert.Equal(0, code);
             var text = output.ToString();
-            Assert.Contains("Qualified", text);
+            Assert.Contains(expectedQualifiedState, text);
             Assert.Contains(expectedCostLabel, text);
             Assert.DoesNotContain("0.0000 USD", text);
             Assert.Equal(10, provider.RequestCount);
@@ -312,7 +312,7 @@ public sealed class ModelQualificationCliTests
 
             // Cualificar recomienda PatchOnly…
             Assert.Equal(0, await Run(new[] { "model", "qualify", "qwen-test", "--yes" }, "", output, dir));
-            Assert.Contains("PatchOnly", output.ToString());
+            Assert.Contains("Sólo parches", output.ToString());
             Assert.Equal(10, provider.RequestCount);
 
             // …pero la política operativa guardada sigue siendo ObserveOnly rev=1.

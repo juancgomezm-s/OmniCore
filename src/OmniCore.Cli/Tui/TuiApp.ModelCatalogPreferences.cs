@@ -1,0 +1,328 @@
+#pragma warning disable CS0618 // TextView is the pinned Terminal.Gui multiline editor used by existing TUI forms.
+namespace OmniCore.Cli;
+
+using System.Collections.ObjectModel;
+using System.Globalization;
+using OmniCore.Client;
+using OmniCore.Host;
+using Terminal.Gui.Drivers;
+using Terminal.Gui.Input;
+using Terminal.Gui.ViewBase;
+using Terminal.Gui.Views;
+
+public sealed partial class TuiApp
+{
+    private IModelCatalogPreferencesHost? _modelCatalogPreferencesOverride;
+    private ModelCatalogPreferencesSnapshot? _modelCatalogSnapshot;
+    private string? _modelCatalogSelectedId;
+    private string? _modelCatalogNotice;
+    private string? _modelCatalogDeleteId;
+
+    internal void SetModelCatalogPreferencesHost(IModelCatalogPreferencesHost host) =>
+        _modelCatalogPreferencesOverride = host ?? throw new ArgumentNullException(nameof(host));
+
+    internal void ShowModelCatalogPreferences()
+    {
+        if (_window is null || _overlay is not null) return;
+        _modelCatalogSelectedId = null;
+        _modelCatalogNotice = null;
+        RefreshModelCatalog();
+        RenderModelCatalog();
+    }
+
+    /// <summary>Called by the global Escape dispatcher before the preferences-center handler.</summary>
+    internal bool HandleModelCatalogPreferencesEscape()
+    {
+        if (_overlay?.Id is not ("model-catalog-preferences" or "model-catalog-editor" or "model-catalog-confirm"))
+            return false;
+        var page = _overlay.Id;
+        if (page == "model-catalog-confirm")
+        {
+            _modelCatalogDeleteId = null;
+            CloseOverlay();
+            RenderModelCatalog();
+        }
+        else if (page == "model-catalog-editor")
+        {
+            CloseOverlay();
+            RenderModelCatalog();
+        }
+        else
+        {
+            ReturnToPreferenceCategory();
+        }
+        return true;
+    }
+
+    private IModelCatalogPreferencesHost ModelCatalogHost() => _modelCatalogPreferencesOverride
+        ?? ModelCatalogPreferencesHost.Create(workspaceRoot: Environment.CurrentDirectory);
+
+    private string ModelCatalogText(string key) => _localization.Resolve("modelCatalogPreferences." + key);
+
+    private void RefreshModelCatalog()
+    {
+        try
+        {
+            _modelCatalogSnapshot = ModelCatalogHost().Read(CancellationToken.None);
+            if (_modelCatalogSelectedId is not null
+                && !_modelCatalogSnapshot.Models.Any(model => model.Id == _modelCatalogSelectedId))
+                _modelCatalogSelectedId = null;
+            if (_modelCatalogSnapshot.Diagnostics.Count > 0)
+                _modelCatalogNotice = ModelCatalogError(_modelCatalogSnapshot.Diagnostics[0]);
+        }
+        catch (Exception)
+        {
+            _modelCatalogSnapshot = ModelCatalogPreferencesSnapshot.Unavailable(["modelCatalog.error.unavailable"]);
+            _modelCatalogNotice = ModelCatalogText("unavailable");
+        }
+    }
+
+    private void RenderModelCatalog()
+    {
+        if (_window is null || _overlay is not null) return;
+        var snapshot = _modelCatalogSnapshot ?? ModelCatalogPreferencesSnapshot.Unavailable([]);
+        var frame = OverlayFrame(ModelCatalogText("title"), _window.Frame.Height - 3);
+        frame.Id = "model-catalog-preferences";
+        frame.Width = Dim.Percent(92);
+        frame.Height = Dim.Fill(2);
+        frame.Add(new Label { Id = "model-catalog-intro", X = 2, Y = 2, Width = Dim.Fill(4), Height = 2,
+            Text = ModelCatalogText("intro") });
+
+        var listHeight = Math.Max(3, _window.Frame.Height - 21);
+        var models = snapshot.Models;
+        var list = new ListView { Id = "model-catalog-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = listHeight,
+            CanFocus = snapshot.Available && models.Count > 0, ShowMarks = false };
+        list.SetSource(new ObservableCollection<string>(models.Select(ModelCatalogRowText)));
+        var selected = _modelCatalogSelectedId is null ? -1 : models.ToList()
+            .FindIndex(model => string.Equals(model.Id, _modelCatalogSelectedId, StringComparison.Ordinal));
+        if (models.Count > 0) list.SelectedItem = selected >= 0 ? selected : 0;
+        frame.Add(list);
+
+        var current = list.SelectedItem is int initialIndex && initialIndex >= 0 && initialIndex < models.Count ? models[initialIndex] : null;
+        if (current is not null) _modelCatalogSelectedId = current.Id;
+        var status = new Label { Id = "model-catalog-status", X = 2, Y = Pos.AnchorEnd(9), Width = Dim.Fill(4), Height = 1,
+            Text = _modelCatalogNotice ?? (models.Count == 0 ? ModelCatalogText("empty") : ModelCatalogText("selectHint")) };
+        var detailsText = current is null ? "" : string.Join("\n", new[]
+        {
+            ModelCatalogText("context") + ": " + current.Context.ToString(CultureInfo.InvariantCulture)
+                + " · " + ModelCatalogText("maxOutput") + ": " + current.MaxOutput.ToString(CultureInfo.InvariantCulture),
+            ModelCatalogText("aliases") + ": " + (current.Aliases.Count == 0 ? "—" : string.Join(", ", current.Aliases)),
+            current.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
+                + string.Join("; ", current.DeleteBlockers.Select(ModelCatalogError))
+        }.Where(line => line.Length > 0));
+        var details = new Label { Id = "model-catalog-details", X = 2, Y = Pos.AnchorEnd(12), Width = Dim.Fill(4), Height = 3,
+            Text = detailsText };
+        var warning = new Label { Id = "model-catalog-warning", X = 2, Y = Pos.AnchorEnd(8), Width = Dim.Fill(4), Height = 2,
+            Text = ModelCatalogText("otherFoldersWarning") };
+        var add = new Button { Id = "model-catalog-add", X = 2, Y = Pos.AnchorEnd(4), Text = ModelCatalogText("add") };
+        var edit = new Button { Id = "model-catalog-edit", X = 16, Y = Pos.AnchorEnd(4), Text = ModelCatalogText("edit") };
+        var delete = new Button { Id = "model-catalog-delete", X = 31, Y = Pos.AnchorEnd(4), Text = ModelCatalogText("delete") };
+        var back = new Button { Id = "model-catalog-back", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = ModelCatalogText("back") };
+        add.Enabled = snapshot.Available && snapshot.Providers.Count > 0;
+        edit.Enabled = snapshot.Available && current is not null;
+        delete.Enabled = snapshot.Available && current?.CanDelete == true;
+
+        string Details(ModelCatalogModel? model) => model is null ? "" : string.Join("\n", new[]
+        {
+            ModelCatalogText("context") + ": " + model.Context.ToString(CultureInfo.InvariantCulture)
+                + " · " + ModelCatalogText("maxOutput") + ": " + model.MaxOutput.ToString(CultureInfo.InvariantCulture),
+            ModelCatalogText("aliases") + ": " + (model.Aliases.Count == 0 ? "—" : string.Join(", ", model.Aliases)),
+            model.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
+                + string.Join("; ", model.DeleteBlockers.Select(ModelCatalogError))
+        }.Where(line => line.Length > 0));
+        void SelectCurrent()
+        {
+            var selectedModel = list.SelectedItem is int index && index >= 0 && index < models.Count ? models[index] : null;
+            _modelCatalogSelectedId = selectedModel?.Id;
+            details.Text = Details(selectedModel);
+            edit.Enabled = snapshot.Available && selectedModel is not null;
+            delete.Enabled = snapshot.Available && selectedModel?.CanDelete == true;
+            status.Text = selectedModel is null
+                ? (models.Count == 0 ? ModelCatalogText("empty") : ModelCatalogText("selectHint"))
+                : _modelCatalogNotice ?? "";
+        }
+        list.ValueChanged += (_, _) => SelectCurrent();
+        list.Accepted += (_, e) =>
+        {
+            e.Handled = true;
+            SelectCurrent();
+            if (FindModel(_modelCatalogSelectedId) is { } model) ShowModelCatalogEditor(snapshot, model);
+        };
+        SelectCurrent();
+        add.Accepted += (_, _) => ShowModelCatalogEditor(snapshot, null);
+        edit.Accepted += (_, _) => { if (FindModel(_modelCatalogSelectedId) is { } model) ShowModelCatalogEditor(snapshot, model); };
+        delete.Accepted += (_, _) => { if (FindModel(_modelCatalogSelectedId) is { CanDelete: true } model) ShowModelCatalogDeleteConfirm(model); };
+        back.Accepted += (_, _) => ReturnToPreferenceCategory();
+        frame.KeyDown += (_, key) => { if (key.KeyCode == KeyCode.Esc) { key.Handled = true; HandleModelCatalogPreferencesEscape(); } };
+        frame.Add(details, status, warning, add, edit, delete, back);
+        if (!snapshot.Available)
+        {
+            list.Enabled = add.Enabled = edit.Enabled = delete.Enabled = false;
+            status.Text = _modelCatalogNotice ?? ModelCatalogText("catalogUnavailable");
+        }
+        ApplyTheme(frame);
+        _overlay = frame;
+        _window.Add(frame);
+        if (list.CanFocus) list.SetFocus(); else back.SetFocus();
+    }
+
+    private string ModelCatalogRowText(ModelCatalogModel model)
+    {
+        var family = _modelCatalogSnapshot?.Providers.FirstOrDefault(provider => provider.Id == model.ProviderId)?.Family ?? "";
+        return model.Id + "  ·  " + model.ProviderId + " (" + family + ")  ·  "
+            + model.Context.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private ModelCatalogModel? FindModel(string? id) => id is null ? null
+        : _modelCatalogSnapshot?.Models.FirstOrDefault(model => string.Equals(model.Id, id, StringComparison.Ordinal));
+
+    private void ShowModelCatalogEditor(ModelCatalogPreferencesSnapshot snapshot, ModelCatalogModel? existing)
+    {
+        if (_window is null) return;
+        CloseOverlay();
+        var frame = OverlayFrame(ModelCatalogText(existing is null ? "newModel" : "edit")
+            + (existing is null ? "" : " · " + existing.Id), _window.Frame.Height - 3);
+        frame.Id = "model-catalog-editor";
+        frame.Width = Dim.Percent(92);
+        frame.Height = Dim.Fill(2);
+        var providers = snapshot.Providers;
+        var y = 2;
+        TextField Field(string id, string labelKey, string value)
+        {
+            frame.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText(labelKey) });
+            var field = new TextField { Id = id, X = 25, Y = y++, Width = Dim.Fill(4), Height = 1, Text = value };
+            frame.Add(field);
+            return field;
+        }
+
+        var modelId = Field("model-catalog-id", "modelId", existing?.Id ?? "");
+        modelId.ReadOnly = existing is not null;
+        var provider = Field("model-catalog-provider", "provider", existing?.ProviderId ?? providers.FirstOrDefault()?.Id ?? "");
+        if (existing is not null)
+        {
+            var family = providers.FirstOrDefault(item => item.Id == existing.ProviderId)?.Family ?? "";
+            frame.Add(new Label { Id = "model-catalog-family", X = 25, Y = y++, Width = Dim.Fill(4), Height = 1,
+                Text = ModelCatalogText("family") + ": " + family });
+        }
+        var context = Field("model-catalog-context", "context", existing?.Context.ToString(CultureInfo.InvariantCulture) ?? "8192");
+        var usable = Field("model-catalog-usable-context", "usableContext", existing?.RecommendedUsableContext.ToString(CultureInfo.InvariantCulture) ?? "8192");
+        var output = Field("model-catalog-max-output", "maxOutput", existing?.MaxOutput.ToString(CultureInfo.InvariantCulture) ?? "2048");
+        var parameters = Field("model-catalog-parameters", "parameters", existing?.ParametersBillions?.ToString("R", PreferenceInput.Culture(_locale)) ?? "");
+        frame.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText("aliases") });
+        var aliases = new TextView { Id = "model-catalog-aliases", X = 25, Y = y, Width = Dim.Fill(4), Height = 2,
+            Text = string.Join("\n", existing?.Aliases ?? []) };
+        frame.Add(aliases);
+        y += 2;
+        frame.Add(new Label { Id = "model-catalog-literal-help", X = 2, Y = y, Width = Dim.Fill(4), Height = 2,
+            Text = ModelCatalogText("literalHelp") });
+        var status = new Label { Id = "model-catalog-editor-status", X = 2, Y = Pos.AnchorEnd(6), Width = Dim.Fill(4), Height = 1,
+            Text = "" };
+        var save = new Button { Id = "model-catalog-save", X = 2, Y = Pos.AnchorEnd(3), Text = ModelCatalogText("save") };
+        var cancel = new Button { Id = "model-catalog-cancel", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(3), Text = ModelCatalogText("cancel") };
+        cancel.Accepted += (_, _) => { CloseOverlay(); RenderModelCatalog(); };
+        save.Enabled = snapshot.Available;
+        save.Accepted += (_, _) =>
+        {
+            if (!long.TryParse(context.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var contextValue)
+                || !long.TryParse(usable.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var usableValue)
+                || !long.TryParse(output.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var outputValue))
+            { status.Text = ModelCatalogText("invalidLimits"); return; }
+            double? parametersValue = null;
+            if (!string.IsNullOrWhiteSpace(parameters.Text.ToString()))
+            {
+                if (!double.TryParse(parameters.Text.ToString(), NumberStyles.Float, PreferenceInput.Culture(_locale), out var parsed))
+                { status.Text = ModelCatalogText("invalidParameters"); return; }
+                parametersValue = parsed;
+            }
+            var aliasesValue = aliases.Text.ToString().Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            try
+            {
+                var draft = new ModelCatalogDraft(modelId.Text.ToString().Trim(), provider.Text.ToString().Trim(), contextValue,
+                    usableValue, outputValue, parametersValue, aliasesValue, existing?.Id);
+                _modelCatalogSnapshot = ModelCatalogHost().Save(draft, snapshot.Revision, CancellationToken.None);
+                _modelCatalogSelectedId = draft.Id;
+                _modelCatalogNotice = ModelCatalogText("saved");
+                CloseOverlay(); RenderModelCatalog();
+            }
+            catch (ModelCatalogConfigurationException exception) { status.Text = ModelCatalogError(exception.MessageKey); }
+            catch (Exception) { status.Text = ModelCatalogText("saveFailed"); }
+        };
+        frame.Add(status, save, cancel);
+        frame.KeyDown += (_, key) => { if (key.KeyCode == KeyCode.Esc) { key.Handled = true; HandleModelCatalogPreferencesEscape(); } };
+        ApplyTheme(frame);
+        _overlay = frame;
+        _window.Add(frame);
+        if (existing is null) modelId.SetFocus(); else provider.SetFocus();
+    }
+
+    private void ShowModelCatalogDeleteConfirm(ModelCatalogModel model)
+    {
+        if (_window is null) return;
+        _modelCatalogDeleteId = model.Id;
+        CloseOverlay();
+        var frame = OverlayFrame(ModelCatalogText("confirmTitle"), 12);
+        frame.Id = "model-catalog-confirm";
+        frame.Add(new Label { Id = "model-catalog-delete-warning", X = 2, Y = 2, Width = Dim.Fill(4), Height = 4,
+            Text = ModelCatalogText("deleteWarning") + "\n\n" + model.Id });
+        var yes = new Button { Id = "model-catalog-confirm-delete", X = 2, Y = Pos.AnchorEnd(3), Text = ModelCatalogText("confirmDelete") };
+        var no = new Button { Id = "model-catalog-cancel-delete", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(3), Text = ModelCatalogText("cancel") };
+        yes.Accepted += (_, _) =>
+        {
+            var snapshot = _modelCatalogSnapshot;
+            if (snapshot is null || _modelCatalogDeleteId is null) return;
+            try
+            {
+                _modelCatalogSnapshot = ModelCatalogHost().Delete(_modelCatalogDeleteId, snapshot.Revision, CancellationToken.None);
+                _modelCatalogSelectedId = null;
+                _modelCatalogNotice = ModelCatalogText("saved");
+                _modelCatalogDeleteId = null;
+                CloseOverlay(); RenderModelCatalog();
+            }
+            catch (ModelCatalogConfigurationException exception)
+            {
+                _modelCatalogNotice = ModelCatalogError(exception.MessageKey);
+                _modelCatalogDeleteId = null;
+                CloseOverlay(); RefreshModelCatalog(); RenderModelCatalog();
+            }
+            catch (Exception)
+            {
+                _modelCatalogNotice = ModelCatalogText("saveFailed");
+                _modelCatalogDeleteId = null;
+                CloseOverlay(); RenderModelCatalog();
+            }
+        };
+        no.Accepted += (_, _) => { _modelCatalogDeleteId = null; CloseOverlay(); RenderModelCatalog(); };
+        frame.KeyDown += (_, key) => { if (key.KeyCode == KeyCode.Esc) { key.Handled = true; HandleModelCatalogPreferencesEscape(); } };
+        frame.Add(yes, no);
+        ApplyTheme(frame);
+        _overlay = frame;
+        _window.Add(frame);
+        no.SetFocus();
+    }
+
+    private string ModelCatalogError(string key)
+    {
+        if (key.StartsWith("modelCatalog.reference.", StringComparison.Ordinal))
+        {
+            var reference = key["modelCatalog.reference.".Length..];
+            return ModelCatalogText(reference switch
+            {
+                "userDefault" => "referenceUserDefault", "projectDefault" => "referenceProjectDefault",
+                "workspaceDefault" => "referenceWorkspaceDefault", _ => "referenceRouting"
+            });
+        }
+        var code = key.StartsWith("modelCatalog.error.", StringComparison.Ordinal)
+            ? key["modelCatalog.error.".Length..] : key;
+        var resource = code switch
+        {
+            "unavailable" => "unavailable", "configurationInvalid" => "catalogUnavailable",
+            "workspaceScopeUnavailable" => "workspaceScopeUnavailable", "revisionConflict" => "stale",
+            "unknownProvider" => "unknownProvider", "modelAlreadyExists" => "modelAlreadyExists",
+            "modelNotFound" => "modelNotFound", "invalidId" => "invalidId", "invalidProvider" => "invalidProvider",
+            "invalidLimits" => "invalidLimits", "invalidParameters" => "invalidParameters", "invalidAliases" => "invalidAliases",
+            "ambiguousAlias" => "ambiguousAlias", "referenced" => "referenced", _ => "saveFailed"
+        };
+        return ModelCatalogText(resource);
+    }
+}
+#pragma warning restore CS0618

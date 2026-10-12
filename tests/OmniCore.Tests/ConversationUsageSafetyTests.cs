@@ -106,8 +106,8 @@ public sealed class ConversationUsageSafetyTests
             System.Text.Json.JsonSerializer.Serialize(snapshot))!;
         Assert.Equal(first.Tokens, roundTrip.SessionTokenMeasurement);
         var status = OmniCore.Cli.CliApp.StatusLineText(roundTrip);
-        Assert.Contains("session — tok", status);
-        Assert.DoesNotContain("session 0 tok", status);
+        Assert.Contains("sesión — tok", status);
+        Assert.DoesNotContain("sesión 0 tok", status);
         fixture.Reopen();
         Assert.Equal(first, fixture.Read());
         Assert.Equal(first, fixture.Read());

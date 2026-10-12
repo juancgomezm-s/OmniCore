@@ -5,7 +5,7 @@ namespace OmniCore.Cli;
 /// <summary>
 /// Renderer plain (ADR-0030 §4): imprime la conversación con roles semánticos, sin dependencias
 /// visuales. En M1 sin TTY o con `--plain`; el estilo viene de la ClientProjection (roles),
-/// y la localización de los títulos de rol usa los recursos es/en (ADR-0040).
+/// y la localización de los títulos de rol usa los recursos es/en/fr/it (ADR-0040).
 /// </summary>
 public sealed class PlainRenderer
 {

@@ -14,6 +14,7 @@ public sealed partial class TuiWiringTests
         using var captured = new ManualResetEventSlim();
         string? svgText = null;
         string? frameText = null;
+        string? lastDrawn = null;
         Exception? captureError = null;
         EventHandler<EventArgs> capture = (_, _) =>
         {
@@ -22,6 +23,7 @@ public sealed partial class TuiWiringTests
             if (cells.GetLength(0) != rows || cells.GetLength(1) != columns) return;
             var drawn = string.Join("\n", Enumerable.Range(0, rows).Select(y => string.Concat(
                 Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
+            lastDrawn = drawn;
             if (!drawn.Contains(marker, StringComparison.Ordinal)
                 || !drawn.Contains(fx.App.Overlay!.Title!.Trim(), StringComparison.Ordinal)) return;
             try
@@ -57,7 +59,7 @@ public sealed partial class TuiWiringTests
         try
         {
             fx.Invoke(() => { fx.App.MainWindow!.SetNeedsLayout(); fx.App.MainWindow.SetNeedsDraw(); });
-            Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "complete preference frame drawn");
+            Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "complete preference frame drawn\n" + lastDrawn);
         }
         finally { fx.Application.LayoutAndDrawComplete -= capture; }
         if (captureError is not null) throw captureError;

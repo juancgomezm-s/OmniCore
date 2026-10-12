@@ -15,6 +15,50 @@ using ToolCallId = OmniCore.Domain.ToolCallId;
 public sealed class ExtensionManifestTests
 {
     [Fact]
+    public void Optional_ui_resources_are_literal_bounded_and_do_not_change_execution_identity()
+    {
+        var loader = new ExtensionManifestLoader();
+        var original = loader.Load(Manifest);
+        Assert.Null(original.UiResources);
+        var translated = loader.Load(Manifest + "\nuiResources:\n  fr:\n    extension.displayName: Outils de compilation\n    tool.compile.description: Compile les fichiers du projet.\n");
+        Assert.Equal(original.Id, translated.Id);
+        Assert.Equal(original.Runtime!.Command, translated.Runtime!.Command);
+        Assert.Equal(original.Requests!.Capabilities, translated.Requests!.Capabilities);
+        Assert.Equal("Outils de compilation", translated.UiResources!["fr"]["extension.displayName"]);
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest + "\nuiResources:\n  de:\n    extension.displayName: Text\n"));
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest + "\nuiResources:\n  fr:\n    command.undeclared.description: Text\n"));
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest + "\nuiResources:\n  fr:\n    extension.description: " + new string('a', 2049) + "\n"));
+        Assert.Throws<InvalidDataException>(() => loader.Load(Manifest + "\nuiResources:\n  fr:\n    extension.description: { prompt: ignored }\n"));
+    }
+
+    [Fact]
+    public void External_ui_copy_roundtrips_without_translating_identity_or_unknown_fields()
+    {
+        const string json = """
+            {"workspaceTrusted":false,"session":null,"extensions":[{
+              "id":"acme.progress","displayName":"Original","version":"1","status":"ConsentRequired","trust":"Project",
+              "uiResources":{"fr":{"extension.displayName":"Outils","extension.description":"Description française","secret":"NEVER SHOW"},
+                 "xx":{"extension.displayName":"Unsupported"}}}]}
+            """;
+        var extension = Assert.Single(SessionPreferencesPresentation.Decode("extensions", json).Extensions);
+        Assert.Equal("acme.progress", extension.Id);
+        Assert.Equal("Original", extension.DisplayName);
+        Assert.Equal("Outils", extension.TextFor("fr-FR")!.DisplayName);
+        Assert.Equal("Description française", extension.TextFor("fr")!.Description);
+        Assert.Null(extension.TextFor("it"));
+        Assert.DoesNotContain("NEVER SHOW", extension.TextFor("fr")!.ToString());
+        var tools = ToolsInspectionJson.Decode("""
+            {"mode":"Act","tools":[{"visibleName":"ext.acme.compile","toolId":"ext.acme.compile","source":"Extension:Project:Project:acme@1",
+              "effectClass":"NonIdempotent","decision":"permission policy","visible":true,"description":"Original tool",
+              "uiDescriptions":{"fr":"Compile le projet"}}]}
+            """)!;
+        var tool = Assert.Single(tools.Tools);
+        Assert.Equal("Compile le projet", ToolInspectionPresentation.Description(tool, new("fr")));
+        Assert.Contains("Original tool", ToolInspectionPresentation.Description(tool, new("it")));
+        Assert.Contains(new Localization("it").Resolve("client.tools.description.original"), ToolInspectionPresentation.Description(tool, new("it")));
+    }
+
+    [Fact]
     public void Discovery_is_pure_and_requires_project_trust_and_capability_consent()
     {
         var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-" + Guid.NewGuid().ToString("N"));

@@ -77,8 +77,8 @@ public sealed class WorktreeInspectionCliTests : IDisposable
     }
 
     [Theory]
-    [InlineData("es", "Snapshots vencidos:")]
-    [InlineData("en", "Expired snapshots:")]
+    [InlineData("es", "Elegibles:")]
+    [InlineData("en", "Eligible:")]
     public async Task Snapshot_retention_cli_defaults_to_dry_run_and_requires_apply(string locale, string label)
     {
         await Git("init", "--template=");
@@ -148,8 +148,8 @@ public sealed class WorktreeInspectionCliTests : IDisposable
     }
 
     [Theory]
-    [InlineData("es", "Preview sin conflictos.")]
-    [InlineData("en", "Preview has no conflicts.")]
+    [InlineData("es", "La propuesta está lista para revisión; no se modificó el workspace.")]
+    [InlineData("en", "Proposal is ready for review; the workspace was not modified.")]
     public async Task Actual_cli_previews_uncommitted_lane_changes_without_changing_user_state(string locale, string ready)
     {
         var worktree = await CreateWorktree();
@@ -163,6 +163,7 @@ public sealed class WorktreeInspectionCliTests : IDisposable
 
         Assert.True(result.ExitCode == 0, result.Output);
         Assert.Contains(ready, result.Output);
+        Assert.DoesNotContain("\uFFFD", result.Output); // Accents survive the real process boundary.
         Assert.Contains("sample.txt", result.Output);
         Assert.DoesNotContain("later user work", result.Output);
         Assert.Equal(index, await File.ReadAllBytesAsync(Path.Combine(_repo, ".git", "index"), TestContext.Current.CancellationToken));
@@ -289,6 +290,8 @@ public sealed class WorktreeInspectionCliTests : IDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
             UseShellExecute = false,
             CreateNoWindow = true,
         };

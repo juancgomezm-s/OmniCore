@@ -31,6 +31,13 @@ public sealed class LocalServerUnavailableException : InvalidOperationException
         (ProviderId, Reason, Endpoint) = (providerId, reason, endpoint);
 }
 
+/// <summary>Fail-closed result when a provider changes between model selection and local startup.</summary>
+internal sealed class LocalServerConfigurationChangedException(string providerId)
+    : InvalidOperationException("Local provider configuration changed: " + providerId)
+{
+    internal string ProviderId { get; } = providerId;
+}
+
 /// <summary>
 /// Servidores locales de los providers (ADR-0011 §4). <c>attach</c> comprueba que el servidor ya
 /// levantado responde antes de gastar un Turn contra él; <c>managed</c> lo lanza con
@@ -45,7 +52,10 @@ public sealed class LocalServerSupervisor : IDisposable
     private sealed class ManagedEntry
     {
         internal required LocalModelHost Host { get; init; }
+        internal object OperationGate { get; } = new();
+        internal object StateGate { get; } = new();
         internal int Starts { get; set; }
+        internal bool Transitioning { get; set; }
     }
 
     private readonly Func<IProcessRuntime> _processes;
@@ -54,7 +64,8 @@ public sealed class LocalServerSupervisor : IDisposable
     private readonly TimeSpan _restartBackoff;
     private readonly Dictionary<string, ManagedEntry> _managed = new(StringComparer.Ordinal);
     private readonly object _gate = new();
-    private bool _exitHooked;
+    private int _exitHooked;
+    private bool _disposed;
 
     public LocalServerSupervisor(Func<IProcessRuntime>? processes = null, Func<string, bool>? reachable = null,
         Func<string, string?, bool>? ready = null, TimeSpan? restartBackoff = null)
@@ -84,12 +95,31 @@ public sealed class LocalServerSupervisor : IDisposable
             return new LocalServerEndpoint(effectiveBaseUrl, null, false);
         }
 
+        ManagedEntry entry;
         lock (_gate)
         {
-            if (!_managed.TryGetValue(provider.Id, out var entry))
-                _managed[provider.Id] = entry = new ManagedEntry { Host = new LocalModelHost(_processes()) };
-            if (!entry.Host.IsManagedRunning()) Start(provider, config, entry);
-            return new LocalServerEndpoint(EndpointOf(entry.Host), entry.Host.GeneratedApiKeyValue(), true);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_managed.TryGetValue(provider.Id, out var existing))
+                _managed[provider.Id] = existing = new ManagedEntry { Host = new LocalModelHost(_processes()) };
+            entry = existing;
+        }
+        lock (entry.OperationGate)
+        {
+            // Dispose may have removed this entry while Ensure waited for its operation gate.
+            // Never start a process after the owning supervisor has released its entries.
+            lock (_gate) ObjectDisposedException.ThrowIf(_disposed, this);
+            lock (entry.StateGate)
+            {
+                if (entry.Host.IsManagedRunning())
+                    return new LocalServerEndpoint(EndpointOf(entry.Host), entry.Host.GeneratedApiKeyValue(), true);
+                entry.Transitioning = true;
+            }
+            try
+            {
+                Start(provider, config, entry);
+                return new LocalServerEndpoint(EndpointOf(entry.Host), entry.Host.GeneratedApiKeyValue(), true);
+            }
+            finally { lock (entry.StateGate) entry.Transitioning = false; }
         }
     }
 
@@ -100,10 +130,9 @@ public sealed class LocalServerSupervisor : IDisposable
         // Reinicio tras una caída: espera creciente para no martillear un servidor que no arranca.
         if (entry.Starts > 0 && _restartBackoff > TimeSpan.Zero) Thread.Sleep(_restartBackoff * entry.Starts);
         entry.Starts++;
-        if (!_exitHooked)
+        if (Interlocked.Exchange(ref _exitHooked, 1) == 0)
         {
             AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
-            _exitHooked = true;
         }
 
         var spec = new ManagedServerSpec(config.Executable!, config.Args ?? [], config.WorkingDirectory ?? "",
@@ -127,26 +156,64 @@ public sealed class LocalServerSupervisor : IDisposable
     public bool IsManagedRunning(string? providerId)
     {
         if (providerId is null) return false;
-        lock (_gate) return _managed.TryGetValue(providerId, out var entry) && entry.Host.IsManagedRunning();
+        ManagedEntry? entry;
+        lock (_gate) _managed.TryGetValue(providerId, out entry);
+        if (entry is null) return false;
+        lock (entry.StateGate) return !entry.Transitioning && entry.Host.IsManagedRunning();
+    }
+
+    public bool IsManagedStarting(string? providerId)
+    {
+        if (providerId is null) return false;
+        ManagedEntry? entry;
+        lock (_gate) _managed.TryGetValue(providerId, out entry);
+        if (entry is null) return false;
+        lock (entry.StateGate) return entry.Transitioning;
+    }
+
+    /// <summary>True only while this live supervisor instance owns an entry for the provider.</summary>
+    public bool IsManagedOwned(string? providerId)
+    {
+        if (providerId is null) return false;
+        lock (_gate) return _managed.ContainsKey(providerId);
     }
 
     /// <summary>Detiene el servidor managed de un provider (kill-tree) y borra su secreto.</summary>
     public void Stop(string providerId)
     {
+        ManagedEntry? entry;
         lock (_gate)
         {
-            if (_managed.TryGetValue(providerId, out var entry)) entry.Host.StopManaged();
+            _managed.TryGetValue(providerId, out entry);
+        }
+        if (entry is null) return;
+        lock (entry.OperationGate)
+        {
+            lock (entry.StateGate) entry.Transitioning = true;
+            try { entry.Host.StopManaged(); }
+            finally { lock (entry.StateGate) entry.Transitioning = false; }
         }
     }
 
     public void Dispose()
     {
+        ManagedEntry[] entries;
         lock (_gate)
         {
-            foreach (var entry in _managed.Values) entry.Host.StopManaged();
-            if (_exitHooked) AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
-            _exitHooked = false;
+            if (_disposed) return;
+            _disposed = true;
+            entries = _managed.Values.ToArray();
+            _managed.Clear();
         }
+        foreach (var entry in entries)
+            lock (entry.OperationGate)
+            {
+                lock (entry.StateGate) entry.Transitioning = true;
+                try { entry.Host.StopManaged(); }
+                finally { lock (entry.StateGate) entry.Transitioning = false; }
+            }
+        if (Interlocked.Exchange(ref _exitHooked, 0) != 0)
+            AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
     }
 
     private void OnProcessExit(object? sender, EventArgs e)

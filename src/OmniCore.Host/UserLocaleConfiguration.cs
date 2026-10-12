@@ -77,8 +77,7 @@ public sealed class UserLocaleConfiguration(IPlatformPaths paths)
         _ = SidebarConfiguration.ReadFile(_file); // Re-check the path after creating the directory.
         // Share the settings lease used by the existing settings writer, so a locale save cannot
         // race a sidebar edit and discard its unrelated keys.
-        using var lease = new FileStream(_file + ".sidebar.lock", FileMode.CreateNew, FileAccess.Write,
-            FileShare.None, 1, FileOptions.DeleteOnClose);
+        using var lease = ConfigurationWriteLease.Acquire(_file);
         cancellationToken.ThrowIfCancellationRequested();
 
         var original = SidebarConfiguration.ReadFile(_file);

@@ -46,7 +46,11 @@ public sealed class ClientCommandLocalizationTests
         var handler = new ClientActionHandler();
         var help = await handler.ExecuteAsync(new(ClientActionIds.HelpShow, [], "Typed"), context, TestContext.Current.CancellationToken);
         Assert.StartsWith(heading, help.Text);
-        foreach (var command in ClientCommandRegistry.Default.Commands) Assert.Contains("/" + command.Name + " — ", help.Text);
+        foreach (var command in ClientCommandRegistry.Default.Commands)
+        {
+            var name = HumanCommandAliases.DisplayName(command.Name, locale);
+            Assert.Contains("/" + name + (name == command.Name ? "" : " (/" + command.Name + ")") + " — ", help.Text);
+        }
         foreach (var action in new[] { ClientActionIds.SkillsInspect, ClientActionIds.MemorySession })
         {
             var result = await handler.ExecuteAsync(new(action, ["invalid"], "Typed"), context, TestContext.Current.CancellationToken);

@@ -1,5 +1,9 @@
 # Encargo de Luna para preferencias e idiomas
 
+Actualización del 12 de octubre: los encargos de implementación de este documento ya fueron
+ejecutados. Es un registro histórico de propiedad, no una orden de relanzar workers. Véanse el
+[inventario vigente](preferences-localization-inventory.md) y la [evidencia de cierre](../validation/preferences-completion-20261012.md).
+
 Implementar el [plan independiente](preferences-and-localization.md) por paquetes, conservando la TUI y el núcleo consolidados. Este encargo no equivale a un cierre del rediseño: establece la secuencia, la autoridad y las pruebas de entrega.
 
 ## Base y propiedad

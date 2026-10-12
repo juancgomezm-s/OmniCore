@@ -33,17 +33,18 @@ public static class SessionSidebarPresentation
     public static IReadOnlyList<ISidebarWidget> Build(SessionSidebarSnapshot? canonical,
         SessionObservabilitySnapshot? observation, string model, string mode, string locale, bool details)
     {
-        string L(string es, string en) => locale == "en" ? en : es;
+        var text = new Localization(locale);
         var widgets = new List<ISidebarWidget>();
         var sessionRows = new List<WidgetRowModel>
         {
-            new(string.IsNullOrWhiteSpace(canonical?.Title) ? L("Nueva sesión", "New session") : canonical.Title),
-            new(L("Modelo: ", "Model: ") + model, ThemeRole.Agent),
-            new((canonical?.Mode ?? mode) + (canonical?.RunState is { } state ? " · " + RunState(state, locale) : ""), ThemeRole.Muted),
+            new(string.IsNullOrWhiteSpace(canonical?.Title) ? text.Resolve("sidebar.new_session") : canonical.Title),
+            new(text.Resolve("sidebar.model") + model, ThemeRole.Agent),
+            new(StatusLinePresentation.ModeLabel(canonical?.Mode ?? mode, locale)
+                + (canonical?.RunState is { } state ? " · " + RunState(state, locale) : ""), ThemeRole.Muted),
         };
         if (canonical?.Activity is { } activity)
             sessionRows.Add(new(Activity(activity, locale), ActivityRole(activity)));
-        widgets.Add(new DataSidebarWidget("core.session", "SESSION", 100, sessionRows));
+        widgets.Add(new DataSidebarWidget("core.session", text.Resolve("sidebar.session_title"), 100, sessionRows));
         if (canonical?.Plan is { } plan && (plan.Items.Count > 1 || plan.Items.Any(i => i.State is "Blocked" or "Failed")))
         {
             var children = plan.Items.Where(i => i.ParentId is not null).Select(i => i.ParentId!).ToHashSet(StringComparer.Ordinal);
@@ -68,105 +69,88 @@ public static class SessionSidebarPresentation
         var context = observation?.Context;
         var contextRows = new List<WidgetRowModel>
         {
-            new(context is null ? L("Sin medición todavía", "No measurement yet")
-                : L("Tokens: ", "Tokens: ") + Count(context.Tokens), ThemeRole.Info),
+            new(context is null ? text.Resolve("sidebar.no_measurement_yet")
+                : text.Resolve("sidebar.tokens") + Count(context.Tokens, locale), ThemeRole.Info),
         };
         if (context is not null)
         {
-            contextRows.Add(new(L("Capacidad: ", "Capacity: ") + Count(context.Capacity), ThemeRole.Muted));
-            contextRows.Add(new(L("Presupuesto: ", "Budget: ") + Count(context.UsableBudget), ThemeRole.Muted));
-            contextRows.Add(new(L("Ocupación: ", "Used: ") + Percent(context.UsedPercent), ThemeRole.Info));
+            contextRows.Add(new(text.Resolve("sidebar.capacity") + Count(context.Capacity, locale), ThemeRole.Muted));
+            contextRows.Add(new(text.Resolve("sidebar.budget_label") + Count(context.UsableBudget, locale), ThemeRole.Muted));
+            contextRows.Add(new(text.Resolve("sidebar.used") + Percent(context.UsedPercent, locale), ThemeRole.Info));
             if (details)
             {
-                contextRows.Add(new(L("Solicitud: ", "Request: ") + context.ModelId, ThemeRole.Muted));
-                foreach (var part in context.Components) contextRows.Add(new(part.Kind + ": " + Count(part.Tokens), ThemeRole.Muted));
-                contextRows.Add(new(L("Razonamiento: ", "Reasoning: ") + Count(context.ReportedReasoningTokens), ThemeRole.Muted));
+                contextRows.Add(new(text.Resolve("sidebar.request") + context.ModelId, ThemeRole.Muted));
+                foreach (var part in context.Components) contextRows.Add(new(part.Kind + ": " + Count(part.Tokens, locale), ThemeRole.Muted));
+                contextRows.Add(new(text.Resolve("sidebar.reasoning") + Count(context.ReportedReasoningTokens, locale), ThemeRole.Muted));
                 contextRows.Add(new(context.AsOf.ToUniversalTime().ToString("HH:mm:ss 'UTC'", CultureInfo.InvariantCulture), ThemeRole.Muted));
             }
         }
-        if (observation?.Updating == true) contextRows.Add(new(L("Actualizando solicitud…", "Updating request…"), ThemeRole.Active));
-        widgets.Add(new DataSidebarWidget("core.context", L("CONTEXTO", "CONTEXT"), 65, contextRows));
+        if (observation?.Updating == true) contextRows.Add(new(text.Resolve("sidebar.updating_request"), ThemeRole.Active));
+        widgets.Add(new DataSidebarWidget("core.context", text.Resolve("sidebar.context"), 65, contextRows));
         var usage = observation?.Consumption;
         var usageRows = new List<WidgetRowModel>
         {
-            new(L("Tokens sesión: ", "Session tokens: ") + (usage is null ? "—" : Count(usage.Total)), ThemeRole.Info),
-            new(L("Costo sesión: ", "Session cost: ") + (usage is null ? "—" : Cost(usage.Cost)), ThemeRole.Muted),
+            new(text.Resolve("sidebar.session_tokens") + (usage is null ? "—" : Count(usage.Total, locale)), ThemeRole.Info),
+            new(text.Resolve("sidebar.session_cost") + (usage is null ? "—" : Cost(usage.Cost, locale)), ThemeRole.Muted),
         };
         if (details && usage is not null)
         {
-            usageRows.Add(new(L("Invocaciones: ", "Invocations: ") + usage.ModelInvocations, ThemeRole.Muted));
-            if (usage.IncompleteInvocations > 0) usageRows.Add(new(L("Sin uso completo: ", "Incomplete usage: ") + usage.IncompleteInvocations, ThemeRole.Attention));
+            usageRows.Add(new(text.Resolve("sidebar.invocations") + usage.ModelInvocations, ThemeRole.Muted));
+            if (usage.IncompleteInvocations > 0) usageRows.Add(new(text.Resolve("sidebar.incomplete_usage") + usage.IncompleteInvocations, ThemeRole.Attention));
             if (usage.Breakdown is { } breakdown)
             {
-                usageRows.Add(new(L("Entrada: ", "Input: ") + Count(breakdown.Input), ThemeRole.Muted));
-                usageRows.Add(new(L("Salida: ", "Output: ") + Count(breakdown.Output), ThemeRole.Muted));
-                usageRows.Add(new("Cache read: " + Count(breakdown.CacheRead), ThemeRole.Muted));
-                usageRows.Add(new("Cache write: " + Count(breakdown.CacheWrite), ThemeRole.Muted));
+                usageRows.Add(new(text.Resolve("sidebar.input") + Count(breakdown.Input, locale), ThemeRole.Muted));
+                usageRows.Add(new(text.Resolve("sidebar.output") + Count(breakdown.Output, locale), ThemeRole.Muted));
+                usageRows.Add(new(text.Resolve("sidebar.cache_read") + Count(breakdown.CacheRead, locale), ThemeRole.Muted));
+                usageRows.Add(new(text.Resolve("sidebar.cache_write") + Count(breakdown.CacheWrite, locale), ThemeRole.Muted));
             }
         }
-        widgets.Add(new DataSidebarWidget("core.consumption", L("CONSUMO", "USAGE"), 60, usageRows));
+        widgets.Add(new DataSidebarWidget("core.consumption", text.Resolve("sidebar.usage"), 60, usageRows));
         var diagnostics = new List<WidgetRowModel>();
-        if (canonical is null) diagnostics.Add(new(L("Sin sesión activa", "No active session"), ThemeRole.Muted));
+        if (canonical is null) diagnostics.Add(new(text.Resolve("sidebar.no_active_session"), ThemeRole.Muted));
         else
         {
-            diagnostics.Add(new(canonical.RecoveryBlocked ? L("Recuperación bloqueada", "Recovery blocked")
-                : L("Sin bloqueo de recuperación", "No recovery block"), canonical.RecoveryBlocked ? ThemeRole.Error : ThemeRole.Muted));
-            if (canonical.ProjectionUnavailable) diagnostics.Add(new(L("Plan no disponible", "Plan unavailable"), ThemeRole.Error));
+            diagnostics.Add(new(canonical.RecoveryBlocked ? text.Resolve("sidebar.recovery_blocked")
+                : text.Resolve("sidebar.no_recovery_block"), canonical.RecoveryBlocked ? ThemeRole.Error : ThemeRole.Muted));
+            if (canonical.ProjectionUnavailable) diagnostics.Add(new(text.Resolve("sidebar.plan_unavailable"), ThemeRole.Error));
             if (details)
             {
                 if (canonical.RunId is { } run) diagnostics.Add(new("Run " + run, ThemeRole.Muted));
-                diagnostics.Add(new(L("Modelo: ", "Model: ") + model, ThemeRole.Agent));
+                diagnostics.Add(new(text.Resolve("sidebar.model") + model, ThemeRole.Agent));
                 diagnostics.Add(new("Journal · seq " + canonical.BasedOnJournalSequence, ThemeRole.Muted));
             }
         }
-        widgets.Add(new DataSidebarWidget("core.diagnostics", L("DIAGNÓSTICO", "DIAGNOSTICS"), 40, diagnostics));
+        widgets.Add(new DataSidebarWidget("core.diagnostics", text.Resolve("sidebar.diagnostics"), 40, diagnostics));
         return widgets;
     }
 
-    private static string Mark(MetricAvailability availability) => availability switch
+    private static CultureInfo Culture(string locale) => CultureInfo.GetCultureInfo(locale == "es" ? "es-MX" : locale);
+    private static string Mark(MetricAvailability availability, string locale) => availability switch
     {
-        MetricAvailability.Estimated => "≈", MetricAvailability.Stale => "anterior · ", _ => "",
+        MetricAvailability.Estimated => "≈", MetricAvailability.Stale => new Localization(locale).Resolve("sidebar.stale"), _ => "",
     };
     private static bool HasValue(MetricAvailability availability) => availability is MetricAvailability.Reported or MetricAvailability.Estimated or MetricAvailability.Stale;
-    public static string Count(Metric<long?> metric) => HasValue(metric.Availability) && metric.Value is { } value
-        ? Mark(metric.Availability) + value.ToString("N0", CultureInfo.InvariantCulture) : "—";
-    private static string Percent(Metric<double?> metric) => HasValue(metric.Availability) && metric.Value is { } value
-        ? Mark(metric.Availability) + value.ToString("0.0", CultureInfo.InvariantCulture) + "%" : "—";
-    private static string Cost(Metric<Money> metric) => HasValue(metric.Availability) && metric.Value is { } value
-        ? Mark(metric.Availability) + value.Amount.ToString("0.0000", CultureInfo.InvariantCulture) + " " + value.Currency : "—";
+    public static string Count(Metric<long?> metric, string locale = "es") => HasValue(metric.Availability) && metric.Value is { } value
+        ? Mark(metric.Availability, locale) + value.ToString("N0", Culture(locale)) : "—";
+    private static string Percent(Metric<double?> metric, string locale) => HasValue(metric.Availability) && metric.Value is { } value
+        ? Mark(metric.Availability, locale) + value.ToString("0.0", Culture(locale)) + "%" : "—";
+    private static string Cost(Metric<Money> metric, string locale) => HasValue(metric.Availability) && metric.Value is { } value
+        ? Mark(metric.Availability, locale) + value.Amount.ToString("0.0000", Culture(locale)) + " " + value.Currency : "—";
     private static ThemeRole PlanRole(string state) => state switch
     {
         "Completed" => ThemeRole.Success, "InProgress" => ThemeRole.Active, "Blocked" => ThemeRole.Attention,
         "Failed" => ThemeRole.Error, _ => ThemeRole.Muted,
     };
-    private static string PlanState(string state, string locale) => locale == "en" ? state : state switch
-    {
-        "Pending" => "pendiente", "Ready" => "listo", "InProgress" => "en curso", "Blocked" => "bloqueado",
-        "Completed" => "completado", "Failed" => "falló", "Skipped" => "omitido", "Cancelled" => "cancelado", _ => state,
-    };
-    private static string Activity(string activity, string locale) => locale == "en" ? activity switch
-    {
-        "WaitingForModel" => "waiting for the model", "WaitingForTool" => "running a tool",
-        "WaitingForPermission" => "waiting for a permission", "WaitingForInput" => "waiting for your answer",
-        "WaitingForSubtask" => "waiting for a subtask", "Validating" => "validating", "Stalled" => "no progress",
-        _ => activity,
-    } : activity switch
-    {
-        "WaitingForModel" => "esperando al modelo", "WaitingForTool" => "ejecutando una herramienta",
-        "WaitingForPermission" => "esperando un permiso", "WaitingForInput" => "esperando tu respuesta",
-        "WaitingForSubtask" => "esperando una subtarea", "Validating" => "validando", "Stalled" => "sin progreso",
-        _ => activity,
-    };
+    private static string PlanState(string state, string locale) => StateLabel(state, locale);
+    private static string Activity(string activity, string locale) => StateLabel(activity, locale);
+    private static string StateLabel(string state, string locale) => ShellUiResources.ContainsKey("state." + state)
+        ? new Localization(locale).Resolve("state." + state) : state;
     private static ThemeRole ActivityRole(string activity) => activity switch
     {
         "WaitingForPermission" or "WaitingForInput" or "Stalled" => ThemeRole.Attention,
         _ => ThemeRole.Active,
     };
-    private static string RunState(string state, string locale) => locale == "en" ? state : state switch
-    {
-        "Created" => "creado", "Running" => "en curso", "AwaitingInput" => "esperando respuesta", "Completed" => "completado",
-        "Failed" => "falló", "Cancelled" => "cancelado", _ => state,
-    };
+    private static string RunState(string state, string locale) => StateLabel(state, locale);
 }
 
 internal sealed class DataSidebarWidget(string id, string title, int priority, IReadOnlyList<WidgetRowModel> rows) : ISidebarWidget

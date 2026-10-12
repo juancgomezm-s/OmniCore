@@ -12,7 +12,7 @@ public sealed class UsagePresentationTests
         const string json = """{"SessionTokens":{"Input":600,"Output":400,"CacheRead":0,"CacheWrite":0},"SessionCost":{"Availability":4,"Value":null,"Source":null},"Remaining":{"Availability":4,"Value":null,"Source":null},"AsOf":"2026-10-07T10:00:00Z"}""";
         var legacy = System.Text.Json.JsonSerializer.Deserialize<UsageSnapshot>(json)!;
         Assert.Null(legacy.SessionTokenMeasurement);
-        Assert.Equal("session 1k tok · — · —", OmniCore.Cli.CliApp.StatusLineText(legacy));
+        Assert.Equal("sesión 1k tok · — · —", OmniCore.Cli.CliApp.StatusLineText(legacy));
     }
 
     [Theory]

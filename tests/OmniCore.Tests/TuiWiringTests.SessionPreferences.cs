@@ -132,7 +132,9 @@ public sealed partial class TuiWiringTests
         ChoosePreferenceCategory(fx, "extensions_skills");
         ClickId(fx, "preferences-extensions-open");
         fx.Wait(() => fx.App.Overlay?.Id == "session-preferences", "extensions preferences screen opened");
-        ExportPreferenceFrame(fx, 120, 35, "extensions", "Fixture extension");
+        ExportPreferenceFrame(fx, 120, 35, "extensions", "Nombre original sin traducir");
+        Assert.Contains("Fixture extension", OverlayText(fx.App.Overlay!));
+        Assert.Contains("Nombre original sin traducir", OverlayText(fx.App.Overlay!));
         Assert.Contains("tool.register", OverlayText(fx.App.Overlay!));
         Assert.True(fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "session-preferences-secondary").Enabled);
 

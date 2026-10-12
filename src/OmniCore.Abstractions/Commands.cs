@@ -13,6 +13,8 @@ public enum CommandKind
 public sealed record CommandDescriptor(string Id, string Name, IReadOnlyList<string> Aliases,
     CommandKind Kind, string Description, IReadOnlyList<string> Arguments, ComponentSource Source)
 {
+    /// <summary>Optional literal presentation translations supplied by an extension; never execution input.</summary>
+    public IReadOnlyDictionary<string, string>? UiDescriptions { get; init; }
     public void Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Id);

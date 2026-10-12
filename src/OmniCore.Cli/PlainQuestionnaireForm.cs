@@ -47,7 +47,8 @@ internal static class PlainQuestionnaireForm
                 }
 
                 Console.Write(question.Kind == QuestionnaireQuestionKind.FreeText
-                    ? "> " : localization.Resolve("cli.questionnaire.selection_prompt"));
+                    ? localization.Resolve("cli.questionnaire.text_prompt")
+                    : localization.Resolve("cli.questionnaire.selection_prompt"));
                 var selectionOrText = Console.ReadLine();
                 if (selectionOrText is null || selectionOrText.Trim().Equals(":cancel", StringComparison.OrdinalIgnoreCase))
                     return new WireQuestionnaireResponse(Array.Empty<WireQuestionAnswer>(), true);
