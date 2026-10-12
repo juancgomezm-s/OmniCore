@@ -9,6 +9,41 @@ using OmniCore.Infrastructure;
 public sealed class CliLocaleRuntimeIntegrationTests
 {
     [Fact]
+    public async Task Default_invocation_opens_tui_interactively_and_exits_cleanly_without_a_terminal()
+    {
+        var tuiLaunched = false;
+        var interactiveCode = await CliApp.RunDefaultInvocationAsync(true, () =>
+        {
+            tuiLaunched = true;
+            return Task.FromResult(17);
+        });
+        Assert.Equal(17, interactiveCode);
+        Assert.True(tuiLaunched);
+
+        var expectedFallback = new Localization(CliApp.ActiveEffectiveLocale)
+            .Resolve("cli.tui.interactive_required");
+        var output = Console.Error;
+        using var captured = new StringWriter();
+        Console.SetError(captured);
+        try
+        {
+            var nonInteractiveCode = await CliApp.RunDefaultInvocationAsync(false, () =>
+            {
+                Assert.Fail("The TUI must not start when the terminal is redirected.");
+                return Task.FromResult(-1);
+            });
+            Assert.Equal(2, nonInteractiveCode);
+        }
+        finally { Console.SetError(output); }
+
+        Assert.Equal(expectedFallback, captured.ToString().Trim());
+
+        var localeOnly = LocaleArgumentParser.Parse(["--locale", "fr"]);
+        Assert.Empty(localeOnly.Arguments);
+        Assert.Equal("fr", localeOnly.ExplicitLocale);
+    }
+
+    [Fact]
     public async Task Cli_startup_resolves_cli_environment_user_and_default_and_updates_plain_localization()
     {
         using var fixture = new Fixture();
@@ -27,7 +62,10 @@ public sealed class CliLocaleRuntimeIntegrationTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", "en");
             runtime = OmniCliRuntime.Create(fixture.Workspace);
             previousRuntime = CliApp.UseRuntimeForTests(runtime);
-            await RunAsync("--locale", "fr-CA", "--help");
+            var explicitHelp = await RunAsync("--locale", "fr-CA", "--help");
+            Assert.Equal(0, explicitHelp.Code);
+            Assert.Contains("omni : moteur d’agents local-first", explicitHelp.Output, StringComparison.Ordinal);
+            Assert.Contains("interface interactive (TUI)", explicitHelp.Output, StringComparison.Ordinal);
             AssertLocale(runtime, "fr", "fr", LocaleSelectionSource.CommandLine, "outil");
             CliApp.UpdateLocaleFromPreferences("it");
             AssertLocale(runtime, "fr", "fr", LocaleSelectionSource.CommandLine, "outil");

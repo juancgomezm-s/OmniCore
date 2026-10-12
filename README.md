@@ -116,10 +116,15 @@ Con npm 11, autoriza el `prepare` que compila el paquete durante la instalación
 ```powershell
 npm.cmd install --global --foreground-scripts --install-links --allow-scripts=omnicore-cli@0.1.0 "git+https://github.com/juancgomezm-s/OmniCore.git#main"
 omni.cmd --help
-omni.cmd tui
+omni
 ```
 
 En npm 10 o anterior, omite `--allow-scripts=omnicore-cli@0.1.0`.
+
+Ejecuta `omni` desde la carpeta del proyecto para abrir la TUI. `omni tui`
+también sigue disponible; `omni --help` muestra la ayuda. Sin argumentos,
+entrada y salida deben estar conectadas a una terminal interactiva. Para
+scripts usa un subcomando explícito, como `omni sim --json`.
 
 La instalación necesita Git, Node.js 20 o posterior y el SDK de .NET 10.0.401 o
 una banda posterior de .NET 10, según `global.json`. `npm` compila la CLI durante

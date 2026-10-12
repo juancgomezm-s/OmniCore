@@ -115,3 +115,21 @@ dotnet y requiere runtime .NET 10 en uso. La instalación compila código; no
 configura cuentas, claves ni preferencias del equipo original.
 
 La instrucción actual se mantiene en [README](../../README.md#instalar-el-comando-omni-con-npm).
+
+## Corrección de arranque sin argumentos
+
+El usuario detectó que ejecutar `omni` devolvía ayuda en lugar de abrir la TUI.
+La instalación sí ejecutaba la CLI; `CliApp.RunAsync` resolvía argumentos vacíos
+con PrintUsage/exit 1. Ahora esa ruta inicia el mismo RunTui que `omni tui`,
+incluido el caso de sólo `--locale <idioma>` tras resolver la preferencia.
+`--help`/`help` siguen explícitos; subcomandos y argumentos conservan su ruta.
+Si stdin o stdout están redirigidos, la invocación vacía emite diagnóstico
+localizado por stderr y exit 2, sin inicializar una UI que quedaría bloqueada.
+Se añadió ayuda del arranque por defecto en es/en/fr/it y se retiró M1 del título.
+
+Validación focal por el mismo worker Luna/high: build CLI y build del proyecto
+de pruebas con cero warnings/errores. CliLocaleRuntimeIntegrationTests,
+LocaleRuntimeTests y LegacyLocaleCoverageTests: 12/12 pass. Tras ampliar la
+comprobación de help explícito, CliLocaleRuntimeIntegrationTests: 3/3 pass.
+Las pruebas verifican lanzamiento delegado, rechazo sin terminal y ayuda
+francesa explícita; el smoke PTY de la instalación se registra después.

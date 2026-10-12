@@ -75,8 +75,9 @@ public sealed class CliApp
 
         if (args.Length == 0)
         {
-            PrintUsage();
-            return Task.FromResult(1);
+            return RunDefaultInvocationAsync(
+                isInteractiveTerminal: !Console.IsInputRedirected && !Console.IsOutputRedirected,
+                launchTui: () => RunTui(args));
         }
 
         args = HumanCommandAliases.NormalizeCli(args);
@@ -492,6 +493,15 @@ public sealed class CliApp
             localEngineSupervisor: Runtime.CreateTuiLocalEngineSupervisor()));
     }
 
+    internal static Task<int> RunDefaultInvocationAsync(bool isInteractiveTerminal, Func<Task<int>> launchTui)
+    {
+        ArgumentNullException.ThrowIfNull(launchTui);
+        if (isInteractiveTerminal) return launchTui();
+
+        Console.Error.WriteLine(Loc().Resolve("cli.tui.interactive_required"));
+        return Task.FromResult(2);
+    }
+
     private static Task<int> RunExplain(string[] args)
     {
         var question = args.Length >= 2 ? args[1] : Loc().Resolve("cli.explain.default_question");
@@ -733,6 +743,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("cli.usage.title"));
         Console.WriteLine();
         Console.WriteLine(Loc().Resolve("cli.usage.heading"));
+        Console.WriteLine(Loc().Resolve("cli.usage.tui"));
         Console.WriteLine(Loc().Resolve("cli.usage.sim"));
         Console.WriteLine(Loc().Resolve("cli.usage.act"));
         Console.WriteLine(Loc().Resolve("cli.usage.ask"));
