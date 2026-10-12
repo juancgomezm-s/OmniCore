@@ -114,8 +114,9 @@ En Windows puedes instalar la CLI directamente desde Git, sin publicar en npm.
 Con npm 11, autoriza el `prepare` que compila el paquete durante la instalación:
 
 ```powershell
-npm.cmd install --global --install-links --allow-scripts=omnicore-cli@0.1.0 "git+https://github.com/juancgomezm-s/OmniCore.git#main"
-omni --help
+npm.cmd install --global --foreground-scripts --install-links --allow-scripts=omnicore-cli@0.1.0 "git+https://github.com/juancgomezm-s/OmniCore.git#main"
+omni.cmd --help
+omni.cmd tui
 ```
 
 En npm 10 o anterior, omite `--allow-scripts=omnicore-cli@0.1.0`.

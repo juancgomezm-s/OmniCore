@@ -24,6 +24,8 @@ OmniCore en otro equipo desde Git con npm. Plataforma validada: Windows.
   No añade dependencias npm ni publica en el registro npm.
 - `git branch --no-merged main` queda vacío. Se conservan worktrees y refs
   históricos; no se eliminan cambios ni se hace force-push.
+  Los cuatro worktrees secundarios están limpios, sin archivos modificados ni
+  sin seguimiento al finalizar la revisión.
 
 La [arquitectura §24.4](../architecture/arquitectura.md) y el
 [plan detallado](../plans/m8-m10-user-localization.md) separan lo previsto de lo
@@ -75,8 +77,37 @@ cache temporal que npm elimina. Se retiene ese flag en la instrucción Windows.
 
 ## Instalación desde GitHub
 
-La publicación de main y el smoke HTTPS se registrarán después del push. La
-validación local anterior no se presenta como una instalación remota.
+Push confirmado: origin/main y HEAD coincidieron en
+`6e1cc9bdba1af533ea276f8009dd4b91e3ff8a9a`. A continuación el worker instaló
+desde HTTPS fijando ese SHA, con prefijo/cache nuevos en Temp:
+
+```powershell
+npm.cmd install --global --foreground-scripts --install-links --allow-scripts=omnicore-cli@0.1.0 "git+https://github.com/juancgomezm-s/OmniCore.git#6e1cc9bdba1af533ea276f8009dd4b91e3ff8a9a"
+```
+
+La ejecución real añadió `--prefix`/`--cache` temporales y `--no-audit --no-fund`
+para aislar el smoke. El log confirmó descargas codeload del SHA fijado y exit 0.
+Prepare/publish ejecutado, paquete instalado como copia real, DLL y shim
+`omni.cmd` presentes. Smoke `--help` con es-MX/en-US/fr-FR/it-IT, doctor y sim
+offline: todos exit 0, con cwd/datos/configuración temporales. Npm 11.17 emitió
+un warning allowScripts pese a ejecutar prepare; se comprobó el contenido y
+la ejecución instalada, no sólo el exit del instalador.
+
+Log local de npm: `%TEMP%/OmniCoreNpmHttpsCache_6e1cc9b/_logs/2026-10-12T15_24_54_540Z-debug-0.log`.
+Además, runner `--self-test --case native-cli`: exit 0;
+AllowedCommandCount=16 y CanonicalArgumentsAccepted, InjectedArgumentsRejected,
+RejectionBudgetVerified=true. Esta última prueba es offline y no inicia modelos.
+
+El commit posterior registra esta evidencia y ajusta instrucciones de README;
+no modifica src/tests ni scripts npm respecto al snapshot remoto validado.
+
+Artefacto de entrega local, reempaquetado con `npm pack --ignore-scripts` sobre
+la publicación validada y README con comandos `omni.cmd`:
+`artifacts/npm/omnicore-cli-0.1.0-20261012.tgz`, 128 archivos,
+26.430.091 bytes, SHA256
+`C9A0FB08804435FF8982508A643E6CFA6A785C4DC3783F7A8E1128034F0E3413`.
+El coordinador comprobó ese hash tras copiarlo al workspace. Binarios/tgz
+permanecen ignorados por Git; el canal remoto construye desde source con prepare.
 
 Requisitos para instalar desde Git: Git, Node 20 o posterior y SDK .NET
 10.0.401 o banda posterior compatible con `global.json`. El launcher ejecuta
