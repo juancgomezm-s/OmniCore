@@ -1,5 +1,8 @@
 # Aceptación real de comandos y herramientas con Luna y Qwen
 
+Estado posterior: [continuación con timeout ampliado, terminal y regresión](closure-live-and-terminal-20261012.md).
+Los cortes de las secciones siguientes son históricos; no representan la última campaña Qwen.
+
 ## Resultado actualizado y reparaciones
 
 Corte de evidencia: 12 de octubre de 2026, 05:24 UTC; 11 de octubre, 23:24 en Ciudad de México.

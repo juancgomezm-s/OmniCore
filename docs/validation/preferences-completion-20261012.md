@@ -1,5 +1,8 @@
 # Cierre de preferencias e idiomas — 12 de octubre de 2026
 
+La [continuación de cierre](closure-live-and-terminal-20261012.md) registra la nueva regresión
+completa, aceptación interactiva en PTY y correcciones visuales posteriores a este corte.
+
 Implementación en `codex/tui-omega-animations`, sobre `e9d482c`. Dos agentes Luna con
 razonamiento alto implementaron paquetes disjuntos; el coordinador auditó los cambios,
 corrigió la integración y ejecutó la validación agrupada. No se modificaron main, cuentas,

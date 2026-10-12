@@ -213,7 +213,10 @@ identidades OAuth, adaptadores API adicionales, MCP, hooks y memoria global— n
 en pendientes ocultos de UI ni se declaran construidas. La aceptación del escritorio real se
 mantiene distinguida de la validación del driver, sin bloquear el cierre del código verificable.
 
-El cierre automatizado terminó con compilación sin advertencias ni errores, arquitectura
-62/62 y paquete final 20/20. Los fallos de la regresión amplia fueron corregidos y verificados
-en lotes focales; no se presenta esa reconciliación como una segunda ejecución completa.
-Permanece pendiente la aceptación interactiva en una ventana real del terminal.
+La continuación del 12 de octubre completó una regresión final de **4199 casos: 4191 PASS,
+0 FAIL y 8 SKIP**, además de arquitectura 62/62. Se ejercitó la TUI real en PTY con teclado,
+vista previa de idiomas, guardar/cancelar y reinicio; también se corrigieron solapes de motores
+locales y truncamientos francés/italiano a 80 columnas. No son capturas del escritorio ni
+certificación de todos los flujos de autenticación y mantenimiento destructivo.
+El [registro actualizado](../validation/closure-live-and-terminal-20261012.md) separa esa
+aceptación de los resultados Luna/Qwen, las omisiones y los límites aún abiertos.
