@@ -107,6 +107,21 @@ dotnet build OmniCore.slnx
 dotnet test --solution OmniCore.slnx
 ```
 
+### Instalar el comando `omni` con npm
+
+En Windows puedes instalar la CLI directamente desde Git, sin publicar en npm:
+
+```powershell
+npm install --global git+https://github.com/juancgomezm-s/OmniCore.git
+omni --help
+```
+
+La instalación necesita Git, Node.js 20 o posterior y el SDK de .NET 10.0.401 o
+una banda posterior de .NET 10, según `global.json`. `npm` compila la CLI durante
+la instalación; después, `omni` necesita el runtime de .NET 10. Para actualizarla,
+repite el comando de instalación. Esta distribución framework-dependent sólo
+está preparada para Windows; Linux queda pendiente.
+
 ### Explorar sin credenciales ni llamadas al modelo
 
 ```powershell

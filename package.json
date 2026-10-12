@@ -1,0 +1,24 @@
+{
+  "name": "omnicore-cli",
+  "version": "0.1.0",
+  "description": "OmniCore local-first agent runtime CLI",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "omni": "bin/omni.js"
+  },
+  "files": [
+    "bin/",
+    "dist/npm/",
+    "tools/npm/launcher.js",
+    "README.md",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "scripts": {
+    "prepare": "node tools/npm/prepare.js",
+    "test": "node --test tools/npm/launcher.test.js"
+  }
+}

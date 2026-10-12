@@ -801,6 +801,8 @@ Revisión del 2026-10-11 solicitada por el usuario. El [plan de preferencias e i
 
 ### 24.4. Herramientas previstas y nuevas, asignadas por hito
 
+**Integración 2026-10-12:** main ya contiene la rama de preferencias/traducción `a865446` y Session Memory `c7d96bd`. Las menciones de ramas pendientes en el corte del 2026-10-11 de §24.2/24.3 son históricas. La incorporación de `media.read`, LSP y demás mejoras de esta sección es planificación autorizada; todavía no acredita implementación.
+
 | Hito | Ya previsto | Nuevo o ampliación concreta |
 |---|---|---|
 | **M8** | `tool.search`/Discovered (spec §36–37), MCP, hooks, toolPreferences, memory.propose | Rango/paginación de filesystem.read; conector configurable de búsqueda/fetch sobre MCP, con redacción y límites. |

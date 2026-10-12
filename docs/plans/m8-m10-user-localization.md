@@ -1,8 +1,10 @@
 # Pendientes M8–M10 alineados con idiomas y convenciones de usuario
 
-Revisión del 2026-10-11. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
+Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
 ## Corte de integración y dependencias
+
+**Estado actualizado 2026-10-12:** traducción/preferencias `a865446` integrada por `70cd180`; Session Memory `c7d96bd` integrada por `a029012`. `4091936` incorpora como antecedentes las ramas históricas restantes manteniendo sin cambios los árboles src/tests de esa integración. Las filas siguientes conservan el corte anterior para trazabilidad; el mecanismo de idiomas ya está disponible en main, y los nuevos contratos de la sección de herramientas siguen pendientes de construcción. Instalación npm desde Git se entrega como canal framework-dependent Windows sobre el producto integrado; no cierra M8–M10.
 
 | Base revisada | Estado y tratamiento |
 |---|---|

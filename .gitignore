@@ -31,6 +31,9 @@ x86/
 [Aa][Rr][Mm]64/
 bld/
 [Bb]in/
+!/bin/
+/bin/*
+!/bin/omni.js
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
