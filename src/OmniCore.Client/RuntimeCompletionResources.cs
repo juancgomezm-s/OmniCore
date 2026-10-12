@@ -5,6 +5,7 @@ public static class RuntimeCompletionResources
 {
     private static readonly (string Key, string Es, string En, string Fr, string It)[] Rows =
     [
+        ("runtime.session.required", "No hay una sesión activa.", "There is no active session.", "Aucune session n’est active.", "Non c’è una sessione attiva."),
         ("cli.runtime.workflow.busy", "Ya hay un turno principal activo; el flujo queda aplazado.", "A principal turn is already active; workflow dispatch is deferred.", "Un tour principal est déjà actif ; le flux est reporté.", "È già attivo un turno principale; il flusso è rinviato."),
         ("cli.runtime.workflow.progress", "Flujo {instance} · {stage}", "Workflow {instance} · {stage}", "Flux {instance} · {stage}", "Flusso {instance} · {stage}"),
         ("cli.runtime.workflow.budget", "Flujo detenido antes de llamar al proveedor: el presupuesto restante del Run no alcanza para reservar la ejecución hija mínima.", "Workflow stopped before provider call: the remaining Run budget cannot reserve the minimum child execution.", "Flux arrêté avant l’appel au fournisseur : le budget restant du Run ne permet pas de réserver l’exécution enfant minimale.", "Flusso interrotto prima della chiamata al provider: il budget residuo del Run non consente di riservare l’esecuzione figlia minima."),

@@ -3429,7 +3429,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private SessionId RequireSession() =>
-        _lastSessionId ?? throw new FormatException("no hay una sesión activa");
+        _lastSessionId ?? throw new FormatException("runtime.session.required");
 
     private RunId RunFrom(Dictionary<string, string> fields) =>
         fields.TryGetValue("runId", out var r) && Guid.TryParse(r, out var g)
