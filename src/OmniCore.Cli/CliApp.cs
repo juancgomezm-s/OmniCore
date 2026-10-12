@@ -736,6 +736,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("cli.usage.sim"));
         Console.WriteLine(Loc().Resolve("cli.usage.act"));
         Console.WriteLine(Loc().Resolve("cli.usage.ask"));
+        Console.WriteLine(Loc().Resolve("cli.usage.explain"));
         Console.WriteLine(Loc().Resolve("commands.context.help"));
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
         Console.WriteLine(Loc().Resolve("commands.extensions.help"));
