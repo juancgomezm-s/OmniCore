@@ -70,3 +70,14 @@ Revisión del 2026-10-11; criterios futuros, no implementación acreditada. Reus
 | Todos: cultura y accesibilidad | Plural, decimal/entrada, moneda/unidad, fecha/zona, override, resize, NO_COLOR/ASCII | Roundtrip sin reinterpretación, instantes UTC, ninguna conversión de moneda por idioma, frames es/en/fr/it 80×25/120×35 |
 
 Las entradas definitivas añaden cultura efectiva/origen y estados separados de contrato, backend, cableado, presentación, validación de rama e integración. El cierre de P6/P7 cubre las nuevas superficies por hito; un test de paridad del catálogo antiguo no certifica un mensaje aún no construido.
+
+### Ampliación autorizada del 2026-10-12
+
+| Hito / contrato | Recursos y flujo que se incorporan al construirlo |
+|---|---|
+| M8 tool.search, read paginado y web/MCP | Descubrimiento/elegibilidad, sin resultados, página/continuación y versión; búsqueda/fetch, origen/destino, límites, error y rechazo de red. Alias humano resuelve al mismo ID sin modificar URLs/JSON. |
+| M9 media.read | Ayuda de lectura visual, MIME/tamaño, falta de visión/incompatibilidad, imagen corrupta, recorte/límite, costo de imagen medido/estimado/desconocido. Imágenes originales; ningún OCR/traductor implícito. |
+| M9 procesos persistentes/ConPTY | Estado/ownership, salida por secuencia, stdin, terminar/cancelar, lease perdido/proceso incierto y reconexión. Cambiar idioma no envía input ni reinicia proceso. |
+| M10 LSP y patch múltiple | Definición/referencia/símbolo/diagnóstico obsoleto, servidor no disponible; preview/conflicto/confirmación/recovery por archivo. Conservar versiones y rutas canónicas en todos los idiomas. |
+
+Se distingue lo ya previsto y lo nuevo en arquitectura §24.4 y en el plan detallado; estas filas son requisitos de cobertura futura y no acreditan herramientas implementadas.

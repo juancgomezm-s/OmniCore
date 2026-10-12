@@ -82,4 +82,4 @@ public interface IProcessHandle : IAsyncDisposable
 |---|---|
 | Tipos `ProcessClaim`, `ProcessEffect`, `SandboxProfile` (se referencian desde `ResourceClaims` en M1) | **Necesario desde M1** (solo tipos) |
 | `IProcessRuntime` mínimo con control del árbol de procesos (M2, lo necesita el servidor local managed), confinamiento `Strong` por plataforma, `process.exec` y `shell.exec` (M3) | **Contract now / implementation later** |
-| PTY/ConPTY, procesos interactivos | **Deferable** |
+| PTY/ConPTY, procesos interactivos | **M9 en Windows**, reasignado por el usuario el 2026-10-12; controles persistentes sobre el mismo runtime, ownership y permisos. Ver [roadmap actualizado](../plans/m8-m10-user-localization.md#herramientas-previstas-y-ampliaciones-autorizadas-2026-10-12). Otras plataformas conservan su validación diferida. |

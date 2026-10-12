@@ -112,4 +112,5 @@ La URL `origin` se normaliza así antes del hash:
 |---|---|
 | Multi-target y analizadores AOT (ya aplicados); `IPlatformPaths`; canonicalización de rutas para las identidades (el journal se ubica con ellas); tests de M1 verdes en Windows y Linux (con CI en matriz en cuanto el repo tenga remoto; hoy no tiene) | **Necesario desde M1** |
 | `IPathBoundaryValidator` por plataforma (M2); `IProcessSandbox`, `IProcessTreeControl` y `WeakSandboxConsent` (M2 control del árbol, M3 confinamiento); `ICredentialStore` por plataforma (M2) | **Contract now / implementation later** |
-| Sandbox fuerte en macOS (Seatbelt), PTY | **Deferable** (v1.x) |
+| PTY/ConPTY y procesos interactivos en Windows | **M9**, reasignación solicitada el 2026-10-12; no implica implementación/validación Linux o macOS |
+| Sandbox fuerte en macOS (Seatbelt), PTY de otras plataformas | **Deferable** (v1.x) |
