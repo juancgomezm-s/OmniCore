@@ -21,7 +21,7 @@ Un scan complementario de líneas con salidas directas y literales encontró can
 
 ## Registro por superficie
 
-Estado inicial de todos los grupos: pendiente de migración completa a cuatro idiomas. «Parcial» se refiere a comportamiento existente, no a aceptación del rediseño.
+Estado inicial histórico de todos los grupos: pendiente de migración completa a cuatro idiomas. «Parcial» se refiere a comportamiento existente en esa línea base, no a aceptación del rediseño. La rama de preferencias añadió implementación y evidencias posteriores; consultar el corte de integración del [plan M8–M10](m8-m10-user-localization.md) antes de reutilizar este inventario como lista de trabajo actual.
 
 | Grupo y símbolos iniciales | Alcance y propietario | Ruta o acción | Estado inicial y prueba exigida |
 |---|---|---|---|
@@ -51,3 +51,22 @@ Estado inicial de todos los grupos: pendiente de migración completa a cuatro id
 Cada grupo se expande con: archivo y símbolo, clave estable o literal de origen, pantalla/comando, estado del flujo, alcance, propietario, recursos es/en/fr/it, acción canónica/alias, prueba y estado de revisión. Un texto de tercero se marca como tal y no se cuenta como traducción propia terminada.
 
 Antes del cierre deben quedar cero entradas propias pendientes y cero fallbacks propios en los recorridos. Las exclusiones se justifican individualmente como datos, IDs, código o contenido ajeno. No se permiten exclusiones masivas por carpeta ni copias automáticas de español usadas como supuesto francés/italiano.
+
+## Ampliación para las funciones restantes de M8–M10
+
+Revisión del 2026-10-11; criterios futuros, no implementación acreditada. Reusar los registros de la rama de preferencias al integrar, y añadir las siguientes entradas al mismo inventario. No reconstruir sus formularios ni contabilizar su traducción como cobertura de estos backends pendientes.
+
+| Hito / función | Estados y acciones que deben cubrirse | Contrato y prueba de usuario |
+|---|---|---|
+| M8 fuentes/skills | Origen, confianza, incompatibilidad, elegible/activada/cargada/liberada, conflictos y aportes | Cuatro idiomas; contenido original y coste acotado; aporte llega al consumidor; lenguaje de programación independiente de idioma UI |
+| M8 commands/toolPreferences | Alias User/localizado/canónico, colisión, selección efectiva, sustitución protegida y Ask | IDs persistidos invariantes, planner/fingerprint efectivos, argumentos intactos y misma autoridad en es/en/fr/it |
+| M8 hooks/MCP | Consentir/revocar, destino, capacidad, sin conexión, denegado, error restrictivo/observación, texto externo | Recursos propios completos; redacción; lista sin efectos; fallos/traducción no amplían permisos |
+| M8 candidatos/uso Memory | Proponer, promover/rechazar/Ask, conflicto/Supersedes, expiración, uso, olvido y reapertura | Contenido sin traducir; decisión durable, uso real en ModelRequest y auditoría; cambio de idioma no promueve ni duplica |
+| M9 transporte/lease | Arranque, versión incompatible, esperando/ocupado, pérdida de supervisor y recuperación | UTF-8/proceso real/net8; clave/args por cliente, stdout sin texto humano; identidad y ownership estables |
+| M9 reconexión/historial | Reconectando, después de N, parcial/completo, nativo/importado, error y Ask pendiente | Clientes con distintos idiomas sobre eventos idénticos; sin pérdida/duplicación ni repetición de efectos; historial literal |
+| M10 memoria multiscoped | Scope/procedencia, evidencia insuficiente, candidato, Global Ask, expiración, reemplazo y olvido | Recursos/acciones por alcance, privacidad y confianza; no inferir/promover idioma UI como recuerdo Global |
+| M10 bindings/palette/search | Disponible/bloqueado, conflicto, reasignar/restaurar, buscar/sin resultados, snippet y navegación | Binding→ID estable; cancelación siempre accesible; acentos/etiquetas largas; no mutar contenido ni ampliar visibilidad |
+| M10 undo/evaluación | Preview, conflicto, confirmar/cancelar/recuperar, deuda de validación, consumo/métrica desconocida | Misma operación autorizada; preservar cambios ajenos; informe propio localizado, valores de máquina invariantes y capacidad lingüística del modelo evaluada aparte |
+| Todos: cultura y accesibilidad | Plural, decimal/entrada, moneda/unidad, fecha/zona, override, resize, NO_COLOR/ASCII | Roundtrip sin reinterpretación, instantes UTC, ninguna conversión de moneda por idioma, frames es/en/fr/it 80×25/120×35 |
+
+Las entradas definitivas añaden cultura efectiva/origen y estados separados de contrato, backend, cableado, presentación, validación de rama e integración. El cierre de P6/P7 cubre las nuevas superficies por hito; un test de paridad del catálogo antiguo no certifica un mensaje aún no construido.

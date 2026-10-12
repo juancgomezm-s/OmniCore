@@ -127,6 +127,16 @@ No se enviarán mensajes, contenido de paquetes o secretos a un traductor remoto
 
 ## Registro de superficies para auditar
 
+### Continuidad obligatoria en M8, M9 y M10
+
+La revisión del 2026-10-11 enlaza este mecanismo con [arquitectura §24.3](../architecture/arquitectura.md#243-idiomas-y-convenciones-de-usuario-en-m8m10) y el [plan de pendientes M8–M10](m8-m10-user-localization.md). P1–P6 tienen implementación posterior en `codex/tui-omega-animations` (corte `89e4f7d`), aún fuera de main al revisar; no deben reconstruirse a partir del estado inicial de este documento. Las actas de esa rama registran pruebas automatizadas y distinguen la aceptación interactiva real pendiente. Integrar y revisar esa base precede a consumir sus contratos en M8–M10.
+
+P5 representa los backends disponibles de M8; los hooks, MCP, nuevas contribuciones de skills y candidatos de memoria reciben superficies cuando se construyan. P6 acompaña cada bloque nuevo con recursos, aliases y ayudas; P7 se amplía a sus recorridos. M9 añade negociación, lease, reconexión e historial por cliente; M10 añade memoria multiscoped, bindings/palette, búsqueda, undo y evaluación. Traducir el centro actual no acredita esas funciones futuras.
+
+Además del idioma del catálogo, cada bloque verifica convenciones regionales: cantidades/entrada, plurales, moneda/unidad explícita, fecha/zona horaria y navegación por acentos. No se infiere país, moneda ni zona a partir de es/en/fr/it. Protocol, journal, hashes, tool IDs, valores canónicos, contenido de memoria y preferencias de autoridad permanecen invariantes. La cultura de formato debe resolverse explícitamente cuando se implemente, sin afirmar que ya existe una clave nueva de configuración.
+
+La coordinación conserva un worker a la vez con objetivos amplios. Esta actualización documental no ordena iniciar otra implementación ni sustituye la revisión del árbol integrado.
+
 Luna mantendrá el [inventario versionado](preferences-localization-inventory.md) con columnas: archivo/símbolo, clave o literal, superficie, estado del flujo, alcance, propietario del texto, idiomas, acción canónica, prueba y estado. La línea base cuantitativa identifica candidatos, no certifica cobertura. Debe recorrer al menos:
 
 | Superficie | Entradas iniciales |
@@ -138,6 +148,9 @@ Luna mantendrá el [inventario versionado](preferences-localization-inventory.md
 | Host | OmniCliRuntime, CommandService, TuiAccountHost, TuiProviderConnectionHost, ModelPolicyHost, diagnósticos ConfigLoader, seguridad, OAuth y supervisión local |
 | Herramientas | Descripciones builtin, presentación de ejecución/resultados, errores tipados, confirmaciones y catálogo de herramientas externo |
 | M8 | ClientActions Skills/Memory, loaders de manifests, catálogos extensions/commands/skills, rechazos de trust/consent y memoria |
+| M8 restante | Hooks, MCP, preferencias efectivas de tools, skills de otros scopes/aportes, candidatos/promoción y auditoría de uso de Session Memory |
+| M9 | Arranque stdio, negociación, lease, reconexión por stream, historial/procedencia y supervisión entre procesos; idioma independiente por cliente |
+| M10 | Memoria Project/Workspace/Global, keybindings/palette, búsqueda, undo, evaluación y nuevas proyecciones; formatos y ayudas de v1 |
 | Arranque y compatibilidad | LocaleArgument, OMNI_LOCALE, primer inicio, settings corrupto/ausente, no TTY, NO_COLOR, ASCII y --json |
 
 El inventario no se limita a `src/OmniCore.Cli`. La auditoría seguirá los mensajes desde donde se originan hasta donde se muestran, incluidos fallos raros y fallbacks. Un literal técnico permitido lleva motivo verificable, no una exclusión por archivo completo.
@@ -185,4 +198,4 @@ No se exige repetir toda la suite por cada texto. Las pruebas de catálogo/parse
 - [ADR0028 memoria](../adr/0028-memory.md): procedencia, reemplazo explícito y separación de WorkingState.
 - [Evidencia M8](../validation/m8-extensibility-20261011.md): capacidades entregadas y pendientes; no confundir un checkpoint con cierre del hito.
 
-Estado inicial: plan preparado; implementación del rediseño y cobertura completa de cuatro idiomas pendientes. Los avances se registran por paquete con commit y evidencia, no mediante porcentajes sin inventario.
+Estado inicial histórico: plan preparado, previo a la implementación de la rama de preferencias. Estado revisado: implementación de idiomas/preferencias disponible en rama, integración y aceptación interactiva pendientes al corte; M8–M10 abiertos según arquitectura §24 y el plan enlazado. Los avances se registran por paquete, commit, árbol integrado y evidencia; no mediante porcentajes sin inventario.
