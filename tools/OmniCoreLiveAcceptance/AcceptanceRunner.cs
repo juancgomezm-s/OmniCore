@@ -502,7 +502,12 @@ internal sealed partial class AcceptanceRunner
             var calls = response.Content.OfType<ToolCallBlock>().ToArray();
             if (calls.Length != 1 || !string.Equals(calls[0].ToolName, acceptanceCase.Id, StringComparison.Ordinal))
                 return CaseEvidence.Failed(modelName, modelId, acceptanceCase.Id, false, false, null,
-                    "model_did_not_return_exactly_one_requested_tool_call", response.StopReason.ToString());
+                    "model_did_not_return_exactly_one_requested_tool_call", response.StopReason.ToString()) with
+                {
+                    RequestedToolCount = calls.Length,
+                    RequestedToolNames = calls.Take(16).Select(item => KnownCaseIds.Contains(item.ToolName, StringComparer.Ordinal)
+                        ? item.ToolName : "<unknown-tool>").ToArray(),
+                };
 
             var call = calls[0];
             modelRequested = true;
@@ -511,7 +516,10 @@ internal sealed partial class AcceptanceRunner
             if (call.ArgumentsJson.Length > 16_384 || !SafeArgumentGate(acceptanceCase, call.ArgumentsJson, workspace))
                 return CaseEvidence.Blocked(modelName, modelId, acceptanceCase.Id, true, false,
                     Hash(call.ArgumentsJson), "arguments_outside_fixture_safety_envelope",
-                    safeArgumentShape: DescribeArgumentShape(call.ArgumentsJson));
+                    safeArgumentShape: DescribeArgumentShape(call.ArgumentsJson)) with
+                {
+                    CanonicalArgumentMatches = CompareCanonicalArguments(acceptanceCase, call.ArgumentsJson),
+                };
 
             // ToolRuntime is the production schema -> Prepare -> Permission -> Execute pipeline.
             // It runs one exact tool with a one-operation fixture-only Allow and a real CAS store.
@@ -643,6 +651,8 @@ internal sealed partial class AcceptanceRunner
                     roundTripCompleted: roundTripVerified) with
                 {
                     ToolEffectVerified = effect.Verified,
+                    CanonicalArgumentMatches = CompareCanonicalArguments(acceptanceCase, call.ArgumentsJson),
+                    ExpectedVerificationReceipt = receipt,
                     FollowUpStopReason = roundTrip.StopReason.ToString(),
                     FollowUpTextCharacters = finalText.Length,
                     FollowUpToolCalls = roundTrip.Content.OfType<ToolCallBlock>().Select(item => item.ToolName).ToArray(),
@@ -851,6 +861,25 @@ internal sealed partial class AcceptanceRunner
         }
     }
 
+    // Diagnostic only, never a replacement for SafeArgumentGate or schema validation.
+    // Only canonical fixture key names and equality booleans leave this method; no
+    // arbitrary model-generated argument value is written into the evidence.
+    private static IReadOnlyDictionary<string, bool> CompareCanonicalArguments(AcceptanceCase item, string json)
+    {
+        var matches = new Dictionary<string, bool>(StringComparer.Ordinal);
+        try
+        {
+            using var actual = JsonDocument.Parse(json);
+            using var expected = JsonDocument.Parse(SelfTestArguments(item, item.ExpectedPrimaryValue));
+            if (actual.RootElement.ValueKind != JsonValueKind.Object) return matches;
+            foreach (var property in expected.RootElement.EnumerateObject())
+                matches[property.Name] = actual.RootElement.TryGetProperty(property.Name, out var value)
+                    && JsonElement.DeepEquals(property.Value, value);
+        }
+        catch (JsonException) { }
+        return matches;
+    }
+
     private static async Task<ModelResponse> GetResponseAsync(IModelProvider provider, ModelRequest request,
         CancellationToken cancellationToken, Action onGenerationInvocation)
     {
@@ -1000,6 +1029,11 @@ internal sealed record CaseEvidence(string ModelAlias, string ModelId, string Ca
     public IReadOnlyList<string>? FollowUpToolCalls { get; init; }
     public long? FollowUpOutputTokens { get; init; }
     public string? FollowUpTextPreview { get; init; }
+    public IReadOnlyDictionary<string, bool>? CanonicalArgumentMatches { get; init; }
+    // Random fixture receipt, not credentials, model reasoning or user content.
+    public string? ExpectedVerificationReceipt { get; init; }
+    public int? RequestedToolCount { get; init; }
+    public IReadOnlyList<string>? RequestedToolNames { get; init; }
 
     public static CaseEvidence NotExercised(string modelAlias, string modelId, string caseId, string reason) =>
         new(modelAlias, modelId, caseId, "not_exercised", false, false, null, false, null,

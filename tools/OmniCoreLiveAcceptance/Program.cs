@@ -16,7 +16,8 @@ internal static class Program
                 {
                     var safety = AcceptanceRunner.RunNativeCliSafetyCheck();
                     Console.WriteLine(JsonSerializer.Serialize(safety, JsonOptions.Indented));
-                    return safety.CanonicalArgumentsAccepted && safety.InjectedArgumentsRejected ? 0 : 1;
+                    return safety.CanonicalArgumentsAccepted && safety.InjectedArgumentsRejected
+                        && safety.RejectionBudgetVerified ? 0 : 1;
                 }
                 var selfTest = runner.RunSelfTest(options.CaseId);
                 Console.WriteLine(JsonSerializer.Serialize(selfTest, JsonOptions.Indented));

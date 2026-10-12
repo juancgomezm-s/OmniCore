@@ -145,6 +145,7 @@ internal sealed partial class AcceptanceRunner
         var eventCount = 0;
         var generationCount = 0;
         var rejectedArgumentHashes = new Dictionary<string, int>(StringComparer.Ordinal);
+        var rejectionBudget = new NativeCliRejectionBudget();
         var stopAfterRepeatedRejectedArguments = false;
         var audit = new InMemoryAuditSink();
         var decisions = catalog.RegisteredTools().ToDictionary(
@@ -217,6 +218,8 @@ internal sealed partial class AcceptanceRunner
             }
 
             var toolResults = new List<ContentBlock>(calls.Length);
+            var attemptsBeforeTurn = resultAttemptCount;
+            var resultsBeforeTurn = results.Count;
             foreach (var call in calls)
             {
                 wholeRun.Token.ThrowIfCancellationRequested();
@@ -331,6 +334,16 @@ internal sealed partial class AcceptanceRunner
             messages.Add(new ModelMessage(MessageRole.Tool, toolResults));
             WriteNativeCliProgress(evidenceDirectory, "tool_results_returned_to_model", generationCount,
                 resultAttemptCount, attemptedCommands, results);
+            // Different malformed strings can evade the identical-hash limit. Stop
+            // after three rejected-only turns rather than burning the whole campaign.
+            if (rejectionBudget.Observe(results.Skip(resultsBeforeTurn).Any(item => item.Status == "rejected"),
+                resultAttemptCount > attemptsBeforeTurn))
+            {
+                providerFailure = "three_consecutive_gate_rejected_turns_without_execution";
+                WriteNativeCliProgress(evidenceDirectory, "stopped_at_rejection_budget", generationCount,
+                    resultAttemptCount, attemptedCommands, results);
+                break;
+            }
             if (stopAfterRepeatedRejectedArguments)
             {
                 // Retain the failed command but continue the independent checklist. Repeating
@@ -533,6 +546,15 @@ internal sealed partial class AcceptanceRunner
         var injectionRejected = !TryMatchNativeCliArguments(
             EncodeNativeCliArguments(commands[0] with { CliArguments = ["help", "; whoami"] }, powershell, script),
             powershell, script, commands, out _);
+        var budget = new NativeCliRejectionBudget();
+        var stopsAfterThree = !budget.Observe(true, false) && !budget.Observe(true, false)
+            && budget.Observe(true, false);
+        var resetBudget = new NativeCliRejectionBudget();
+        var resetsAfterExecution = !resetBudget.Observe(true, false) && !resetBudget.Observe(true, false)
+            && !resetBudget.Observe(true, true) && !resetBudget.Observe(true, false)
+            && !resetBudget.Observe(true, false) && resetBudget.Observe(true, false);
+        if (!stopsAfterThree || !resetsAfterExecution)
+            throw new InvalidOperationException("native_cli_rejection_budget_contract_failed");
         var data = Path.Combine(root, "data");
         var config = Path.Combine(root, "config");
         Directory.CreateDirectory(data);
@@ -542,7 +564,8 @@ internal sealed partial class AcceptanceRunner
         var probe = RunNativeCliHelpProbeAsync(powershell, script, workspace, CancellationToken.None).GetAwaiter().GetResult();
         if (!probe.Verified) throw new InvalidOperationException("offline_fixture_wrapper_help_failed");
         return new NativeCliSafetyCheck(commands.Count, allAccepted, injectionRejected,
-            "offline_exact_gate_and_three_readonly_wrapper_help_processes; no_model_request");
+            "offline_exact_gate_and_three_readonly_wrapper_help_processes; no_model_request")
+        { RejectionBudgetVerified = stopsAfterThree && resetsAfterExecution };
     }
 
     private static IReadOnlyList<NativeCliCommandSpec> BuildNativeCliCommands()
@@ -830,6 +853,16 @@ internal sealed partial class AcceptanceRunner
         IReadOnlyList<string> CliArguments, string EffectKind, IReadOnlyList<string> ExpectedOutputFragments);
 
     private sealed record NativeCliVerification(bool Verified, string Description);
+
+    private sealed class NativeCliRejectionBudget
+    {
+        private int _consecutiveRejectedTurns;
+        public bool Observe(bool rejected, bool executed)
+        {
+            _consecutiveRejectedTurns = rejected && !executed ? _consecutiveRejectedTurns + 1 : 0;
+            return _consecutiveRejectedTurns >= 3;
+        }
+    }
 }
 
 internal sealed record NativeCliRunSummary(string Scenario, string ModelKey, string ModelId,
@@ -850,6 +883,9 @@ internal sealed record NativeCliCaseEvidence(string CommandId, string Status,
 }
 
 internal sealed record NativeCliSafetyCheck(int AllowedCommandCount, bool CanonicalArgumentsAccepted,
-    bool InjectedArgumentsRejected, string Scope);
+    bool InjectedArgumentsRejected, string Scope)
+{
+    public bool RejectionBudgetVerified { get; init; }
+}
 
 internal sealed record NativeCliHelpProbe(bool Verified, string Text);
