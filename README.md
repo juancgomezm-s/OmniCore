@@ -66,7 +66,7 @@ Se distinguen rutas locales, cuota incluida, facturación monetaria y condicione
 
 ## Estado actual
 
-Resumen documental al **10 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
+Resumen documental al **12 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
 
 | Hito | Estado | Evidencia y alcance |
 |---|---|---|
@@ -77,8 +77,9 @@ Resumen documental al **10 de octubre de 2026**. La [arquitectura §24](docs/arc
 | **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
 | **M5.5 · Fronteras pre-M6** | Cerrado en Windows | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. 2.958 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS. |
 | **M6 · Multiagente** | Cerrado en Windows | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify con Plan reconciliado, scheduler, budgets, joins/FanOut, supervisión/mailbox, background e inspector. [Revisión de cableado del 09-10](docs/validation/m6-wiring-audit-20261009.md): 3.292 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS y recuperación M4 serial verde. Un Host compartido. |
-| **M7 · Aislamiento** | En construcción | [Checkpoints y fases restantes](docs/validation/m7-isolation-20261010.md): backend Git, inspección y preview de integración cableados a CLI; aplicación autorizada, recovery y lanes aisladas pendientes. |
-| **M8–M10** | Planificados | Extensiones, Host separado y madurez v1. |
+| **M7 · Aislamiento** | Cerrado en Windows | [Acta y alcance](docs/validation/m7-isolation-20261010.md): integración autorizada y recuperación, lanes aisladas, continuidad Implement→Verify, undo compensatorio y retención. |
+| **M8 · Extensibilidad** | En construcción | Extensiones/comandos/skills Project y Session Memory integrados, incluida memoria efectiva en el modelo. Faltan scopes/aportes, hooks, MCP, preferencias de herramientas y candidatos/promoción. [Matriz de entregas](docs/validation/m8-extensibility-20261011.md). |
+| **M9–M10** | Avance parcial | Bases Protocol/Client, inspección y undo disponibles; transporte/Host separado, memoria multiscoped y cierre v1 pendientes. [Plan restante, idiomas y herramientas](docs/plans/m8-m10-user-localization.md). |
 
 La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.
 
@@ -109,12 +110,15 @@ dotnet test --solution OmniCore.slnx
 
 ### Instalar el comando `omni` con npm
 
-En Windows puedes instalar la CLI directamente desde Git, sin publicar en npm:
+En Windows puedes instalar la CLI directamente desde Git, sin publicar en npm.
+Con npm 11, autoriza el `prepare` que compila el paquete durante la instalación:
 
 ```powershell
-npm install --global git+https://github.com/juancgomezm-s/OmniCore.git
+npm.cmd install --global --install-links --allow-scripts=omnicore-cli@0.1.0 "git+https://github.com/juancgomezm-s/OmniCore.git#main"
 omni --help
 ```
+
+En npm 10 o anterior, omite `--allow-scripts=omnicore-cli@0.1.0`.
 
 La instalación necesita Git, Node.js 20 o posterior y el SDK de .NET 10.0.401 o
 una banda posterior de .NET 10, según `global.json`. `npm` compila la CLI durante
