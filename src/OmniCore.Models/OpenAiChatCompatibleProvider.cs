@@ -332,38 +332,37 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
 
     private static IEnumerable<ChatRequestMessage> MapMessage(ModelMessage message, Dictionary<string, string> ids)
     {
-        foreach (var block in message.Content)
+        // A ContentBlock is not a conversation turn. Chat Completions expects all
+        // calls from one assistant turn together, followed by one result per call.
+        var text = message.Content.OfType<TextBlock>().ToArray();
+        var calls = message.Content.OfType<ToolCallBlock>().ToArray();
+        if (text.Length > 0 || calls.Length > 0)
         {
-            switch (block)
+            yield return new ChatRequestMessage
             {
-                case TextBlock text:
-                    yield return new ChatRequestMessage { Role = Role(message.Role), Content = text.Text };
-                    break;
-                case ToolCallBlock call:
-                    yield return new ChatRequestMessage
+                Role = calls.Length > 0 ? "assistant" : Role(message.Role),
+                Content = text.Length > 0 ? string.Concat(text.Select(block => block.Text)) : null,
+                ToolCalls = calls.Length == 0 ? null : calls.Select(call => new ChatRequestToolCall
+                {
+                    Id = ids.GetValueOrDefault(call.Id.ToString(), call.ProviderCallId ?? call.Id.ToString()),
+                    Type = "function",
+                    Function = new ChatRequestFunctionCall
                     {
-                        Role = "assistant", Content = null,
-                        ToolCalls = [new ChatRequestToolCall
-                        {
-                            Id = ids.GetValueOrDefault(call.Id.ToString(), call.ProviderCallId ?? call.Id.ToString()),
-                            Type = "function",
-                            Function = new ChatRequestFunctionCall { Name = call.ToolName, Arguments = call.ArgumentsJson },
-                        }],
-                    };
-                    break;
-                case ToolResultBlock result:
-                    yield return new ChatRequestMessage
-                    {
-                        Role = "tool", ToolCallId = ids.GetValueOrDefault(result.Id.ToString(), result.Id.ToString()),
-                        Content = result.Content.OfType<TextBlock>().FirstOrDefault()?.Text ?? "",
-                    };
-                    break;
-                case ProviderOpaqueBlock opaque when opaque.Opaque.Family == ProviderFamily.OpenAiChatCompatible &&
-                    opaque.Opaque.Replay != ReplayPolicy.Never:
-                    // Payload loading belongs to ArtifactStore; without it the opaque block is not replayable here.
-                    break;
-            }
+                        Name = call.ToolName, Arguments = call.ArgumentsJson,
+                    },
+                }).ToList(),
+            };
         }
+        foreach (var result in message.Content.OfType<ToolResultBlock>())
+        {
+            yield return new ChatRequestMessage
+            {
+                Role = "tool", ToolCallId = ids.GetValueOrDefault(result.Id.ToString(), result.Id.ToString()),
+                Content = string.Concat(result.Content.OfType<TextBlock>().Select(block => block.Text)),
+            };
+        }
+        // Opaque artifact loading still belongs to ArtifactStore. Do not turn
+        // ReasoningBlock or ProviderOpaqueBlock into visible conversation text.
     }
 
     private static Dictionary<string, string> CollectServerCallIds(IReadOnlyList<ModelMessage> messages)
