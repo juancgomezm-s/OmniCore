@@ -250,35 +250,59 @@ public sealed class LiveMailboxAcceptanceTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task Configured_luna_returns_a_real_mailbox_delivery_to_the_model_and_acknowledges_once()
+    public async System.Threading.Tasks.Task Configured_model_returns_a_real_mailbox_delivery_to_the_model_and_acknowledges_once()
     {
         var optIn = Environment.GetEnvironmentVariable("OMNICORE_LIVE_ACCEPTANCE_MAILBOX_MODEL");
         if (string.IsNullOrWhiteSpace(optIn))
-            Assert.Skip("Set OMNICORE_LIVE_ACCEPTANCE_MAILBOX_MODEL=luna to opt in; no live request was made.");
-        if (!string.Equals(optIn, "luna", StringComparison.Ordinal))
-            throw new InvalidOperationException("Mailbox acceptance model must be exactly luna.");
+            Assert.Skip("Set OMNICORE_LIVE_ACCEPTANCE_MAILBOX_MODEL=luna or qwen to opt in; no live request was made.");
+        if (optIn is not ("luna" or "qwen"))
+            throw new InvalidOperationException("Mailbox acceptance model must be exactly luna or qwen.");
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+        using var timeout = new CancellationTokenSource(optIn == "qwen" ? TimeSpan.FromMinutes(70) : TimeSpan.FromSeconds(120));
         var paths = ExistingLiveConnectionPaths();
         var registry = OmniHost.LoadUserModelRegistry(paths);
-        var model = registry.Model(LunaModelId)
-            ?? throw new InvalidOperationException("configured_luna_model_missing");
+        var model = registry.Model(optIn == "luna" ? LunaModelId : "qwen38-27b-abl-v9-best-q4kxl")
+            ?? throw new InvalidOperationException("configured_acceptance_model_missing");
         var providerDescriptor = registry.Provider(model.ProviderId)
             ?? throw new InvalidOperationException("configured_luna_provider_missing");
-        if (!providerDescriptor.SupportsNativeToolCalls || providerDescriptor.Family != ProviderFamily.OpenAIResponses
-            || providerDescriptor.Profile != "codex" || providerDescriptor.BillingMode != BillingMode.IncludedQuota)
-            throw new InvalidOperationException("configured_luna_native_included_quota_route_required");
+        if (!providerDescriptor.SupportsNativeToolCalls)
+            throw new InvalidOperationException("configured_native_tools_required");
         var route = ModelRoutingHost.RouteFor(model, providerDescriptor);
-        var auth = OmniHost.CreateChatGptAuth(paths);
-        EnsureFreshSubscription(auth);
-        var provider = OmniHost.ConnectProvider(providerDescriptor, providerDescriptor.BaseUrl,
-            providerDescriptor.Auth.SecretRef ?? "", "", subscription: new LiveMailboxNoRefreshSource(auth));
+        IModelProvider provider;
+        if (optIn == "luna")
+        {
+            if (providerDescriptor.Family != ProviderFamily.OpenAIResponses
+                || providerDescriptor.Profile != "codex" || providerDescriptor.BillingMode != BillingMode.IncludedQuota)
+                throw new InvalidOperationException("configured_luna_native_included_quota_route_required");
+            var auth = OmniHost.CreateChatGptAuth(paths);
+            EnsureFreshSubscription(auth);
+            provider = OmniHost.ConnectProvider(providerDescriptor, providerDescriptor.BaseUrl,
+                providerDescriptor.Auth.SecretRef ?? "", "", subscription: new LiveMailboxNoRefreshSource(auth));
+        }
+        else
+        {
+            if (providerDescriptor.Family != ProviderFamily.OpenAiChatCompatible
+                || providerDescriptor.BillingMode != BillingMode.Local
+                || providerDescriptor.LocalHost?.Mode != LocalHostMode.Attach
+                || providerDescriptor.BaseUrl.TrimEnd('/') != "https://192.168.1.104:8080/v1"
+                || string.IsNullOrWhiteSpace(providerDescriptor.TrustedCertificatePath)
+                || !File.Exists(providerDescriptor.TrustedCertificatePath)
+                || providerDescriptor.Auth.Kind is not (AuthKind.None or AuthKind.ApiKey))
+                throw new InvalidOperationException("configured_qwen_local_attach_or_tls_mismatch");
+            var key = providerDescriptor.Auth.Kind == AuthKind.ApiKey
+                ? OmniHost.ResolveApiKey(OmniHost.CreateUserCredentialStore(paths),
+                    providerDescriptor.Auth.SecretRef!, environmentKey: null, CancellationToken.None) : "";
+            if (providerDescriptor.Auth.Kind == AuthKind.ApiKey && string.IsNullOrEmpty(key))
+                throw new InvalidOperationException("configured_qwen_secret_missing");
+            provider = OmniHost.ConnectProvider(providerDescriptor, providerDescriptor.BaseUrl,
+                providerDescriptor.Auth.SecretRef ?? "", key ?? "", chatCompletionsRequestTimeout: TimeSpan.FromMinutes(35));
+        }
 
-        using var fx = new LiveMailboxFixture(route, BillingMode.IncludedQuota, providerDescriptor.Id,
+        using var fx = new LiveMailboxFixture(route, providerDescriptor.BillingMode, providerDescriptor.Id,
             preserveEvidence: true);
         fx.StartRootTurn();
         var marker = "LIVE-MAILBOX-" + Guid.NewGuid().ToString("N");
-        var toolRuntime = fx.CreateChildToolRuntime(route, BillingMode.IncludedQuota);
+        var toolRuntime = fx.CreateChildToolRuntime(route, providerDescriptor.BillingMode);
         var mailboxDefinition = Assert.Single(toolRuntime.Catalog.Definitions(), item =>
             item.Name == "core.agents.mailbox.receive");
         var selection = new ModelSelection(new ModelIdValue(model.Id), model.ContextWindow,
@@ -414,8 +438,8 @@ public sealed class LiveMailboxAcceptanceTests
         {
             status = "passed",
             scope = "model_contract_and_host_mailbox_integration; managed_child_generation_not_certified",
-            model = "luna",
-            modelId = LunaModelId,
+            model = optIn,
+            modelId = model.Id,
             startedAtUtc = fx.LiveStartedAt,
             completedAtUtc = DateTimeOffset.UtcNow,
             sessionId = fx.Session.ToString(),
@@ -449,8 +473,8 @@ public sealed class LiveMailboxAcceptanceTests
                 {
                     status = "failed",
                     scope = "model_contract_and_host_mailbox_integration; managed_child_generation_not_certified",
-                    model = "luna",
-                    modelId = LunaModelId,
+                    model = optIn,
+                    modelId = model.Id,
                     stage,
                     startedAtUtc = fx.LiveStartedAt,
                     completedAtUtc = DateTimeOffset.UtcNow,
@@ -520,7 +544,7 @@ public sealed class LiveMailboxAcceptanceTests
                 throw new InvalidOperationException("live_evidence_directory_must_not_overlap_connection_paths");
         }
         Directory.CreateDirectory(directory);
-        var name = "mailbox-luna-" + DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ",
+        var name = "mailbox-" + DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ",
             System.Globalization.CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N") + ".json";
         File.WriteAllText(Path.Combine(directory, name), JsonSerializer.Serialize(evidence,
             new JsonSerializerOptions { WriteIndented = true }));

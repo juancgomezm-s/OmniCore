@@ -554,12 +554,13 @@ public sealed class OmniHost
         ProviderResilienceCatalog? circuits = null,
         IClaudeOAuthCredentialSource? claudeOAuth = null,
         ClaudeOAuthClientIdentity? oauthIdentity = null,
-        Func<HttpClient>? anthropicHttpFactory = null)
+        Func<HttpClient>? anthropicHttpFactory = null,
+        TimeSpan? chatCompletionsRequestTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         return descriptor.Family switch
         {
-            ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey, circuits),
+            ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey, circuits, chatCompletionsRequestTimeout),
             ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey, circuits, claudeOAuth, oauthIdentity, anthropicHttpFactory),
             ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey, subscription, circuits),
             _ => throw new ProviderFamilyNotSupportedException(descriptor.Family),
@@ -631,21 +632,30 @@ public sealed class OmniHost
     }
 
     private static OpenAiChatCompatibleProvider ConnectOpenAiChatCompatible(ProviderDescriptor descriptor,
-        string baseUrl, string secretRef, string apiKey, ProviderResilienceCatalog? circuits)
+        string baseUrl, string secretRef, string apiKey, ProviderResilienceCatalog? circuits,
+        TimeSpan? requestTimeout = null)
     {
         var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
             descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
             descriptor.SupportsNativeToolCalls)
         { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile, BillingMode = descriptor.BillingMode };
-        HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
-        {
-            Timeout = System.TimeSpan.FromSeconds(300),
-        };
+        HttpClient CreateClient() => CreateChatCompletionsClient(baseUrl, descriptor.TrustedCertificatePath, requestTimeout);
         var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
         // StreamAsync owns and disposes each HttpClient returned by the factory; a shared instance
         // works for the first completion only, then every follow-up Turn fails as disposed.
         return new OpenAiChatCompatibleProvider(configured, secrets, CreateClient,
             new OpenAiProviderOptions { CircuitCatalog = circuits });
+    }
+
+    // An explicit per-connection override lets slow local-prefill acceptance keep the
+    // production adapter, TLS policy and retry behavior. Default runtime behavior stays 300 s.
+    internal static HttpClient CreateChatCompletionsClient(string baseUrl, string? trustedCertificatePath,
+        TimeSpan? requestTimeout = null)
+    {
+        var timeout = requestTimeout ?? TimeSpan.FromSeconds(300);
+        if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(requestTimeout));
+        return new HttpClient(CreateTlsHandler(baseUrl, trustedCertificatePath)) { Timeout = timeout };
     }
 
     /// <summary>Handler HTTP con la política TLS de <see cref="ConnectLocalChatCompletions"/>.</summary>

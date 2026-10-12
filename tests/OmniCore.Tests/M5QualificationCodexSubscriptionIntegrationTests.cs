@@ -184,7 +184,15 @@ public sealed class M5QualificationCodexSubscriptionIntegrationTests
             using (var host = ModelQualificationHost.Create(directory))
             {
                 await Assert.ThrowsAsync<ModelQualificationSuiteIncompleteException>(() => host.QualifyAsync(ModelId,
-                    new QualificationOptions { Suite = "quick", ConsentGiven = true, MaxTotalCostUsd = 1m },
+                    new QualificationOptions
+                    {
+                        Suite = "quick", ConsentGiven = true, MaxTotalCostUsd = 1m,
+                        // Missing private credentials must not consult the developer's real
+                        // subscription quota (which may independently require consent).
+                        QueryQuota = (id, _) => Task.FromResult(new ProviderQuotaSnapshot(id, null,
+                            "private-loopback-fixture:no-account-query", DateTimeOffset.UtcNow,
+                            MetricAvailability.Unknown, [], [], "Offline fixture; no authenticated quota query.")),
+                    },
                     CancellationToken.None));
             }
 

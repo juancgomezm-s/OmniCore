@@ -32,7 +32,7 @@ public sealed class LiveQwenConnectivityDiagnosticTests
         long? outputTokens = null;
         string? finishReason = null, failure = null;
         using var http = new HttpClient(OmniHost.CreateTlsHandler(descriptor.BaseUrl, descriptor.TrustedCertificatePath))
-            { Timeout = TimeSpan.FromSeconds(30) };
+            { Timeout = TimeSpan.FromMinutes(35) };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", credential);
         try
         {
@@ -57,7 +57,7 @@ public sealed class LiveQwenConnectivityDiagnosticTests
             }
             else failure = "generation_http_" + generationStatus;
         }
-        catch (OperationCanceledException) { failure = "bounded_30_second_timeout"; }
+        catch (OperationCanceledException) { failure = "bounded_2100_second_timeout"; }
         catch (Exception exception) { failure = "exception_type:" + exception.GetType().Name; }
         var directory = Environment.GetEnvironmentVariable("OMNICORE_LIVE_ACCEPTANCE_EVIDENCE_DIR")!;
         Assert.True(Path.IsPathFullyQualified(directory));
@@ -66,7 +66,8 @@ public sealed class LiveQwenConnectivityDiagnosticTests
         {
             modelId = model.Id, status, modelsStatus, modelPresent, generationStatus, outputTokens, finishReason, failure,
             configuredTlsPreserved = true, existingCredentialReused = true, modelOrServerModified = false,
-            requestOutputCap = 16, maxGenerationRequests = 1, startedAt = start, completedAt = DateTimeOffset.UtcNow,
+            requestOutputCap = 16, maxGenerationRequests = 1, timeoutSeconds = 2100,
+            startedAt = start, completedAt = DateTimeOffset.UtcNow,
         }, new JsonSerializerOptions { WriteIndented = true }));
         Assert.True(status == "generation_completed_not_tool_acceptance", "qwen_diagnostic:" + failure);
     }

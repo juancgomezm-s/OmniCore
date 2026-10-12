@@ -21,8 +21,16 @@ internal sealed partial class AcceptanceRunner
     private const string Marker = "OMNICORE-LIVE-ACCEPTANCE";
     private static readonly TimeSpan MinimumLunaCredentialTtl = TimeSpan.FromMinutes(15);
     private const int MaximumGenerationInvocations = 32;
-    private static readonly TimeSpan PerCaseTimeout = TimeSpan.FromSeconds(90);
-    private static readonly TimeSpan WholeRunTimeout = TimeSpan.FromMinutes(25);
+    // Local prefill may legitimately take several minutes. These are acceptance-only
+    // deadlines, not persisted server/model settings. Preserve the existing Luna limits.
+    private static readonly TimeSpan QwenGenerationTimeout = TimeSpan.FromMinutes(35);
+    private static TimeSpan GenerationTimeout(string model, TimeSpan other) =>
+        model == "qwen" ? QwenGenerationTimeout : other;
+    private static TimeSpan CaseTimeout(string model) => model == "qwen"
+        ? QwenGenerationTimeout * 2 : TimeSpan.FromSeconds(90);
+    private static TimeSpan RunTimeout(string model) => model == "qwen"
+        ? QwenGenerationTimeout * MaximumGenerationInvocations + TimeSpan.FromMinutes(5)
+        : TimeSpan.FromMinutes(25);
     public static IReadOnlyList<string> KnownCaseIds { get; } = new[]
     {
         "filesystem.read", "filesystem.list", "search.text", "reference.resolve",
@@ -147,6 +155,21 @@ internal sealed partial class AcceptanceRunner
             }
 
             var json = SelfTestArguments(item, artifact.Hash.Value);
+            if (item.Id == "user.ask")
+            {
+                var nullableQuestionnaire = JsonSerializer.Serialize(new
+                {
+                    title = "Fixture question", description = (string?)null,
+                    questions = new[] { new { id = "fixture-answer", prompt = "Which marker is present?",
+                        kind = "FreeText", helpText = (string?)null, options = Array.Empty<object>(), other = (object?)null,
+                        required = false, minSelections = (int?)null, maxSelections = (int?)null, maxTextLength = 128 } },
+                });
+                if (!SafeArgumentGate(item, nullableQuestionnaire, workspace)
+                    || SafeArgumentGate(item, nullableQuestionnaire.Replace("Which marker is present?", "Which secret marker is present?", StringComparison.Ordinal), workspace)
+                    || SafeArgumentGate(item, nullableQuestionnaire.Replace("\"description\":null", "\"description\":\"api key\"", StringComparison.Ordinal), workspace))
+                    throw new InvalidOperationException("questionnaire_nullable_safety_contract_failed");
+                json = nullableQuestionnaire;
+            }
             if (!SafeArgumentGate(item, json, workspace))
             {
                 results.Add(new SelfTestCaseResult(item.Id, "failed", false, false,
@@ -280,7 +303,7 @@ internal sealed partial class AcceptanceRunner
                 preflight.RequestMaxOutputTokens, null, results);
 
         var provider = ConnectModelProvider(options.Model, preflight.ModelId);
-        using var totalBudget = new CancellationTokenSource(WholeRunTimeout);
+        using var totalBudget = new CancellationTokenSource(RunTimeout(options.Model));
         var providerFailuresInRow = 0;
         var generationInvocations = 0;
         foreach (var acceptanceCase in runnable)
@@ -305,7 +328,7 @@ internal sealed partial class AcceptanceRunner
                 continue;
             }
             using var caseBudget = CancellationTokenSource.CreateLinkedTokenSource(totalBudget.Token);
-            caseBudget.CancelAfter(PerCaseTimeout);
+            caseBudget.CancelAfter(CaseTimeout(options.Model));
             var evidence = await RunCaseAsync(options.Model, preflight, provider, catalog,
                 acceptanceCase, workspace, artifactStore, referenced, caseBudget.Token,
                 () => generationInvocations++, options.AllowFixtureProcess, options.AutoSelect,
@@ -617,7 +640,17 @@ internal sealed partial class AcceptanceRunner
                     outcome.Preview, effect.Verified && roundTripVerified,
                     effect.Description + "; model_received_unique_result_receipt=" + roundTripVerified
                         + "; explicit_fixture_consent_once=" + consentRecorded + "; consent_audited=" + audited,
-                    roundTripCompleted: roundTripVerified);
+                    roundTripCompleted: roundTripVerified) with
+                {
+                    ToolEffectVerified = effect.Verified,
+                    FollowUpStopReason = roundTrip.StopReason.ToString(),
+                    FollowUpTextCharacters = finalText.Length,
+                    FollowUpToolCalls = roundTrip.Content.OfType<ToolCallBlock>().Select(item => item.ToolName).ToArray(),
+                    FollowUpOutputTokens = roundTrip.Usage.Output,
+                    // This response only sees a synthetic fixture and its own ToolResult.
+                    // Never capture reasoning blocks, account context or transport headers.
+                    FollowUpTextPreview = finalText.Length > 1200 ? finalText[..1200] : finalText,
+                };
             }
         }
         catch (OperationCanceledException)
@@ -725,6 +758,7 @@ internal sealed partial class AcceptanceRunner
                 case "user.ask": return Keys("title", "description", "questions")
                     && String("title") == "Fixture question"
                     && (!root.TryGetProperty("description", out var description)
+                        || description.ValueKind == JsonValueKind.Null
                         || description.ValueKind == JsonValueKind.String
                             && SafeQuestionText(description.GetString(), 500))
                     && root.TryGetProperty("questions", out var questions)
@@ -735,6 +769,7 @@ internal sealed partial class AcceptanceRunner
                     && IsSafeQuestionPrompt(questions[0].GetProperty("prompt").GetString())
                     && questions[0].GetProperty("kind").GetString() == "FreeText"
                     && (!questions[0].TryGetProperty("helpText", out var helpText)
+                        || helpText.ValueKind == JsonValueKind.Null
                         || helpText.ValueKind == JsonValueKind.String && SafeQuestionText(helpText.GetString(), 500))
                     && SafeOptionalQuestionText(questions[0]);
                 case "core.agents.mailbox.receive": return Keys();
@@ -773,7 +808,7 @@ internal sealed partial class AcceptanceRunner
                         && (value.ValueKind != JsonValueKind.String || !SafeQuestionText(value.GetString(), 500))) return false;
             }
         }
-        if (question.TryGetProperty("other", out var other))
+        if (question.TryGetProperty("other", out var other) && other.ValueKind != JsonValueKind.Null)
         {
             if (other.ValueKind != JsonValueKind.Object
                 || other.EnumerateObject().Any(property => property.Name is not ("optionId" or "label" or "placeholder" or "textRequired" or "maxTextLength"))) return false;
@@ -860,8 +895,12 @@ internal sealed partial class AcceptanceRunner
         var apiKey = descriptor.Auth.Kind == AuthKind.ApiKey ? ReadConfiguredApiKey(paths, descriptor) : null;
         if (descriptor.Auth.Kind == AuthKind.ApiKey && apiKey is null)
             throw new InvalidOperationException("qwen_configured_secret_missing");
+        // Use the production adapter and Host TLS validation with a test-only client
+        // deadline. The normal Host factory has a 300-second header timeout, which would
+        // otherwise silently defeat the longer prefill allowance above. No TLS bypass,
+        // endpoint replacement, server startup, or persisted configuration change.
         return OmniHost.ConnectProvider(descriptor, descriptor.BaseUrl, descriptor.Auth.SecretRef ?? "",
-            apiKey ?? "");
+            apiKey ?? "", chatCompletionsRequestTimeout: QwenGenerationTimeout);
     }
 
     private static void SeedWorkspace(string workspace)
@@ -955,6 +994,13 @@ internal sealed record CaseEvidence(string ModelAlias, string ModelId, string Ca
     bool? QuestionnairePreparationValid = null,
     string? QuestionnaireErrorCodes = null)
 {
+    public bool? ToolEffectVerified { get; init; }
+    public string? FollowUpStopReason { get; init; }
+    public int? FollowUpTextCharacters { get; init; }
+    public IReadOnlyList<string>? FollowUpToolCalls { get; init; }
+    public long? FollowUpOutputTokens { get; init; }
+    public string? FollowUpTextPreview { get; init; }
+
     public static CaseEvidence NotExercised(string modelAlias, string modelId, string caseId, string reason) =>
         new(modelAlias, modelId, caseId, "not_exercised", false, false, null, false, null,
             null, null, reason, null, null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,

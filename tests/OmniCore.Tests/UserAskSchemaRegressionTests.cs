@@ -251,12 +251,13 @@ public sealed class UserAskSchemaRegressionTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task Configured_luna_selects_user_ask_and_receives_the_durable_fixture_answer()
+    public async System.Threading.Tasks.Task Configured_model_selects_user_ask_and_receives_the_durable_fixture_answer()
     {
         var optIn = Environment.GetEnvironmentVariable("OMNICORE_LIVE_ACCEPTANCE_USER_ASK");
         if (string.IsNullOrWhiteSpace(optIn))
-            Assert.Skip("Set OMNICORE_LIVE_ACCEPTANCE_USER_ASK=luna to make the bounded live acceptance call.");
-        if (optIn != "luna") throw new InvalidOperationException("Live user.ask opt-in must be exactly luna.");
+            Assert.Skip("Set OMNICORE_LIVE_ACCEPTANCE_USER_ASK=luna or qwen to make the bounded live acceptance call.");
+        if (optIn is not ("luna" or "qwen")) throw new InvalidOperationException("Live user.ask opt-in must be exactly luna or qwen.");
+        var modelId = optIn == "luna" ? "gpt-6-luna" : "qwen38-27b-abl-v9-best-q4kxl";
 
         var startedAt = DateTimeOffset.UtcNow;
         var fixtureRoot = Path.Combine(Path.GetTempPath(), "OmniCoreLiveUserAsk-" + Guid.NewGuid().ToString("N"));
@@ -273,20 +274,21 @@ public sealed class UserAskSchemaRegressionTests
         var resultReturned = false;
         string? argumentHash = null;
         string? questionnaireKinds = null;
+        string[]? schemaErrorCodes = null;
         SqliteEventStore? store = null;
         try
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+            using var timeout = new CancellationTokenSource(optIn == "qwen" ? TimeSpan.FromMinutes(70) : TimeSpan.FromSeconds(180));
             var paths = ExistingLiveConnectionPaths();
             var registry = OmniHost.LoadUserModelRegistry(paths);
-            const string modelId = "gpt-6-luna";
             var model = registry.Model(modelId)
                 ?? throw new InvalidOperationException("configured_luna_model_missing");
             var providerDescriptor = registry.Provider(model.ProviderId)
                 ?? throw new InvalidOperationException("configured_luna_provider_missing");
-            var provider = ConnectConfiguredLuna(model, providerDescriptor, paths);
+            var provider = optIn == "luna" ? ConnectConfiguredLuna(model, providerDescriptor, paths)
+                : LiveWorktreeAcceptanceTests.ConnectConfiguredProvider(optIn, modelId, model, providerDescriptor, paths);
             var selection = new ModelSelection(new ModelIdValue(modelId), model.ContextWindow,
-                ToolMode.Direct, null, maxOutputTokens: null);
+                ToolMode.Direct, null, maxOutputTokens: ModelRoutingHost.OutputTokenLimit(model, providerDescriptor));
 
             var askTool = new UserAskTool();
             var alternateTool = HostTools.Explorer().Catalog().Find(new ToolId("filesystem.list"))
@@ -317,6 +319,9 @@ public sealed class UserAskSchemaRegressionTests
             var schema = QuestionnaireCodec.DecodeSchema(call.ArgumentsJson)
                 ?? throw new InvalidOperationException("live_user_ask_schema_decode_failed");
             var validation = QuestionnaireValidator.ValidateSchema(schema, QuestionnaireLimits.Default());
+            schemaErrorCodes = validation.Errors.Select(error => error.Code.ToString()).Distinct().ToArray();
+            questionnaireKinds = string.Join(",", schema.Questions.Select(question => question.Kind.ToString())
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
             Assert.True(validation.Valid, "live_user_ask_schema_invalid:" + string.Join(",",
                 validation.Errors.Select(error => error.Code.ToString())));
             Assert.Contains(schema.Questions, question => question.Kind == QuestionKind.SingleChoice);
@@ -324,8 +329,6 @@ public sealed class UserAskSchemaRegressionTests
                 && question.Other is not null);
             Assert.Contains(schema.Questions, question => question.Kind == QuestionKind.FreeText);
             toolSchemaValid = true;
-            questionnaireKinds = string.Join(",", schema.Questions.Select(question => question.Kind.ToString())
-                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
 
             store = new SqliteEventStore(Path.Combine(fixtureRoot, "journal.db"));
             var codecs = EventCodecs.Create();
@@ -428,6 +431,7 @@ public sealed class UserAskSchemaRegressionTests
                 modelRequestedUserAsk = toolRequested,
                 argumentsSha256 = argumentHash,
                 schemaValid = toolSchemaValid,
+                schemaErrorCodes,
                 questionKinds = questionnaireKinds,
                 includesOtherChoice = true,
                 toolRuntimeExecuted,
@@ -446,11 +450,12 @@ public sealed class UserAskSchemaRegressionTests
             WriteEvidence(new
             {
                 caseId = "user.ask",
-                modelId = "gpt-6-luna",
+                modelId,
                 status = caseStatus,
                 modelRequestedUserAsk = toolRequested,
                 argumentsSha256 = argumentHash,
                 schemaValid = toolSchemaValid,
+                schemaErrorCodes,
                 questionKinds = questionnaireKinds,
                 toolRuntimeExecuted,
                 interactionPublished,
@@ -592,7 +597,8 @@ public sealed class UserAskSchemaRegressionTests
         var directory = Environment.GetEnvironmentVariable("OMNICORE_LIVE_ACCEPTANCE_EVIDENCE_DIR");
         if (string.IsNullOrWhiteSpace(directory)) directory = Path.Combine(fixtureRoot, "evidence");
         Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, "user-ask-luna.json"),
+        File.WriteAllText(Path.Combine(directory, "user-ask-"
+            + (Environment.GetEnvironmentVariable("OMNICORE_LIVE_ACCEPTANCE_USER_ASK") == "qwen" ? "qwen" : "luna") + ".json"),
             JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true }),
             new UTF8Encoding(false));
     }

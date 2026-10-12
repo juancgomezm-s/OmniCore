@@ -18,7 +18,8 @@ internal sealed partial class AcceptanceRunner
         var counts = new Dictionary<string, int>();
         long textCharacters = 0, reasoningCharacters = 0, toolArgumentCharacters = 0;
         string? failure = null, stopReason = null;
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var deadline = GenerationTimeout(preflight.ModelAlias, TimeSpan.FromSeconds(45));
+        using var timeout = new CancellationTokenSource(deadline);
         var request = new ModelRequest(new ModelSelection(new ModelIdValue(preflight.ModelId),
                 preflight.ContextWindow!.Value, ToolMode.Direct, null,
                 maxOutputTokens: preflight.ModelAlias == "qwen" ? 64 : null),
@@ -41,12 +42,13 @@ internal sealed partial class AcceptanceRunner
                 }
             }
         }
-        catch (OperationCanceledException) { failure = "bounded_45_second_timeout"; }
+        catch (OperationCanceledException) { failure = $"bounded_{deadline.TotalSeconds:0}_second_timeout"; }
         catch (Exception exception) { failure = SafeProviderFailureCode(exception); }
         var evidence = new TransportProbeEvidence(preflight.ModelId, started, DateTimeOffset.UtcNow,
             first, headersReceived, completed, counts, textCharacters, reasoningCharacters,
             toolArgumentCharacters, stopReason, failure, request.Model.MaxOutputTokens,
-            (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts);
+            (provider as IModelRequestAttemptBound)?.MaximumGenerationRequestAttempts,
+            (long)deadline.TotalSeconds);
         File.WriteAllText(Path.Combine(directory, "transport-probe.json"), JsonSerializer.Serialize(evidence, JsonOptions.Indented));
         return evidence;
     }
@@ -56,4 +58,4 @@ internal sealed record TransportProbeEvidence(string ModelId, DateTimeOffset Sta
     DateTimeOffset? FirstEventAt, bool ResponseHeadersReceived, bool Completed,
     IReadOnlyDictionary<string, int> EventCounts, long TextCharacters, long ReasoningCharacters,
     long ToolArgumentCharacters, string? StopReason, string? Failure, long? RequestOutputCap,
-    long? MaximumHttpAttempts);
+    long? MaximumHttpAttempts, long TimeoutSeconds);

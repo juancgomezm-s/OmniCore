@@ -88,7 +88,8 @@ internal sealed partial class AcceptanceRunner
         }).ToArray();
         var rows = new List<CommandEvidence>();
         var generationCount = 0;
-        using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(12));
+        using var budget = new CancellationTokenSource(options.Model == "qwen"
+            ? RunTimeout(options.Model) : TimeSpan.FromMinutes(12));
         var fixture = Path.Combine(evidenceDirectory, "command-fixture");
         Directory.CreateDirectory(fixture);
 
@@ -104,7 +105,7 @@ internal sealed partial class AcceptanceRunner
                 [], ToolChoice.None(), null, null, null, null);
             var started = DateTimeOffset.UtcNow;
             using var caseTimeout = CancellationTokenSource.CreateLinkedTokenSource(budget.Token);
-            caseTimeout.CancelAfter(TimeSpan.FromSeconds(120));
+            caseTimeout.CancelAfter(GenerationTimeout(options.Model, TimeSpan.FromSeconds(120)));
             var response = await GetResponseAsync(provider, request, caseTimeout.Token, () => generationCount++);
             var text = string.Concat(response.Content.OfType<TextBlock>().Select(block => block.Text)).Trim();
             if (text.StartsWith("```", StringComparison.Ordinal))

@@ -136,7 +136,7 @@ internal sealed partial class AcceptanceRunner
         IArtifactStore artifactStore, ITool processTool, CancellationToken cancellationToken)
     {
         using var wholeRun = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        wholeRun.CancelAfter(WholeRunTimeout);
+        wholeRun.CancelAfter(RunTimeout(modelKey));
         var messages = new List<ModelMessage> { new(MessageRole.User, [new TextBlock(requestPrompt)]) };
         var results = new List<NativeCliCaseEvidence>(commands.Count);
         var receipts = new HashSet<string>(StringComparer.Ordinal);
@@ -180,7 +180,7 @@ internal sealed partial class AcceptanceRunner
 
             ModelResponse response;
             using var generationBudget = CancellationTokenSource.CreateLinkedTokenSource(wholeRun.Token);
-            generationBudget.CancelAfter(NativeCliGenerationTimeout);
+            generationBudget.CancelAfter(GenerationTimeout(modelKey, NativeCliGenerationTimeout));
             try
             {
                 response = await GetResponseAsync(provider, request, generationBudget.Token,
@@ -197,7 +197,8 @@ internal sealed partial class AcceptanceRunner
             catch (OperationCanceledException)
             {
                 providerFailure = wholeRun.IsCancellationRequested
-                    ? "native_cli_run_deadline_exceeded" : "model_generation_timeout_90s";
+                    ? "native_cli_run_deadline_exceeded"
+                    : $"model_generation_timeout_{GenerationTimeout(modelKey, NativeCliGenerationTimeout).TotalSeconds:0}s";
                 break;
             }
             catch (Exception exception)
@@ -499,6 +500,14 @@ internal sealed partial class AcceptanceRunner
                 }),
                 argvCount = argvShape is string[] tokens ? tokens.Length : (int?)null,
                 argvShape,
+                executableMatches = root.TryGetProperty("executable", out var executableValue)
+                    && executableValue.ValueKind == JsonValueKind.String && executableValue.GetString() == executable,
+                cwdMatches = root.TryGetProperty("cwd", out var cwdValue)
+                    && cwdValue.ValueKind == JsonValueKind.String && cwdValue.GetString() == "workspace",
+                timeoutMatches = root.TryGetProperty("timeoutSeconds", out var timeoutValue)
+                    && timeoutValue.ValueKind == JsonValueKind.Number && timeoutValue.TryGetInt32(out var seconds) && seconds == 30,
+                networkMatches = !root.TryGetProperty("networkRequired", out var networkValue)
+                    || networkValue.ValueKind == JsonValueKind.False,
             });
         }
         catch (JsonException)
