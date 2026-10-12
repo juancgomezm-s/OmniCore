@@ -217,7 +217,7 @@ public static class PreferencesUiResources
         "local_runtime_readyConfirm", "L’action utilise le point de terminaison local configuré. Aucune inférence n’est envoyée.",
         "local_runtime_startConfirm", "OmniCore lancera l’exécutable configuré et le gérera tant que cette instance restera active.",
         "local_runtime_stopConfirm", "OmniCore arrêtera le processus lancé par cette instance.",
-        "local_runtime_check", "Vérifier le point de terminaison", "local_runtime_start", "Démarrer le moteur", "local_runtime_stop", "Arrêter le moteur",
+        "local_runtime_check", "Vérifier l’adresse", "local_runtime_start", "Démarrer le moteur", "local_runtime_stop", "Arrêter le moteur",
         "local_delete", "Supprimer la configuration…", "local_confirm", "Confirmer", "local_cancel", "Annuler",
         "local_error_sensitive", "La valeur peut contenir des données sensibles ; elle ne sera ni affichée ni enregistrée.", "local_saved", "Configuration enregistrée ; démarrez explicitement le moteur quand vous le souhaitez.",
         "models_open", "Modèles et politiques…", "tools_open", "Inspecter les outils…", "permissions_open", "Consulter les autorisations…", "permissions_hint", "Les règles d’autorisation et la confiance se consultent avec /permissions et /trust.",

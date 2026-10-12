@@ -203,7 +203,7 @@ public sealed partial class TuiApp
         switch (selected.Id)
         {
             case "general":
-                Add(new Label { X = 2, Y = y++, Width = 22, Height = 1, Text = Pref("locale_label") });
+                Add(new Label { Id = "preferences-locale-label", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("locale_label") });
                 var language = new ListView { Id = "preferences-locale", X = 2, Y = y,
                     Width = Dim.Fill(4), Height = 4, ShowMarks = false };
                 language.SetSource(new ObservableCollection<string>(new[]
@@ -575,17 +575,17 @@ public sealed partial class TuiApp
             Width = Dim.Fill(4), Height = 2, Text = LocalEngineStatusText(SelectedRow()) };
         var actionY = listBottom + 3;
         var add = new Button { Id = "local-engine-add", X = 2, Y = actionY,
-            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_add"),
+            Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_add"),
             Enabled = snapshot.Diagnostics.Count == 0 };
         add.Accepted += (_, _) => ShowLocalEngineEditor(snapshot, null);
         var edit = new Button { Id = "local-engine-edit", X = Pos.Right(add) + 1, Y = actionY,
-            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_edit") };
-        var runtime = new Button { Id = "local-engine-runtime", X = 2, Y = actionY + 1,
-            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_runtime_check") };
-        var delete = new Button { Id = "local-engine-delete", X = Pos.Right(runtime) + 1, Y = actionY + 1,
-            Width = Dim.Percent(47), TextAlignment = Alignment.Start, Text = Pref("local_delete") };
-        var notice = new Label { Id = "local-engine-notice", X = 2, Y = Pos.AnchorEnd(2),
-            Width = Dim.Fill(4), Height = 1, Text = _localEngineNotice ?? LocalEngineDiagnostics(snapshot) };
+            Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_edit") };
+        var runtime = new Button { Id = "local-engine-runtime", X = 2, Y = actionY + 2,
+            Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_runtime_check") };
+        var delete = new Button { Id = "local-engine-delete", X = Pos.Right(runtime) + 1, Y = actionY + 2,
+            Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_delete") };
+        var notice = new Label { Id = "local-engine-notice", X = 2, Y = actionY + 5,
+            Width = Dim.Fill(4), Height = 3, Text = _localEngineNotice ?? LocalEngineDiagnostics(snapshot) };
         void SyncSelection()
         {
             var row = SelectedRow();
@@ -630,6 +630,7 @@ public sealed partial class TuiApp
             contentPanel.Add(new Label { Id = "local-engine-empty", X = 2, Y = y - 1,
                 Width = Dim.Fill(4), Height = 1, Text = Pref("local_empty") });
         contentPanel.Add(list, status, notice, add, edit, runtime, delete);
+        ConfigurePreferenceScroll(contentPanel, actionY + 8);
         SyncSelection();
     }
 
