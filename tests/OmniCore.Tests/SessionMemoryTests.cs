@@ -108,6 +108,71 @@ public sealed class SessionMemoryTests
     }
 
     [Fact]
+    public void Store_rejects_reparse_points_under_its_data_directory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-reparse-" + Guid.NewGuid().ToString("N"));
+        var data = Path.Combine(root, "data");
+        var outside = Path.Combine(root, "outside");
+        var memoryDirectory = Path.Combine(data, "session-memory");
+        Directory.CreateDirectory(data);
+        Directory.CreateDirectory(outside);
+        try
+        {
+            try { Directory.CreateSymbolicLink(memoryDirectory, outside); }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                                               or PlatformNotSupportedException or NotSupportedException)
+            {
+                return;
+            }
+
+            var store = new SessionMemoryStore(data);
+            Assert.Throws<InvalidDataException>(() => store.Read(MemoryScope.ForSession(SessionId.New()),
+                CancellationToken.None));
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outside));
+        }
+        finally
+        {
+            if (Directory.Exists(memoryDirectory)) Directory.Delete(memoryDirectory);
+            if (Directory.Exists(outside)) Directory.Delete(outside, recursive: true);
+            if (Directory.Exists(data)) Directory.Delete(data, recursive: true);
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Last_used_tracks_only_memory_items_in_the_completed_context_and_never_moves_backwards()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-last-used-" + Guid.NewGuid().ToString("N"));
+        var session = SessionId.New();
+        var scope = MemoryScope.ForSession(session);
+        try
+        {
+            var store = new SessionMemoryStore(root);
+            var used = Record(scope, "Used session fact.");
+            var unused = Record(scope, "Unused session fact.");
+            store.Add(used, CancellationToken.None);
+            store.Add(unused, CancellationToken.None);
+            var contributor = new SessionMemoryContextContributor(store);
+            var fingerprint = new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build");
+            var request = new MaterializeRequest(session, RunId.New(), null, null, null, 0, fingerprint);
+            var items = await contributor.GetContextAsync(request, CancellationToken.None);
+            var usedItem = Assert.Single(items, item => item.Id == "memory." + used.Id);
+            var usedAt = DateTimeOffset.UtcNow.AddMinutes(1);
+
+            Assert.Equal(1, contributor.RecordUsed(session, [usedItem], usedAt, CancellationToken.None));
+            Assert.Equal(0, contributor.RecordUsed(session, [usedItem], usedAt.AddSeconds(-1), CancellationToken.None));
+            var reopened = new SessionMemoryStore(root).Read(scope, CancellationToken.None).ToDictionary(item => item.Id);
+            Assert.Equal(usedAt, reopened[used.Id].LastUsedAt);
+            Assert.Null(reopened[unused.Id].LastUsedAt);
+
+            var notMemory = new ContextItem(usedItem.Id, ContextItemKind.UserMessage, usedItem.Content,
+                usedItem.EstimatedTokens, usedItem.Priority, usedItem.Retention, usedItem.Provenance);
+            Assert.Equal(0, contributor.RecordUsed(session, [notMemory], usedAt.AddMinutes(1), CancellationToken.None));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Replacement_chain_keeps_only_latest_context_and_collapses_when_middle_is_forgotten()
     {
         var root = Path.Combine(Path.GetTempPath(), "OmniCore-memory-replacement-chain-" + Guid.NewGuid().ToString("N"));
