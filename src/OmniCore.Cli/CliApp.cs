@@ -8,12 +8,20 @@ namespace OmniCore.Cli;
 public sealed class CliApp
 {
     private static OmniCliRuntime Runtime = CreateRuntime();
+    private static LocaleSelection _localeSelection = new("es", LocaleSelectionSource.Default);
+    private static Localization _localization = Localization.Spanish();
+    internal static LocaleSelection ActiveLocaleSelection => _localeSelection;
+    internal static string ActiveEffectiveLocale => _localization.Locale;
 
     // Internal injection point for end-to-end tests. Production always uses CreateRuntime().
     internal static OmniCliRuntime UseRuntimeForTests(OmniCliRuntime runtime)
     {
         var previous = Runtime;
         Runtime = runtime;
+        // This seam is also used to restore the prior runtime. Do not leave the
+        // previous fixture's language preview in the shared CLI presentation state.
+        _localeSelection = new(UiLocaleCodes.NormalizeOrDefault(runtime.UiLocale), LocaleSelectionSource.Default);
+        _localization = new Localization(_localeSelection.Locale);
         return previous;
     }
 
@@ -21,30 +29,65 @@ public sealed class CliApp
     {
         var runtime = OmniCliRuntime.Create(".");
         runtime.Localize = (key, args) => Loc().Resolve(key, args);
-        runtime.QuestionnaireInput = Console.IsInputRedirected ? null : PlainQuestionnaireForm.Read;
+        runtime.QuestionnaireInput = Console.IsInputRedirected ? null
+            : prompt => PlainQuestionnaireForm.Read(prompt, Loc());
         return runtime;
     }
 
-    // Idioma de la interfaz: OMNI_LOCALE=en o español por defecto (ADR-0040).
-    private static Localization Loc() =>
-        Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? Localization.English() : Localization.Spanish();
+    private static Localization Loc() => _localization;
+
+    private static void UpdateLocaleConsumers()
+    {
+        Runtime.UiLocale = _localization.Locale;
+        Runtime.Localize = (key, values) => Loc().Resolve(key, values);
+        Runtime.QuestionnaireInput = Console.IsInputRedirected ? null
+            : prompt => PlainQuestionnaireForm.Read(prompt, Loc());
+    }
+
+    internal static void UpdateLocaleFromPreferences(string effectiveLocale)
+    {
+        var locale = _localeSelection.HasProcessOverride
+            ? _localeSelection.Locale : UiLocaleCodes.NormalizeOrDefault(effectiveLocale);
+        _localization = new Localization(locale);
+        UpdateLocaleConsumers();
+    }
+
+    internal static void SetLocaleForTests(string locale)
+    {
+        _localeSelection = new(UiLocaleCodes.NormalizeOrDefault(locale), LocaleSelectionSource.UserSetting);
+        _localization = new Localization(_localeSelection.Locale);
+        UpdateLocaleConsumers();
+    }
 
     public static Task<int> RunAsync(string[] args)
     {
+        var parsedLocale = LocaleArgumentParser.Parse(args);
+        args = parsedLocale.Arguments;
+        var savedLocale = ReadUserLocale();
+        _localeSelection = LocaleSelectionResolver.Resolve(parsedLocale.ExplicitLocale,
+            Environment.GetEnvironmentVariable("OMNI_LOCALE"),
+            savedLocale?.IsConfigured == true ? savedLocale.Locale : null);
+        _localization = new Localization(_localeSelection.Locale);
+        UpdateLocaleConsumers();
+        ReportLocaleDiagnostics(parsedLocale.Diagnostics, savedLocale);
+        if (parsedLocale.HasMissingLocaleValue)
+            return Task.FromResult(2);
+
         if (args.Length == 0)
         {
             PrintUsage();
             return Task.FromResult(1);
         }
 
+        args = HumanCommandAliases.NormalizeCli(args);
         var command = args[0];
         if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
         if (command is "explain" or "explore") return RunExplain(args);
         if (command == "ask") return RunAsk(args);
         if (command == "act") return RunAct(args);
-        if (command == "model") return ModelPolicyCommands.Run(args);
-        if (command == "worktree") return WorktreeCommands.RunAsync(args, CancellationToken.None);
+        if (command == "model") return ModelPolicyCommands.Run(args, selectedLocalization: Loc());
+        if (command == "worktree") return WorktreeCommands.RunAsync(args, CancellationToken.None, Loc());
         if (command == "trust") return RunTrust(args);
         if (command == "extensions") return RunExtensions(args);
         if (command is "login" or "logout" && args.Length >= 2 && args[1] == "claude")
@@ -69,12 +112,12 @@ public sealed class CliApp
         }
         if (command == "permissions") return RunPermissions(args);
         if (command == "resolve") return RunResolve(args);
-        if (command == "verify-journal") return JournalCommands.VerifyJournal(args);
+        if (command == "verify-journal") return JournalCommands.VerifyJournal(args, selectedLocalization: Loc());
         if (command == "session" && args.Length >= 2 && args[1] == "purge")
-            return MaintenanceCommands.SessionPurge(args);
-        if (command == "gc") return MaintenanceCommands.Gc(args);
+            return MaintenanceCommands.SessionPurge(args, selectedLocalization: Loc());
+        if (command == "gc") return MaintenanceCommands.Gc(args, selectedLocalization: Loc());
         if (command == "audit" && args.Length >= 2 && args[1] == "purge")
-            return MaintenanceCommands.AuditPurge(args);
+            return MaintenanceCommands.AuditPurge(args, selectedLocalization: Loc());
         if (command is "session" or "audit")
         {
             Console.WriteLine(Loc().Resolve("cli.unknown_subcommand", "command", command));
@@ -154,12 +197,19 @@ public sealed class CliApp
         }
         try
         {
-            Console.WriteLine(Runtime.SetProjectExtensionConsent(args[2], grant: args[1] == "trust"));
+            var result = Runtime.SetProjectExtensionConsent(args[2], grant: args[1] == "trust");
+            Console.WriteLine(result.Granted
+                ? Loc().Resolve("cli.extension.consent.granted", new Dictionary<string, string>
+                {
+                    ["id"] = result.ExtensionId,
+                    ["capabilities"] = result.Capabilities.Count == 0 ? "—" : string.Join(", ", result.Capabilities),
+                })
+                : Loc().Resolve("cli.extension.consent.revoked", "id", result.ExtensionId));
             return Task.FromResult(0);
         }
         catch (Exception exception) when (exception is InvalidOperationException or IOException or ArgumentException)
         {
-            Console.WriteLine("Extension consent failed closed: " + exception.Message);
+            Console.WriteLine(Loc().Resolve("cli.extension.consent.failed", "diagnostic", exception.Message));
             return Task.FromResult(1);
         }
     }
@@ -209,8 +259,7 @@ public sealed class CliApp
             CancellationToken.None);
         if (ack.Status != "ok")
         {
-            Console.WriteLine(Loc().Resolve("cli.command_ack_error",
-                new Dictionary<string, string> { ["command"] = invocation.Name, ["error"] = ack.Error ?? Loc().Resolve("cli.command_failed") }));
+            Console.WriteLine(FormatCommandAckError(invocation.Name, ack.Error));
             return Task.FromResult(2);
         }
         var expanded = client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
@@ -230,7 +279,7 @@ public sealed class CliApp
             var origin = outcome.GetProperty("origin").GetString() ?? "";
             if (outcome.TryGetProperty("toolName", out var toolName) && toolName.GetString() is { Length: > 0 } forcedTool)
                 return Runtime.ExecuteExtensionCommandAsync(text, forcedTool, Console.WriteLine, CancellationToken.None);
-            Console.WriteLine("[" + origin + "]");
+            Console.WriteLine("[" + FormatCommandOrigin(origin) + "]");
             return Runtime.AskAsync(text, Console.WriteLine, CancellationToken.None);
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
@@ -241,9 +290,8 @@ public sealed class CliApp
         }
     }
 
-    private static void RenderDiagnostic(string name, string json)
+    internal static void RenderDiagnostic(string name, string json)
     {
-        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
         Console.WriteLine(name switch
         {
             "context" => Loc().Resolve("cli.diagnostic.context"),
@@ -257,19 +305,23 @@ public sealed class CliApp
             if (name == "context")
             {
                 var snapshot = root.GetProperty("snapshot");
-                Console.WriteLine("Fingerprint: " + snapshot.GetProperty("fingerprint").GetString());
-                Console.WriteLine("Tokens: " + snapshot.GetProperty("tokenCount").GetInt32() + "/"
+                Console.WriteLine(Loc().Resolve("cli.diagnostic.fingerprint") + ": " + snapshot.GetProperty("fingerprint").GetString());
+                var accuracy = KnownDiagnosticValue("cli.diagnostic.context.accuracy.", snapshot.GetProperty("tokenAccuracy").GetString(),
+                    "exact", "estimated", "unknown");
+                Console.WriteLine(Loc().Resolve("cli.diagnostic.tokens") + ": " + snapshot.GetProperty("tokenCount").GetInt32() + "/"
                     + snapshot.GetProperty("tokenBudget").GetInt64() + " ("
-                    + snapshot.GetProperty("tokenAccuracy").GetString() + ")");
+                    + accuracy + ")");
                 foreach (var item in snapshot.GetProperty("items").EnumerateArray())
-                    Console.WriteLine("  " + item.GetProperty("kind").GetString() + " · "
+                    Console.WriteLine("  " + KnownDiagnosticValue("cli.diagnostic.context.kind.", item.GetProperty("kind").GetString(),
+                        "system", "task", "decision", "constraint", "usermessage", "assistantmessage", "toolresult",
+                        "file", "skill", "knowledge", "subagentresult", "summary", "checkpoint", "workingstate", "memory") + " · "
                         + item.GetProperty("contributor").GetString() + " · "
-                        + item.GetProperty("tokens").GetInt32() + " estimated tokens");
+                        + item.GetProperty("tokens").GetInt32() + " " + Loc().Resolve("cli.diagnostic.estimated_tokens"));
                 if (snapshot.TryGetProperty("diagnostics", out var diagnostics))
                     foreach (var item in diagnostics.EnumerateArray())
                         Console.WriteLine("  " + item.GetProperty("itemId").GetString() + " · "
-                            + item.GetProperty("decision").GetString() + " · "
-                            + item.GetProperty("reason").GetString());
+                            + DiagnosticDecision(item.GetProperty("decision").GetString()) + " · "
+                            + Loc().Resolve("cli.diagnostic.reason", "value", item.GetProperty("reason").GetString()));
             }
             else if (name == "extensions")
             {
@@ -277,22 +329,24 @@ public sealed class CliApp
                 {
                     var id = extension.TryGetProperty("id", out var idValue) ? idValue.GetString() : null;
                     var version = extension.TryGetProperty("version", out var versionValue) ? versionValue.GetString() : null;
-                    var status = extension.GetProperty("status").GetString();
-                    Console.WriteLine("  " + (id ?? "<invalid-manifest>")
+                    var status = KnownDiagnosticValue("cli.diagnostic.extension.status.", extension.GetProperty("status").GetString(),
+                        "ready", "workspacetrustrequired", "consentrequired", "invalidmanifest", "incompatibleapi", "untrusted");
+                    Console.WriteLine("  " + (id ?? "<" + Loc().Resolve("cli.diagnostic.extension.invalid_id") + ">")
                         + (version is null ? "" : "@" + version) + " · " + status);
                     if (extension.TryGetProperty("diagnostic", out var diagnostic) && diagnostic.ValueKind == System.Text.Json.JsonValueKind.String)
-                        Console.WriteLine("    " + diagnostic.GetString());
+                        Console.WriteLine("    " + FormatExternalDiagnostic(diagnostic.GetString()));
                 }
             }
             else
             {
-                Console.WriteLine("Mode: " + root.GetProperty("mode").GetString());
+                Console.WriteLine(Loc().Resolve("cli.diagnostic.mode") + ": " + KnownDiagnosticValue("cli.diagnostic.mode.",
+                    root.GetProperty("mode").GetString(), "plan", "act", "orchestrate"));
                 foreach (var tool in root.GetProperty("tools").EnumerateArray())
                     Console.WriteLine("  " + tool.GetProperty("visibleName").GetString() + " → "
                         + tool.GetProperty("toolId").GetString() + " · "
-                        + tool.GetProperty("source").GetString() + " · "
-                        + tool.GetProperty("effectClass").GetString() + " · "
-                        + tool.GetProperty("decision").GetString());
+                        + DiagnosticToolSource(tool.GetProperty("source").GetString()) + " · "
+                        + DiagnosticToolEffect(tool.GetProperty("effectClass").GetString()) + " · "
+                        + DiagnosticDecision(tool.GetProperty("decision").GetString()));
             }
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
@@ -300,6 +354,55 @@ public sealed class CliApp
         {
             Console.WriteLine(Loc().Resolve("cli.diagnostic.no_snapshot"));
         }
+    }
+
+    private static string KnownDiagnosticValue(string keyPrefix, string? value, params string[] known)
+    {
+        if (value is null) return Loc().Resolve("cli.runtime.status.unknown", "value", "Unavailable");
+        var code = value.Replace("_", "", StringComparison.Ordinal)
+            .Replace("-", "", StringComparison.Ordinal).ToLowerInvariant();
+        if (known.Contains(code, StringComparer.Ordinal))
+        {
+            var key = keyPrefix + code;
+            var localized = Loc().ResolveDetailed(key);
+            if (!localized.UsedFallback && localized.Text != key) return localized.Text;
+        }
+        return Loc().Resolve("cli.runtime.status.unknown", "value", value);
+    }
+
+    private static string DiagnosticDecision(string? value)
+    {
+        if (value is null) return Loc().Resolve("cli.runtime.status.unknown", "value", "Unavailable");
+        var code = value.Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();
+        if (code is "allow" or "allowed") return Loc().Resolve("cli.diagnostic.decision.allowed");
+        if (code is "deny" or "denied") return Loc().Resolve("cli.diagnostic.decision.denied");
+        if (code is "pending") return Loc().Resolve("cli.diagnostic.decision.pending");
+        if (code == "ask") return Loc().Resolve("cli.diagnostic.decision.ask");
+        if (code == "reject:plan mode") return Loc().Resolve("cli.diagnostic.decision.plan_rejected");
+        var known = new[] { "included", "omitted", "truncated", "omittedbybudget", "truncatedbybudget",
+            "pruned", "externalized", "compressed", "compacted" };
+        if (known.Contains(code, StringComparer.Ordinal))
+            return KnownDiagnosticValue("cli.diagnostic.decision.", code, known);
+        return Loc().Resolve("cli.runtime.status.unknown", "value", value);
+    }
+
+    private static string DiagnosticToolSource(string? value) => KnownDiagnosticValue(
+        "cli.diagnostic.tool.source.", value, "builtin", "extension");
+
+    private static string DiagnosticToolEffect(string? value) => KnownDiagnosticValue(
+        "cli.diagnostic.tool.effect.", value, "none", "rerunnable", "reconcilable", "nonidempotent", "read", "write", "execute");
+
+    internal static string FormatCommandOrigin(string origin) => Loc().Resolve("cli.command.origin", "value", origin);
+
+    internal static string FormatExternalDiagnostic(string? diagnostic) =>
+        Loc().Resolve("cli.runtime.diagnostic.external", "value", diagnostic ?? "—");
+
+    internal static string FormatCommandAckError(string command, string? error)
+    {
+        var diagnostic = error is null ? Loc().Resolve("cli.command_failed")
+            : FormatExternalDiagnostic(Loc().ResolveWire(error));
+        return Loc().Resolve("cli.command_ack_error",
+            new Dictionary<string, string> { ["command"] = command, ["error"] = diagnostic });
     }
 
     private static Task<int> RunSim(string[] args)
@@ -356,10 +459,10 @@ public sealed class CliApp
             return Task.FromResult(exitCode);
         }
 
-        var projection = new ClientProjection();
+        var projection = new ClientProjection(Loc());
         var state = ClientState.Empty();
         foreach (var envelope in events) state = projection.Apply(state, envelope);
-        new PlainRenderer("es").Render(state);
+        new PlainRenderer(Loc().Locale).Render(state);
         if (events.Count == 0) Console.WriteLine(Loc().Resolve("cli.sim.ok_no_events"));
         return Task.FromResult(exitCode);
     }
@@ -384,7 +487,9 @@ public sealed class CliApp
             return Task.FromResult(0);
         }
 
-        return Task.FromResult(TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime)));
+        return Task.FromResult(TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime),
+            localeSelection: _localeSelection, localeChanged: UpdateLocaleFromPreferences,
+            localEngineSupervisor: Runtime.CreateTuiLocalEngineSupervisor()));
     }
 
     private static Task<int> RunExplain(string[] args)
@@ -433,11 +538,17 @@ public sealed class CliApp
             {
                 ["tokens"] = snapshot.GetProperty("tokenCount").GetInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["budget"] = snapshot.TryGetProperty("tokenBudget", out var budget) ? budget.ToString() : "?",
-                ["accuracy"] = snapshot.TryGetProperty("tokenAccuracy", out var accuracy) ? accuracy.ToString() : "?",
+                ["accuracy"] = snapshot.TryGetProperty("tokenAccuracy", out var accuracy)
+                    ? KnownDiagnosticValue("cli.diagnostic.context.accuracy.", accuracy.GetString(), "exact", "estimated", "unknown") : "?",
             }));
-            foreach (var group in items.GroupBy(item => item.GetProperty("kind").GetString() + " · "
-                + item.GetProperty("contributor").GetString()))
-                Console.WriteLine("  " + group.Key + " ×" + group.Count());
+            foreach (var group in items.GroupBy(item => (Kind: item.GetProperty("kind").GetString() ?? "",
+                Contributor: item.GetProperty("contributor").GetString() ?? "")))
+            {
+                var kind = KnownDiagnosticValue("cli.diagnostic.context.kind.", group.Key.Kind, "system", "task", "decision",
+                    "constraint", "usermessage", "assistantmessage", "toolresult", "file", "skill", "knowledge",
+                    "subagentresult", "summary", "checkpoint", "workingstate", "memory");
+                Console.WriteLine("  " + kind + " · " + group.Key.Contributor + " ×" + group.Count());
+            }
             var dropped = snapshot.TryGetProperty("diagnostics", out var diagnostics) ? diagnostics.GetArrayLength() : 0;
             if (dropped > 0)
                 Console.WriteLine(Loc().Resolve("cli.explain.omitted", "count",
@@ -543,23 +654,45 @@ public sealed class CliApp
     {
         if (args.Any(argument => argument == "--verify-journal"))
             return JournalCommands.VerifyJournal(new[] { "verify-journal" }
-                .Concat(args.Where(argument => argument == "--json")).ToArray());
+                .Concat(args.Where(argument => argument == "--json")).ToArray(), selectedLocalization: Loc());
 
-        var localization = new Localization(DoctorLocale(args));
+        var localization = Loc();
         return Task.FromResult(OmniCliRuntime.Doctor(localization.Locale, Console.WriteLine,
             localization.Resolve));
     }
 
-    private static string DoctorLocale(string[] args)
+    private static UiLocalePreferencesSnapshot? ReadUserLocale()
     {
-        for (var index = 1; index < args.Length; index++)
+        try
         {
-            if (args[index] == "--locale" && index + 1 < args.Length)
-                return args[index + 1] == "en" ? "en" : "es";
-            if (args[index].StartsWith("--locale=", StringComparison.Ordinal))
-                return args[index][9..] == "en" ? "en" : "es";
+            return UserLocaleConfiguration.ReadCurrentUser();
         }
-        return Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        catch (Exception exception) when (exception is IOException or InvalidOperationException
+            or System.Text.Json.JsonException)
+        {
+            return new UiLocalePreferencesSnapshot("unavailable", "es", ["unavailable"]);
+        }
+    }
+
+    private static void ReportLocaleDiagnostics(IReadOnlyList<string> parserDiagnostics,
+        UiLocalePreferencesSnapshot? savedLocale)
+    {
+        foreach (var diagnostic in parserDiagnostics)
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.missing"));
+        if (_localeSelection.InvalidValue is { } invalid)
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.invalid", "value", invalid));
+        if (savedLocale is null || savedLocale.Diagnostics.Count > 0)
+        {
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.settings_unavailable"));
+        }
+        else if (_localeSelection.HasProcessOverride && savedLocale.IsConfigured)
+        {
+            Console.Error.WriteLine(Loc().Resolve("cli.locale.override", new Dictionary<string, string>
+            {
+                ["active"] = _localeSelection.Locale,
+                ["saved"] = savedLocale.Locale,
+            }));
+        }
     }
 
     private static async Task<int> RunAsk(string[] args)
@@ -588,10 +721,10 @@ public sealed class CliApp
         string.Join(" · ", new[]
         {
             usage.SessionTokenMeasurement is { } measurement
-                ? UsagePresentation.Tokens(measurement) : UsagePresentation.Tokens(usage.SessionTokens),
+                ? UsagePresentation.Tokens(measurement, Loc().Locale) : UsagePresentation.Tokens(usage.SessionTokens, Loc().Locale),
             UsagePresentation.Cost(usage.SessionCost),
-            UsagePresentation.Remaining(usage.Remaining),
-            UsagePresentation.AccountQuota(usage.AccountQuota),
+            UsagePresentation.Remaining(usage.Remaining, Loc().Locale),
+            UsagePresentation.AccountQuota(usage.AccountQuota, Loc().Locale),
             UsagePresentation.Account(usage.Account, Loc()),
         }.Where(part => part is not null));
 
@@ -603,6 +736,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("cli.usage.sim"));
         Console.WriteLine(Loc().Resolve("cli.usage.act"));
         Console.WriteLine(Loc().Resolve("cli.usage.ask"));
+        Console.WriteLine(Loc().Resolve("cli.usage.explain"));
         Console.WriteLine(Loc().Resolve("commands.context.help"));
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
         Console.WriteLine(Loc().Resolve("commands.extensions.help"));

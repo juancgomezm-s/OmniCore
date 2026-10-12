@@ -16,6 +16,8 @@ public sealed class ExtensionManifest
     public ExtensionRequestsManifest? Requests { get; set; }
     public ExtensionRuntimeManifest? Runtime { get; set; }
     public ExtensionSourceManifest? Source { get; set; }
+    /// <summary>Optional literal UI copy by locale and stable key; never used as model instructions.</summary>
+    public Dictionary<string, Dictionary<string, string>>? UiResources { get; set; }
 }
 
 public sealed class ExtensionProvidesManifest

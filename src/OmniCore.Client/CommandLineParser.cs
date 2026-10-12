@@ -17,13 +17,13 @@ public static class CommandLineParser
         if (arguments is null || arguments.Count == 0) return false;
         if (arguments.Count == 1) return TryParse(arguments[0], out invocation);
 
-        var command = arguments[0];
+        var command = arguments[0].Normalize(System.Text.NormalizationForm.FormC);
         if (string.IsNullOrWhiteSpace(command) || command.Length < 2 || command[0] != '/'
             || command.Skip(1).Any(character => !char.IsLetterOrDigit(character)
                 && character is not '-' and not '_' and not '.' and not ':'))
             return false;
 
-        invocation = new CommandInvocation(command[1..], arguments.Skip(1).ToArray(), "Typed");
+        invocation = HumanCommandAliases.Normalize(new CommandInvocation(command[1..], arguments.Skip(1).ToArray(), "Typed"));
         return true;
     }
 
@@ -70,7 +70,7 @@ public static class CommandLineParser
         if (started) parts.Add(current.ToString());
         if (parts.Count == 0 || !parts[0].StartsWith("/", StringComparison.Ordinal)
             || parts[0].Length < 2) return false;
-        invocation = new CommandInvocation(parts[0].Substring(1), parts.Skip(1).ToArray(), "Typed");
+        invocation = HumanCommandAliases.Normalize(new CommandInvocation(parts[0].Substring(1), parts.Skip(1).ToArray(), "Typed"));
         return true;
     }
 }

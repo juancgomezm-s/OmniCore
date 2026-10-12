@@ -537,6 +537,25 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == UiLocalePreferencesProtocol.ConfigureCommand)
+        {
+            if (!trustedUserAction)
+                return new(command.MessageId, "error", "ui.locale.error.trusted_action_required",
+                    RuntimeCommandOutcome.Rejected());
+            try
+            {
+                var request = UiLocalePreferencesProtocol.DecodeUpdate(command.PayloadJson)
+                    ?? throw new ArgumentException("UI locale request is malformed.");
+                new UserLocaleConfiguration(_platformPathsFactory()).Set(request, cancellationToken);
+                return new(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+                or IOException or UnauthorizedAccessException or YamlDotNet.Core.YamlException
+                or System.Text.Json.JsonException or ConfigValidationException)
+            {
+                return new(command.MessageId, "error", UiLocaleErrorKey(exception), RuntimeCommandOutcome.Rejected());
+            }
+        }
         if (commandName == "sidebar.configure")
         {
             if (!trustedUserAction) return new(command.MessageId, "error", "Trusted user action required", RuntimeCommandOutcome.Rejected());
@@ -604,9 +623,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         if (commandName is "skills.activate" or "skills.release")
-            return ChangeSessionSkillActivation(command, commandName, fields);
+            return ChangeSessionSkillActivation(command, commandName, fields, trustedUserAction);
         if (commandName is "memory.session.add" or "memory.session.forget")
             return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
+        if (commandName == "extensions.consent")
+            return ChangeProjectExtensionConsent(command, fields, trustedUserAction);
 
         if (commandName == "sim")
         {
@@ -1898,6 +1919,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (_lastSessionId is not { } session || _workspaceRoot is null)
             return new CommandAck(command.MessageId, "error", "An existing Session and Workspace are required.",
                 RuntimeCommandOutcome.Rejected());
+        if (fields.TryGetValue("expectedSessionId", out var expectedSessionId)
+            && !string.Equals(expectedSessionId, session.ToString(), StringComparison.Ordinal))
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.session_changed",
+                RuntimeCommandOutcome.Rejected());
         try
         {
             var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
@@ -1930,18 +1955,36 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private CommandAck ChangeSessionSkillActivation(WireEnvelope command, string commandName,
-        IReadOnlyDictionary<string, string> fields)
+        IReadOnlyDictionary<string, string> fields, bool trustedUserAction)
     {
         if (_lastSessionId is not { } session)
             return new CommandAck(command.MessageId, "error", "An existing Session is required to activate a skill.",
                 RuntimeCommandOutcome.Rejected());
         var skillId = fields.GetValueOrDefault("skillId") ?? "";
+        if (fields.ContainsKey("expectedSessionId") && !trustedUserAction)
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.trusted_action_required",
+                RuntimeCommandOutcome.Rejected());
+        if (fields.TryGetValue("expectedSessionId", out var expectedSessionId)
+            && !string.Equals(expectedSessionId, session.ToString(), StringComparison.Ordinal))
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.session_changed",
+                RuntimeCommandOutcome.Rejected());
         try
         {
             var workspaceRoot = _workspaceRoot ?? throw new InvalidOperationException("Workspace is unavailable.");
             var store = new SessionSkillActivationStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), workspaceRoot));
             if (commandName == "skills.release")
             {
+                if (fields.TryGetValue("expectedManifestSha256", out var expectedReleaseHash))
+                {
+                    var trustedForRelease = new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(workspaceRoot);
+                    var current = SkillManifestLoader.ResolvePrecedence(new SkillManifestLoader().Discover(
+                        Path.Combine(workspaceRoot, ".omnicore", "skills"), ScopeLevel.Project, TrustLevel.Project,
+                        workspaceTrusted: trustedForRelease));
+                    var matching = current.Where(skill => string.Equals(skill.Manifest.Id, skillId, StringComparison.Ordinal)).ToArray();
+                    if (matching.Length != 1 || !FixedHashEquals(expectedReleaseHash, matching[0].ManifestSha256))
+                        return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
+                            RuntimeCommandOutcome.Rejected());
+                }
                 var removed = store.Release(session, skillId);
                 return new CommandAck(command.MessageId, "ok", removed ? null : "Skill was not active.",
                     RuntimeCommandOutcome.Accepted());
@@ -1958,6 +2001,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 ?? throw new InvalidOperationException(candidates.Length == 0
                     ? "No eligible Project skill has that id."
                     : "Skill activation is ambiguous or shadowed by a sealed or more trusted source.");
+            if (fields.TryGetValue("expectedManifestSha256", out var expectedHash)
+                && !string.Equals(expectedHash, selected.ManifestSha256, StringComparison.Ordinal))
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
+                    RuntimeCommandOutcome.Rejected());
             _ = loader.Activate(selected); // Explicit activation validates the bounded instruction package.
             store.Activate(session, selected.Manifest.Id!, selected.ManifestSha256);
             return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
@@ -1969,9 +2016,108 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
     }
 
+    private CommandAck ChangeProjectExtensionConsent(WireEnvelope command,
+        IReadOnlyDictionary<string, string> fields, bool trustedUserAction)
+    {
+        if (!trustedUserAction)
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.trusted_action_required",
+                RuntimeCommandOutcome.Rejected());
+        if (_lastSessionId is not { } session || _workspaceRoot is null)
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.session_unavailable",
+                RuntimeCommandOutcome.Rejected());
+        if (!fields.TryGetValue("expectedSessionId", out var expectedSessionId)
+            || !string.Equals(expectedSessionId, session.ToString(), StringComparison.Ordinal))
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.session_changed",
+                RuntimeCommandOutcome.Rejected());
+        try
+        {
+            using var payloadDocument = System.Text.Json.JsonDocument.Parse(command.PayloadJson);
+            var payload = payloadDocument.RootElement;
+            if (payload.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !WireString(payload, "extensionId", out var extensionId) || string.IsNullOrWhiteSpace(extensionId)
+                || !WireString(payload, "version", out var version) || string.IsNullOrWhiteSpace(version)
+                || !WireString(payload, "manifestSha256", out var expectedManifestHash)
+                || !WireString(payload, "packageSha256", out var expectedPackageHash)
+                || !WireString(payload, "consentHash", out var expectedConsentHash)
+                || !payload.TryGetProperty("grant", out var grantElement)
+                || grantElement.ValueKind is not (System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False)
+                || !payload.TryGetProperty("capabilities", out var capabilitiesElement)
+                || capabilitiesElement.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.invalid_request",
+                    RuntimeCommandOutcome.Rejected());
+            var grant = grantElement.GetBoolean();
+            if (!WireString(payload, "expectedSessionId", out var rawExpectedSession)
+                || !string.Equals(rawExpectedSession, session.ToString(), StringComparison.Ordinal))
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.session_changed",
+                    RuntimeCommandOutcome.Rejected());
+
+            if (!new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(_workspaceRoot))
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.workspace_untrusted",
+                    RuntimeCommandOutcome.Rejected());
+            var capabilities = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var element in capabilitiesElement.EnumerateArray())
+            {
+                if (element.ValueKind != System.Text.Json.JsonValueKind.String
+                    || string.IsNullOrWhiteSpace(element.GetString())
+                    || !capabilities.Add(element.GetString()!))
+                    throw new System.Text.Json.JsonException("Invalid capability array.");
+            }
+
+            var root = Path.Combine(_workspaceRoot, ".omnicore", "extensions");
+            var discovered = new ExtensionManifestLoader().Discover(root, TrustLevel.Project, workspaceTrusted: true)
+                .Where(extension => string.Equals(extension.Manifest?.Id, extensionId, StringComparison.Ordinal))
+                .ToArray();
+            if (discovered.Length != 1)
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
+                    RuntimeCommandOutcome.Rejected());
+            var extension = discovered[0];
+            if (!string.Equals(extension.Manifest?.Version, version, StringComparison.Ordinal)
+                || !FixedHashEquals(expectedManifestHash, extension.ManifestSha256)
+                || !FixedHashEquals(expectedPackageHash, extension.PackageSha256)
+                || !FixedHashEquals(expectedConsentHash, extension.ConsentHash))
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
+                    RuntimeCommandOutcome.Rejected());
+            var requested = new HashSet<string>(extension.Manifest?.Requests?.Capabilities ?? [], StringComparer.Ordinal);
+            if (!capabilities.IsSubsetOf(requested) || (grant && capabilities.Count == 0)
+                || (!grant && capabilities.Count != 0))
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.invalid_request",
+                    RuntimeCommandOutcome.Rejected());
+
+            var store = new ExtensionConsentStore(_platformPathsFactory(), _workspaceRoot);
+            if (grant) store.Grant(extension, capabilities);
+            else store.Revoke(extensionId);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or ArgumentException
+            or InvalidOperationException or InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.operation_failed",
+                RuntimeCommandOutcome.Rejected());
+        }
+    }
+
+    private static bool WireString(System.Text.Json.JsonElement payload, string name, out string value)
+    {
+        if (payload.TryGetProperty(name, out var field) && field.ValueKind == System.Text.Json.JsonValueKind.String)
+        {
+            value = field.GetString() ?? "";
+            return true;
+        }
+        value = "";
+        return false;
+    }
+
+    private static bool FixedHashEquals(string supplied, string actual) =>
+        actual.Length is 64 or 128 && supplied.Length == actual.Length && supplied.All(Uri.IsHexDigit)
+        && System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.ASCII.GetBytes(supplied.ToLowerInvariant()),
+            System.Text.Encoding.ASCII.GetBytes(actual.ToLowerInvariant()));
+
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == UiLocalePreferencesProtocol.QueryName)
+            return new(name, UiLocalePreferencesProtocol.Encode(new UserLocaleConfiguration(_platformPathsFactory()).Read()));
         if (name == "sidebarSettings") return new(name, SidebarPreferencesJson.Encode(SidebarSettings().Read()));
         if (name == "sessionSidebar")
             return new SessionQueryResult(name, _lastSessionId is null ? "null"
@@ -2003,34 +2149,59 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
         if (name == "extensions")
         {
-            if (_workspaceRoot is null) return new SessionQueryResult(name, "{\"extensions\":[]}");
+            if (_workspaceRoot is null) return new SessionQueryResult(name, "{\"workspaceTrusted\":false,\"session\":"
+                + (_lastSessionId is { } noWorkspaceSession ? "\"" + JsonObj.Escape(noWorkspaceSession.ToString()) + "\"" : "null")
+                + ",\"extensions\":[]}");
             var trusted = new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(_workspaceRoot);
             var root = Path.Combine(_workspaceRoot, ".omnicore", "extensions");
             var loader = new ExtensionManifestLoader();
             var discovered = loader.Discover(root, TrustLevel.Project, trusted);
+            var ambiguousIds = discovered.Where(extension => extension.Manifest?.Id is not null)
+                .GroupBy(extension => extension.Manifest!.Id!, StringComparer.Ordinal)
+                .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
+            var consented = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal);
             if (trusted)
             {
                 var consents = new ExtensionConsentStore(_platformPathsFactory(), _workspaceRoot);
-                var byExtension = discovered.Where(extension => extension.Manifest?.Id is not null)
-                    .ToDictionary(extension => extension.Manifest!.Id!, consents.ConsentedCapabilities, StringComparer.Ordinal);
-                discovered = loader.DiscoverWithConsents(root, TrustLevel.Project, trusted, byExtension);
+                foreach (var extension in discovered.Where(extension => extension.Manifest?.Id is not null
+                    && !ambiguousIds.Contains(extension.Manifest.Id)))
+                    consented[extension.Manifest!.Id!] = consents.ConsentedCapabilities(extension);
+                discovered = loader.DiscoverWithConsents(root, TrustLevel.Project, trusted, consented);
             }
-            var entries = discovered.Select(extension => "{" + string.Join(",", new[]
+            var entries = discovered.Select(extension =>
             {
-                extension.Manifest?.Id is { } id ? JsonObj.Field("id", id) : "\"id\":null",
-                extension.Manifest?.Version is { } version ? JsonObj.Field("version", version) : "\"version\":null",
-                extension.Manifest?.DisplayName is { } displayName ? JsonObj.Field("displayName", displayName) : "\"displayName\":null",
-                JsonObj.Field("trust", extension.Trust.ToString()),
-                JsonObj.Field("status", extension.Status.ToString()),
-                JsonObj.Field("manifestSha256", extension.ManifestSha256),
-                JsonObj.Field("packageSha256", extension.PackageSha256),
-                extension.Diagnostic is { } diagnostic ? JsonObj.Field("diagnostic", diagnostic) : "\"diagnostic\":null",
-            }) + "}");
-            return new SessionQueryResult(name, "{\"extensions\":[" + string.Join(",", entries) + "]}");
+                var id = extension.Manifest?.Id;
+                var requested = extension.Manifest?.Requests?.Capabilities ?? [];
+                var granted = id is not null && consented.TryGetValue(id, out var existing)
+                    ? existing : new HashSet<string>(StringComparer.Ordinal);
+                return "{" + string.Join(",", new[]
+                {
+                    id is not null ? JsonObj.Field("id", id) : "\"id\":null",
+                    extension.Manifest?.Version is { } version ? JsonObj.Field("version", version) : "\"version\":null",
+                    extension.Manifest?.DisplayName is { } displayName ? JsonObj.Field("displayName", displayName) : "\"displayName\":null",
+                    "\"uiResources\":" + ExtensionUiResourcesJson.Encode(extension.Manifest?.UiResources),
+                    JsonObj.Field("trust", extension.Trust.ToString()),
+                    JsonObj.Field("status", extension.Status.ToString()),
+                    JsonObj.Field("manifestSha256", extension.ManifestSha256),
+                    JsonObj.Field("packageSha256", extension.PackageSha256),
+                    JsonObj.Field("consentHash", extension.ConsentHash),
+                    JsonObj.FieldBool("ambiguousId", id is not null && ambiguousIds.Contains(id)),
+                    "\"requestedCapabilities\":[" + string.Join(",", requested.Distinct(StringComparer.Ordinal)
+                        .Order(StringComparer.Ordinal).Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]",
+                    "\"consentedCapabilities\":[" + string.Join(",", granted.Order(StringComparer.Ordinal)
+                        .Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]",
+                    extension.Diagnostic is { } diagnostic ? JsonObj.Field("diagnostic", diagnostic) : "\"diagnostic\":null",
+                }) + "}";
+            });
+            return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
+                + ",\"session\":" + ( _lastSessionId is { } currentSession ? "\"" + JsonObj.Escape(currentSession.ToString()) + "\"" : "null")
+                + ",\"extensions\":[" + string.Join(",", entries) + "]}");
         }
         if (name == "skills")
         {
-            if (_workspaceRoot is null) return new SessionQueryResult(name, "{\"workspaceTrusted\":false,\"skills\":[]}");
+            if (_workspaceRoot is null) return new SessionQueryResult(name, "{\"workspaceTrusted\":false,\"session\":"
+                + (_lastSessionId is { } noWorkspaceSession ? "\"" + JsonObj.Escape(noWorkspaceSession.ToString()) + "\"" : "null")
+                + ",\"skills\":[]}");
             var trusted = new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(_workspaceRoot);
             var root = Path.Combine(_workspaceRoot, ".omnicore", "skills");
             var discovered = SkillManifestLoader.ResolvePrecedence(new SkillManifestLoader().Discover(root,
@@ -2062,10 +2233,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 JsonObj.Field("state", state.ToString()),
                 JsonObj.Field("manifestSha256", skill.ManifestSha256),
                 skill.Manifest.Sealed ? "\"sealed\":true" : "\"sealed\":false",
+                "\"tools\":[" + string.Join(",", (skill.Manifest.Tools ?? []).Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]",
+                JsonObj.FieldBool("modelInvocable", skill.Manifest.ModelInvocable),
                 diagnostic is { } message ? JsonObj.Field("diagnostic", message) : "\"diagnostic\":null",
             }) + "}";
             });
             return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
+                + ",\"session\":" + (_lastSessionId is { } currentSession ? "\"" + JsonObj.Escape(currentSession.ToString()) + "\"" : "null")
                 + ",\"skills\":[" + string.Join(",", entries) + "]}");
         }
         if (name is "memory" or "memory.session")
@@ -2223,6 +2397,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 entries.Add("{" + JsonObj.Field("visibleName", definition.Name) + ","
                     + JsonObj.Field("toolId", descriptor.Id.ToString()) + ","
                     + JsonObj.Field("description", definition.Description) + ","
+                    + "\"uiDescriptions\":" + ExtensionUiResourcesJson.EncodeDescriptions((tool as ExtensionTool)?.UiDescriptions) + ","
                     + JsonObj.Field("source", descriptor.Source.Kind + ":" + descriptor.Source.Scope
                         + ":" + descriptor.Source.Trust + ":" + descriptor.Source.Owner
                         + "@" + descriptor.Source.Version) + ","
@@ -2264,6 +2439,22 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         return null;
+    }
+
+    private static string UiLocaleErrorKey(Exception exception)
+    {
+        if (exception.Data["UiLocaleErrorKey"] is string errorKey)
+            return errorKey;
+        var key = exception switch
+        {
+            ConfigValidationException => "ui.locale.error.invalid_settings",
+            System.Text.Json.JsonException => "ui.locale.error.invalid_request",
+            InvalidOperationException => "ui.locale.error.invalid_settings",
+            ArgumentException => "ui.locale.error.invalid_request",
+            YamlDotNet.Core.YamlException => "ui.locale.error.invalid_settings",
+            _ => "ui.locale.error.save_failed",
+        };
+        return key;
     }
 
     /// <summary>Redacta PII del WorkingState antes de exponerlo en queries.</summary>
@@ -3238,7 +3429,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private SessionId RequireSession() =>
-        _lastSessionId ?? throw new FormatException("no hay una sesión activa");
+        _lastSessionId ?? throw new FormatException("runtime.session.required");
 
     private RunId RunFrom(Dictionary<string, string> fields) =>
         fields.TryGetValue("runId", out var r) && Guid.TryParse(r, out var g)

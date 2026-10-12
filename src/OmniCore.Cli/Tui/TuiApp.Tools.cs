@@ -9,45 +9,50 @@ namespace OmniCore.Cli;
 
 public sealed partial class TuiApp
 {
+    private string ToolUi(string key) => _localization.Resolve("tools.ui." + key);
+
     private void ShowTools(ToolsInspection snapshot)
     {
         if (_window is null) return;
+        var fromPreferences = _preferencesCenterActive || _preferencesReturnToCategory;
         CloseOverlay();
-        var frame = OverlayFrame(Ui("Herramientas", "Tools"), Math.Max(14, _window.Frame.Height - 5));
+        var frame = OverlayFrame(ToolUi("title"), Math.Max(14, _window.Frame.Height - 5));
         frame.Height = Dim.Func(parent => Math.Max(16, (parent?.Frame.Height ?? 25) - 4), _window);
         var summary = new Label { Id = "tools-summary", X = 2, Y = 1, Width = Dim.Fill(2), Height = 1 };
         var purpose = new Label { Id = "tools-purpose", X = 2, Y = 2, Width = Dim.Fill(2), Height = 2,
-            Text = Ui("Qué hace cada herramienta del agente.\nConsulta: no ejecuta ni activa/desactiva.",
-                "What each agent tool does.\nRead-only: no execution or on/off switches.") };
+            Text = ToolUi("purpose") };
         var search = new TextField { Id = "tools-search", X = 10, Y = 4, Width = Dim.Fill(2) };
         var list = new ListView { Id = "tools-list", X = 2, Y = 6, Width = Dim.Fill(2),
             Height = Dim.Func(parent => Math.Max(1, ((parent?.Frame.Height ?? 21) - 10) / 2), frame),
             ShowMarks = false };
         var detail = new StyledTextPresenter { Id = "tools-detail", X = 2, Y = Pos.Bottom(list) + 1, Width = Dim.Fill(2),
             Height = Dim.Fill(3), CanFocus = true };
-        var close = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
-        close.Accepted += (_, _) => CloseOverlay();
+        var close = new Button { Id = "tools-close", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
+            Text = fromPreferences ? Pref("back") : ToolUi("close") };
+        close.Accepted += (_, _) =>
+        {
+            if (fromPreferences) ReturnFromPreferencesSubpage(); else CloseOverlay();
+        };
         var rows = snapshot.Tools.ToArray();
-        string Visibility(ToolInspectionRow row) => row.Visible ? Ui("Visible", "Visible") : Ui("No visible", "Not visible");
+        string Visibility(ToolInspectionRow row) => ToolUi(row.Visible ? "visible" : "hidden");
         string Description(ToolInspectionRow row) => ToolDisplayText(ToolInspectionPresentation.Description(row, _localization));
         string Detail(ToolInspectionRow row) => ToolDisplayText(row.VisibleName) + "\n" + Description(row)
-            + "\n\n" + Ui("Restricción: ", "Restriction: ") + ToolInspectionPresentation.Decision(row, _localization)
-            + "\n" + Visibility(row) + " · " + Ui("no equivale a permiso de ejecución", "does not grant execution permission")
-            + "\n\n" + Ui("Control: las reglas de usuario en permissions.yaml permiten allow (permitir), ask (preguntar) y deny (denegar). No superan los límites del modo o del modelo. /permissions lista autorizaciones guardadas; no activa herramientas.",
-                "Control: user rules in permissions.yaml support allow, ask and deny. They cannot override mode or model limits. /permissions lists saved grants; it does not enable tools.")
+            + "\n\n" + ToolUi("restriction") + ToolInspectionPresentation.Decision(row, _localization)
+            + "\n" + Visibility(row) + " · " + ToolUi("not_permission")
+            + "\n\n" + ToolUi("control")
             + "\n\nID: " + ToolDisplayText(row.ToolId)
-            + "\n" + Ui("Origen: ", "Source: ") + ToolDisplayText(row.Source)
-            + "\n" + Ui("Clase de efecto (técnica): ", "Effect class (technical): ") + ToolDisplayText(row.EffectClass)
-            + "\n" + Ui("Política reportada (técnica): ", "Reported policy (technical): ") + ToolDisplayText(row.Decision)
-            + (string.IsNullOrWhiteSpace(row.Description) ? "" : "\n" + Ui("Definición original: ", "Original definition: ") + ToolDisplayText(row.Description));
+            + "\n" + ToolUi("source") + ToolDisplayText(row.Source)
+            + "\n" + ToolUi("effect") + ToolDisplayText(UiCompletionResources.EnumLabel("effect", row.EffectClass, _locale))
+            + "\n" + ToolUi("policy") + ToolInspectionPresentation.Decision(row, _localization)
+            + (string.IsNullOrWhiteSpace(row.Description) ? "" : "\n" + ToolUi("original") + ToolDisplayText(row.Description));
         void UpdateDetail()
         {
-            summary.Text = Ui("Modo: ", "Mode: ") + ToolDisplayText(snapshot.Mode ?? Ui("no reportado", "not reported"))
-                + $" · {rows.Length}/{snapshot.Tools.Count} · " + Ui("sólo consulta", "read-only");
+            summary.Text = ToolUi("mode") + ToolDisplayText(snapshot.Mode is { } mode
+                    ? UiCompletionResources.EnumLabel("toolMode", mode, _locale) : ToolUi("unknown"))
+                + $" · {rows.Length}/{snapshot.Tools.Count} · " + ToolUi("read_only");
             detail.Text = list.SelectedItem is int index && index >= 0 && index < rows.Length
                 ? Detail(rows[index])
-                : snapshot.Tools.Count == 0 ? Ui("El Host no reportó herramientas.", "The Host reported no tools.")
-                : Ui("Sin coincidencias. Cambia el filtro.", "No matches. Change the filter.");
+                : snapshot.Tools.Count == 0 ? ToolUi("empty") : ToolUi("no_matches");
         }
         void Filter()
         {
@@ -79,13 +84,14 @@ public sealed partial class TuiApp
             if (rows.Length > 0 && key.KeyCode is KeyCode.CursorDown or KeyCode.Enter)
             { list.SetFocus(); key.Handled = true; }
         };
-        frame.Add(summary, purpose, new Label { X = 2, Y = 4, Width = 8, Text = Ui("Filtrar", "Filter") },
+        frame.Add(summary, purpose, new Label { X = 2, Y = 4, Width = 8, Text = ToolUi("filter") },
             search, list, detail, close, new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(2),
-                Text = Ui("↑↓ · Enter detalle · Ctrl+F · Esc", "↑↓ · Enter details · Ctrl+F · Esc") });
+                Text = ToolUi("help") });
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) { _conversation.Dimmed = true; _conversation.SetNeedsDraw(); }
         ApplyTheme(frame);
         _overlay = frame;
+        _preferencesReturnToCategory = fromPreferences;
         _window.Add(frame);
         Filter();
         if (rows.Length > 0) list.SetFocus(); else search.SetFocus();

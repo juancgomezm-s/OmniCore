@@ -1,10 +1,12 @@
 # Preferencias e idiomas de OmniCore
 
-Plan independiente de producto e implementación, acordado a partir de la petición del 11 de octubre de 2026. Responsable de integración y revisión: Codex. Implementación por paquetes: un worker Luna. El objetivo es que una persona encuentre y configure las funciones construidas sin conocer comandos, archivos YAML ni la arquitectura interna, con toda la interfaz propia disponible en español, inglés, francés e italiano.
+Plan independiente de producto e implementación, acordado a partir de la petición del 11 de octubre de 2026. Responsable de integración y revisión: Codex. Implementación por paquetes: dos workers Luna con razonamiento alto, tras la ampliación solicitada por el usuario. El objetivo es que una persona encuentre y configure las funciones construidas sin conocer comandos, archivos YAML ni la arquitectura interna, con toda la interfaz propia disponible en español, inglés, francés e italiano.
 
 El rediseño no se limita a cambiar etiquetas. Separa cuentas, conexiones y motores locales; une las preferencias dispersas; da representación a las capacidades recientes de M8; y sustituye la localización parcial por un contrato verificable de extremo a extremo. No declara M8 terminado ni adelanta MCP, hooks o memoria global por el hecho de añadir una entrada al menú.
 
-## Problemas que se deben resolver
+## Problemas detectados en la línea base
+
+Esta lista describe la situación anterior a P1. El estado de las entregas se registra al final y en el inventario; no debe interpretarse como ausencia de lo ya implementado.
 
 1. El subtítulo «Modelos, políticas y cuenta» ocupa una fila similar a una opción. El título, la explicación, el foco y la selección no tienen una jerarquía inequívoca.
 2. «Modelos y permisos» mezcla selección de modelo y autoridad operativa. «Conexiones API de providers» mezcla cuentas por suscripción, servidores locales y proveedores con clave. No permite entender dónde configurar cada uno.
@@ -65,7 +67,7 @@ Esta matriz identifica contratos existentes y trabajo nuevo. Cada paquete debe a
 | Cuenta ChatGPT | `TuiAccountHost`, `ChatGptSubscriptionAuthProvider`, catálogo | Reutilizar login, logout y estado; mostrar acciones acordes al estado, no pedir API key. |
 | Cuenta Claude | `OmniCliRuntime.LoginClaudeAsync`/`LogoutClaude`, configuración OAuth y almacenes | Añadir fachada TUI tipada y selector de provider exacto. Respetar identidad OAuth configurada, sin inventar cliente ni usar credenciales ajenas. |
 | API remota | `ProviderConnectionService`, `ITuiProviderConnectionHost` | Actualmente conectar/descubrir está especializado en Anthropic. Generalizar sólo a familias ya implementadas mediante adaptadores explícitos y capabilities; no llamar al flujo Anthropic para cualquier fila. |
-| Motor local | `LocalServerSupervisor`, `ProviderFileYaml.Host`, `ManagedHostYaml` | Editor y fachada Host de lectura/validación/guardado pendientes. Servidor existente y administrado son rutas distintas. Puerto efímero y API key de managed son del runtime, no campos inventados de usuario. |
+| Motor local | `LocalServerSupervisor`, `ProviderFileYaml.Host`, `ManagedHostYaml`, nueva `TuiLocalEngineHost` | Editor y fachada Host de lectura/validación/guardado construidos en el bloque P1B/P2; evidencia en el registro del bloque. Servidor existente y administrado son rutas distintas. Puerto efímero y API key de managed son del runtime, no campos inventados de usuario. Supervisión desde preferencias sigue pendiente. |
 | Modelos y políticas | `ModelPolicyHost`, picker, `ModelPolicyCommands`, routing en YAML | Unificar acceso sin mezclar selección, cualificación y permiso. Conservar revisión, historial y selección exacta provider/model. |
 | Perfil y reglas | `UserPermissionsConfiguration`, `PermissionGrantCommands`, `OmniCliRuntime.Permissions` | Vista explicativa y editor validado donde el contrato permita; separar visibilidad, política allow/ask/deny y grants revocables. No existe un toggle universal que conceda autoridad. |
 | Confianza | `WorkspaceTrustStore`, `SetWorkspaceTrusted`, ADR0039 | Entrada visible con alcance y confirmación. Confiar en un workspace no concede consentimiento automático a paquetes. |
@@ -178,7 +180,7 @@ Antes de P2, Root revisa diff, pruebas y la propuesta de navegación. Antes de P
 
 ## Verificación proporcional y definición de terminado
 
-No se exige repetir toda la suite por cada texto. Las pruebas de catálogo/parser se ejecutan en cada cambio de recursos; las de seguridad/persistencia se ejecutan al tocar su contrato; las visuales al tocar layout. La suite de arquitectura y la regresión amplia corresponden a la integración y al cierre, con fallos anteriores separados de los nuevos.
+No se exige repetir toda la suite por cada texto. Por indicación del usuario, se implementan paquetes amplios con sus pruebas antes de ejecutar la validación agrupada. Al integrar se seleccionan catálogo/parser, seguridad/persistencia y recorridos visuales según los contratos modificados. La suite de arquitectura y la regresión amplia corresponden a la integración y al cierre, con fallos anteriores separados de los nuevos. Un fallo localizado se reproduce y corrige sin repetir automáticamente regresiones ajenas.
 
 1. Toda acción del inventario está representada o tiene una dependencia explícita; no quedan controles que aparenten funcionar sobre contratos inexistentes.
 2. Una persona encuentra cuentas y motores locales desde F4 sin memorizar comandos. Puede identificar una cuenta conectada, configurar un endpoint y distinguir guardar de probar.
@@ -198,4 +200,38 @@ No se exige repetir toda la suite por cada texto. Las pruebas de catálogo/parse
 - [ADR0028 memoria](../adr/0028-memory.md): procedencia, reemplazo explícito y separación de WorkingState.
 - [Evidencia M8](../validation/m8-extensibility-20261011.md): capacidades entregadas y pendientes; no confundir un checkpoint con cierre del hito.
 
-Estado inicial histórico: plan preparado, previo a la implementación de la rama de preferencias. Estado revisado: implementación de idiomas/preferencias disponible en rama, integración y aceptación interactiva pendientes al corte; M8–M10 abiertos según arquitectura §24 y el plan enlazado. Los avances se registran por paquete, commit, árbol integrado y evidencia; no mediante porcentajes sin inventario.
+## Estado de ejecución
+
+P0 está consolidado y P1A quedó en `0c4ddc8`. El siguiente bloque construye P1B, el centro base
+de P2 y la configuración local de P3. Se implementaron dos paquetes amplios con dos Luna en
+alto; después se compiló y validó el conjunto. La evidencia de compilación, pruebas, capturas y
+correcciones está en [el registro del bloque](../validation/preferences-batch-20261011.md).
+
+La segunda tanda, también con dos Luna en alto, añade reflow 80↔120 con búsqueda, selección,
+viewport y foco conservados; cuentas Claude sobre identidad OAuth ya configurada; acciones API
+por capacidades; y páginas tipadas de contexto, memoria Session, skills y extensiones. Se amplía
+la traducción de cuentas, herramientas y ayuda de comandos a es/en/fr/it. La revisión y los
+resultados están en [el registro de cuentas y sesión](../validation/preferences-accounts-session-20261011.md).
+
+La tanda de cierre del 12 de octubre implementa los formularios restantes de catálogo,
+políticas, seguridad y diagnóstico; control de motores propios; invocaciones localizadas;
+catálogos propios en cuatro idiomas y recursos opcionales de extensiones. Incorpora además las
+correcciones detectadas al integrar concurrencia, foco, scroll, cancelación y arquitectura.
+
+El estado de validación, comandos reproducibles, capturas y límites está en
+[el registro de cierre](../validation/preferences-completion-20261012.md). Ese registro y el
+[inventario actualizado](preferences-localization-inventory.md) tienen precedencia sobre los
+pendientes históricos de las tandas anteriores. Las funciones que carecen de backend —nuevas
+identidades OAuth, adaptadores API adicionales, MCP, hooks y memoria global— no se convierten
+en pendientes ocultos de UI ni se declaran construidas. La aceptación del escritorio real se
+mantiene distinguida de la validación del driver, sin bloquear el cierre del código verificable.
+
+La continuación del 12 de octubre completó una regresión final de **4199 casos: 4191 PASS,
+0 FAIL y 8 SKIP**, además de arquitectura 62/62. Se ejercitó la TUI real en PTY con teclado,
+vista previa de idiomas, guardar/cancelar y reinicio; también se corrigieron solapes de motores
+locales y truncamientos francés/italiano a 80 columnas. No son capturas del escritorio ni
+certificación de todos los flujos de autenticación y mantenimiento destructivo.
+El [registro actualizado](../validation/closure-live-and-terminal-20261012.md) separa esa
+aceptación de los resultados Luna/Qwen, las omisiones y los límites aún abiertos.
+
+Integración solicitada del 2026-10-12: se conserva el alcance futuro M8–M10 de arquitectura §24.4 junto con esta implementación y su evidencia histórica; el árbol combinado se valida por separado.

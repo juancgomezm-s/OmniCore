@@ -2,6 +2,8 @@ namespace OmniCore.Host;
 
 using OmniCore.Infrastructure;
 using OmniCore.Protocol;
+using OmniCore.Domain;
+using Task = System.Threading.Tasks.Task;
 
 /// <summary>
 /// Comandos del journal (M4): <c>omni verify-journal [ruta] [--session id] [--artifacts dir]
@@ -18,7 +20,8 @@ public sealed class JournalCommandHost
 {
     private const string DefaultJournal = "<data>/workspaces/<WorkspaceId>/journal.db";
 
-    public static Task<int> VerifyJournal(string[] args, TextWriter? output = null)
+    public static Task<int> VerifyJournal(string[] args, TextWriter? output = null,
+        Func<CommandOutputText, string>? resolve = null)
     {
         var console = output ?? Console.Out;
         var paths = OmniHost.CreatePlatformPaths();
@@ -52,8 +55,10 @@ public sealed class JournalCommandHost
             }
             else if (arg.StartsWith("--", StringComparison.Ordinal))
             {
-                console.WriteLine("omni verify-journal: opción desconocida '" + arg + "'");
-                PrintUsage(console);
+                LocalizedCommandOutput.WriteLine(console, resolve, "cli.journal.unknown_option",
+                    new Dictionary<string, string> { ["value"] = arg },
+                    "omni verify-journal: opción desconocida '" + arg + "'");
+                PrintUsage(console, resolve);
                 return Task.FromResult(2);
             }
             else
@@ -64,7 +69,9 @@ public sealed class JournalCommandHost
 
         if (session is not null && !IsGuid(session))
         {
-            console.WriteLine("omni verify-journal: --session espera un GUID de sesión válido: '" + session + "'");
+            LocalizedCommandOutput.WriteLine(console, resolve, "cli.journal.invalid_session",
+                new Dictionary<string, string> { ["value"] = session },
+                "omni verify-journal: --session espera un GUID de sesión válido: '" + session + "'");
             return Task.FromResult(2);
         }
 
@@ -86,53 +93,79 @@ public sealed class JournalCommandHost
             return Task.FromResult(report.Ok ? 0 : 1);
         }
 
-        console.WriteLine(report.SummaryLine());
+        var summaryKey = report.Ok ? "cli.journal.summary.ok" : "cli.journal.summary.issues";
+        var listed = report.Issues.Count == (int)report.TotalIssueCount
+            ? report.TotalIssueCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : report.Issues.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + " de "
+                + report.TotalIssueCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        LocalizedCommandOutput.WriteLine(console, resolve, summaryKey, new Dictionary<string, string>
+        {
+            ["file"] = Path.GetFileName(report.JournalPath),
+            ["sessions"] = report.SessionCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["events"] = report.EventCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["refs"] = report.ArtifactRefCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["issues"] = report.TotalIssueCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["listed"] = listed,
+        }, report.SummaryLine());
         foreach (var issue in report.Issues)
         {
-            console.WriteLine(IssueLine(issue));
+            console.WriteLine(IssueLine(issue, resolve));
         }
 
         if (report.IssuesTruncated)
         {
-            console.WriteLine("… y " + (report.TotalIssueCount - report.Issues.Count) + " problema(s) más "
-                + "(usa --max-issues para listarlos).");
+            LocalizedCommandOutput.WriteLine(console, resolve, "cli.journal.issues_truncated",
+                new Dictionary<string, string> { ["count"] = (report.TotalIssueCount - report.Issues.Count)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                "… y " + (report.TotalIssueCount - report.Issues.Count) + " problema(s) más (usa --max-issues para listarlos).");
         }
 
         return Task.FromResult(report.Ok ? 0 : 1);
     }
 
-    private static void PrintUsage(TextWriter console)
+    private static void PrintUsage(TextWriter console, Func<CommandOutputText, string>? resolve = null)
     {
-        console.WriteLine("Uso: omni verify-journal [ruta] [--session <id>] [--artifacts <dir>] [--json] "
-            + "[--max-issues N]");
-        console.WriteLine("  ruta        journal SQLite (por defecto " + DefaultJournal + ")");
-        console.WriteLine("  --artifacts raíz de blobs (por defecto, el directorio del journal)");
+        LocalizedCommandOutput.WriteLine(console, resolve, "cli.journal.usage", null,
+            "Uso: omni verify-journal [ruta] [--session <id>] [--artifacts <dir>] [--json] [--max-issues N]");
+        LocalizedCommandOutput.WriteLine(console, resolve, "cli.journal.usage.path",
+            new Dictionary<string, string> { ["path"] = DefaultJournal },
+            "  ruta        journal SQLite (por defecto " + DefaultJournal + ")");
+        LocalizedCommandOutput.WriteLine(console, resolve, "cli.journal.usage.artifacts", null,
+            "  --artifacts raíz de blobs (por defecto, el directorio del journal)");
     }
 
     /// <summary>Línea legible de un problema: código, ubicación y detalle (en español). El
     /// detalle pasa por el redactor de PII por defensa en profundidad: el journal ya se
     /// escribe redactado (ADR-0018 §4), pero un error de parse puede incluir fragmentos.
     /// </summary>
-    private static string IssueLine(JournalIssue issue)
+    private static string IssueLine(JournalIssue issue, Func<CommandOutputText, string>? resolve)
     {
         var detail = new OmniCore.Domain.PiiRedactor().Redact(issue.Detail);
-        var where = "seq=" + (issue.Sequence?.ToString() ?? "—");
+        var where = resolve?.Invoke(new CommandOutputText("cli.journal.issue.sequence",
+            new Dictionary<string, string> { ["value"] = issue.Sequence?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "—" }))
+            ?? "seq=" + (issue.Sequence?.ToString() ?? "—");
         if (issue.SessionId is not null)
         {
-            where = "sesión=" + issue.SessionId + " " + where;
+            var session = resolve?.Invoke(new CommandOutputText("cli.journal.issue.session",
+                new Dictionary<string, string> { ["value"] = issue.SessionId })) ?? "sesión=" + issue.SessionId;
+            where = session + " " + where;
         }
 
         if (issue.EventType is not null)
         {
-            where += " evento=" + issue.EventType;
+            where += " " + (resolve?.Invoke(new CommandOutputText("cli.journal.issue.event",
+                new Dictionary<string, string> { ["value"] = issue.EventType })) ?? "evento=" + issue.EventType);
         }
 
         if (issue.Field is not null)
         {
-            where += " campo=" + issue.Field;
+            where += " " + (resolve?.Invoke(new CommandOutputText("cli.journal.issue.field",
+                new Dictionary<string, string> { ["value"] = issue.Field })) ?? "campo=" + issue.Field);
         }
 
-        return "[" + issue.Code + "] " + where + " — " + detail;
+        return resolve?.Invoke(new CommandOutputText("cli.journal.issue", new Dictionary<string, string>
+        { ["code"] = issue.Code.ToString(), ["where"] = where, ["detail"] = detail }))
+            ?? "[" + issue.Code + "] " + where + " — " + detail;
     }
 
     /// <summary>Reporte como un objeto JSON de una línea (para scripting y CI).</summary>

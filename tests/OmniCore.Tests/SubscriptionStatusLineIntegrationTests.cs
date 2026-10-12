@@ -89,7 +89,7 @@ public sealed class SubscriptionStatusLineIntegrationTests
             Assert.Equal("tokens 60%", OmniCore.Client.UsagePresentation.Remaining(firstUsage.Remaining));
             var firstStatus = OmniCore.Cli.CliApp.StatusLineText(firstUsage);
             Assert.Contains("tokens 60%", firstStatus);
-            Assert.Contains(ProviderId + " 7d remaining 80%", firstStatus);
+            Assert.Contains(ProviderId + " 7d restantes 80%", firstStatus);
 
             // An unknown refresh preserves the last reading as stale and timestamps the failed attempt.
             Volatile.Write(ref reportUnknownForFixture, 1);
@@ -102,7 +102,7 @@ public sealed class SubscriptionStatusLineIntegrationTests
             Assert.Equal(attemptedUnknownAt, staleUsage.AccountQuota.LastQueryAttemptAt);
             Assert.Equal("synthetic query intentionally unavailable", staleUsage.AccountQuota.Limitation);
             Assert.Equal("tokens 60%", OmniCore.Client.UsagePresentation.Remaining(staleUsage.Remaining));
-            Assert.Contains(ProviderId + " 7d remaining 80% stale", OmniCore.Cli.CliApp.StatusLineText(staleUsage));
+            Assert.Contains(ProviderId + " 7d restantes 80% dato anterior", OmniCore.Cli.CliApp.StatusLineText(staleUsage));
 
             // A query for another provider is stored independently and cannot replace the active provider's quota.
             var otherProvider = "m5-statusline-other-fixture-provider";
@@ -114,7 +114,7 @@ public sealed class SubscriptionStatusLineIntegrationTests
             Assert.Equal(MetricAvailability.Stale, afterOtherProvider.AccountQuota.Availability);
             Assert.Equal("tokens 60%", OmniCore.Client.UsagePresentation.Remaining(afterOtherProvider.Remaining));
             var afterOtherStatus = OmniCore.Cli.CliApp.StatusLineText(afterOtherProvider);
-            Assert.Contains(ProviderId + " 7d remaining 80% stale", afterOtherStatus);
+            Assert.Contains(ProviderId + " 7d restantes 80% dato anterior", afterOtherStatus);
             Assert.DoesNotContain(otherProvider, afterOtherStatus, StringComparison.Ordinal);
 
             lock (requestedProviders)

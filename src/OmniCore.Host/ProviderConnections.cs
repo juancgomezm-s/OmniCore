@@ -948,6 +948,13 @@ internal static class ProviderConnectionRegistration
         string? expectedProviderId = null, string? expectedSecretRef = null)
     {
         Directory.CreateDirectory(directory);
+        using var lease = ProviderConfigurationLease.Acquire(directory);
+        return EnsureAnthropicProviderUnderLease(directory, expectedProviderId, expectedSecretRef);
+    }
+
+    private static (string ProviderId, string BaseUrl) EnsureAnthropicProviderUnderLease(string directory,
+        string? expectedProviderId = null, string? expectedSecretRef = null)
+    {
         var providersPath = Path.Combine(directory, "providers.yaml");
         var modelsPath = Path.Combine(directory, "models.yaml");
         var oldProviders = File.Exists(providersPath) ? File.ReadAllText(providersPath) : null;
@@ -1054,6 +1061,7 @@ internal static class ProviderConnectionRegistration
         IReadOnlyList<AvailableAnthropicModel> catalog)
     {
         Directory.CreateDirectory(directory);
+        using var lease = ProviderConfigurationLease.Acquire(directory);
         var providersPath = Path.Combine(directory, "providers.yaml");
         var modelPath = Path.Combine(directory, "models.yaml");
         var oldProviders = File.Exists(providersPath) ? File.ReadAllText(providersPath) : null;
@@ -1061,8 +1069,9 @@ internal static class ProviderConnectionRegistration
         var loaded = new ConfigLoader().Load(oldProviders, oldModels);
         if (loaded.Registry.Provider(providerId) is null)
         {
-            EnsureAnthropicProvider(directory);
+            EnsureAnthropicProviderUnderLease(directory);
             oldProviders = File.ReadAllText(providersPath);
+            oldModels = File.Exists(modelPath) ? File.ReadAllText(modelPath) : null;
             loaded = new ConfigLoader().Load(oldProviders, oldModels);
         }
 

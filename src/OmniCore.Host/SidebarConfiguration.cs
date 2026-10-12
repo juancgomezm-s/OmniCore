@@ -170,8 +170,7 @@ public sealed class SidebarConfiguration
         var file = scope == "User" ? UserFile : WorkspaceFile;
         CheckLinks(file); Directory.CreateDirectory(Path.GetDirectoryName(file)!); CheckLinks(file);
         // A lease prevents competing OmniCore writers; revision prevents overwriting intervening edits.
-        var lockFile = file + ".sidebar.lock";
-        using var lease = new FileStream(lockFile, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+        using var lease = ConfigurationWriteLease.Acquire(file);
         if (Read().Revision != revision) throw new InvalidOperationException("Settings changed; reload before saving");
         var original = ReadFile(file); var root = Root(original); var map = root;
         foreach (var part in parts[..^1])

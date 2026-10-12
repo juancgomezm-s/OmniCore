@@ -1,10 +1,14 @@
 # Encargo de Luna para preferencias e idiomas
 
+Actualización del 12 de octubre: los encargos de implementación de este documento ya fueron
+ejecutados. Es un registro histórico de propiedad, no una orden de relanzar workers. Véanse el
+[inventario vigente](preferences-localization-inventory.md) y la [evidencia de cierre](../validation/preferences-completion-20261012.md).
+
 Implementar el [plan independiente](preferences-and-localization.md) por paquetes, conservando la TUI y el núcleo consolidados. Este encargo no equivale a un cierre del rediseño: establece la secuencia, la autoridad y las pruebas de entrega.
 
 ## Base y propiedad
 
-- Un único worker `gpt-6-luna`, coordinado por Codex. No crear subagentes.
+- Dos workers `gpt-6-luna` con razonamiento alto, coordinados por Codex conforme a la ampliación solicitada por el usuario. No crear subagentes adicionales.
 - Directorio de implementación: `C:\Users\juanc\.codex\worktrees\tui-omega-animations\OmniCore`.
 - Rama de trabajo: `codex/tui-omega-animations`. No cambiar de rama, reescribir historial, hacer push o merge a main desde el worker.
 - Base de código consolidada: `e06aa7f`; contiene la TUI, M8, memoria `709f17b` y el rescate OAuth con las defensas posteriores de main preservadas. El coordinador proporciona el SHA final de documentación y confirma que main está integrado antes de iniciar P1.
@@ -32,6 +36,57 @@ Archivos esperados, no autorización para cambios ajenos: `src/OmniCore.Client/L
 
 Entregar un commit por bloque coherente, lista de archivos, pruebas y conteos reales, decisiones tomadas y pendientes concretos para P1B/P2. No deshabilitar assertions, saltar tests ni introducir mocks que eviten el contrato que se pretende validar. Actualizar el inventario con las claves/superficies migradas y la evidencia.
 
-El coordinador reproduce las pruebas focales y revisa el diff antes del siguiente bloque. P1B conecta arranque y propagación de idioma; P2 conecta la nueva navegación y General. P3 a P7 siguen el orden y las dependencias del plan. Una incompatibilidad de arquitectura o una operación que requiera autoridad nueva se reporta con evidencia; no se resuelve saltándose el Host o simulando una función inexistente.
+El coordinador revisa cada diff y agrupa la validación al cerrar bloques amplios. No se repite la regresión por cada texto o pequeño ajuste. P1B conecta arranque y propagación de idioma; P2 conecta la nueva navegación y General. P3 a P7 siguen el orden y las dependencias del plan. Una incompatibilidad de arquitectura o una operación que requiera autoridad nueva se reporta con evidencia; no se resuelve saltándose el Host o simulando una función inexistente.
 
 Las pruebas no incluyen modificar preferencias reales del usuario ni gastar presupuesto de proveedores. Las futuras comprobaciones visuales distinguirán buffers Terminal.Gui, ventanas realmente ejecutadas y limitaciones de automatización.
+
+## Ejecución paralela autorizada
+
+Base de implementación `0c4ddc8`, entrega P1A. Main conserva la consolidación `fc6f8e0` mientras se construyen y revisan los bloques siguientes.
+
+| Responsable | Bloque completo | Archivos exclusivos |
+|---|---|---|
+| Luna A con razonamiento alto | P1B y localización compartida de arranque, CLI, Host y catálogo existente | CLI fuera de Tui, Localization y recursos generales, contratos y configuración de locale, tests de idioma |
+| Luna B con razonamiento alto | P2, General funcional, navegación y conexión de páginas ya existentes, formularios locales sobre la fachada Host | TuiApp y parciales, nuevas vistas de preferencias, PreferencesUiResources y PreferencesPresentation, tests de navegación y frames |
+| Codex coordinador | Integración, configuración de motores locales, revisión y evidencia | TuiLocalEngineHost, sus pruebas, documentación compartida y correcciones acordadas |
+
+Ambos agentes trabajan sin commits ni staging compartido; el coordinador reúne los archivos por bloque. El seam de TUI es `LocaleSelection? localeSelection = null` al final del constructor, seguido por la fachada local inyectable. Los recursos nuevos de preferencias se resuelven a través de Localization. Se escriben primero implementación y pruebas; después se compila el conjunto y se ejecuta una selección focal que cubra los contratos modificados, más arquitectura. Fallos nuevos se corrigen sin debilitar las pruebas. La regresión completa sólo se justifica por el riesgo de integración, no por la cantidad de traducciones.
+
+## Cola tras P1B y el centro base
+
+El [registro del bloque](../validation/preferences-batch-20261011.md) y el inventario describen el
+estado implementado. Próximos encargos amplios, sin iniciar trabajo adicional automáticamente:
+
+1. Completar navegación adaptativa en vivo y rutas de cuentas/API: cambio de ancho con borrador,
+   foco y scroll conservados; fachada Claude exacta; acciones por capabilities y mensajes de estado.
+2. Completar vistas/acciones tipadas de seguridad y M8, con recursos propios en los cuatro idiomas,
+   sin mezclar lectura con consentimiento o ejecución. Mantener propiedad disjunta del primer bloque.
+
+Antes de cada tanda se implementa el paquete y sus casos de prueba. Al integrar se reproduce
+el grupo afectado; un fallo de UI no justifica repetir toda la suite de OAuth o del motor.
+La traducción de las páginas heredadas y aliases sigue abierta y debe registrarse por superficie.
+
+## Segunda tanda paralela: cuentas y operaciones de sesión
+
+Continuación autorizada por el usuario sobre `ca6f725`, en el mismo worktree y con main ya
+contenido en la rama. Los dos agentes Luna conservan razonamiento alto. No hay nuevas ramas,
+login real, inferencia ni modificaciones de configuración personal en esta tanda.
+
+| Responsable | Entrega asignada | Propiedad |
+|---|---|---|
+| Luna `preferences_ui_high` | Reflow en vivo, navegación de cuentas ChatGPT/Claude/API, cancelación y selección exacta | Parciales Preferences, AccountPreferences, ProviderConnections, TuiApp, fachada Claude, recursos y pruebas de cuentas |
+| Luna `locale_runtime_high` | Contexto, memoria Session, skills y consentimiento de extensiones con datos tipados | SessionPreferences, recursos/presentación compartida, regiones de query/comandos de OmniServer y pruebas asociadas |
+| Coordinador | Integración de catálogos, ayuda de comandos y herramientas en cuatro idiomas, auditoría, evidencia | Localization, ClientActions (copy), ClientCommandResources, TuiApp.Tools, pruebas de idiomas y documentación |
+
+Se escriben implementación y pruebas antes de compilar el conjunto. El coordinador revisa
+arquitectura, identidad de proveedor/sesión/paquete, efectos de las acciones y layouts pequeños.
+Los agentes no hacen staging ni commits. Las pruebas usan servicios falsos o directorios
+temporales aislados; listar cuentas no renueva tokens ni abre red. Las imágenes de evidencia
+proceden del buffer real del driver Terminal.Gui con datos sintéticos, no del escritorio.
+
+Esta tanda no cierra todo P3–P7: no implementa adaptadores API inexistentes, supervisión de
+motores, editores completos de políticas/grants, mantenimiento, aliases ni toda la traducción
+heredada. Los resultados verificados se registran en el inventario y en
+[la evidencia de cuentas y sesión](../validation/preferences-accounts-session-20261011.md):
+105 casos focales distintos con resultado final PASS, 31/31 en el recorrido UI final,
+4/4 tras el ajuste visual y 62/62 de arquitectura (conteos solapados, no sumarlos).

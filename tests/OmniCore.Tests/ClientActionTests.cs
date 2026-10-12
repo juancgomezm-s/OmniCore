@@ -95,13 +95,17 @@ public sealed class ClientActionTests
     {
         var client = new FakeClient();
         client.Queries["commands"] = "{\"catalog\":{\"commands\":[{\"name\":\"plan\",\"description\":\"dup\"},"
-            + "{\"name\":\"explain\",\"description\":\"Explain repository content\"}]}}";
+            + "{\"id\":\"core:explain\",\"name\":\"explain\",\"source\":\"BuiltIn:core@1\",\"description\":\"Explain repository content\"}]}}";
 
         var help = Run("help", Context(client)).Text;
 
         Assert.StartsWith("Comandos disponibles:", help, StringComparison.Ordinal);
-        foreach (var command in ClientCommandRegistry.Default.Commands) Assert.Contains("/" + command.Name + " — ", help);
-        Assert.Contains("/explain — Explain repository content", help);
+        foreach (var command in ClientCommandRegistry.Default.Commands)
+        {
+            var name = HumanCommandAliases.DisplayName(command.Name, "es");
+            Assert.Contains("/" + name + (name == command.Name ? "" : " (/" + command.Name + ")") + " — ", help);
+        }
+        Assert.Contains("/explicar (/explain) — " + Localization.Spanish().Resolve("catalog.explain"), help);
         Assert.DoesNotContain("dup", help);
         Assert.Contains("se envía al modelo", help);
         Assert.Contains("shows this help", Run("help", Context(client, locale: "en")).Text);
@@ -189,7 +193,7 @@ public sealed class ClientActionTests
         Run("skills", Context(client), "release", "progress.compile");
         using var released = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("skills.release", released.RootElement.GetProperty("cmd").GetString());
-        Assert.Contains("Usage", Run("skills", Context(client), "other", "x").Text);
+        Assert.Equal("Uso: /skills [load|release <skill-id>]", Run("skills", Context(client), "other", "x").Text);
     }
 
     [Fact]
@@ -210,7 +214,7 @@ public sealed class ClientActionTests
         using var forget = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("memory.session.forget", forget.RootElement.GetProperty("cmd").GetString());
         Assert.Equal("abc123", forget.RootElement.GetProperty("memoryId").GetString());
-        Assert.Contains("Usage", Run("memory", Context(client), "workspace").Text);
+        Assert.Equal("Uso: /memory session [add <texto>|forget <memory-id>]", Run("memory", Context(client), "workspace").Text);
     }
 
     [Fact]

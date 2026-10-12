@@ -2,9 +2,38 @@ namespace OmniCore.Client;
 
 using OmniCore.Protocol;
 
+public enum LocaleSelectionSource { CommandLine, Environment, UserSetting, Default }
+
+/// <summary>Effective UI locale and the winning source; invalid explicit values fall back to Spanish.</summary>
+public sealed record LocaleSelection(string Locale, LocaleSelectionSource Source, string? InvalidValue = null)
+{
+    public bool HasProcessOverride => Source is LocaleSelectionSource.CommandLine or LocaleSelectionSource.Environment;
+    public bool HasCompleteLegacyCatalog => Locale is "es" or "en" or "fr" or "it";
+}
+
+public static class LocaleSelectionResolver
+{
+    public static LocaleSelection Resolve(string? commandLine, string? environment, string? userSetting)
+    {
+        if (commandLine is not null) return Select(commandLine, LocaleSelectionSource.CommandLine);
+        if (environment is not null) return Select(environment, LocaleSelectionSource.Environment);
+        if (userSetting is not null) return Select(userSetting, LocaleSelectionSource.UserSetting);
+        return new("es", LocaleSelectionSource.Default);
+    }
+
+    private static LocaleSelection Select(string value, LocaleSelectionSource source) =>
+        UiLocaleCodes.TryNormalize(value, out var locale)
+            ? new(locale, source)
+            : new("es", source, value);
+}
+
+public sealed record LocalizationResolution(string Text, string RequestedLocale, string? ResourceLocale,
+    bool UsedFallback);
+
 /// <summary>
 /// Resolver de texto localizado (ADR-0040): el servidor envía claves + argumentos; el cliente
-/// las resuelve con sus recursos es/en (es por defecto). Fallback: en, y luego la clave literal.
+/// resuelve los recursos propios es/en/fr/it (es por defecto).
+/// Las claves desconocidas conservan un fallback defensivo; ResolveDetailed lo informa.
 /// Los prompts al modelo y los datos técnicos no se traducen.
 /// </summary>
 public sealed class Localization
@@ -12,7 +41,7 @@ public sealed class Localization
     /// <summary>Idioma configurado (por defecto es).</summary>
     public string Locale { get; }
 
-    public Localization(string locale) => Locale = locale;
+    public Localization(string locale) => Locale = UiLocaleCodes.NormalizeOrDefault(locale);
 
     public static Localization Spanish() => new("es");
 
@@ -21,6 +50,9 @@ public sealed class Localization
 
     /// <summary>Claves del recurso inglés. Expuesto para el test de paridad es/en.</summary>
     public static IReadOnlyCollection<string> EnglishKeys => _en.Keys;
+
+    /// <summary>Keys in the complete shared runtime and startup copy catalog.</summary>
+    public static IReadOnlyCollection<string> RuntimeResourceKeys => LocaleRuntimeResources.Keys;
 
     /// <summary>True si la clave existe en los dos recursos.</summary>
     public static bool HasInBoth(string key) => _es.ContainsKey(key) && _en.ContainsKey(key);
@@ -42,7 +74,7 @@ public sealed class Localization
     /// <summary>Resuelve una clave y todos sus argumentos.</summary>
     public string Resolve(string key, IReadOnlyDictionary<string, string>? args = null)
     {
-        var text = Resources(key);
+        var text = ResolveDetailed(key).Text;
         if (args is not null)
         {
             foreach (var pair in args)
@@ -54,6 +86,45 @@ public sealed class Localization
         return text;
     }
 
+    /// <summary>Resolves a key and reports whether a legacy key used a fallback resource.</summary>
+    public LocalizationResolution ResolveDetailed(string key)
+    {
+        if (RuntimeCompletionResources.TryTranslate(Locale, key, out var runtimeCompletionText))
+            return new(runtimeCompletionText, Locale, Locale, false);
+        if (ModelCatalogPreferencesResources.TryTranslate(Locale, key, out var modelCatalogText))
+            return new(modelCatalogText, Locale, Locale, false);
+        if (OperationalCommandResources.TryTranslate(Locale, key, out var operationText))
+            return new(operationText, Locale, Locale, false);
+        if (OperationalHostResources.TryTranslate(Locale, key, out var hostText))
+            return new(hostText, Locale, Locale, false);
+        if (UiCompletionResources.TryTranslate(Locale, key, out var completionText))
+            return new(completionText, Locale, Locale, false);
+        if (PolicyPreferencesResources.TryTranslate(Locale, key, out var policyText))
+            return new(policyText, Locale, Locale, false);
+        if (SecurityPreferencesResources.TryTranslate(Locale, key, out var securityText))
+            return new(securityText, Locale, Locale, false);
+        if (DiagnosticsPreferencesResources.TryTranslate(Locale, key, out var diagnosticsText))
+            return new(diagnosticsText, Locale, Locale, false);
+        if (ShellUiResources.TryTranslate(Locale, key, out var shellText))
+            return new(shellText, Locale, Locale, false);
+        if (SessionPreferencesResources.TryTranslate(Locale, key, out var sessionText))
+            return new(sessionText, Locale, Locale, false);
+        if (AccountsPreferencesResources.TryTranslate(Locale, key, out var accountText))
+            return new(accountText, Locale, Locale, false);
+        if (ClientCommandResources.TryTranslate(Locale, key, out var commandText))
+            return new(commandText, Locale, Locale, false);
+        if (LocaleRuntimeResources.TryTranslate(Locale, key, out var runtimeText))
+            return new(runtimeText, Locale, Locale, false);
+        if (PreferencesUiResources.TryTranslate(Locale, key, out var preferencesText))
+            return new(preferencesText, Locale, Locale, false);
+        if (PreferenceCategoryCatalog.TryTranslate(Locale, key, out var categoryText))
+            return new(categoryText, Locale, Locale, false);
+        if (LegacyLocaleResources.TryTranslate(Locale, key, out var legacyText))
+            return new(legacyText, Locale, Locale, false);
+        var text = Resources(key, out var resourceLocale);
+        return new(text, Locale, resourceLocale, resourceLocale != Locale);
+    }
+
     /// <summary>
     /// Resuelve un texto que llega en el formato estable del servidor, <c>clave</c> o
     /// <c>clave(arg=valor,...)</c> (p. ej. el error de un ack). Si la clave no existe en los
@@ -63,7 +134,22 @@ public sealed class Localization
     {
         var open = text.IndexOf('(');
         var key = open < 0 ? text : text[..open];
-        if (!_es.ContainsKey(key) && !_en.ContainsKey(key))
+        if (!_es.ContainsKey(key) && !_en.ContainsKey(key)
+            && !RuntimeCompletionResources.ContainsKey(key)
+            && !ModelCatalogPreferencesResources.ContainsKey(key)
+            && !OperationalCommandResources.ContainsKey(key)
+            && !OperationalHostResources.ContainsKey(key)
+            && !UiCompletionResources.ContainsKey(key)
+            && !PolicyPreferencesResources.ContainsKey(key)
+            && !SecurityPreferencesResources.ContainsKey(key)
+            && !DiagnosticsPreferencesResources.ContainsKey(key)
+            && !ShellUiResources.ContainsKey(key)
+            && !SessionPreferencesResources.ContainsKey(key)
+            && !AccountsPreferencesResources.ContainsKey(key)
+            && !ClientCommandResources.ContainsKey(key)
+            && !LocaleRuntimeResources.Keys.Contains(key, StringComparer.Ordinal)
+            && !PreferencesUiResources.ContainsKey(key)
+            && !PreferenceCategoryCatalog.ContainsKey(key))
         {
             return text;
         }
@@ -84,16 +170,23 @@ public sealed class Localization
         return Resolve(key, args);
     }
 
-    private string Resources(string key)
+    private string Resources(string key, out string? resourceLocale)
     {
         var es = _es.TryGetValue(key, out var e) ? e : null;
         if (Locale == "es" && es is not null)
         {
+            resourceLocale = "es";
             return es!;
         }
 
         var en = _en.TryGetValue(key, out var v) ? v : null;
-        return en is not null ? en! : key;
+        if (en is not null)
+        {
+            resourceLocale = "en";
+            return en;
+        }
+        resourceLocale = null;
+        return key;
     }
 
     private static readonly Dictionary<string, string> _es = new()
@@ -115,7 +208,7 @@ public sealed class Localization
         ["commands.skills.help"] = "  omni /skills [load|release <id>]  Inspecciona o activa una skill Project para esta sesión",
         ["commands.memory.help"] = "  omni /memory session [add|forget] Memoria de esta sesión; no se comparte con otras sesiones",
         ["extensions.usage"] = "  omni extensions trust <id> | revoke <id>   Autoriza o revoca capacidades de una extensión Project",
-        ["commands.explain.help"] = "  omni /explain <ruta>              Explica un archivo o el repositorio",
+        ["commands.explain.help"] = "  omni /explain <ruta>              Envía una solicitud al modelo para explicar archivos del repositorio",
         ["commands.workflow.help"] = "  omni /orq-auth <objetivo> --verify-executable <ruta> --verify-argv-json <JSON en un argumento>  Requiere un Run Orchestrate autorizado",
         ["interaction.plan_approval.approve_execute"] = "Aprobar y ejecutar",
         ["interaction.plan_approval.approve_only"] = "Aprobar sin ejecutar",
@@ -572,7 +665,8 @@ public sealed class Localization
         ["cli.usage.heading"] = "Uso:",
         ["cli.usage.sim"] = "  omni sim [escenario.yaml] [--json]   Ejecuta la simulación de M1",
         ["cli.usage.act"] = "  omni act \"instrucción\"              Run Act con filesystem.read/patch bajo política efectiva (M3)",
-        ["cli.usage.ask"] = "  omni ask \"texto\"                    Turn end-to-end contra el modelo local (M2)",
+        ["cli.usage.ask"] = "  omni ask \"texto\"                    Envía el texto al modelo configurado (M2)",
+        ["cli.usage.explain"] = "  omni explain [pregunta] (alias: explore)  Reporta contexto local; no llama al modelo",
         ["cli.usage.model"] = "  omni model ...                       Políticas de modelo, onboarding (M3) y cualificación (M5)",
         ["worktree.inspect.usage"] = "omni worktree inspect [ruta] · Inspecciona el repositorio sin modificarlo (M7)",
         ["worktree.preview.usage"] = "omni worktree preview <repositorio> <ownershipId> · Calcula la integración sin aplicarla (M7)",
@@ -657,7 +751,7 @@ public sealed class Localization
         ["commands.skills.help"] = "  omni /skills [load|release <id>]  Inspect or activate a Project skill for this session",
         ["commands.memory.help"] = "  omni /memory session [add|forget] Memory for this session; not shared with others",
         ["extensions.usage"] = "  omni extensions trust <id> | revoke <id>   Grant or revoke Project extension capabilities",
-        ["commands.explain.help"] = "  omni /explain <path>              Explain a file or the repository",
+        ["commands.explain.help"] = "  omni /explain <path>              Sends a model request to explain repository files",
         ["commands.workflow.help"] = "  omni /orq-auth <objective> --verify-executable <path> --verify-argv-json <JSON as one argument>  Requires an authorized Orchestrate Run",
         ["interaction.plan_approval.approve_execute"] = "Approve and execute",
         ["interaction.plan_approval.approve_only"] = "Approve without executing",
@@ -1114,7 +1208,8 @@ public sealed class Localization
         ["cli.usage.heading"] = "Usage:",
         ["cli.usage.sim"] = "  omni sim [scenario.yaml] [--json]   Run the M1 simulation",
         ["cli.usage.act"] = "  omni act \"instruction\"              Act Run with filesystem.read/patch under effective policy (M3)",
-        ["cli.usage.ask"] = "  omni ask \"text\"                    End-to-end turn against the local model (M2)",
+        ["cli.usage.ask"] = "  omni ask \"text\"                    Sends the text to the configured model (M2)",
+        ["cli.usage.explain"] = "  omni explain [question] (alias: explore)  Reports local context; does not call the model",
         ["cli.usage.model"] = "  omni model ...                       Model policies, onboarding (M3) and qualification (M5)",
         ["worktree.inspect.usage"] = "omni worktree inspect [path] · Inspect the repository without modifying it (M7)",
         ["worktree.preview.usage"] = "omni worktree preview <repository> <ownershipId> · Calculate integration without applying it (M7)",

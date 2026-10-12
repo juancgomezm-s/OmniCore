@@ -56,13 +56,12 @@ public sealed partial class TuiApp
         }
         if (next is null)
         {
-            ShowMessage(Ui("Usa /animation showcase · on/off · reduced/full · fast/normal/slow\nEfectos: ",
-                "Use /animation showcase · on/off · reduced/full · fast/normal/slow\nEffects: ")
+            ShowMessage(_localization.Resolve("shell.use_animation_showcase_on_off_reduced_full_fast_normal_slow_neffects")
                 + string.Join(", ", AnimationCatalog.Names));
             return;
         }
         if (!SaveAnimationPreferences(next))
-            ShowMessage(Ui("No se pudo guardar la preferencia de animación.", "Could not save animation preferences."));
+            ShowMessage(_localization.Resolve("shell.could_not_save_animation_preferences"));
     }
 
     private void ShowAnimationSettings()
@@ -71,14 +70,13 @@ public sealed partial class TuiApp
         _previewEffect = _animationPreferences.Waiting;
         if (_window.Frame.Height < 18)
         {
-            ShowMessage(Ui("Amplía la terminal para la vista previa.\n/animation on/off · reduced/full · fast/normal/slow",
-                "Enlarge the terminal for the preview.\n/animation on/off · reduced/full · fast/normal/slow"));
+            ShowMessage(_localization.Resolve("shell.enlarge_the_terminal_for_the_preview_n_animation_on_off_reduced_full_f"));
             return;
         }
-        var frame = OverlayFrame(Ui("✦ Indicadores y animaciones", "✦ Activity and animations"), 14);
+        var frame = OverlayFrame(_localization.Resolve("shell.activity_and_animations"), 14);
         var notice = new Label { Id = "animation-notice", X = 2, Y = 1, Width = Dim.Fill(2), Height = 1 };
         if (_animationStore.Notice is not null)
-            notice.Text = Ui("Configuración inválida · usando valores seguros", "Invalid settings · using safe defaults");
+            notice.Text = _localization.Resolve("shell.invalid_settings_using_safe_defaults");
         _animationPreview = new ActivityView { Id = "animation-preview", X = 2, Y = 2, Width = 12, Height = 1 };
         var description = new Label { X = 16, Y = 2, Width = Dim.Fill(2), Height = 1 };
         var effects = new List<(Button Button, ChatActivityPhase Phase, string Label)>();
@@ -107,32 +105,32 @@ public sealed partial class TuiApp
         var reduced = new Button { Id = "animation-reduced", X = 2, Y = 10, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
         var speed = new Button { Id = "animation-speed", X = 2, Y = 11, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
         var ascii = new Button { Id = "animation-ascii", X = 2, Y = 12, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
-        AddEffect("animation-waiting", 4, ChatActivityPhase.WaitingForResponse, Ui("Espera", "Waiting"));
-        AddEffect("animation-thinking", 5, ChatActivityPhase.Reasoning, Ui("Razonamiento reportado", "Reported reasoning"));
-        AddEffect("animation-working", 6, ChatActivityPhase.AnswerText, Ui("Respuesta", "Answer"));
-        AddEffect("animation-tool", 7, ChatActivityPhase.Tools, Ui("Herramientas", "Tools"));
+        AddEffect("animation-waiting", 4, ChatActivityPhase.WaitingForResponse, _localization.Resolve("shell.waiting"));
+        AddEffect("animation-thinking", 5, ChatActivityPhase.Reasoning, _localization.Resolve("shell.reported_reasoning"));
+        AddEffect("animation-working", 6, ChatActivityPhase.AnswerText, _localization.Resolve("shell.answer"));
+        AddEffect("animation-tool", 7, ChatActivityPhase.Tools, _localization.Resolve("shell.tools"));
         enabled.Accepted += (_, _) => { Save(_animationPreferences with { Enabled = !_animationPreferences.Enabled }); Update(); };
         reduced.Accepted += (_, _) => { Save(_animationPreferences with { ReducedMotion = !_animationPreferences.ReducedMotion }); Update(); };
         speed.Accepted += (_, _) => { Save(_animationPreferences with { IntervalMilliseconds = _animationPreferences.IntervalMilliseconds == 300 ? 100 : _animationPreferences.IntervalMilliseconds + 100 }); Update(); };
         ascii.Accepted += (_, _) => { Save(_animationPreferences with { Ascii = !_animationPreferences.Ascii }); Update(); };
         void Save(AnimationPreferences preferences)
         {
-            notice.Text = SaveAnimationPreferences(preferences) ? "" : Ui("No se pudo guardar · sin cambios", "Could not save · unchanged");
+            notice.Text = SaveAnimationPreferences(preferences) ? "" : _localization.Resolve("shell.could_not_save_unchanged");
         }
         void Update()
         {
             foreach (var item in effects) item.Button.Text = item.Label + " · " + _animationPreferences.Effect(item.Phase);
-            enabled.Text = Ui("Animaciones", "Animations") + " · " + (_animationPreferences.Enabled ? "ON" : "OFF");
-            reduced.Text = Ui("Movimiento reducido", "Reduced motion") + " · " + (_animationPreferences.ReducedMotion ? "ON" : "OFF");
-            speed.Text = Ui("Intervalo", "Interval") + " · " + _animationPreferences.IntervalMilliseconds + " ms";
-            ascii.Text = Ui("Caracteres", "Characters") + " · " + (_animationPreferences.Ascii ? "ASCII *" : "Unicode ✦");
-            description.Text = _previewEffect + Ui(" · vista previa", " · preview");
+            enabled.Text = _localization.Resolve("shell.animations") + " · " + (_animationPreferences.Enabled ? "ON" : "OFF");
+            reduced.Text = _localization.Resolve("shell.reduced_motion") + " · " + (_animationPreferences.ReducedMotion ? "ON" : "OFF");
+            speed.Text = _localization.Resolve("shell.interval") + " · " + _animationPreferences.IntervalMilliseconds + " ms";
+            ascii.Text = _localization.Resolve("shell.characters") + " · " + (_animationPreferences.Ascii ? "ASCII *" : "Unicode ✦");
+            description.Text = _previewEffect + _localization.Resolve("shell.preview");
             RenderAnimationPreview();
         }
         var help = new Label { Id = "omni-help", X = 2, Y = 13, Width = Dim.Fill(2), Height = 1,
-            Text = Ui("Enter cambia · OFF conserva el estado sin movimiento", "Enter changes · OFF keeps status without motion") };
-        var close = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = Ui("Cerrar", "Close") };
-        close.Accepted += (_, _) => CloseOverlay();
+            Text = _localization.Resolve("shell.enter_changes_off_keeps_status_without_motion") };
+        var close = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _localization.Resolve("shell.close") };
+        close.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("interface", categoryPage: true); };
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) { _conversation.Dimmed = true; _conversation.SetNeedsDraw(); }
         frame.Add(notice, _animationPreview, description, enabled, reduced, speed, ascii, help, close);

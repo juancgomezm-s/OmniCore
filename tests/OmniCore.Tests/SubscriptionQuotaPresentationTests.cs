@@ -15,7 +15,7 @@ public sealed class SubscriptionQuotaPresentationTests
         var snapshot = Snapshot(Quota());
         var line = OmniCore.Cli.CliApp.StatusLineText(snapshot);
         Assert.Contains("tokens 62%", line, StringComparison.Ordinal);
-        Assert.Contains("chatgpt 7d remaining 80%", line, StringComparison.Ordinal);
+        Assert.Contains("chatgpt 7d restantes 80%", line, StringComparison.Ordinal);
         Assert.Equal(QuotaKind.RateLimitWindow, snapshot.Remaining.Value!.Kind);
         Assert.Equal(10080, snapshot.AccountQuota!.Windows[0].DurationMinutes);
     }
@@ -87,7 +87,7 @@ public sealed class SubscriptionQuotaPresentationTests
         Assert.True(parsed.Remove("accountQuota"));
         var decoded = Assert.IsType<UsageSnapshot>(JsonSerializer.Deserialize<UsageSnapshot>(parsed.ToJsonString(), ObservabilityJson.Options));
         Assert.Null(decoded.AccountQuota);
-        Assert.Equal("session 3 tok · — · tokens 62%", OmniCore.Cli.CliApp.StatusLineText(decoded));
+        Assert.Equal("sesión 3 tok · — · tokens 62%", OmniCore.Cli.CliApp.StatusLineText(decoded));
     }
 
     private static ProviderQuotaSnapshot Quota(int? duration = 10080, double remaining = 80,

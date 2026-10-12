@@ -6,10 +6,11 @@ namespace OmniCore.Cli;
 /// <summary>M7 repository inspection and integration preview through the Host.</summary>
 public static class WorktreeCommands
 {
-    public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
+    public static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken,
+        Localization? selectedLocalization = null)
     {
-        var loc = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en"
-            ? Localization.English() : Localization.Spanish();
+        var loc = selectedLocalization ?? new Localization(LocaleSelectionResolver.Resolve(
+            null, Environment.GetEnvironmentVariable("OMNI_LOCALE"), null).Locale);
         if (args.Length == 2 && args[1] is "--help" or "-h" or "help")
         {
             Console.WriteLine(loc.Resolve("worktree.inspect.usage"));
@@ -48,7 +49,7 @@ public static class WorktreeCommands
             if (!inspected.Succeeded)
             {
                 var key = "worktree.error." + inspected.ErrorCode;
-                Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.error.GitCommandFailed"));
+                Console.WriteLine(loc.Resolve(HasWorktreeResource(key) ? key : "worktree.error.GitCommandFailed"));
                 return 1;
             }
             Console.WriteLine(loc.Resolve("worktree.inspect.repository", "value", inspected.RepositoryRoot));
@@ -79,7 +80,7 @@ public static class WorktreeCommands
             if (!result.Succeeded)
             {
                 var key = "worktree.error." + result.ErrorCode;
-                Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.error.GitCommandFailed"));
+                Console.WriteLine(loc.Resolve(HasWorktreeResource(key) ? key : "worktree.error.GitCommandFailed"));
                 return 1;
             }
             Console.WriteLine(loc.Resolve("worktree.preview.proposal", "value", result.ProposalId));
@@ -121,7 +122,9 @@ public static class WorktreeCommands
             var result = WorktreeUndoHost.UndoForCli(Environment.CurrentDirectory, effect, cancellationToken);
             foreach (var file in result.Files)
                 Console.WriteLine($"{UndoFileOutcome(loc, file.Outcome)}  {EscapePath(file.RelativePath)}");
-            Console.WriteLine(loc.Resolve("worktree.undo.outcome." + result.Outcome));
+            var outcomeKey = "worktree.undo.outcome." + result.Outcome;
+            Console.WriteLine(loc.Resolve(HasWorktreeResource(outcomeKey)
+                ? outcomeKey : "worktree.undo.outcome.Unsupported"));
             return result.Outcome switch { "Applied" or "NoOp" => 0, "Conflict" => 3, _ => 1 };
         }
         catch (OperationCanceledException) { Console.WriteLine(loc.Resolve("worktree.undo.cancelled")); return 130; }
@@ -159,7 +162,7 @@ public static class WorktreeCommands
             if (result.Error is { } error)
             {
                 var key = "worktree.error." + error;
-                Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.error.GitCommandFailed"));
+                Console.WriteLine(loc.Resolve(HasWorktreeResource(key) ? key : "worktree.error.GitCommandFailed"));
                 return 1;
             }
             Console.WriteLine(loc.Resolve("worktree.retention.summary", new Dictionary<string, string>
@@ -199,7 +202,7 @@ public static class WorktreeCommands
                 return 0;
             }
             var key = "worktree.error." + result.Error;
-            Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.cleanup.preserved"));
+            Console.WriteLine(loc.Resolve(HasWorktreeResource(key) ? key : "worktree.cleanup.preserved"));
             return result.Error == "WorktreeDirty" ? 3 : 1;
         }
         catch (OperationCanceledException)
@@ -228,7 +231,7 @@ public static class WorktreeCommands
                 return 0;
             }
             var key = "worktree.error." + result.Error;
-            Console.WriteLine(loc.Resolve(Localization.HasInBoth(key) ? key : "worktree.cleanup.preserved"));
+            Console.WriteLine(loc.Resolve(HasWorktreeResource(key) ? key : "worktree.cleanup.preserved"));
             return result.Error == "WorktreeDirty" ? 3 : 1;
         }
         catch (OperationCanceledException)
@@ -238,13 +241,17 @@ public static class WorktreeCommands
         }
     }
 
-    private static string UndoState(Localization localization, string state) =>
-        localization.Resolve(Localization.HasInBoth("worktree.undo.state." + state)
+    internal static string UndoState(Localization localization, string state) =>
+        localization.Resolve(HasWorktreeResource("worktree.undo.state." + state)
             ? "worktree.undo.state." + state : "worktree.undo.state.Unsupported");
 
-    private static string UndoFileOutcome(Localization localization, string outcome) =>
-        localization.Resolve(Localization.HasInBoth("worktree.undo.fileOutcome." + outcome)
+    internal static string UndoFileOutcome(Localization localization, string outcome) =>
+        localization.Resolve(HasWorktreeResource("worktree.undo.fileOutcome." + outcome)
             ? "worktree.undo.fileOutcome." + outcome : "worktree.undo.fileOutcome.Unresolvable");
+
+    private static bool HasWorktreeResource(string key) => Localization.HasInBoth(key)
+        || OperationalCommandResources.Keys.Contains(key.StartsWith("worktree.", StringComparison.Ordinal)
+            ? "cli." + key : key, StringComparer.Ordinal);
 
     private static string EscapePath(string path) => string.Concat(path.Select(character => char.IsControl(character)
         ? "\\u" + ((int)character).ToString("x4", System.Globalization.CultureInfo.InvariantCulture) : character.ToString()));

@@ -29,7 +29,7 @@ public static class QuestionnairePresentationFactory
                     NullableInt(item, "minSelections"), NullableInt(item, "maxSelections"), NullableInt(item, "maxTextLength")));
             }
             return new QuestionnaireOverlayModel(String(root, "title"), NullableString(root, "description"), models,
-                locale == "en" ? "Submit" : "Enviar", locale == "en" ? "Cancel" : "Cancelar");
+                new Localization(locale).Resolve("questionnaire.send"), new Localization(locale).Resolve("shell.cancel"));
         }
         catch (System.Text.Json.JsonException) { return null; }
         catch (InvalidOperationException) { return null; }

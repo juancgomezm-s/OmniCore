@@ -4,6 +4,7 @@ using System.Globalization;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Models;
+using OmniCore.Protocol;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
 using YamlDotNet.Serialization;
@@ -126,8 +127,24 @@ public sealed class ConfigLoader
                 return null;
             }
 
-            CheckKeys(root, "settings.yaml", "$", ["budget", "sidebar", "widgets", "locked", "defaultModel", "gates"],
+            CheckKeys(root, "settings.yaml", "$", ["ui", "budget", "sidebar", "widgets", "locked", "defaultModel", "gates"],
                 diagnostics);
+            if (root.Children.TryGetValue(new YamlScalarNode("ui"), out var uiNode))
+            {
+                if (uiNode is not YamlMappingNode ui)
+                    AddAtNode(diagnostics, "settings.yaml", "ui", "config.wrongType", uiNode);
+                else
+                {
+                    CheckKeys(ui, "settings.yaml", "ui", ["locale"], diagnostics);
+                    if (ui.Children.TryGetValue(new YamlScalarNode("locale"), out var localeNode))
+                    {
+                        var locale = (localeNode as YamlScalarNode)?.Value;
+                        if (!IsYamlString(localeNode) || !UiLocaleCodes.TryNormalize(locale, out var canonicalLocale)
+                            || !string.Equals(locale, canonicalLocale, StringComparison.Ordinal))
+                            AddAtNode(diagnostics, "settings.yaml", "ui.locale", "ui.locale.error.invalid_value", localeNode);
+                    }
+                }
+            }
             SidebarConfiguration.ValidateRoot(root, diagnostics);
             ValidateLocked(root, diagnostics);
             if (root.Children.TryGetValue(new YamlScalarNode("defaultModel"), out var defaultModel)

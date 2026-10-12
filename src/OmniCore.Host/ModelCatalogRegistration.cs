@@ -19,6 +19,7 @@ internal static class ModelCatalogRegistration
                 throw new ArgumentException("Invalid token limits.");
         }
         Directory.CreateDirectory(directory);
+        using var lease = ProviderConfigurationLease.Acquire(directory);
         var providerPath = Path.Combine(directory, "providers.yaml");
         var modelPath = Path.Combine(directory, "models.yaml");
         var oldProviders = File.Exists(providerPath) ? File.ReadAllText(providerPath) : null;

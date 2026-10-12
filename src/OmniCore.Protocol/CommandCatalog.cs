@@ -5,7 +5,11 @@ using System.Text.Json.Serialization;
 
 /// <summary>Wire-safe Host command catalog shared by CLI and external clients (ADR-0024 §3).</summary>
 public sealed record CommandCatalogEntry(string Id, string Name, IReadOnlyList<string> Aliases, string Kind,
-    string Description, IReadOnlyList<string> Arguments, string Source, bool Enabled, string? DisabledReason);
+    string Description, IReadOnlyList<string> Arguments, string Source, bool Enabled, string? DisabledReason)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyDictionary<string, string>? UiDescriptions { get; init; }
+}
 
 public sealed record CommandCatalogSnapshot(IReadOnlyList<CommandCatalogEntry> Commands);
 

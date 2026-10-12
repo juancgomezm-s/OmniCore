@@ -4,6 +4,13 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "locale": { "type": "string", "enum": ["es", "en", "fr", "it"], "default": "es" }
+      }
+    },
     "sidebar": { "$ref": "#/$defs/sidebar" },
     "widgets": { "type": "object", "propertyNames": { "pattern": "^[A-Za-z0-9._-]{1,100}$" }, "additionalProperties": { "$ref": "#/$defs/widget" } },
     "defaultModel": { "type": "string", "description": "Must name a user-defined model alias." },

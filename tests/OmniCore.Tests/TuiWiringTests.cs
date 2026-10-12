@@ -31,7 +31,7 @@ namespace OmniCore.Tests;
 /// contraste, solapamientos visuales) queda como validación manual pendiente: estas pruebas
 /// verifican cableado, no experiencia visual.</para>
 /// </summary>
-public sealed class TuiWiringTests
+public sealed partial class TuiWiringTests
 {
     // Test-only fallback: production construction always uses the real Host facade.
     private sealed class EmptyTuiProviderConnectionHost : ITuiProviderConnectionHost
@@ -81,6 +81,7 @@ public sealed class TuiWiringTests
         };
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        ChoosePreferenceCategory(fx, "accounts_connections");
         Click(fx, "Conexiones API");
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Conexiones API") == true,
             "conexiones API visibles");
@@ -129,6 +130,7 @@ public sealed class TuiWiringTests
         };
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        ChoosePreferenceCategory(fx, "accounts_connections");
         Click(fx, "Conexiones API");
         fx.Invoke(() =>
         {
@@ -173,6 +175,7 @@ public sealed class TuiWiringTests
         };
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        ChoosePreferenceCategory(fx, "accounts_connections");
         Click(fx, "Conexiones API");
         Click(fx, "Conectar");
         fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>()
@@ -182,12 +185,19 @@ public sealed class TuiWiringTests
         var operation = fx.App.ProviderConnectionTask!;
 
         fx.InjectKey(new Key(KeyCode.Esc));
-        fx.Wait(() => fx.App.Overlay is null, "cerrar el formulario cancela el overlay");
+        fx.Wait(() => fx.App.Overlay is { } overlay
+            && Descendants(overlay).Any(view => view.Id == "preferences-back"),
+            "Esc cancela el formulario y vuelve a la categoría de preferencias");
         fx.Wait(() => host.ConnectCancellationObserved.Task.IsCompleted, "token del Host cancelado al cerrar");
         host.ConnectGate!.TrySetResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected, null, null));
         operation.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken).GetAwaiter().GetResult();
         fx.Invoke(() => fx.App.PollOnce());
-        Assert.Null(fx.App.Overlay);
+        var returned = fx.App.Overlay;
+        Assert.NotNull(returned);
+        var returnedText = OverlayText(returned!);
+        Assert.Contains("Cuentas y conexiones", returnedText);
+        Assert.DoesNotContain("Estado: Conectado", returnedText);
+        Assert.DoesNotContain("fixture-cancelled-key-12345", returnedText);
     });
 
     [Fact]
@@ -211,6 +221,7 @@ public sealed class TuiWiringTests
 
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        ChoosePreferenceCategory(fx, "accounts_connections");
         Click(fx, "Conexiones API");
         fx.Invoke(() =>
         {
@@ -248,6 +259,11 @@ public sealed class TuiWiringTests
             && row.Contains("modelos 2026-10-08 12:00 UTC", StringComparison.Ordinal));
 
         Click(fx, "Desconectar");
+        fx.Wait(() => fx.App.Overlay is { } confirm
+            && Descendants(confirm).Any(view => view.Id == "provider-disconnect-confirm"),
+            "confirmación explícita de desconexión visible");
+        Assert.Equal(2, handler.Requests.Count); // Only the preceding probe and discovery; confirmation adds no request.
+        ClickId(fx, "provider-disconnect-confirm");
         fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Conexión eliminada"),
             "disconnect vuelve al listado");
         Assert.Null(store.Load("credentials/anthropic-b", TestContext.Current.CancellationToken));
@@ -501,7 +517,7 @@ public sealed class TuiWiringTests
         Assert.True(fx.App.SidebarComposition.Collapsed > 0);
         Type(fx, "/sidebar settings");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "ajustes del panel");
-        Assert.Contains("Scope: Workspace", OverlayText(fx.App.Overlay!));
+        Assert.Contains("Alcance: Área de trabajo", OverlayText(fx.App.Overlay!));
         Assert.Contains(fx.App.Overlay!.SubViews.OfType<Button>(), b => b.Text == "Visibilidad");
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cierra ajustes");
         var preferences = SidebarPreferencesJson.Decode(fx.Server.Query("sidebarSettings", CancellationToken.None)!.Json)!;
@@ -547,7 +563,7 @@ public sealed class TuiWiringTests
         if (!noColor) Assert.Contains(frame.Cast<Terminal.Gui.Drawing.Cell>(), cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#F1D58A"));
         else Assert.All(frame.Cast<Terminal.Gui.Drawing.Cell>().Where(cell => cell.Grapheme == "◐"), cell => Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Foreground));
         fx.Invoke(() => fx.App.Sidebar!.SubViews.OfType<Button>().Single(b => b.Id == "sidebar-details").InvokeCommand(Command.Accept));
-        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Cache read: 30"), "detalle de consumo desplegable");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Lectura de caché: 30"), "detalle de consumo desplegable");
         Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
         Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
         Assert.Contains("fixture/sidebar-model", fx.App.SidebarSession!.Text.ToString());
@@ -649,6 +665,11 @@ public sealed class TuiWiringTests
     [InlineData(100, 30, "notice")]
     [InlineData(80, 25, "settings")]
     [InlineData(120, 35, "settings")]
+    [InlineData(80, 25, "settings-fr")]
+    [InlineData(80, 25, "settings-it")]
+    [InlineData(80, 25, "settings-override")]
+    [InlineData(80, 25, "settings-local")]
+    [InlineData(80, 25, "settings-local-editor")]
     [InlineData(80, 25, "account")]
     [InlineData(120, 35, "account")]
     [InlineData(80, 25, "login")]
@@ -708,10 +729,22 @@ public sealed class TuiWiringTests
             stream.Append(new ModelStepCompleted(turn, 0, new(100, 20, 0, 0, 0), StopReason.EndTurn, null, "fixture", null));
         }
         var visualTurn = scene == "activity" ? new TestTurn(fx) : null;
+        var visualAccount = new TestAccount { Pending = true, Current = new(scene is "models" or "picker", null, null, false),
+            Catalog = new[] { new AvailableChatGptModel("subscription-a", "Subscription A"),
+                new AvailableChatGptModel("subscription-b", "Subscription B") } };
+        var visualLocalEngines = scene is "settings-local" or "settings-local-editor"
+            ? new TuiLocalEngineHost(Path.Combine(fx.Root, "visual-local-engines")) : null;
+        if (visualLocalEngines is not null)
+        {
+            var snapshot = visualLocalEngines.Read(CancellationToken.None);
+            visualLocalEngines.Save(new("visual-local", "managed", "auto", "C:/fixture/local-engine.exe",
+                ["--fixture"], "C:/fixture", 120), snapshot.Revision, CancellationToken.None);
+        }
         fx.StartTui(policies: visualPolicies, turnHost: visualTurn,
-            account: new TestAccount { Pending = true, Current = new(scene is "models" or "picker", null, null, false),
-                Catalog = new[] { new AvailableChatGptModel("subscription-a", "Subscription A"),
-                    new AvailableChatGptModel("subscription-b", "Subscription B") } });
+            account: visualAccount,
+            localEngines: visualLocalEngines,
+            localeSelection: scene == "settings-override"
+                ? new LocaleSelection("en", LocaleSelectionSource.CommandLine) : null);
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(columns, rows));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == columns && fx.App.MainWindow.Frame.Height == rows,
             "el renderer debe completar el resize");
@@ -753,7 +786,13 @@ public sealed class TuiWiringTests
         }
         else if (scene is "models" or "picker")
         {
-            if (scene == "models") OpenModelMaintenance(fx); else fx.InjectKey(new Key(KeyCode.F3));
+            if (scene == "models")
+            {
+                OpenModelMaintenance(fx);
+                Assert.Equal(0, visualAccount.CatalogCalls);
+                Click(fx, "Actualizar modelos");
+            }
+            else fx.InjectKey(new Key(KeyCode.F3));
             fx.Wait(() => fx.App.Overlay is not null && fx.App.Overlay.SubViews.OfType<Button>()
                 .Any(b => b.Text.ToString().Contains("subscription-b"))
                 || (scene == "picker" && PickerItems(fx).Any(item => item.Contains("Subscription B"))), "catálogo descubierto visible");
@@ -769,18 +808,46 @@ public sealed class TuiWiringTests
             KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.SubViews.Any(v => v.Id == "animation-preview") == true,
                 "vista previa de animaciones visible");
         }
-        else if (scene is "settings" or "account" or "login")
+        else if (scene is "settings" or "settings-fr" or "settings-it" or "settings-override" or "settings-local" or "settings-local-editor" or "account" or "login")
         {
             fx.InjectKey(new Key(KeyCode.F4));
             fx.Wait(() => fx.App.Overlay is not null, "configuración visible");
             if (scene != "settings")
             {
-                Click(fx, "Cuenta ChatGPT");
-                fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Cuenta") == true, "cuenta visible");
-                if (scene == "login")
+                if (scene is "settings-local" or "settings-local-editor")
                 {
-                    Click(fx, "enlace de navegador");
-                    fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("TEST-CODE"), "autorización visible");
+                    ChoosePreferenceCategory(fx, "local_engines");
+                    if (scene == "settings-local-editor")
+                    {
+                        var localList = Descendants(fx.App.Overlay!).OfType<ListView>()
+                            .Single(view => view.Id == "local-engine-list");
+                        var localIndex = localList.Source!.ToList().Cast<object>()
+                            .Select(item => item.ToString() ?? "").ToList()
+                            .FindIndex(item => item.StartsWith("visual-local", StringComparison.Ordinal));
+                        Assert.True(localIndex >= 0);
+                        fx.Invoke(() => localList.SelectedItem = localIndex);
+                        ClickId(fx, "local-engine-edit");
+                    }
+                }
+                else if (scene.StartsWith("settings-", StringComparison.Ordinal))
+                {
+                    ChoosePreferenceCategory(fx, "general");
+                    if (scene == "settings-fr" || scene == "settings-it")
+                    {
+                        var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
+                        fx.Invoke(() => language.SelectedItem = scene == "settings-fr" ? 2 : 3);
+                    }
+                }
+                else
+                {
+                    ChoosePreferenceCategory(fx, "accounts_connections");
+                    Click(fx, "Cuenta ChatGPT");
+                    fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Cuenta") == true, "cuenta visible");
+                    if (scene == "login")
+                    {
+                        Click(fx, "enlace de navegador");
+                        fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("TEST-CODE"), "autorización visible");
+                    }
                 }
             }
         }
@@ -795,11 +862,11 @@ public sealed class TuiWiringTests
                 string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
-            var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Configuración", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Preferencias", "settings-fr" => "Préférences", "settings-it" => "Preferenze", "settings-override" => "Preferences", "settings-local" => "visual-local", "settings-local-editor" => "visual-local", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
             if (scene == "animations-braille") marker = "braille-spinner";
             if (scene == "tools") marker = "Herramientas";
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
-            if (scene == "sidebar" && !text.Contains("Workspace", StringComparison.Ordinal)) return;
+            if (scene == "sidebar" && !text.Contains("Espacio de trabajo", StringComparison.Ordinal)) return;
             try
             {
                 Assert.Equal(rows, cells.GetLength(0));
@@ -809,16 +876,24 @@ public sealed class TuiWiringTests
                 if (scene != "table") Assert.DoesNotContain("┌", text);
                 if (scene == "sidebar-settings")
                 {
-                    Assert.Contains("Scope: Workspace", text); Assert.Contains("core.context", text);
+                    Assert.Contains("Alcance: Área de trabajo", text); Assert.Contains("core.context", text);
                     Assert.Contains("Visibilidad", text); Assert.Contains("Prioridad", text);
                     Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
                     var buttons = fx.App.Overlay.SubViews.OfType<Button>().ToArray();
                     foreach (var button in buttons) Assert.True(button.Frame.Right < fx.App.Overlay.Viewport.Width);
                     Assert.False(fx.App.Composer!.HasFocus);
                 }
-                else if (scene is "settings" or "account" or "login")
+                else if (scene is "settings" or "settings-fr" or "settings-it" or "settings-override" or "settings-local" or "settings-local-editor" or "account" or "login")
                 {
-                    Assert.Contains(scene == "settings" ? "Modelos y permisos" : scene == "account" ? "código de dispositivo" : "Cancelar", text);
+                    Assert.Contains(scene switch
+                    {
+                        "settings" => "General", "settings-fr" => "Langue de l’interface",
+                        "settings-it" => "Lingua dell’interfaccia", "settings-override" => "Command line",
+                        "settings-local" => "Añadir motor local", "settings-local-editor" => "Guardar",
+                        "account" => "código de dispositivo", _ => "Cancelar",
+                    }, text);
+                    if (scene == "settings-local") Assert.Contains("Editar", text);
+                    if (scene == "settings-local-editor") Assert.Contains("Cancelar", text);
                     Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
                     Assert.False(fx.App.Composer!.HasFocus);
                 }
@@ -931,7 +1006,7 @@ public sealed class TuiWiringTests
                         string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme)).Contains("Enter enviar", StringComparison.Ordinal));
                     Assert.True(helpRow > inputRow, "ayudas debajo del panel de mensaje");
                     Assert.True(fx.App.Composer!.HasFocus);
-                    if (scene == "sidebar") Assert.Contains("Workspace", text);
+                    if (scene == "sidebar") Assert.Contains("Espacio de trabajo", text);
                 }
                 var destination = Environment.GetEnvironmentVariable("OMNICORE_TUI_SNAPSHOT_DIR");
                 if (string.IsNullOrWhiteSpace(destination)) return;
@@ -1388,6 +1463,7 @@ public sealed class TuiWiringTests
         fx.StartTui();
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferencias visibles");
         var journalCount = fx.Server.SubscribeSince(0).Count;
+        ChoosePreferenceCategory(fx, "interface");
         Click(fx, "Indicadores y animaciones");
         fx.Wait(() => fx.App.Overlay!.SubViews.Any(v => v.Id == "animation-preview"), "vista previa visible");
         var preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
@@ -1408,6 +1484,215 @@ public sealed class TuiWiringTests
         Assert.False(fx.App.Activity!.Visible);
         Assert.Equal(journalCount, fx.Server.SubscribeSince(0).Count);
     });
+
+    [Theory]
+    [InlineData(80, 25)]
+    [InlineData(120, 35)]
+    public void Preferences_center_navigates_by_keyboard_and_cancelled_locale_preview_preserves_chat(int columns, int rows) => RunTuiTest(fx =>
+    {
+        var changed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        fx.StartTui(initialColumns: columns, initialRows: rows, localeChanged: changed.Enqueue);
+        fx.Invoke(() => fx.App.Composer!.Text = "keep this draft");
+        var conversation = fx.App.Conversation!;
+        var transcript = conversation.Text?.ToString();
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro de preferencias visible");
+        var preferencesOverlay = Assert.IsType<FrameView>(fx.App.Overlay);
+        Assert.Equal(9, Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source!.Count);
+        var categories = Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories");
+        Assert.Equal(columns >= 100, preferencesOverlay.SubViews.Any(view => view.Id == "preferences-panel"));
+        var search = Descendants(preferencesOverlay).OfType<TextField>().Single(view => view.Id == "preferences-search");
+        fx.Invoke(() => search.Text = "no-such-preference-category");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-empty-search").Visible,
+            "búsqueda sin resultados muestra un estado vacío");
+        Assert.False(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Visible);
+        if (columns >= 100)
+            Assert.False(Descendants(fx.App.Overlay!).OfType<Button>().Single(view => view.Id == "preferences-open-category").Enabled);
+        fx.Invoke(() => search.Text = "local");
+        fx.Wait(() => categories.Source?.Count == 1, "búsqueda de categorías funciona en el layout actual");
+        fx.InjectKey(new Key(KeyCode.CursorDown));
+        fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Motores locales") == true,
+            "Enter abre la categoría filtrada");
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.Wait(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
+            "Esc vuelve a navegación estrecha/ancha");
+        fx.Invoke(() => search = Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search"));
+        fx.Invoke(() => search.Text = "");
+        fx.Wait(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source?.Count == 9,
+            "limpiar búsqueda recupera las nueve categorías");
+        ChoosePreferenceCategory(fx, "general");
+        AssertPreferencesGeneralLayoutFit(fx);
+        var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
+        fx.Invoke(() => language.SelectedItem = 2);
+        fx.Wait(() => fx.App.PreferencesLocale == "fr", "vista previa francesa activa");
+        Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
+        Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
+        Assert.Same(conversation, fx.App.Conversation);
+        Assert.Equal(transcript, conversation.Text?.ToString());
+        Assert.Equal("fr", changed.Last());
+
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.Wait(() => fx.App.PreferencesLocale == "es"
+            && fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
+            "volver cancela el idioma no guardado");
+        Assert.Equal("es", changed.Last());
+        ChoosePreferenceCategory(fx, "accounts_connections");
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.Wait(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
+            "otra categoría vuelve al índice");
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.Wait(() => fx.App.Overlay is null, "cerrar Preferences");
+        Assert.Equal("es", fx.App.PreferencesLocale);
+        Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
+        Assert.Same(conversation, fx.App.Conversation);
+    });
+
+    [Fact]
+    public void Preferences_locale_save_detects_revision_conflict_and_explicitly_reloads()
+    {
+        var changed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        // The real server is both the query target and trusted-action target; paths are fixture-local.
+        RunTuiTest(fx =>
+        {
+            fx.StartTui(initialColumns: 80, initialRows: 25, localeChanged: changed.Enqueue);
+            KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences abre");
+            ChoosePreferenceCategory(fx, "general");
+            var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
+            fx.Invoke(() => language.SelectedItem = 3);
+            fx.Wait(() => fx.App.PreferencesLocale == "it", "previsualización italiana");
+
+            var snapshot = UiLocalePreferencesProtocol.Decode(fx.Server.Query(
+                UiLocalePreferencesProtocol.QueryName, CancellationToken.None)!.Json)!;
+            var external = fx.Server.SendUserAction(UiLocalePreferencesProtocol.Configure(
+                "User", "en", snapshot.Revision), CancellationToken.None);
+            Assert.Equal("ok", external.Status);
+            ClickId(fx, "preferences-save");
+            fx.Wait(() => fx.App.Overlay?.SubViews.OfType<Button>()
+                .Single(button => button.Id == "preferences-reload").Enabled == true,
+                "revision stale ofrece recarga explícita");
+            Assert.NotEmpty(Descendants(fx.App.Overlay!).OfType<Label>()
+                .Single(view => view.Id == "preferences-notice").Text.ToString());
+
+            ClickId(fx, "preferences-reload");
+            fx.Wait(() => fx.App.PreferencesLocale == "en", "recarga adopta el valor externo");
+            Assert.Equal("en", changed.Last());
+            ClickId(fx, "preferences-save");
+            var saved = UiLocalePreferencesProtocol.Decode(fx.Server.Query(
+                UiLocalePreferencesProtocol.QueryName, CancellationToken.None)!.Json)!;
+            Assert.True(saved.IsConfigured);
+            Assert.Equal("en", saved.Locale);
+            Assert.Contains("Configured", Descendants(fx.App.Overlay!).OfType<Label>()
+                .Single(view => view.Id == "preferences-locale-saved").Text.ToString());
+            Assert.Contains("User preference", Descendants(fx.App.Overlay!).OfType<Label>()
+                .Single(view => view.Id == "preferences-locale-source").Text.ToString());
+            Assert.Contains("Configured", OverlayText(fx.App.Overlay!));
+        });
+    }
+
+    [Fact]
+    public void Process_locale_override_remains_effective_while_user_preference_is_saved()
+    {
+        var changed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        RunTuiTest(fx =>
+        {
+            fx.StartTui(initialColumns: 80, initialRows: 25,
+                localeSelection: new LocaleSelection("en", LocaleSelectionSource.CommandLine),
+                localeChanged: changed.Enqueue);
+            Assert.Equal("en", fx.App.PreferencesLocale);
+            KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences opens in the process locale");
+            ChoosePreferenceCategory(fx, "general");
+            var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
+            fx.Invoke(() => language.SelectedItem = 2);
+            Assert.Equal("en", fx.App.PreferencesLocale);
+            Assert.Empty(changed);
+            Assert.Contains("Command line", OverlayText(fx.App.Overlay!));
+            ClickId(fx, "preferences-save");
+            var saved = UiLocalePreferencesProtocol.Decode(fx.Server.Query(
+                UiLocalePreferencesProtocol.QueryName, CancellationToken.None)!.Json)!;
+            Assert.Equal("fr", saved.Locale);
+            Assert.True(saved.IsConfigured);
+            Assert.Equal("en", fx.App.PreferencesLocale);
+            Assert.Empty(changed);
+        });
+    }
+
+    [Fact]
+    public void Local_engine_editor_preserves_managed_endpoint_and_literal_empty_argv()
+    {
+        RunTuiTest(fx =>
+        {
+            var host = new TuiLocalEngineHost(Path.Combine(fx.Root, "local-engine-ui-config"));
+            var initial = host.Read(CancellationToken.None);
+            string[] arguments = ["", "\"\"", "\\\"\\\"", "\\", "C:/models/My model.gguf", "a \"quoted\" argument"];
+            host.Save(new("managed-ui", "managed", "http://127.0.0.1:9000",
+                "C:/fixture/server.exe", arguments, "C:/models", 180), initial.Revision, CancellationToken.None);
+            fx.StartTui(localEngines: host, initialColumns: 80, initialRows: 25);
+            KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences abre");
+            ChoosePreferenceCategory(fx, "local_engines");
+            var list = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "local-engine-list");
+            fx.Invoke(() =>
+            {
+                var rows = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
+                var index = Array.FindIndex(rows, row => row.StartsWith("managed-ui", StringComparison.Ordinal));
+                Assert.True(index >= 0);
+                list.SelectedItem = index;
+            });
+            ClickId(fx, "local-engine-edit");
+            fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "local-engine-endpoint"),
+                "formulario managed visible");
+            var endpoint = Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "local-engine-endpoint");
+#pragma warning disable CS0618 // Inspect the argv editor implemented with the same pinned TextView as existing TUI views.
+            var argv = Descendants(fx.App.Overlay!).OfType<TextView>().Single(view => view.Id == "local-engine-arguments");
+#pragma warning restore CS0618
+            Assert.Equal("http://127.0.0.1:9000", endpoint.Text.ToString());
+            Assert.Equal(arguments, TuiApp.DecodeLocalArguments(argv.Text.ToString()));
+            fx.Invoke(() => endpoint.Text = "http://127.0.0.1:9191");
+            ClickId(fx, "local-engine-save");
+            fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "local-engine-list"),
+                "guardado devuelve a la lista sin reiniciar runtime");
+            var updated = host.Read(CancellationToken.None).Engines.Single(row => row.ProviderId == "managed-ui");
+            Assert.Equal("managed", updated.Mode);
+            Assert.Equal("http://127.0.0.1:9191", updated.BaseUrl);
+            Assert.Equal(arguments, updated.Arguments);
+            Assert.Equal(180, updated.ReadinessTimeoutSeconds);
+        });
+    }
+
+    [Fact]
+    public void Preferences_escape_cancels_local_editor_and_returns_from_read_only_inspection()
+    {
+        RunTuiTest(fx =>
+        {
+            var host = new TuiLocalEngineHost(Path.Combine(fx.Root, "local-engine-escape-config"));
+            var before = host.Read(CancellationToken.None);
+            fx.StartTui(localEngines: host, initialColumns: 80, initialRows: 25);
+            KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences abre");
+            ChoosePreferenceCategory(fx, "local_engines");
+            ClickId(fx, "local-engine-add");
+            fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "local-engine-id"),
+                "editor local visible");
+            var providerId = Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "local-engine-id");
+            fx.Invoke(() => providerId.Text = "discarded-engine");
+            fx.InjectKey(new Key(KeyCode.Esc));
+            fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Motores locales") == true,
+                "Escape cancela el borrador y vuelve a motores locales");
+            Assert.DoesNotContain(host.Read(CancellationToken.None).Engines, row => row.ProviderId == "discarded-engine");
+
+            fx.InjectKey(new Key(KeyCode.Esc));
+            fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Preferencias") == true,
+                "Escape vuelve del centro al índice");
+            ChoosePreferenceCategory(fx, "context_memory");
+            ClickId(fx, "preferences-context-open");
+            fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "session-preferences-details"),
+                "consulta de contexto de sólo lectura visible");
+            fx.InjectKey(new Key(KeyCode.Esc));
+            fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "preferences-panel"),
+                "Escape vuelve del visor a la categoría de contexto");
+            var after = host.Read(CancellationToken.None);
+            Assert.Equal(before.Revision, after.Revision);
+            Assert.DoesNotContain(after.Engines, row => row.ProviderId == "discarded-engine");
+        });
+    }
 
     [Theory]
     [InlineData(false)]
@@ -1646,6 +1931,10 @@ public sealed class TuiWiringTests
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/models ", "Enter completa prefijo sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
+        fx.Invoke(() => fx.App.Composer.Text = "/modelos");
+        fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "alias localizado exacto");
+        KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == "/modelos ", "conserva alias localizado sin ejecutarlo");
+        Assert.Null(fx.App.Overlay);
         fx.Invoke(() => fx.App.Composer.Text = "/pl");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "helper reabierto");
         KeyWithEffect(fx, KeyCode.Esc, () => !fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "Esc cierra solo sugerencias");
@@ -1730,7 +2019,7 @@ public sealed class TuiWiringTests
         fx.Wait(() => detail.Text.ToString().Contains("id.39"), "detalle seleccionado actualizado");
         Assert.Contains(source, detail.Text);
         Assert.Contains("No visible", detail.Text);
-        Assert.Contains("reject:PLAN mode", detail.Text);
+        Assert.Contains(Localization.Spanish().Resolve("client.tools.policy.plan"), detail.Text);
         Assert.Contains("Bloqueada en Plan", detail.Text);
         Assert.Contains("Descripción externa: acción y pingüino.", detail.Text);
         Assert.Contains("no equivale a permiso", detail.Text);
@@ -2204,6 +2493,7 @@ public sealed class TuiWiringTests
         var account = new TestAccount { Current = new(true, "***1234", null, false) };
         fx.StartTui(account: account);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "F4 abre configuración");
+        ChoosePreferenceCategory(fx, "accounts_connections");
         Click(fx, "Cuenta ChatGPT");
         fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("***1234"), "estado enmascarado visible");
         Assert.Equal(0, account.LoginCalls);
@@ -2376,6 +2666,8 @@ public sealed class TuiWiringTests
             Catalog = new[] { new AvailableChatGptModel("available-test", "Available test") } };
         fx.StartTui(policies, account);
         OpenModelMaintenance(fx);
+        Assert.Equal(0, account.CatalogCalls);
+        Click(fx, "Actualizar modelos");
         fx.Wait(() => fx.App.Header!.Text.ToString().Contains("available-test"), "modelo retirado sustituido");
         Assert.Equal("available-test", policies.CurrentSelection(workspace, ct)!.ModelId);
         Assert.True(policies.CurrentSelection(workspace, ct)!.ObserveOnly);
@@ -2392,10 +2684,46 @@ public sealed class TuiWiringTests
         Assert.Equal(0, account.LoginCalls);
     });
 
+    private static IEnumerable<View> Descendants(View root)
+    {
+        yield return root;
+        foreach (var child in root.SubViews)
+        foreach (var descendant in Descendants(child)) yield return descendant;
+    }
+
     private static void Click(TuiFixture fx, string text)
     {
-        var button = fx.App.Overlay!.SubViews.OfType<Button>().Single(b => b.Text.ToString().Contains(text));
+        var button = Descendants(fx.App.Overlay!).OfType<Button>().Single(b => b.Text.ToString().Contains(text));
         fx.Invoke(() => button.InvokeCommand(Command.Accept));
+    }
+
+    private static void ClickId(TuiFixture fx, string id)
+    {
+        var button = Descendants(fx.App.Overlay!).OfType<Button>().Single(view => view.Id == id);
+        fx.Invoke(() => button.InvokeCommand(Command.Accept));
+    }
+
+    private static void AssertPreferencesGeneralLayoutFit(TuiFixture fx)
+    {
+        var frame = fx.App.Overlay!;
+        Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, frame.BorderStyle);
+        foreach (var child in frame.SubViews)
+        {
+            Assert.True(child.Frame.Bottom <= frame.Viewport.Height, $"{child.Id} must fit vertically: {child.Frame}");
+            Assert.True(child.Frame.Right <= frame.Viewport.Width, $"{child.Id} must fit horizontally: {child.Frame}");
+        }
+        var panel = frame.SubViews.Single(view => view.Id == "preferences-panel");
+        var controls = panel.SubViews.Where(view => view.Id != "preferences-accent").ToArray();
+        foreach (var control in controls)
+            Assert.True(control.Frame.Bottom <= panel.Viewport.Height, $"{control.Id} must fit in General: {control.Frame}");
+        for (var left = 0; left < controls.Length; left++)
+        for (var right = left + 1; right < controls.Length; right++)
+        {
+            var a = controls[left].Frame; var b = controls[right].Frame;
+            if (a.X < b.Right && b.X < a.Right)
+                Assert.True(a.Bottom <= b.Y || b.Bottom <= a.Y,
+                    $"General controls overlap: {controls[left].Id} {a} and {controls[right].Id} {b}");
+        }
     }
 
     private static string[] PickerItems(TuiFixture fx)
@@ -2447,10 +2775,28 @@ public sealed class TuiWiringTests
         });
     }
 
+    private static void ChoosePreferenceCategory(TuiFixture fx, string categoryId, string locale = "es")
+    {
+        fx.Invoke(() =>
+        {
+            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single(view => view.Id == "preferences-categories");
+            var index = PreferenceCategoryCatalog.All.ToList().FindIndex(category => category.Id == categoryId);
+            Assert.True(index >= 0);
+            list.SelectedItem = index;
+            list.InvokeCommand(Command.Accept);
+        });
+        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale))
+            .Single(category => category.Id == categoryId);
+        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains(selected.Title, StringComparison.Ordinal) == true,
+            "categoría de preferencias visible: " + categoryId);
+    }
+
     private static void OpenModelMaintenance(TuiFixture fx)
     {
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
-        Click(fx, "Modelos y permisos");
+        ChoosePreferenceCategory(fx, "models_execution");
+        Click(fx, "Modelos y políticas");
+        ClickId(fx, "policy-preferences-model-policies");
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Modelos") == true, "mantenimiento de modelos visible");
     }
 
@@ -2590,7 +2936,7 @@ public sealed class TuiWiringTests
     }
 
     private static string OverlayText(View overlay) => string.Join(" ",
-        overlay.SubViews.Select(view => view.Text?.ToString() ?? ""));
+        Descendants(overlay).Select(view => view.Text?.ToString() ?? ""));
 
     /// <summary>Teclea texto en el composer verificando que llega: bajo la carga de la suite completa
     /// el driver puede perder claves inyectadas, así que se reintentan las que falten.</summary>
@@ -2674,7 +3020,9 @@ public sealed class TuiWiringTests
             fx.Server = OmniHost.OpenPersistentServer(Path.Combine(fx.JournalDirectory, "journal.db"),
                 Path.Combine(fx.Root, "audit"));
             fx.Server.ConfigureWorkspaceRoot(fx.Workspace);
-            fx.Server.ConfigureSidebarPaths(new OmniCore.Infrastructure.DefaultPlatformPaths(Path.Combine(fx.Root, "sidebar-settings")));
+        var hostPaths = new DefaultPlatformPaths(Path.Combine(fx.Root, "host-data"), Path.Combine(fx.Root, "host-config"));
+        fx.Server.ConfigurePlatformPaths(() => hostPaths);
+        fx.Server.ConfigureSidebarPaths(hostPaths);
             fx.Artifacts = OmniHost.CreateArtifactStore(fx.JournalDirectory);
             // Sesión semilla: el primer input crea la sesión y el run en el journal real.
             var ack = fx.Server.Send(WireEnvelope.Command(Ids.NewV7(),
@@ -2729,7 +3077,13 @@ public sealed class TuiWiringTests
 
         public void StartTui(ModelPolicyHost? policies = null, ITuiAccountHost? account = null,
             ITuiTurnHost? turnHost = null, int? initialColumns = null, int? initialRows = null,
-            IOmniClient? client = null, ITuiProviderConnectionHost? providerConnections = null)
+            IOmniClient? client = null, ITuiProviderConnectionHost? providerConnections = null,
+            ITuiLocalEngineHost? localEngines = null, LocaleSelection? localeSelection = null,
+            Action<string>? localeChanged = null, ITuiClaudeAccountHost? claudeAccounts = null,
+            ITuiLocalEngineSupervisor? localEngineSupervisor = null,
+            IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
+            IDiagnosticsPreferencesFacade? diagnosticsPreferences = null,
+            IModelCatalogPreferencesHost? modelCatalogPreferences = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -2747,7 +3101,15 @@ public sealed class TuiWiringTests
                 _loopError = null;
                 App = new TuiApp(client ?? Server, "es", _fixturePolicies, account, turnHost,
                     providerConnections ?? EmptyTuiProviderConnectionHost.Instance,
-                    Path.Combine(Root, "tui-animations.json"));
+                    Path.Combine(Root, "tui-animations.json"), localeSelection: localeSelection,
+                    localEngines: localEngines ?? new TuiLocalEngineHost(Path.Combine(Root, "fixture-local-engines")),
+                    localeChanged: localeChanged, claudeAccounts: claudeAccounts ?? new ClaudeAccountsFixture(),
+                    localEngineSupervisor: localEngineSupervisor,
+                    policyPreferences: policyPreferences ?? PolicyPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
+                    securityPreferences: securityPreferences ?? SecurityPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
+                    diagnosticsPreferences: diagnosticsPreferences ?? DiagnosticsPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")));
+                App.SetModelCatalogPreferencesHost(modelCatalogPreferences ?? ModelCatalogPreferencesHost.Create(
+                    Path.Combine(Root, "fixture-model-catalog"), Workspace, Path.Combine(Root, "fixture-model-catalog-data")));
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);

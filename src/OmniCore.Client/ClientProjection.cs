@@ -399,7 +399,11 @@ public sealed class ClientProjection
     private InteractionOverlayModel Overlay(Dictionary<string, string> f)
     {
         var kind = Get(f, "kind");
-        var prefix = "interaction." + Snake(kind) + ".";
+        // The protocol's stable AcceptanceConfirmation kind uses the established user-facing
+        // acceptance catalog; keep the wire enum unchanged and alias only at presentation time.
+        var prefix = kind == "AcceptanceConfirmation"
+            ? "interaction.acceptance."
+            : "interaction." + Snake(kind) + ".";
         var ids = Get(f, "options").Split(',', StringSplitOptions.RemoveEmptyEntries);
         var labels = ids.Select(id => Label(prefix + id, id)).ToArray();
         var subject = SubjectText(Get(f, "subject"));

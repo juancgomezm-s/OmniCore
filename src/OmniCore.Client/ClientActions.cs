@@ -98,7 +98,9 @@ public sealed class ClientCommandRegistry
     public bool TryResolve(CommandInvocation invocation, out ClientActionInvocation? action)
     {
         action = null;
-        if (invocation is null || !_byName.TryGetValue(invocation.Name, out var command)) return false;
+        if (invocation is null) return false;
+        invocation = HumanCommandAliases.Normalize(invocation);
+        if (!_byName.TryGetValue(invocation.Name, out var command)) return false;
         action = new ClientActionInvocation(command.ActionId, invocation.Arguments, invocation.InvocationOrigin);
         return true;
     }
@@ -146,7 +148,9 @@ public sealed class ClientActionHandler : IClientActionHandler
         foreach (var command in ClientCommandRegistry.Default.Commands)
         {
             shown.Add(command.Name);
-            lines.Add("  /" + command.Name + " — " + context.Text.Resolve(command.DescriptionKey));
+            var localized = HumanCommandAliases.DisplayName(command.Name, context.Text.Locale);
+            lines.Add("  /" + localized + (localized == command.Name ? "" : " (/" + command.Name + ")")
+                + " — " + context.Text.Resolve(command.DescriptionKey));
         }
         // Los commands del Host (ADR-0024 §3) vienen del mismo catálogo que usa el autocompletado.
         foreach (var entry in HostCommands(context))
@@ -158,22 +162,8 @@ public sealed class ClientActionHandler : IClientActionHandler
     private static IEnumerable<(string Name, string Description)> HostCommands(ClientContext context)
     {
         var json = context.Client.Query("commands", CancellationToken.None)?.Json;
-        if (string.IsNullOrWhiteSpace(json)) yield break;
-        System.Text.Json.JsonDocument? document = null;
-        try { document = System.Text.Json.JsonDocument.Parse(json); }
-        catch (System.Text.Json.JsonException) { }
-        using (document)
-        {
-            if (document is null || !document.RootElement.TryGetProperty("catalog", out var catalog)
-                || !catalog.TryGetProperty("commands", out var commands)
-                || commands.ValueKind != System.Text.Json.JsonValueKind.Array) yield break;
-            foreach (var command in commands.EnumerateArray())
-            {
-                if (!command.TryGetProperty("name", out var name) || name.GetString() is not { Length: > 0 } text) continue;
-                var description = command.TryGetProperty("description", out var value) ? value.GetString() ?? "" : "";
-                yield return (text, description);
-            }
-        }
+        return CommandCatalogPresentation.Read(json, context.Text).Where(row => row.Source != "Core")
+            .Select(row => (row.DisplayName == row.Name ? row.Name : row.DisplayName + " (/" + row.Name + ")", row.Description));
     }
 
     private static ClientActionResult InspectTools(ClientContext context, CancellationToken cancellationToken)
@@ -196,14 +186,16 @@ public sealed class ClientActionHandler : IClientActionHandler
     {
         if (invocation.Arguments.Count == 0) return Query(context, "skills");
         if (invocation.Arguments.Count != 2 || invocation.Arguments[0] is not ("load" or "release"))
-            return new ClientActionResult("Usage: /skills [load|release <skill-id>]");
+            return new ClientActionResult(context.Text.Resolve("client.skills.usage"));
         var command = invocation.Arguments[0] == "load" ? "skills.activate" : "skills.release";
         var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("skillId", invocation.Arguments[1]) + "}";
         var ack = context.Client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
-        if (ack.Status != "ok") return new ClientActionResult(ack.Error ?? "Skill activation was rejected.");
+        if (ack.Status != "ok") return new ClientActionResult(ack.Error is { } error
+            ? context.Text.ResolveWire(error) : context.Text.Resolve("client.skills.rejected"));
         var current = Query(context, "skills");
         return current.Text == context.Text.Resolve("client.no_data")
-            ? new ClientActionResult(invocation.Arguments[0] == "load" ? "Skill activated for this Session." : "Skill released from this Session.")
+            ? new ClientActionResult(context.Text.Resolve(invocation.Arguments[0] == "load"
+                ? "client.skills.activated" : "client.skills.released"))
             : current;
     }
 
@@ -220,16 +212,17 @@ public sealed class ClientActionHandler : IClientActionHandler
         if (invocation.Arguments.Count == 3 && invocation.Arguments[0] == "session"
             && invocation.Arguments[1] == "forget")
             return SendMemory(context, "memory.session.forget", "memoryId", invocation.Arguments[2]);
-        return new ClientActionResult("Usage: /memory session [add <text>|forget <memory-id>]");
+        return new ClientActionResult(context.Text.Resolve("client.memory.usage"));
     }
 
     private static ClientActionResult SendMemory(ClientContext context, string command, string field, string value)
     {
         if (context.Client is not ITrustedUserActionClient trusted)
-            return new ClientActionResult("Session memory changes require a trusted in-process user action.");
+            return new ClientActionResult(context.Text.Resolve("client.memory.trusted_required"));
         var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field(field, value) + "}";
         var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
-        if (ack.Status != "ok") return new ClientActionResult(ack.Error ?? "Session memory change was rejected.");
+        if (ack.Status != "ok") return new ClientActionResult(ack.Error is { } error
+            ? context.Text.ResolveWire(error) : context.Text.Resolve("client.memory.rejected"));
         return Query(context, "memory.session");
     }
 

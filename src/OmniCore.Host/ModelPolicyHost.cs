@@ -13,6 +13,9 @@ public sealed record ModelRegistryModelDescriptor(
     long MaxOutputTokens,
     double? ParameterCountBillions = null);
 
+/// <summary>Machine-neutral outcome when refreshing the current model selection.</summary>
+public sealed record ModelCatalogRefreshChange(string PreviousModelId, string? ReplacementModelId);
+
 /// <summary>Identidad primitiva de una política de modelo; el Host aplica valores predeterminados a los detalles opcionales.</summary>
 public sealed record ModelPolicyKeyDto(
     string ProviderId,
@@ -156,6 +159,19 @@ public sealed class ModelPolicyHost : IDisposable
     /// <summary>Apply only a successfully fetched account catalog; never infer withdrawal from errors.</summary>
     public string? ApplyChatGptCatalog(IReadOnlyList<AvailableChatGptModel> catalog, string workspaceId, CancellationToken ct)
     {
+        var change = ApplyChatGptCatalogWithChange(catalog, workspaceId, ct);
+        return change switch
+        {
+            null => null,
+            { ReplacementModelId: null } => "No hay modelos disponibles en esta cuenta; no se enviarán solicitudes.",
+            _ => change.PreviousModelId + " → " + change.ReplacementModelId + " (ObserveOnly)",
+        };
+    }
+
+    /// <summary>Applies a successfully fetched account catalog and returns a typed selection change.</summary>
+    public ModelCatalogRefreshChange? ApplyChatGptCatalogWithChange(
+        IReadOnlyList<AvailableChatGptModel> catalog, string workspaceId, CancellationToken ct)
+    {
         ct.ThrowIfCancellationRequested();
         if (_configDirectory is null) throw new InvalidOperationException("Catalog is read-only.");
         var providerId = ModelCatalogRegistration.RegisterChatGpt(_configDirectory, catalog);
@@ -165,10 +181,10 @@ public sealed class ModelPolicyHost : IDisposable
         var current = CurrentSelection(workspaceId, ct);
         if (current?.Key.ProviderId != providerId || catalog.Any(m => m.Id == current.ModelId)) return null;
         var replacement = catalog.FirstOrDefault(m => m.IsDefault) ?? catalog.FirstOrDefault();
-        if (replacement is null) return "No hay modelos disponibles en esta cuenta; no se enviarán solicitudes.";
+        if (replacement is null) return new(current.ModelId, null);
         // A replacement must not inherit mutation/tool permissions from the old model.
         Select(workspaceId, new ModelPolicyKeyDto(providerId, replacement.Id), replacement.Id, true, ct);
-        return current.ModelId + " → " + replacement.Id + " (ObserveOnly)";
+        return new(current.ModelId, replacement.Id);
     }
 
     /// <summary>Registers a user-entered subscription model, without discovery, tokens or inference calls.</summary>

@@ -42,6 +42,40 @@ public sealed class LocalServerTests
             "", fixedPort, readiness);
 
     [Fact]
+    public async System.Threading.Tasks.Task Status_remains_readable_during_start_and_dispose_prevents_later_starts()
+    {
+        var process = new FakeProcessRuntime();
+        using var started = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var supervisor = new LocalServerSupervisor(() => process, ready: (_, _) =>
+        {
+            started.Set();
+            Assert.True(release.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            return true;
+        });
+        var provider = Provider(Managed(), LocalHostConfig.ManagedLogicalBaseUrl);
+        var starting = System.Threading.Tasks.Task.Run(() => supervisor.Ensure(provider, provider.BaseUrl), TestContext.Current.CancellationToken);
+        try
+        {
+            Assert.True(started.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            await System.Threading.Tasks.Task.Run(() =>
+            {
+                Assert.True(supervisor.IsManagedOwned("local"));
+                Assert.True(supervisor.IsManagedStarting("local"));
+                Assert.False(supervisor.IsManagedRunning("local"));
+            }, TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        }
+        finally { release.Set(); }
+        await starting;
+        Assert.True(supervisor.IsManagedRunning("local"));
+        supervisor.Dispose();
+        Assert.False(supervisor.IsManagedOwned("local"));
+        Assert.Equal(0, process.AliveCount);
+        Assert.Throws<ObjectDisposedException>(() => supervisor.Ensure(provider, provider.BaseUrl));
+        Assert.Single(process.Launches);
+    }
+
+    [Fact]
     public void Attach_checks_the_already_running_server_and_fails_before_the_turn_when_it_is_down()
     {
         var probed = new List<string>();

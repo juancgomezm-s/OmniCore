@@ -86,7 +86,7 @@ internal static class ConversationPresentation
             if (rows.Count > 0) rows.Add(Array.Empty<ConversationSpan>());
             var label = block.Role switch
             {
-                ConversationRole.User => locale == "en" ? "YOU" : "TÚ",
+                ConversationRole.User => new OmniCore.Client.Localization(locale).Resolve("conversation.you"),
                 ConversationRole.Assistant => "OMNICORE",
                 ConversationRole.Tool => "▪ " + (block.ToolName ?? "tool"),
                 ConversationRole.Interaction => "!",

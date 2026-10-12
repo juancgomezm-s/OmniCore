@@ -19,6 +19,8 @@ using System.Text.Json;
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
 public sealed class OmniCliRuntime : IDisposable
 {
+    public sealed record ProjectExtensionConsentResult(bool Granted, string ExtensionId,
+        IReadOnlyList<string> Capabilities);
     private readonly string _workspaceRoot;
     private readonly object _serverInitializationGate = new();
     private readonly ProviderResilienceCatalog _providerCircuits = new();
@@ -47,11 +49,79 @@ public sealed class OmniCliRuntime : IDisposable
     /// <summary>Detiene los servidores locales managed que este runtime lanzó (ADR-0011 §4).</summary>
     public void Dispose() => _localServers.Dispose();
 
+    /// <summary>
+    /// Re-reads provider configuration under the shared writer lease immediately before an
+    /// implicit managed start. This closes the selection/delete race without probing or starting
+    /// anything when configuration is unavailable or has changed.
+    /// </summary>
+    internal static LocalServerEndpoint EnsureConfiguredLocalServer(IPlatformPaths paths,
+        LocalServerSupervisor supervisor, ProviderDescriptor selectedProvider, string effectiveBaseUrl,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentNullException.ThrowIfNull(supervisor);
+        ArgumentNullException.ThrowIfNull(selectedProvider);
+        ArgumentException.ThrowIfNullOrWhiteSpace(effectiveBaseUrl);
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            // Stable lock order: shared provider/model configuration lease, then supervisor's
+            // internal operation/state gates. Deletion follows the same order.
+            using var lease = ProviderConfigurationLease.Acquire(paths.ConfigDirectory);
+            cancellationToken.ThrowIfCancellationRequested();
+            var current = OmniHost.LoadUserConfiguration(paths).Registry.Provider(selectedProvider.Id);
+            if (current is null || current.LocalHost is null || !SameProviderConfiguration(selectedProvider, current))
+                throw new LocalServerConfigurationChangedException(selectedProvider.Id);
+            cancellationToken.ThrowIfCancellationRequested();
+            return supervisor.Ensure(current, effectiveBaseUrl);
+        }
+        catch (LocalServerConfigurationChangedException) { throw; }
+        catch (LocalServerUnavailableException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or ArgumentException or InvalidOperationException)
+        {
+            // Configuration/lease failures are deliberately generic and contain no config or secret text.
+            throw new LocalServerConfigurationChangedException(selectedProvider.Id);
+        }
+    }
+
+    private static bool SameProviderConfiguration(ProviderDescriptor selected, ProviderDescriptor current)
+    {
+        if (!string.Equals(selected.Id, current.Id, StringComparison.Ordinal)
+            || selected.Family != current.Family
+            || !string.Equals(selected.BaseUrl, current.BaseUrl, StringComparison.Ordinal)
+            || selected.Auth.Kind != current.Auth.Kind
+            || !string.Equals(selected.Auth.SecretRef, current.Auth.SecretRef, StringComparison.Ordinal)
+            || selected.SupportsJsonSchemaPerRequest != current.SupportsJsonSchemaPerRequest
+            || selected.SupportsGrammarPerRequest != current.SupportsGrammarPerRequest
+            || selected.SupportsNativeToolCalls != current.SupportsNativeToolCalls
+            || !string.Equals(selected.TrustedCertificatePath, current.TrustedCertificatePath, StringComparison.Ordinal)
+            || !string.Equals(selected.Profile, current.Profile, StringComparison.Ordinal)
+            || selected.BillingMode != current.BillingMode)
+            return false;
+
+        var left = selected.LocalHost;
+        var right = current.LocalHost;
+        if (left is null || right is null) return left is null && right is null;
+        return left.Mode == right.Mode
+            && string.Equals(left.Executable, right.Executable, StringComparison.Ordinal)
+            && (left.Args ?? []).SequenceEqual(right.Args ?? [], StringComparer.Ordinal)
+            && string.Equals(left.WorkingDirectory, right.WorkingDirectory, StringComparison.Ordinal)
+            && left.FixedPort == right.FixedPort
+            && left.ReadinessTimeout == right.ReadinessTimeout
+            && left.Declared == right.Declared;
+    }
+
+    /// <summary>Creates a UI adapter over this runtime's actual local-server supervisor.</summary>
+    public ITuiLocalEngineSupervisor CreateTuiLocalEngineSupervisor() =>
+        new TuiLocalEngineSupervisor(_localServers, OmniHost.CreatePlatformPaths());
+
     public static OmniCliRuntime Create(string workspaceRoot,
         Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota = null) => new(workspaceRoot, queryQuota);
 
     /// <summary>Explicit CLI consent action bound to the exact project manifest hash and version.</summary>
-    public string SetProjectExtensionConsent(string extensionId, bool grant)
+    public ProjectExtensionConsentResult SetProjectExtensionConsent(string extensionId, bool grant)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(extensionId);
         var paths = OmniHost.CreatePlatformPaths();
@@ -66,15 +136,14 @@ public sealed class OmniCliRuntime : IDisposable
         if (!grant)
         {
             store.Revoke(extensionId);
-            return "Revoked project extension consent for " + extensionId + ".";
+            return new(false, extensionId, Array.Empty<string>());
         }
         if (extension.Manifest is null || extension.Status is ExtensionDiscoveryStatus.InvalidManifest
             or ExtensionDiscoveryStatus.IncompatibleApi)
             throw new InvalidOperationException(extension.Diagnostic ?? "The extension cannot receive consent.");
         var requested = new HashSet<string>(extension.Manifest.Requests?.Capabilities ?? [], StringComparer.Ordinal);
         store.Grant(extension, requested);
-        return "Granted " + string.Join(", ", requested.Order(StringComparer.Ordinal)) + " to " + extensionId
-            + " for this workspace and manifest version.";
+        return new(true, extensionId, requested.Order(StringComparer.Ordinal).ToArray());
     }
 
     private static async Task<ProviderQuotaSnapshot> QueryConfiguredQuotaAsync(string providerId, CancellationToken token)
@@ -93,6 +162,9 @@ public sealed class OmniCliRuntime : IDisposable
     /// El Host no traduce: sin resolver, escribe el formato estable <c>clave(arg=valor)</c>.
     /// </summary>
     public Func<string, IReadOnlyDictionary<string, string>, string>? Localize { get; set; }
+
+    /// <summary>Effective interface locale selected by the CLI for this runtime instance.</summary>
+    public string UiLocale { get; set; } = "es";
 
     /// <summary>Entrada plain provista por OmniCore.Cli; null cuando no existe un TTY interactivo.</summary>
     public Func<QuestionnairePromptDto, QuestionnaireResponseDto?>? QuestionnaireInput { get; set; }
@@ -127,6 +199,38 @@ public sealed class OmniCliRuntime : IDisposable
             }
         }
         return Localize(key, args);
+    }
+
+    private string ExternalDiagnostic(string? value) => Text(Localized("cli.runtime.diagnostic.external",
+        ("value", string.IsNullOrWhiteSpace(value) ? "—" : value)));
+
+    private string CommandError(string? error, string fallbackKey) => error is null
+        ? Text(LocalizedText.Of(fallbackKey)) : ExternalDiagnostic(ResolveWire(error));
+
+    private string RuntimeEnumLabel(string group, string value)
+    {
+        var key = "cli.runtime.label." + group + "." + value.ToLowerInvariant();
+        var translated = Text(LocalizedText.Of(key));
+        return translated == key ? Text(Localized("cli.runtime.status.unknown", ("value", value))) : translated;
+    }
+
+    private string WorkflowStageLabel(string value) => RuntimeEnumLabel("stage", value);
+    private string WorkflowPhaseLabel(string value) => RuntimeEnumLabel("phase", value);
+    private string DispositionLabel(string value) => RuntimeEnumLabel("disposition", value);
+
+    private string StopReasonLabel(StopReason reason)
+    {
+        var code = reason switch
+        {
+            StopReason.EndTurn => "endturn", StopReason.InputRequired => "inputrequired",
+            StopReason.ToolUse => "tooluse", StopReason.MaxOutputTokens => "maxoutputtokens",
+            StopReason.StopSequence => "stopsequence",
+            StopReason.ContextOverflow => "contextoverflow", StopReason.Error => "error",
+            StopReason.ContentFilter => "contentfilter", StopReason.Refusal => "refusal",
+            StopReason.Cancelled => "cancelled", _ => null,
+        };
+        return code is null ? Text(Localized("cli.runtime.label.reason.unknown", ("value", reason.ToString())))
+            : Text(LocalizedText.Of("cli.runtime.label.reason." + code));
     }
 
     /// <summary>Abre el cliente in-process del workspace sin exponer OmniServer al consumidor.</summary>
@@ -202,7 +306,8 @@ public sealed class OmniCliRuntime : IDisposable
         }
         ReportProviderNotices(loaded, locale, writeLine, localize);
         writeLine(Resolve(LocalizedText.Of("doctor.heading"), localize));
-        writeLine(Resolve(Localized("doctor.permissions", ("profile", userPermissions.Profile.ToString()),
+        writeLine(Resolve(Localized("doctor.permissions", ("profile", DoctorValueLabel("permissionProfile",
+                userPermissions.Profile.ToString(), localize)),
             ("rules", userPermissions.Rules.Count.ToString(CultureInfo.InvariantCulture))), localize));
         writeLine(Resolve(Localized("doctor.config", ("path", paths.ConfigDirectory)), localize));
         var trust = new WorkspaceTrustStore(paths).IsTrusted(Directory.GetCurrentDirectory());
@@ -224,7 +329,8 @@ public sealed class OmniCliRuntime : IDisposable
         {
             var provider = registry.Provider(model.ProviderId);
             writeLine(Resolve(Localized("doctor.model", ("name", model.Id), ("provider", model.ProviderId)), localize)
-                + (provider is null ? "" : Resolve(Localized("doctor.model.details", ("family", provider.Family.ToString()),
+                + (provider is null ? "" : Resolve(Localized("doctor.model.details", ("family", DoctorValueLabel(
+                    "providerFamily", provider.Family.ToString(), localize)),
                     ("baseUrl", provider.BaseUrl)), localize)));
             if (provider is not null && !OmniHost.IsProviderFamilySupported(provider.Family))
             {
@@ -264,11 +370,13 @@ public sealed class OmniCliRuntime : IDisposable
         {
             foreach (var key in scopes.Values.Keys.Order(StringComparer.Ordinal))
                 writeLine(Resolve(Localized("doctor.config.scoped", ("key", key),
-                    ("scope", scopes.SourceOf(key)?.ToString() ?? "")), localize));
+                    ("scope", scopes.SourceOf(key) is { } source
+                        ? DoctorValueLabel("configScope", source.ToString(), localize) : "")), localize));
             foreach (var blocked in scopes.Blocked ?? [])
                 writeLine(Resolve(Localized("doctor.config.locked", ("key", blocked.Key),
-                    ("scope", blocked.Scope.ToString()), ("lock", blocked.Lock),
-                    ("owner", blocked.LockedBy.ToString())), localize));
+                    ("scope", DoctorValueLabel("configScope", blocked.Scope.ToString(), localize)),
+                    ("lock", blocked.Lock),
+                    ("owner", DoctorValueLabel("configScope", blocked.LockedBy.ToString(), localize))), localize));
         }
         writeLine(Resolve(Localized("doctor.runtime.credentialStore", ("type", credentials.GetType().Name),
             ("value", credentials.ToString() ?? "")), localize));
@@ -291,6 +399,27 @@ public sealed class OmniCliRuntime : IDisposable
             localize));
         return configured ? 0 : 1;
     }
+
+    internal static string DoctorValueLabel(string group, string value,
+        Func<string, IReadOnlyDictionary<string, string>, string>? localize)
+    {
+        var key = (group, value) switch
+        {
+            ("permissionProfile", "Autonomous") => "doctor.label.permissionProfile.Autonomous",
+            ("permissionProfile", "Balanced") => "doctor.label.permissionProfile.Balanced",
+            ("permissionProfile", "Conservative") => "doctor.label.permissionProfile.Conservative",
+            ("providerFamily", "OpenAIResponses") => "doctor.label.providerFamily.OpenAIResponses",
+            ("providerFamily", "AnthropicMessages") => "doctor.label.providerFamily.AnthropicMessages",
+            ("providerFamily", "OpenAiChatCompatible") => "doctor.label.providerFamily.OpenAiChatCompatible",
+            ("configScope", "User") => "doctor.label.configScope.User",
+            ("configScope", "Project") => "doctor.label.configScope.Project",
+            ("configScope", "Workspace") => "doctor.label.configScope.Workspace",
+            ("configScope", "BuiltIn") => "doctor.label.configScope.BuiltIn",
+            _ => null,
+        };
+        return key is null ? value : Resolve(LocalizedText.Of(key), localize);
+    }
+
     /// <summary>
     /// Estado de la sesion de cuenta de Claude para <c>omni doctor</c>. Lee solo metadata no
     /// secreta: nunca descifra el credential ni muestra tokens (INV-016). Lo que el servidor no
@@ -422,12 +551,12 @@ public sealed class OmniCliRuntime : IDisposable
         ArgumentNullException.ThrowIfNull(diagnostics);
         if (Interlocked.CompareExchange(ref _turnExecutionActive, 1, 0) != 0)
         {
-            diagnostics("A principal Turn is already active; workflow dispatch is deferred.");
+            diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.busy")));
             return 1;
         }
         try
         {
-            var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+            var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
             var server = Server();
             var authorization = server.AuthorizeWorkflowRequest(
                 new WorkflowRequested(new WorkflowRef(request.WorkflowId, request.Version), request.Arguments), commandId);
@@ -441,7 +570,8 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 token.ThrowIfCancellationRequested();
                 var stage = stages[index];
-                diagnostics($"Workflow {authorization.Instance[..12]} · {stage}");
+                diagnostics(Text(Localized("cli.runtime.workflow.progress", ("instance", authorization.Instance[..12]),
+                    ("stage", WorkflowStageLabel(stage.ToString())))));
                 var stageAuthorization = server.ForStage(authorization, stage, previousPlanItem,
                     previousCompletionSequence);
                 var found = server.FindWorkflowStage(stageAuthorization, stage);
@@ -452,7 +582,7 @@ public sealed class OmniCliRuntime : IDisposable
                         stages.Length - index);
                     if (tokenBudget < 8_448)
                     {
-                        diagnostics("Workflow stopped before provider call: the remaining Run token budget cannot reserve the minimum child envelope.");
+                        diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.budget")));
                         return 1;
                     }
                     var selected = ContextInheritanceService.SelectableItems(server.AcquireArtifacts(),
@@ -466,7 +596,9 @@ public sealed class OmniCliRuntime : IDisposable
                     var ack = server.CreateWorkflowClient(stageAuthorization).Send(wire, token);
                     if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
                     {
-                        diagnostics("Workflow stage was not admitted: " + (ack.Error ?? ack.Outcome?.Reason ?? "authority, capacity, permission, route, or budget is unavailable."));
+                        diagnostics(Text(Localized("cli.runtime.workflow.admission", ("reason",
+                            ExternalDiagnostic(ack.Error is null ? ack.Outcome?.Reason
+                                ?? "authority, capacity, permission, route, or budget unavailable" : ResolveWire(ack.Error))))));
                         return 1;
                     }
                     found = server.FindWorkflowStage(stageAuthorization, stage);
@@ -476,7 +608,7 @@ public sealed class OmniCliRuntime : IDisposable
                 var (planItem, delegation, phase) = found.Value;
                 if (phase == PreM6RecordPhase.Failed)
                 {
-                    diagnostics($"Workflow stopped at {stage}: the prior execution is durably Failed.");
+                    diagnostics(Text(Localized("cli.runtime.workflow.failed_phase", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 1;
                 }
                 if (phase == PreM6RecordPhase.Created)
@@ -491,12 +623,13 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (phase == PreM6RecordPhase.Accepted)
                 {
-                    diagnostics($"Workflow waiting at {stage}: an Accepted execution has no returned result. It will not be re-executed automatically.");
+                    diagnostics(Text(Localized("cli.runtime.workflow.accepted_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 3;
                 }
                 if (phase != PreM6RecordPhase.Returned)
                 {
-                    diagnostics($"Workflow stopped at {stage}: unexpected durable delegation phase {phase}.");
+                    diagnostics(Text(Localized("cli.runtime.workflow.invalid_phase", ("stage", WorkflowStageLabel(stage.ToString())),
+                        ("phase", WorkflowPhaseLabel(phase.ToString())))));
                     return 1;
                 }
 
@@ -505,7 +638,7 @@ public sealed class OmniCliRuntime : IDisposable
                 var stageContract = WorkflowStageContract.FromPlanItem(planItem);
                 if (stageContract.Execution is not { } returnedExecution)
                 {
-                    diagnostics($"Workflow waiting at {stage}: its returned execution is not bound to the Plan yet.");
+                    diagnostics(Text(Localized("cli.runtime.workflow.binding_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 3;
                 }
                 supervisor.ReviewReturnedResults(token, returnedExecution);
@@ -521,13 +654,15 @@ public sealed class OmniCliRuntime : IDisposable
                     .ToArray();
                 if (dispositions.Length == 0)
                 {
-                    diagnostics($"Workflow waiting at {stage}: the returned result has no durable disposition yet.");
+                    diagnostics(Text(Localized("cli.runtime.workflow.disposition_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 3;
                 }
                 var disposition = dispositions[^1].Disposition;
                 if (disposition.Outcome != ResultDispositionOutcome.Accepted || planItem.State != PlanItemState.Completed)
                 {
-                    diagnostics($"Workflow stopped at {stage}: {disposition.Outcome} · {disposition.Reason}");
+                    diagnostics(Text(Localized("cli.runtime.workflow.disposition_failed", ("stage", WorkflowStageLabel(stage.ToString())),
+                        ("outcome", DispositionLabel(disposition.Outcome.ToString())),
+                        ("reason", ExternalDiagnostic(disposition.Reason)))));
                     return 1;
                 }
                 var evidence = WorkflowStageEvidenceEvaluator.Evaluate(contract, authorization.Session,
@@ -536,7 +671,8 @@ public sealed class OmniCliRuntime : IDisposable
                 if (!evidence.Passed)
                 {
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
-                    diagnostics($"Workflow stopped at {stage}: {evidence.Reason}");
+                    diagnostics(Text(Localized("cli.runtime.workflow.evidence_failed", ("stage", WorkflowStageLabel(stage.ToString())),
+                        ("reason", ExternalDiagnostic(evidence.Reason)))));
                     return 1;
                 }
                 if (contract.Definition.Stage == WorkflowStage.Verify
@@ -544,9 +680,7 @@ public sealed class OmniCliRuntime : IDisposable
                         authorization.Run, own, token))
                 {
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
-                    diagnostics(locale == "en"
-                        ? "Workflow stopped at Verify: the accepted Implement worktree changed or its durable binding is unavailable."
-                        : "Flujo detenido en Verify: cambió el worktree Implement aceptado o no está disponible su vínculo durable.");
+                    diagnostics(Text(Localized("host.workflow.verify_binding", [])));
                     return 1;
                 }
                 if (contract.Definition.Stage == WorkflowStage.Implement)
@@ -556,16 +690,14 @@ public sealed class OmniCliRuntime : IDisposable
                         .SingleOrDefault(value => value.LaneId == contract.Lane);
                     if (implementationWorktree is null)
                     {
-                        diagnostics("Workflow stopped at Implement: isolated worktree ownership is unavailable.");
+                        diagnostics(Text(Localized("host.workflow.implementation_owner", [])));
                         return 1;
                     }
                     var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
                         implementationWorktree.OwnershipId, token).ConfigureAwait(false);
                     if (!preview.Succeeded)
                     {
-                        diagnostics(locale == "en"
-                            ? "Workflow paused after Implement: the isolated result needs manual recovery before Verify."
-                            : "Flujo en pausa después de Implement: el resultado aislado requiere recuperación manual antes de Verify.");
+                        diagnostics(Text(Localized("host.workflow.manual_recovery", [])));
                         return 3;
                     }
                 }
@@ -575,20 +707,18 @@ public sealed class OmniCliRuntime : IDisposable
             }
             BeforeWorkflowCompletionGateForTests?.Invoke(server, authorization);
             server.CompleteWorkflowCompletionGate(authorization);
-            diagnostics(locale == "en"
-                ? "Workflow completed: Explore, Implement, and Verify are accepted; Verify used the exact owned Implement tree. Integration into the main workspace remains a separate authorized action."
-                : "Flujo completado: Explore, Implement y Verify fueron aceptados; Verify usó el árbol Implement exacto y propio. La integración al workspace principal sigue siendo una acción autorizada aparte.");
+            diagnostics(Text(Localized("host.workflow.completed", [])));
             return 0;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            diagnostics("Workflow canceled. Durable stage and execution state are preserved for explicit recovery.");
+            diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.cancelled")));
             return 130;
         }
         catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
             or ArgumentException or KeyNotFoundException)
         {
-            diagnostics("Workflow stopped safely: " + failure.Message);
+            diagnostics(Text(Localized("cli.runtime.workflow.stopped", ("diagnostic", ExternalDiagnostic(failure.Message)))));
             return 1;
         }
         finally { Volatile.Write(ref _turnExecutionActive, 0); }
@@ -803,7 +933,7 @@ public sealed class OmniCliRuntime : IDisposable
                 || !events.Any(evt => evt.RunId == run && evt.Sequence > previousStart && evt.Sequence <= originStart.Sequence
                     && server.AcquireCodecs().Decode(evt) is UserInputReceived input
                     && input.Origin?.StartsWith("InteractionResponse(", StringComparison.Ordinal) != true))
-            { writeLine("Escalation has no durable original input; resume rejected"); return 1; }
+            { writeLine(Text(LocalizedText.Of("cli.runtime.resume.no_input"))); return 1; }
             var originalTurn = (TurnStarted)server.AcquireCodecs().Decode(originStart);
             var before = server.AcquireStore().CurrentSequence(session);
             var code = await RunTurnAsync("", server.CurrentRunMode() == RunMode.Act, writeLine,
@@ -824,7 +954,7 @@ public sealed class OmniCliRuntime : IDisposable
             return code;
         }
         // A stale, denied or already consumed escalation is not executable.
-        writeLine("No pending user-consented escalation for this interaction");
+        writeLine(Text(LocalizedText.Of("cli.runtime.resume.no_consent")));
         return 1;
     }
 
@@ -878,7 +1008,7 @@ public sealed class OmniCliRuntime : IDisposable
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException
-            or InvalidOperationException or FormatException) { writeLine("Quota consent is invalid; resume rejected"); return 1; }
+            or InvalidOperationException or FormatException) { writeLine(Text(LocalizedText.Of("cli.runtime.resume.quota_invalid"))); return 1; }
     }
 
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
@@ -890,7 +1020,7 @@ public sealed class OmniCliRuntime : IDisposable
         {
             if (!_activeDelegations.TryAdd(child, 0))
             {
-                writeLine("This delegation is already active in this runtime.");
+                writeLine(Text(LocalizedText.Of("cli.runtime.runtime.delegation_busy")));
                 return 1;
             }
             try
@@ -903,7 +1033,7 @@ public sealed class OmniCliRuntime : IDisposable
 
         if (Interlocked.CompareExchange(ref _turnExecutionActive, 1, 0) != 0)
         {
-            writeLine("A principal Turn is already active in this runtime.");
+            writeLine(Text(LocalizedText.Of("cli.runtime.runtime.turn_busy")));
             return 1;
         }
         try
@@ -950,14 +1080,19 @@ public sealed class OmniCliRuntime : IDisposable
         try
         {
             workspaceConfig = ScopedSettingsLoader.Load(paths, _workspaceRoot, trust,
-                alias => registry.Model(alias) is not null);
+                alias =>
+                {
+                    try { _ = registry.Resolve(alias); return true; }
+                    catch (UnknownModelException) { return false; }
+                    catch (AmbiguousModelAliasException) { return false; }
+                });
         }
         catch (ConfigValidationException ex)
         {
             WriteDiagnostics(ex.Diagnostics, writeLine);
             return 1;
         }
-        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
         if (!_providerDeprecationShown && loaded.DeprecationNotices is { Count: > 0 } notices)
         {
             foreach (var notice in notices)
@@ -995,7 +1130,7 @@ public sealed class OmniCliRuntime : IDisposable
         }
 
         if (workspaceConfig.Settings?.DefaultModel is not null)
-            modelDefinition = registry.Model(workspaceConfig.Settings.DefaultModel);
+            modelDefinition = registry.Resolve(workspaceConfig.Settings.DefaultModel);
 
         // Elección explícita (escalación en curso, OMNI_MODEL o defaultModel del workspace) siempre gana;
         // si no la hay y el usuario configuró routing:, elige el router por tipo de tarea (M5).
@@ -1006,7 +1141,7 @@ public sealed class OmniCliRuntime : IDisposable
             modelDefinition = ResolveExplicitModel(loaded, explicitModel);
             if (modelDefinition is null)
             {
-                writeLine("Selected model is not registered. Open Models and select a configured model.");
+                writeLine(Text(LocalizedText.Of("cli.runtime.model.unregistered")));
                 return 1;
             }
         }
@@ -1045,14 +1180,14 @@ public sealed class OmniCliRuntime : IDisposable
                     explicitModel = storedSelection.ModelId;
                 if (!catalog.Any(m => m.Id == (explicitModel ?? modelDefinition?.Id)))
                 {
-                    writeLine("No available ChatGPT model. Refresh Models or sign in again."); return 1;
+                    writeLine(Text(LocalizedText.Of("cli.runtime.model.none"))); return 1;
                 }
                 loaded = OmniHost.LoadUserConfiguration(paths); registry = loaded.Registry;
                 modelDefinition = registry.Model(explicitModel ?? modelDefinition!.Id);
                 providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception) { writeLine("ChatGPT catalog unavailable; selection preserved. Retry before sending."); return 1; }
+            catch (Exception) { writeLine(Text(LocalizedText.Of("cli.runtime.model.catalog_failed"))); return 1; }
         }
         var secretRef = providerDescription?.Auth.SecretRef ?? "qwen";
         var model = modelDefinition?.Id ?? explicitModel;
@@ -1069,14 +1204,14 @@ public sealed class OmniCliRuntime : IDisposable
         {
             if (modelDefinition is null || modelDefinition.Id != priorStep.ModelId)
             {
-                writeLine("The configured model no longer matches the open Turn; resume rejected before provider access.");
+                writeLine(Text(LocalizedText.Of("cli.runtime.resume.model_mismatch")));
                 return 1;
             }
 
             var priorRoute = selectedRoute ?? ModelRoutingHost.RouteFor(modelDefinition, providerDescription, baseUrl);
             if (priorStep.RouteId is { } priorRouteId && !priorRoute.Id.Equals(priorRouteId))
             {
-                writeLine("The configured route no longer matches the open Turn; resume rejected before provider access.");
+                writeLine(Text(LocalizedText.Of("cli.runtime.resume.route_mismatch")));
                 return 1;
             }
             selectedRoute = priorRoute;
@@ -1112,8 +1247,9 @@ public sealed class OmniCliRuntime : IDisposable
         {
             try
             {
-                var endpoint = await System.Threading.Tasks.Task.Run(() => _localServers.Ensure(providerDescription, baseUrl),
-                    cancellationToken).ConfigureAwait(false);
+                var selectedProvider = providerDescription;
+                var endpoint = await System.Threading.Tasks.Task.Run(() => EnsureConfiguredLocalServer(
+                    paths, _localServers, selectedProvider, baseUrl, cancellationToken), cancellationToken).ConfigureAwait(false);
                 connectUrl = endpoint.BaseUrl;
                 if (endpoint.ApiKey is not null)
                 {
@@ -1133,6 +1269,11 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
                     ("message", Text(ex.UserMessage)))));
+                return 1;
+            }
+            catch (LocalServerConfigurationChangedException ex)
+            {
+                writeLine(Text(Localized("localServer.configurationChanged", ("provider", ex.ProviderId))));
                 return 1;
             }
         }
@@ -1201,7 +1342,7 @@ public sealed class OmniCliRuntime : IDisposable
                 var resumeRun = routingResume?.Run ?? openTurn!.Run;
                 if (server.LastSessionId() != resumeSession || server.LastRunId() != resumeRun
                     || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(resumeSession) != resumeRun)
-                { writeLine("Selected Session/Run changed; Turn resume rejected"); return 1; }
+                { writeLine(Text(LocalizedText.Of("cli.runtime.resume.session_changed"))); return 1; }
                 workingState = ReadWorkingState(server, cancellationToken);
             }
             else if (conversationOnly)
@@ -1259,7 +1400,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (followUp.Ack.Status != "ok"
                 || followUp.Ack.Outcome?.Kind is not (RuntimeCommandOutcomeKind.Accepted or RuntimeCommandOutcomeKind.NoOp))
             {
-                writeLine(followUp.Ack.Error ?? "follow-up queue rejected");
+                writeLine(CommandError(followUp.Ack.Error, "cli.runtime.followup.rejected"));
                 return 1;
             }
 
@@ -1276,7 +1417,7 @@ public sealed class OmniCliRuntime : IDisposable
                 || route.Protocol != (providerDescription?.Family ?? ProviderFamily.OpenAiChatCompatible)
                 || route.Profile != providerDescription?.Profile)
             {
-                writeLine("Selected route no longer matches configured model/provider. Select a current route before sending.");
+                writeLine(Text(LocalizedText.Of("cli.runtime.route.mismatch")));
                 return 1;
             }
             var selectedMaxOutputTokens = ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription);
@@ -1302,9 +1443,7 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 catch (InvalidOperationException)
                 {
-                    writeLine(locale == "en"
-                        ? "The selected reasoning request conflicts with this route's declared capability; no provider request was sent."
-                        : "La solicitud de razonamiento elegida contradice la capacidad declarada de esta ruta; no se envió ninguna solicitud al proveedor.");
+                    writeLine(Text(Localized("host.reasoning.route_conflict", [])));
                     return 1;
                 }
             }
@@ -1315,24 +1454,20 @@ public sealed class OmniCliRuntime : IDisposable
             }
             catch (InvalidOperationException)
             {
-                writeLine(locale == "en"
-                    ? "The selected reasoning request conflicts with this route's declared capability; no provider request was sent."
-                    : "La solicitud de razonamiento elegida contradice la capacidad declarada de esta ruta; no se envió ninguna solicitud al proveedor.");
+                writeLine(Text(Localized("host.reasoning.route_conflict", [])));
                 return 1;
             }
             if (reasoningResolution?.Source == ReasoningSelectionSource.UltraCode
                 && reasoningResolution.AppliedRequest is null)
             {
-                writeLine(locale == "en"
-                    ? "UltraCode is selected, but this route has no compatible declared reasoning capability and finite configured budget; no native reasoning request was sent."
-                    : "UltraCode está seleccionado, pero la ruta no declara una capacidad compatible ni un presupuesto finito configurado; no se envió una solicitud de razonamiento nativo.");
+                writeLine(Text(Localized("host.reasoning.ultracode_unavailable", [])));
             }
             if (routingResume?.Interaction is not null)
             {
                 var pending = ModelEscalationConsentReplay.FindGrantedPending(server.AcquireStore().ReadFrom(sessionId, 1),
                     server.AcquireCodecs(), sessionId, runId, model, route, providerDescription?.BillingMode ?? BillingMode.Unknown);
                 if (pending?.InteractionId != routingResume.Interaction)
-                { writeLine("Routing consent is stale or already consumed; resume rejected"); return 1; }
+                { writeLine(Text(LocalizedText.Of("cli.runtime.resume.consent_stale"))); return 1; }
                 EnsureEscalationRecorded(server.RecordModelEscalationApproved(sessionId,
                     new ModelEscalationApproved(runId, model, "interaction:" + pending.InteractionId,
                         pending.Request.TurnId, pending.Request.LaneId)));
@@ -1340,7 +1475,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (delegation is not null && SessionRoutingAuthorization.Read(server.AcquireStore().ReadFrom(sessionId, 1),
                     server.AcquireCodecs(), sessionId)?.Allows(route, providerDescription?.BillingMode ?? BillingMode.Unknown) != true)
             {
-                writeLine("Deferred · ChildRouteAuthorizationRequired. Authorize the route explicitly in the principal first.");
+                writeLine(Text(LocalizedText.Of("cli.runtime.route.child_deferred")));
                 return 1;
             }
             if (delegation is null && AuthorizeRouteForInvocation(server, sessionId, runId, route,
@@ -1462,7 +1597,8 @@ public sealed class OmniCliRuntime : IDisposable
                 catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
                     or InvalidOperationException or UnauthorizedAccessException)
                 {
-                    writeLine("Extension tool composition failed closed: " + failure.Message);
+                    writeLine(Text(Localized("cli.runtime.extension.compose_failed",
+                        ("diagnostic", ExternalDiagnostic(failure.Message)))));
                     return 1;
                 }
             }
@@ -1471,7 +1607,7 @@ public sealed class OmniCliRuntime : IDisposable
                 var processTool = hostTools.Catalog().Find(new ToolId("process.exec"));
                 if (processTool is null)
                 {
-                    writeLine("Deferred · VerificationProcessPermissionRequired. Configure the declared executable in the child AgentProfile before starting Verify.");
+                    writeLine(Text(LocalizedText.Of("cli.runtime.workflow.process_permission")));
                     return 1;
                 }
                 try
@@ -1485,7 +1621,8 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 catch (Exception failure) when (failure is ArgumentException or InvalidOperationException)
                 {
-                    writeLine("Workflow verifier could not be composed: " + failure.Message);
+                    writeLine(Text(Localized("cli.runtime.workflow.verifier_failed",
+                        ("diagnostic", ExternalDiagnostic(failure.Message)))));
                     return 1;
                 }
             }
@@ -1741,8 +1878,9 @@ public sealed class OmniCliRuntime : IDisposable
                             return PersistLaneAcceptance(server, work, childResult, artifacts, token);
                     }
                     if (workflowStage is not null && childResult.StopReason == StopReason.Error)
-                        writeLine("Workflow child Turn failed: " + RedactSensitive(childResult.FinalText
-                            ?? childResult.FailureDiagnostic ?? "no diagnostic was returned"));
+                        writeLine(Text(Localized("cli.runtime.workflow.child_failed", ("diagnostic",
+                            ExternalDiagnostic(RedactSensitive(childResult.FinalText
+                                ?? childResult.FailureDiagnostic ?? "no diagnostic was returned"))))));
                     return childResult;
                 }
                 var ack = server.ExecuteDelegation(delegationId, ExecuteLane,
@@ -1773,8 +1911,9 @@ public sealed class OmniCliRuntime : IDisposable
                     ack = server.ExecuteDelegation(delegationId, ExecuteLane,
                         cancellationToken, waitForCapacity: true);
                 }
-                if (ack.Error is not null) writeLine(ack.Error);
-                if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred) writeLine("Deferred · " + ack.Outcome.Reason);
+                if (ack.Error is not null) writeLine(CommandError(ack.Error, "cli.runtime.workflow.stopped"));
+                if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred)
+                    writeLine(Text(Localized("cli.runtime.outcome.deferred", ("reason", ExternalDiagnostic(ack.Outcome.Reason)))));
                 return ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Deferred ? 0 : 1;
             }
             var instructionSnapshot = routingResume?.InstructionSnapshot ?? openTurn?.Started.InstructionSnapshot;
@@ -1807,9 +1946,7 @@ public sealed class OmniCliRuntime : IDisposable
                     }
                     catch (InvalidOperationException)
                     {
-                        writeLine(locale == "en"
-                            ? "The current reasoning preference conflicts with this route; no next Turn was sent."
-                            : "La preferencia de razonamiento vigente contradice esta ruta; no se envió el siguiente Turn.");
+                        writeLine(Text(Localized("host.reasoning.current_conflict", [])));
                         return null;
                     }
                 }
@@ -1857,7 +1994,8 @@ public sealed class OmniCliRuntime : IDisposable
                 writeLine(result.FinalText);
             }
 
-            writeLine(Text(Localized("cli.runtime.turn.summary", ("reason", result.StopReason.ToString()),
+            writeLine(Text(Localized("cli.runtime.turn.summary",
+                ("reason", StopReasonLabel(result.StopReason)),
                 ("steps", result.Steps.ToString()),
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
             if (HandleStallOutcome(server, sessionId, result.Stall, interactionResponder, interactive, writeLine)
@@ -2403,7 +2541,8 @@ public sealed class OmniCliRuntime : IDisposable
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
                 writeLine(FormatToolTrace(trace));
             if (!string.IsNullOrEmpty(result.FinalText)) writeLine(result.FinalText);
-            writeLine(Text(Localized("cli.runtime.turn.summary", ("reason", result.StopReason.ToString()),
+            writeLine(Text(Localized("cli.runtime.turn.summary",
+                ("reason", StopReasonLabel(result.StopReason)),
                 ("steps", result.Steps.ToString()),
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
             // ADR-0048 §3: AskUser espera al usuario; EscalateModel continúa el Run con otro modelo.
@@ -2632,17 +2771,17 @@ public sealed class OmniCliRuntime : IDisposable
     {
         var initialized = server.EnsureSessionRoutingPolicy(session);
         initialized.ThrowIfFailure();
-        if (initialized.Status != "ok") { writeLine(initialized.Error ?? "Routing policy initialization rejected"); return 1; }
+        if (initialized.Status != "ok") { writeLine(CommandError(initialized.Error, "cli.runtime.routing.initialization_failed")); return 1; }
         var authorization = server.AuthorizeModelRoute(session, run, route, mode, requireConsent);
         if (authorization.Failure is { } authorizationFailure)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(authorizationFailure);
         if (authorization.Ack.Status != "ok")
-        { writeLine(authorization.Ack.Error ?? "Model route authorization could not be confirmed"); return 1; }
+        { writeLine(CommandError(authorization.Ack.Error, "cli.runtime.routing.authorization_failed")); return 1; }
         if (authorization.Authorized
             && authorization.Ack.Outcome?.Kind is RuntimeCommandOutcomeKind.NoOp or RuntimeCommandOutcomeKind.Accepted)
             return null;
         if (authorization.Interaction is not { } interaction)
-        { writeLine(authorization.Ack.Error ?? "Model route authorization rejected"); return 1; }
+        { writeLine(CommandError(authorization.Ack.Error, "cli.runtime.routing.rejected")); return 1; }
         if (HasInteractionClient)
         { writeLine(InputRequiredJson(interaction, "ModelRouteConsent")); return 3; }
         if (UseConsoleInput && !Console.IsInputRedirected)
@@ -2651,7 +2790,7 @@ public sealed class OmniCliRuntime : IDisposable
                 .OfType<InteractionRequested>().Last(request => request.InteractionId == interaction);
             var selected = CreateInteractionResponder(writeLine, locale)(request) ?? "deny";
             var ack = server.RespondToInteraction(interaction, selected);
-            if (ack.Status != "ok") { writeLine(ack.Error ?? "Model route response rejected"); return 1; }
+            if (ack.Status != "ok") { writeLine(CommandError(ack.Error, "cli.runtime.routing.response_rejected")); return 1; }
             if (selected == "allow_route")
             {
                 var confirmed = server.AuthorizeModelRoute(session, run, route, mode);
@@ -2665,7 +2804,7 @@ public sealed class OmniCliRuntime : IDisposable
         }
         var denial = server.ResolveModelRouteWithoutClient(session, run, interaction);
         denial.ThrowIfFailure();
-        if (denial.Status != "ok") writeLine(denial.Error ?? "NoClient route denial rejected");
+        if (denial.Status != "ok") writeLine(CommandError(denial.Error, "cli.runtime.routing.denial_rejected"));
         return 1;
     }
 
@@ -2691,7 +2830,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (pending.Values.Any(evt => evt.RunId is null && server.AcquireCodecs().Decode(evt)
                     is InteractionRequested { Kind: InteractionKind.BudgetExceeded }))
             {
-                writeLine("Pending budget interaction has no Run attribution; execution is blocked");
+                writeLine(Text(LocalizedText.Of("cli.runtime.budget.unattributed")));
                 return 1;
             }
             return null;
@@ -2706,7 +2845,7 @@ public sealed class OmniCliRuntime : IDisposable
         }
         var ack = server.ResolveBudgetWithoutClient(session, run, requestPayload.InteractionId);
         ack.ThrowIfFailure();
-        if (ack.Status != "ok") writeLine(ack.Error ?? "Budget denial was rejected");
+        if (ack.Status != "ok") writeLine(CommandError(ack.Error, "cli.runtime.budget.denial_rejected"));
         return 1;
     }
 
@@ -3262,7 +3401,7 @@ public sealed class OmniCliRuntime : IDisposable
         if (escalatedDefinition is null) return 1;
         var escalatedRoute = next.Route;
         var escalationMode = ModelRoutingHost.EscalationMode(loaded);
-        var locale = Environment.GetEnvironmentVariable("OMNI_LOCALE") == "en" ? "en" : "es";
+        var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
         if (AuthorizeRouteForInvocation(server, session, run, escalatedRoute,
                 escalatedProvider?.BillingMode ?? BillingMode.Unknown, writeLine, locale,
                 requireConsent: escalationMode == "ask") is { } authorizationCode)

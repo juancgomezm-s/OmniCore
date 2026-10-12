@@ -59,7 +59,7 @@ public sealed class SessionUsageReporterTests
     public void Status_line_joins_tokens_cost_and_quota_and_omits_what_does_not_apply()
     {
         var local = SessionUsageReporter.Build(new TokenTotals(900, 50, 0, 0), 0m, false, false, true, [], Now);
-        Assert.Equal("session 950 tok · —", OmniCore.Cli.CliApp.StatusLineText(local));
+        Assert.Equal("sesión 950 tok · —", OmniCore.Cli.CliApp.StatusLineText(local));
     }
 
     [Fact]

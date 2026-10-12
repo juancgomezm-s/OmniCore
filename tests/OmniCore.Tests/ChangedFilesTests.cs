@@ -114,11 +114,11 @@ public sealed class ChangedFilesTests
         Assert.Contains(rows, r => r.Text == "  ");
         Assert.Equal("@@ -1,2 +1,2 @@", rows[0].Text);
         Assert.Equal("@@ -0,0 +1,1 @@", FileDiffPresentation.Build(diff with { Before = "", After = "new\n" }).Rows[0].Text);
-        Assert.Contains("Line endings only", Assert.Single(FileDiffPresentation.Build(diff with { Before = "a\r\n", After = "a\n" }).Rows).Text);
+        Assert.Contains("Line endings only", Assert.Single(FileDiffPresentation.Build(diff with { Before = "a\r\n", After = "a\n" }, locale: "en").Rows).Text);
         var large = diff with { Before = string.Join('\n', Enumerable.Range(0, 20)), After = "new" };
-        var limited = FileDiffPresentation.Build(large, 8); Assert.Equal(8, limited.Rows.Count);
+        var limited = FileDiffPresentation.Build(large, 8, locale: "en"); Assert.Equal(8, limited.Rows.Count);
         Assert.Contains("Partial preview", limited.Rows[^1].Text);
-        Assert.Contains(FileDiffPresentation.Build(diff with { After = "b" }).Rows, r => r.Text.Contains("No newline at end of after"));
+        Assert.Contains(FileDiffPresentation.Build(diff with { After = "b" }, locale: "en").Rows, r => r.Text.Contains("No newline at end of after"));
     }
 
     [Fact]

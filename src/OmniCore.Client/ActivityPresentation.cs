@@ -10,18 +10,13 @@ public sealed record ActivityPresentation(ChatActivityPhase? Phase, int Backgrou
 
     public string Label(string locale = "es")
     {
-        var en = locale == "en";
-        var label = Phase switch
-        {
-            ChatActivityPhase.WaitingForResponse => en ? "Waiting for response" : "Esperando respuesta",
-            ChatActivityPhase.Reasoning => en ? "Reasoning" : "Razonando",
-            ChatActivityPhase.AnswerText => en ? "Responding" : "Respondiendo",
-            // Tools includes requested calls, not necessarily admitted/running calls.
-            ChatActivityPhase.Tools => en ? "Tools" : "Herramientas",
-            ChatActivityPhase.WaitingForApproval => en ? "Input required" : "Requiere tu respuesta",
-            _ => BackgroundActivities > 0 ? (en ? "Agents" : "Agentes") : (en ? "Processing…" : "Procesando…"),
-        };
-        return BackgroundActivities > 0 ? label + " · " + BackgroundActivities + (en ? " agents" : " agentes") : label;
+        var text = new Localization(locale);
+        var key = "activity." + Phase;
+        // Tools includes requested calls, not necessarily admitted/running calls.
+        var label = ShellUiResources.ContainsKey(key) ? text.Resolve(key)
+            : text.Resolve(BackgroundActivities > 0 ? "activity.agents" : "shell.processing");
+        return BackgroundActivities > 0 ? text.Resolve("activity.background", new Dictionary<string, string>
+        { ["label"] = label, ["count"] = BackgroundActivities.ToString(System.Globalization.CultureInfo.InvariantCulture) }) : label;
     }
 
     public static ActivityPresentation From(string? sessionId, string? runId, string? principalLaneId,

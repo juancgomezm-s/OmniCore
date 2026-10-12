@@ -22,7 +22,7 @@ public sealed class ExtensionManifestLoader
     private static ExtensionManifest Map(YamlMappingNode root)
     {
         ManifestYamlAst.CheckKeys(root, "extension manifest", "manifestVersion", "id", "version", "displayName",
-            "publisher", "omnicoreApi", "provides", "requests", "runtime", "source");
+            "publisher", "omnicoreApi", "provides", "requests", "runtime", "source", "uiResources");
         var manifest = new ExtensionManifest
         {
             ManifestVersion = ManifestYamlAst.Optional(root, "manifestVersion") is { } manifestVersion
@@ -92,7 +92,35 @@ public sealed class ExtensionManifestLoader
                 Location = ManifestYamlAst.OptionalString(source, "location", "source.location"),
                 Sha256 = ManifestYamlAst.OptionalString(source, "sha256", "source.sha256"),
             };
+        manifest.UiResources = MapUiResources(root, manifest);
         return manifest;
+    }
+
+    private static Dictionary<string, Dictionary<string, string>>? MapUiResources(YamlMappingNode root, ExtensionManifest manifest)
+    {
+        if (ManifestYamlAst.OptionalMap(root, "uiResources", "uiResources", "es", "en", "fr", "it") is not { } locales) return null;
+        var allowed = new HashSet<string>(StringComparer.Ordinal) { "extension.displayName", "extension.description" };
+        foreach (var command in manifest.Provides?.Commands ?? []) allowed.Add("command." + command.Name + ".description");
+        foreach (var tool in manifest.Provides?.Tools ?? []) allowed.Add("tool." + tool.Name + ".description");
+        var result = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
+        foreach (var locale in locales.Children)
+        {
+            var name = ManifestYamlAst.String(locale.Key, "uiResources locale");
+            if (locale.Value is not YamlMappingNode resources || resources.Children.Count > 128)
+                throw ManifestYamlAst.WrongType("uiResources." + name);
+            var values = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var resource in resources.Children)
+            {
+                var key = ManifestYamlAst.String(resource.Key, "uiResources key");
+                var value = ManifestYamlAst.String(resource.Value, "uiResources text");
+                if (!allowed.Contains(key) || string.IsNullOrWhiteSpace(value) || value.Length > 2048
+                    || value.Any(c => char.IsControl(c) && c is not '\n' and not '\t'))
+                    throw new InvalidDataException("Invalid extension UI resource: " + name + "/" + key);
+                values.Add(key, value);
+            }
+            result.Add(name, values);
+        }
+        return result;
     }
 
     private static List<ExtensionToolManifest>? MapTools(YamlMappingNode provides)

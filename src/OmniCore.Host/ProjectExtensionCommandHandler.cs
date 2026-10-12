@@ -28,7 +28,11 @@ internal sealed class ProjectExtensionCommandHandler : ICommandHandler
             CommandKind.Extension, "Run the " + command.Name + " command from " + _displayName
                 + " (tool ext." + _extensionId + "." + command.Tool + ").",
             ["<JSON object of tool arguments>"],
-            new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust, _extensionId, _extensionVersion));
+            new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust, _extensionId, _extensionVersion))
+        {
+            UiDescriptions = manifest.UiResources?.Where(pair => pair.Value.ContainsKey("command." + command.Name + ".description"))
+                .ToDictionary(pair => pair.Key, pair => pair.Value["command." + command.Name + ".description"], StringComparer.Ordinal),
+        };
         Descriptor.Validate();
     }
 

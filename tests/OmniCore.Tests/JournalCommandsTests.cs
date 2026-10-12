@@ -121,7 +121,7 @@ public sealed class JournalCommandsTests
         var session = new StringWriter();
         Assert.Equal(2, await OmniCore.Cli.JournalCommands.VerifyJournal(
             new[] { "verify-journal", fx.JournalPath, "--session", "no-es-un-guid" }, session));
-        Assert.Contains("GUID de sesión válido", session.ToString());
+        Assert.Contains("--session espera un GUID válido", session.ToString());
     }
 
     [Fact]
@@ -147,7 +147,7 @@ public sealed class JournalCommandsTests
 
         Assert.Equal(0, code);
         // Envelope (refs declaradas) + payload (ResponseArtifact): 2 refs verificadas por hash.
-        Assert.Contains("2 ref(s) de artifacts — OK", output.ToString());
+        Assert.Contains("2 referencia(s) de artifacts — OK", output.ToString());
     }
 
     [Fact]

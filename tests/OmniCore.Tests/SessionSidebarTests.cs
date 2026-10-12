@@ -158,6 +158,23 @@ public sealed class SessionSidebarTests
         Assert.DoesNotContain("Tokens: 100", foreign); Assert.DoesNotContain("Tokens sesión: 1,000", foreign);
     }
 
+    [Theory]
+    [InlineData("es", "orquestar")]
+    [InlineData("en", "orchestrate")]
+    [InlineData("fr", "orchestrer")]
+    [InlineData("it", "orchestrare")]
+    public void Session_sidebar_localizes_the_canonical_run_mode(string locale, string expectedMode)
+    {
+        var snapshot = new SessionSidebarSnapshot("s", "r", 1, "Title", null,
+            "Orchestrate", "Running", null, false, false);
+        var widgets = SessionSidebarPresentation.Build(snapshot, null, "model", "act", locale, false);
+        var session = Assert.IsType<ListWidgetModel>(Assert.Single(widgets, widget => widget.Id == "core.session")
+            .Build(ClientState.Empty(), WidgetSize.Normal));
+
+        Assert.Contains(session.Rows, row => row.Text == expectedMode + " · " +
+            new Localization(locale).Resolve("state.Running"));
+    }
+
     [Fact]
     public void Session_stays_fixed_above_blocked_plan_and_leaf_progress_excludes_containers()
     {

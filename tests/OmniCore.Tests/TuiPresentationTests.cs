@@ -274,7 +274,7 @@ public sealed class TuiPresentationTests
         var presentation = StatusLinePresentation.From(model);
 
         Assert.Contains("60%", presentation.Right);
-        Assert.Contains("! 3 pending", presentation.Right);
+        Assert.Contains("! 3 pendientes", presentation.Right);
     }
 
     [Fact]
@@ -284,7 +284,7 @@ public sealed class TuiPresentationTests
         var presentation = StatusLinePresentation.From(model);
 
         Assert.StartsWith("—", presentation.Right);
-        Assert.Contains("! 2 pending", presentation.Right);
+        Assert.Contains("! 2 pendientes", presentation.Right);
     }
 
     [Fact]
@@ -293,7 +293,7 @@ public sealed class TuiPresentationTests
         var model = new StatusLineModel(null, null, "ACT");
         var presentation = StatusLinePresentation.From(model);
 
-        Assert.Equal("ACT", presentation.Left);
+        Assert.Equal("act", presentation.Left);
     }
 
     [Fact]
@@ -302,7 +302,22 @@ public sealed class TuiPresentationTests
         var model = new StatusLineModel(null, null, "plan", "ultracode", "budget:4096");
         var presentation = StatusLinePresentation.From(model);
 
-        Assert.Equal("plan · UltraCode · reasoning budget:4096", presentation.Left);
+        Assert.Equal("plan · UltraCode · razonamiento budget:4096", presentation.Left);
+    }
+
+    [Theory]
+    [InlineData("es", "orquestar", "razonamiento", "pendientes")]
+    [InlineData("en", "orchestrate", "reasoning", "pending")]
+    [InlineData("fr", "orchestrer", "raisonnement", "en attente")]
+    [InlineData("it", "orchestrare", "ragionamento", "in sospeso")]
+    public void StatusLine_localizes_own_labels_in_all_supported_locales(string locale, string mode,
+        string reasoning, string pending)
+    {
+        var presentation = StatusLinePresentation.From(
+            new StatusLineModel("42%", 2, "Orchestrate", appliedReasoning: "high"), locale);
+
+        Assert.Equal(mode + " · " + reasoning + " high", presentation.Left);
+        Assert.Equal("42% · ! 2 " + pending, presentation.Right);
     }
 
     #endregion

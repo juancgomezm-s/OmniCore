@@ -20,14 +20,15 @@ public sealed class ChangedFilesProjection
     private sealed class FilesWidget(ChangedFilesSnapshot? snapshot, string locale) : ISidebarWidget
     {
         public string Id => "core.files";
-        public string Title => locale == "en" ? "FILES · effects" : "ARCHIVOS · efectos";
+        private Localization Text => new(locale);
+        public string Title => Text.Resolve("files.title");
         public ThemeRole Accent => ThemeRole.Info;
         public int DefaultPriority => 50;
         public WidgetRelevance Evaluate(ClientState state) => snapshot?.Unavailable == true || snapshot?.Files.Any(f => f.Status == "?") == true
             ? WidgetRelevance.Attention : snapshot?.Files.Count > 0 ? WidgetRelevance.Normal : WidgetRelevance.None;
         public WidgetModel Build(ClientState state, WidgetSize size)
         {
-            if (snapshot?.Unavailable == true) return new ListWidgetModel(Title, [new(locale == "en" ? "Unavailable" : "No disponible", ThemeRole.Error)]);
+            if (snapshot?.Unavailable == true) return new ListWidgetModel(Title, [new(Text.Resolve("files.unavailable"), ThemeRole.Error)]);
             var groups = (snapshot?.Files ?? []).GroupBy(f => (f.Path, f.LaneId)).ToArray();
             var rows = new List<WidgetRowModel>();
             static WidgetRowModel Row(ChangedFile f, string suffix = "") => new(f.Status + " " + f.Path
@@ -37,8 +38,8 @@ public sealed class ChangedFilesProjection
             foreach (var group in groups)
             {
                 var effects = group.ToArray();
-                rows.Add(Row(effects[^1], effects.Length > 1 ? $" · {effects.Length}" + (locale == "en" ? " effects · latest" : " efectos · último") : ""));
-                if (size == WidgetSize.Expanded) foreach (var effect in effects[..^1]) rows.Add(Row(effect, locale == "en" ? " · earlier" : " · anterior"));
+                rows.Add(Row(effects[^1], effects.Length > 1 ? $" · {effects.Length}" + Text.Resolve("files.latest") : ""));
+                if (size == WidgetSize.Expanded) foreach (var effect in effects[..^1]) rows.Add(Row(effect, Text.Resolve("files.earlier")));
             }
             return new ListWidgetModel(Title + " " + groups.Length, rows);
         }
@@ -48,9 +49,10 @@ public sealed class ChangedFilesProjection
 /// <summary>Bounded, ordered line diff. Replacements preserve both sides, including newline diagnostics.</summary>
 public static class FileDiffPresentation
 {
-    public static ListWidgetModel Build(FileDiffSnapshot diff, int maximumRows = 1200)
+    public static ListWidgetModel Build(FileDiffSnapshot diff, int maximumRows = 1200, string locale = "es")
     {
-        if (!diff.Available) return new(diff.Path, [new(diff.Reason ?? "Diff unavailable", ThemeRole.Attention)]);
+        var text = new Localization(locale);
+        if (!diff.Available) return new(diff.Path, [new(diff.Reason ?? text.Resolve("shell.diff_unavailable"), ThemeRole.Attention)]);
         var before = Lines(diff.Before!); var after = Lines(diff.After!);
         var rows = new List<WidgetRowModel>();
         var prefix = 0;
@@ -59,8 +61,7 @@ public static class FileDiffPresentation
         while (suffix < Math.Min(before.Length, after.Length) - prefix
             && before[^(suffix + 1)] == after[^(suffix + 1)]) suffix++;
         if (prefix == before.Length && prefix == after.Length)
-            return new(diff.Path, [new(diff.Before == diff.After ? "Sin cambios de texto · No text changes"
-                : "Sólo finales de línea · Line endings only", ThemeRole.Muted)]);
+            return new(diff.Path, [new(text.Resolve(diff.Before == diff.After ? "files.unchanged" : "files.endings"), ThemeRole.Muted)]);
         var start = Math.Max(0, prefix - 3);
         var trailing = Math.Min(3, suffix);
         rows.Add(new($"@@ -{(before.Length == 0 ? 0 : start + 1)},{before.Length - suffix - start + trailing} +{(after.Length == 0 ? 0 : start + 1)},{after.Length - suffix - start + trailing} @@", ThemeRole.Info));
@@ -68,9 +69,9 @@ public static class FileDiffPresentation
         for (var i = prefix; i < before.Length - suffix; i++) rows.Add(new("- " + before[i], ThemeRole.Error));
         for (var i = prefix; i < after.Length - suffix; i++) rows.Add(new("+ " + after[i], ThemeRole.Success));
         for (var i = 0; i < Math.Min(3, suffix); i++) rows.Add(new("  " + after[after.Length - suffix + i], ThemeRole.Primary));
-        if (diff.Before!.Length > 0 && !diff.Before.EndsWith('\n')) rows.Add(new("\\ No newline at end of before", ThemeRole.Muted));
-        if (diff.After!.Length > 0 && !diff.After.EndsWith('\n')) rows.Add(new("\\ No newline at end of after", ThemeRole.Muted));
-        if (rows.Count > maximumRows) rows = rows.Take(Math.Max(1, maximumRows - 1)).Append(new("… Vista parcial · Partial preview", ThemeRole.Attention)).ToList();
+        if (diff.Before!.Length > 0 && !diff.Before.EndsWith('\n')) rows.Add(new(text.Resolve("files.before_newline"), ThemeRole.Muted));
+        if (diff.After!.Length > 0 && !diff.After.EndsWith('\n')) rows.Add(new(text.Resolve("files.after_newline"), ThemeRole.Muted));
+        if (rows.Count > maximumRows) rows = rows.Take(Math.Max(1, maximumRows - 1)).Append(new(text.Resolve("files.partial"), ThemeRole.Attention)).ToList();
         return new(diff.Path, rows);
     }
     private static string[] Lines(string text) => text.Length == 0 ? [] : (text.EndsWith('\n') ? text[..^1] : text).Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n').Select(line => line.EndsWith('\r') ? line[..^1] : line).ToArray();

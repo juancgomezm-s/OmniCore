@@ -59,10 +59,11 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
             throw new ArgumentException("Solo se almacenan grants persistentes.", nameof(grant));
         lock (_gate)
         {
+            using var lease = AcquireWriteLease(cancellationToken);
             var grants = Read().Where(g => g.Id != grant.Id).Append(grant).ToArray();
             Write(grants);
+            AppendAudit("created", grant);
         }
-        AppendAudit("created", grant);
         _audit.Record(new AuditRecord("permission.grant.created", grant.Workspace, null, grant.Run,
             DateTimeOffset.UtcNow, grant.Id.ToString(), new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -78,12 +79,13 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
         PermissionGrantRecord? revoked;
         lock (_gate)
         {
+            using var lease = AcquireWriteLease(cancellationToken);
             var grants = Read();
             revoked = grants.FirstOrDefault(g => g.Workspace.Equals(workspace) && g.Id.Equals(id));
             if (revoked is null) return false;
             Write(grants.Where(g => !g.Id.Equals(id)).ToArray());
+            AppendAudit("revoked", revoked);
         }
-        AppendAudit("revoked", revoked);
         _audit.Record(new AuditRecord("permission.grant.revoked", workspace, null, revoked.Run,
             DateTimeOffset.UtcNow, id.ToString(), new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -133,7 +135,10 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
     {
         if (!File.Exists(_file)) return Array.Empty<PermissionGrantRecord>();
         var result = new List<PermissionGrantRecord>();
-        foreach (var line in File.ReadAllLines(_file))
+        using var snapshot = new FileStream(_file, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(snapshot, Encoding.UTF8);
+        while (reader.ReadLine() is { } line)
         {
             if (line.Length == 0) continue;
             var fields = line.Split('\t');
@@ -163,12 +168,31 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
     private void Write(IReadOnlyList<PermissionGrantRecord> grants)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
-        var temp = _file + ".tmp";
+        var temp = _file + ".tmp-" + Guid.NewGuid().ToString("N");
         var lines = grants.Select(g => string.Join('\t', g.Id, Encode(g.ToolId), g.ClaimsKey,
             g.Lifetime.ToString(), Encode(g.Workspace.ToString()), Encode(g.Run?.ToString() ?? ""),
             g.CreatedAt.UtcTicks.ToString(CultureInfo.InvariantCulture)));
-        File.WriteAllLines(temp, lines, new UTF8Encoding(false));
-        File.Move(temp, _file, true);
+        try
+        {
+            File.WriteAllLines(temp, lines, new UTF8Encoding(false));
+            File.Move(temp, _file, true);
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    // Every writer, including runtime grants and the preferences facade, shares this
+    // OS lease. Instance-local locks cannot protect read/modify/replace across stores.
+    private FileStream AcquireWriteLease(CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try { return new FileStream(_file + ".lease", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) when (System.Diagnostics.Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(10))
+            { cancellationToken.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(25)); }
+        }
     }
 
     private static string Encode(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));

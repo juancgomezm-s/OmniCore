@@ -41,7 +41,7 @@ public sealed class ModelPolicyCliTests
         Assert.Contains("TECHO", text);
         Assert.Contains("Recomendación sin evidencia", text);
         // Elegir 1 guarda ObserveOnly rev=1 y selecciona.
-        Assert.Contains("Política guardada: ObserveOnly rev=1", text);
+        Assert.Contains("Política guardada: Sólo observación rev=1", text);
         Assert.Contains("Seleccionado: test-model", text);
     }
 
@@ -53,12 +53,12 @@ public sealed class ModelPolicyCliTests
         // Alta inicial vía onboarding (elige 2 = PatchOnly).
         var onboard = new StringWriter();
         Assert.Equal(0, await Run(new[] { "model", "select", "test-model" }, "2\n", onboard, dir));
-        Assert.Contains("PatchOnly rev=1", onboard.ToString());
+        Assert.Contains("Sólo parches rev=1", onboard.ToString());
 
         // Consultar.
         var show = new StringWriter();
         Assert.Equal(0, await Run(new[] { "model", "policy", "show", "test-model" }, "", show, dir));
-        Assert.Contains("PatchOnly", show.ToString());
+        Assert.Contains("Sólo parches", show.ToString());
         Assert.Contains("visibles=7", show.ToString());
 
         // Cambiar (sin --revision usa la vigente ⇒ sin conflicto).
@@ -66,7 +66,7 @@ public sealed class ModelPolicyCliTests
         Assert.Equal(0, await Run(
             new[] { "model", "policy", "set", "test-model", "--category", "ScopedCoder", "--note", "prueba" },
             "", update, dir));
-        Assert.Contains("ScopedCoder rev=2", update.ToString());
+        Assert.Contains("Codificación acotada rev=2", update.ToString());
 
         // Cambiar con revisión obsoleta ⇒ conflicto, nada se pisa y exit 2.
         var stale = new StringWriter();
@@ -76,13 +76,13 @@ public sealed class ModelPolicyCliTests
         Assert.Contains("Conflicto de revisión", stale.ToString());
         var afterConflict = new StringWriter();
         await Run(new[] { "model", "policy", "show", "test-model" }, "", afterConflict, dir);
-        Assert.Contains("ScopedCoder", afterConflict.ToString());
+        Assert.Contains("Codificación acotada", afterConflict.ToString());
 
         // Historial: created + updated.
         var history = new StringWriter();
         Assert.Equal(0, await Run(new[] { "model", "policy", "history", "test-model" }, "", history, dir));
-        Assert.Contains("rev=1 created", history.ToString());
-        Assert.Contains("rev=2 updated", history.ToString());
+        Assert.Contains("rev=1 creada", history.ToString());
+        Assert.Contains("rev=2 actualizada", history.ToString());
 
         // Eliminar...
         var delete = new StringWriter();
@@ -93,7 +93,7 @@ public sealed class ModelPolicyCliTests
         var reonboard = new StringWriter();
         Assert.Equal(0, await Run(new[] { "model", "select", "test-model" }, "1\n", reonboard, dir));
         Assert.Contains("Onboarding de política", reonboard.ToString());
-        Assert.Contains("ObserveOnly rev=1", reonboard.ToString());
+        Assert.Contains("Sólo observación rev=1", reonboard.ToString());
     }
 
     [Fact]
@@ -107,7 +107,7 @@ public sealed class ModelPolicyCliTests
         Assert.Equal(0, code);
         var text = output.ToString();
         Assert.Contains("Sin terminal interactiva", text);
-        Assert.Contains("ObserveOnly por esta selección", text);
+        Assert.Contains("modo Sólo observación", text);
         Assert.DoesNotContain("Onboarding de política", text);
         // No se guardó ninguna política: la próxima selección TTY abrirá onboarding.
         Assert.DoesNotContain("Política guardada", text);
@@ -122,7 +122,7 @@ public sealed class ModelPolicyCliTests
         var code = await Run(new[] { "model", "select", "test-model" }, "s\n", output, dir);
 
         Assert.Equal(0, code);
-        Assert.Contains("modo seguro ObserveOnly (solo esta selección)", output.ToString());
+        Assert.Contains("modo seguro Sólo observación (sólo esta selección)", output.ToString());
         Assert.DoesNotContain("Política guardada", output.ToString());
     }
 
@@ -133,11 +133,11 @@ public sealed class ModelPolicyCliTests
         var set = new StringWriter();
         Assert.Equal(0, await Run(new[] { "model", "policy", "set", "claude-code/claude-haiku-5-5",
             "--category", "FullAgent" }, "", set, dir));
-        Assert.Contains("FullAgent rev=1", set.ToString());
+        Assert.Contains("Agente completo rev=1", set.ToString());
         var show = new StringWriter();
         Assert.Equal(0, await Run(new[] { "model", "policy", "show", "claude-code/claude-haiku-5-5" },
             "", show, dir));
-        Assert.Contains("FullAgent", show.ToString());
+        Assert.Contains("Agente completo", show.ToString());
         var invalid = new StringWriter();
         Assert.Equal(2, await Run(new[] { "model", "policy", "set", "claude-code/--permission-mode",
             "--category", "FullAgent" }, "", invalid, dir));
@@ -167,7 +167,7 @@ public sealed class ModelPolicyCliTests
         var text = output.ToString();
         Assert.Contains("Opción no válida: '9'", text);
         Assert.Contains("Opción no válida: 'xx'", text);
-        Assert.Contains("ScopedCoder rev=1", text);
+        Assert.Contains("Codificación acotada rev=1", text);
     }
 
     [Fact]
@@ -192,6 +192,6 @@ public sealed class ModelPolicyCliTests
         Assert.Equal(0, await Run(new[] { "model", "list" }, "", output, dir));
 
         Assert.Contains("test-model", output.ToString());
-        Assert.Contains("FullAgent rev=1", output.ToString());
+        Assert.Contains("Agente completo rev=1", output.ToString());
     }
 }

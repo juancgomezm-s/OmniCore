@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OmniCore.Protocol\OmniCore.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Client\OmniCore.Client.csproj" />
+    <ProjectReference Include="..\..\src\OmniCore.Cli\OmniCore.Cli.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>
