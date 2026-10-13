@@ -42,7 +42,10 @@ del perfil para hacer pasar la prueba.
 
 ## Validación e integración
 
-Estado: código verificado en `2fa931c`, listo para la fusión local a main.
+Estado: **integrado en main** mediante el merge local `63fcb5e`, sin conflictos.
+Implementación: `2fa931c`; evidencia, imágenes y comparación: `3dfc357`.
+La comparación de árboles posterior a la fusión confirma que main conserva
+exactamente el código/tests verificados de la rama de cierre, además de su base.
 Build de tests: **cero warnings/errores**, 14,72 s. Arquitectura: **62/62 PASS**
 (`TestResults/menu-closure-architecture-20261013.trx`). Regresión completa:
 **4276 casos / 4265 PASS / 0 FAIL / 11 SKIP**, del 13 de octubre a las
