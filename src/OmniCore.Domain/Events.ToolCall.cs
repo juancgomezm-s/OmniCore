@@ -54,6 +54,14 @@ public record PermissionGranted(ToolCallId ToolCallId, GrantId? GrantId, GrantLi
     public int SchemaVersion() => 1;
 }
 
+/// <summary>Explicit user consent to one protected tool-preference substitution identity.</summary>
+public record ToolPreferenceSubstitutionApproved(ToolCallId ToolCallId, InteractionId InteractionId,
+    string SourceToolId, string TargetToolId, string IdentityHash) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("tool_preference.substitution_approved");
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>PermissionDenied: el Ask se resolvió Deny (incluye causa NoInteractiveClient).</summary>
 public record PermissionDenied(ToolCallId ToolCallId, string Cause) : DomainEventPayload
 {

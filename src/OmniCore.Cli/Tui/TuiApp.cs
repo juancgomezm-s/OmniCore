@@ -498,7 +498,9 @@ public sealed partial class TuiApp
                 "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation" })
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name));
         var suggestions = ComposerAutocomplete.Complete(draft,
-            HumanCommandAliases.CompletionNames(names, _locale), ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
+        new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
+            .Read().CommandAliases).CompletionNames(HumanCommandAliases.CompletionNames(names, _locale)),
+            ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
         // Keep common entry points visible. For typed prefixes, exact names win and
         // canonical spellings keep their established order ahead of translated aliases.
         if (draft == "/") suggestions = suggestions.DistinctBy(suggestion => suggestion.Value)
@@ -619,7 +621,10 @@ public sealed partial class TuiApp
     private void SubmitComposer()
     {
         if (_composer is null) return;
-        var input = HumanCommandAliases.NormalizeSlashSyntax(_composer.Text?.ToString()?.Trim() ?? "");
+        var rawInput = _composer.Text?.ToString()?.Trim() ?? "";
+        var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
+            .Read().CommandAliases);
+        var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput));
         if (input == "/animation" || input.StartsWith("/animation ", StringComparison.Ordinal))
         {
             HandleAnimationCommand(input.Length > 10 ? input[11..].Trim() : "");

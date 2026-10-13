@@ -129,13 +129,18 @@ public sealed class ComponentSource
 
     public string Version { get; }
 
-    public ComponentSource(SourceKind kind, ScopeLevel scope, TrustLevel trust, string owner, string version)
+    /// <summary>Optional verified package/content digest for extension-owned components.</summary>
+    public string? ContentIdentity { get; }
+
+    public ComponentSource(SourceKind kind, ScopeLevel scope, TrustLevel trust, string owner, string version,
+        string? contentIdentity = null)
     {
         Kind = kind;
         Scope = scope;
         Trust = trust;
         Owner = owner;
         Version = version;
+        ContentIdentity = contentIdentity;
     }
 
     public static ComponentSource Core() => new(SourceKind.BuiltIn, ScopeLevel.BuiltIn, TrustLevel.Core, "core", "1");
@@ -265,6 +270,12 @@ public sealed class ToolExecutionContext
     /// <summary>Model capability filter for catalog discovery; it discloses no grants.</summary>
     public Func<string, bool>? IsModelToolVisible { get; }
 
+    /// <summary>Requires a human Ask for a protected tool substitution; it never grants permissions.</summary>
+    public bool RequiresSubstitutionAsk { get; }
+
+    /// <summary>Identity-bound protected substitution shown in the explicit consent Ask.</summary>
+    public ProtectedToolSubstitution? ProtectedSubstitution { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
@@ -274,7 +285,9 @@ public sealed class ToolExecutionContext
         IArtifactStore? artifacts = null,
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null,
-        Func<string, bool>? isModelToolVisible = null)
+        Func<string, bool>? isModelToolVisible = null,
+        bool requiresSubstitutionAsk = false,
+        ProtectedToolSubstitution? protectedSubstitution = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -288,8 +301,13 @@ public sealed class ToolExecutionContext
         ReceiveMailbox = receiveMailbox;
         WorkspaceWriteLeases = workspaceWriteLeases;
         IsModelToolVisible = isModelToolVisible;
+        ProtectedSubstitution = protectedSubstitution;
+        RequiresSubstitutionAsk = requiresSubstitutionAsk || protectedSubstitution is not null;
     }
 }
+
+/// <summary>Bounded, canonical identity of one eligible source-to-target preference.</summary>
+public sealed record ProtectedToolSubstitution(string SourceToolId, string TargetToolId, string IdentityHash);
 
 /// <summary>
 /// Intent declarado por Prepare (ADR-0014 §2): efecto, claims, riesgo y reconciliación.

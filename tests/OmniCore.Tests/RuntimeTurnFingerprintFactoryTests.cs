@@ -98,6 +98,27 @@ public sealed class RuntimeTurnFingerprintFactoryTests
     }
 
     [Fact]
+    public void Tool_preferences_have_a_canonical_fingerprint_component()
+    {
+        var catalog = new FakeCatalog().Add(FakeTool.Read("visible.read"));
+        ExecutionFingerprint With(IReadOnlyDictionary<string, string>? preferences) =>
+            RuntimeFingerprintFactory.WithTurnConfiguration(Baseline, catalog, catalog.Definitions(),
+                "system", null, toolPreferences: preferences);
+
+        var first = With(new Dictionary<string, string> { ["filesystem.write"] = "ext.fs.write" });
+        var reordered = With(new Dictionary<string, string>
+        {
+            ["search.text"] = "ext.search.text", ["filesystem.write"] = "ext.fs.write",
+        });
+        var sameReordered = With(new Dictionary<string, string>
+        {
+            ["filesystem.write"] = "ext.fs.write", ["search.text"] = "ext.search.text",
+        });
+        Assert.NotEqual(Component(first, "tools.preferences").Hash, Component(reordered, "tools.preferences").Hash);
+        Assert.Equal(Component(reordered, "tools.preferences").Hash, Component(sameReordered, "tools.preferences").Hash);
+    }
+
+    [Fact]
     public void Visible_schema_change_changes_only_tools_plan_component()
     {
         var catalog = new FakeCatalog().Add(FakeTool.Read("visible.read"));
@@ -161,8 +182,8 @@ public sealed class RuntimeTurnFingerprintFactoryTests
         var twice = RuntimeFingerprintFactory.WithTurnConfiguration(once, catalog,
             catalog.Definitions(), "system prompt", null);
 
-        Assert.Equal(5, once.Components.Count);
-        Assert.Equal(5, twice.Components.Count);
+        Assert.Equal(6, once.Components.Count);
+        Assert.Equal(6, twice.Components.Count);
         Assert.Equal(once.Hash(), twice.Hash());
         Assert.Empty(Baseline.Components);
         Assert.Equal(originalComponents, Baseline.Components);

@@ -3,6 +3,7 @@ namespace OmniCore.Cli;
 using System.Collections.ObjectModel;
 using OmniCore.Host;
 using OmniCore.Client;
+using OmniCore.Protocol;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
@@ -67,9 +68,46 @@ public sealed partial class TuiApp
         panel.Add(MenuIndent.Heading(PolicyPref("section_escalation"), y++));
         var escalationMode = Route("policy-escalation-mode", PolicyPref("escalation_mode"), [route.EscalationMode], "escalation_mode");
         var escalationChain = Route("policy-escalation-chain", PolicyPref("escalation_chain"), route.EscalationChain, "escalation_chain");
+        y++;
+        panel.Add(MenuIndent.Heading(PolicyPref("section_command_aliases"), y++));
+        var commandAliases = new TextField { Id = "policy-command-aliases", X = fieldX, Y = y,
+            Width = Dim.Fill(4), Height = 1,
+            Text = string.Join(", ", snapshot.CommandAliases.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => pair.Key + "=" + pair.Value)) };
+        panel.Add(new Label { X = MenuIndent.Level1, Y = y, Width = 27, Height = 1,
+            Text = PolicyPref("command_aliases") }, commandAliases);
+        y += 2;
+        panel.Add(MenuIndent.Heading(PolicyPref("section_tool_preferences"), y++));
+        var toolPreferences = new TextField { Id = "policy-tool-preferences", X = fieldX, Y = y,
+            Width = Dim.Fill(4), Height = 1,
+            Text = string.Join(", ", snapshot.ToolPreferences.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => pair.Key + "=" + pair.Value)) };
+        panel.Add(new Label { X = MenuIndent.Level1, Y = y++, Width = 27, Height = 1,
+            Text = PolicyPref("tool_preferences") }, toolPreferences);
+        var saveToolPreferences = new Button { Id = "policy-preferences-save-tools", X = MenuIndent.Level1, Y = y++,
+            Text = PolicyPref("save_tool_preferences") };
+        panel.Add(saveToolPreferences);
+        saveToolPreferences.Enabled = snapshot.Available;
+        saveToolPreferences.Accepted += (_, _) =>
+        {
+            try
+            {
+                var updated = host.SaveToolPreferences(snapshot.Revision,
+                    ParseToolPreferences(toolPreferences.Text.ToString()));
+                snapshot = updated;
+                note.Text = updated.Available ? PolicyPref("saved") : PolicyPref("saved_but_invalid");
+            }
+            catch (InvalidOperationException exception) when (exception.Message == "policyPreferences.error.stale")
+            { note.Text = PolicyPref("stale"); }
+            catch (ArgumentException) { note.Text = PolicyPref("invalid_tool_preferences"); }
+            catch (Exception) { note.Text = PolicyPref("save_failed"); }
+        };
+        toolPreferences.Enabled = commandAliases.Enabled = snapshot.Available;
         var save = new Button { Id = "policy-preferences-save", X = 2, Y = Pos.AnchorEnd(4), Text = PolicyPref("save") };
         var saveRoutes = new Button { Id = "policy-preferences-save-routes", X = Pos.Percent(36), Y = Pos.AnchorEnd(4), Text = PolicyPref("save_routes") };
-        save.Enabled = saveRoutes.Enabled = snapshot.Available;
+        var saveAliases = new Button { Id = "policy-preferences-save-aliases", X = Pos.Percent(68), Y = Pos.AnchorEnd(4),
+            Text = PolicyPref("save_aliases") };
+        save.Enabled = saveRoutes.Enabled = saveAliases.Enabled = snapshot.Available;
         save.Accepted += (_, _) =>
         {
             if (!PreferenceInput.TryMoney(session.Text.ToString(), _locale, out var sessionUsd)
@@ -107,6 +145,19 @@ public sealed partial class TuiApp
             catch (ArgumentException) { note.Text = PolicyPref("invalid_values"); }
             catch (Exception) { note.Text = PolicyPref("save_failed"); }
         };
+        saveAliases.Accepted += (_, _) =>
+        {
+            try
+            {
+                var updated = host.SaveCommandAliases(snapshot.Revision, ParseCommandAliases(commandAliases.Text.ToString()));
+                snapshot = updated;
+                note.Text = updated.Available ? PolicyPref("saved") : PolicyPref("saved_but_invalid");
+            }
+            catch (InvalidOperationException exception) when (exception.Message == "policyPreferences.error.stale")
+            { note.Text = PolicyPref("stale"); }
+            catch (ArgumentException) { note.Text = PolicyPref("invalid_command_aliases"); }
+            catch (Exception) { note.Text = PolicyPref("save_failed"); }
+        };
         var models = new Button { Id = "policy-preferences-model-policies", X = 2, Y = Pos.AnchorEnd(2),
             Text = PolicyPref("model_policies") };
         models.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(refreshCatalog: false); };
@@ -122,13 +173,40 @@ public sealed partial class TuiApp
             Width = Dim.Fill(4), Height = 2, Text = PolicyPref("reasoning_note") });
         ConfigurePreferenceScroll(panel, y + 9);
         fieldHelp.Text = PolicyPref("help.default_model");
-        frame.Add(panel, fieldHelp, note, save, saveRoutes, models, back);
+        frame.Add(panel, fieldHelp, note, save, saveRoutes, saveAliases, models, back);
         if (!snapshot.Available) { model.Enabled = session.Enabled = daily.Enabled = false; }
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); model.SetFocus();
     }
 
     private string PolicyPref(string key) => _localization.Resolve("policyPreferences." + key);
     private static IReadOnlyList<string> ParseAliases(string text) => text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    private static IReadOnlyDictionary<string, string> ParseCommandAliases(string text)
+    {
+        var aliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = line.IndexOf('=');
+            if (separator <= 0 || separator == line.Length - 1) throw new ArgumentException("Invalid alias row.");
+            var alias = line[..separator].Trim();
+            var target = line[(separator + 1)..].Trim();
+            UserCommandAliases.ValidatePair(alias, target);
+            if (!aliases.TryAdd(alias, target)) throw new ArgumentException("Duplicate alias.");
+        }
+        return aliases;
+    }
+    private static IReadOnlyDictionary<string, string> ParseToolPreferences(string text)
+    {
+        var preferences = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var line in text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = line.IndexOf('=');
+            if (separator <= 0 || separator == line.Length - 1) throw new ArgumentException("Invalid tool preference.");
+            var source = line[..separator].Trim();
+            var target = line[(separator + 1)..].Trim();
+            if (!preferences.TryAdd(source, target)) throw new ArgumentException("Duplicate tool preference.");
+        }
+        return preferences;
+    }
     private static bool TryBoolean(string text, out bool? value)
     {
         if (string.IsNullOrWhiteSpace(text)) { value = null; return true; }

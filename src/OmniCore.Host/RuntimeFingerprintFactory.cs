@@ -30,12 +30,13 @@ internal static class RuntimeFingerprintFactory
         IArtifactStore? artifacts = null, ProfileId? agentProfile = null,
         IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null, AgentProfile? resolvedAgentProfile = null,
         RunModeAuthority? modeAuthority = null, TurnInstructionSnapshot? instructionSnapshot = null,
-        ReasoningResolution? reasoningResolution = null)
+        ReasoningResolution? reasoningResolution = null,
+        IReadOnlyDictionary<string, string>? toolPreferences = null)
     {
         var pending = new List<IPreparedArtifact>();
         var fingerprint = WithTurnConfiguration(baseline, catalog, visibleTools, systemPrompt, plan,
             artifacts, agentProfile, activeSkills, pending, resolvedAgentProfile, modeAuthority, instructionSnapshot,
-            reasoningResolution);
+            reasoningResolution, toolPreferences);
         return new PreparedRuntimeFingerprint(fingerprint, pending.AsReadOnly());
     }
 
@@ -169,7 +170,8 @@ internal static class RuntimeFingerprintFactory
         IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null,
         ICollection<IPreparedArtifact>? pending = null, AgentProfile? resolvedAgentProfile = null,
         RunModeAuthority? modeAuthority = null, TurnInstructionSnapshot? instructionSnapshot = null,
-        ReasoningResolution? reasoningResolution = null)
+        ReasoningResolution? reasoningResolution = null,
+        IReadOnlyDictionary<string, string>? toolPreferences = null)
     {
         var tools = Component("tools.plan", writer =>
         {
@@ -189,6 +191,7 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteString("sourceTrust", descriptor.Source.Trust.ToString());
                 writer.WriteString("sourceOwner", descriptor.Source.Owner);
                 writer.WriteString("sourceVersion", descriptor.Source.Version);
+                writer.WriteString("sourceContentIdentity", descriptor.Source.ContentIdentity);
                 writer.WriteBoolean("readOnly", descriptor.ReadOnly);
                 writer.WriteBoolean("destructive", descriptor.Destructive);
                 writer.WriteString("risk", descriptor.Risk.ToString());
@@ -200,7 +203,7 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
-        }, "2", artifacts, pending);
+        }, "3", artifacts, pending);
         var prompt = Component("prompt.template", writer =>
         {
             writer.WriteString("templateId", "ExplorerTurn.SystemPrompt");
@@ -247,7 +250,15 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteEndArray();
             }
         }, artifacts: artifacts, pending: pending);
-        var resolved = new List<FingerprintComponent> { tools, prompt, revision, profile, skills };
+        var preferences = Component("tools.preferences", writer =>
+        {
+            writer.WriteStartObject("toolPreferences");
+            foreach (var pair in (toolPreferences ?? new Dictionary<string, string>())
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                writer.WriteString(pair.Key, pair.Value);
+            writer.WriteEndObject();
+        }, artifacts: artifacts, pending: pending);
+        var resolved = new List<FingerprintComponent> { tools, prompt, revision, profile, skills, preferences };
         if (reasoningResolution is not null)
         {
             reasoningResolution.Validate();

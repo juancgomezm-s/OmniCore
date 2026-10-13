@@ -151,6 +151,21 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     }
 
     internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream, bool requiresSubstitutionAsk)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        return Run(validated, userApprovesAsk, cancellationToken, stream, null, requiresSubstitutionAsk);
+    }
+
+    internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream, ProtectedToolSubstitution? protectedSubstitution)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        return Run(validated, userApprovesAsk, cancellationToken, stream,
+            protectedSubstitution: protectedSubstitution);
+    }
+
+    internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken, EventStream stream, ToolCallRequestReceipt requestReceipt)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -164,8 +179,40 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt);
     }
 
+    internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream, ToolCallRequestReceipt requestReceipt,
+        bool requiresSubstitutionAsk)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(requestReceipt);
+        var scope = ExecutionScope.Current;
+        if (!requestReceipt.MatchesCall(validated)
+            || !requestReceipt.MatchesScope(scope?.RunId, scope?.TaskId, scope?.LaneId,
+                scope?.TurnId, scope?.ExecutionId)
+            || !stream.IsCurrentToolCallRequestReceipt(requestReceipt, validated))
+            throw new InvalidOperationException("Tool request receipt is not present in this session journal.");
+        return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt, requiresSubstitutionAsk);
+    }
+
+    internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream, ToolCallRequestReceipt requestReceipt,
+        ProtectedToolSubstitution? protectedSubstitution)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(requestReceipt);
+        var scope = ExecutionScope.Current;
+        if (!requestReceipt.MatchesCall(validated)
+            || !requestReceipt.MatchesScope(scope?.RunId, scope?.TaskId, scope?.LaneId,
+                scope?.TurnId, scope?.ExecutionId)
+            || !stream.IsCurrentToolCallRequestReceipt(requestReceipt, validated))
+            throw new InvalidOperationException("Tool request receipt is not present in this session journal.");
+        return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt,
+            protectedSubstitution: protectedSubstitution);
+    }
+
     private ToolOutcome Run(ValidatedToolCall validated, bool userApprovesAsk,
-        CancellationToken cancellationToken, EventStream? stream, ToolCallRequestReceipt? requestReceipt = null)
+        CancellationToken cancellationToken, EventStream? stream, ToolCallRequestReceipt? requestReceipt = null,
+        bool requiresSubstitutionAsk = false, ProtectedToolSubstitution? protectedSubstitution = null)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -260,7 +307,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 emit(new PostEditValidationPending(runId, intent.ToolCallId, intent.Claims.Writes.ToArray()));
             }, artifacts: _artifacts, receiveMailbox: _receiveMailbox,
             workspaceWriteLeases: _workspaceWriteLeases,
-            isModelToolVisible: _boundary is null ? null : _boundary.IsToolVisible);
+            isModelToolVisible: _boundary is null ? null : _boundary.IsToolVisible,
+            requiresSubstitutionAsk: requiresSubstitutionAsk,
+            protectedSubstitution: protectedSubstitution);
         var outcome = requestReceipt is null
             ? runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken)
             : runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken, requestReceipt);

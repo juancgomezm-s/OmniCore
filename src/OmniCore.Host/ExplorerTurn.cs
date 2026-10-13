@@ -43,6 +43,9 @@ public sealed class ExplorerTurn
     private readonly bool _recordEffectiveFingerprint;
     private readonly IReadOnlyList<ActiveSkillFingerprint>? _activeSkills;
     private readonly AgentProfile? _resolvedAgentProfile;
+    private readonly IReadOnlyDictionary<string, string> _toolPreferences;
+    private readonly Dictionary<string, ProtectedToolSubstitution> _protectedPreferenceSubstitutions = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _approvedProtectedPreferenceIdentities = new(StringComparer.Ordinal);
 
     private readonly ModelSelection _selection;
 
@@ -279,7 +282,8 @@ public sealed class ExplorerTurn
         string? forcedInitialToolName = null,
         int maxModelStepsPerTurn = MaxSteps, int maxToolCallsPerTurn = 32,
         int maxGenerationSeconds = 300,
-        bool? enforceSessionSpendCap = null, bool? enforceDailySpendCap = null)
+        bool? enforceSessionSpendCap = null, bool? enforceDailySpendCap = null,
+        IReadOnlyDictionary<string, string>? toolPreferences = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -289,6 +293,9 @@ public sealed class ExplorerTurn
         _complete = complete;
         _tools = tools;
         _resolvedAgentProfile = (tools as ScriptedToolExecutor)?.AgentProfile;
+        _toolPreferences = toolPreferences is null
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : new Dictionary<string, string>(toolPreferences, StringComparer.Ordinal);
         _catalog = catalog;
         _materializer = materializer;
         _fingerprint = fingerprint;
@@ -585,7 +592,7 @@ public sealed class ExplorerTurn
             ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(discoveredToolIds),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
                 laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority, instructionSnapshot,
-                reasoningResolution)
+                reasoningResolution, _toolPreferences)
             : null;
         var fingerprint = preparedTurnFingerprint?.Fingerprint ?? _fingerprint;
         // TurnStarted preserves the original configuration snapshot. A discovered tool plan is
@@ -622,6 +629,10 @@ public sealed class ExplorerTurn
         var queuedQuestion = _redaction.Redact(question ?? "").Length > 0
             && FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, question ?? "", origin);
         var runEvents = stream.EventsSince(1);
+        _approvedProtectedPreferenceIdentities.Clear();
+        foreach (var approval in runEvents.Select(_codecs.Decode).OfType<ToolPreferenceSubstitutionApproved>())
+            _approvedProtectedPreferenceIdentities.Add(ApprovalKey(approval.SourceToolId,
+                approval.TargetToolId, approval.IdentityHash));
         if (RunProjection.Replay(sessionId, runId, _codecs, runEvents).IsTerminal())
             return new TurnResult("Run is terminal; queued FollowUps remain inert.", StopReason.Error,
                 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
@@ -646,7 +657,7 @@ public sealed class ExplorerTurn
             var configured = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog,
                 requestTools, EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(),
                 _artifacts, laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority,
-                instructionSnapshot, reasoningResolution);
+                instructionSnapshot, reasoningResolution, _toolPreferences);
             if (!string.Equals(configured.Fingerprint.Hash(), stepFingerprint.Hash(), StringComparison.Ordinal))
             {
                 stepFingerprint = configured.Fingerprint;
@@ -1392,17 +1403,30 @@ public sealed class ExplorerTurn
                             ValidateUltraCode(toolCall: call.Id);
                         });
                     }
-                    var outcome = exposed
-                        ? requestReceipt is not null && _tools is ScriptedToolExecutor scripted
-                            ? scripted.ExecuteTool(validated, false, cancellationToken, stream, requestReceipt)
-                            : _tools.ExecuteTool(validated, false, cancellationToken, stream)
-                        : ToolOutcome.Failed("tool no disponible para este modelo", null,
+                    ToolOutcome outcome;
+                    if (!exposed)
+                        outcome = ToolOutcome.Failed("tool no disponible para este modelo", null,
                             ToolCallState.Rejected, new DomainEventPayload[] {
                                 // Para el modelo la tool no existe: la frontera de capacidad no
                                 // la expone, así que el rechazo se tipa UNKNOWN_TOOL (spec §71).
                                 new ToolCallRejected(call.Id, "tool no disponible para este modelo",
                                     ToolErrorCode.UnknownTool)
                             });
+                    else if (_tools is ScriptedToolExecutor scripted)
+                    {
+                        var substitution = _protectedPreferenceSubstitutions.GetValueOrDefault(call.ToolName);
+                        var substitutionAsk = substitution is not null
+                            && !_approvedProtectedPreferenceIdentities.Contains(ApprovalKey(substitution));
+                        outcome = requestReceipt is not null
+                            ? scripted.ExecuteTool(validated, false, cancellationToken, stream,
+                                requestReceipt, substitutionAsk ? substitution : null)
+                            : scripted.ExecuteTool(validated, false, cancellationToken, stream,
+                                substitutionAsk ? substitution : null);
+                        foreach (var approval in outcome.Events.OfType<ToolPreferenceSubstitutionApproved>())
+                            _approvedProtectedPreferenceIdentities.Add(ApprovalKey(approval.SourceToolId,
+                                approval.TargetToolId, approval.IdentityHash));
+                    }
+                    else outcome = _tools.ExecuteTool(validated, false, cancellationToken, stream);
 
                     // Discovery affects only the next request. Every selected tool still has
                     // to pass the ToolRuntime schema, boundary, PermissionPolicy and Execute path.
@@ -1622,7 +1646,7 @@ public sealed class ExplorerTurn
                     var preparedStepFingerprint = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint,
                         _catalog, VisibleTools(discoveredToolIds), EffectiveSystemPrompt(instruction), replayedPlan,
                         _artifacts, laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority,
-                        instructionSnapshot, reasoningResolution);
+                instructionSnapshot, reasoningResolution, _toolPreferences);
                     stepFingerprint = preparedStepFingerprint.Fingerprint;
                     stepFingerprintArtifacts = preparedStepFingerprint.Artifacts;
                     discoveredPlanChanged = true;
@@ -2632,7 +2656,8 @@ public sealed class ExplorerTurn
             var plan = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog,
                 savedDefinitions, EffectiveSystemPrompt(instruction),
                 PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts, laneProfileId,
-                _activeSkills, _resolvedAgentProfile, fingerprintAuthority, instructionSnapshot, reasoningResolution);
+                _activeSkills, _resolvedAgentProfile, fingerprintAuthority, instructionSnapshot, reasoningResolution,
+                _toolPreferences);
             var rebuiltToolPlan = plan.Fingerprint.Components.SingleOrDefault(component => component.Name == "tools.plan");
             if (!string.Equals(plan.Fingerprint.Hash(), savedFingerprint, StringComparison.Ordinal)
                 || rebuiltToolPlan is null || rebuiltToolPlan.Hash != componentHash)
@@ -3461,34 +3486,97 @@ public sealed class ExplorerTurn
             ranks = _resolvedAgentProfile.PreferredTools.Select((tool, index) => (tool, index))
                 .ToDictionary(pair => pair.tool.ToString(), pair => pair.index, StringComparer.Ordinal);
         }
-        // A preference changes ordering only. Basic capabilities are ranked first by the
-        // boundary, so a low visible-tool cap cannot accidentally hide read/search behind plans.
-        if (_boundary is not null) return _boundary.VisibleTools(definitions, ranks);
-
-        IEnumerable<ToolDefinition> all = definitions;
-        if (ranks is not null) all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
-        var visible = new List<ToolDefinition>();
-        foreach (var tool in all)
+        // Basic capabilities are ranked first by the boundary, so a low visible-tool cap
+        // cannot accidentally hide read/search behind plans.
+        IReadOnlyList<ToolDefinition> visible;
+        if (_boundary is not null) visible = _boundary.VisibleTools(definitions, ranks);
+        else
         {
-            // ToolPlanner (ADR-0044 §5.1): la frontera oculta las tools fuera del techo de la
-            // categoría. La política efectiva del boundary ya está intersectada con el harness.
-            if (_boundary is not null && !_boundary!.IsToolVisible(tool.Name))
+            IEnumerable<ToolDefinition> all = definitions;
+            if (ranks is not null) all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
+            var limited = new List<ToolDefinition>();
+            foreach (var tool in all)
             {
-                continue;
+                if (limited.Count >= (_harness?.MaxVisibleTools ?? Int32.MaxValue)) break;
+                limited.Add(tool);
             }
-
-            var maxVisible = _boundary is not null
-                ? _boundary!.MaxVisibleTools()
-                : (_harness?.MaxVisibleTools ?? Int32.MaxValue);
-            if (visible.Count >= maxVisible)
-            {
-                break;
-            }
-
-            visible.Add(tool);
+            visible = limited;
         }
 
-        return visible;
+        // A preference may replace only a currently eligible tool with an already eligible
+        // alternative of the same declared tags and effect and no greater risk. Protected
+        // substitutions carry an additional user Ask at invocation; the setting itself never
+        // bypasses the boundary or grants the intent.
+        var eligibleNames = visible.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+        var substitutions = _toolPreferences.Where(pair => eligibleNames.Contains(pair.Key)
+                && eligibleNames.Contains(pair.Value))
+            .Where(pair =>
+            {
+                var source = _catalog.Find(new ToolId(pair.Key))?.Descriptor;
+                var target = _catalog.Find(new ToolId(pair.Value))?.Descriptor;
+                return source is not null && target is not null
+                    && source.EffectClass == target.EffectClass
+                    && target.Risk <= source.Risk
+                    && source.Tags.Order(StringComparer.Ordinal).SequenceEqual(target.Tags.Order(StringComparer.Ordinal),
+                        StringComparer.Ordinal)
+                    && (_boundary is null || _boundary.IsToolVisible(pair.Value));
+            }).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        _protectedPreferenceSubstitutions.Clear();
+        foreach (var pair in substitutions)
+        {
+            var source = _catalog.Find(new ToolId(pair.Key))?.Descriptor;
+            var target = _catalog.Find(new ToolId(pair.Value))?.Descriptor;
+            if (source?.Protection == ToolProtection.Protected && target is not null)
+                _protectedPreferenceSubstitutions[pair.Value] = new ProtectedToolSubstitution(
+                    pair.Key, pair.Value, ToolPreferenceSubstitutionIdentity(source, target));
+        }
+        return substitutions.Count == 0 ? visible
+            : visible.Where(tool => !substitutions.ContainsKey(tool.Name)).ToArray();
+    }
+
+    private static string ToolPreferenceSubstitutionIdentity(ToolDescriptor source, ToolDescriptor target)
+    {
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            WriteIdentityDescriptor(writer, "source", source);
+            WriteIdentityDescriptor(writer, "target", target);
+            writer.WriteEndObject();
+        }
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(buffer.WrittenSpan));
+    }
+
+    private static string ApprovalKey(ProtectedToolSubstitution substitution) =>
+        ApprovalKey(substitution.SourceToolId, substitution.TargetToolId, substitution.IdentityHash);
+
+    private static string ApprovalKey(string sourceToolId, string targetToolId, string identityHash) =>
+        sourceToolId + "\0" + targetToolId + "\0" + identityHash;
+
+    private static void WriteIdentityDescriptor(System.Text.Json.Utf8JsonWriter writer, string name,
+        ToolDescriptor descriptor)
+    {
+        writer.WriteStartObject(name);
+        writer.WriteString("id", descriptor.Id.ToString());
+        writer.WriteString("description", descriptor.Description);
+        writer.WriteString("schema", descriptor.InputSchema.ToString());
+        writer.WriteStartArray("tags");
+        foreach (var tag in descriptor.Tags.Order(StringComparer.Ordinal)) writer.WriteStringValue(tag);
+        writer.WriteEndArray();
+        writer.WriteBoolean("readOnly", descriptor.ReadOnly);
+        writer.WriteBoolean("destructive", descriptor.Destructive);
+        writer.WriteString("risk", descriptor.Risk.ToString());
+        writer.WriteString("protection", descriptor.Protection.ToString());
+        writer.WriteString("effect", descriptor.EffectClass.ToString());
+        writer.WriteStartObject("source");
+        writer.WriteString("kind", descriptor.Source.Kind.ToString());
+        writer.WriteString("scope", descriptor.Source.Scope.ToString());
+        writer.WriteString("trust", descriptor.Source.Trust.ToString());
+        writer.WriteString("owner", descriptor.Source.Owner);
+        writer.WriteString("version", descriptor.Source.Version);
+        writer.WriteString("contentIdentity", descriptor.Source.ContentIdentity);
+        writer.WriteEndObject();
+        writer.WriteEndObject();
     }
 
     /// <summary>

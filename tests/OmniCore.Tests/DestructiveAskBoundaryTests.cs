@@ -1,5 +1,6 @@
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+using OmniCore.Infrastructure;
 using OmniCore.Security;
 using OmniCore.Tools;
 
@@ -143,5 +144,86 @@ public sealed class DestructiveAskBoundaryTests
         var (outcome, sink) = Run(DestructiveActionPolicy.Deny, PermissionDecision.Allow, userApproves: true);
         Assert.False(outcome.Succeeded);
         Assert.Equal(0, sink.Count("toolcall.permission_requested"));
+    }
+
+    [Fact]
+    public void Protected_tool_substitution_adds_a_real_ask_without_granting_the_call()
+    {
+        var sink = new Sink();
+        var policy = ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Allow);
+        var runtime = ToolRuntime.For(FakeCatalog.Default(), policy, sink.Emit);
+        var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("fake.write"), "pc", "{}");
+
+        var outcome = runtime.Run(call, new ToolPreparationContext("sim", DateTimeOffset.Now),
+            new ToolExecutionContext("sim", readRegistry: null, requiresSubstitutionAsk: true),
+            userApprovesAsk: true, TestContext.Current.CancellationToken);
+
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(1, sink.Count("toolcall.permission_requested"));
+        Assert.Contains(sink.Events.OfType<InteractionRequested>(), request => request.Kind == InteractionKind.Permission);
+        Assert.Contains(sink.Events.OfType<PermissionEvaluated>(), evaluated =>
+            evaluated.Decision == PermissionDecision.Ask && evaluated.LayersJson.Contains("UserPolicy", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Protected_tool_substitution_ask_never_lifts_a_policy_deny()
+    {
+        var sink = new Sink();
+        var policy = ScriptedPermissionPolicy.WithTool("fake.write", PermissionDecision.Deny);
+        var runtime = ToolRuntime.For(FakeCatalog.Default(), policy, sink.Emit);
+        var outcome = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("fake.write"), "pc", "{}"),
+            new ToolPreparationContext("sim", DateTimeOffset.Now),
+            new ToolExecutionContext("sim", readRegistry: null, requiresSubstitutionAsk: true),
+            userApprovesAsk: true, TestContext.Current.CancellationToken);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Equal(0, sink.Count("toolcall.permission_requested"));
+        Assert.Equal(0, sink.Count("toolcall.succeeded"));
+    }
+
+    [Fact]
+    public void Existing_permission_grant_does_not_approve_protected_substitution()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-substitution-grant-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var tool = FakeTool.Read("fake.read");
+            var catalog = new FakeCatalog().Add(tool);
+            var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("fake.read"), "pc", "{}");
+            var intent = Assert.IsType<Prepared>(tool.Prepare(call, new ToolPreparationContext("sim", DateTimeOffset.Now))).Intent;
+            var workspace = WorkspaceId.Parse("fixture-workspace");
+            var run = RunId.New();
+            var grants = new FilePermissionGrantStore(root, new InMemoryAuditSink());
+            grants.Add(new PermissionGrantRecord(GrantId.New(), "fake.read",
+                FilePermissionGrantStore.ClaimsKey(intent), GrantLifetime.Workspace, workspace, null,
+                DateTimeOffset.UtcNow), CancellationToken.None);
+            var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>())
+                .WithUserPolicyTool("fake.read", PermissionDecision.Ask)
+                .WithGrantStore(grants, workspace, run);
+            Assert.Equal(PermissionDecision.Allow, policy.Evaluate(intent).Final);
+
+            var sink = new Sink();
+            var runtime = ToolRuntime.For(catalog, policy, sink.Emit);
+            var outcome = runtime.Run(call, new ToolPreparationContext("sim", DateTimeOffset.Now),
+                new ToolExecutionContext("sim", null, protectedSubstitution: new ProtectedToolSubstitution(
+                    "core.protected", "fake.read", new string('c', 64))),
+                userApprovesAsk: true, TestContext.Current.CancellationToken);
+
+            Assert.True(outcome.Succeeded);
+            Assert.Equal(1, sink.Count("toolcall.permission_requested"));
+            Assert.Contains(sink.Events.OfType<InteractionRequested>(), request =>
+                request.SubjectJson.Contains("core.protected", StringComparison.Ordinal)
+                && request.SubjectJson.Contains("fake.read", StringComparison.Ordinal));
+            Assert.Contains(sink.Events.OfType<ToolPreferenceSubstitutionApproved>(), approved =>
+                approved.SourceToolId == "core.protected" && approved.TargetToolId == "fake.read"
+                && approved.IdentityHash == new string('c', 64));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
     }
 }

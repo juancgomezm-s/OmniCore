@@ -7,6 +7,7 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
+using OmniCore.Protocol;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
 
@@ -17,6 +18,8 @@ public interface IPolicyPreferencesFacade
     PolicyPreferencesSnapshot SaveRouting(string expectedRevision, ModelRoutingPreferences draft);
     PolicyPreferencesSnapshot SaveUserSettings(string expectedRevision, string? defaultModel,
         decimal? sessionCapUsd, decimal? dailyCapUsd);
+    PolicyPreferencesSnapshot SaveCommandAliases(string expectedRevision, IReadOnlyDictionary<string, string> aliases);
+    PolicyPreferencesSnapshot SaveToolPreferences(string expectedRevision, IReadOnlyDictionary<string, string> preferences);
 }
 
 public sealed class PolicyPreferencesHost(IPlatformPaths paths, string workspaceRoot) : IPolicyPreferencesFacade
@@ -56,7 +59,8 @@ public sealed class PolicyPreferencesHost(IPlatformPaths paths, string workspace
                     routing?.Implementation?.ToArray() ?? [], routing?.Reasoning?.ToArray() ?? [],
                     routing?.Architecture?.ToArray() ?? [], routing?.PreferLocal,
                     routing?.Escalation?.Mode ?? "ask", routing?.Escalation?.Chain?.ToArray() ?? []),
-                aliases, []);
+                aliases, [], loaded.Settings?.CommandAliases ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                loaded.Settings?.ToolPreferences ?? new Dictionary<string, string>(StringComparer.Ordinal));
         }
         catch (ConfigValidationException exception)
         {
@@ -156,6 +160,57 @@ public sealed class PolicyPreferencesHost(IPlatformPaths paths, string workspace
         return Read();
     }
 
+    public PolicyPreferencesSnapshot SaveCommandAliases(string expectedRevision,
+        IReadOnlyDictionary<string, string> aliases)
+    {
+        _ = new UserCommandAliases(aliases);
+        return SaveSettingsMap(expectedRevision, "commandAliases", aliases);
+    }
+
+    public PolicyPreferencesSnapshot SaveToolPreferences(string expectedRevision,
+        IReadOnlyDictionary<string, string> preferences)
+    {
+        ArgumentNullException.ThrowIfNull(preferences);
+        foreach (var pair in preferences)
+            if (!IsToolId(pair.Key) || !IsToolId(pair.Value)
+                || pair.Key.Equals(pair.Value, StringComparison.Ordinal))
+                throw new ArgumentException("Tool preference ids must be distinct canonical ids.", nameof(preferences));
+        return SaveSettingsMap(expectedRevision, "toolPreferences", preferences);
+    }
+
+    private PolicyPreferencesSnapshot SaveSettingsMap(string expectedRevision, string name,
+        IReadOnlyDictionary<string, string> values)
+    {
+        if (string.IsNullOrWhiteSpace(expectedRevision)) throw new ArgumentException("revision required", nameof(expectedRevision));
+        using var modelLease = ProviderConfigurationLease.Acquire(_paths.ConfigDirectory);
+        using var settingsLease = ConfigurationWriteLease.Acquire(SettingsFile);
+        var files = ReadFiles();
+        if (!string.Equals(Revision(files), expectedRevision, StringComparison.Ordinal))
+            throw new InvalidOperationException("policyPreferences.error.stale");
+        var root = ParseRoot(files.Settings);
+        var key = new YamlScalarNode(name);
+        if (values.Count == 0) root.Children.Remove(key);
+        else
+        {
+            var map = new YamlMappingNode();
+            foreach (var pair in values.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                map.Children.Add(Plain(pair.Key), Plain(pair.Value));
+            root.Children[key] = map;
+        }
+        var updated = Serialize(root);
+        _ = new ConfigLoader().Load(files.Providers, files.Models, updated);
+        Publish(SettingsFile, updated, () =>
+        {
+            if (!string.Equals(Revision(ReadFiles()), expectedRevision, StringComparison.Ordinal))
+                throw new InvalidOperationException("policyPreferences.error.stale");
+        });
+        return Read();
+    }
+
+    private static bool IsToolId(string value) => value.Length is > 0 and <= 160
+        && value[0] is >= 'a' and <= 'z'
+        && value.All(character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '-' or '_');
+
     private (string? Providers, string? Models, string? Settings) ReadFiles() =>
         (ReadOptional(ProvidersFile), ReadOptional(ModelsFile), ReadOptional(SettingsFile));
 
@@ -223,9 +278,11 @@ public sealed record ModelRoutingPreferences(IReadOnlyList<string> Meta,
 
 public sealed record PolicyPreferencesSnapshot(bool Available, string Revision, string? EffectiveDefaultModel,
     string? DefaultModelSource, string? UserDefaultModel, decimal? SessionCapUsd, decimal? DailyCapUsd,
-    ModelRoutingPreferences Routing, IReadOnlyList<string> ModelAliases, IReadOnlyList<string> Diagnostics)
+    ModelRoutingPreferences Routing, IReadOnlyList<string> ModelAliases, IReadOnlyList<string> Diagnostics,
+    IReadOnlyDictionary<string, string> CommandAliases, IReadOnlyDictionary<string, string> ToolPreferences)
 {
     public static PolicyPreferencesSnapshot Unavailable(IReadOnlyList<string> diagnostics) =>
         new(false, "unavailable", null, null, null, null, null,
-            new([], [], [], [], [], null, "ask", []), [], diagnostics);
+            new([], [], [], [], [], null, "ask", []), [], diagnostics,
+            new Dictionary<string, string>(), new Dictionary<string, string>());
 }

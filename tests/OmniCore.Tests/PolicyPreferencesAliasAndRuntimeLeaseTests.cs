@@ -4,6 +4,7 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
+using OmniCore.Protocol;
 
 public sealed class PolicyPreferencesAliasAndRuntimeLeaseTests
 {
@@ -67,6 +68,43 @@ public sealed class PolicyPreferencesAliasAndRuntimeLeaseTests
         public ProcessResult Wait(ProcessHandle handle, TimeSpan timeout, CancellationToken cancellationToken) =>
             new(0, null, null, false);
         public bool IsAlive(ProcessHandle handle) => _alive.Contains(handle.Pid);
+    }
+
+    [Fact]
+    public void User_command_aliases_rewrite_only_command_head_and_roundtrip_in_user_settings()
+    {
+        using var fixture = new Fixture();
+        var preferences = new PolicyPreferencesHost(fixture.Paths, fixture.Workspace);
+        var initial = preferences.Read();
+        var saved = preferences.SaveCommandAliases(initial.Revision,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["hi"] = "help" });
+
+        Assert.True(saved.Available, string.Join("; ", saved.Diagnostics));
+        Assert.Equal("help", saved.CommandAliases["hi"]);
+        var aliases = new UserCommandAliases(saved.CommandAliases);
+        Assert.Equal("help", aliases.NormalizeCli(["hi", "--", "literal /hi"])[0]);
+        Assert.Equal("literal /hi", aliases.NormalizeCli(["hi", "--", "literal /hi"])[2]);
+        Assert.Equal("/help 'hi there'", aliases.NormalizeSlashHead("/hi 'hi there'"));
+        Assert.Contains("hi", aliases.CompletionNames(["help"]));
+        Assert.Throws<ArgumentException>(() => UserCommandAliases.ValidatePair("help", "exit"));
+        Assert.Throws<ArgumentException>(() => UserCommandAliases.ValidatePair("explain", "help"));
+        Assert.Throws<ArgumentException>(() => UserCommandAliases.ValidatePair("bad?", "tools"));
+    }
+
+    [Fact]
+    public void Tool_preferences_are_user_scoped_canonical_ids_and_reject_invalid_ids()
+    {
+        using var fixture = new Fixture();
+        var preferences = new PolicyPreferencesHost(fixture.Paths, fixture.Workspace);
+        var initial = preferences.Read();
+        var saved = preferences.SaveToolPreferences(initial.Revision,
+            new Dictionary<string, string> { ["filesystem.write"] = "ext.acme.fs.write" });
+
+        Assert.True(saved.Available, string.Join("; ", saved.Diagnostics));
+        Assert.Equal("ext.acme.fs.write", saved.ToolPreferences["filesystem.write"]);
+        Assert.Contains("toolPreferences:", File.ReadAllText(Path.Combine(fixture.Paths.ConfigDirectory, "settings.yaml")));
+        Assert.Throws<ArgumentException>(() => preferences.SaveToolPreferences(saved.Revision,
+            new Dictionary<string, string> { ["Filesystem.Write"] = "ext.acme.fs.write" }));
     }
 
     [Theory]

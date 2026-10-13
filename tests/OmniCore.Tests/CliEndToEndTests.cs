@@ -3005,6 +3005,32 @@ public sealed class CliEndToEndTests
             ModelPolicyPresets.FullAgent(), CancellationToken.None);
     }
 
+    [Fact]
+    public async Task User_command_alias_dispatches_through_cli_commands_and_unknown_target_never_calls_model()
+    {
+        await InIsolatedCli(async (_, config, _, provider) =>
+        {
+            var preferences = new PolicyPreferencesHost(OmniHost.CreatePlatformPaths(), Environment.CurrentDirectory);
+            var initial = preferences.Read();
+            preferences.SaveCommandAliases(initial.Revision, new Dictionary<string, string>
+            {
+                ["t"] = "tools",
+                ["x"] = "missing-command",
+            });
+
+            var tools = await Run("t");
+            Assert.Equal(0, tools.Code);
+            Assert.DoesNotContain("cli.ask_assumed", tools.Output, StringComparison.Ordinal);
+            Assert.Equal(0, provider.RequestCount);
+
+            var unknown = await Run("x", "literal argument");
+            Assert.Equal(2, unknown.Code);
+            Assert.DoesNotContain("cli.ask_assumed", unknown.Output, StringComparison.Ordinal);
+            Assert.Equal(0, provider.RequestCount);
+            Assert.True(File.Exists(Path.Combine(config, "settings.yaml")));
+        });
+    }
+
     private static async Task InIsolatedCli(Func<string, string, string, ScriptedHttpProvider, Task> run)
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-cli-e2e-gap-" + Guid.NewGuid().ToString("N"));
