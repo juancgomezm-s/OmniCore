@@ -55,7 +55,7 @@ public sealed partial class TuiApp
             { detail.Text = _localization.Resolve("catalog.draft_exists"); return; }
             CloseOverlay(); _composer.Text = "/" + row.DisplayName + " "; _composer.MoveEnd(); _composer.SetFocus();
         };
-        back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("extensions_skills", categoryPage: true); };
+        back.Accepted += (_, _) => { if (!ReturnToChatIfOpenedFromChat()) { CloseOverlay(); ShowPreferences("extensions_skills", categoryPage: true); } };
         frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 1, Text = _localization.Resolve("catalog.purpose") }, search, list, detail, prepare, back);
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
         Filter(); search.SetFocus();

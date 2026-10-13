@@ -130,6 +130,7 @@ public sealed partial class TuiApp
                 try
                 {
                     snapshot = host.SaveUserPermissions(snapshot.Revision, proposedProfile, rules);
+                    InvalidatePermissionLevel();
                     note.Text = SecurityPref("saved"); CloseOverlay(); ShowSecurityPreferences("tools_security");
                 }
                 catch (InvalidOperationException exception) when (exception.Message == "securityPreferences.error.stale")

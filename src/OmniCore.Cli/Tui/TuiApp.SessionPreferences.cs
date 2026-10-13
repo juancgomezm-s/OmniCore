@@ -451,6 +451,7 @@ public sealed partial class TuiApp
 
     private void ReturnToPreferenceCategory()
     {
+        if (ReturnToChatIfOpenedFromChat()) return;
         CloseOverlay();
         ShowPreferences(_preferencesCategory, categoryPage: true);
     }

@@ -40,6 +40,7 @@ public sealed partial class TuiApp
     private void ShowPreferences(string? categoryId = null, bool categoryPage = false)
     {
         if (_window is null || _overlay is not null) return;
+        _viewFromChat = false;
         _preferencesLastLayoutWidth = _window.Frame.Width;
         _preferencesLastLayoutHeight = _window.Frame.Height;
         _preferencesCenterActive = true;
@@ -457,7 +458,7 @@ public sealed partial class TuiApp
         var content = new TextView { Id = "preferences-inspection", X = 2, Y = 2,
             Width = Dim.Fill(4), Height = Dim.Fill(5), ReadOnly = true, WordWrap = true, Text = text };
         var close = new Button { Id = "preferences-inspection-close", X = 2, Y = Pos.AnchorEnd(2), Text = Pref("back") };
-        close.Accepted += (_, _) => { CloseOverlay(); ShowPreferences(_preferencesCategory, categoryPage: true); };
+        close.Accepted += (_, _) => { if (!ReturnToChatIfOpenedFromChat()) { CloseOverlay(); ShowPreferences(_preferencesCategory, categoryPage: true); } };
         frame.Add(content, close, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
             Width = Dim.Fill(4), Height = 1, Text = Pref("inspection_help") });
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true; content.SetFocus();
@@ -918,6 +919,7 @@ public sealed partial class TuiApp
 
     private void ReturnFromPreferencesSubpage()
     {
+        if (ReturnToChatIfOpenedFromChat()) return;
         if (_returnToClaudeAccounts || _returnToChatGptAccount) { ReturnFromAccountSubpage(); return; }
         if (_returnToProviderConnections)
         {

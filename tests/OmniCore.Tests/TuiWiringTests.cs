@@ -769,7 +769,7 @@ public sealed partial class TuiWiringTests
         else if (scene == "notice")
         {
             fx.Invoke(() => fx.App.Composer!.Text = "");
-            Type(fx, "/context");
+            Type(fx, "/events");
             fx.InjectKey(new Key(KeyCode.Enter));
             fx.Wait(() => fx.App.Overlay is not null, "menú visible en fotograma");
         }
@@ -924,7 +924,7 @@ public sealed partial class TuiWiringTests
                     Assert.Contains(drawn, cell => cell.Attribute?.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Italic) == true);
                     Assert.Contains(drawn, cell => cell.Attribute?.Style.HasFlag(Terminal.Gui.Drawing.TextStyle.Strikethrough) == true);
                     Assert.Contains(drawn, cell => cell.Attribute?.Background == new Terminal.Gui.Drawing.Color("#B47CE7"));
-                    Assert.Contains("act · Enter enviar", text);
+                    Assert.Contains("act · Permisos: Libre · Enter enviar", text);
                 }
                 else if (scene == "table")
                 {
@@ -967,9 +967,9 @@ public sealed partial class TuiWiringTests
                 }
                 else if (scene == "commands")
                 {
+                    Assert.Contains("/help", text);
+                    Assert.Contains("/mode", text);
                     Assert.Contains("/models", text);
-                    Assert.Contains("/agents", text);
-                    Assert.Contains("/delegate", text);
                     Assert.Contains("Seleccionar modelo", text);
                     Assert.Contains("Tab completar", text);
                     Assert.True(fx.App.Composer!.HasFocus);

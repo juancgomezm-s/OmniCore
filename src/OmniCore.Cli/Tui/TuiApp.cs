@@ -310,6 +310,8 @@ public sealed partial class TuiApp
         if (code == "F2") { ToggleSidebar(); key.Handled = true; }
         else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
         else if (code == "F4") { ShowPreferences(); key.Handled = true; }
+        else if (key.KeyCode == (KeyCode.Tab | KeyCode.ShiftMask) && _overlay is null && _activeInteraction is null)
+        { CycleMode(); key.Handled = true; }
         else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
         else if (code == "Esc" && HandleSessionPreferencesEscape()) { key.Handled = true; }
         else if (code == "Esc" && HandleModelCatalogPreferencesEscape()) { key.Handled = true; }
@@ -491,14 +493,15 @@ public sealed partial class TuiApp
         var commandCatalogJson = _client.Query("commands", CancellationToken.None)?.Json;
         _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
         var names = ReadStringArray(commandCatalogJson, "commands")
-            .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation" });
+            .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation" })
+            .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name));
         var suggestions = ComposerAutocomplete.Complete(draft,
             HumanCommandAliases.CompletionNames(names, _locale), ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
         // Keep common entry points visible. For typed prefixes, exact names win and
         // canonical spellings keep their established order ahead of translated aliases.
         if (draft == "/") suggestions = suggestions.DistinctBy(suggestion => suggestion.Value)
-            .OrderBy(suggestion => suggestion.Value switch { "/act" => 0, "/models" => 1, "/agents" => 2, "/delegate" => 3, _ => 4 }).ToArray();
+            .OrderBy(suggestion => suggestion.Value switch { "/help" => 0, "/act" => 1, "/mode" => 2, "/models" => 3, "/agents" => 4, _ => 5 }).ToArray();
         else if (draft[0] == '/') suggestions = suggestions
             .OrderBy(suggestion => suggestion.Value == draft ? 0
                 : HumanCommandAliases.NormalizeSlashHead(suggestion.Value) == suggestion.Value ? 1 : 2).ToArray();
@@ -552,6 +555,8 @@ public sealed partial class TuiApp
         "/plan" => _localization.Resolve("shell.show_current_plan"),
         "/cancel" => _localization.Resolve("shell.cancel_active_turn"),
         "/interrupt" => _localization.Resolve("shell.interrupt_active_turn"),
+        var head when ClientCommandRegistry.Default.Commands.FirstOrDefault(c => "/" + c.Name == head) is { } client =>
+            _localization.Resolve(client.DescriptionKey),
         _ when command.StartsWith('/') && _disabledCommandReasons.TryGetValue(command[1..], out var reason) =>
             _localization.Resolve("shell.disabled") + DescribeDisabledCommand(reason),
         _ => _localization.Resolve("shell.workspace_command")
@@ -634,12 +639,20 @@ public sealed partial class TuiApp
         HideCommandHelper();
         if (input.StartsWith("/act ", StringComparison.Ordinal))
         { if (StartModelTurn(input[5..], act: true)) { _composer.Text = ""; PollEvents(); } return; }
+        // Bare forms never reach the Host as unknown commands: they explain how to use them.
+        if (input == "/act") { ShowMessage(_localization.Resolve("shell.act_usage")); _composer.Text = ""; return; }
+        if (input == "/runmode") { ShowMessage(_localization.Resolve("shell.usage_runmode_plan_act_orq")); _composer.Text = ""; return; }
+        if (input is "/ultracode" or "/ultracode on") { ShowMessage(_localization.Resolve("shell.usage_ultracode")); _composer.Text = ""; return; }
         if (input == "/mode")
         {
             var preference = _client.Query("modePreference", CancellationToken.None)?.Json ?? "{}";
             var authority = _client.Query("modeAuthority", CancellationToken.None)?.Json ?? "null";
-            ShowMessage(_localization.Resolve("shell.next_run_default") + preference
-                + Environment.NewLine + _localization.Resolve("shell.active_run_authority") + authority);
+            ShowMessage(_localization.Resolve("shell.mode_overview", new Dictionary<string, string>
+            {
+                ["current"] = StatusLinePresentation.ModeLabel(CurrentModeCode(), _locale),
+                ["next"] = ReadableModeField(preference, "mode"),
+                ["authority"] = authority is "null" or "{}" ? "—" : ReadableJsonText(authority),
+            }));
             _composer.Text = ""; return;
         }
         if (input.StartsWith("/mode ", StringComparison.Ordinal))
@@ -905,7 +918,7 @@ public sealed partial class TuiApp
                     else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(expanded) + "\""));
                 }
             }
-            else ShowMessage("/" + invocation.Name + ": " + _localization.ResolveWire(ack.Error ?? "shell.command_failed"));
+            else ShowMessage("/" + invocation.Name + ": " + CommandError(ack.Error));
         }
         else if (input[0] == '@')
         {
@@ -923,6 +936,7 @@ public sealed partial class TuiApp
     private void RunClientAction(ClientActionInvocation action)
     {
         _composer!.Text = "";
+        if (OpenClientView(action)) return;
         // La TUI lleva su propio Turn: cancelar o interrumpir detiene primero ese Turn (misma ruta que antes).
         if (action.ActionId is ClientActionIds.RunCancel or ClientActionIds.RunInterrupt && _turnBusy)
         {
@@ -1233,13 +1247,14 @@ public sealed partial class TuiApp
         return result + "…";
     }
 
-    private string HelpText() => CompactHelp(_state.StatusLine.Mode, _locale,
-        Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4));
+    private string HelpText() => CompactHelp(CurrentModeCode(), _locale,
+        Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4), PermissionLevelLabel());
 
-    internal static string CompactHelp(string mode, string locale, int width)
+    internal static string CompactHelp(string mode, string locale, int width, string? permissionLevel = null)
     {
         var localization = new Localization(locale);
-        var lead = StatusLinePresentation.ModeLabel(mode, locale) + localization.Resolve("shell.help.lead");
+        var lead = StatusLinePresentation.ModeLabel(mode, locale)
+            + (permissionLevel is null ? "" : " · " + permissionLevel) + localization.Resolve("shell.help.lead");
         var variants = new[] { localization.Resolve("shell.help.full"), localization.Resolve("shell.help.medium"),
             localization.Resolve("shell.help.short"), " · /" };
         return variants.Select(tail => lead + tail).FirstOrDefault(value => Terminal.Gui.Text.StringExtensions.GetColumns(value, false) <= width)
@@ -2159,6 +2174,157 @@ public sealed partial class TuiApp
         foreach (var view in retired) view.Dispose();
         foreach (var view in _overlaysReadyForDisposal) view.Dispose();
         _overlaysReadyForDisposal.Clear();
+    }
+
+    private string? _modeOverride;
+    private string? _modeAtOverride;
+    private string? _permissionLevelCache;
+
+    /// <summary>
+    /// Mode shown to the user: the active Run's mode, or the next Run's default right after the
+    /// user changed it (the projection only learns it on the next run.created event).
+    /// </summary>
+    private string CurrentModeCode()
+    {
+        var projected = _state.StatusLine.Mode;
+        if (_modeOverride is null) return projected;
+        if (!string.Equals(projected, _modeAtOverride, StringComparison.OrdinalIgnoreCase)) { _modeOverride = null; return projected; }
+        return _modeOverride;
+    }
+
+    private static string ModeCommandCode(string mode) => mode.ToLowerInvariant() switch
+    {
+        "plan" => "plan", "orchestrate" or "orq" => "orq", _ => "act",
+    };
+
+    /// <summary>Shift+Tab: PLAN → ACT → ORQ. Changes the active Run, or the next Run's default when idle.</summary>
+    private void CycleMode()
+    {
+        var next = ModeCommandCode(CurrentModeCode()) switch { "plan" => "act", "act" => "orq", _ => "plan" };
+        if (_client is not OmniCore.Protocol.ITrustedUserActionClient trusted)
+        { ShowMessage(_localization.Resolve("shell.this_client_cannot_change_local_authority")); return; }
+        var runAck = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "run.mode.select")
+            + "," + JsonObj.Field("mode", next) + ",\"effort\":\"standard\"}"), CancellationToken.None);
+        var target = next == "orq" ? "orchestrate" : next;
+        if (runAck.Status == "ok")
+        {
+            _turnStatus = _localization.Resolve("shell.mode_switched_run", "mode", StatusLinePresentation.ModeLabel(target, _locale));
+            PollEvents(); RenderState(); return;
+        }
+        var preference = _client.Query("modePreference", CancellationToken.None)?.Json ?? "{}";
+        if (!TryReadLong(preference, "revision", out var revision))
+        { ShowMessage(_localization.Resolve("shell.could_not_read_the_mode_revision")); return; }
+        var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "mode.default.set")
+            + "," + JsonObj.Field("mode", next) + ",\"expectedRevision\":"
+            + revision.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}"), CancellationToken.None);
+        if (ack.Status != "ok") { ShowMessage(ack.Error ?? _localization.Resolve("shell.mode_change_rejected")); return; }
+        _modeAtOverride = _state.StatusLine.Mode; _modeOverride = target;
+        _turnStatus = _localization.Resolve("shell.mode_switched_next", "mode", StatusLinePresentation.ModeLabel(target, _locale));
+        RenderState();
+    }
+
+    /// <summary>Permission level (Restrict / Ask / Free) shown next to the mode; cached until changed in F4.</summary>
+    private string? PermissionLevelLabel()
+    {
+        if (_permissionLevelCache is not null) return _permissionLevelCache.Length == 0 ? null : _permissionLevelCache;
+        try
+        {
+            var host = _securityPreferencesOverride ?? SecurityPreferencesHost.Create(Environment.CurrentDirectory);
+            var key = host.Read().Profile switch
+            {
+                "Conservative" => "level_restrict", "Balanced" => "level_ask", _ => "level_free",
+            };
+            _permissionLevelCache = _localization.Resolve("shell.permission_level") + _localization.Resolve("securityPreferences." + key);
+        }
+        catch (Exception) { _permissionLevelCache = ""; }
+        return _permissionLevelCache.Length == 0 ? null : _permissionLevelCache;
+    }
+
+    internal void InvalidatePermissionLevel() => _permissionLevelCache = null;
+
+    private string ReadableModeField(string json, string field)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && document.RootElement.TryGetProperty(field, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
+                ? StatusLinePresentation.ModeLabel(value.GetString() == "orq" ? "orchestrate" : value.GetString()!, _locale) : "—";
+        }
+        catch (System.Text.Json.JsonException) { return "—"; }
+    }
+
+    private static string ReadableJsonText(string json)
+    {
+        try { using var document = System.Text.Json.JsonDocument.Parse(json); return ReadableJson(document.RootElement); }
+        catch (System.Text.Json.JsonException) { return json; }
+    }
+
+    private string CommandError(string? error)
+    {
+        if (error is null) return _localization.Resolve("shell.command_failed");
+        if (error.StartsWith("command.prompt_not_found", StringComparison.Ordinal)) return _localization.Resolve("shell.command_unknown");
+        if (error.StartsWith("command.disabled", StringComparison.Ordinal))
+            return _localization.Resolve("shell.command_disabled") + (error.IndexOf(':') is var colon and > 0 && colon < error.Length - 1
+                ? " " + DescribeDisabledCommand(error[(colon + 1)..]) : "");
+        return _localization.ResolveWire(error);
+    }
+
+    /// <summary>Slash commands open the same screens as Preferences; leaving returns to the chat.</summary>
+    private bool OpenClientView(ClientActionInvocation action)
+    {
+        var bare = action.Arguments.Count == 0;
+        string? sessionQuery = action.ActionId switch
+        {
+            ClientActionIds.ContextInspect when bare => "context",
+            ClientActionIds.ExtensionsInspect when bare => "extensions",
+            ClientActionIds.SkillsInspect when bare => "skills",
+            ClientActionIds.MemorySession when bare || action.Arguments is ["session"] => "memory.session",
+            _ => null,
+        };
+        if (sessionQuery is not null)
+        {
+            CloseOverlay(); _viewFromChat = true; ShowSessionPreferences(sessionQuery); return true;
+        }
+        if (action.ActionId == ClientActionIds.CommandsInspect && bare)
+        { _viewFromChat = true; ShowCommandPreferences(); return true; }
+        if (action.ActionId == ClientActionIds.HelpShow)
+        {
+            var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
+            var help = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            _viewFromChat = true; ShowPreferenceText(_localization.Resolve("shell.help_title"), help.Text + "\n\n" + TuiHelpSection());
+            return true;
+        }
+        if (action.ActionId == ClientActionIds.PermissionsList)
+        {
+            _viewFromChat = true;
+            ShowPreferenceText(_localization.Resolve("shell.permissions_title"),
+                (PermissionLevelLabel() ?? "") + "\n" + _localization.Resolve("shell.permissions_change_hint") + "\n\n" + CliApp.PermissionsListing());
+            return true;
+        }
+        return false;
+    }
+
+    private bool _viewFromChat;
+
+    /// <summary>Returns true (and goes back to the chat) when the current screen was opened by a slash command.</summary>
+    private bool ReturnToChatIfOpenedFromChat()
+    {
+        if (!_viewFromChat) return false;
+        _viewFromChat = false;
+        CloseOverlay();
+        _composer?.SetFocus();
+        return true;
+    }
+
+    private string TuiHelpSection()
+    {
+        var lines = new List<string> { _localization.Resolve("shell.help_tui_section") };
+        foreach (var name in new[] { "/act", "/mode", "/runmode", "/ultracode", "/reasoning", "/models", "/preferences",
+            "/login", "/sidebar", "/animation", "/agents", "/delegate", "/agent", "/join", "/fanout" })
+            lines.Add("  " + name + " — " + CommandDescription(name));
+        lines.Add(_localization.Resolve("shell.help_keys"));
+        return string.Join("\n", lines);
     }
 
     private void SendTrustedModeCommand(string command, string fields)
