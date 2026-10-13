@@ -133,3 +133,12 @@ LocaleRuntimeTests y LegacyLocaleCoverageTests: 12/12 pass. Tras ampliar la
 comprobación de help explícito, CliLocaleRuntimeIntegrationTests: 3/3 pass.
 Las pruebas verifican lanzamiento delegado, rechazo sin terminal y ayuda
 francesa explícita; el smoke PTY de la instalación se registra después.
+
+Reanudación del 2026-10-13: el log npm
+`%TEMP%/OmniCoreNpmRepair_2b8d7b7/_logs/2026-10-12T15_52_57_210Z-debug-0.log`
+confirma que la reinstalación global desde GitHub del commit
+`2b8d7b77038d83d7afdb87c27acd84177c4903b0` terminó exit 0. Se usó caché nuevo
+y TLS con certificados verificados. El usuario informa que ya no encuentra
+temas visuales y autoriza continuar M8. Esta observación no se atribuye a una
+nueva prueba PTY automatizada; la evidencia interactiva posterior de preferencias
+está diferenciada en [su acta](preferences-main-closure-20261013.md).

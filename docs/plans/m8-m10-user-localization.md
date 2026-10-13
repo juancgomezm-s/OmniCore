@@ -4,6 +4,13 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 
 ## Corte de integración y dependencias
 
+**Continuación 2026-10-13:** main `358f481` incorpora el cierre de preferencias,
+controles de harness y safeguards de borradores/discovery. Esa base se reutiliza
+al cerrar M8; sus controles por modelo no sustituyen la selección/resolución
+de tools de extensiones aún pendiente. El canal de actualizaciones GitHub,
+solicitado por el usuario, se añade como requisito nuevo de M10 en
+[su plan](github-updates.md), sin ampliar M8 ni declararlo construido.
+
 **Estado actualizado 2026-10-12:** traducción/preferencias `a865446` integrada por `70cd180`; Session Memory `c7d96bd` integrada por `a029012`. `4091936` incorpora como antecedentes las ramas históricas restantes manteniendo sin cambios los árboles src/tests de esa integración. Las filas siguientes conservan el corte anterior para trazabilidad; el mecanismo de idiomas ya está disponible en main, y los nuevos contratos de la sección de herramientas siguen pendientes de construcción. Instalación npm desde Git se entrega como canal framework-dependent Windows sobre el producto integrado; no cierra M8–M10.
 
 | Base revisada | Estado y tratamiento |
@@ -93,8 +100,9 @@ Orden: integrar bases → completar commands/preferences/skills → hooks/MCP �
 | Búsqueda y diagnósticos | `session.search`, resultados/procedencia y completar proyecciones de Execution/supervisión/capacidad/ValidationDebt. Bases de `/agents` ya existen. | Buscar sin reescribir contenido ni ampliar visibilidad; snippet original con estados locales. Diferenciar reclamación de evidencia, deuda de validación y verificación real. Vacíos/errores y navegación accesibles en cuatro idiomas. |
 | Producto undo y adapter | `/undo` completo sobre compensación/diff/preview/gates M7; terminar adapter OmniCoder sobre M9, sin duplicar transporte. | Alias/menú/palette llega a misma operación autorizada. Preview con efectos/conflictos/consecuencias, confirmación y resultado en cuatro idiomas. Conservar rutas/IDs y cambios posteriores ajenos; idioma no provoca apply ni modifica un diff. |
 | Evaluación y cierre | Suite full, calibración, regresión y comparación con Pi; documentar límites de plataformas/proveedores y criterios spec §96. | Informes y ayudas propios localizados, métricas numéricas invariantes y consumo estimado/medido/desconocido explícito. Fixtures deterministas verifican UI; pruebas lingüísticas de modelos, si se realizan, se reportan aparte y no se deducen de traducir catálogos. |
+| Actualizaciones GitHub — nuevo | Releases versionadas stable/preview, assets preparados, manifest/procedencia/digests, check/apply/rollback y recuperación según [plan del canal](github-updates.md). Reusar negociación/versiones M9 y gestor de instalación; no convertir main en release estable. | Consulta manual por defecto, compatibilidad y confirmación antes de aplicar, datos de usuario preservados y estados es/en/fr/it. Verificar instalación real, download alterado, crash/rollback y versión en uso; todavía no hay updater construido. |
 
-**Salida M10:** v1 funcional con memoria completa, acciones/teclado/búsqueda/undo y evaluación, navegación/diagnósticos LSP y parche de varias operaciones con preview/recovery; cierre de los recorridos nuevos y existentes es/en/fr/it. P6/P7 cubren la suma del producto: una aceptación previa del centro de preferencias no cubre automáticamente estas superficies futuras. No reabrir funciones cerradas de M6/M7 para reconstruir sus bases.
+**Salida M10:** v1 funcional con memoria completa, acciones/teclado/búsqueda/undo y evaluación, navegación/diagnósticos LSP, parche de varias operaciones con preview/recovery y canal de actualizaciones GitHub recuperable; cierre de los recorridos nuevos y existentes es/en/fr/it. P6/P7 cubren la suma del producto: una aceptación previa del centro de preferencias no cubre automáticamente estas superficies futuras. No reabrir funciones cerradas de M6/M7 para reconstruir sus bases.
 
 ## Evidencia y seguimiento
 
