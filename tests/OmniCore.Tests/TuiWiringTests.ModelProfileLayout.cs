@@ -21,11 +21,20 @@ public sealed partial class TuiWiringTests
         string locale, int columns, int rows) => RunTuiTest(fx =>
     {
         var key = new ModelPolicyKeyDto("local", "profile-layout-model");
-        var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "profile-layout-policies"),
-            [new ModelRegistryModelDescriptor(key.ModelId, key.ProviderId, 8192, 8192, 2048)]);
+        var policyRoot = Path.Combine(fx.Root, "profile-layout-policies");
+        var config = Path.Combine(policyRoot, "config");
+        Assert.Equal(config, OmniHost.CreatePlatformPaths(policyRoot).ConfigDirectory);
+        Directory.CreateDirectory(config);
+        File.WriteAllText(Path.Combine(config, "providers.yaml"),
+            "providers:\n  local: { baseUrl: http://127.0.0.1:8099/v1, auth: none }\n");
+        File.WriteAllText(Path.Combine(config, "models.yaml"),
+            "models:\n  profile-layout-model: { provider: local, context: 8192, maxOutput: 2048 }\n");
+        var policies = ModelPolicyHost.Create(policyRoot);
+        Assert.True(policies.SupportsDiscovery);
+        var account = new TestAccount { Current = new(true, "fixture", null, false) };
         policies.Set(key, 0, "FullAgent", null, CancellationToken.None);
         var initial = policies.Get(key, CancellationToken.None)!;
-        fx.StartTui(policies, initialColumns: columns, initialRows: rows,
+        fx.StartTui(policies, account: account, initialColumns: columns, initialRows: rows,
             localeSelection: new LocaleSelection(locale, LocaleSelectionSource.CommandLine));
         OpenProfileLimits(fx, locale);
 
@@ -111,12 +120,22 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => { panel.Viewport = new System.Drawing.Rectangle(panel.Viewport.X, 0,
             panel.Viewport.Width, panel.Viewport.Height); steps.Text = "2";
             ratio.Text = 0.5d.ToString("R", PreferenceInput.Culture(locale)); });
+        fx.Invoke(() => steps.Text = "0");
+        ClickProfileButtonWhenAvailable(fx, "profile-limits-save");
+        Assert.Equal("model-profile-limits", fx.App.Overlay!.Id);
+        Assert.Equal(labels.Invalid, Descendants(fx.App.Overlay!).OfType<Label>()
+            .Single(view => view.Id == "profile-limits-status").Text.ToString());
+        Assert.Equal("0", steps.Text.ToString());
+        Assert.Equal(0.5d.ToString("R", PreferenceInput.Culture(locale)), ratio.Text.ToString());
+        Assert.Equal(initial.Revision, policies.Get(key, CancellationToken.None)!.Revision);
+        fx.Invoke(() => steps.Text = "2");
         ClickProfileButtonWhenAvailable(fx, "profile-limits-save");
         fx.Wait(() => fx.App.Overlay?.Id != "model-profile-limits", "save closes the profile editor");
         var saved = policies.Get(key, CancellationToken.None)!;
         Assert.Equal(2, saved.MaxModelStepsPerTurn);
         Assert.Equal(0.5d, saved.MaxRewriteRatio);
         Assert.True(saved.Revision > initial.Revision);
+        AssertNoProfileDiscovery();
 
         // A subsequent draft can be canceled without changing the persisted value.
         OpenProfileLimitsInMaintenance(fx);
@@ -129,10 +148,33 @@ public sealed partial class TuiWiringTests
         Assert.Equal(0.5d.ToString("R", PreferenceInput.Culture(locale)), reopenedRatio.Text.ToString());
         fx.Invoke(() => { calls.Text = "1";
             reopenedRatio.Text = 0.25d.ToString("R", PreferenceInput.Culture(locale)); });
+        var concurrent = policies.SetProfileControls(key, saved.Revision, saved.MaxModelStepsPerTurn,
+            savedCalls - 1, saved.MaxVisibleTools, saved.CapabilityCeiling, saved.MutationMode,
+            saved.MaxFilesPerTurn, saved.MaxChangedLinesPerTurn, saved.MaxRewriteRatio,
+            saved.DeletePolicy, saved.MoveOrRenamePolicy, saved.RequirePriorRead,
+            saved.RequireExpectedVersionToken, saved.RequirePostEditValidation,
+            saved.AllowOrchestration, saved.MaxGenerationSeconds, CancellationToken.None);
+        ClickProfileButtonWhenAvailable(fx, "profile-limits-save");
+        Assert.Equal("model-profile-limits", fx.App.Overlay!.Id);
+        Assert.Equal(new Localization(locale).Resolve("shell.could_not_save_the_policy_reopen_the_model"),
+            Descendants(fx.App.Overlay!).OfType<Label>().Single(view => view.Id == "profile-limits-status").Text.ToString());
+        Assert.Equal("1", calls.Text.ToString());
+        Assert.Equal(0.25d.ToString("R", PreferenceInput.Culture(locale)), reopenedRatio.Text.ToString());
+        Assert.Equal(concurrent.Revision, policies.Get(key, CancellationToken.None)!.Revision);
         ClickProfileButtonWhenAvailable(fx, "profile-limits-cancel");
         fx.Wait(() => fx.App.Overlay?.Id != "model-profile-limits", "cancel closes the profile editor");
-        Assert.Equal(savedCalls, policies.Get(key, CancellationToken.None)!.MaxToolCallsPerTurn);
+        Assert.Equal(concurrent.MaxToolCallsPerTurn, policies.Get(key, CancellationToken.None)!.MaxToolCallsPerTurn);
         Assert.Equal(0.5d, policies.Get(key, CancellationToken.None)!.MaxRewriteRatio);
+        AssertNoProfileDiscovery();
+
+        void AssertNoProfileDiscovery()
+        {
+            // Inspect the owned refresh handle too, so a queued task cannot make an
+            // immediate zero-call assertion pass before discovery begins.
+            fx.Invoke(() => Assert.Null(fx.App.GetType().GetField("_catalogCancellation",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(fx.App)));
+            Assert.Equal(0, account.CatalogCalls);
+        }
     });
 
     private static void OpenProfileLimits(TuiFixture fx, string locale)
