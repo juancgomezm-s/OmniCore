@@ -336,8 +336,13 @@ procesos, pregunta al usuario, propone plan ni cambia modo. El executor aplica e
 techo de perfil y la política de permisos real, no sólo un prompt de sólo lectura.
 
 Los guards del Run/sesión/ruta permanecen vigentes. Los hijos operativos añaden
-sus topes de Turns, tools, tokens y costo con replay propio antes de cada frontera;
-invocación de cota desconocida o consumo incompleto no equivale a presupuesto libre.
+sus topes de Turns y tools con replay propio antes de cada frontera. Revisión del
+2026-10-13 solicitada por el usuario: tokens y costo son cuotas opcionales, heredadas
+de una cuota padre declarada o establecidas explícitamente para el hijo; si ninguna
+fuente las declara, permanecen null y no requieren una cota dura de salida para
+admitir una generación. Con cuota explícita, una exposición desconocida o consumo
+incompleto no se interpreta como saldo disponible. El límite de salida solicitado
+al proveedor también es opcional; no se inventa uno para admitir una ruta de suscripción.
 No heredan consentimiento de una invocación de cuota del principal ni abren un
 resume de ruta atribuido al principal: ruta no autorizada o cuota baja difieren/
 detienen el trabajo. El deadline usa el tiempo restante del grant, no lo renueva.

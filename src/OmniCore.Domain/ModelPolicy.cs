@@ -394,9 +394,26 @@ public sealed class UserModelPolicy
 
     public string? Note { get; }
 
+    /// <summary>Hard per-Turn generation bounds. Providers decide how reasoning is exposed; this
+    /// policy only bounds requests and tool-call loops, never asks a provider to disable reasoning.</summary>
+    public int MaxModelStepsPerTurn { get; }
+
+    public int MaxToolCallsPerTurn { get; }
+
+    /// <summary>Explicit user ceiling permitting the runtime to coordinate a child execution.</summary>
+    public bool AllowOrchestration { get; }
+
+    /// <summary>Per-generation soft deadline in seconds; provider-specific reasoning remains provider-controlled.</summary>
+    public int MaxGenerationSeconds { get; }
+
     public UserModelPolicy(ModelPolicyCategory category, ModelToolPolicy toolPolicy,
-        FileMutationPolicy mutationPolicy, string source, string? note)
+        FileMutationPolicy mutationPolicy, string source, string? note,
+        int maxModelStepsPerTurn = 8, int maxToolCallsPerTurn = 32,
+        bool allowOrchestration = false, int maxGenerationSeconds = 300)
     {
+        if (maxModelStepsPerTurn is < 1 or > 8) throw new ArgumentOutOfRangeException(nameof(maxModelStepsPerTurn), "model steps must be in [1,8]");
+        if (maxToolCallsPerTurn is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(maxToolCallsPerTurn), "tool calls must be in [1,64]");
+        if (maxGenerationSeconds is < 1 or > 3600) throw new ArgumentOutOfRangeException(nameof(maxGenerationSeconds), "generation seconds must be in [1,3600]");
         if (category == ModelPolicyCategory.ObserveOnly && mutationPolicy.Mode != FileMutationMode.None)
         {
             throw new ArgumentException("ObserveOnly no admite mutación de archivos");
@@ -407,6 +424,10 @@ public sealed class UserModelPolicy
         MutationPolicy = mutationPolicy;
         Source = source;
         Note = note;
+        MaxModelStepsPerTurn = maxModelStepsPerTurn;
+        MaxToolCallsPerTurn = maxToolCallsPerTurn;
+        AllowOrchestration = allowOrchestration;
+        MaxGenerationSeconds = maxGenerationSeconds;
     }
 
     public override bool Equals(object? other)
@@ -418,7 +439,9 @@ public sealed class UserModelPolicy
 
         return Category == p.Category && ToolPolicy.Equals(p.ToolPolicy)
             && MutationPolicy.Equals(p.MutationPolicy) && Source.Equals(p.Source, StringComparison.Ordinal)
-            && (Note ?? "") == (p.Note ?? "");
+            && (Note ?? "") == (p.Note ?? "") && MaxModelStepsPerTurn == p.MaxModelStepsPerTurn
+            && MaxToolCallsPerTurn == p.MaxToolCallsPerTurn && AllowOrchestration == p.AllowOrchestration
+            && MaxGenerationSeconds == p.MaxGenerationSeconds;
     }
 
     public override int GetHashCode()
@@ -428,6 +451,10 @@ public sealed class UserModelPolicy
         hash = hash * 31 + ToolPolicy.GetHashCode();
         hash = hash * 31 + MutationPolicy.GetHashCode();
         hash = hash * 31 + Source.GetHashCode(StringComparison.Ordinal);
+        hash = hash * 31 + MaxModelStepsPerTurn;
+        hash = hash * 31 + MaxToolCallsPerTurn;
+        hash = hash * 31 + (AllowOrchestration ? 1 : 0);
+        hash = hash * 31 + MaxGenerationSeconds;
         return hash;
     }
 }
@@ -551,7 +578,8 @@ public static class ModelPolicyPresets
         new FileMutationPolicy(FileMutationMode.None, DestructiveActionPolicy.Deny,
             DestructiveActionPolicy.Deny, 0, 0, 0, requirePriorRead: true, requireExpectedVersionToken: true,
             requirePostEditValidation: false, allowParallelMutations: false),
-        "preset", null);
+        "preset", null, maxModelStepsPerTurn: 8, maxToolCallsPerTurn: 32,
+        allowOrchestration: false, maxGenerationSeconds: 120);
 
     /// <summary>Lo anterior + parche estructurado sobre archivos ya leídos. Sin crear/borrar/mover.</summary>
     public static UserModelPolicy PatchOnly() => new(
@@ -560,7 +588,8 @@ public static class ModelPolicyPresets
         new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
             DestructiveActionPolicy.Deny, 2, 200, 0.25, requirePriorRead: true, requireExpectedVersionToken: true,
             requirePostEditValidation: true, allowParallelMutations: false),
-        "preset", null);
+        "preset", null, maxModelStepsPerTurn: 8, maxToolCallsPerTurn: 32,
+        allowOrchestration: false, maxGenerationSeconds: 180);
 
     /// <summary>Patch + crear + build/test acotado al scope de la Task.</summary>
     public static UserModelPolicy ScopedCoder() => new(
@@ -569,7 +598,8 @@ public static class ModelPolicyPresets
         new FileMutationPolicy(FileMutationMode.PatchAndCreate, DestructiveActionPolicy.Ask,
             DestructiveActionPolicy.Ask, 5, 600, 0.50, requirePriorRead: true, requireExpectedVersionToken: true,
             requirePostEditValidation: true, allowParallelMutations: false),
-        "preset", null);
+        "preset", null, maxModelStepsPerTurn: 8, maxToolCallsPerTurn: 32,
+        allowOrchestration: false, maxGenerationSeconds: 300);
 
     /// <summary>Techo explícito del usuario; intersecta con Task, AgentProfile y permisos (ADR-0044 §3).</summary>
     public static UserModelPolicy FullAgent() => new(
@@ -578,7 +608,8 @@ public static class ModelPolicyPresets
         new FileMutationPolicy(FileMutationMode.Full, DestructiveActionPolicy.Ask,
             DestructiveActionPolicy.Ask, 8, 2000, 1.0, requirePriorRead: true, requireExpectedVersionToken: true,
             requirePostEditValidation: true, allowParallelMutations: false),
-        "preset", null);
+        "preset", null, maxModelStepsPerTurn: 8, maxToolCallsPerTurn: 32,
+        allowOrchestration: true, maxGenerationSeconds: 600);
 
     public static UserModelPolicy For(ModelPolicyCategory category)
     {
@@ -615,8 +646,18 @@ public sealed class EffectiveModelPolicy
     /// <summary>True si no hay UserModelPolicy guardada y se aplicó el fallback ObserveOnly.</summary>
     public bool IsFallback { get; }
 
+    public int MaxModelStepsPerTurn { get; }
+
+    public int MaxToolCallsPerTurn { get; }
+
+    public bool AllowOrchestration { get; }
+
+    public int MaxGenerationSeconds { get; }
+
     public EffectiveModelPolicy(ModelPolicyKey key, long? revision, ModelPolicyCategory category,
-        ModelToolPolicy toolPolicy, FileMutationPolicy mutationPolicy, bool isFallback)
+        ModelToolPolicy toolPolicy, FileMutationPolicy mutationPolicy, bool isFallback,
+        int maxModelStepsPerTurn = 8, int maxToolCallsPerTurn = 32,
+        bool allowOrchestration = false, int maxGenerationSeconds = 300)
     {
         Key = key;
         Revision = revision;
@@ -624,6 +665,10 @@ public sealed class EffectiveModelPolicy
         ToolPolicy = toolPolicy;
         MutationPolicy = mutationPolicy;
         IsFallback = isFallback;
+        MaxModelStepsPerTurn = Math.Clamp(maxModelStepsPerTurn, 1, 8);
+        MaxToolCallsPerTurn = Math.Clamp(maxToolCallsPerTurn, 1, 64);
+        AllowOrchestration = allowOrchestration;
+        MaxGenerationSeconds = Math.Clamp(maxGenerationSeconds, 1, 3600);
     }
 
     /// <summary>
@@ -639,7 +684,8 @@ public sealed class EffectiveModelPolicy
         {
             var fallback = ModelPolicyPresets.ObserveOnly();
             return new EffectiveModelPolicy(key, null, fallback.Category, fallback.ToolPolicy,
-                fallback.MutationPolicy, isFallback: true);
+                fallback.MutationPolicy, isFallback: true, fallback.MaxModelStepsPerTurn, fallback.MaxToolCallsPerTurn,
+                fallback.AllowOrchestration, fallback.MaxGenerationSeconds);
         }
 
         var user = stored!.Policy;
@@ -651,14 +697,31 @@ public sealed class EffectiveModelPolicy
             && mode != ToolMode.Direct;
         var toolPolicy = new ModelToolPolicy(mode, visible, discovery, user.ToolPolicy.CapabilityCeiling);
         return new EffectiveModelPolicy(key, stored!.Revision, user.Category, toolPolicy,
-            user.MutationPolicy, isFallback: false);
+            user.MutationPolicy, isFallback: false, user.MaxModelStepsPerTurn, user.MaxToolCallsPerTurn,
+            user.AllowOrchestration, user.MaxGenerationSeconds);
     }
 
     /// <summary>Fingerprint de ejecución (ADR-0044 §8): hash de clave, revisión, categoría y mutación.</summary>
     public string Fingerprint()
     {
-        var payload = Key.CanonicalJson() + "|rev=" + (Revision?.ToString() ?? "fallback")
-            + "|cat=" + Category + "|mutation=" + MutationPolicy.Mode;
+        // A fingerprint is durable execution evidence, so it must not depend on the current
+        // culture and must cover every effective control that can change execution.
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        var mutation = MutationPolicy;
+        var payload = Key.CanonicalJson() + "|rev=" + (Revision?.ToString(invariant) ?? "fallback")
+            + "|cat=" + Category + "|fallback=" + IsFallback
+            + "|tools=" + ToolPolicy.Mode + ":" + ToolPolicy.MaxVisibleTools.ToString(invariant)
+            + ":" + ToolPolicy.AllowToolDiscovery + ":" + string.Join(",", ToolPolicy.CapabilityCeiling
+                .OrderBy(x => x).Select(x => ((int)x).ToString(invariant)))
+            + "|mutation=" + mutation.Mode + ":delete=" + mutation.Delete + ":move=" + mutation.MoveOrRename
+            + ":files=" + mutation.MaxFilesPerTurn.ToString(invariant)
+            + ":lines=" + mutation.MaxChangedLinesPerTurn.ToString(invariant)
+            + ":ratio=" + mutation.MaxRewriteRatio.ToString("R", invariant)
+            + ":priorRead=" + mutation.RequirePriorRead + ":version=" + mutation.RequireExpectedVersionToken
+            + ":validation=" + mutation.RequirePostEditValidation + ":parallel=" + mutation.AllowParallelMutations
+            + "|turn=" + MaxModelStepsPerTurn.ToString(invariant) + ":" + MaxToolCallsPerTurn.ToString(invariant);
+        payload += "|orchestration=" + AllowOrchestration + "|generationSeconds="
+            + MaxGenerationSeconds.ToString(invariant);
         return ModelPolicyKey.Hex(ModelPolicyKey.Sha256(Encoding.UTF8.GetBytes(payload)));
     }
 

@@ -14,7 +14,8 @@ internal sealed class QualificationSpendAccounting : IProbeExecutionObserver
     private readonly UserWorkspaceSpendReader _workspaces;
     private readonly Guid _executionId = Guid.NewGuid();
     private readonly string _keyHash, _taskSetHash;
-    private readonly decimal _maximum, _suiteCap, _dailyCap;
+    private readonly decimal _maximum, _suiteCap;
+    private readonly decimal? _dailyCap;
     private readonly long _attemptBound;
     private readonly BillingMode _billing;
     private int _ordinal;
@@ -22,7 +23,7 @@ internal sealed class QualificationSpendAccounting : IProbeExecutionObserver
 
     internal QualificationSpendAccounting(SqliteModelQualificationStore store, string dataDirectory,
         string keyHash, IReadOnlyList<Probe> probes, decimal maximum, long attemptBound,
-        BillingMode billing, decimal suiteCap, decimal dailyCap)
+        BillingMode billing, decimal suiteCap, decimal? dailyCap)
     {
         _store = store; _keyHash = keyHash; _taskSetHash = ProbeScorer.TaskSetHash(probes);
         _maximum = maximum; _attemptBound = attemptBound; _billing = billing;
@@ -42,12 +43,19 @@ internal sealed class QualificationSpendAccounting : IProbeExecutionObserver
         {
             var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             var receipts = _store.ProbeReceipts(cancellationToken);
-            var daily = checked(CanonicalSpendReader.ReadAllWorkspaceDaily(_workspaces, codecs, day)
-                + Daily(receipts, day, _reservations));
             var suite = receipts.Where(r => r.ExecutionId == _executionId)
                 .Aggregate(0m, (sum, r) => checked(sum + (r.CostUsd ?? 0m)));
-            return [new SqliteSpendReservationStore.Limit("qualification", _executionId.ToString("D"), _suiteCap, suite),
-                new("daily", "user", UserDailyBudgetContinuation.Limit(_workspaces, codecs, day, _dailyCap), daily)];
+            var limits = new List<SqliteSpendReservationStore.Limit>
+            {
+                new("qualification", _executionId.ToString("D"), _suiteCap, suite),
+            };
+            if (_dailyCap is { } dailyCap)
+            {
+                var daily = checked(CanonicalSpendReader.ReadAllWorkspaceDaily(_workspaces, codecs, day)
+                    + Daily(receipts, day, _reservations));
+                limits.Add(new("daily", "user", UserDailyBudgetContinuation.Limit(_workspaces, codecs, day, dailyCap), daily));
+            }
+            return limits;
         }, out var scope);
         if (admission != SqliteSpendReservationStore.Admission.Reserved)
             throw new ModelQualificationBudgetAdmissionException(scope ?? "duplicate");

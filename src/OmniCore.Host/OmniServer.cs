@@ -89,6 +89,53 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private SessionRoutingPolicy _newSessionRoutingPolicy = SessionRoutingPolicy.Empty();
     private AgentProfileConfiguration.Loaded _agentProfiles = new(new AgentProfileRegistry([]), null);
 
+    private bool SourceModelAllowsOrchestration(SessionId session, IReadOnlyList<DomainEvent> journal,
+        ModelStepStarted step)
+    {
+        if (step.RouteId is null) return false;
+        var routing = journal.Where(evt => evt.SessionId == session)
+            .OrderBy(evt => evt.Sequence).Select(_codecs.Decode)
+            .Select(payload => payload switch
+            {
+                SessionRoutingPolicySet set => set.Policy,
+                SessionRoutingPolicyRevised revised => revised.Policy,
+                _ => null,
+            }).LastOrDefault(policy => policy is not null);
+        var route = routing?.AllowedRoutes.SingleOrDefault(candidate => candidate.RouteId.Equals(step.RouteId));
+        if (route is null) return false;
+        try
+        {
+            using var policies = new SqliteModelPolicyStore(_platformPathsFactory().UserDatabasePath);
+            return policies.Get(ModelPolicyKey.For(route.ProviderId, step.ModelId), CancellationToken.None)
+                ?.Policy.AllowOrchestration == true;
+        }
+        catch (Exception) { return false; }
+    }
+
+    private ModelStepStarted? DelegationSourceModelStep(IReadOnlyList<DomainEvent> journal, Delegation delegation)
+    {
+        if (_artifacts is null || !Enum.IsDefined(delegation.PacketRef.Kind)
+            || !_artifacts.Verify(delegation.PacketRef.Hash, delegation.PacketRef.Size)) return null;
+        try
+        {
+            var text = _artifacts.GetText(delegation.PacketRef.Hash);
+            if (text is null) return null;
+            var packet = System.Text.Json.JsonSerializer.Deserialize(text,
+                DelegationContextJson.Default.DelegationContextPacket);
+            if (packet is null || packet.SessionId != _lastSessionId || packet.RunId != _lastRunId
+                || packet.Target.DelegationId != delegation.DelegationId
+                || packet.Target.ParentExecutionId != delegation.ParentExecutionId
+                || packet.SourceEvent is null) return null;
+            var source = journal.SingleOrDefault(evt => evt.SessionId == packet.SourceEvent.SessionId
+                && evt.EventId == packet.SourceEvent.EventId && evt.Sequence == packet.SourceSequence);
+            return source is not null && _codecs.Decode(source) is ModelStepStarted step
+                && source.ExecutionId == delegation.ParentExecutionId ? step : null;
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidDataException
+            or InvalidOperationException or ArgumentException)
+        { return null; }
+    }
+
     internal void ConfigureAgentProfiles(AgentProfileConfiguration.Loaded profiles)
     {
         ArgumentNullException.ThrowIfNull(profiles);
@@ -930,7 +977,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             + ",\"maxTurns\":" + limits.MaxTurns.ToString(CultureInfo.InvariantCulture)
             + ",\"maxToolCalls\":" + limits.MaxToolCalls.ToString(CultureInfo.InvariantCulture)
             + ",\"maxElapsedSeconds\":" + limits.MaxElapsedSeconds.ToString(CultureInfo.InvariantCulture)
-            + ",\"maxSpendUsd\":" + limits.MaxSpendUsd.ToString(CultureInfo.InvariantCulture)
+            + ",\"maxSpendUsd\":" + (limits.MaxSpendUsd?.ToString(CultureInfo.InvariantCulture) ?? "null")
             + "}," + JsonObj.Field("grantedAtUtc", auth.GrantedAtUtc!.Value.ToString("O", CultureInfo.InvariantCulture))
             + ",\"planCoverage\":" + (auth.PlanCoverage is not { } coverage ? "null" : "{"
                 + JsonObj.Field("runId", coverage.RunId.ToString()) + ","
@@ -1520,9 +1567,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (!Int("maxAgents", out var agents) || !Int("maxDepth", out var depth)
             || !Int("maxTurns", out var turns) || !Int("maxToolCalls", out var tools)
             || !Long("maxElapsedSeconds", out var seconds)
-            || !fields.TryGetValue("maxSpendUsd", out var spendText)
-            || !decimal.TryParse(spendText, NumberStyles.Number, CultureInfo.InvariantCulture, out var spend)
             || !fields.TryGetValue("allowedModes", out var modeText)) return false;
+        decimal? spend = null;
+        if (fields.TryGetValue("maxSpendUsd", out var spendText) && spendText != "null")
+        {
+            if (!decimal.TryParse(spendText, NumberStyles.Number, CultureInfo.InvariantCulture, out var declaredSpend))
+                return false;
+            spend = declaredSpend;
+        }
         var modes = new List<RunMode>();
         var modeParts = modeText.Split(',');
         if (modeParts.Length == 0 || modeParts.Any(string.IsNullOrWhiteSpace)) return false;

@@ -129,7 +129,7 @@ public sealed partial class TuiWiringTests
         Click(fx, "Eliminar blobs identificados");
         fx.Wait(() => fx.App.Overlay is { Title: not null }, "resultado confirmado de mantenimiento visible");
         Assert.False(Directory.Exists(workspaceData));
-        Click(fx, "OK");
+        Click(fx, "Aceptar");
     });
 
     [Fact]

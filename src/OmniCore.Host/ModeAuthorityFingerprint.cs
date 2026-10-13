@@ -57,7 +57,8 @@ internal static class ModeAuthorityFingerprint
             writer.WriteNumber("maxTurns", authorization.Limits.MaxTurns);
             writer.WriteNumber("maxToolCalls", authorization.Limits.MaxToolCalls);
             writer.WriteNumber("maxElapsedSeconds", authorization.Limits.MaxElapsedSeconds);
-            writer.WriteNumber("maxSpendUsd", authorization.Limits.MaxSpendUsd);
+            if (authorization.Limits.MaxSpendUsd is { } spend) writer.WriteNumber("maxSpendUsd", spend);
+            else writer.WriteNull("maxSpendUsd");
             writer.WriteEndObject();
             writer.WriteEndObject();
         }

@@ -81,8 +81,10 @@ delegar siempre: una tarea sencilla puede seguir resolviéndose directamente.
   Una expansión de alcance, un plan fuera de la autorización o un modo no autorizado vuelve a requerir interacción.
 - UltraCode no concede acceso adicional a archivos, shell, secretos, providers de pago ni acciones
   destructivas. Se siguen aplicando ADR-0037, ADR-0044 y la `SessionRoutingPolicy` de ADR-0046.
-- Límites de agentes, profundidad, turnos, tools, tiempo y gasto son finitos y configurables en User.
-  No se aceptan límites ausentes como autorización ilimitada. En M6 el scheduler hace cumplir estos techos.
+- Límites de agentes, profundidad, turnos, tools y tiempo son finitos y configurables en User.
+  Las cuotas de tokens y gasto son opcionales: si no se declaran, no se imponen. Si se declaran,
+  el scheduler y el runtime conservan sus techos. Revisión explícita del usuario del 2026-10-13:
+  la ausencia de una cuota monetaria no invalida una autorización de coordinación completa.
 - Desactivar UltraCode o fijar otro modo revoca la autorización adaptativa y bloquea nuevas
   delegaciones/transiciones automáticas. El cambio se aplica en una frontera segura de ModelStep;
   efectos ya iniciados terminan o se cancelan por su protocolo. Un downgrade a PLAN queda Deferred

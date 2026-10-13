@@ -181,3 +181,49 @@ Las entradas definitivas añaden cultura efectiva/origen y estados separados de 
 | M10 LSP y patch múltiple | Definición/referencia/símbolo/diagnóstico obsoleto, servidor no disponible; preview/conflicto/confirmación/recovery por archivo. Conservar versiones y rutas canónicas en todos los idiomas. |
 
 Se distingue lo ya previsto y lo nuevo en arquitectura §24.4 y en el plan detallado; estas filas son requisitos de cobertura futura y no acreditan herramientas implementadas.
+
+## Auditoría sobre main 29c2c26 — 13 de octubre de 2026
+
+La evidencia del cierre del 12 de octubre describe otra rama y no sustituye esta comprobación
+de `main`. En este checkout, `Localization.cs` contiene **542 claves es y 542 en**. `LegacyLocaleCoverageTests`
+comprueba la misma clave y sus placeholders en fr/it; la búsqueda de selección binaria con
+`locale == "en"` en Client, CLI y Host no encontró helpers de fallback binario.
+
+Se amplió la cobertura automatizada con `LocaleCatalogCoverageTests`: recorre las claves de los
+catálogos first-party compartidos y verifica resolución en es/en/fr/it, `ResourceLocale`, ausencia
+de fallback y paridad de argumentos. La salida de comandos/alias conserva sus IDs y argumentos
+canónicos; el grupo existente `HumanCommandAliasTests` y los casos de CLI/registro lo ejercitan.
+
+La lectura de rutas TUI/CLI encontró tres literales propios que no estaban localizados: el botón
+de aviso `OK`, los estados `ON/OFF` en Animaciones y el valor `Unavailable` al presentar datos
+diagnósticos ausentes. Se migraron a recursos de shell/runtime existentes con variantes es/en/fr/it.
+El contenido del usuario, respuestas externas, rutas, valores wire, IDs y argumentos de comandos
+siguen mostrándose en su forma original/canónica.
+
+Validación agrupada en este checkout: recursos heredados, contratos sin fallback, shell/runtime,
+CLI, alias y herramientas **119/119 PASS**. El primer recorrido amplio de TUI/preferencias dio
+**247/250 PASS**; sus tres errores son assertions españolas que aún esperaban `OK` en el binario
+construido antes de actualizar la etiqueta a `Aceptar` (confirmación de GC a 80×25 y 120×35, y
+fotograma de aviso). Las tres expectativas se actualizaron. La regresión general posterior
+(`TestResults/harness-optional-quotas-final-20261013.trx`) cubre esos casos y los nuevos catálogos:
+**4273 casos / 4262 PASS / 0 FAIL / 11 SKIP**, incluyendo **185 casos TUI**. Los skips son siete
+pruebas live opt-in y cuatro casos de symlinks sin permisos; no cuentan como certificación de
+proveedores. No se suman estos resultados a grupos anteriores solapados.
+
+El formulario de controles por perfil también pasa los ocho casos es/en/fr/it a 80×25 y 120×35:
+scroll, ausencia de solapamientos, footer fijo, guardado persistido y cancelación sin cambios.
+Se revisaron las rasterizaciones sin sustitución de colores de los frames españoles generados
+por esa regresión con `NO_COLOR` desactivado. Las exportaciones anteriores con `NO_COLOR=1`
+serializan el color por defecto como blanco; sus previews recoloreados sólo son diagnósticos
+y no se publican como evidencia visual.
+
+No se confirmó otro literal propio sin traducción en los caminos inspeccionados. `Esc`, `Ctrl+F`,
+ASCII/Unicode, códigos de locale, IDs, tokens de opción como `off`, JSON/wire y contenido aportado
+por usuario/paquete son controles o datos canónicos, no copy traducible. Esta auditoría no afirma
+que se hayan probado live providers ni que el idioma del contenido externo se transforme.
+
+El cierre posterior corrige también el ratio decimal del formulario de perfil en
+fr/it y completa la regresión del código final: **4276 casos / 4265 PASS / 0 FAIL /
+11 SKIP**, más arquitectura **62/62 PASS**. El alcance auditado y la integración
+están en [el registro de main](../validation/preferences-main-closure-20261013.md).
+Estas cifras sustituyen el corte de 4273 casos para ese cambio; no se suman ambos.

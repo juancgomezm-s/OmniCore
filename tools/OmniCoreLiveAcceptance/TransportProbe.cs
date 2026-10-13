@@ -22,7 +22,7 @@ internal sealed partial class AcceptanceRunner
         using var timeout = new CancellationTokenSource(deadline);
         var request = new ModelRequest(new ModelSelection(new ModelIdValue(preflight.ModelId),
                 preflight.ContextWindow!.Value, ToolMode.Direct, null,
-                maxOutputTokens: preflight.ModelAlias == "qwen" ? 64 : null),
+                maxOutputTokens: preflight.ModelAlias == "qwen" && preflight.RequestMaxOutputTokens is not null ? 64 : null),
             [new ModelMessage(MessageRole.User, [new TextBlock("Reply with OK only.")])],
             "This is a bounded connectivity diagnostic. Do not use tools.", [], ToolChoice.None(), null, null, null, null);
         try

@@ -23,7 +23,7 @@ internal sealed partial class AcceptanceRunner
     private const int MaximumGenerationInvocations = 32;
     // Local prefill may legitimately take several minutes. These are acceptance-only
     // deadlines, not persisted server/model settings. Preserve the existing Luna limits.
-    private static readonly TimeSpan QwenGenerationTimeout = TimeSpan.FromMinutes(35);
+    private static readonly TimeSpan QwenGenerationTimeout = TimeSpan.FromMinutes(60);
     private static TimeSpan GenerationTimeout(string model, TimeSpan other) =>
         model == "qwen" ? QwenGenerationTimeout : other;
     private static TimeSpan CaseTimeout(string model) => model == "qwen"

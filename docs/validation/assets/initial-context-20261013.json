@@ -1,0 +1,398 @@
+{
+  "capturedAtUtc": "2026-10-13T19:10:21.918Z",
+  "sourceSnapshotCommit": "29c2c26bbb49e2ff2c083ac21d573b55a0459e55",
+  "omniCliSha256": "c52c6b3912367024d9004912de37afa360da06820e9de24f7942ddf2cb68ae10",
+  "opencodeVersion": "1.18.35",
+  "piVersion": "1.1.0",
+  "piCliSha256": "e79626f2dd6f94aa45d30f3fa63cd84319a6eefcd150b353cfaf274366926774",
+  "claudeVersion": "2.1.296 (Claude Code)",
+  "claudeCliSha256": "76de74f7694a5bdc03378a5f837c9e132827bf004c98c276bc4e9094ff06769a",
+  "codexVersion": "codex-cli 0.153.4",
+  "codexCliSha256": "444a3f0008050605cae73cd9b7a2dcac61294062dfaab56dd20430fd6498518b",
+  "prompt": "Examina este proyecto y explica su estructura sin modificar archivos.",
+  "workspace": "one README, no history, no activated skills/memory, isolated configuration",
+  "capturesPath": "C:\\Users\\juanc\\AppData\\Local\\Temp\\omnicore-context-measure-nsfNCT\\requests.json",
+  "measurementPath": "C:\\Users\\juanc\\source\\repos\\OmniCore\\TestResults\\initial-context-five-harnesses-final-measurement.json",
+  "capturesSha256": "72fa30a1eab0ca85a790b65b5439f18843be508d24b37026b1749169b3c93b91",
+  "measurementSha256": "8840b8884fb1fdffea2352c30344f1b6e4c548af4336849549b9855729561eb0",
+  "tokenizer": {
+    "package": "gpt-tokenizer",
+    "version": "4.0.0",
+    "modelModule": "gpt-tokenizer/model/gpt-5.6-luna",
+    "encoding": "o200k_base",
+    "license": "MIT",
+    "method": "encode(text).length over each UTF-8-decoded text component; the joined sans-prompt aggregate is tokenized as one string."
+  },
+  "method": {
+    "textBlocks": "Read string content directly; flatten text-only content arrays by joining block.text with newlines. Exclude JSON type/text wrappers. Reject unsupported non-text content.",
+    "catalogs": "Include body.tools and Responses input.additional_tools catalogs; count callable namespace leaves, while retaining namespace descriptions in the schema reference text.",
+    "instructions": "Combine body.system, body.instructions and system/developer message text. Developer permissions and environment instructions are harness overhead, not the original user prompt.",
+    "promptRemoval": "Remove the first exact occurrence from user message text only. Preserve any system/context copy of the objective because it is actual harness overhead.",
+    "aggregate": "Join system text, remaining user/environment text, and compact JSON tool schemas with newline separators, then count reference tokens. This excludes chat-role/template overhead and is not provider-native usage.",
+    "bytes": "UTF-8 byte counts over decoded components and compact JSON.stringify output. Raw HTTP request bytes were not preserved in the capture file.",
+    "byteRatio": "ceil(UTF-8 bytes / 4), shown only as a rough comparison baseline.",
+    "nativeUsage": "Unknown. The loopback fixture returned zero usage and does not establish native prompt-token consumption."
+  },
+  "cases": [
+    {
+      "case": "OmniCore/ObserveOnly",
+      "model": "context-fixture",
+      "wireApi": "chat_completions",
+      "requestCount": 1,
+      "toolCount": 6,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 974,
+        "utf8Bytes": 977,
+        "referenceTokens": 218,
+        "estimatedTokensBytesOverFour": 245
+      },
+      "userAndEnvironment": {
+        "characters": 69,
+        "utf8Bytes": 69,
+        "referenceTokens": 12,
+        "estimatedTokensBytesOverFour": 18
+      },
+      "toolSchemas": {
+        "characters": 4103,
+        "utf8Bytes": 4105,
+        "referenceTokens": 943,
+        "estimatedTokensBytesOverFour": 1027
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 5078,
+        "utf8Bytes": 5083,
+        "referenceTokens": 1161,
+        "estimatedTokensBytesOverFour": 1271
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 5314,
+        "referenceTokensIfTreatedAsPlainText": 1215,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 1108,
+      "requestHashFromMeasurement": "1d17e5fd808a3a1364405b18e7003503cf66a845a43a629c121976f42b5b9e38",
+      "canonicalBodyHash": "1d17e5fd808a3a1364405b18e7003503cf66a845a43a629c121976f42b5b9e38"
+    },
+    {
+      "case": "OmniCore/PatchOnly",
+      "model": "context-fixture",
+      "wireApi": "chat_completions",
+      "requestCount": 1,
+      "toolCount": 7,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 824,
+        "utf8Bytes": 825,
+        "referenceTokens": 180,
+        "estimatedTokensBytesOverFour": 207
+      },
+      "userAndEnvironment": {
+        "characters": 69,
+        "utf8Bytes": 69,
+        "referenceTokens": 12,
+        "estimatedTokensBytesOverFour": 18
+      },
+      "toolSchemas": {
+        "characters": 4513,
+        "utf8Bytes": 4515,
+        "referenceTokens": 1034,
+        "estimatedTokensBytesOverFour": 1129
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 5338,
+        "utf8Bytes": 5341,
+        "referenceTokens": 1215,
+        "estimatedTokensBytesOverFour": 1336
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 5571,
+        "referenceTokensIfTreatedAsPlainText": 1268,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 955,
+      "requestHashFromMeasurement": "ef0f878be3743f275d3272247be0b4f055c6e7116e72bace9bbced9b8cf65f1b",
+      "canonicalBodyHash": "ef0f878be3743f275d3272247be0b4f055c6e7116e72bace9bbced9b8cf65f1b"
+    },
+    {
+      "case": "OmniCore/ScopedCoder",
+      "model": "context-fixture",
+      "wireApi": "chat_completions",
+      "requestCount": 1,
+      "toolCount": 10,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 824,
+        "utf8Bytes": 825,
+        "referenceTokens": 180,
+        "estimatedTokensBytesOverFour": 207
+      },
+      "userAndEnvironment": {
+        "characters": 69,
+        "utf8Bytes": 69,
+        "referenceTokens": 12,
+        "estimatedTokensBytesOverFour": 18
+      },
+      "toolSchemas": {
+        "characters": 5637,
+        "utf8Bytes": 5639,
+        "referenceTokens": 1274,
+        "estimatedTokensBytesOverFour": 1410
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 6462,
+        "utf8Bytes": 6465,
+        "referenceTokens": 1455,
+        "estimatedTokensBytesOverFour": 1617
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 6695,
+        "referenceTokensIfTreatedAsPlainText": 1508,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 955,
+      "requestHashFromMeasurement": "451e4d029b588125f1fd32644d2e6c316b254399aadc33b645a9c1bdc3b4093b",
+      "canonicalBodyHash": "451e4d029b588125f1fd32644d2e6c316b254399aadc33b645a9c1bdc3b4093b"
+    },
+    {
+      "case": "OmniCore/FullAgent",
+      "model": "context-fixture",
+      "wireApi": "chat_completions",
+      "requestCount": 1,
+      "toolCount": 12,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 824,
+        "utf8Bytes": 825,
+        "referenceTokens": 180,
+        "estimatedTokensBytesOverFour": 207
+      },
+      "userAndEnvironment": {
+        "characters": 69,
+        "utf8Bytes": 69,
+        "referenceTokens": 12,
+        "estimatedTokensBytesOverFour": 18
+      },
+      "toolSchemas": {
+        "characters": 6521,
+        "utf8Bytes": 6523,
+        "referenceTokens": 1460,
+        "estimatedTokensBytesOverFour": 1631
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 7346,
+        "utf8Bytes": 7349,
+        "referenceTokens": 1641,
+        "estimatedTokensBytesOverFour": 1838
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 7579,
+        "referenceTokensIfTreatedAsPlainText": 1694,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 955,
+      "requestHashFromMeasurement": "62edd9c92321a1b32cad616ff30314a7734cf79dc40aeda13486892d28f6c270",
+      "canonicalBodyHash": "62edd9c92321a1b32cad616ff30314a7734cf79dc40aeda13486892d28f6c270"
+    },
+    {
+      "case": "OpenCode/plan",
+      "model": "context-fixture",
+      "wireApi": "chat_completions",
+      "requestCount": 1,
+      "toolCount": 10,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 9623,
+        "utf8Bytes": 9623,
+        "referenceTokens": 2025,
+        "estimatedTokensBytesOverFour": 2406
+      },
+      "userAndEnvironment": {
+        "characters": 1556,
+        "utf8Bytes": 1556,
+        "referenceTokens": 310,
+        "estimatedTokensBytesOverFour": 389
+      },
+      "toolSchemas": {
+        "characters": 21471,
+        "utf8Bytes": 21471,
+        "referenceTokens": 4889,
+        "estimatedTokensBytesOverFour": 5368
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 32583,
+        "utf8Bytes": 32583,
+        "referenceTokens": 7213,
+        "estimatedTokensBytesOverFour": 8146
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 33062,
+        "referenceTokensIfTreatedAsPlainText": 7404,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 11450,
+      "requestHashFromMeasurement": "f51cb6439bcb2143d47ad421a039d78e48f0e7ae8fab905d18a63bf0aafdcca7",
+      "canonicalBodyHash": "f51cb6439bcb2143d47ad421a039d78e48f0e7ae8fab905d18a63bf0aafdcca7"
+    },
+    {
+      "case": "OpenCode/build",
+      "model": "context-fixture",
+      "wireApi": "chat_completions",
+      "requestCount": 1,
+      "toolCount": 10,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 9623,
+        "utf8Bytes": 9623,
+        "referenceTokens": 2025,
+        "estimatedTokensBytesOverFour": 2406
+      },
+      "userAndEnvironment": {
+        "characters": 71,
+        "utf8Bytes": 71,
+        "referenceTokens": 13,
+        "estimatedTokensBytesOverFour": 18
+      },
+      "toolSchemas": {
+        "characters": 21471,
+        "utf8Bytes": 21471,
+        "referenceTokens": 4889,
+        "estimatedTokensBytesOverFour": 5368
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 31098,
+        "utf8Bytes": 31098,
+        "referenceTokens": 6916,
+        "estimatedTokensBytesOverFour": 7775
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 31501,
+        "referenceTokensIfTreatedAsPlainText": 7070,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 9889,
+      "requestHashFromMeasurement": "b2505e258898c0af02b36a45bea6ebacd7dae6c25c40400bd4481891ac69d8a6",
+      "canonicalBodyHash": "b2505e258898c0af02b36a45bea6ebacd7dae6c25c40400bd4481891ac69d8a6"
+    },
+    {
+      "case": "Pi/default",
+      "model": "context-fixture",
+      "wireApi": "chat_completions",
+      "requestCount": 1,
+      "toolCount": 4,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 3116,
+        "utf8Bytes": 3116,
+        "referenceTokens": 776,
+        "estimatedTokensBytesOverFour": 779
+      },
+      "userAndEnvironment": {
+        "characters": 69,
+        "utf8Bytes": 69,
+        "referenceTokens": 12,
+        "estimatedTokensBytesOverFour": 18
+      },
+      "toolSchemas": {
+        "characters": 2841,
+        "utf8Bytes": 2841,
+        "referenceTokens": 609,
+        "estimatedTokensBytesOverFour": 711
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 5958,
+        "utf8Bytes": 5958,
+        "referenceTokens": 1385,
+        "estimatedTokensBytesOverFour": 1490
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 6333,
+        "referenceTokensIfTreatedAsPlainText": 1485,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 3347,
+      "requestHashFromMeasurement": "441d7456d35176c1753786b14781b3fb464f7eb387e380317413f7f8d3f2f107",
+      "canonicalBodyHash": "441d7456d35176c1753786b14781b3fb464f7eb387e380317413f7f8d3f2f107"
+    },
+    {
+      "case": "ClaudeCode/default",
+      "model": "claude-opus-5-5",
+      "wireApi": "messages",
+      "requestCount": 1,
+      "toolCount": 22,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 12161,
+        "utf8Bytes": 12201,
+        "referenceTokens": 2761,
+        "estimatedTokensBytesOverFour": 3051
+      },
+      "userAndEnvironment": {
+        "characters": 650,
+        "utf8Bytes": 653,
+        "referenceTokens": 146,
+        "estimatedTokensBytesOverFour": 164
+      },
+      "toolSchemas": {
+        "characters": 51124,
+        "utf8Bytes": 51333,
+        "referenceTokens": 11910,
+        "estimatedTokensBytesOverFour": 12834
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 63868,
+        "utf8Bytes": 64120,
+        "referenceTokens": 14805,
+        "estimatedTokensBytesOverFour": 16030
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 65158,
+        "referenceTokensIfTreatedAsPlainText": 15141,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 9479,
+      "requestHashFromMeasurement": "a7699241e8823f64f4830b63031e850d18f37e3310e9be8b0f434d5bd3a414e2",
+      "canonicalBodyHash": "a7699241e8823f64f4830b63031e850d18f37e3310e9be8b0f434d5bd3a414e2"
+    },
+    {
+      "case": "Codex/default",
+      "model": "gpt-6-astra",
+      "wireApi": "responses",
+      "requestCount": 1,
+      "toolCount": 11,
+      "removedPromptOccurrences": 1,
+      "system": {
+        "characters": 28175,
+        "utf8Bytes": 28187,
+        "referenceTokens": 5588,
+        "estimatedTokensBytesOverFour": 7047
+      },
+      "userAndEnvironment": {
+        "characters": 621,
+        "utf8Bytes": 621,
+        "referenceTokens": 162,
+        "estimatedTokensBytesOverFour": 156
+      },
+      "toolSchemas": {
+        "characters": 19442,
+        "utf8Bytes": 19442,
+        "referenceTokens": 4507,
+        "estimatedTokensBytesOverFour": 4861
+      },
+      "contentAndSchemasSansOriginalUserMessage": {
+        "characters": 48171,
+        "utf8Bytes": 48183,
+        "referenceTokens": 10245,
+        "estimatedTokensBytesOverFour": 12046
+      },
+      "reconstructedCompactRequestJson": {
+        "utf8Bytes": 50865,
+        "referenceTokensIfTreatedAsPlainText": 11342,
+        "note": "Transport serialization measurement; this is not a model prompt-token count."
+      },
+      "compactMessagesJsonUtf8Bytes": 49504,
+      "requestHashFromMeasurement": "7b4b98092fbb2b8d868889b26c4dd9005c9aa4acdacece14533c7218dda834f8",
+      "canonicalBodyHash": "7b4b98092fbb2b8d868889b26c4dd9005c9aa4acdacece14533c7218dda834f8"
+    }
+  ]
+}

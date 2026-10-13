@@ -186,7 +186,8 @@ public sealed class ModelPolicyService : IDisposable
         {
             var fallback = ModelPolicyPresets.ObserveOnly();
             return new EffectiveModelPolicy(selection!.Key, null, fallback.Category, fallback.ToolPolicy,
-                fallback.MutationPolicy, isFallback: true);
+                fallback.MutationPolicy, isFallback: true, fallback.MaxModelStepsPerTurn,
+                fallback.MaxToolCallsPerTurn, fallback.AllowOrchestration, fallback.MaxGenerationSeconds);
         }
 
         return Effective(selection!.Key, harness, cancellationToken);

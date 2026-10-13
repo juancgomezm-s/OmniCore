@@ -1,5 +1,27 @@
 {
   "date": "2026-10-11",
+  "initial_context_update": {
+    "captured_at_utc": "2026-10-13T19:10:21.918Z",
+    "pi_version": "1.1.0",
+    "claude_version": "2.1.296",
+    "codex_version": "0.153.4",
+    "evidence": "../validation/assets/initial-context-20261013.json",
+    "method_document": "../validation/initial-context-20261013.md",
+    "metric": "Joined system, user environment and compact tool schemas, excluding first original user prompt occurrence; text-only content arrays flattened without JSON type/text wrappers; reference o200k_base tokens, not billed provider usage.",
+    "cases": [
+      { "case": "OmniCore/ObserveOnly", "tool_count": 6, "reference_tokens": 1161, "utf8_bytes": 5083 },
+      { "case": "OmniCore/PatchOnly", "tool_count": 7, "reference_tokens": 1215, "utf8_bytes": 5341 },
+      { "case": "OmniCore/ScopedCoder", "tool_count": 10, "reference_tokens": 1455, "utf8_bytes": 6465 },
+      { "case": "OmniCore/FullAgent", "tool_count": 12, "reference_tokens": 1641, "utf8_bytes": 7349 },
+      { "case": "OpenCode/plan", "tool_count": 10, "reference_tokens": 7213, "utf8_bytes": 32583 },
+      { "case": "OpenCode/build", "tool_count": 10, "reference_tokens": 6916, "utf8_bytes": 31098 },
+      { "case": "Pi/default", "tool_count": 4, "reference_tokens": 1385, "utf8_bytes": 5958 },
+      { "case": "ClaudeCode/default", "tool_count": 22, "reference_tokens": 14805, "utf8_bytes": 64120 },
+      { "case": "Codex/default", "tool_count": 11, "reference_tokens": 10245, "utf8_bytes": 48183 },
+      { "case": "ChatGPT/web", "tool_count": null, "reference_tokens": null, "utf8_bytes": null, "status": "not_observable_in_this_fixture" }
+    ],
+    "pi_static_schema_totals": { "base_four": 587, "catalog_eight": 1143, "not_first_request_context": true }
+  },
   "omnicore_commit": "1db35b1a4c2717bfeb4a3fdf966258c7facfe15e",
   "public_source_snapshots": {
     "repos": {

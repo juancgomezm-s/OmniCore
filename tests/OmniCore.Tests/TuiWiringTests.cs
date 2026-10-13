@@ -991,7 +991,7 @@ public sealed partial class TuiWiringTests
                 else if (scene == "notice")
                 {
                     Assert.Contains("Aviso", text);
-                    Assert.Contains("OK", text);
+                    Assert.Contains("Aceptar", text);
                     Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
                     Assert.False(fx.App.Composer!.HasFocus);
                 }

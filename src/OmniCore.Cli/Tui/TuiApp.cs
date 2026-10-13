@@ -706,7 +706,7 @@ public sealed partial class TuiApp
                     || !values.TryAdd(item[2..equals], item[(equals + 1)..]))
                 { ShowMessage(_localization.Resolve("shell.use_explicit_key_value_options")); _composer.Text = ""; return; }
             }
-            var required = new[] { "mode", "modes", "agents", "depth", "turns", "tools", "seconds", "spend-usd" };
+            var required = new[] { "mode", "modes", "agents", "depth", "turns", "tools", "seconds" };
             if (values.TryGetValue("plan", out var planCoverage) && planCoverage != "current")
             { ShowMessage(_localization.Resolve("shell.use_plan_current_to_cover_only_the_current_revision")); _composer.Text = ""; return; }
             if (required.Any(key => !values.ContainsKey(key))
@@ -715,19 +715,26 @@ public sealed partial class TuiApp
             if (!int.TryParse(values["agents"], out var agents) || !int.TryParse(values["depth"], out var depth)
                 || !int.TryParse(values["turns"], out var turns) || !int.TryParse(values["tools"], out var tools)
                 || !long.TryParse(values["seconds"], out var seconds)
-                || !decimal.TryParse(values["spend-usd"], System.Globalization.NumberStyles.Number,
-                    System.Globalization.CultureInfo.InvariantCulture, out var spend)
                 || values["modes"].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Any(mode => mode is not ("plan" or "act" or "orq")))
             { ShowMessage(_localization.Resolve("shell.invalid_ultracode_limits")); _composer.Text = ""; return; }
+            decimal? spend = null;
+            if (values.TryGetValue("spend-usd", out var spendText))
+            {
+                if (!decimal.TryParse(spendText, System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture, out var parsedSpend))
+                { ShowMessage(_localization.Resolve("shell.invalid_ultracode_limits")); _composer.Text = ""; return; }
+                spend = parsedSpend;
+            }
             var payload = JsonObj.Field("mode", values["mode"])
                 + ",\"effort\":\"ultracode\",\"adaptive\":true," + JsonObj.Field("allowedModes", values["modes"])
                 + ",\"maxAgents\":" + agents.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + ",\"maxDepth\":" + depth.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + ",\"maxTurns\":" + turns.ToString(System.Globalization.CultureInfo.InvariantCulture)
                 + ",\"maxToolCalls\":" + tools.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + ",\"maxElapsedSeconds\":" + seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + ",\"maxSpendUsd\":" + spend.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                + ",\"maxElapsedSeconds\":" + seconds.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (spend is { } spendLimit)
+                payload += ",\"maxSpendUsd\":" + spendLimit.ToString(System.Globalization.CultureInfo.InvariantCulture);
             if (values.ContainsKey("plan")) payload += ",\"coverCurrentPlan\":true";
             SendTrustedModeCommand("run.mode.select", payload);
             _composer.Text = ""; PollEvents(); return;
@@ -871,7 +878,7 @@ public sealed partial class TuiApp
                 var request = input.Length > 10 ? AgentsJson.DecodeRequest(input[10..]) : null;
                 if (request is null) throw new ArgumentException(_localization.Resolve("shell.usage_delegate")
                     + "{\"profileId\":\"UUID\",\"sourceEventId\":\"UUID de /agents\",\"objective\":\"Revisar\",\"selectedItemIds\":[],"
-                    + "\"maximumPacketBytes\":8192,\"maxTurns\":2,\"maxToolCalls\":4,\"maxTokens\":4096,\"maxCostUsd\":0}");
+                    + "\"maximumPacketBytes\":8192,\"maxTurns\":2,\"maxToolCalls\":4}");
                 var ack = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()), CancellationToken.None);
                 ShowMessage(ack.Status != "ok" ? ack.Error ?? _localization.Resolve("shell.delegation_rejected")
                     : ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred ? _localization.Resolve("shell.deferred") + ack.Outcome.Reason
@@ -1931,9 +1938,14 @@ public sealed partial class TuiApp
             frame.Add(visibility);
             if (record is not null)
             {
+                var limits = new Button { Id = "model-policy-limits-" + descriptor.Id,
+                    X = Pos.AnchorEnd(17), Y = row, Width = 5, Text = "⚙" };
+                BindCell(limits, index, 2);
+                limits.Accepted += (_, _) => ShowModelPolicyLimits(key, record);
+                frame.Add(limits);
                 var delete = new Button { Id = "delete-policy-" + descriptor.Id,
                     X = Pos.AnchorEnd(6), Y = row, Width = 4, Text = "🗑" };
-                BindCell(delete, index, 2);
+                BindCell(delete, index, 3);
                 delete.Accepted += (_, _) => ConfirmDeletePolicy(key, record.Revision, page);
                 frame.Add(delete);
             }
@@ -1962,6 +1974,170 @@ public sealed partial class TuiApp
         _overlay = frame; _window.Add(frame);
         if (models.Length > 0) FocusModel(focusIndex < 0 ? page : focusIndex, focusColumn); else register.SetFocus();
         if (refreshCatalog && _policies.SupportsDiscovery) RefreshAccountModels(frame, feedback, page);
+    }
+
+    private void ShowModelPolicyLimits(ModelPolicyKeyDto key, ModelPolicyRecordDto record)
+    {
+        if (_window is null) return;
+        CloseOverlay();
+        var labels = ModelPolicyProfileLabels.For(_locale);
+        var frame = OverlayFrame(labels.Title, 48);
+        frame.Id = "model-profile-limits";
+        frame.Width = Dim.Percent(92);
+        frame.Height = Dim.Fill(2);
+        var panel = new View { Id = "model-profile-limits-panel", X = 2, Y = 2,
+            Width = Dim.Fill(4), Height = Dim.Fill(5),
+            ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar };
+        var y = 0;
+        panel.Add(new Label { Id = "model-profile-key", X = 0, Y = y++, Width = Dim.Fill(2),
+            Text = key.ProviderId + "/" + key.ModelId });
+
+        TextField AddNumber(string id, string label, string value)
+        {
+            panel.Add(new Label { Id = id + "-label", X = 0, Y = y++, Width = Dim.Fill(2), Text = label });
+            var field = new TextField { Id = id, X = 0, Y = y++, Width = 12, Text = value };
+            panel.Add(field);
+            return field;
+        }
+
+        var steps = AddNumber("profile-limits-steps", labels.Steps, record.MaxModelStepsPerTurn.ToString());
+        var calls = AddNumber("profile-limits-tool-calls", labels.ToolCalls, record.MaxToolCallsPerTurn.ToString());
+        var visible = AddNumber("profile-limits-visible-tools", labels.VisibleTools, record.MaxVisibleTools.ToString());
+        var generationSeconds = AddNumber("profile-limits-generation-seconds", labels.GenerationDeadline,
+            record.MaxGenerationSeconds.ToString());
+        panel.Add(new Label { Id = "profile-limits-bounds", X = 0, Y = y, Width = Dim.Fill(2), Height = 2,
+            Text = labels.Bounds });
+        y += 2;
+        var permittedCapabilities = record.CapabilityCeiling.ToHashSet(StringComparer.Ordinal);
+        var capabilityChecks = new Dictionary<string, CheckBox>(StringComparer.Ordinal);
+        panel.Add(new Label { Id = "profile-limits-capabilities-heading", X = 0, Y = y++, Width = Dim.Fill(2),
+            Text = labels.Capabilities });
+        var basicCapabilities = new[] { "WorkspaceRead", "Search", "ReferenceResolve", "AgentMailboxWait" };
+        var advancedCapabilities = new[]
+        {
+            "PlanProposal", "PatchExisting", "CreateFile", "ReplaceFile", "DeleteFile", "MoveOrRename",
+            "ValidationProcess", "GeneralProcess", "Shell", "Network",
+        };
+        AddCapabilityGroup("basics", basicCapabilities);
+        AddCapabilityGroup("advanced", advancedCapabilities);
+
+        void AddCapabilityGroup(string groupId, IReadOnlyList<string> capabilities)
+        {
+            var allowed = capabilities.Where(permittedCapabilities.Contains).ToArray();
+            if (allowed.Length == 0) return;
+            panel.Add(new Label { Id = "profile-limits-" + groupId + "-heading", X = 0, Y = y++,
+                Width = Dim.Fill(2), Text = ModelPolicyProfileText.Get(_locale, groupId) });
+            foreach (var capability in allowed)
+            {
+                var checkbox = new CheckBox
+                {
+                    Id = "profile-limits-capability-" + capability,
+                    X = 0, Y = y++, Width = Dim.Fill(2),
+                    Text = ModelPolicyProfileText.Capability(_locale, capability),
+                    Value = CheckState.Checked,
+                };
+                capabilityChecks.Add(capability, checkbox); panel.Add(checkbox);
+            }
+        }
+
+        panel.Add(new Label { Id = "profile-limits-mutation-heading", X = 0, Y = y++, Width = Dim.Fill(2),
+            Text = labels.Mutation });
+        panel.Add(new Label { Id = "profile-limits-mutation-mode-label", X = 0, Y = y++, Width = Dim.Fill(2),
+            Text = labels.MutationMode });
+        var mode = AddRadioOptions("mode", new[]
+        {
+            ("None", "mode_none"), ("PatchExisting", "mode_patch"),
+            ("PatchAndCreate", "mode_patch_create"), ("Full", "mode_full"),
+        }, record.MutationMode);
+        var files = AddNumber("profile-limits-files", labels.MaxFiles, record.MaxFilesPerTurn.ToString());
+        var lines = AddNumber("profile-limits-changed-lines", labels.MaxLines, record.MaxChangedLinesPerTurn.ToString());
+        var ratio = AddNumber("profile-limits-rewrite-ratio", labels.RewriteRatio,
+            record.MaxRewriteRatio.ToString("R", PreferenceInput.Culture(_locale)));
+        panel.Add(new Label { Id = "profile-limits-delete-policy-label", X = 0, Y = y++, Width = Dim.Fill(2),
+            Text = labels.DeletePolicy });
+        var deletePolicy = AddRadioOptions("delete", new[]
+            { ("Deny", "deny"), ("Ask", "confirm"), ("Allow", "allow") }, record.DeletePolicy);
+        panel.Add(new Label { Id = "profile-limits-move-policy-label", X = 0, Y = y++, Width = Dim.Fill(2),
+            Text = labels.MovePolicy });
+        var movePolicy = AddRadioOptions("move", new[]
+            { ("Deny", "deny"), ("Ask", "confirm"), ("Allow", "allow") }, record.MoveOrRenamePolicy);
+        var priorRead = AddFlag("prior-read", labels.PriorRead, record.RequirePriorRead);
+        var versionToken = AddFlag("version-token", labels.VersionToken, record.RequireExpectedVersionToken);
+        var validation = AddFlag("validation", labels.Validation, record.RequirePostEditValidation);
+        var orchestration = AddFlag("orchestration", labels.AllowOrchestration, record.AllowOrchestration);
+        orchestration.Enabled = record.AllowOrchestration;
+        panel.Add(new Label { Id = "profile-limits-provider-reasoning", X = 0, Y = y++, Width = Dim.Fill(2), Height = 2,
+            Text = labels.ProviderReasoning });
+        ConfigurePreferenceScroll(panel, y + 1);
+        var cancel = new Button { Id = "profile-limits-cancel", X = 2, Y = Pos.AnchorEnd(2),
+            Text = _localization.Resolve("shell.cancel") };
+        cancel.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
+        var save = new Button { Id = "profile-limits-save", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = labels.Save };
+        save.Accepted += (_, _) =>
+        {
+            if (!int.TryParse(steps.Text.ToString(), out var stepCount)
+                || !int.TryParse(calls.Text.ToString(), out var callCount)
+                || !int.TryParse(visible.Text.ToString(), out var visibleCount)
+                || !int.TryParse(generationSeconds.Text.ToString(), out var generationLimit)
+                || !int.TryParse(files.Text.ToString(), out var fileCount)
+                || !int.TryParse(lines.Text.ToString(), out var lineCount)
+                || !double.TryParse(ratio.Text.ToString(), System.Globalization.NumberStyles.Float,
+                    PreferenceInput.Culture(_locale), out var rewriteRatio)
+                || stepCount is < 1 or > 8 || callCount is < 1 or > 64
+                || generationLimit is < 1 or > 3600)
+            { ShowMessage(labels.Invalid); return; }
+            try
+            {
+                var capabilityNames = capabilityChecks.Where(pair => pair.Value.Value == CheckState.Checked)
+                    .Select(pair => pair.Key).ToArray();
+                _policies.SetProfileControls(key, record.Revision, stepCount, callCount, visibleCount,
+                    capabilityNames, Selected(mode), fileCount, lineCount, rewriteRatio,
+                    Selected(deletePolicy), Selected(movePolicy), priorRead.Value == CheckState.Checked,
+                    versionToken.Value == CheckState.Checked, validation.Value == CheckState.Checked,
+                    orchestration.Value == CheckState.Checked, generationLimit, CancellationToken.None);
+            }
+            catch (Exception) { CloseOverlay(); ShowMessage(labels.Failed); return; }
+            CloseOverlay(); ShowModelPolicies();
+        };
+        frame.Add(panel, cancel, save); ApplyTheme(frame); _overlay = frame; _window.Add(frame); steps.SetFocus();
+
+        (string Id, CheckBox Control)[] AddRadioOptions(string group,
+            (string Id, string LabelId)[] options, string selected)
+        {
+            var controls = new List<(string Id, CheckBox Control)>();
+            foreach (var (id, labelId) in options)
+            {
+                var control = new CheckBox
+                {
+                    Id = "profile-limits-choice-" + group + "-" + id,
+                    X = 0, Y = y++, Width = Dim.Fill(2),
+                    Text = ModelPolicyProfileText.Get(_locale, labelId),
+                    RadioStyle = true,
+                    Value = string.Equals(id, selected, StringComparison.OrdinalIgnoreCase)
+                        ? CheckState.Checked : CheckState.UnChecked,
+                };
+                control.ValueChanged += (_, args) =>
+                {
+                    if (args.NewValue != CheckState.Checked) return;
+                    foreach (var other in controls)
+                        if (!ReferenceEquals(other.Control, control)) other.Control.Value = CheckState.UnChecked;
+                };
+                controls.Add((id, control));
+                panel.Add(control);
+            }
+            return controls.ToArray();
+        }
+
+        CheckBox AddFlag(string id, string label, bool isChecked)
+        {
+            var control = new CheckBox { Id = "profile-limits-" + id,
+                X = 0, Y = y++, Width = Dim.Fill(2), Text = label,
+                Value = isChecked ? CheckState.Checked : CheckState.UnChecked };
+            panel.Add(control); return control;
+        }
+
+        static string Selected((string Id, CheckBox Control)[] options) =>
+            options.Single(option => option.Control.Value == CheckState.Checked).Id;
     }
 
     private void ConfirmDeletePolicy(ModelPolicyKeyDto key, long revision, int page)
@@ -2137,7 +2313,7 @@ public sealed partial class TuiApp
         if (lines.Length > available) visible[^1] = "…";
         var frame = OverlayFrame(title, Math.Max(6, visible.Length + 5));
         frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = visible.Length, Text = string.Join("\n", visible) });
-        var ok = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = "OK" };
+        var ok = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _localization.Resolve("shell.ok") };
         ok.Accepted += (_, _) => CloseOverlay(); frame.Add(ok); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();
     }
 

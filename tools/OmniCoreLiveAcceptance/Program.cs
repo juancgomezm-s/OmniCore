@@ -24,6 +24,7 @@ internal static class Program
                 return selfTest.Failed > 0 ? 1 : 0;
             }
             var preflight = runner.Preflight(options.Model);
+            if (options.NoOutputLimit) preflight = preflight with { RequestMaxOutputTokens = null };
             if (options.Preflight)
             {
                 Console.WriteLine(JsonSerializer.Serialize(preflight, JsonOptions.Indented));
@@ -90,15 +91,16 @@ internal sealed record Options(
     bool AutoSelect,
     bool Commands,
     bool Probe,
-    bool NativeCli)
+    bool NativeCli,
+    bool NoOutputLimit)
 {
     public const string Usage = "Usage: OmniCoreLiveAcceptance --self-test [--case <tool-id>] | --preflight [--model luna|qwen] | "
         + "--case <tool-id|core-tools|model-command-boundary|native-cli-maintenance> [--model luna|qwen] --allow-live | "
-        + "--all|--commands|--probe|--native-cli [--model luna|qwen] --allow-live [--auto-select] [--allow-fixture-process]";
+        + "--all|--commands|--probe|--native-cli [--model luna|qwen] --allow-live [--auto-select] [--allow-fixture-process] [--no-output-limit]";
 
     public static Options Parse(string[] args)
     {
-        bool selfTest = false, preflight = false, allowLive = false, all = false, allowFixtureProcess = false, autoSelect = false, commands = false, probe = false, nativeCli = false;
+        bool selfTest = false, preflight = false, allowLive = false, all = false, allowFixtureProcess = false, autoSelect = false, commands = false, probe = false, nativeCli = false, noOutputLimit = false;
         string? caseId = null;
         string model = "luna";
         for (var index = 0; index < args.Length; index++)
@@ -114,6 +116,7 @@ internal sealed record Options(
                 case "--native-cli": nativeCli = true; break;
                 case "--allow-fixture-process": allowFixtureProcess = true; break;
                 case "--auto-select": autoSelect = true; break;
+                case "--no-output-limit": noOutputLimit = true; break;
                 case "--case" when index + 1 < args.Length: caseId = args[++index]; break;
                 case "--model" when index + 1 < args.Length: model = args[++index]; break;
                 default: throw new ArgumentException("Unknown or incomplete option: " + args[index]);
@@ -122,7 +125,7 @@ internal sealed record Options(
 
         if (model is not ("luna" or "qwen"))
             throw new ArgumentException("--model must be luna or qwen; no model fallback is available.");
-        if (selfTest && (preflight || all || commands || probe || nativeCli || allowLive || model != "luna"))
+        if (selfTest && (preflight || all || commands || probe || nativeCli || allowLive || noOutputLimit || model != "luna"))
             throw new ArgumentException("--self-test is offline and accepts only an optional --case.");
         if (preflight && (all || commands || probe || nativeCli || caseId is not null || allowLive))
             throw new ArgumentException("--preflight is an offline inspection and cannot be combined with live execution options.");
@@ -132,7 +135,7 @@ internal sealed record Options(
             throw new ArgumentException("Unknown self-test case.");
         if ((allowFixtureProcess || autoSelect) && !allowLive)
             throw new ArgumentException("Process consent and model selection modes require explicit --allow-live.");
-        return new Options(selfTest, preflight, allowLive, all, caseId, model, allowFixtureProcess, autoSelect, commands, probe, nativeCli);
+        return new Options(selfTest, preflight, allowLive, all, caseId, model, allowFixtureProcess, autoSelect, commands, probe, nativeCli, noOutputLimit);
     }
 }
 

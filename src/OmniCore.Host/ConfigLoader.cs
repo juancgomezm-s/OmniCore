@@ -98,12 +98,13 @@ public sealed class ConfigLoader
                         ? new ReasoningCapability(reasoning.Supported, reasoning.EffortLevels,
                             reasoning.ReplayPolicy is null ? null : Enum.Parse<ReasoningReplayPolicy>(reasoning.ReplayPolicy),
                             reasoning.UltraCodeBudgetTokens, reasoning.UltraCodeOutputReserveTokens)
-                        : null));
+                        : null, outputLimitConfigured: m.MaxOutput is not null));
             }
         }
 
         if (providersYaml is null && modelsYaml is null)
-            registry.AddModel(new ModelDefinition("local-worker", "local", 8192, 8192, 2048));
+            registry.AddModel(new ModelDefinition("local-worker", "local", 8192, 8192, 2048,
+                outputLimitConfigured: false));
 
         ValidateRouting(modelFile?.Routing, registry, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);

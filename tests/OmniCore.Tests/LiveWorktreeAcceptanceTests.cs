@@ -95,7 +95,7 @@ public sealed class LiveWorktreeAcceptanceTests
         try
         {
         using var totalBudget = new CancellationTokenSource(alias == "qwen"
-            ? TimeSpan.FromMinutes(70) : TimeSpan.FromSeconds(90));
+            ? TimeSpan.FromMinutes(120) : TimeSpan.FromSeconds(90));
         var modelId = alias == "luna" ? LunaModelId : QwenModelId;
         // The test assembly isolates default paths globally. Explicit, existing paths are
         // required for this opt-in connection only; never undo isolation for other tests.
@@ -349,7 +349,7 @@ public sealed class LiveWorktreeAcceptanceTests
         if (provider.Auth.Kind is not (AuthKind.None or AuthKind.ApiKey))
             throw new InvalidOperationException("configured_qwen_auth_kind_not_supported");
         return OmniHost.ConnectProvider(provider, provider.BaseUrl, provider.Auth.SecretRef ?? "", apiKey ?? "",
-            chatCompletionsRequestTimeout: TimeSpan.FromMinutes(35));
+            chatCompletionsRequestTimeout: TimeSpan.FromMinutes(60));
     }
 
     private static void EnsureFreshSubscription(ChatGptSubscriptionAuthProvider auth)

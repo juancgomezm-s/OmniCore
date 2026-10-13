@@ -1077,7 +1077,7 @@ internal static class ProviderConnectionRegistration
 
         var models = Parse(oldModels
             ?? (oldProviders is null
-                ? "models:\n  local-worker: { provider: local, context: 8192, maxOutput: 2048 }\n"
+                ? "models:\n  local-worker: { provider: local, context: 8192 }\n"
                 : "models: {}\n"));
         var modelMap = (YamlMappingNode)models.Children[new YamlScalarNode("models")];
         var added = 0;

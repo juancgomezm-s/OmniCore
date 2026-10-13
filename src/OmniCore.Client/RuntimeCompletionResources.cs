@@ -48,6 +48,7 @@ public static class RuntimeCompletionResources
         ("cli.runtime.budget.unattributed", "La interacción de presupuesto pendiente no tiene un Run asociado; la ejecución queda bloqueada.", "The pending budget interaction has no Run attribution; execution is blocked.", "L’interaction de budget en attente n’est associée à aucun Run ; l’exécution est bloquée.", "L'interazione di budget in attesa non è associata a un Run; l'esecuzione è bloccata."),
         ("cli.runtime.diagnostic.external", "Diagnóstico: {value}", "Diagnostic: {value}", "Diagnostic : {value}", "Diagnostica: {value}"),
         ("cli.runtime.status.unknown", "Estado: {value}", "Status: {value}", "État : {value}", "Stato: {value}"),
+        ("cli.diagnostic.value.unavailable", "No disponible", "Unavailable", "Indisponible", "Non disponibile"),
         ("cli.runtime.label.stage.explore", "Exploración", "Explore", "Exploration", "Esplorazione"),
         ("cli.runtime.label.stage.implement", "Implementación", "Implementation", "Implémentation", "Implementazione"),
         ("cli.runtime.label.stage.verify", "Verificación", "Verification", "Vérification", "Verifica"),

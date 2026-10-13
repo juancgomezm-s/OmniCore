@@ -221,6 +221,9 @@ public sealed class ModelDefinition
     public long RecommendedUsableContext { get; }
 
     public long MaxOutputTokens { get; }
+    /// <summary>Whether configuration explicitly requested a generation output limit.
+    /// A model's descriptive/default capacity alone does not impose that limit.</summary>
+    public bool OutputLimitConfigured { get; }
 
     public double? ParameterCountBillions { get; }
 
@@ -230,13 +233,14 @@ public sealed class ModelDefinition
 
     public ModelDefinition(string id, string providerId, long contextWindow, long recommendedUsableContext,
         long maxOutputTokens, double? parameterCountBillions = null, IEnumerable<string>? aliases = null,
-        ReasoningCapability? reasoningCapability = null)
+        ReasoningCapability? reasoningCapability = null, bool outputLimitConfigured = true)
     {
         Id = id;
         ProviderId = providerId;
         ContextWindow = contextWindow;
         RecommendedUsableContext = recommendedUsableContext;
         MaxOutputTokens = maxOutputTokens;
+        OutputLimitConfigured = outputLimitConfigured;
         ParameterCountBillions = parameterCountBillions;
         Aliases = (aliases ?? Array.Empty<string>()).ToArray();
         ReasoningCapability = reasoningCapability ?? OmniCore.Domain.ReasoningCapability.Unknown;

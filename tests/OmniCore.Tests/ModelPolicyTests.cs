@@ -158,6 +158,28 @@ public sealed class ModelPolicyTests
     }
 
     [Fact]
+    public void Per_model_execution_limits_are_preserved_and_fingerprinted()
+    {
+        var key = ModelPolicyKey.For("p", "m");
+        var configured = new UserModelPolicy(ModelPolicyCategory.PatchOnly,
+            ModelPolicyPresets.PatchOnly().ToolPolicy, ModelPolicyPresets.PatchOnly().MutationPolicy,
+            "user", null, maxModelStepsPerTurn: 2, maxToolCallsPerTurn: 5);
+        var stored = new StoredModelPolicy(key, 1, configured, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var stricter = new StoredModelPolicy(key, 1, new UserModelPolicy(ModelPolicyCategory.PatchOnly,
+            configured.ToolPolicy, configured.MutationPolicy, "user", null,
+            maxModelStepsPerTurn: 1, maxToolCallsPerTurn: 5), DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var harness = StrongHarness();
+
+        var effective = EffectiveModelPolicy.Resolve(key, stored, harness);
+        var changed = EffectiveModelPolicy.Resolve(key, stricter, harness);
+
+        Assert.Equal(2, effective.MaxModelStepsPerTurn);
+        Assert.Equal(5, effective.MaxToolCallsPerTurn);
+        Assert.NotEqual(effective.Fingerprint(), changed.Fingerprint());
+        Assert.Equal(8, EffectiveModelPolicy.Resolve(key, null, harness).MaxModelStepsPerTurn);
+    }
+
+    [Fact]
     public void Effective_policy_allows_discovery_when_both_layers_admit()
     {
         var key = ModelPolicyKey.For("p", "m");
@@ -169,6 +191,27 @@ public sealed class ModelPolicyTests
         Assert.Equal(ToolMode.Discovered, effective.ToolPolicy.Mode);
         Assert.True(effective.ToolPolicy.AllowToolDiscovery);
         Assert.Equal(16, effective.ToolPolicy.MaxVisibleTools);
+    }
+
+    [Fact]
+    public void Mutation_mode_restriction_hides_destructive_tools_from_the_planner()
+    {
+        var preset = ModelPolicyPresets.FullAgent();
+        var restricted = new UserModelPolicy(ModelPolicyCategory.FullAgent, preset.ToolPolicy,
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 2, 200, 0.25, true, true, true, false),
+            "user", null);
+        var key = ModelPolicyKey.For("p", "m");
+        var effective = EffectiveModelPolicy.Resolve(key,
+            new StoredModelPolicy(key, 1, restricted, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch),
+            StrongHarness());
+        var boundary = new ModelCapabilityBoundary(effective);
+
+        Assert.True(boundary.IsToolVisible("filesystem.patch"));
+        Assert.False(boundary.IsToolVisible("filesystem.write"));
+        Assert.False(boundary.IsToolVisible("filesystem.delete"));
+        Assert.False(boundary.IsToolVisible("filesystem.move"));
+        Assert.False(boundary.Evaluate(BoundaryTests.Intent("filesystem.delete", writes: ["x"])).Allowed);
     }
 
     [Fact]
@@ -189,6 +232,67 @@ public sealed class ModelPolicyTests
         Assert.Equal(f1, f1again);
         Assert.NotEqual(f1, f2);
         Assert.NotEqual(f1, fallback);
+    }
+
+    [Fact]
+    public void Fingerprint_is_culture_invariant_and_covers_every_mutation_control()
+    {
+        var key = ModelPolicyKey.For("p", "m");
+        var tools = new ModelToolPolicy(ToolMode.Direct, 4, false,
+            new HashSet<ModelToolCapability> { ModelToolCapability.WorkspaceRead });
+        var baselineMutation = new FileMutationPolicy(FileMutationMode.PatchExisting,
+            DestructiveActionPolicy.Deny, DestructiveActionPolicy.Deny, 2, 200, 0.25,
+            true, true, true, false);
+        EffectiveModelPolicy For(FileMutationPolicy mutation) => new(key, 3,
+            ModelPolicyCategory.PatchOnly, tools, mutation, false, 4, 12);
+        var baseline = For(baselineMutation).Fingerprint();
+        var originalCulture = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("fr-FR");
+            Assert.Equal(baseline, For(baselineMutation).Fingerprint());
+        }
+        finally { System.Globalization.CultureInfo.CurrentCulture = originalCulture; }
+
+        var variants = new[]
+        {
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Ask,
+                DestructiveActionPolicy.Deny, 2, 200, 0.25, true, true, true, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Ask, 2, 200, 0.25, true, true, true, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 3, 200, 0.25, true, true, true, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 2, 201, 0.25, true, true, true, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 2, 200, 0.5, true, true, true, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 2, 200, 0.25, false, true, true, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 2, 200, 0.25, true, false, true, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 2, 200, 0.25, true, true, false, false),
+            new FileMutationPolicy(FileMutationMode.PatchExisting, DestructiveActionPolicy.Deny,
+                DestructiveActionPolicy.Deny, 2, 200, 0.25, true, true, true, true),
+        };
+        Assert.All(variants, mutation => Assert.NotEqual(baseline, For(mutation).Fingerprint()));
+
+        var baselineEffective = For(baselineMutation);
+        var toolControlVariants = new[]
+        {
+            new EffectiveModelPolicy(key, 3, ModelPolicyCategory.PatchOnly,
+                new ModelToolPolicy(ToolMode.Discovered, 4, false, tools.CapabilityCeiling), baselineMutation, false, 4, 12),
+            new EffectiveModelPolicy(key, 3, ModelPolicyCategory.PatchOnly,
+                new ModelToolPolicy(ToolMode.Direct, 5, false, tools.CapabilityCeiling), baselineMutation, false, 4, 12),
+            new EffectiveModelPolicy(key, 3, ModelPolicyCategory.PatchOnly,
+                new ModelToolPolicy(ToolMode.Direct, 4, true, tools.CapabilityCeiling), baselineMutation, false, 4, 12),
+            new EffectiveModelPolicy(key, 3, ModelPolicyCategory.PatchOnly,
+                new ModelToolPolicy(ToolMode.Direct, 4, false,
+                    new HashSet<ModelToolCapability> { ModelToolCapability.WorkspaceRead, ModelToolCapability.Search }), baselineMutation, false, 4, 12),
+            new EffectiveModelPolicy(key, 3, ModelPolicyCategory.PatchOnly, tools, baselineMutation, false, 5, 12),
+            new EffectiveModelPolicy(key, 3, ModelPolicyCategory.PatchOnly, tools, baselineMutation, false, 4, 13),
+        };
+        Assert.All(toolControlVariants, changed => Assert.NotEqual(baselineEffective.Fingerprint(), changed.Fingerprint()));
     }
 
     // ---- ModelCapabilityBoundary (ADR-0044 §5): la categoría sola nunca otorga ----

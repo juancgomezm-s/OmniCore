@@ -6,13 +6,13 @@ OmniCore es un runtime **local-first en C#/.NET 10** para trabajar sobre reposit
 
 La meta es una conversación que conserva contexto, puede inspeccionar y modificar código dentro de permisos explícitos y entrega resultados respaldados por evidencia. Cambiar el modelo no debería exigir cambiar la tarea ni el motor.
 
-[Primeros pasos](#primeros-pasos) · [Experiencia final](#la-experiencia-que-queremos-entregar) · [Estado actual](#estado-actual) · [Roadmap](#camino-hacia-v1) · [Documentación](#documentación)
+[Primeros pasos](#primeros-pasos) · [Experiencia objetivo](#experiencia-objetivo) · [Panel lateral](#panel-lateral-de-sesión) · [Simplicidad y contexto](#simplicidad-y-contexto) · [Estado actual](#estado-actual) · [Roadmap](#roadmap-hacia-v1) · [Documentación](#documentación)
 
-![Renderizado real de la TUI de OmniCore en una conversación de prueba, con respuesta y código.](docs/images/tui-conversation.svg)
+![Renderizado real de la TUI de OmniCore en una conversación de prueba, con respuesta y código.](docs/images/tui-conversation.png)
 
 *Captura exportada del driver real de Terminal.Gui (140 × 40 celdas). El contenido procede de un fixture determinista; no es una conversación con un modelo.*
 
-![Renderizado real del menú de preferencias de OmniCore.](docs/images/tui-preferences.svg)
+![Renderizado real del menú de preferencias de OmniCore.](docs/images/tui-preferences.png)
 
 *Captura exportada del driver real de Terminal.Gui (120 × 35 celdas), también con datos de prueba y sin conexión a proveedores.*
 
@@ -41,6 +41,37 @@ El lenguaje visual previsto combina superficies oscuras, acentos cian y violeta,
 
 Los clientes dibujan la experiencia. El Core decide estado, permisos, budgets y evidencia. Credenciales y consultas autenticadas no pertenecen al renderer.
 
+## Panel lateral de sesión
+
+El panel reúne el estado del trabajo junto a la conversación. Su propósito es permitir
+entender qué está ejecutándose, qué contexto recibió el modelo y qué resultados están
+respaldados por evidencia, sin tener que reconstruirlo leyendo todo el chat.
+
+![Panel lateral real de OmniCore con sesión, plan, agentes, contexto y consumo.](docs/images/tui-sidebar.png)
+
+*Frame exportado del driver de Terminal.Gui a 120 × 35 celdas. Modelo, plan y consumo
+son datos deterministas de prueba; los estados sin medición se muestran explícitamente.*
+
+| Área | Información y acciones disponibles |
+|---|---|
+| **Sesión** | Título, modelo, modo y estado del Run activo. |
+| **Plan** | Jerarquía de tareas, revisión, estado y progreso; navegar entre elementos no ejecuta una tarea. |
+| **Contexto** | Snapshot de la última solicitud, categorías, conteo y procedencia. Se distingue de los tokens acumulados de la sesión. |
+| **Consumo** | Tokens y costo registrados, con valores medidos, estimados o desconocidos identificados. Las cuotas aparecen cuando el proveedor las informa. |
+| **Agentes y caminos de ejecución** | Tareas, delegaciones, capacidad, espera, supervisión y resultados. El inspector permite consultar detalle e historial; un resultado devuelto conserva su estado de revisión. |
+| **Archivos y efectos** | Cambios registrados por la sesión y su atribución. El diff usa preimagen/postimagen conservadas, para no mezclar cambios posteriores de otra persona o proceso. |
+| **Diagnóstico** | Información disponible para detectar errores, recuperación y datos incompletos. |
+
+`F2` muestra u oculta el panel. En **General → Panel lateral y widgets** o
+`/sidebar settings` se configuran visibilidad, tamaño y prioridad. El layout se adapta
+al ancho mediante paneles apilados, pestañas u overlay; las preferencias indican su
+alcance y origen. El foco y la selección se conservan durante cambios de tamaño.
+
+El panel se amplía conforme se conectan funciones del núcleo: los futuros controles de
+memoria entre sesiones, búsqueda e integraciones tendrán acciones sobre los mismos
+servicios del Host. Se documentarán como disponibles cuando sus recorridos estén
+implementados y verificados.
+
 ## Cómo funciona
 
 ![Arquitectura: clientes, commands y eventos, runtime, proveedores, herramientas autorizadas, journal, artifacts y telemetría separada.](docs/images/runtime-map.png)
@@ -67,6 +98,74 @@ UltraCode es un preset de esfuerzo del producto, no un cuarto modo ni un modelo.
 ### Local-first no implica que todo sea gratuito
 
 Se distinguen rutas locales, cuota incluida, facturación monetaria y condiciones desconocidas. Una credencial no equivale a autorización para gastar. Cuotas y créditos sólo se muestran cuando la fuente los informa: desconocido no es cero y saldo de cuenta no equivale al límite de una clave.
+
+Las cuotas propias de tokens y costo son opcionales. Se aplican cuando el usuario
+las declara; la sesión no recibe un presupuesto monetario arbitrario al abrirse.
+El catálogo admite una **salida máxima opcional**: dejar el campo vacío elimina el
+límite solicitado, y cada ruta informa qué controles de generación soporta.
+
+### Controles del harness por modelo
+
+Cada modelo tiene una política operativa que limita sus capacidades. Las categorías
+de lectura, parches, edición acotada y agente completo sirven como punto de partida;
+la elección se guarda por identidad configurada de proveedor/modelo, sin deducir
+autoridad del nombre comercial o del tamaño del modelo.
+
+Desde **Modelos y ejecución → Modelos y políticas**, los controles del perfil permiten
+restringir herramientas básicas y avanzadas, coordinación, archivos y líneas por
+turno, proporción de reescritura, lectura previa, versión y validación posterior.
+Así, un modelo destinado a parches puede mantener acceso a lectura y búsqueda mientras
+se rechazan reemplazos completos o mutaciones que superen su alcance.
+
+Los límites de pasos, llamadas a herramientas y tiempo por generación permiten cortar
+ciclos sin progreso. La cancelación por tiempo se muestra como una interrupción;
+la configuración de razonamiento usa las capacidades que ofrece el proveedor.
+Estos controles se aplican tanto al catálogo visible como a la ejecución de una llamada.
+
+## Simplicidad y contexto
+
+Un harness no necesita ocupar gran parte de la ventana antes de empezar a trabajar.
+Mantener las instrucciones y el catálogo de herramientas acotados deja más espacio
+para el código, las evidencias y la conversación. La simplicidad reduce ese costo
+fijo; no implica quitar controles de seguridad ni ofrecer menos autoridad de forma
+oculta. Los perfiles de OmniCore hacen explícito qué herramientas se ofrecen.
+
+Capturamos la primera solicitud de los cinco harnesses instalados contra un servidor
+HTTP de prueba local, con el mismo proyecto nuevo y la misma pregunta. El conteo
+usa `o200k_base`, excluye la pregunta original y normaliza los bloques de texto:
+es contexto de referencia, **no consumo facturado ni una prueba de calidad**.
+
+| Harness / perfil | Herramientas ofrecidas | Contexto inicial inyectado, tokens de referencia |
+|---|---:|---:|
+| OmniCore · Observación | 6 | 1.161 |
+| OmniCore · Parches | 7 | 1.215 |
+| OmniCore · Programación acotada | 10 | 1.455 |
+| OmniCore · Agente completo | 12 | 1.641 |
+| Pi 1.1.0 · Base | 4 | 1.385 |
+| OpenCode 1.18.35 · Build | 10 | 6.916 |
+| OpenCode 1.18.35 · Plan | 10 | 7.213 |
+| Codex CLI 0.153.4 · Base, read-only | 11 | 10.245 |
+| Claude Code 2.1.296 · Base, manual | 22 | 14.805 |
+
+En esta captura, los perfiles de OmniCore inyectan **entre un 76,3 % y un 83,2 %
+menos contexto fijo que OpenCode Build**. Pi también ilustra la ganancia de un
+catálogo pequeño: su configuración base usa aproximadamente un **80,0 % menos**
+que OpenCode Build. OmniCore no es el menor en todos los casos: Pi usa menos que
+sus perfiles de programación acotada y agente completo. Frente a las solicitudes
+capturadas de Codex CLI y Claude Code, la reducción de OmniCore es de **84,0–88,7 %**
+y **88,9–92,2 %**, respectivamente.
+
+Los conjuntos de herramientas y sus contratos no son equivalentes. Estas cifras
+no prueban mayor capacidad, mejor respuesta, más velocidad ni el mismo ahorro
+en factura. Historial, skills, instrucciones propias, rutas y versiones cambian
+el resultado; la captura no utiliza cuentas ni inferencia real. La fila de Codex
+mide el CLI aislado, **no ChatGPT web ni esta conversación en la app de Codex**.
+Los catálogos namespace dentro de `input.additional_tools` se incluyen: las 11
+funciones declaradas no significan que haya sólo 11 operaciones accesibles por `exec`.
+
+[Tabla HTML completa de herramientas y contexto](docs/reports/harness-tools-20261011.html#contexto-inicial)
+· [Método, versiones, hashes y reproducción](docs/validation/initial-context-20261013.md)
+· [Datos de las nueve capturas](docs/validation/assets/initial-context-20261013.json).
 
 ## Estado actual
 
@@ -251,6 +350,7 @@ Son principios de diseño, no una declaración de aceptación total. Entre los e
 - [Plan de aceptación M5.5](docs/validation/m55-closure-plan.md).
 - [Contratos pre-M6](docs/architecture/pre-m6-record-contracts.md).
 - [Propuestas de modo y autoridad](docs/architecture/mode-proposals.md).
+- [Cierre e integración de menús y preferencias](docs/validation/preferences-main-closure-20261013.md).
 - [Recuperación de los 42 archivos](docs/validation/recovered-worktrees-20261007.md).
 
 Las capturas de la TUI provienen de fixtures locales; las ilustraciones de arquitectura y roadmap son diagramas editables, no capturas de validación. [Fuentes y regeneración](docs/images/README.md).

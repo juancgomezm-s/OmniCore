@@ -91,10 +91,13 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
                         mutation_mode, delete_policy, move_rename_policy,
                         tool_mode, max_visible_tools, allow_tool_discovery, capability_ceiling_json,
                         max_files_per_turn, max_changed_lines_per_turn, max_rewrite_ratio,
+                        max_model_steps_per_turn, max_tool_calls_per_turn,
+                        allow_orchestration, max_generation_seconds,
                         require_prior_read, require_version_token, require_validation,
                         allow_parallel_mutations, source, note, created_at, updated_at)
                     VALUES (:h, :kj, 1, :cat, :mm, :del, :mov, :tm, :vis, :disc, :caps,
-                        :mfiles, :mlines, :mratio, :rread, :rtoken, :rvalid, :rpar, :src, :note, :now, :now)
+                        :mfiles, :mlines, :mratio, :msteps, :mcalls, :orq, :gensec,
+                        :rread, :rtoken, :rvalid, :rpar, :src, :note, :now, :now)
                 """;
                 AddPolicyParams(insert, key, keyHash, policy, now);
                 insert.ExecuteNonQuery();
@@ -122,6 +125,8 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
                     capability_ceiling_json = :caps,
                     max_files_per_turn = :mfiles, max_changed_lines_per_turn = :mlines,
                     max_rewrite_ratio = :mratio,
+                    max_model_steps_per_turn = :msteps, max_tool_calls_per_turn = :mcalls,
+                    allow_orchestration = :orq, max_generation_seconds = :gensec,
                     require_prior_read = :rread, require_version_token = :rtoken,
                     require_validation = :rvalid, allow_parallel_mutations = :rpar,
                     source = :src, note = :note, updated_at = :now
@@ -262,6 +267,10 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
                 max_files_per_turn INTEGER NOT NULL,
                 max_changed_lines_per_turn INTEGER NOT NULL,
                 max_rewrite_ratio REAL NOT NULL,
+                max_model_steps_per_turn INTEGER NOT NULL DEFAULT 8,
+                max_tool_calls_per_turn INTEGER NOT NULL DEFAULT 32,
+                allow_orchestration INTEGER NOT NULL DEFAULT 0,
+                max_generation_seconds INTEGER NOT NULL DEFAULT 300,
                 require_prior_read INTEGER NOT NULL,
                 require_version_token INTEGER NOT NULL,
                 require_validation INTEGER NOT NULL,
@@ -272,6 +281,11 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
                 updated_at TEXT NOT NULL
             )
         """);
+        // Existing user.db files predate bounded per-model Turn limits.
+        EnsureColumn("model_user_policies", "max_model_steps_per_turn", "INTEGER NOT NULL DEFAULT 8");
+        EnsureColumn("model_user_policies", "max_tool_calls_per_turn", "INTEGER NOT NULL DEFAULT 32");
+        EnsureColumn("model_user_policies", "allow_orchestration", "INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn("model_user_policies", "max_generation_seconds", "INTEGER NOT NULL DEFAULT 300");
         Exec("""
             CREATE TABLE IF NOT EXISTS model_policy_history (
                 policy_key_hash TEXT NOT NULL,
@@ -330,6 +344,10 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
         Add(cmd, "mfiles", (long)policy.MutationPolicy.MaxFilesPerTurn);
         Add(cmd, "mlines", (long)policy.MutationPolicy.MaxChangedLinesPerTurn);
         Add(cmd, "mratio", policy.MutationPolicy.MaxRewriteRatio);
+        Add(cmd, "msteps", (long)policy.MaxModelStepsPerTurn);
+        Add(cmd, "mcalls", (long)policy.MaxToolCallsPerTurn);
+        Add(cmd, "orq", policy.AllowOrchestration ? 1L : 0L);
+        Add(cmd, "gensec", (long)policy.MaxGenerationSeconds);
         Add(cmd, "rread", policy.MutationPolicy.RequirePriorRead ? 1L : 0L);
         Add(cmd, "rtoken", policy.MutationPolicy.RequireExpectedVersionToken ? 1L : 0L);
         Add(cmd, "rvalid", policy.MutationPolicy.RequirePostEditValidation ? 1L : 0L);
@@ -364,7 +382,11 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
         var note = reader.IsDBNull(noteOrdinal) ? null : reader.GetString(noteOrdinal);
         var policy = new UserModelPolicy(
             Enum.Parse<ModelPolicyCategory>(Text(reader, "category")), toolPolicy, mutation,
-            Text(reader, "source"), note);
+            Text(reader, "source"), note,
+            (int)reader.GetInt64(reader.GetOrdinal("max_model_steps_per_turn")),
+            (int)reader.GetInt64(reader.GetOrdinal("max_tool_calls_per_turn")),
+            reader.GetInt64(reader.GetOrdinal("allow_orchestration")) != 0,
+            (int)reader.GetInt64(reader.GetOrdinal("max_generation_seconds")));
         return new StoredModelPolicy(key, reader.GetInt64(reader.GetOrdinal("policy_revision")),
             policy, ParseIso(Text(reader, "created_at")), ParseIso(Text(reader, "updated_at")));
     }
@@ -423,6 +445,10 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
         {
             "\"category\":\"" + policy.Category + "\"",
             "\"source\":\"" + JsonEscape(policy.Source) + "\"",
+            "\"maxModelStepsPerTurn\":" + policy.MaxModelStepsPerTurn,
+            "\"maxToolCallsPerTurn\":" + policy.MaxToolCallsPerTurn,
+            "\"allowOrchestration\":" + (policy.AllowOrchestration ? "true" : "false"),
+            "\"maxGenerationSeconds\":" + policy.MaxGenerationSeconds,
             policy.Note is null ? "\"note\":null" : "\"note\":\"" + JsonEscape(policy.Note) + "\"",
             "\"tool\":{"
             + "\"mode\":\"" + policy.ToolPolicy.Mode + "\""
@@ -473,6 +499,17 @@ public sealed class SqliteModelPolicyStore : IModelPolicyStore, IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = ddl;
         cmd.ExecuteNonQuery();
+    }
+
+    private void EnsureColumn(string table, string column, string definition)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "PRAGMA table_info(" + table + ")";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return;
+        reader.Close();
+        Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
     }
 
     private static void Add(DbCommand cmd, string name, object? value)

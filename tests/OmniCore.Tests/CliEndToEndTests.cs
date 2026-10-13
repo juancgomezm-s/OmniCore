@@ -56,13 +56,36 @@ public sealed class CliEndToEndTests
             using (var policies = OmniHost.CreateModelPolicyService(data))
                 policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
                     TestContext.Current.CancellationToken);
+            SetSourceModelFullAgent(data);
 
-            File.AppendAllText(Path.Combine(config, "models.yaml"),
-                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
-            static string WithUsage(string response) => response.Replace("data: [DONE]",
-                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]",
-                StringComparison.Ordinal);
-            provider.RespondWith((_, _) => WithUsage(TextResponse("Principal context is ready.")));
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  scripted-model:
+                    provider: scripted
+                    context: 8192
+                    maxOutput: 2048
+                    inputPricePerMillionUsd: 0
+                    outputPricePerMillionUsd: 0
+                    reasoning:
+                      supported: true
+                      effortLevels: [high, adaptive]
+                """);
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
+                providers:
+                  scripted:
+                    family: OpenAIResponses
+                    profile: api
+                    baseUrl: {{provider.BaseUrl}}
+                    auth: none
+                    billingMode: Local
+                """);
+            static string WithUsage(string response) => response
+                .Replace("\"input_tokens\":64,\"output_tokens\":16",
+                    "\"input_tokens\":3,\"output_tokens\":2", StringComparison.Ordinal)
+                .Replace("data: [DONE]",
+                    "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]",
+                    StringComparison.Ordinal);
+            provider.RespondWith((_, _) => WithUsage(ResponsesTextResponse("Principal context is ready.")));
             IProcessRuntime process = liveClaudeAcceptance
                 ? new SystemProcessRuntime()
                 : new FakeClaudeLaneRuntime(model, includeToolActivity: true);
@@ -80,9 +103,13 @@ public sealed class CliEndToEndTests
             var modeAck = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
                 {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
                  "allowedModes":"plan,act,orq","maxAgents":2,"maxDepth":1,"maxTurns":8,
-                 "maxToolCalls":12,"maxElapsedSeconds":900,"maxSpendUsd":3}
+                 "maxToolCalls":12,"maxElapsedSeconds":900}
                 """), TestContext.Current.CancellationToken);
             Assert.True(modeAck.Status == "ok", modeAck.Error ?? "Run mode selection was rejected.");
+            var authorityRun = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<RunCreated>());
+            var authority = RunProjection.Replay(authorityRun.SessionId, authorityRun.RunId, EventCodecs.Create(),
+                ReadCurrentSessionJournalEvents(workspace)).ModeAuthority;
+            Assert.Null(authority?.Authorization?.Limits.MaxSpendUsd);
             var root = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
             var request = new DelegationCreateRequest(profile, root.LastContextEventId!,
                 liveClaudeAcceptance
@@ -102,10 +129,19 @@ public sealed class CliEndToEndTests
             Assert.True(childExit == 0, "Claude lane failed: " + string.Join(" | ", diagnostics)
                 + "; process=" + (liveClaudeAcceptance ? "real" : "fake")
                 + "; events=" + string.Join(",", ReadCurrentSessionEvents(workspace).Select(item => item.GetType().Name)));
-            Assert.Equal(providerCalls, provider.RequestCount);
+            Assert.Equal(providerCalls + 1, provider.RequestCount); // one managed root continuation after the child returns
             var fakeLaunch = process is FakeClaudeLaneRuntime fakeProcess ? fakeProcess.LastLaunch : null;
 
             var events = ReadCurrentSessionEvents(workspace);
+            var wakeEnvelopes = ReadCurrentSessionJournalEvents(workspace);
+            var returnEnvelope = Assert.Single(wakeEnvelopes, envelope => EventCodecs.Create().Decode(envelope)
+                is DelegationReturned item && item.DelegationId.ToString() == child.DelegationId);
+            var wake = Assert.Single(events.OfType<WakeRequestCreated>(), item => item.Request.SourceEvent.EventId == returnEnvelope.EventId);
+            var acceptedWake = Assert.Single(events.OfType<WakeRequestAccepted>(), item => item.WakeRequestId == wake.Request.WakeRequestId);
+            var resolvedWake = Assert.Single(events.OfType<WakeRequestResolved>(), item => item.WakeRequestId == wake.Request.WakeRequestId);
+            Assert.Equal(wake.Request.TargetExecutionId, acceptedWake.ExecutionId);
+            Assert.Equal(wake.Request.TargetExecutionId, resolvedWake.ExecutionId);
+            Assert.DoesNotContain(events.OfType<WakeRequestFailed>(), item => item.WakeRequestId == wake.Request.WakeRequestId);
             var worktree = Assert.Single(events.OfType<LaneWorktreeCreated>(), item => item.TaskId.ToString() == child.TaskId);
             var execution = Assert.Single(events.OfType<AgentExecutionStarted>(), item => item.ParentExecutionId is not null);
             var session = Assert.Single(events.OfType<ExternalLaneSessionBound>());
@@ -128,9 +164,9 @@ public sealed class CliEndToEndTests
                 Assert.Equal(20_000L, reservation.ReservedTokens);
                 Assert.Equal(2, reservation.ReservedTurns);
                 Assert.Equal(4, reservation.ReservedToolCalls);
-                Assert.InRange(usage.TotalCostUsd ?? decimal.MaxValue, 0m, reservation.ReservedCostUsd);
+                Assert.InRange(usage.TotalCostUsd ?? decimal.MaxValue, 0m, reservation.ReservedCostUsd!.Value);
                 Assert.InRange((usage.InputTokens ?? long.MaxValue) + (usage.OutputTokens ?? long.MaxValue),
-                    0L, reservation.ReservedTokens);
+                    0L, reservation.ReservedTokens!.Value);
                 Assert.InRange(usage.ToolUseCount, 0, reservation.ReservedToolCalls);
                 Assert.Equal("isolated lane proof\n", File.ReadAllText(Path.Combine(worktree.WorktreePath,
                     "m7-lane-proof.txt")));
@@ -156,8 +192,8 @@ public sealed class CliEndToEndTests
                 var runCreated = Assert.Single(events.OfType<RunCreated>());
                 var runBudget = RunTokenBudgetReader.Read(ReadCurrentSessionJournalEvents(workspace), EventCodecs.Create(),
                     runCreated.RunId, 8192);
-                Assert.Equal(21L, runBudget.ObservedSettledTokens);
-                Assert.Equal(8171L, runBudget.Remaining);
+                Assert.Equal(26L, runBudget.ObservedSettledTokens); // includes the root wake generation
+                Assert.Equal(8166L, runBudget.Remaining);
                 Assert.Null(runBudget.Limitation);
             }
             Assert.Equal(session.ExecutionId, execution.ExecutionId);
@@ -204,9 +240,29 @@ public sealed class CliEndToEndTests
             using (var policies = OmniHost.CreateModelPolicyService(data))
                 policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
                     TestContext.Current.CancellationToken);
-            File.AppendAllText(Path.Combine(config, "models.yaml"),
-                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
-            provider.RespondWith((_, _) => UsageTextResponse("Root context ready."));
+            SetSourceModelFullAgent(data);
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  scripted-model:
+                    provider: scripted
+                    context: 8192
+                    maxOutput: 2048
+                    inputPricePerMillionUsd: 0
+                    outputPricePerMillionUsd: 0
+                    reasoning:
+                      supported: true
+                      effortLevels: [high, adaptive]
+                """);
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
+                providers:
+                  scripted:
+                    family: OpenAIResponses
+                    profile: api
+                    baseUrl: {{provider.BaseUrl}}
+                    auth: none
+                    billingMode: Local
+                """);
+            provider.RespondWith((_, _) => ResponsesTextResponse("Root context ready."));
             var firstProcess = new FakeClaudeLaneRuntime(model, failAfterInit: true);
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.ProcessRuntimeFactoryForTests = () => firstProcess;
@@ -219,10 +275,14 @@ public sealed class CliEndToEndTests
             var modeAck = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
                 {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
                  "allowedModes":"plan,act,orq","maxAgents":2,"maxDepth":1,"maxTurns":8,
-                 "maxToolCalls":12,"maxElapsedSeconds":900,"maxSpendUsd":3}
+                 "maxToolCalls":12,"maxElapsedSeconds":900}
                 """), TestContext.Current.CancellationToken);
             Assert.True(modeAck.Status == "ok", modeAck.Error ?? "Run mode selection was rejected.");
             var rootLane = Assert.Single(AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes);
+            var runCreated = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<RunCreated>());
+            var authority = RunProjection.Replay(runCreated.SessionId, runCreated.RunId, EventCodecs.Create(),
+                ReadCurrentSessionJournalEvents(workspace)).ModeAuthority;
+            Assert.Null(authority?.Authorization?.Limits.MaxSpendUsd);
             var request = new DelegationCreateRequest(profile, rootLane.LastContextEventId!,
                 "Resume the owned lane and return a result", rootLane.SelectableContextItemIds!, 8192, 2, 4, 20_000, 1m);
             var queued = trusted.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
@@ -253,7 +313,8 @@ public sealed class CliEndToEndTests
             reopened.ProcessRuntimeFactoryForTests = () => resumedProcess;
             reopened.ClaudeExecutableLocatorForTests = () => Path.Combine(workspace, "claude-fixture.exe");
             var reopenedHost = new TuiTurnHost(reopened);
-            var resumedExit = await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, _ => { },
+            var resumedDiagnostics = new List<string>();
+            var resumedExit = await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, resumedDiagnostics.Add,
                 TestContext.Current.CancellationToken);
             var resumedLaunch = Assert.IsType<ProcessLaunch>(resumedProcess.LastLaunch);
             Assert.Contains("--resume", resumedLaunch.Args);
@@ -290,7 +351,29 @@ public sealed class CliEndToEndTests
                 thirdRuntime.Dispose();
                 return;
             }
-            Assert.Equal(0, resumedExit);
+            Assert.True(resumedExit == 0, string.Join(" | ", resumedDiagnostics)
+                + "; wakes=" + string.Join(",", ReadCurrentSessionEvents(workspace)
+                    .Where(item => item is WakeRequestCreated or WakeRequestAccepted or WakeRequestResolved or WakeRequestFailed)
+                    .Select(item => item.GetType().Name)));
+            Assert.True(provider.RequestCount == 2, "Expected initial root plus one continuation; calls="
+                + provider.RequestCount + "; wake events=" + string.Join(",", events
+                    .Where(item => item is WakeRequestCreated or WakeRequestAccepted or WakeRequestResolved or WakeRequestFailed)
+                    .Select(item => item.ToString())) + "; run events=" + string.Join(",", events
+                    .Where(item => item is RunCompleted or RunFailed or TurnStarted or TurnCompleted or TurnAbandoned)
+                    .Select(item => item.ToString())));
+            var returnedEnvelope = Assert.Single(ReadCurrentSessionJournalEvents(workspace), envelope =>
+                EventCodecs.Create().Decode(envelope) is DelegationReturned returned
+                    && returned.DelegationId.ToString() == child.DelegationId);
+            var wake = Assert.Single(events.OfType<WakeRequestCreated>(), item =>
+                item.Request.SourceEvent.EventId == returnedEnvelope.EventId);
+            var acceptedWake = Assert.Single(events.OfType<WakeRequestAccepted>(), item =>
+                item.WakeRequestId == wake.Request.WakeRequestId);
+            var resolvedWake = Assert.Single(events.OfType<WakeRequestResolved>(), item =>
+                item.WakeRequestId == wake.Request.WakeRequestId);
+            Assert.Equal(wake.Request.TargetExecutionId, acceptedWake.ExecutionId);
+            Assert.Equal(wake.Request.TargetExecutionId, resolvedWake.ExecutionId);
+            Assert.DoesNotContain(events.OfType<WakeRequestFailed>(), item =>
+                item.WakeRequestId == wake.Request.WakeRequestId);
             var usage = Assert.Single(events.OfType<ExternalLaneUsageRecorded>());
             Assert.Equal(bound.SessionId, usage.SessionId);
             Assert.False(usage.UsageCoverageComplete);
@@ -305,8 +388,10 @@ public sealed class CliEndToEndTests
             Assert.Null(budget.Remaining);
             Assert.Equal("generation attempt usage coverage unknown", budget.Limitation);
             Assert.Null(budget.ObservedSettledTokens);
-            Assert.Equal(0, await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, _ => { },
-                TestContext.Current.CancellationToken));
+            var duplicateDiagnostics = new List<string>();
+            var duplicateExit = await reopenedHost.ExecuteDelegationAsync(child.DelegationId!, duplicateDiagnostics.Add,
+                TestContext.Current.CancellationToken);
+            Assert.True(duplicateExit == 0, string.Join(" | ", duplicateDiagnostics));
             Assert.Equal(resumedLaunch, resumedProcess.LastLaunch);
             reopened.Dispose();
         });
@@ -349,6 +434,7 @@ public sealed class CliEndToEndTests
             using (var policies = OmniHost.CreateModelPolicyService(data))
                 policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
                     TestContext.Current.CancellationToken);
+            SetSourceModelFullAgent(data);
             File.AppendAllText(Path.Combine(config, "models.yaml"),
                 "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
             provider.RespondWith((_, _) => UsageTextResponse("Parent is ready."));
@@ -459,6 +545,7 @@ public sealed class CliEndToEndTests
             using (var policies = OmniHost.CreateModelPolicyService(data))
                 policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
                     TestContext.Current.CancellationToken);
+            SetSourceModelFullAgent(data);
             File.AppendAllText(Path.Combine(config, "models.yaml"),
                 "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
             provider.RespondWith((_, _) => UsageTextResponse("root context"));
@@ -500,10 +587,11 @@ public sealed class CliEndToEndTests
     [Fact]
     public async Task Tui_dispatches_managed_read_only_child_through_actual_HTTP_context_profile_and_result_boundaries()
     {
-        await InIsolatedCli(async (workspace, config, _, provider) =>
+        await InIsolatedCli(async (workspace, config, data, provider) =>
         {
             const string profile = "0199a000-0000-7000-8000-000000000001";
             File.AppendAllText(Path.Combine(config, "models.yaml"), "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            SetSourceModelFullAgent(data);
             File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), """
                 defaultProfile: 0199a000-0000-7000-8000-000000000001
                 agentProfiles:
@@ -548,7 +636,7 @@ public sealed class CliEndToEndTests
             var child = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes.Single(e => e.ParentTaskId is not null);
             diagnostics.Clear();
             Assert.Equal(0, await host.ExecuteDelegationAsync(child.DelegationId!, diagnostics.Add, TestContext.Current.CancellationToken));
-            Assert.Equal(3, provider.RequestCount);
+            Assert.Equal(4, provider.RequestCount); // two child requests plus one root wake after the initial root request
             Assert.Contains("CONTEXTO SELECCIONADO", childRequest!);
             Assert.DoesNotContain("filesystem.write\"", childRequest!);
             Assert.DoesNotContain("plan.propose", childRequest!);
@@ -559,20 +647,27 @@ public sealed class CliEndToEndTests
             var started = Assert.Single(events.OfType<AgentExecutionStarted>(), e => e.ParentExecutionId is not null);
             var produced = Assert.Single(events.OfType<AgentResultProduced>());
             Assert.Equal(started.ExecutionId, produced.ExecutionId);
-            Assert.Single(events.OfType<DelegationReturned>());
+            var envelopes = ReadCurrentSessionJournalEvents(workspace);
+            var returnEnvelope = Assert.Single(envelopes, envelope => EventCodecs.Create().Decode(envelope)
+                is DelegationReturned item && item.DelegationId.ToString() == child.DelegationId);
+            var wake = Assert.Single(events.OfType<WakeRequestCreated>(), item => item.Request.SourceEvent.EventId == returnEnvelope.EventId);
+            var acceptedWake = Assert.Single(events.OfType<WakeRequestAccepted>(), item => item.WakeRequestId == wake.Request.WakeRequestId);
+            var resolvedWake = Assert.Single(events.OfType<WakeRequestResolved>(), item => item.WakeRequestId == wake.Request.WakeRequestId);
+            Assert.Equal(wake.Request.TargetExecutionId, acceptedWake.ExecutionId);
+            Assert.Equal(wake.Request.TargetExecutionId, resolvedWake.ExecutionId);
             Assert.Empty(events.OfType<ResultDispositionRecorded>());
             Assert.DoesNotContain(events.OfType<TaskCompleted>(), e => e.TaskId.ToString() == child.TaskId);
             var snapshot = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
-            var returned = snapshot.Lanes.Single(e => e.DelegationId == child.DelegationId);
-            Assert.Equal(produced.ResultRef.Id.ToString(), returned.ResultId);
-            Assert.Contains("Resultado de lectura", returned.ResultSummary!);
-            Assert.Equal(1, returned.ResultIssueCount);
-            Assert.Null(returned.ResultDisposition);
+            var returnedLane = snapshot.Lanes.Single(e => e.DelegationId == child.DelegationId);
+            Assert.Equal(produced.ResultRef.Id.ToString(), returnedLane.ResultId);
+            Assert.Contains("Resultado de lectura", returnedLane.ResultSummary!);
+            Assert.Equal(1, returnedLane.ResultIssueCount);
+            Assert.Null(returnedLane.ResultDisposition);
             var accept = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"delegation.disposition\",\"delegationId\":\""
-                + child.DelegationId + "\",\"resultId\":\"" + returned.ResultId + "\",\"outcome\":\"Accepted\",\"reason\":\"Leído y aceptado\"}"), TestContext.Current.CancellationToken);
+                + child.DelegationId + "\",\"resultId\":\"" + returnedLane.ResultId + "\",\"outcome\":\"Accepted\",\"reason\":\"Leído y aceptado\"}"), TestContext.Current.CancellationToken);
             Assert.Equal("error", accept.Status);
             var rework = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"delegation.disposition\",\"delegationId\":\""
-                + child.DelegationId + "\",\"resultId\":\"" + returned.ResultId + "\",\"outcome\":\"ReworkRequested\",\"reason\":\"Tool scope lacked read-only compatibility\"}"), TestContext.Current.CancellationToken);
+                + child.DelegationId + "\",\"resultId\":\"" + returnedLane.ResultId + "\",\"outcome\":\"ReworkRequested\",\"reason\":\"Tool scope lacked read-only compatibility\"}"), TestContext.Current.CancellationToken);
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, rework.Outcome?.Kind);
             Assert.Equal("Blocked", AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!.Lanes.Single(e => e.DelegationId == child.DelegationId).TaskState);
         });
@@ -581,11 +676,31 @@ public sealed class CliEndToEndTests
     [Fact]
     public async Task Runtime_runs_two_delegations_on_one_host_and_defers_root_writer_behind_live_readers()
     {
-        await InIsolatedCli(async (workspace, config, _, provider) =>
+        await InIsolatedCli(async (workspace, config, data, provider) =>
         {
             const string profile = "0199a000-0000-7000-8000-000000000021";
-            File.AppendAllText(Path.Combine(config, "models.yaml"),
-                "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  scripted-model:
+                    provider: scripted
+                    context: 8192
+                    maxOutput: 2048
+                    inputPricePerMillionUsd: 0
+                    outputPricePerMillionUsd: 0
+                    reasoning:
+                      supported: true
+                      effortLevels: [high, adaptive]
+                """);
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
+                providers:
+                  scripted:
+                    family: OpenAIResponses
+                    profile: api
+                    baseUrl: {{provider.BaseUrl}}
+                    auth: none
+                    billingMode: Local
+                """);
+            SetSourceModelFullAgent(data);
             File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), """
                 defaultProfile: 0199a000-0000-7000-8000-000000000021
                 agentProfiles:
@@ -608,15 +723,14 @@ public sealed class CliEndToEndTests
             var bothReadersAtProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var firstReaderAtProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var principalReachedProvider = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            static string WithUsage(string response) => response.Replace("data: [DONE]",
-                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]", StringComparison.Ordinal);
-            provider.RespondWithAsync(async (index, _) =>
+            static string WithUsage(string response) => response;
+            provider.RespondWithAsync(async (index, body) =>
             {
-                if (index == 0) return WithUsage(TextResponse("stable root context"));
-                if (index > 2)
+                if (index == 0) return WithUsage(ResponsesTextResponse("stable root context"));
+                if (index >= 3 && body.Contains("Managed worker result", StringComparison.Ordinal))
                 {
                     principalReachedProvider.TrySetResult(true);
-                    return WithUsage(TextResponse("root writer reached provider"));
+                    return WithUsage(ResponsesTextResponse("root writer reached provider"));
                 }
                 readersEntered.Signal();
                 if (index == 1) firstReaderAtProvider.TrySetResult(true);
@@ -625,9 +739,9 @@ public sealed class CliEndToEndTests
                 try { await release.Task.WaitAsync(TimeSpan.FromSeconds(25), TestContext.Current.CancellationToken); }
                 catch (TimeoutException)
                 {
-                    return WithUsage(TextResponse("reader fixture timeout"));
+                    return WithUsage(ResponsesTextResponse("reader fixture timeout"));
                 }
-                return WithUsage(TextResponse("reader completed " + index));
+                return WithUsage(ResponsesTextResponse("reader completed " + index));
             });
 
             var runtime = OmniCliRuntime.Create(workspace);
@@ -640,7 +754,7 @@ public sealed class CliEndToEndTests
             Assert.Equal("ok", trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), """
                 {"cmd":"run.mode.select","mode":"orq","effort":"ultracode","adaptive":true,
                 "allowedModes":"plan,act,orq","maxAgents":3,"maxDepth":1,"maxTurns":20,
-                "maxToolCalls":20,"maxElapsedSeconds":3600,"maxSpendUsd":1}
+                "maxToolCalls":20,"maxElapsedSeconds":3600}
                 """), TestContext.Current.CancellationToken).Status);
             var before = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
             var rootBefore = Assert.Single(before.Lanes);
@@ -674,7 +788,18 @@ public sealed class CliEndToEndTests
             try
             {
                 first = Task.Run(() => runtime.DelegationAsync(firstId, firstDiagnostics.Enqueue, firstCancellation.Token));
-                await firstReaderAtProvider.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+                try
+                {
+                    await firstReaderAtProvider.Task.WaitAsync(TimeSpan.FromSeconds(12), TestContext.Current.CancellationToken);
+                }
+                catch (TimeoutException)
+                {
+                    throw new InvalidOperationException("First reader never reached the provider; requests="
+                        + provider.RequestCount + "; task completed=" + first.IsCompleted
+                        + "; diagnostics=" + string.Join(" | ", firstDiagnostics)
+                        + "; events=" + string.Join(" | ", ReadCurrentSessionEvents(workspace).TakeLast(20)
+                            .Select(item => item.GetType().Name + ":" + item)));
+                }
                 second = Task.Run(() => runtime.DelegationAsync(secondId, secondDiagnostics.Enqueue, secondCancellation.Token));
                 await bothReadersAtProvider.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
                 var live = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
@@ -703,8 +828,21 @@ public sealed class CliEndToEndTests
                 // invocation. Its later cancellation must not poison the already-settled Lane.
                 releaseSecondReader.TrySetResult(true);
                 var secondResult = await second.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
-                Assert.True(secondResult == 0, "Second reader failed before independent cancellation: "
-                    + string.Join(" | ", secondDiagnostics));
+                // The child return is durable, but its root wake is deferred while the
+                // first reader still owns capacity. Do not accept or invoke root yet.
+                Assert.NotEqual(0, secondResult);
+                var pendingWakeEvents = ReadCurrentSessionEvents(workspace);
+                Assert.Single(pendingWakeEvents.OfType<DelegationReturned>(),
+                    item => item.DelegationId.ToString() == secondId);
+                var pendingEnvelopes = ReadCurrentSessionJournalEvents(workspace);
+                var secondReturnEnvelope = Assert.Single(pendingEnvelopes, envelope => EventCodecs.Create().Decode(envelope)
+                    is DelegationReturned item && item.DelegationId.ToString() == secondId);
+                var pendingWake = Assert.Single(pendingWakeEvents.OfType<WakeRequestCreated>(),
+                    item => item.Request.SourceEvent.EventId == secondReturnEnvelope.EventId);
+                Assert.DoesNotContain(pendingWakeEvents.OfType<WakeRequestAccepted>(),
+                    item => item.WakeRequestId == pendingWake.Request.WakeRequestId);
+                Assert.DoesNotContain(pendingWakeEvents.OfType<WakeRequestResolved>(),
+                    item => item.WakeRequestId == pendingWake.Request.WakeRequestId);
                 Assert.Equal(1, AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!
                     .Capacity!.Active);
 
@@ -718,9 +856,31 @@ public sealed class CliEndToEndTests
                     && item.Heartbeat?.State == "Cancelled");
                 Assert.False(principalReachedProvider.Task.IsCompleted);
                 Assert.Equal(3, provider.RequestCount);
+                Assert.Equal(0, await runtime.DelegationAsync(secondId, secondDiagnostics.Enqueue,
+                    TestContext.Current.CancellationToken));
+                Assert.True(principalReachedProvider.Task.IsCompleted,
+                    "Root continuation was not invoked after capacity release; provider requests="
+                    + provider.RequestCount.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + "; diagnostics=" + string.Join(" | ", secondDiagnostics)
+                    + "; wake events=" + string.Join(" | ", ReadCurrentSessionEvents(workspace)
+                        .Where(item => item is WakeRequestCreated or WakeRequestAccepted or WakeRequestResolved or WakeRequestFailed)
+                        .Select(item => item is WakeRequestFailed failed ? failed.GetType().Name + ":" + failed.Reason
+                            : item.GetType().Name)
+                        .Concat(ReadCurrentSessionEvents(workspace).OfType<TurnAbandoned>()
+                            .Select(item => "TurnAbandoned:" + item.Reason))));
+                Assert.Equal(4, provider.RequestCount);
+                var resumedEvents = ReadCurrentSessionEvents(workspace);
+                var acceptedWake = Assert.Single(resumedEvents.OfType<WakeRequestAccepted>(),
+                    item => item.WakeRequestId == pendingWake.Request.WakeRequestId);
+                var resolvedWake = Assert.Single(resumedEvents.OfType<WakeRequestResolved>(),
+                    item => item.WakeRequestId == pendingWake.Request.WakeRequestId);
+                Assert.Equal(pendingWake.Request.TargetExecutionId, acceptedWake.ExecutionId);
+                Assert.Equal(pendingWake.Request.TargetExecutionId, resolvedWake.ExecutionId);
+                Assert.Single(resumedEvents.OfType<WakeRequestCreated>(),
+                    item => item.Request.WakeRequestId == pendingWake.Request.WakeRequestId);
                 var final = AgentsJson.Decode(client.Query("agents", TestContext.Current.CancellationToken)!.Json)!;
                 Assert.Equal(rootRun, final.RunId);
-                Assert.Equal(rootContext, Assert.Single(final.Lanes, lane => lane.ParentTaskId is null).LastContextEventId);
+                Assert.NotEqual(rootContext, Assert.Single(final.Lanes, lane => lane.ParentTaskId is null).LastContextEventId);
             }
             finally
             {
@@ -765,6 +925,7 @@ public sealed class CliEndToEndTests
             using (var policies = OmniHost.CreateModelPolicyService(data))
                 policies.Set(ModelPolicyKey.For("claude-code", model), 0, ModelPolicyPresets.FullAgent(),
                     TestContext.Current.CancellationToken);
+            SetSourceModelFullAgent(data);
             static string WithUsage(string response) => response.Replace("data: [DONE]",
                 "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\ndata: [DONE]",
                 StringComparison.Ordinal);
@@ -827,8 +988,29 @@ public sealed class CliEndToEndTests
                 laneRuntime.ReleaseWriters.TrySetResult(true);
                 var childResults = await Task.WhenAll(first, second!).WaitAsync(TimeSpan.FromSeconds(35),
                     TestContext.Current.CancellationToken);
-                Assert.All(childResults, result => Assert.True(result == 0,
-                    "Writer lane failed: " + string.Join(" | ", childDiagnostics)));
+                var writerIds = new[] { firstId, secondId };
+                for (var index = 0; index < childResults.Length; index++)
+                {
+                    if (childResults[index] == 0) continue;
+                    Assert.Equal(0, await runtime.DelegationAsync(writerIds[index], childDiagnostics.Enqueue,
+                        TestContext.Current.CancellationToken));
+                }
+                Assert.Equal(3, provider.RequestCount); // initial context plus one admitted root generation per returned writer
+                var wakeEvents = ReadCurrentSessionEvents(workspace);
+                var returnedDelegations = wakeEvents.OfType<DelegationReturned>().ToArray();
+                Assert.Equal(2, returnedDelegations.Length);
+                var wakeEnvelopes = ReadCurrentSessionJournalEvents(workspace);
+                foreach (var childReturn in returnedDelegations)
+                {
+                    var returnEnvelope = Assert.Single(wakeEnvelopes, envelope => EventCodecs.Create().Decode(envelope)
+                        is DelegationReturned item && item.DelegationId == childReturn.DelegationId);
+                    var request = Assert.Single(wakeEvents.OfType<WakeRequestCreated>(), item =>
+                        item.Request.SourceEvent.EventId == returnEnvelope.EventId);
+                    Assert.Single(wakeEvents.OfType<WakeRequestAccepted>(), item =>
+                        item.WakeRequestId == request.Request.WakeRequestId);
+                    Assert.Single(wakeEvents.OfType<WakeRequestResolved>(), item =>
+                        item.WakeRequestId == request.Request.WakeRequestId);
+                }
             }
             finally
             {
@@ -899,7 +1081,7 @@ public sealed class CliEndToEndTests
             var executable = new SystemExecutableResolver().Resolve("dotnet", workspace).ResolvedPath;
             var projectDirectory = Path.Combine(workspace, "src", "FeatureApp");
             Directory.CreateDirectory(projectDirectory);
-            const string originalProgram = "public static class Program { public static int Main() { /* FEATURE_MODULE_HOOK */ return FeatureModule.IsInitialized ? 0 : 1; } }\n";
+            const string originalProgram = "public static class Program\n{\n    public static int Main()\n    {\n        /* FEATURE_MODULE_HOOK */\n        return FeatureModule.IsInitialized ? 0 : 1;\n    }\n}\n";
             File.WriteAllText(Path.Combine(projectDirectory, "Program.cs"), originalProgram);
             File.WriteAllText(Path.Combine(projectDirectory, "FeatureApp.csproj"), """
                 <Project Sdk="Microsoft.NET.Sdk">
@@ -965,8 +1147,32 @@ public sealed class CliEndToEndTests
             File.WriteAllText(Path.Combine(config, "permissions.yaml"), "profile: autonomous\nrules:\n  dyn.core.verify_integration: allow\n");
 
             using (var modelPolicies = OmniHost.CreateModelPolicyService(data))
-                modelPolicies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
-                    ModelPolicyPresets.FullAgent(), CancellationToken.None);
+            {
+                var policyKey = ModelPolicyKey.For("scripted", "scripted-model");
+                // Workflow stages run with their own compiled tool catalog. Keep this source
+                // model policy explicit and narrow while retaining the tools the workflow's
+                // Explore/Implement/Verify stages actually need.
+                var workflowCapabilities = new HashSet<ModelToolCapability>
+                {
+                    ModelToolCapability.WorkspaceRead,
+                    ModelToolCapability.PatchExisting,
+                    ModelToolCapability.CreateFile,
+                    ModelToolCapability.ReplaceFile,
+                    ModelToolCapability.ValidationProcess,
+                    ModelToolCapability.GeneralProcess,
+                };
+                var workflowPolicy = new UserModelPolicy(ModelPolicyCategory.Custom,
+                    new ModelToolPolicy(ToolMode.Direct, 6, false, workflowCapabilities),
+                    new FileMutationPolicy(FileMutationMode.Full,
+                        DestructiveActionPolicy.Deny, DestructiveActionPolicy.Deny,
+                        5, 600, 0.50, requirePriorRead: true, requireExpectedVersionToken: true,
+                        requirePostEditValidation: true, allowParallelMutations: false),
+                    "test", "Exact compiled workflow stage capabilities.",
+                    maxModelStepsPerTurn: 8, maxToolCallsPerTurn: 32,
+                    allowOrchestration: true, maxGenerationSeconds: 300);
+                var existing = modelPolicies.Get(policyKey, CancellationToken.None);
+                modelPolicies.Set(policyKey, existing?.Revision ?? 0, workflowPolicy, CancellationToken.None);
+            }
 
             var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(originalProgram))).ToLowerInvariant();
             var implementation = "public static class FeatureModule { public static bool IsInitialized { get; private set; } public static void Initialize() => IsInitialized = true; }\n";
@@ -1350,8 +1556,23 @@ public sealed class CliEndToEndTests
     [Fact]
     public async Task Normal_PLAN_chat_can_recommend_ORQ_without_granting_mode_or_creating_workers()
     {
-        await InIsolatedCli(async (workspace, _, _, provider) =>
+        await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            // The normal 8k fixture has a six-tool Harness ceiling, under which artifact.read
+            // correctly outranks optional proposals. Give this case enough declared context
+            // for the existing PlanProposal capability to be disclosed without widening policy.
+            File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model:\n    provider: scripted\n    context: 32768\n    maxOutput: 2048\n");
+            using (var policies = OmniHost.CreateModelPolicyService(data))
+            {
+                var observe = ModelPolicyPresets.ObserveOnly();
+                policies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
+                    new UserModelPolicy(ModelPolicyCategory.Custom,
+                        new ModelToolPolicy(ToolMode.Direct, 7, false,
+                            new HashSet<ModelToolCapability>(observe.ToolPolicy.CapabilityCeiling)
+                            { ModelToolCapability.PlanProposal }),
+                        observe.MutationPolicy, "test", "Plan proposal only; ORQ remains unauthorized.",
+                        allowOrchestration: false), CancellationToken.None);
+            }
             using (var preferences = new RunModePreferenceStore(OmniHost.CreatePlatformPaths().UserDatabasePath))
                 preferences.Set(RunMode.Plan, 0);
             string? request = null;
@@ -2775,6 +2996,13 @@ public sealed class CliEndToEndTests
                 .Select(codecs.Decode).ToArray();
         }
         finally { store.Close(); }
+    }
+
+    private static void SetSourceModelFullAgent(string dataDirectory)
+    {
+        using var policies = OmniHost.CreateModelPolicyService(dataDirectory);
+        policies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
+            ModelPolicyPresets.FullAgent(), CancellationToken.None);
     }
 
     private static async Task InIsolatedCli(Func<string, string, string, ScriptedHttpProvider, Task> run)
