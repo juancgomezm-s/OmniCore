@@ -48,19 +48,20 @@ public sealed class PlainRenderer
     private void Print(ConversationBlock block)
     {
         var role = new LocalizedLine(_localization.Locale).RoleLabel(block.Role);
+        var text = PlainHyperlinks.Render(block.Text, PlainHyperlinks.Interactive);
         switch (block.Role)
         {
             case ConversationRole.System:
-                Console.WriteLine(block.Text);
+                Console.WriteLine(text);
                 break;
             case ConversationRole.User:
-                Console.WriteLine("✎ " + block.Text);
+                Console.WriteLine("✎ " + text);
                 break;
             case ConversationRole.Assistant:
-                Console.WriteLine("◈ " + block.Text);
+                Console.WriteLine("◈ " + text);
                 break;
             default:
-                Console.WriteLine("[" + role + "] " + block.Text);
+                Console.WriteLine("[" + role + "] " + text);
                 break;
         }
     }

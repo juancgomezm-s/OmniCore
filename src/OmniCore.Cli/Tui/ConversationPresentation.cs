@@ -10,7 +10,7 @@ internal enum ConversationStyle
     UserAccent, AssistantAccent, ToolAccent, NoticeAccent,
 }
 internal sealed record ConversationSpan(string Text, ConversationStyle Style,
-    Terminal.Gui.Drawing.TextStyle Decoration = Terminal.Gui.Drawing.TextStyle.None);
+    Terminal.Gui.Drawing.TextStyle Decoration = Terminal.Gui.Drawing.TextStyle.None, string? LinkTarget = null);
 
 /// <summary>Small, deterministic Markdown subset for terminal conversations; never modifies journal content.</summary>
 internal static class ConversationPresentation
@@ -99,9 +99,9 @@ internal static class ConversationPresentation
                 rows.AddRange(MarkdownRenderer.Render(compactExamples ? MarkdownExamples.Compact(block.Text) : block.Text, width));
                 continue;
             }
-            foreach (var source in block.Text.Replace("\r\n", "\n").Split('\n'))
-                rows.Add(new[] { new ConversationSpan(source, block.Role == ConversationRole.System
-                    ? ConversationStyle.Muted : ConversationStyle.Text) });
+            rows.AddRange(MarkdownRenderer.SplitLineBreaks(PlainHyperlinks.AnnotateLiteral(
+                block.Text.Replace("\r\n", "\n"), block.Role == ConversationRole.System
+                    ? ConversationStyle.Muted : ConversationStyle.Text)));
         }
         return rows;
     }

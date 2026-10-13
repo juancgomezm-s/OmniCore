@@ -349,6 +349,7 @@ public sealed partial class TuiApp
         _conversation = new ConversationView { X = 2, Y = 0, Width = Dim.Fill(2), Height = Dim.Fill(),
             ReadOnly = true, WordWrap = true, ScrollBars = true, Text = ConversationText() };
         _renderedConversation = null;
+        ConfigureConversationLinks(_conversation);
         // Keep user intent independent of content/layout changes, as in OmniCoder.
         _conversation.KeyDown += (_, key) =>
         {
@@ -1254,8 +1255,10 @@ public sealed partial class TuiApp
         return result + "…";
     }
 
-    private string HelpText() => CompactHelp(CurrentModeCode(), _locale,
-        Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4), PermissionLevelLabel());
+    private string HelpText() => _conversation?.HasFocus == true
+        ? FitText(_localization.Resolve("links.help"), Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4))
+        : CompactHelp(CurrentModeCode(), _locale,
+            Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4), PermissionLevelLabel());
 
     internal static string CompactHelp(string mode, string locale, int width, string? permissionLevel = null)
     {

@@ -254,6 +254,12 @@ Configure proveedores y modelos en el directorio **del usuario**, tomando [docs/
 
 En la TUI, **F4 → Conexiones API de proveedores** permite guardar la clave de API de Anthropic, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; si se guarda sin verificar, el estado se muestra como desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. El acceso a la cuenta ChatGPT también se administra desde el menú de configuración.
 
+Los enlaces web de las respuestas se abren en el navegador predeterminado con un clic.
+También puede enfocar la conversación, situar el cursor sobre el enlace con las flechas
+y pulsar **Enter**. Arrastrar para seleccionar texto conserva la copia sin abrir enlaces.
+En salida plain interactiva se emiten hipervínculos; el gesto de apertura depende de la
+terminal (por ejemplo, Ctrl+clic). La salida redirigida conserva el texto original.
+
 ```powershell
 dotnet run --project src/OmniCore.Cli -- doctor
 dotnet run --project src/OmniCore.Cli -- explain "¿Cómo está organizado este repositorio?"

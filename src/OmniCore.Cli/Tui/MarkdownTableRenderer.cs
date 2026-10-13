@@ -73,7 +73,7 @@ internal static class MarkdownTableRenderer
     }
 
     private static IReadOnlyList<ConversationSpan> Spans(string cell, bool header) =>
-        header ? new[] { new ConversationSpan(Plain(cell), ConversationStyle.Heading) } : MarkdownRenderer.Inline(cell);
+        header ? MarkdownRenderer.Inline(cell).Select(span => span with { Style = ConversationStyle.Heading }).ToArray() : MarkdownRenderer.Inline(cell);
     private static string Plain(string cell) => string.Concat(MarkdownRenderer.Inline(cell).Select(span => span.Text));
     private static int Columns(string text) => Terminal.Gui.Text.StringExtensions.GetColumns(text, false);
 
