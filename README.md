@@ -8,9 +8,13 @@ La meta es una conversación que conserva contexto, puede inspeccionar y modific
 
 [Primeros pasos](#primeros-pasos) · [Experiencia final](#la-experiencia-que-queremos-entregar) · [Estado actual](#estado-actual) · [Roadmap](#camino-hacia-v1) · [Documentación](#documentación)
 
-![Experiencia final prevista: conversación con código y tablas, composer multilínea, actividad y panel lateral de sesión.](docs/images/product-vision.png)
+![Renderizado real de la TUI de OmniCore en una conversación de prueba, con respuesta y código.](docs/images/tui-conversation.svg)
 
-*Diseño conceptual de v1, no una captura de la aplicación actual. Los textos y estados son ilustrativos: no representan consultas, mediciones ni ejecuciones reales.*
+*Captura exportada del driver real de Terminal.Gui (140 × 40 celdas). El contenido procede de un fixture determinista; no es una conversación con un modelo.*
+
+![Renderizado real del menú de preferencias de OmniCore.](docs/images/tui-preferences.svg)
+
+*Captura exportada del driver real de Terminal.Gui (120 × 35 celdas), también con datos de prueba y sin conexión a proveedores.*
 
 ## Experiencia objetivo
 
@@ -249,7 +253,7 @@ Son principios de diseño, no una declaración de aceptación total. Entre los e
 - [Propuestas de modo y autoridad](docs/architecture/mode-proposals.md).
 - [Recuperación de los 42 archivos](docs/validation/recovered-worktrees-20261007.md).
 
-Las imágenes son ilustraciones editables, no capturas de validación. [Fuentes y regeneración](docs/images/README.md).
+Las capturas de la TUI provienen de fixtures locales; las ilustraciones de arquitectura y roadmap son diagramas editables, no capturas de validación. [Fuentes y regeneración](docs/images/README.md).
 
 ## Licencia
 

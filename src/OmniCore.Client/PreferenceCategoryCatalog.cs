@@ -54,7 +54,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _es = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "General",
-        ["preferences.category.general.description"] = "Idioma, panel lateral, widgets y animaciones de la interfaz.",
+        ["preferences.category.general.description"] = "Idioma, panel lateral, widgets y animaciones de carga. Configúrelas aquí o con /animation.",
         ["preferences.category.general.help"] = "El idioma se guarda para el usuario; los ajustes del panel lateral indican su alcance y su origen.",
         ["preferences.category.accounts_connections.title"] = "Cuentas y conexiones",
         ["preferences.category.accounts_connections.description"] = "Cuentas por suscripción y conexiones de proveedores mediante API.",
@@ -79,7 +79,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _en = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "General",
-        ["preferences.category.general.description"] = "Language, sidebar, widgets, and interface animations.",
+        ["preferences.category.general.description"] = "Language, sidebar, widgets, and loading animations. Configure them here or with /animation.",
         ["preferences.category.general.help"] = "The language is saved for the user; sidebar settings show their scope and source.",
         ["preferences.category.accounts_connections.title"] = "Accounts and connections",
         ["preferences.category.accounts_connections.description"] = "Subscription accounts and API provider connections.",
@@ -104,7 +104,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _fr = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "Général",
-        ["preferences.category.general.description"] = "Langue, panneau latéral, widgets et animations de l’interface.",
+        ["preferences.category.general.description"] = "Langue, panneau latéral, widgets et animations de chargement. Configurez-les ici ou avec /animation.",
         ["preferences.category.general.help"] = "La langue est enregistrée pour l’utilisateur ; les réglages du panneau latéral indiquent leur portée et leur source.",
         ["preferences.category.accounts_connections.title"] = "Comptes et connexions",
         ["preferences.category.accounts_connections.description"] = "Comptes par abonnement et connexions API aux fournisseurs.",
@@ -129,7 +129,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _it = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "Generale",
-        ["preferences.category.general.description"] = "Lingua, pannello laterale, widget e animazioni dell’interfaccia.",
+        ["preferences.category.general.description"] = "Lingua, pannello laterale, widget e animazioni di caricamento. Configurale qui o con /animation.",
         ["preferences.category.general.help"] = "La lingua viene salvata per l’utente; le impostazioni del pannello laterale indicano ambito e origine.",
         ["preferences.category.accounts_connections.title"] = "Account e connessioni",
         ["preferences.category.accounts_connections.description"] = "Account in abbonamento e connessioni API ai provider.",

@@ -57,4 +57,29 @@ public sealed partial class TuiWiringTests
         Assert.True(label.Frame.Width >= label.Text.ToString()!.Length);
         ExportPreferenceFrame(fx, 80, 24, "general-it", "Lingua dell’interfaccia");
     }, noColor: false);
+
+    [Theory]
+    [InlineData("es", "Animaciones de carga", "animaciones de carga")]
+    [InlineData("en", "Loading animations", "loading animations")]
+    [InlineData("fr", "Animations de chargement", "animations de chargement")]
+    [InlineData("it", "Animazioni di caricamento", "animazioni di caricamento")]
+    public void General_preferences_explain_and_open_loading_animation_settings(
+        string locale, string actionLabel, string descriptionText) => RunTuiTest(fx =>
+    {
+        fx.StartTui(initialColumns: 100, initialRows: 30,
+            localeSelection: new LocaleSelection(locale, LocaleSelectionSource.CommandLine));
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
+        ChoosePreferenceCategory(fx, "general", locale);
+
+        var description = Descendants(fx.App.Overlay!).OfType<Label>()
+            .Single(view => view.Id == "preferences-description").Text.ToString()!;
+        Assert.Contains(descriptionText, description, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("/animation", description, StringComparison.Ordinal);
+        Assert.Contains(actionLabel, Descendants(fx.App.Overlay!).OfType<Button>()
+            .Single(view => view.Id == "preferences-animations-open").Text.ToString(), StringComparison.Ordinal);
+
+        ClickId(fx, "preferences-animations-open");
+        fx.Wait(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "animation-preview") == true,
+            "configuración y vista previa de animaciones visibles desde General");
+    });
 }

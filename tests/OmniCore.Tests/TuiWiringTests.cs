@@ -1464,7 +1464,7 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferencias visibles");
         var journalCount = fx.Server.SubscribeSince(0).Count;
         ChoosePreferenceCategory(fx, "general");
-        Click(fx, "Indicadores y animaciones");
+        Click(fx, "Animaciones de carga");
         fx.Wait(() => fx.App.Overlay!.SubViews.Any(v => v.Id == "animation-preview"), "vista previa visible");
         var preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
         Assert.Equal("✦", preview.SubViews.First().Text);
