@@ -1753,7 +1753,8 @@ public sealed class OmniCliRuntime : IDisposable
                     maxToolCallsPerTurn: effectivePolicy.MaxToolCallsPerTurn,
                     maxGenerationSeconds: effectivePolicy.MaxGenerationSeconds,
                     enforceSessionSpendCap: hasSessionSpendCap,
-                    enforceDailySpendCap: hasDailySpendCap);
+                    enforceDailySpendCap: hasDailySpendCap,
+                    toolPreferences: loaded.Settings?.ToolPreferences);
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);

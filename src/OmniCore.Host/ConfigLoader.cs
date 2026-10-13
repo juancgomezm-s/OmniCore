@@ -128,7 +128,8 @@ public sealed class ConfigLoader
                 return null;
             }
 
-            CheckKeys(root, "settings.yaml", "$", ["ui", "budget", "sidebar", "widgets", "locked", "defaultModel", "gates"],
+            CheckKeys(root, "settings.yaml", "$", ["ui", "budget", "sidebar", "widgets", "locked", "defaultModel", "gates",
+                    "commandAliases", "toolPreferences"],
                 diagnostics);
             if (root.Children.TryGetValue(new YamlScalarNode("ui"), out var uiNode))
             {
@@ -151,6 +152,13 @@ public sealed class ConfigLoader
             if (root.Children.TryGetValue(new YamlScalarNode("defaultModel"), out var defaultModel)
                 && !IsYamlString(defaultModel))
                 AddAtNode(diagnostics, "settings.yaml", "defaultModel", "config.wrongType", defaultModel);
+            ValidateSettingsMap(root, "commandAliases", diagnostics, (key, value) =>
+            {
+                try { UserCommandAliases.ValidatePair(key, value); return true; }
+                catch (ArgumentException) { return false; }
+            });
+            ValidateSettingsMap(root, "toolPreferences", diagnostics, (key, value) =>
+                IsCanonicalToolId(key) && IsCanonicalToolId(value) && !key.Equals(value, StringComparison.Ordinal));
             if (root.Children.TryGetValue(new YamlScalarNode("gates"), out var gates))
                 WorkspaceConfigurationLoader.ValidateGates(gates, diagnostics);
             if (!root.Children.TryGetValue(new YamlScalarNode("budget"), out var budgetNode)) return root;
@@ -203,6 +211,34 @@ public sealed class ConfigLoader
                 AddAtNode(diagnostics, "settings.yaml", "locked." + ((YamlScalarNode)entry).Value, "config.unknownKey", entry);
         }
     }
+
+    private static void ValidateSettingsMap(YamlMappingNode root, string name,
+        List<ConfigDiagnostic> diagnostics, Func<string, string, bool> validate)
+    {
+        if (!root.Children.TryGetValue(new YamlScalarNode(name), out var node)) return;
+        if (node is not YamlMappingNode map)
+        {
+            AddAtNode(diagnostics, "settings.yaml", name, "config.wrongType", node);
+            return;
+        }
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in map.Children)
+        {
+            if (!IsYamlString(pair.Key) || !IsYamlString(pair.Value))
+            {
+                AddAtNode(diagnostics, "settings.yaml", name, "config.wrongType", pair.Value);
+                continue;
+            }
+            var key = ((YamlScalarNode)pair.Key).Value!;
+            var value = ((YamlScalarNode)pair.Value).Value!;
+            if (!keys.Add(key) || !validate(key, value))
+                AddAtNode(diagnostics, "settings.yaml", name + "." + key, "config.invalidValue", pair.Value);
+        }
+    }
+
+    private static bool IsCanonicalToolId(string value) => value.Length is > 0 and <= 160
+        && value[0] is >= 'a' and <= 'z'
+        && value.All(character => character is >= 'a' and <= 'z' or >= '0' and <= '9' or '.' or '-' or '_');
 
     private static YamlMappingNode? ParseRoot(string? yaml, string file, string rootKey,
         List<ConfigDiagnostic> diagnostics, string[] rootAllowed, string[] childAllowed)

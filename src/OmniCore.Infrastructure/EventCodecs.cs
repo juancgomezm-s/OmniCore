@@ -130,6 +130,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.PermissionEvaluated())
             .Plus(Typed.PermissionRequested())
             .Plus(Typed.PermissionGranted())
+            .Plus(Typed.ToolPreferenceSubstitutionApproved())
             .Plus(Typed.PermissionDenied())
             .Plus(Typed.ToolCallAuthorized())
             .Plus(Typed.ToolCallStarted())
@@ -497,6 +498,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(PermissionEvaluated))]
 [JsonSerializable(typeof(PermissionRequested))]
 [JsonSerializable(typeof(PermissionGranted))]
+[JsonSerializable(typeof(ToolPreferenceSubstitutionApproved))]
 [JsonSerializable(typeof(PermissionDenied))]
 [JsonSerializable(typeof(ToolCallAuthorized))]
 [JsonSerializable(typeof(ToolCallStarted))]
@@ -879,6 +881,10 @@ public sealed class Typed
 
     public static CodecPair PermissionGranted() =>
         Of(EventType.Of("toolcall.permission_granted"), EventJsonContext.Default.PermissionGranted);
+
+    public static CodecPair ToolPreferenceSubstitutionApproved() =>
+        Of(EventType.Of("tool_preference.substitution_approved"),
+            EventJsonContext.Default.ToolPreferenceSubstitutionApproved);
 
     public static CodecPair PermissionDenied() =>
         Of(EventType.Of("toolcall.permission_denied"), EventJsonContext.Default.PermissionDenied);

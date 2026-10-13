@@ -27,7 +27,8 @@ public sealed class ExtensionTool : ITool
         Descriptor = new ToolDescriptor(new ToolId("ext." + id + "." + name),
             "Extension tool from " + extension.Manifest.DisplayName + ": " + name,
             new InputSchema(schemaJson), ["extension", id], readOnly: false, destructive: false,
-            ToolRisk.High, new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust, id, version),
+            ToolRisk.High, new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust, id, version,
+                extension.PackageSha256),
             ToolProtection.None, EffectClass.NonIdempotent);
         Boundary = new ExtensionBoundary(extension.Manifest.Requests?.Permissions ?? new ExtensionPermissionManifest(),
             id, workspaceRoot, Descriptor.Source);

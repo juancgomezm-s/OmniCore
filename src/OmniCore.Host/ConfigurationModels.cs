@@ -143,6 +143,8 @@ public sealed class UserSettingsYaml
     public BudgetSettingsYaml? Budget { get; set; }
     public string? DefaultModel { get; set; }
     public WorkspaceGatesYaml? Gates { get; set; }
+    public Dictionary<string, string>? CommandAliases { get; set; }
+    public Dictionary<string, string>? ToolPreferences { get; set; }
 
     /// <summary>Claves fijadas en User: Project y Workspace no las cambian (ADR-0039 §5).</summary>
     public List<string>? Locked { get; set; }

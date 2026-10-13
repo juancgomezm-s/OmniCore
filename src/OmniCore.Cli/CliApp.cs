@@ -80,7 +80,11 @@ public sealed class CliApp
                 launchTui: () => RunTui(args));
         }
 
-        args = HumanCommandAliases.NormalizeCli(args);
+        var aliases = PolicyPreferencesHost.Create(Environment.CurrentDirectory).Read().CommandAliases;
+        var userAliases = new UserCommandAliases(aliases);
+        var withUserAlias = userAliases.NormalizeCli(args);
+        var userAliasApplied = !ReferenceEquals(withUserAlias, args);
+        args = HumanCommandAliases.NormalizeCli(withUserAlias);
         var command = args[0];
         if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
@@ -131,6 +135,13 @@ public sealed class CliApp
             PrintUsage();
             return Task.FromResult(0);
         }
+
+        // An explicit user alias is a command route, never free-form model input. A bare
+        // command target is resolved through the same typed command path as /target; this
+        // also lets extension-qualified ids reach the Host command catalog and rejects
+        // unknown targets without invoking the model.
+        if (userAliasApplied)
+            return RunTypedCommand(new[] { "/" + command }.Concat(args.Skip(1)).ToArray());
 
         Console.WriteLine(Loc().Resolve("cli.ask_assumed", "command", command));
         return RunAsk(new[] { "ask", string.Join(" ", args) });

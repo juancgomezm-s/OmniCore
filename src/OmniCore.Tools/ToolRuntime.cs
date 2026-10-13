@@ -262,6 +262,16 @@ public sealed class ToolRuntime
             return new Outcome(false, "política falló: " + ex.Message,
                 ToolCallState.Rejected, EffectOutcome.None);
         }
+        if (execContext.RequiresSubstitutionAsk && decision.Final == PermissionDecision.Allow)
+        {
+            var layers = new List<LayerDecision>(decision.Layers)
+            {
+                // The Ask is grantable only because the user explicitly chose this protected
+                // substitution. A saved tool preference still does not authorize the intent.
+                new("UserPolicy", PermissionDecision.Ask, "tool-preference-substitution"),
+            };
+            decision = new PermissionDecisionRecord(PermissionDecision.Ask, layers, null);
+        }
         if (boundaryAsk && decision.Final == PermissionDecision.Allow)
         {
             // Mínimo entre capas (INV-028): el Ask de la frontera baja un Allow; nunca sube un Deny.
@@ -285,7 +295,7 @@ public sealed class ToolRuntime
             // ADR-0034/0036 §5: el Ask abre un InteractionRequest con sujeto y opciones del
             // servidor. El default es Deny (más restrictiva, ADR-0034 §1).
             var interaction = new InteractionRequested(interactionId, InteractionKind.Permission,
-                SubjectJson(validated.ToolId.ToString()),
+                SubjectJson(validated.ToolId.ToString(), execContext.ProtectedSubstitution),
                 OptionsJson(_policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }
                     && IsGrantableAsk(decision.Layers)),
                 "deny", null, null, null, null, 0, 1);
@@ -347,6 +357,9 @@ public sealed class ToolRuntime
             }
 
             _emit(new InteractionResolved(interactionId, optionId, InteractionCause.User));
+            if (execContext.ProtectedSubstitution is { } substitution)
+                _emit(new ToolPreferenceSubstitutionApproved(validated.ToolCallId, interactionId,
+                    substitution.SourceToolId, substitution.TargetToolId, substitution.IdentityHash));
             _emit(new PermissionGranted(validated.ToolCallId, approvedGrant, effectiveLifetime));
             // INV-002: la política ya quedó evaluada con la aprobación humana; no se pide un
             // nuevo permiso. La política de Security comprueba de nuevo que no exista Deny.
@@ -726,9 +739,14 @@ public sealed class ToolRuntime
     }
 
     /// <summary>Sujeto de la interacción (redactado; ADR-0034 §1, ADR-0018).</summary>
-    private static string SubjectJson(string tool)
+    private static string SubjectJson(string tool, ProtectedToolSubstitution? substitution = null)
     {
-        return "{\"operation\":\"" + Esc(tool) + "\",\"risk\":\"low\",\"reason\":\"permission.required\"}";
+        var subject = "{\"operation\":\"" + Esc(tool) + "\",\"risk\":\"low\",\"reason\":\"permission.required\"";
+        if (substitution is not null)
+            subject += ",\"toolPreferenceSubstitution\":{\"sourceToolId\":\""
+                + Esc(substitution.SourceToolId) + "\",\"targetToolId\":\""
+                + Esc(substitution.TargetToolId) + "\"}";
+        return subject + "}";
     }
 
     /// <summary>Opciones decididas por el servidor; el default (más restrictiva) es Deny.</summary>
