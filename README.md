@@ -1,6 +1,6 @@
 # OmniCore
 
-### Un motor de agentes. Tus modelos. Tu workspace. Tu control.
+### Runtime local-first para agentes de IA, modelos y repositorios bajo control explícito.
 
 OmniCore es un runtime **local-first en C#/.NET 10** para trabajar sobre repositorios con modelos locales o de frontera. Su primer cliente es el CLI `omni`; Protocol y Client también están preparados para consumidores como OmniCoder.
 
@@ -12,21 +12,21 @@ La meta es una conversación que conserva contexto, puede inspeccionar y modific
 
 *Diseño conceptual de v1, no una captura de la aplicación actual. Los textos y estados son ilustrativos: no representan consultas, mediciones ni ejecuciones reales.*
 
-## La experiencia que queremos entregar
+## Experiencia objetivo
 
-Una interfaz limpia para preguntar, planear, implementar y verificar sin perder la conversación ni ceder autoridad al modelo.
+Una interfaz para consultar, planificar, implementar y verificar sin perder el contexto de la conversación ni delegar autoridad al modelo.
 
-| Para ti | Lo que OmniCore debe garantizar |
+| Objetivo | Garantía del producto |
 |---|---|
-| **Conversación útil** | Respuestas en el chat, código legible, tablas Markdown, referencias y resultados de herramientas. Una explicación no necesita crear archivos ni agentes hijos. |
-| **Escritura cómoda** | Campo multilínea que crece, cursor visible, ayudas de comandos y navegación al último mensaje sin arrastrarte si estás leyendo el historial. |
-| **Modelos a tu elección** | Selector sencillo para trabajar; mantenimiento separado para catálogo, visibilidad, perfiles y políticas. Sin sustituciones que amplíen gasto o permisos silenciosamente. |
+| **Conversación útil** | Respuestas en el chat, código legible, tablas Markdown, referencias y resultados de herramientas. Las consultas explicativas no requieren crear archivos ni agentes hijos. |
+| **Edición eficiente** | Campo multilínea adaptable, cursor visible, ayuda de comandos y navegación al último mensaje sin forzar el desplazamiento mientras se consulta el historial. |
+| **Elección de modelos** | Selector de modelo y administración separada del catálogo, la visibilidad, los perfiles y las políticas. No se sustituyen modelos de forma que amplíe silenciosamente el gasto o los permisos. |
 | **Actividad comprensible** | Estados distintos para espera, razonamiento, respuesta, herramientas y aprobación; los indicadores se retiran al completar, cancelar, fallar o cambiar de sesión. |
 | **Contexto y consumo claros** | Contexto actual separado del consumo acumulado; fuente y fecha; valores reportados, estimados o no disponibles identificados. |
 | **Trabajo comprobable** | Plan y evidencias inspeccionables: una afirmación del modelo no equivale a un test ejecutado ni a una integración verificada. |
 | **Continuidad** | Sesiones persistidas, recuperación tras interrupciones y artifacts verificables, sin duplicar efectos al reanudar. |
 
-El lenguaje visual previsto combina superficies oscuras sobrias, acentos cian y violeta, selección clara y paneles sin marcos pesados. La conversación es protagonista; los detalles se despliegan cuando hacen falta.
+El lenguaje visual previsto combina superficies oscuras, acentos cian y violeta, selección clara y paneles sin marcos pesados. La conversación ocupa el área principal; los detalles aparecen cuando son necesarios.
 
 ### Un mismo núcleo, distintos clientes
 
@@ -58,9 +58,9 @@ Una solicitud se convierte en un **Turn** dentro de una Session y un **Run**. El
 
 **PLAN, ACT y ORQ los elige el usuario.** El esfuerzo de razonamiento no cambia el modo, no habilita herramientas y no autoriza gasto por sí solo.
 
-UltraCode es un preset de esfuerzo del producto, no un cuarto modo ni un modelo. Sólo una autorización explícita y durable permite transiciones de política acotadas. Consulta [las decisiones de modos y UltraCode](docs/adr/README.md) y [su contrato efectivo](docs/architecture/mode-proposals.md).
+UltraCode es un preset de esfuerzo del producto, no un cuarto modo ni un modelo. Sólo una autorización explícita y durable permite transiciones de política acotadas. Consulte [las decisiones de modos y UltraCode](docs/adr/README.md) y [su contrato efectivo](docs/architecture/mode-proposals.md).
 
-### Local-first no significa «todo gratis»
+### Local-first no implica que todo sea gratuito
 
 Se distinguen rutas locales, cuota incluida, facturación monetaria y condiciones desconocidas. Una credencial no equivale a autorización para gastar. Cuotas y créditos sólo se muestran cuando la fuente los informa: desconocido no es cero y saldo de cuenta no equivale al límite de una clave.
 
@@ -97,9 +97,11 @@ Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de l
 
 ## Primeros pasos
 
-Necesitas **SDK de .NET 10** y Git. Protocol, Client y Sandbox también tienen target .NET 8 para OmniCoder. La TUI usa Terminal.Gui sobre el SDK oficial de .NET.
+### Requisitos
 
-### Compilar y probar
+Se requiere el **SDK de .NET 10** y Git. Protocol, Client y Sandbox también tienen como destino .NET 8 para OmniCoder. La TUI utiliza Terminal.Gui sobre el SDK oficial de .NET.
+
+### Compilación y pruebas
 
 ```powershell
 git clone https://github.com/juancgomezm-s/OmniCore.git
@@ -110,8 +112,8 @@ dotnet test --solution OmniCore.slnx
 
 ### Instalar el comando `omni` con npm
 
-En Windows puedes instalar la CLI directamente desde Git, sin publicar en npm.
-Con npm 11, autoriza el `prepare` que compila el paquete durante la instalación:
+En Windows, la CLI se puede instalar directamente desde Git, sin publicarla en npm.
+Con npm 11, autorice el script `prepare`, que compila el paquete durante la instalación:
 
 ```powershell
 npm.cmd install --global --foreground-scripts --install-links --allow-scripts=omnicore-cli@0.1.0 "git+https://github.com/juancgomezm-s/OmniCore.git#main"
@@ -119,14 +121,14 @@ omni.cmd --help
 omni
 ```
 
-En npm 10 o anterior, omite `--allow-scripts=omnicore-cli@0.1.0`.
+En npm 10 o anterior, omita `--allow-scripts=omnicore-cli@0.1.0`.
 
-Ejecuta `omni` desde la carpeta del proyecto para abrir la TUI. `omni tui`
-también sigue disponible; `omni --help` muestra la ayuda. Sin argumentos,
+Ejecute `omni` desde la carpeta del proyecto para abrir la TUI. También está
+disponible `omni tui`; `omni --help` muestra la ayuda. Sin argumentos,
 entrada y salida deben estar conectadas a una terminal interactiva. Para
-scripts usa un subcomando explícito, como `omni sim --json`.
+scripts, utilice un subcomando explícito, como `omni sim --json`.
 
-La instalación necesita Git, Node.js 20 o posterior y el SDK de .NET 10.0.401 o
+La instalación requiere Git, Node.js 20 o posterior y el SDK de .NET 10.0.401 o
 una banda posterior de .NET 10, según `global.json`. `npm` compila la CLI durante
 la instalación; después, `omni` necesita el runtime de .NET 10. Para actualizarla,
 repite el comando de instalación. Esta distribución framework-dependent sólo
@@ -141,13 +143,13 @@ dotnet run --project src/OmniCore.Cli -- sim docs/sim/multi-item-plan.yaml --jso
 dotnet run --project src/OmniCore.Cli -- tui --sim
 ```
 
-`sim` usa escenarios deterministas: permite conocer el lifecycle y los renderers sin atribuirle autenticación ni consumo real.
+`sim` utiliza escenarios deterministas para mostrar el ciclo de ejecución y los renderizadores, sin atribuirles autenticación ni consumo real.
 
-### Conectar y trabajar
+### Conexión y uso
 
-Configura providers y modelos en el directorio **del usuario**, tomando [docs/examples](docs/examples) como referencia. No pegues credenciales en el repositorio. Las reglas de conexión y almacenamiento están en [los ADR](docs/adr/README.md), especialmente ADR-0011.
+Configure proveedores y modelos en el directorio **del usuario**, tomando [docs/examples](docs/examples) como referencia. No almacene credenciales en el repositorio. Las reglas de conexión y almacenamiento se documentan en [los ADR](docs/adr/README.md), especialmente en ADR-0011.
 
-En la TUI, **F4 → Conexiones API de providers** permite guardar la API key de Anthropic, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; guardar sin verificar muestra estado desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. La cuenta ChatGPT conserva su acceso en el mismo menú de configuración.
+En la TUI, **F4 → Conexiones API de proveedores** permite guardar la clave de API de Anthropic, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; si se guarda sin verificar, el estado se muestra como desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. El acceso a la cuenta ChatGPT también se administra desde el menú de configuración.
 
 ```powershell
 dotnet run --project src/OmniCore.Cli -- doctor
@@ -157,7 +159,7 @@ dotnet run --project src/OmniCore.Cli -- act "Corrige este test y verifica el re
 dotnet run --project src/OmniCore.Cli -- tui
 ```
 
-`ask`, `act` y la cualificación real pueden llamar al proveedor: revisa primero ruta, facturación y permisos. `explain` permite inspeccionar el contexto materializado y su fingerprint.
+`ask`, `act` y la cualificación real pueden llamar al proveedor. Antes de ejecutarlos, verifique la ruta, la facturación y los permisos. `explain` permite inspeccionar el contexto materializado y su fingerprint.
 
 ### Atajos de la TUI
 
@@ -179,9 +181,9 @@ pwsh -File tools/test-conversation-rendering.ps1 -Snapshots
 pwsh -File tools/test-sqlite-durability.ps1
 ```
 
-La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `--probe-timeout <segundos>` ajusta el límite por probe. Revisa [condiciones de reproducción](docs/validation/m5-closure-20261007.md) y [qué significa Qualified](docs/validation/m5-quick-qualification-scope.md) antes de hacer llamadas reales.
+La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `--probe-timeout <segundos>` ajusta el límite por probe. Consulte [las condiciones de reproducción](docs/validation/m5-closure-20261007.md) y [el alcance de Qualified](docs/validation/m5-quick-qualification-scope.md) antes de realizar llamadas reales.
 
-## Camino hacia v1
+## Roadmap hacia v1
 
 ![Roadmap: M5, M5.5 y M6 cerrados en Windows; próximas etapas de aislamiento, extensiones, Host separado y v1.](docs/images/roadmap.svg)
 
@@ -197,18 +199,18 @@ La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `
 | **M9 · Host y protocolo** | Host separado, stdio, cliente net8, lease entre procesos y reconexión por secuencia sin pérdida ni duplicación. |
 | **M10 · Madurez v1** | CLI pulido, memoria Project/Workspace/Global, búsqueda, keybindings, cualificación full, calibración e integración de OmniCoder. |
 
-El producto final debe resolver una pregunta directa con cero herramientas, una edición controlada con pruebas o un workflow multiagente cuando aporte valor. No se fuerza una metodología de agentes a toda conversación.
+El producto final debe responder consultas directas sin herramientas, realizar ediciones controladas con pruebas y ofrecer flujos multiagente cuando aporten valor. La metodología multiagente no se aplica a todas las conversaciones.
 
 ## Garantías de diseño
 
 - **El modelo propone; el runtime autoriza.** No ejecuta herramientas ni se concede permisos.
-- **El repositorio no controla tus credenciales.** Un workspace no confiable no puede ampliar providers, sandbox o permisos.
+- **El repositorio no controla las credenciales del usuario.** Un workspace no confiable no puede ampliar proveedores, el sandbox ni los permisos.
 - **Estado recuperable.** Journal append-only, artifacts verificables y reconciliación tras interrupciones.
 - **Contexto con procedencia.** No se confunden datos base64 con texto ni consumo acumulado con ocupación actual.
 - **Evidencia honesta.** Ausencia de cuota, precio, resultado o validación se muestra como ausencia.
 - **UI desacoplada.** Terminal.Gui y Spectre.Console sólo en CLI; Protocol y Client sin framework visual.
 
-Son reglas del producto, no una afirmación de aceptación total. Entre los diferidos están validación Linux, sandbox Strong en Linux y lease de sesión entre procesos en M9. El bloqueo de escritores cooperantes no es un compare-and-swap portable frente a cualquier editor externo.
+Son principios de diseño, no una declaración de aceptación total. Entre los elementos pendientes se encuentran la validación en Linux, el sandbox Strong en Linux y el lease de sesión entre procesos previsto para M9. El bloqueo de escritores cooperantes no equivale a una operación compare-and-swap portable frente a cualquier editor externo.
 
 ## Organización del código
 
