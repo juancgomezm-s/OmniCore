@@ -14,6 +14,25 @@ La rama de preferencias `codex/tui-omega-animations` contiene mecanismo es/en/fr
 
 Pendientes reales de cierre M8: fuentes/scopes y aportes completos de skills, aliases User, `toolPreferences` consumidas por planner/fingerprint, hooks, MCP, candidatos/política/Ask y auditoría de Session Memory; integrar/verificar los deltas de uso/contexto/ruta y las superficies de preferencias. ExtensionCommand y almacenamiento/comandos Session no se vuelven a construir. Recursos, errores, ayuda y acciones propios de cada pendiente deben funcionar en los cuatro idiomas. Project/Workspace/Global Memory sigue en M10 y cliente↔Host stdio en M9.
 
+## Ampliación de cierre M8 (2026-10-13)
+
+El usuario incorpora **OpenRouter completo** a M8: conexión, interfaz CLI/TUI,
+catálogo/registro/selección de modelos y créditos, con los criterios [OR1–OR5](../plans/openrouter-closure.md).
+El diferido M5 de créditos queda asignado a esta entrega. Adapter y contratos existentes
+son base reutilizable; no acreditan aceptación autenticada ni una interfaz terminada.
+
+El cierre también exige **skills completas** según ADR-0026 y el [plan M8 actualizado](../plans/m8-m10-user-localization.md):
+scopes BuiltIn/User/Workspace/Session sobre Project, `SkillSelector` con HarnessPolicy y
+presupuesto, índice Eligible/modelInvocable, invocación explícita/modelo permitida,
+tools/workflows/validators/contributors/knowledge y ciclo de vida/fingerprint/eventos.
+Verificar cada aporte hasta su consumidor y su eliminación efectiva al liberar; preservar
+trust, `sealed`, integridad y aislamiento de componentes no Core. Estos pendientes
+pertenecen a M8 y no quedan satisfechos por las skills Project de instrucciones actuales.
+
+La secuencia inferior se amplía con OR1–OR5 antes de la integración final. Recursos,
+errores y recorridos nuevos deben funcionar en es/en/fr/it. Esta ampliación es alcance
+pendiente; las pasadas históricas de este acta no prueban estos bloques nuevos.
+
 ## Matriz de base
 
 | Área | Hecho reutilizable | Falta para M8 |

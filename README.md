@@ -194,7 +194,7 @@ La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 o
 | **Local / llama.cpp** | Chat compatible, configuración y supervisión de host local | Quick real de Qwen en la configuración documentada; no cualifica automáticamente cualquier modelo local. |
 | **OpenAI Responses API** | Adapter nativo | Fixtures; aceptación con API de pago no acreditada en el cierre M5. |
 | **Anthropic Messages** | Adapter nativo y semántica del proveedor | Fixtures; aceptación autenticada de API pendiente. |
-| **Créditos de otros proveedores** | Contratos de saldo de cuenta y límite de clave | Consulta real de créditos OpenRouter pendiente de una configuración validable. |
+| **OpenRouter** | Adapter compatible y contratos de saldo de cuenta/límite de clave | Cierre completo asignado a M8: conexión, interfaz CLI/TUI, catálogo y créditos; implementación y aceptación autenticada pendientes según [OR1–OR5](docs/plans/openrouter-closure.md). |
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 

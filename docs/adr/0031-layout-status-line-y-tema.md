@@ -81,7 +81,9 @@ public enum QuotaKind { Credits, RateLimitWindow, TokenAllowance }
   - headers de rate limit;
   - límites de la suscripción ChatGPT.
 
-  Se implementan en M5.
+  La base de reporting se implementa en M5. El cierre completo de OpenRouter, incluida
+  la consulta y presentación de créditos informados, queda asignado explícitamente a
+  **M8** desde el 2026-10-13: [plan OR1–OR5](../plans/openrouter-closure.md).
 - **Espacio insuficiente:** el grupo derecho se reduce primero (se quitan créditos, luego costo) y el izquierdo al final. El modelo nunca desaparece.
 
 ### 4. Responsive

@@ -65,6 +65,16 @@ Instrucciones, **context contributors** (fuera de proceso si la skill no es `Cor
 
 `SkillManifestLoader` implementa discovery Project solo con workspace confiable, evaluación de activadores (path, extensión, language, framework, task type), prioridad y precedencia por scope/confianza con soporte `sealed`. La ClientAction `/skills` inspecciona metadata y ejecuta `load|release <id>` como comando al Host. La selección se almacena fuera del repo por SessionId y hash del manifest. En la composición CLI, el Host vuelve a verificar la selección, lee `instructions.md` solo al activar, acota su tamaño, crea `ContextItem(Kind=Skill)` con procedencia y registra hash de contenido en `skills.active` del fingerprint. Solo están implementados los skills Project de instrucciones; otras contribuciones y scopes siguen pendientes.
 
+### Condición de cierre M8 (2026-10-13)
+
+Todos los pendientes M8 de la clasificación inferior son obligatorios para cerrar el
+hito: scopes, selector con presupuesto, índice/invocación por modelo y aportes completos,
+incluida su carga y liberación efectivas en contexto, ToolPlan y validación. La base
+Project de instrucciones no satisface ese cierre. La secuencia y pruebas hasta los
+consumidores quedan en el [plan M8–M10](../plans/m8-m10-user-localization.md).
+Se mantienen los diferidos explícitos de detección avanzada de frameworks y tests propios
+de paquetes; no se trasladan a M9/M10 los pendientes clasificados como M8.
+
 ## Clasificación
 
 | Elemento | Categoría |
