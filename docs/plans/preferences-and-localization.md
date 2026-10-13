@@ -235,3 +235,12 @@ El [registro actualizado](../validation/closure-live-and-terminal-20261012.md) s
 aceptación de los resultados Luna/Qwen, las omisiones y los límites aún abiertos.
 
 Integración solicitada del 2026-10-12: se conserva el alcance futuro M8–M10 de arquitectura §24.4 junto con esta implementación y su evidencia histórica; el árbol combinado se valida por separado.
+
+### Cierre de integración del 13 de octubre
+
+La auditoría de P0–P7, los controles operativos por modelo, las cuotas opcionales y
+la corrección de formato decimal del formulario se registran en
+[la evidencia de integración a main](../validation/preferences-main-closure-20261013.md).
+Ese corte tiene precedencia sobre los pendientes históricos de las primeras tandas.
+Los contratos futuros de M8–M10 permanecen en su plan; no se reetiquetan como menús
+incompletos del backend ya construido ni se declaran implementados por esta fusión.

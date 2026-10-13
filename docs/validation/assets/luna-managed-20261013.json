@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "scope": "native_managed_child_wait_and_one_claimed_principal_ExplorerTurn",
+  "model": "luna",
+  "modelId": "gpt-6-luna",
+  "routeId": "gpt-6-luna",
+  "billingMode": "IncludedQuota",
+  "startedAtUtc": "2026-10-13T17:39:47.1676914+00:00",
+  "completedAtUtc": "2026-10-13T17:40:53.5579467+00:00",
+  "hostMonotonicWaitSeconds": 60.0034365,
+  "configuredOutputTokenLimit": null,
+  "providerCalls": 2,
+  "childModelStepStartedCount": 2,
+  "principalProviderCalls": 1,
+  "delegationId": "01a13659-5732-7b02-aec8-2b1c6a039c88",
+  "childLaneId": "01a13659-5732-709e-b7df-0bde9347ae69",
+  "workerWaitAndGreetingVerified": true,
+  "principalWakeClaimedExactlyOnce": true,
+  "result": "Actual Luna managed child used the native mailbox tool, received a delayed message, returned durably, and drove one principal ExplorerTurn."
+}
