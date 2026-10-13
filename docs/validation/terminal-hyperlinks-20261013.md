@@ -59,6 +59,19 @@ Logs externos: `C:/Users/juanc/.codex/terminal-hyperlinks-validation-20261013/`.
 `intermediate-architecture.log`/`intermediate-results.json` conservan la comprobación
 intermedia; `final-*.log` y `final-results.json` identifican la revisión final.
 
+## Comprobación con el main reciente
+
+Se incorporó `main` en `15d0c0d` (incluye aliases User y preferencias de herramientas)
+sin conflicto en `TuiApp`. Árbol combinado de código `f126771b1c040ada88a1af217da5f0ab4e7b255c`:
+`src` = `cf169fcd3fcef66297cbbc7f805ef749d188eb79`,
+`tests` = `af5627df96d8a0e0e9669bf4876162e43e0c9e23`.
+Build combinado: **0 errores, 0 advertencias**. Tras compilar, se verificaron
+**28/28 enlaces, 6/6 aliases y 62/62 arquitectura**; logs `combined-*.log` y
+`combined-results.json`. La batería TUI completa anterior pertenece a `8cf0fd8`;
+no se atribuye una pasada integral adicional al árbol combinado. El commit documental
+posterior conserva ambos árboles. El trabajo no confirmado de hooks en el checkout
+principal no se incorporó a esta revisión.
+
 ## Límites
 
 No se ejecutó aceptación manual abriendo el navegador del usuario, ni pruebas Linux/macOS.
