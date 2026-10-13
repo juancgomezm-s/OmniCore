@@ -2071,7 +2071,9 @@ public sealed partial class TuiApp
         ConfigurePreferenceScroll(panel, y + 1);
         var cancel = new Button { Id = "profile-limits-cancel", X = 2, Y = Pos.AnchorEnd(2),
             Text = _localization.Resolve("shell.cancel") };
-        cancel.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
+        var status = new Label { Id = "profile-limits-status", X = 2, Y = Pos.AnchorEnd(4),
+            Width = Dim.Fill(4), Height = 1 };
+        cancel.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(refreshCatalog: false); };
         var save = new Button { Id = "profile-limits-save", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = labels.Save };
         save.Accepted += (_, _) =>
         {
@@ -2085,7 +2087,7 @@ public sealed partial class TuiApp
                     PreferenceInput.Culture(_locale), out var rewriteRatio)
                 || stepCount is < 1 or > 8 || callCount is < 1 or > 64
                 || generationLimit is < 1 or > 3600)
-            { ShowMessage(labels.Invalid); return; }
+            { status.Text = labels.Invalid; return; }
             try
             {
                 var capabilityNames = capabilityChecks.Where(pair => pair.Value.Value == CheckState.Checked)
@@ -2096,10 +2098,12 @@ public sealed partial class TuiApp
                     versionToken.Value == CheckState.Checked, validation.Value == CheckState.Checked,
                     orchestration.Value == CheckState.Checked, generationLimit, CancellationToken.None);
             }
-            catch (Exception) { CloseOverlay(); ShowMessage(labels.Failed); return; }
-            CloseOverlay(); ShowModelPolicies();
+            catch (ModelPolicyRevisionConflict)
+            { status.Text = _localization.Resolve("shell.could_not_save_the_policy_reopen_the_model"); return; }
+            catch (Exception) { status.Text = labels.Failed; return; }
+            CloseOverlay(); ShowModelPolicies(refreshCatalog: false);
         };
-        frame.Add(panel, cancel, save); ApplyTheme(frame); _overlay = frame; _window.Add(frame); steps.SetFocus();
+        frame.Add(panel, status, cancel, save); ApplyTheme(frame); _overlay = frame; _window.Add(frame); steps.SetFocus();
 
         (string Id, CheckBox Control)[] AddRadioOptions(string group,
             (string Id, string LabelId)[] options, string selected)

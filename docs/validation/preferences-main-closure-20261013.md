@@ -59,6 +59,24 @@ symlink sin permisos y siete aceptaciones live opt-in; no son herramientas ni
 menús declarados aprobados sin ejecutarse. Los grupos se solapan y no se suman.
 Los logs de intentos anteriores se conservan.
 
+### Adenda de validación del borrador
+
+La auditoría posterior al primer merge reprodujo una pérdida de borrador: guardar
+un valor inválido reemplazaba el editor de perfil por un aviso. Los ocho casos
+ampliados fallaron con ese comportamiento (`menu-draft-repro-20261013.trx`).
+Ahora las validaciones y conflictos de revisión se muestran dentro del formulario,
+mantienen sus campos y no escriben sobre la revisión nueva de otro editor.
+Cancelar conserva esa revisión concurrente. Guardar y Cancelar regresan al listado
+sin iniciar discovery ni refresco remoto implícito.
+
+Después del cambio de presentación, el grupo TUI/catálogos/perfil pasó **192/192**
+(`menu-draft-final-20261013.trx`). La comprobación final de los ocho recorridos,
+con un Host que sí admite discovery y una cuenta sintética conectada, pasó **8/8**
+(`menu-draft-discovery-final-20261013.trx`): se comprueban tanto el contador de
+llamadas como la ausencia del handle de refresco, no sólo un cero antes de que una
+tarea arranque. El build final dio cero warnings/errores. Estos grupos se solapan;
+complementan la regresión general anterior y no se suman como casos únicos.
+
 ## Evidencia visual y límites
 
 Las capturas del README y las de `assets/preferences-20261012/` proceden de las
