@@ -44,6 +44,7 @@ del perfil para hacer pasar la prueba.
 
 Estado: **integrado en main** mediante el merge local `63fcb5e`, sin conflictos.
 Implementación: `2fa931c`; evidencia, imágenes y comparación: `3dfc357`.
+Correcciones finales de borrador/discovery: `08ef1ac`, integradas por `cb67591`.
 La comparación de árboles posterior a la fusión confirma que main conserva
 exactamente el código/tests verificados de la rama de cierre, además de su base.
 Build de tests: **cero warnings/errores**, 14,72 s. Arquitectura: **62/62 PASS**
@@ -76,6 +77,9 @@ con un Host que sí admite discovery y una cuenta sintética conectada, pasó **
 llamadas como la ausencia del handle de refresco, no sólo un cero antes de que una
 tarea arranque. El build final dio cero warnings/errores. Estos grupos se solapan;
 complementan la regresión general anterior y no se suman como casos únicos.
+Arquitectura después de esa corrección: **62/62 PASS**
+(`TestResults/menu-draft-architecture-final-20261013.trx`). El árbol de código/tests
+de main coincide con la rama de esta última entrega; no quedan cambios sin commit.
 
 ## Evidencia visual y límites
 
