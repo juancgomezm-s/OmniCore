@@ -30,6 +30,12 @@ de integración. Las credenciales y endpoints sólo se configuran en User (ADR-0
 
 ## Condición de cierre M8
 
+**Disponibilidad confirmada por el usuario (2026-10-13):** aún no hay conexión
+OpenRouter configurada en OmniCore; el usuario la configurará cuando esté lista la
+interfaz. Construcción, integración y fixtures continúan. La aceptación autenticada
+de conexión, catálogo y créditos queda pendiente de esa configuración y se registra
+por separado, sin solicitar claves en el chat ni generar respuestas de modelos.
+
 OR1–OR5 deben estar construidos, conectados al consumidor e integrados. Una pantalla,
 un DTO, el adapter compatible o tests con HTTP falso por sí solos no cierran OpenRouter.
 Si falta cuenta/configuración autorizada, se documenta la aceptación real pendiente;
