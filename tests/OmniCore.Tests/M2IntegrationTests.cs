@@ -333,6 +333,48 @@ public sealed class M2IntegrationTests
         RemoveDir(wsDir);
     }
 
+    [Fact]
+    public void Filesystem_read_returns_bounded_numbered_pages_with_full_file_hash()
+    {
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService());
+        var wsDir = Path.Combine(TestCwd, ".omnicore-read-pages-test");
+        Directory.CreateDirectory(wsDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(wsDir, "paged.txt"), "uno\nñandú\ntres\ncuatro\n", new System.Text.UTF8Encoding(false));
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.read", PermissionDecision.Allow), wsDir);
+            var first = executor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(),
+                new ToolId("filesystem.read"), "page-1", "{\"path\":\"paged.txt\",\"offset\":2,\"limit\":2}"),
+                false, CancellationToken.None);
+            var second = executor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(),
+                new ToolId("filesystem.read"), "page-2", "{\"path\":\"paged.txt\",\"offset\":4,\"limit\":2}"),
+                false, CancellationToken.None);
+
+            Assert.True(first.Succeeded, first.Summary);
+            Assert.True(second.Succeeded, second.Summary);
+            Assert.Contains("[lines:2-3/4;hasMore:true;contentTruncated:false]", first.Preview);
+            Assert.Contains("ñandú\ntres", first.Preview);
+            Assert.DoesNotContain("cuatro", first.Preview);
+            Assert.Contains("[lines:4-4/4;hasMore:false;contentTruncated:false]", second.Preview);
+            Assert.Contains("cuatro", second.Preview);
+            static string? VersionMarker(string? preview)
+            {
+                const string marker = "[version:";
+                var start = preview?.LastIndexOf(marker, StringComparison.Ordinal) ?? -1;
+                var end = start < 0 ? -1 : preview!.IndexOf(']', start + marker.Length);
+                return end < 0 ? null : preview!.Substring(start, end - start + 1);
+            }
+            Assert.Equal(VersionMarker(first.Preview), VersionMarker(second.Preview));
+
+            var invalid = executor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(),
+                new ToolId("filesystem.read"), "page-invalid", "{\"path\":\"paged.txt\",\"offset\":0,\"limit\":501}"),
+                false, CancellationToken.None);
+            Assert.False(invalid.Succeeded);
+        }
+        finally { RemoveDir(wsDir); }
+    }
+
     private static bool HasSecretBlocked(OmniCore.Engine.ToolOutcome outcome)
     {
         return outcome.Summary is not null && outcome.Summary!.ToLowerInvariant().Contains("secret");

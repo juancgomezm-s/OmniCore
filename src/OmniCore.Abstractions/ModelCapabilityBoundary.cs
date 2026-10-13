@@ -56,6 +56,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             { "artifact.read", ModelToolCapability.WorkspaceRead },
             { "filesystem.search", ModelToolCapability.Search },
             { "search.text", ModelToolCapability.Search },
+            { "tool.search", ModelToolCapability.Search },
             { "reference.resolve", ModelToolCapability.ReferenceResolve },
             { "plan.propose", ModelToolCapability.PlanProposal },
             { "mode.propose", ModelToolCapability.PlanProposal },
@@ -280,6 +281,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         return capability switch
         {
             ModelToolCapability.PlanProposal when toolName == "user.ask" => 0,
+            ModelToolCapability.Search when toolName == "tool.search" => 1,
             ModelToolCapability.WorkspaceRead or ModelToolCapability.Search
                 or ModelToolCapability.ReferenceResolve or ModelToolCapability.AgentMailboxWait =>
                     toolName == "artifact.read" ? 3 : 1,

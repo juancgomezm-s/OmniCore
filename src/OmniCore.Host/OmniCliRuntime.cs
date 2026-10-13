@@ -1721,7 +1721,7 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 var requestedToolName = pendingForcedToolName;
                 pendingForcedToolName = null;
-                var selection = new ModelSelection(new ModelIdValue(model), usableContext, ToolMode.Direct,
+                var selection = new ModelSelection(new ModelIdValue(model), usableContext, effectivePolicy.ToolPolicy.Mode,
                     appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution);
                 var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
                     selection, harnessHash, contextPolicyHash, effectivePolicyFingerprint, tokenCounter.Id.Value,

@@ -49,14 +49,14 @@ public sealed class ToolsInspectionTests
     {
         var row = new ToolInspectionRow("read alias", "filesystem.read", "BuiltIn:BuiltIn:Core:core@1",
             "None", "permission policy", true) { Description = "Original model-facing description" };
-        Assert.Equal("Lee el contenido de un archivo del proyecto sin modificarlo.",
+        Assert.Equal("Lee una página acotada de líneas de un archivo del proyecto sin modificarlo. Indica offset desde la línea 1 y limit hasta 500; muestra numeración, continuación y hash del archivo completo.",
             ToolInspectionPresentation.Description(row, Localization.Spanish()));
-        Assert.Equal("Reads a project file's contents without changing it.",
+        Assert.Equal("Reads a bounded page of project file lines without changing it. Set offset from line 1 and limit up to 500; the result shows line numbers, continuation and the full file hash.",
             ToolInspectionPresentation.Description(row, Localization.English()));
         Assert.Equal("Original model-facing description", row.Description);
         foreach (var id in new[] { "user.ask", "filesystem.read", "filesystem.list", "search.text", "reference.resolve",
             "plan.propose", "mode.propose", "filesystem.write", "filesystem.patch", "process.exec", "shell.exec",
-            "artifact.read", "core.agents.mailbox.receive", "worktree.integrate" })
+            "artifact.read", "core.agents.mailbox.receive", "worktree.integrate", "tool.search" })
             Assert.True(Localization.HasInBoth("client.tool." + id + ".description"), id);
     }
 

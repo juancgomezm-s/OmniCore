@@ -63,6 +63,7 @@ public sealed class HostTools
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
         if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);
         if (includeMailboxReceive) catalog = catalog.Add(new AgentMailboxReceiveTool());
+        if (includeControlTools) catalog = catalog.Add(new ToolSearchTool(catalog));
         _catalog = includeControlTools ? catalog.Add(_planPropose).Add(new ModeProposeTool()) : catalog;
     }
 

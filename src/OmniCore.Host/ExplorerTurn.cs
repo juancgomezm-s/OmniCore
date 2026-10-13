@@ -1,5 +1,6 @@
 namespace OmniCore.Host;
 
+using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
@@ -579,13 +580,19 @@ public sealed class ExplorerTurn
                 || configured.AgentProfileHash != AgentProfileFingerprint.Hash(_resolvedAgentProfile)))
             return new TurnResult("Cannot execute Turn: durable AgentProfile revision or content differs from its applied configuration.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+        var discoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
         var preparedTurnFingerprint = _recordEffectiveFingerprint
-            ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(),
+            ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(discoveredToolIds),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
                 laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority, instructionSnapshot,
                 reasoningResolution)
             : null;
         var fingerprint = preparedTurnFingerprint?.Fingerprint ?? _fingerprint;
+        // TurnStarted preserves the original configuration snapshot. A discovered tool plan is
+        // represented by later ModelStep context snapshots, never by rewriting that event.
+        var stepFingerprint = fingerprint;
+        var stepFingerprintArtifacts = preparedTurnFingerprint?.Artifacts;
+        var discoveredPlanChanged = false;
         if (originalStart is not null && _codecs.Decode(originalStart) is TurnStarted
             { Fingerprint: { } originalFingerprint })
         {
@@ -595,6 +602,22 @@ public sealed class ExplorerTurn
             // Equal configuration hashes do not make newly allocated artifact receipts durable.
             // Resume retains the fingerprint and exact refs rooted by the original TurnStarted.
             fingerprint = originalFingerprint;
+        }
+        RuntimeFingerprintFactory.PreparedRuntimeFingerprint? recoveredPlan = null;
+        string? recoveredPlanError = null;
+        if (isResume && _selection.ToolMode == ToolMode.Discovered
+            && TryRecoverDiscoveredToolPlan(stream, new TurnId(resumedTurnId!.Value), instruction, initialPlanEvents, laneProfileId,
+                fingerprintAuthority, instructionSnapshot, reasoningResolution, discoveredToolIds,
+                out recoveredPlan, out recoveredPlanError))
+        {
+            stepFingerprint = recoveredPlan!.Fingerprint;
+            stepFingerprintArtifacts = recoveredPlan.Artifacts;
+            discoveredPlanChanged = true;
+        }
+        else if (isResume && recoveredPlanError is not null)
+        {
+            return new TurnResult(recoveredPlanError, StopReason.Error, 0,
+                new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         }
         var queuedQuestion = _redaction.Redact(question ?? "").Length > 0
             && FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, question ?? "", origin);
@@ -616,6 +639,21 @@ public sealed class ExplorerTurn
         using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
             turnTask, laneId, turnId, ExecutionId: executionId));
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
+        IReadOnlyList<ToolDefinition> RequestTools() => ReadTurnToolCallCount(stream, turnId) >= _maxToolCallsPerTurn
+            ? Array.Empty<ToolDefinition>() : VisibleTools(discoveredToolIds);
+        void RefreshStepFingerprint(IReadOnlyList<ToolDefinition> requestTools)
+        {
+            var configured = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog,
+                requestTools, EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(),
+                _artifacts, laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority,
+                instructionSnapshot, reasoningResolution);
+            if (!string.Equals(configured.Fingerprint.Hash(), stepFingerprint.Hash(), StringComparison.Ordinal))
+            {
+                stepFingerprint = configured.Fingerprint;
+                stepFingerprintArtifacts = configured.Artifacts;
+                discoveredPlanChanged = true;
+            }
+        }
         var forcedToolName = isResume ? null : _forcedInitialToolName;
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
@@ -970,8 +1008,9 @@ public sealed class ExplorerTurn
                 return new TurnResult("Presupuesto agotado: " + ex.Detail, StopReason.Cancelled, 0,
                     usage, allToolCalls.ToArray(), null);
             }
+            RefreshStepFingerprint(RequestTools());
             var preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                workingStateText, instruction, messages, messageOwners, fingerprint, cancellationToken, CanInvokeMeta,
+                workingStateText, instruction, messages, messageOwners, stepFingerprint, cancellationToken, CanInvokeMeta,
                 hasReservationBoundary ? ReserveMeta : null,
                 hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
                 hasReservationBoundary ? FinishMeta : null,
@@ -1060,6 +1099,8 @@ public sealed class ExplorerTurn
             // admissions already written for this Turn before allowing another model/tool step.
             for (var step = nextModelStepIndex; step < _maxModelStepsPerTurn; step++)
             {
+                var requestTools = RequestTools();
+                RefreshStepFingerprint(requestTools);
                 if (_quotaAdmission?.Invoke(sessionId, runId, laneId, turnId, nextModelStepIndex) is { } quotaInteraction)
                     return new TurnResult(null, StopReason.InputRequired, steps, usage, allToolCalls.ToArray(), null,
                         quotaInteraction);
@@ -1072,7 +1113,7 @@ public sealed class ExplorerTurn
                 if (step > 0 || steering.Count > 0)
                 {
                     preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
-                        workingStateText, instruction, messages, messageOwners, fingerprint, cancellationToken, CanInvokeMeta,
+                        workingStateText, instruction, messages, messageOwners, stepFingerprint, cancellationToken, CanInvokeMeta,
                         hasReservationBoundary ? ReserveMeta : null,
                         hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
                         hasReservationBoundary ? FinishMeta : null,
@@ -1094,8 +1135,7 @@ public sealed class ExplorerTurn
                             WithoutOpaqueReplay(message.Content))).ToArray()
                         : preparedContext.Messages,
                     RenderContext(materialized),
-                    ReadTurnToolCallCount(stream, turnId) >= _maxToolCallsPerTurn
-                        ? Array.Empty<ToolDefinition>() : VisibleTools(),
+                    requestTools,
                     forcedToolName is { } exactTool ? ToolChoice.Exact(exactTool) : ToolChoice.Auto(),
                     null, _selection.Reasoning, new CacheHints(4, "automatic"),
                     // None is an explicit outbound replay prohibition. Keep the checkpoint
@@ -1125,6 +1165,11 @@ public sealed class ExplorerTurn
                         using (var contextPublication = (_artifacts as IArtifactPublicationLease)
                             ?.AcquirePublicationLease(CancellationToken.None))
                         {
+                            if (discoveredPlanChanged)
+                            {
+                                PublishFingerprintArtifacts(stepFingerprint, stepFingerprintArtifacts);
+                                discoveredPlanChanged = false;
+                            }
                             preparedContext.PublishArtifacts();
                             var stepStart = new ModelStepStarted(turnId, stepIndex, _selection.Model.ToString(),
                                 _selection.ContextBudget, _selection.ToolMode.ToString(),
@@ -1309,6 +1354,7 @@ public sealed class ExplorerTurn
                 // Se mantiene la redacción vigente; el replay opaco requiere una política aparte.
                 messages.Add(RedactMessage(new ModelMessage(MessageRole.Assistant, resolved.Content.ToArray())));
 
+                var pendingDiscoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
                 foreach (ToolCallBlock call in toolBlocks)
                 {
                     try
@@ -1327,7 +1373,7 @@ public sealed class ExplorerTurn
                     var validated = new ValidatedToolCall(call.Id, new ToolId(call.ToolName),
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
                     var exposed = ReadTurnToolCallCount(stream, turnId) < _maxToolCallsPerTurn
-                        && VisibleTools().Any(tool => tool.Name == call.ToolName);
+                        && VisibleTools(discoveredToolIds).Any(tool => tool.Name == call.ToolName);
                     ToolCallRequestReceipt? requestReceipt = null;
                     // user.ask has no external effect. Keep its schema in CAS and append its
                     // sanitized request + tool outcome + InteractionRequested atomically only
@@ -1357,6 +1403,37 @@ public sealed class ExplorerTurn
                                 new ToolCallRejected(call.Id, "tool no disponible para este modelo",
                                     ToolErrorCode.UnknownTool)
                             });
+
+                    // Discovery affects only the next request. Every selected tool still has
+                    // to pass the ToolRuntime schema, boundary, PermissionPolicy and Execute path.
+                    if (call.ToolName == "tool.search" && outcome.Succeeded && outcome.Preview is not null
+                        && _selection.ToolMode == ToolMode.Discovered)
+                    {
+                        try
+                        {
+                            using var discovery = JsonDocument.Parse(outcome.Preview);
+                            if (discovery.RootElement.TryGetProperty("matches", out var matches)
+                                && matches.ValueKind == JsonValueKind.Array)
+                            {
+                                foreach (var match in matches.EnumerateArray())
+                                {
+                                    if (!match.TryGetProperty("id", out var id)
+                                        || id.ValueKind != JsonValueKind.String) continue;
+                                    var toolId = id.GetString();
+                                    if (string.IsNullOrWhiteSpace(toolId)) continue;
+                                    var tool = _catalog.Find(new ToolId(toolId));
+                                    if (tool is not null && tool.Descriptor.Source.Trust != TrustLevel.Untrusted
+                                        && (_boundary is null || _boundary.IsToolVisible(toolId)))
+                                        pendingDiscoveredToolIds.Add(toolId);
+                                }
+                            }
+                        }
+                        catch (JsonException)
+                        {
+                            // A malformed discovery result adds no tools; the completed call
+                            // remains in the journal and the ordinary tool plan stays intact.
+                        }
+                    }
 
                     string? planError = null;
                     IReadOnlyList<DomainEventPayload> planEvents = Array.Empty<DomainEventPayload>();
@@ -1532,6 +1609,23 @@ public sealed class ExplorerTurn
                         new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
                     });
                     messages.Add(toolResult);
+                }
+
+                // Apply catalog selections only after this entire model response has been handled.
+                // A tool discovered by one call cannot authorize a sibling call from the same response.
+                var addedDiscoveredTool = false;
+                foreach (var toolId in pendingDiscoveredToolIds)
+                    addedDiscoveredTool |= discoveredToolIds.Add(toolId);
+                if (addedDiscoveredTool)
+                {
+                    var replayedPlan = PlanProjection.Replay(_codecs, initialPlanEvents).Latest();
+                    var preparedStepFingerprint = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint,
+                        _catalog, VisibleTools(discoveredToolIds), EffectiveSystemPrompt(instruction), replayedPlan,
+                        _artifacts, laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority,
+                        instructionSnapshot, reasoningResolution);
+                    stepFingerprint = preparedStepFingerprint.Fingerprint;
+                    stepFingerprintArtifacts = preparedStepFingerprint.Artifacts;
+                    discoveredPlanChanged = true;
                 }
 
                 if (stop == StopReason.Cancelled)
@@ -2465,6 +2559,112 @@ public sealed class ExplorerTurn
                 throw new InvalidDataException("Fingerprint component artifact failed publication integrity verification.");
     }
 
+    private bool TryRecoverDiscoveredToolPlan(EventStream stream, TurnId turnId, string instruction,
+        IReadOnlyList<DomainEvent> initialPlanEvents, ProfileId? laneProfileId,
+        RunModeAuthority? fingerprintAuthority, TurnInstructionSnapshot? instructionSnapshot,
+        ReasoningResolution? reasoningResolution, HashSet<string> discoveredToolIds,
+        out RuntimeFingerprintFactory.PreparedRuntimeFingerprint? recovered, out string? error)
+    {
+        recovered = null;
+        error = null;
+        try
+        {
+            var latest = stream.EventsSince(1).Where(evt => evt.TurnId == turnId)
+                .Select(evt => _codecs.Decode(evt)).OfType<ModelStepStarted>()
+                .OrderByDescending(step => step.StepIndex).FirstOrDefault();
+            if (latest?.ContextSnapshotRef is not { } snapshotRef)
+                return false;
+            if (!_artifacts.Verify(snapshotRef.Hash, snapshotRef.Size)
+                || _artifacts.GetText(snapshotRef.Hash) is not { } snapshotText)
+                throw new InvalidDataException("Persisted ModelStep snapshot failed integrity verification.");
+
+            using var snapshot = System.Text.Json.JsonDocument.Parse(snapshotText);
+            var root = snapshot.RootElement;
+            if (!root.TryGetProperty("toolPlan", out var savedPlan)
+                || savedPlan.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return false; // Legacy context snapshot: there is no safe discovery receipt to replay.
+            var savedFingerprint = root.GetProperty("fingerprint").GetString();
+            var componentHashText = savedPlan.GetProperty("componentHash").GetString();
+            var artifactHashText = savedPlan.GetProperty("artifactHash").GetString();
+            var artifactSize = savedPlan.GetProperty("artifactSize").GetInt64();
+            if (savedPlan.GetProperty("componentVersion").GetString() != "2")
+                throw new InvalidDataException("Persisted discovered tool plan version is unsupported.");
+            if (string.IsNullOrWhiteSpace(savedFingerprint) || string.IsNullOrWhiteSpace(componentHashText)
+                || !TryContentHash(componentHashText, out var componentHash)
+                || !TryContentHash(artifactHashText, out var artifactHash)
+                || componentHash != artifactHash || artifactSize < 0
+                || !_artifacts.Verify(artifactHash, artifactSize)
+                || _artifacts.GetText(artifactHash) is not { } toolPlanText)
+                throw new InvalidDataException("Persisted discovered tool plan failed integrity verification.");
+
+            using var planDocument = System.Text.Json.JsonDocument.Parse(toolPlanText);
+            var tools = planDocument.RootElement.GetProperty("tools");
+            if (tools.ValueKind != System.Text.Json.JsonValueKind.Array)
+                throw new InvalidDataException("Persisted discovered tool plan is malformed.");
+            var initialIds = VisibleTools(new HashSet<string>(StringComparer.Ordinal))
+                .Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+            var savedDefinitions = new List<ToolDefinition>();
+            foreach (var entry in tools.EnumerateArray())
+            {
+                var visibleName = entry.GetProperty("visibleName").GetString();
+                var toolId = entry.GetProperty("toolId").GetString();
+                var description = entry.GetProperty("description").GetString();
+                var schema = entry.GetProperty("inputSchemaJson").GetString();
+                if (string.IsNullOrWhiteSpace(toolId) || !string.Equals(visibleName, toolId, StringComparison.Ordinal)
+                    || description is null || schema is null)
+                    throw new InvalidDataException("Persisted discovered tool mapping is not canonical.");
+                var tool = _catalog.Find(new ToolId(toolId));
+                if (tool is null || tool.Descriptor.Source.Trust == TrustLevel.Untrusted
+                    || _boundary is not null && !_boundary.IsToolVisible(toolId))
+                    throw new InvalidDataException("Persisted request tool is no longer eligible.");
+                savedDefinitions.Add(new ToolDefinition(visibleName!, description, schema));
+                if (!initialIds.Contains(toolId)) discoveredToolIds.Add(toolId);
+            }
+
+            // A ModelStep can intentionally receive no tools when the per-Turn call cap is
+            // exhausted. Otherwise its persisted request set must still be the exact live plan.
+            if (savedDefinitions.Count > 0)
+            {
+                var expected = VisibleTools(discoveredToolIds);
+                if (!EquivalentToolDefinitions(savedDefinitions, expected))
+                    throw new InvalidDataException("Persisted request tool schemas differ from the current effective plan.");
+            }
+            var plan = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog,
+                savedDefinitions, EffectiveSystemPrompt(instruction),
+                PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts, laneProfileId,
+                _activeSkills, _resolvedAgentProfile, fingerprintAuthority, instructionSnapshot, reasoningResolution);
+            var rebuiltToolPlan = plan.Fingerprint.Components.SingleOrDefault(component => component.Name == "tools.plan");
+            if (!string.Equals(plan.Fingerprint.Hash(), savedFingerprint, StringComparison.Ordinal)
+                || rebuiltToolPlan is null || rebuiltToolPlan.Hash != componentHash)
+                throw new InvalidDataException("Persisted discovered tool plan differs from current catalog or effective policy.");
+            recovered = plan;
+            return discoveredToolIds.Count > 0;
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException or InvalidOperationException
+            or IOException or ArgumentException or InvalidDataException or FormatException)
+        {
+            error = "Cannot resume Turn: discovered tool plan failed integrity or eligibility validation.";
+            return false;
+        }
+
+        static bool TryContentHash(string? text, out ContentHash hash)
+        {
+            hash = new ContentHash("", "");
+            if (text is null) return false;
+            var separator = text.IndexOf(':');
+            if (separator < 1 || separator == text.Length - 1) return false;
+            hash = new ContentHash(text[..separator], text[(separator + 1)..]);
+            return hash.Algorithm == "sha256" && hash.Value.Length == 64
+                && hash.Value.All(Uri.IsHexDigit);
+        }
+
+        static bool EquivalentToolDefinitions(IReadOnlyList<ToolDefinition> left,
+            IReadOnlyList<ToolDefinition> right) => left.Count == right.Count
+            && left.Zip(right).All(pair => string.Equals(pair.First.Name, pair.Second.Name, StringComparison.Ordinal)
+                && string.Equals(pair.First.Description, pair.Second.Description, StringComparison.Ordinal)
+                && string.Equals(pair.First.InputSchemaJson, pair.Second.InputSchemaJson, StringComparison.Ordinal));
+    }
+
     private LaneCreated? FindAgentProfileForLane(IReadOnlyList<DomainEvent> events, RunId runId, LaneId laneId)
     {
         foreach (var evt in events)
@@ -3070,6 +3270,16 @@ public sealed class ExplorerTurn
             writer.WriteString("turnId", snapshot.TurnId?.ToString());
             writer.WriteString("fingerprint", snapshot.Fingerprint.Hash());
             writer.WriteString("snapshotFingerprint", snapshot.SnapshotFingerprint);
+            if (snapshot.Fingerprint.Components.FirstOrDefault(component => component.Name == "tools.plan")
+                is { Content: { } toolPlanContent } toolPlan)
+            {
+                writer.WriteStartObject("toolPlan");
+                writer.WriteString("componentVersion", toolPlan.Version);
+                writer.WriteString("componentHash", toolPlan.Hash.ToString());
+                writer.WriteString("artifactHash", toolPlanContent.Hash.ToString());
+                writer.WriteNumber("artifactSize", toolPlanContent.Size);
+                writer.WriteEndObject();
+            }
             writer.WriteNumber("tokenCount", snapshot.TokenCount);
             writer.WriteNumber("tokenBudget", tokenBudget);
             var accuracy = _materializer.Counter().Accuracy.ToString().ToLowerInvariant();
@@ -3232,8 +3442,19 @@ public sealed class ExplorerTurn
             throw new InvalidOperationException("El Run no admite input en estado " + state);
     }
 
-    private IReadOnlyList<ToolDefinition> VisibleTools()
+    private IReadOnlyList<ToolDefinition> VisibleTools(IReadOnlySet<string>? discoveredToolIds = null)
     {
+        var definitions = _catalog.Definitions();
+        if (_selection.ToolMode != ToolMode.Discovered)
+            definitions = definitions.Where(tool => tool.Name != "tool.search").ToArray();
+        else
+        {
+            var visibleIds = new HashSet<string>(StringComparer.Ordinal)
+                { "filesystem.read", "filesystem.list", "filesystem.search", "search.text",
+                    "reference.resolve", "tool.search", "user.ask", "artifact.read" };
+            if (discoveredToolIds is not null) visibleIds.UnionWith(discoveredToolIds);
+            definitions = definitions.Where(tool => visibleIds.Contains(tool.Name)).ToArray();
+        }
         IReadOnlyDictionary<string, int>? ranks = null;
         if (_resolvedAgentProfile is not null)
         {
@@ -3242,9 +3463,9 @@ public sealed class ExplorerTurn
         }
         // A preference changes ordering only. Basic capabilities are ranked first by the
         // boundary, so a low visible-tool cap cannot accidentally hide read/search behind plans.
-        if (_boundary is not null) return _boundary.VisibleTools(_catalog.Definitions(), ranks);
+        if (_boundary is not null) return _boundary.VisibleTools(definitions, ranks);
 
-        IEnumerable<ToolDefinition> all = _catalog.Definitions();
+        IEnumerable<ToolDefinition> all = definitions;
         if (ranks is not null) all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
         var visible = new List<ToolDefinition>();
         foreach (var tool in all)

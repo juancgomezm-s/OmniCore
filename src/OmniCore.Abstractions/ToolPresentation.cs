@@ -32,6 +32,7 @@ public sealed record ToolPresentation(ActivityCategory Category, string RunningK
         new Dictionary<string, ToolPresentation>(StringComparer.Ordinal)
         {
             ["filesystem.read"] = For("filesystem.read", ActivityCategory.Read, "path"),
+            ["tool.search"] = For("tool.search", ActivityCategory.Search, "query"),
             ["filesystem.list"] = For("filesystem.list", ActivityCategory.Read, "path"),
             ["search.text"] = For("search.text", ActivityCategory.Search, "pattern"),
             ["filesystem.write"] = For("filesystem.write", ActivityCategory.Edit, "path"),

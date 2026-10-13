@@ -24,8 +24,8 @@ public sealed class ReadFileTool : ITool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.read"),
-            "Reads the contents of a file within the workspace (read-only).",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}"),
+            "Reads a bounded page of lines from a file within the workspace (read-only). offset is a 1-based line number; limit is 1..500 lines. The result includes the SHA-256 of the complete file.",
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"offset\":{\"type\":\"integer\"},\"limit\":{\"type\":\"integer\"}},\"required\":[\"path\"],\"additionalProperties\":false}"),
             new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
     }
 
@@ -46,6 +46,11 @@ public sealed class ReadFileTool : ITool
                 "Acceso denegado: la ruta contiene secretos (.env, claves, credenciales) y está protegida (ADR-0018)",
                 null, ToolErrorCode.PermissionDenied);
         }
+
+        if (!TryReadArguments(call.NormalizedArgumentsJson, out var offset, out var limit,
+                out var offsetValue, out var limitValue) || offset < 1 || limit is < 1 or > 500)
+            return new PreparationRejected(ToolArgumentDiagnostic.Invalid("tool.error.read_page_bounds",
+                ("offset", offsetValue), ("limit", limitValue)), null, ToolErrorCode.InvalidArguments);
 
         var claims = path is null || path!.Length == 0
             ? ResourceClaims.Empty()
@@ -102,23 +107,34 @@ public sealed class ReadFileTool : ITool
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.ToolFailure, ex.Message));
         }
 
-        var content = decoded.Text;
-        // Redacción obligatoria del contenido antes de exponerlo al modelo (ADR-0018 §4).
-        content = new OmniCore.Domain.RedactionPolicy().Redact(content);
-        var truncated = content.Length > 8000 ? content.Substring(0, 8000) : content;
-        var externalized = content.Length > 8000;
+        if (!TryReadArguments(intent.Intent.NormalizedArgumentsJson, out var offset, out var limit,
+                out var offsetValue, out var limitValue) || offset < 1 || limit is < 1 or > 500)
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
+                ToolArgumentDiagnostic.Invalid("tool.error.read_page_bounds",
+                    ("offset", offsetValue), ("limit", limitValue))));
 
-        // El token se añade al final, DESPUÉS de truncar/redactar, para que siempre llegue al
-        // modelo utilizable aunque el contenido no sea el completo.
-        var preview = truncated + "\n\n" + VersionTokenMarker(version);
+        // Las páginas siempre son líneas completas. Offset es 1-based y el token identifica
+        // los bytes del archivo entero, aunque solo se devuelva una página redactada.
+        var lineRanges = GetLineRanges(decoded.Text);
+        var start = Math.Min(offset - 1, lineRanges.Count);
+        var pageCount = Math.Min(limit, lineRanges.Count - start);
+        var page = pageCount == 0 ? "" : decoded.Text.Substring(lineRanges[start].Start,
+            lineRanges[start + pageCount - 1].End - lineRanges[start].Start);
+        var content = new OmniCore.Domain.RedactionPolicy().Redact(page);
+        const int maxPreviewChars = 8000;
+        var contentTruncated = content.Length > maxPreviewChars;
+        if (contentTruncated) content = content.Substring(0, maxPreviewChars);
+        var endLine = pageCount == 0 ? start : start + pageCount;
+        var hasMore = contentTruncated || start + pageCount < lineRanges.Count;
+        var pageMarker = "[lines:" + (pageCount == 0 ? "none" : (start + 1) + "-" + endLine)
+            + "/" + lineRanges.Count + ";hasMore:" + (hasMore ? "true" : "false")
+            + ";contentTruncated:" + (contentTruncated ? "true" : "false") + "]";
+        var preview = pageMarker + "\n" + content + "\n\n" + VersionTokenMarker(version);
+        var externalized = hasMore;
 
-        // ADR-0044 §5: registrar la lectura EFECTIVA (éxito + token real visible en el marcador
-        // [version:…] del resultado) en el registro por-Run, para que filesystem.patch exija esta
-        // lectura previa del MISMO path/version antes de mutar. Se registra SOLO aquí, en el
-        // camino exitoso, justo antes de devolver el ToolResult exitoso. El marker [version:…] se
-        // añade al final de `preview` DESPUÉS del truncado/redacción (sobre `content`), así que en
-        // el momento del registro el modelo SÍ va a recibir ese token en el resultado: la identidad
-        // path/version registrada coincide siempre con lo que el modelo observa. Un read que
+        // ADR-0044 §5: registrar únicamente después de que la lectura tuvo éxito y expuso el token
+        // del archivo completo. La página puede ser parcial; el consumidor sigue obligado a usar
+        // oldText exacto y a pasar las comprobaciones de versión y permisos. Un read que
         // devuelve antes de esta línea (archivo inexistente, fuera del workspace, encoding
         // inválido tras Decode, error, denegación, cancelación o lectura de secretos rechazada en
         // Prepare) NO registra y por tanto no habilita un patch posterior. Si el pipeline no
@@ -130,7 +146,7 @@ public sealed class ReadFileTool : ITool
         }
 
         return System.Threading.Tasks.Task.FromResult(new ToolResult(
-            externalized ? "Contenido truncado (externalizado)" : "ok (" + path + ")", preview, null,
+            externalized ? "Contenido parcial (externalizado)" : "ok (" + path + ")", preview, null,
             content.Length, externalized, EffectOutcome.None));
     }
 
@@ -138,6 +154,64 @@ public sealed class ReadFileTool : ITool
     {
         var map = ArgsJson.Parse(argsJson);
         return map.TryGetValue("path", out var p) ? p : null;
+    }
+
+    private readonly record struct LineRange(int Start, int End);
+
+    // Ranges include the original terminator bytes after decoding (LF, CRLF, or mixed) so a
+    // multiline fragment returned by read can be passed unchanged as filesystem.patch.oldText.
+    // A final newline terminates the preceding line; it does not create an extra empty line.
+    private static IReadOnlyList<LineRange> GetLineRanges(string text)
+    {
+        var lines = new List<LineRange>();
+        var start = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (text[index] != '\n') continue;
+            lines.Add(new LineRange(start, index + 1));
+            start = index + 1;
+        }
+        if (start < text.Length) lines.Add(new LineRange(start, text.Length));
+        return lines;
+    }
+
+    private static bool TryReadArguments(string argsJson, out int offset, out int limit,
+        out string offsetText, out string limitText)
+    {
+        offset = 1;
+        limit = 200;
+        offsetText = "1";
+        limitText = "200";
+        try
+        {
+            using var document = JsonDocument.Parse(argsJson);
+            var root = document.RootElement;
+            if (root.TryGetProperty("offset", out var offsetValue))
+            {
+                offsetText = DiagnosticValue(offsetValue);
+                if (offsetValue.ValueKind != JsonValueKind.Number || !offsetValue.TryGetInt32(out offset)) return false;
+            }
+            if (root.TryGetProperty("limit", out var limitValue))
+            {
+                limitText = DiagnosticValue(limitValue);
+                if (limitValue.ValueKind != JsonValueKind.Number || !limitValue.TryGetInt32(out limit)) return false;
+            }
+            offsetText = offset.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            limitText = limit.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        static string DiagnosticValue(JsonElement value)
+        {
+            if (value.ValueKind != JsonValueKind.Number) return "invalid";
+            var raw = value.GetRawText();
+            if (value.TryGetInt32(out _)) return raw;
+            return value.TryGetInt64(out _) || raw.Length > 32 ? "out-of-range" : "invalid";
+        }
     }
 
     private static string JoinPath(string root, string relative)

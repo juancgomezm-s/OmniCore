@@ -262,6 +262,9 @@ public sealed class ToolExecutionContext
 
     public IWorkspaceWriteLeaseProvider? WorkspaceWriteLeases { get; }
 
+    /// <summary>Model capability filter for catalog discovery; it discloses no grants.</summary>
+    public Func<string, bool>? IsModelToolVisible { get; }
+
     public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
@@ -270,7 +273,8 @@ public sealed class ToolExecutionContext
         WeakSandboxConsentState? weakSandboxConsent = null, Action<ToolIntent>? beforeEffect = null,
         IArtifactStore? artifacts = null,
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
-        IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null)
+        IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null,
+        Func<string, bool>? isModelToolVisible = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -283,6 +287,7 @@ public sealed class ToolExecutionContext
         Artifacts = artifacts;
         ReceiveMailbox = receiveMailbox;
         WorkspaceWriteLeases = workspaceWriteLeases;
+        IsModelToolVisible = isModelToolVisible;
     }
 }
 

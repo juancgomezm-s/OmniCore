@@ -536,6 +536,40 @@ public sealed class FilesystemPatchToolTests
         Assert.Equal(currentBefore, File.ReadAllText(Path.Combine(ws, "doc.txt")));
     }
 
+    [Fact]
+    public void EndToEnd_read_page_fragment_preserves_crlf_for_multiline_patch()
+    {
+        var ws = TempDir();
+        var original = "alpha\r\nbeta\r\ngamma";
+        File.WriteAllText(Path.Combine(ws, "doc.txt"), original, new System.Text.UTF8Encoding(false));
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+        var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(),
+            new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+            {
+                ["filesystem.read"] = PermissionDecision.Allow,
+                ["filesystem.patch"] = PermissionDecision.Allow,
+            }), ws);
+
+        var read = executor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(),
+            new ToolId("filesystem.read"), "read-page-crlf",
+            "{\"path\":\"doc.txt\",\"offset\":1,\"limit\":2}"), false, CancellationToken.None);
+        Assert.True(read.Succeeded, read.Summary);
+        var version = ExtractTokenFromReadPreview(read.Preview!);
+        Assert.NotNull(version);
+        const string markerEnd = "\n";
+        var contentStart = read.Preview!.IndexOf(markerEnd, StringComparison.Ordinal) + markerEnd.Length;
+        var versionMarkerStart = read.Preview.IndexOf("\n\n[version:", contentStart, StringComparison.Ordinal);
+        Assert.True(versionMarkerStart > contentStart);
+        var fragment = read.Preview.Substring(contentStart, versionMarkerStart - contentStart);
+        Assert.Equal("alpha\r\nbeta\r\n", fragment);
+
+        var patch = executor.ExecuteToolWithoutJournal(
+            PatchCall(ws, "doc.txt", version!, fragment, "alpha-updated\r\nbeta\r\n"), false,
+            CancellationToken.None);
+        Assert.True(patch.Succeeded, patch.Summary);
+        Assert.Equal("alpha-updated\r\nbeta\r\ngamma", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+    }
+
     // ---- Decodificación estricta (FileVersion.Decode): BOM no soportado y bytes inválidos ----
 
     [Fact]

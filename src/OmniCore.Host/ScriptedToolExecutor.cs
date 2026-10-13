@@ -259,7 +259,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 // Buffered before Started: its Barrier confirms this debt before ExecuteAsync.
                 emit(new PostEditValidationPending(runId, intent.ToolCallId, intent.Claims.Writes.ToArray()));
             }, artifacts: _artifacts, receiveMailbox: _receiveMailbox,
-            workspaceWriteLeases: _workspaceWriteLeases);
+            workspaceWriteLeases: _workspaceWriteLeases,
+            isModelToolVisible: _boundary is null ? null : _boundary.IsToolVisible);
         var outcome = requestReceipt is null
             ? runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken)
             : runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken, requestReceipt);
