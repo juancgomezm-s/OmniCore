@@ -11,6 +11,40 @@ namespace OmniCore.Tests;
 public sealed class DelegationLifecycleTests
 {
     [Fact]
+    public void Undeclared_quotas_allow_a_managed_child_without_an_output_bound_and_survive_reopen()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        fx.Grant(maxSpendUsd: null);
+        var request = fx.Request() with { MaxTokens = null, MaxCostUsd = null };
+        var admitted = fx.Server.SendUserAction(DelegationCommands.Create(request, Ids.NewV7()),
+            CancellationToken.None);
+        Assert.Equal("ok", admitted.Status);
+        var child = Assert.Single(fx.Payloads.OfType<DelegationCreated>()).Delegation;
+        var task = fx.Payloads.OfType<TaskCreated>().Single(item => item.TaskId == child.ChildTaskId);
+        Assert.Null(task.Budget.MaxTokens);
+        Assert.Null(task.Budget.MaxCostUsd);
+        Assert.Equal(request.MaxTurns, task.Budget.MaxTurns);
+        Assert.Equal(request.MaxToolCalls, task.Budget.MaxToolCalls);
+        fx.Reopen();
+        var calls = 0;
+        var executed = fx.Server.ExecuteDelegation(child.DelegationId, (work, token) =>
+            fx.Explorer((modelRequest, _) =>
+            {
+                calls++;
+                Assert.Null(modelRequest.Model.MaxOutputTokens);
+                return new ModelResponse([new TextBlock("Hola, sin cuota impuesta.")], StopReason.EndTurn,
+                    new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
+            }, outputLimitConfigured: false).Ask(work.Objective, "system", work.Session, work.Run,
+                work.Delegation.ChildLaneId, "", token), CancellationToken.None);
+        Assert.Equal("ok", executed.Status);
+        Assert.Equal(1, calls);
+        Assert.Single(fx.Payloads.OfType<DelegationReturned>());
+        Assert.DoesNotContain(fx.Payloads.OfType<InteractionRequested>(),
+            item => item.Kind == InteractionKind.BudgetExceeded);
+    }
+
+    [Fact]
     public void Real_child_returns_immutable_result_and_waits_for_explicit_acceptance_across_reopen()
     {
         using var fx = new DelegationAdmissionTests.Fixture();
@@ -48,6 +82,61 @@ public sealed class DelegationLifecycleTests
         before = fx.Store.CurrentSequence(fx.Session);
         Assert.Equal(RuntimeCommandOutcomeKind.NoOp, Disposition(fx, child, produced).Outcome?.Kind);
         Assert.Equal(before, fx.Store.CurrentSequence(fx.Session));
+    }
+
+    [Fact]
+    public void Managed_return_wake_is_claimed_once_and_reopen_never_replays_an_uncertain_root_call()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        var child = Queue(fx);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, Execute(fx, child).Outcome?.Kind);
+        var providerCallsAfterChild = fx.ProviderCalls;
+
+        var returned = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt =>
+            fx.Codecs.Decode(evt) is DelegationReturned item && item.DelegationId == child.DelegationId);
+        var created = Assert.Single(fx.Payloads.OfType<WakeRequestCreated>());
+        Assert.Equal(new EvidenceEventRef(fx.Session, returned.EventId), created.Request.SourceEvent);
+        Assert.Equal(fx.Payloads.OfType<DelegationReturned>().Single().ExecutionId, created.ExecutionId);
+
+        var claim = fx.Server.ClaimDelegationReturnWake(child.DelegationId);
+        Assert.Equal(DelegationWakeClaimKind.Claimed, claim.Kind);
+        Assert.NotNull(claim.Request);
+        Assert.Equal(DelegationWakeClaimKind.AlreadyClaimed,
+            fx.Server.ClaimDelegationReturnWake(child.DelegationId).Kind);
+        var acceptedCount = fx.Payloads.OfType<WakeRequestAccepted>().Count();
+        Assert.Equal(1, acceptedCount);
+        Assert.Equal(providerCallsAfterChild, fx.ProviderCalls); // claiming never dispatches a provider call.
+
+        fx.Reopen();
+        Assert.Equal(RuntimeCommandOutcomeKind.NoOp, Execute(fx, child).Outcome?.Kind);
+        Assert.Equal(DelegationWakeClaimKind.AlreadyClaimed,
+            fx.Server.ClaimDelegationReturnWake(child.DelegationId).Kind);
+        Assert.Equal(acceptedCount, fx.Payloads.OfType<WakeRequestAccepted>().Count());
+        Assert.Equal(providerCallsAfterChild, fx.ProviderCalls);
+
+        var wake = created.Request;
+        fx.Server.CompleteDelegationReturnWake(wake, failed: true, "cancelled before root completion");
+        Assert.Equal(DelegationWakeClaimKind.Failed,
+            fx.Server.ClaimDelegationReturnWake(child.DelegationId).Kind);
+        Assert.Single(fx.Payloads.OfType<WakeRequestFailed>());
+        Assert.Empty(fx.Payloads.OfType<WakeRequestResolved>());
+    }
+
+    [Fact]
+    public void Managed_return_wake_resolves_idempotently_after_root_completion()
+    {
+        using var fx = new DelegationAdmissionTests.Fixture();
+        fx.Ask();
+        var child = Queue(fx);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, Execute(fx, child).Outcome?.Kind);
+        var claim = fx.Server.ClaimDelegationReturnWake(child.DelegationId);
+        Assert.Equal(DelegationWakeClaimKind.Claimed, claim.Kind);
+        fx.Server.CompleteDelegationReturnWake(claim.Request!, failed: false);
+        fx.Server.CompleteDelegationReturnWake(claim.Request!, failed: false);
+        Assert.Equal(DelegationWakeClaimKind.Resolved,
+            fx.Server.ClaimDelegationReturnWake(child.DelegationId).Kind);
+        Assert.Single(fx.Payloads.OfType<WakeRequestResolved>());
     }
 
     [Fact]
@@ -360,16 +449,19 @@ public sealed class DelegationLifecycleTests
         var acknowledgement = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is ExecutionMailboxMessageAcknowledged);
         var ackPayload = (ExecutionMailboxMessageAcknowledged)fx.Codecs.Decode(acknowledgement);
         Assert.Equal(message.Message.MessageId, ackPayload.MessageId);
-        var wakeEvents = fx.Store.ReadFrom(fx.Session, 1).Where(evt => fx.Codecs.Decode(evt) is WakeRequestCreated).ToArray();
+        var wakeEvents = fx.Store.ReadFrom(fx.Session, 1).Where(evt => fx.Codecs.Decode(evt) is WakeRequestCreated created
+            && created.Request.MessageId is not null).ToArray();
         Assert.Equal(2, wakeEvents.Length);
         var firstWakeId = ((WakeRequestCreated)fx.Codecs.Decode(wakeEvents[0])).Request.WakeRequestId;
         var secondWakeId = ((WakeRequestCreated)fx.Codecs.Decode(wakeEvents[1])).Request.WakeRequestId;
         var failedWake = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is WakeRequestFailed);
         Assert.Equal(firstWakeId, ((WakeRequestFailed)fx.Codecs.Decode(failedWake)).WakeRequestId);
         Assert.Equal(new EventCausation(failedCall.EventId), failedWake.Causation);
-        var acceptedEvents = fx.Store.ReadFrom(fx.Session, 1).Where(evt => fx.Codecs.Decode(evt) is WakeRequestAccepted).ToArray();
+        var acceptedEvents = fx.Store.ReadFrom(fx.Session, 1).Where(evt => fx.Codecs.Decode(evt) is WakeRequestAccepted accepted
+            && wakeEvents.Any(created => ((WakeRequestCreated)fx.Codecs.Decode(created)).Request.WakeRequestId == accepted.WakeRequestId)).ToArray();
         Assert.Equal(2, acceptedEvents.Length);
-        var wakeResolved = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is WakeRequestResolved);
+        var wakeResolved = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is WakeRequestResolved resolved
+            && wakeEvents.Any(created => ((WakeRequestCreated)fx.Codecs.Decode(created)).Request.WakeRequestId == resolved.WakeRequestId));
         Assert.Contains(acceptedEvents, evt => ((WakeRequestAccepted)fx.Codecs.Decode(evt)).WakeRequestId == firstWakeId);
         Assert.Contains(acceptedEvents, evt => ((WakeRequestAccepted)fx.Codecs.Decode(evt)).WakeRequestId == secondWakeId);
         Assert.Equal(secondWakeId, ((WakeRequestResolved)fx.Codecs.Decode(wakeResolved)).WakeRequestId);
@@ -502,16 +594,20 @@ public sealed class DelegationLifecycleTests
         var success = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => evt.ToolCallId == request.ToolCallId
             && fx.Codecs.Decode(evt) is ToolCallSucceeded);
         var message = Assert.Single(fx.Payloads.OfType<ExecutionMailboxMessageReceived>());
-        var wake = Assert.Single(fx.Payloads.OfType<WakeRequestCreated>());
+        var wake = Assert.Single(fx.Payloads.OfType<WakeRequestCreated>(), item =>
+            item.Request.MessageId == message.Message.MessageId);
         Assert.Empty(fx.Payloads.OfType<ExecutionMailboxMessageAcknowledged>());
-        Assert.Empty(fx.Payloads.OfType<WakeRequestResolved>());
+        Assert.DoesNotContain(fx.Payloads.OfType<WakeRequestResolved>(), item =>
+            item.WakeRequestId == wake.Request.WakeRequestId);
 
         // Simulate process loss after ToolCallSucceeded but before the atomic ACK + WakeResolved batch.
         // Recovery runs against a newly opened Host on the same SQLite only after the prior one is done.
         fx.MailboxAckFault!.FailAcknowledgementBatches = false;
         fx.Reopen();
         var ackEvent = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is ExecutionMailboxMessageAcknowledged);
-        var resolvedEvent = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt => fx.Codecs.Decode(evt) is WakeRequestResolved);
+        var resolvedEvent = Assert.Single(fx.Store.ReadFrom(fx.Session, 1), evt =>
+            fx.Codecs.Decode(evt) is WakeRequestResolved resolved
+            && resolved.WakeRequestId == wake.Request.WakeRequestId);
         Assert.Equal(message.Message.MessageId, ((ExecutionMailboxMessageAcknowledged)fx.Codecs.Decode(ackEvent)).MessageId);
         Assert.Equal(wake.Request.WakeRequestId, ((WakeRequestResolved)fx.Codecs.Decode(resolvedEvent)).WakeRequestId);
         Assert.Equal(new EventCausation(success.EventId), ackEvent.Causation);
@@ -521,7 +617,8 @@ public sealed class DelegationLifecycleTests
         fx.Reopen();
         Assert.Equal(recoveredSequence, fx.Store.CurrentSequence(fx.Session));
         Assert.Single(fx.Payloads.OfType<ExecutionMailboxMessageAcknowledged>());
-        Assert.Single(fx.Payloads.OfType<WakeRequestResolved>());
+        Assert.Single(fx.Payloads.OfType<WakeRequestResolved>(), item =>
+            item.WakeRequestId == wake.Request.WakeRequestId);
         Assert.Equal(1, Volatile.Read(ref providerCalls));
     }
 

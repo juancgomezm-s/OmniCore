@@ -278,7 +278,7 @@ public sealed class UserAskSchemaRegressionTests
         SqliteEventStore? store = null;
         try
         {
-            using var timeout = new CancellationTokenSource(optIn == "qwen" ? TimeSpan.FromMinutes(70) : TimeSpan.FromSeconds(180));
+            using var timeout = new CancellationTokenSource(optIn == "qwen" ? TimeSpan.FromMinutes(120) : TimeSpan.FromSeconds(180));
             var paths = ExistingLiveConnectionPaths();
             var registry = OmniHost.LoadUserModelRegistry(paths);
             var model = registry.Model(modelId)

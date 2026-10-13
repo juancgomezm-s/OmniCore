@@ -289,7 +289,7 @@ public sealed record WorkflowStageContract(WorkflowRef Workflow, string Instance
                 || delegation.Delegation.Supervision != ExecutionSupervision.Managed
                 || delegation.Delegation.ProfileId != lane.AgentProfile
                 || task.Budget.MaxTurns != 1 || task.Budget.MaxToolCalls is not (>= 1 and <= 4)
-                || task.Budget.MaxTokens is not (>= 8_448) || task.Budget.MaxCostUsd is null or < 0)
+                || task.Budget.MaxTokens is < 8_448 || task.Budget.MaxCostUsd is < 0)
                 return false;
             var rootLane = facts.Select(pair => pair.Payload).OfType<LaneCreated>()
                 .SingleOrDefault(value => value.TaskId == root.RootTask);

@@ -29,6 +29,7 @@ public sealed class SessionRoutingHostIntegrationTests
               paid-model: { provider: paid, context: 8192 }
             """);
         var baseline = ModelRoutingHost.InitialSessionPolicy(loaded, "local");
+        Assert.Null(baseline.SessionSpendLimit);
         Assert.Equal(BillingMode.Local, Assert.Single(baseline.AllowedRoutes).BillingMode);
         Assert.Empty(ModelRoutingHost.InitialSessionPolicy(loaded, "unknown").AllowedRoutes);
         Assert.Empty(ModelRoutingHost.InitialSessionPolicy(loaded, "paid").AllowedRoutes);
@@ -41,9 +42,25 @@ public sealed class SessionRoutingHostIntegrationTests
         Assert.Equal(RuntimeCommandOutcomeKind.NoOp, server.EnsureSessionRoutingPolicy(session).Outcome?.Kind);
         var persisted = SessionRoutingAuthorization.Read(server.AcquireStore().ReadFrom(session, 1), server.AcquireCodecs(), session)!;
         Assert.Equal(baseline.AllowedRoutes, persisted.AllowedRoutes);
+        Assert.Null(persisted.SessionSpendLimit);
         Assert.Equal(1, persisted.Revision);
         Assert.Throws<ArgumentException>(() => server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
             [AuthorizedModelRoute.From(Route(), BillingMode.MeteredCurrency)], [BillingMode.MeteredCurrency], false, null, "paid")));
+    }
+
+    [Theory]
+    [InlineData("", null)]
+    [InlineData("budget: {}", null)]
+    [InlineData("budget: { daily: 7 }", null)]
+    [InlineData("budget: { session: 0 }", 0d)]
+    [InlineData("budget: { session: 12.5 }", 12.5d)]
+    public void Initial_session_quota_exists_only_when_explicitly_configured(string settings, double? expected)
+    {
+        var loaded = new ConfigLoader().Load(
+            "providers:\n  fixture: { baseUrl: 'http://fixture.invalid/v1', auth: none, billingMode: Local }",
+            "models:\n  fixture-model: { provider: fixture, context: 8192 }", settings);
+        var policy = ModelRoutingHost.InitialSessionPolicy(loaded, "fixture");
+        Assert.Equal(expected is { } value ? (decimal?)value : null, policy.SessionSpendLimit);
     }
 
     [Theory]

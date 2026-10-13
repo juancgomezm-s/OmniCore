@@ -359,7 +359,7 @@ public sealed class CliApp
 
     private static string KnownDiagnosticValue(string keyPrefix, string? value, params string[] known)
     {
-        if (value is null) return Loc().Resolve("cli.runtime.status.unknown", "value", "Unavailable");
+        if (value is null) return Loc().Resolve("cli.runtime.status.unknown", "value", Loc().Resolve("cli.diagnostic.value.unavailable"));
         var code = value.Replace("_", "", StringComparison.Ordinal)
             .Replace("-", "", StringComparison.Ordinal).ToLowerInvariant();
         if (known.Contains(code, StringComparer.Ordinal))
@@ -373,7 +373,7 @@ public sealed class CliApp
 
     private static string DiagnosticDecision(string? value)
     {
-        if (value is null) return Loc().Resolve("cli.runtime.status.unknown", "value", "Unavailable");
+        if (value is null) return Loc().Resolve("cli.runtime.status.unknown", "value", Loc().Resolve("cli.diagnostic.value.unavailable"));
         var code = value.Replace("_", "", StringComparison.Ordinal).ToLowerInvariant();
         if (code is "allow" or "allowed") return Loc().Resolve("cli.diagnostic.decision.allowed");
         if (code is "deny" or "denied") return Loc().Resolve("cli.diagnostic.decision.denied");

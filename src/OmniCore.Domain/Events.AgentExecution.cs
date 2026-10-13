@@ -65,7 +65,7 @@ public sealed record ExternalLaneSessionBound(ExecutionId ExecutionId, LaneId La
 /// <summary>Durable ceiling reserved before one external CLI invocation. Reservations are never
 /// refunded: an interrupted process may already have consumed its entire allowance.</summary>
 public sealed record ExternalLaneInvocationReserved(ExecutionId ExecutionId, LaneId LaneId,
-    int AttemptNumber, string? SessionId, decimal ReservedCostUsd, long ReservedTokens,
+    int AttemptNumber, string? SessionId, decimal? ReservedCostUsd, long? ReservedTokens,
     int ReservedTurns, int ReservedToolCalls) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("external_lane.invocation_reserved");

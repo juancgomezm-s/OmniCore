@@ -44,11 +44,12 @@ public sealed record FanOutGroupSnapshot(string GroupId, string OwnerExecutionId
     IReadOnlyList<string> DelegationIds, string State, IReadOnlyList<string> MemberResultIds, string? AggregateId);
 
 /// <summary>Explicit user request. Empty selection means no inherited parent content.
-/// Budgets bound queued work; they do not grant tools, routing or worker capacity.</summary>
+/// Turns and tool calls always have finite ceilings. Token and currency ceilings are optional;
+/// null means no local quota, not zero, and does not grant tools, routing or worker capacity.</summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record DelegationCreateRequest(string ProfileId, string SourceEventId, string Objective,
     IReadOnlyList<string> SelectedItemIds, int MaximumPacketBytes, int MaxTurns, int MaxToolCalls,
-    long MaxTokens, decimal MaxCostUsd, int Priority = 0);
+    long? MaxTokens = null, decimal? MaxCostUsd = null, int Priority = 0);
 
 public static class AgentsJson
 {

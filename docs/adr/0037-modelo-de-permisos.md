@@ -109,10 +109,11 @@ Las categorías de la spec §43 se mapean a `ResourceClaims` (ADR-0014):
 
 ### 7. Gasto: tope por sesión con `Ask`
 
-- **Topes por defecto** para providers de pago (API key): **5 USD por sesión** y **20 USD por día**, configurables en scope User (`budget.session`, `budget.daily`).
+- **Cuotas opcionales** por sesión y día, configurables en scope User (`budget.session`, `budget.daily`). Revisión solicitada por el usuario el 2026-10-13: no se imponen los antiguos valores predeterminados de 5/20 USD. Un campo ausente no limita gasto; un cero explícito sigue siendo un límite real. La autorización de la ruta de pago permanece independiente de la cuota.
 - **Al alcanzar el tope:** se emite un `InteractionRequest` de tipo `BudgetExceeded`, con las opciones `Continuar hasta +X` y `Detener`. Sin cliente, aplica ADR-0003: `Deny`, y el Run termina `Failed` con causa `BudgetExceeded`.
 - **Costo:** mientras el provider no lo informe, se estima con el precio declarado, marcado `Estimated` (ADR-0031). Rige **desde M2**, porque desde entonces se puede configurar un provider de pago.
 - **`RunBudget` / `TaskBudget`:** tienen los campos `MaxCostUsd?`, `MaxTokens?`, `MaxTurns?` y `MaxToolCalls?`. Se aplica el patrón reservar-y-liquidar de ADR-0011 §6.
+- **Salida de una generación:** `maxOutput` es opcional; dejarlo vacío elimina el límite solicitado. La ruta sólo lo envía cuando admite ese parámetro. No se exige una cota de salida para comprobar una cuota que no fue declarada. Si se declara una cuota estricta y no se puede calcular su exposición, esa limitación se informa y la admisión conserva el tope elegido.
 - **Suscripciones** (ChatGPT, Claude Code): no tienen costo monetario por llamada. Cuenta la cuota informada por el provider (ADR-0031), y se hace `Ask` si queda por debajo del 10 %.
 
 ### 8. Agent profiles como techos

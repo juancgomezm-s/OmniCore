@@ -36,6 +36,9 @@ internal static class UltraCodeExecutionGuard
             || toolCall is not null && !tools.Contains(toolCall)
             && usedTools + allocations.ToolCalls >= grant.Limits.MaxToolCalls)
             throw Denied("límite de herramientas alcanzado");
+        // No monetary admission quote is required for a quota the user did not set.
+        // This does not authorize a provider route or change tool permissions.
+        if (grant.Limits.MaxSpendUsd is not { } spendLimit) return;
         var reader = new CanonicalSpendReader(codecs, artifacts);
         var day = now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var pool = RunBudgetPool.For(store);
@@ -47,7 +50,7 @@ internal static class UltraCodeExecutionGuard
         if (invocation && quote is null) throw Denied("cota monetaria de invocación desconocida");
         try
         {
-            if (checked(primary.RunUsd.Value + meta.RunUsd.Value + (invocation ? quote!.Value : 0m)) > grant.Limits.MaxSpendUsd)
+            if (checked(primary.RunUsd.Value + meta.RunUsd.Value + (invocation ? quote!.Value : 0m)) > spendLimit)
                 throw Denied("límite de gasto insuficiente");
         }
         catch (OverflowException) { throw Denied("consumo no representable"); }

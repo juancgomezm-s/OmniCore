@@ -52,9 +52,9 @@ internal static class ClaudeLaneInvocationBuilder
         if (!Uri.TryCreate(executable, UriKind.Absolute, out _) && !Path.IsPathFullyQualified(executable))
             throw new InvalidDataException("ClaudeRuntimeIdentityUnavailable");
         var budget = packet.Budget;
-        if (budget.MaxCostUsd is not > 0m || budget.MaxCostUsd > 100m
-            || budget.MaxTokens is not > 0 || budget.MaxToolCalls is not > 0 || budget.MaxTurns is not > 0)
-            throw new InvalidDataException("ExternalLaneBudgetRequired");
+        if (budget.MaxCostUsd is <= 0m or > 100m || budget.MaxTokens is <= 0
+            || budget.MaxToolCalls is not > 0 || budget.MaxTurns is not > 0)
+            throw new InvalidDataException("ExternalLaneBudgetInvalid");
 
         // Claude's tool allow-list cannot express OmniCore's arbitrary read/write glob
         // intersection without changing its permission semantics. Until a lossless mapper is
@@ -118,8 +118,12 @@ internal static class ClaudeLaneInvocationBuilder
             "--setting-sources", "",
             "--restricted", "--safe-mode",
             "--model", profile.ExternalModel!,
-            "--max-budget-usd", budget.MaxCostUsd.Value.ToString("G29", CultureInfo.InvariantCulture),
         ]);
+        if (budget.MaxCostUsd is { } maximumCostUsd)
+        {
+            args.Add("--max-budget-usd");
+            args.Add(maximumCostUsd.ToString("G29", CultureInfo.InvariantCulture));
+        }
         if (budget.MaxTurns is { } maximumTurns)
         {
             args.Add("--max-turns");
@@ -133,12 +137,12 @@ internal static class ClaudeLaneInvocationBuilder
             args.Add(resumeSessionId);
         }
         var reportedCostLimit = maximumReportedCostUsd ?? budget.MaxCostUsd;
-        if (reportedCostLimit is not { } totalCostLimit
-            || totalCostLimit < budget.MaxCostUsd.Value || totalCostLimit > 100m)
+        if (reportedCostLimit is { } totalCostLimit
+            && (budget.MaxCostUsd is { } attemptCost && totalCostLimit < attemptCost || totalCostLimit > 100m))
             throw new InvalidDataException("ExternalLaneReportedCostLimitInvalid");
         var limits = new ClaudeLaneStreamLimits(MaximumTokens: budget.MaxTokens,
             MaximumToolCalls: budget.MaxToolCalls, MaximumCostUsd: budget.MaxCostUsd,
-            MaximumReportedCostUsd: totalCostLimit);
+            MaximumReportedCostUsd: reportedCostLimit);
         limits.Validate();
         var expectedTools = builtinTools.Append("StructuredOutput").ToArray();
         return new(executable, args.AsReadOnly(), new Dictionary<string, string>(),

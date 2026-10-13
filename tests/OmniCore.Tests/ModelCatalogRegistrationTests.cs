@@ -4,6 +4,35 @@ using OmniCore.Host;
 
 public sealed class ModelCatalogRegistrationTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData(4096)]
+    public void Discovery_does_not_turn_provider_capacity_into_an_output_quota(int? capacity)
+    {
+        using var directory = new CatalogDirectory();
+        using var host = ModelPolicyHost.Create(directory.Root);
+        host.ApplyChatGptCatalog([new AvailableChatGptModel("discovered", "Discovered", 8192, capacity)],
+            ModelPolicyHost.WorkspaceSelectionId(directory.Root), TestContext.Current.CancellationToken);
+        var loaded = OmniHost.LoadUserConfiguration(directory.Config);
+        Assert.False(loaded.Registry.Model("discovered")!.OutputLimitConfigured);
+        Assert.DoesNotContain("maxOutput:", File.ReadAllText(Path.Combine(directory.Config, "models.yaml")));
+        Assert.Null(ModelRoutingHost.OutputTokenLimit(loaded.Registry.Model("discovered")!,
+            loaded.Registry.Provider("chatgpt")));
+    }
+
+    [Fact]
+    public void Discovery_preserves_an_existing_explicit_output_limit()
+    {
+        using var directory = new CatalogDirectory();
+        using var host = ModelPolicyHost.Create(directory.Root);
+        host.RegisterChatGptModel("configured", 8192, 2048);
+        host.ApplyChatGptCatalog([new AvailableChatGptModel("configured", "Configured", 8192, 4096)],
+            ModelPolicyHost.WorkspaceSelectionId(directory.Root), TestContext.Current.CancellationToken);
+        var configured = OmniHost.LoadUserConfiguration(directory.Config).Registry.Model("configured")!;
+        Assert.True(configured.OutputLimitConfigured);
+        Assert.Equal(2048, configured.MaxOutputTokens);
+    }
+
     [Fact]
     public void Discovery_replaces_withdrawn_selection_in_same_provider_without_inheriting_permissions()
     {

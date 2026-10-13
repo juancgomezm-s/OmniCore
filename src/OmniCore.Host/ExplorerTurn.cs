@@ -23,7 +23,7 @@ public sealed class ExplorerTurn
 {
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IEventStore,
         System.Collections.Concurrent.ConcurrentDictionary<(SessionId, RunId, LaneId?), SemaphoreSlim>> RunExecutionGates = new();
-    public static readonly int MaxSteps = 8;
+    public const int MaxSteps = 8;
 
     private readonly Func<ModelRequest, CancellationToken, ModelResponse> _complete;
 
@@ -193,6 +193,27 @@ public sealed class ExplorerTurn
         return max + 1;
     }
 
+    private int ReadTurnToolCallCount(EventStream stream, TurnId turnId)
+    {
+        var ids = new HashSet<ToolCallId>();
+        foreach (var evt in stream.EventsSince(1))
+        {
+            if (evt.TurnId != turnId) continue;
+            try
+            {
+                if (_codecs.Decode(evt) is ToolCallRequested requested)
+                    ids.Add(requested.ToolCallId);
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
+                or FormatException or ArgumentException)
+            {
+                // The general journal validation reports malformed evidence; do not count it as
+                // a valid admission, and keep the boundary fail-closed through that validation.
+            }
+        }
+        return ids.Count;
+    }
+
     /// <summary>
     /// Frontera de capacidad del modelo (ADR-0044 §5): el ToolPlanner (VisibleTools) oculta las
     /// tools fuera del techo y el ToolRuntime la re-valida antes de permisos y antes de ejecutar.
@@ -204,6 +225,8 @@ public sealed class ExplorerTurn
     private readonly ModelPricing? _pricing;
 
     private readonly bool _enforceDefaultSpendCaps;
+    private readonly bool _enforceSessionSpendCap;
+    private readonly bool _enforceDailySpendCap;
     private readonly Func<SessionId, RunId, LaneId, TurnId, int, InteractionId?>? _quotaAdmission;
     private readonly Func<bool>? _quotaAllowsMeta;
 
@@ -226,6 +249,9 @@ public sealed class ExplorerTurn
     private readonly Action<IReadOnlyList<FileMutationSample>>? _mutationEvidence;
 
     private readonly string? _forcedInitialToolName;
+    private readonly int _maxModelStepsPerTurn;
+    private readonly int _maxToolCallsPerTurn;
+    private readonly int _maxGenerationSeconds;
 
     // El watchdog y la directiva se evalúan en cada Turn: cada evento se decodifica una sola vez.
     private readonly MemoizedEventDecoder _stallDecoder;
@@ -249,10 +275,16 @@ public sealed class ExplorerTurn
         Action<ToolCallId>? mailboxDeliveryCompleted = null,
         Func<string?>? stallEscalationUnavailable = null,
         Action<IReadOnlyList<FileMutationSample>>? mutationEvidence = null,
-        string? forcedInitialToolName = null)
+        string? forcedInitialToolName = null,
+        int maxModelStepsPerTurn = MaxSteps, int maxToolCallsPerTurn = 32,
+        int maxGenerationSeconds = 300,
+        bool? enforceSessionSpendCap = null, bool? enforceDailySpendCap = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
+        if (maxModelStepsPerTurn is < 1 or > MaxSteps) throw new ArgumentOutOfRangeException(nameof(maxModelStepsPerTurn));
+        if (maxToolCallsPerTurn is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(maxToolCallsPerTurn));
+        if (maxGenerationSeconds is < 1 or > 3600) throw new ArgumentOutOfRangeException(nameof(maxGenerationSeconds));
         _complete = complete;
         _tools = tools;
         _resolvedAgentProfile = (tools as ScriptedToolExecutor)?.AgentProfile;
@@ -275,7 +307,9 @@ public sealed class ExplorerTurn
         _harness = harness;
         _boundary = boundary;
         _pricing = pricing;
-        _enforceDefaultSpendCaps = enforceDefaultSpendCaps;
+        _enforceSessionSpendCap = enforceSessionSpendCap ?? enforceDefaultSpendCaps;
+        _enforceDailySpendCap = enforceDailySpendCap ?? enforceDefaultSpendCaps;
+        _enforceDefaultSpendCaps = _enforceSessionSpendCap || _enforceDailySpendCap;
         _quotaAdmission = quotaAdmission;
         _quotaAllowsMeta = quotaAllowsMeta;
         _sessionCapUsd = sessionCapUsd;
@@ -288,6 +322,9 @@ public sealed class ExplorerTurn
         if (forcedInitialToolName is not null && catalog.Find(new ToolId(forcedInitialToolName)) is null)
             throw new ArgumentException("The forced command tool is not registered in this Turn.", nameof(forcedInitialToolName));
         _forcedInitialToolName = forcedInitialToolName;
+        _maxModelStepsPerTurn = maxModelStepsPerTurn;
+        _maxToolCallsPerTurn = maxToolCallsPerTurn;
+        _maxGenerationSeconds = maxGenerationSeconds;
         _stallDecoder = new MemoizedEventDecoder(codecs);
         _metaModelProvider = metaModelProvider;
         _modelContextCapacity = modelContextCapacity;
@@ -681,10 +718,10 @@ public sealed class ExplorerTurn
             if (budget.MaxCostUsd is not null && runCost >= budget.MaxCostUsd.Value)
                 throw new BudgetExceededException("límite de costo de Run alcanzado ($" + budget.MaxCostUsd.Value + ")",
                     new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
-            if (_enforceDefaultSpendCaps && sessionCost >= sessionCap)
+            if (_enforceSessionSpendCap && sessionCost >= sessionCap)
                 throw new BudgetExceededException("límite de sesión alcanzado ($" + sessionCap + ")",
                     new("session", _sessionCapUsd, sessionCap, null, null));
-            if (_enforceDefaultSpendCaps && dailyCost >= dailyCap)
+            if (_enforceDailySpendCap && dailyCost >= dailyCap)
                 throw new BudgetExceededException("límite diario alcanzado ($" + dailyCap + ")",
                     new("daily", _dailyCapUsd, dailyCap, null, today));
         }
@@ -816,9 +853,9 @@ public sealed class ExplorerTurn
             var modeAuthorization = RunProjection.Replay(sessionId, runId, _codecs, admissionEvents)
                 .ModeAuthority?.Authorization;
             var hasCappedAdmission = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps
-                || childCostLimit is not null || modeAuthorization is not null;
+                || childCostLimit is not null || modeAuthorization?.Limits.MaxSpendUsd is not null;
             if (!hasCappedAdmission) return null;
-            if (_enforceDefaultSpendCaps && _userSpendReader is not null)
+            if (_enforceDailySpendCap && _userSpendReader is not null)
                 QualificationSpendAccounting.Reconcile(SqliteModelQualificationStore.ReadCanonicalProbeReceipts(
                     _userSpendReader.UserDataDirectory, CancellationToken.None), _spendReservations);
             var maximum = ModelInvocationCostBound.Quote(_selection, _pricing, _modelContextCapacity,
@@ -842,8 +879,8 @@ public sealed class ExplorerTurn
                 var allocatedRunSpend = checked(fresh.RunUsd.Value + allocations.CostUsd);
                 if (budget.MaxCostUsd is { } runLimit)
                     limits.Add(new("run", runId.ToString(), runLimit, allocatedRunSpend));
-                if (modeAuthorization is { } authorization)
-                    limits.Add(new("ultra_run", runId.ToString(), authorization.Limits.MaxSpendUsd,
+                if (modeAuthorization?.Limits.MaxSpendUsd is { } coordinationSpendLimit)
+                    limits.Add(new("ultra_run", runId.ToString(), coordinationSpendLimit,
                         allocatedRunSpend));
                 if (childCostLimit is { } taskLimit && currentTask is not null)
                 {
@@ -858,7 +895,7 @@ public sealed class ExplorerTurn
                     limits.Add(new("task_usd", laneId.ToString(), taskLimit,
                         checked(ownPrimary.RunUsd.Value + ownMeta.RunUsd.Value)));
                 }
-                if (_enforceDefaultSpendCaps)
+                if (_enforceDailySpendCap)
                 {
                     var effectiveDaily = _dailyCapUsd;
                     if (_store is IWorkspaceJournalReader journal)
@@ -868,11 +905,12 @@ public sealed class ExplorerTurn
                             sessionId, runId, day, "daily", _dailyCapUsd);
                     effectiveDaily = Math.Max(effectiveDaily, UserDailyBudgetContinuation.Limit(_userSpendReader, _codecs, day, _dailyCapUsd));
                     reservationDailyCap = effectiveDaily;
-                    limits.Add(new("session", sessionId.ToString(), sessionCap,
-                        checked(fresh.SessionUsd.Value + allocations.CostUsd)));
                     limits.Add(new("daily", "user", effectiveDaily,
                         checked(fresh.DailyUsd.Value + allocations.CostUsd)));
                 }
+                if (_enforceSessionSpendCap)
+                    limits.Add(new("session", sessionId.ToString(), sessionCap,
+                        checked(fresh.SessionUsd.Value + allocations.CostUsd)));
                 return limits;
             }
             var admission = _spendReservations.TryReserve(id, maximum.Value, ReadLimits, out var blocked);
@@ -1018,7 +1056,9 @@ public sealed class ExplorerTurn
             // Replay is scoped to the same durable invocation destination, never to a session's last model.
             ProviderState? continuation = isResume
                 ? ReadProviderContinuation(stream, runId, laneId, turnId) : null;
-            for (var step = 0; step < MaxSteps; step++)
+            // These ceilings are per durable Turn, not per user.ask/resume invocation. Replay
+            // admissions already written for this Turn before allowing another model/tool step.
+            for (var step = nextModelStepIndex; step < _maxModelStepsPerTurn; step++)
             {
                 if (_quotaAdmission?.Invoke(sessionId, runId, laneId, turnId, nextModelStepIndex) is { } quotaInteraction)
                     return new TurnResult(null, StopReason.InputRequired, steps, usage, allToolCalls.ToArray(), null,
@@ -1054,7 +1094,8 @@ public sealed class ExplorerTurn
                             WithoutOpaqueReplay(message.Content))).ToArray()
                         : preparedContext.Messages,
                     RenderContext(materialized),
-                    VisibleTools(),
+                    ReadTurnToolCallCount(stream, turnId) >= _maxToolCallsPerTurn
+                        ? Array.Empty<ToolDefinition>() : VisibleTools(),
                     forcedToolName is { } exactTool ? ToolChoice.Exact(exactTool) : ToolChoice.Auto(),
                     null, _selection.Reasoning, new CacheHints(4, "automatic"),
                     // None is an explicit outbound replay prohibition. Keep the checkpoint
@@ -1111,7 +1152,17 @@ public sealed class ExplorerTurn
                     }
                     using var generationAttempts = GenerationRequestAttemptScope.Enter();
                     providerEntered = true;
-                    resolved = _complete(request, cancellationToken);
+                    using var generationDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    generationDeadline.CancelAfter(TimeSpan.FromSeconds(_maxGenerationSeconds));
+                    try
+                    {
+                        resolved = _complete(request, generationDeadline.Token);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested
+                        && generationDeadline.IsCancellationRequested)
+                    {
+                        throw new GenerationDeadlineExceededException(_maxGenerationSeconds);
+                    }
                     forcedToolName = null;
                     continuation = resolved.State;
                     var stepResponse = VisibleAnswerText(resolved.Content) ?? string.Empty;
@@ -1275,7 +1326,8 @@ public sealed class ExplorerTurn
 
                     var validated = new ValidatedToolCall(call.Id, new ToolId(call.ToolName),
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
-                    var exposed = VisibleTools().Any(tool => tool.Name == call.ToolName);
+                    var exposed = ReadTurnToolCallCount(stream, turnId) < _maxToolCallsPerTurn
+                        && VisibleTools().Any(tool => tool.Name == call.ToolName);
                     ToolCallRequestReceipt? requestReceipt = null;
                     // user.ask has no external effect. Keep its schema in CAS and append its
                     // sanitized request + tool outcome + InteractionRequested atomically only
@@ -1544,9 +1596,18 @@ public sealed class ExplorerTurn
             return new TurnResult(null, ex is OperationCanceledException ? StopReason.Cancelled : StopReason.Error,
                 steps, usage, allToolCalls.ToArray(), null)
             {
-                FailureDiagnostic = _redaction.Redact(ex.GetType().Name + ": " + (ex.Message ?? "turn failed")),
+                FailureDiagnostic = ex is GenerationDeadlineExceededException deadline
+                    ? "OmniCore cancelled generation after " + deadline.Seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + " seconds. The provider may continue work if it does not honor cancellation; reasoning is provider-controlled."
+                    : _redaction.Redact(ex.GetType().Name + ": " + (ex.Message ?? "turn failed")),
             };
         }
+    }
+
+    private sealed class GenerationDeadlineExceededException(int seconds)
+        : OperationCanceledException("Configured generation deadline elapsed.")
+    {
+        public int Seconds { get; } = seconds;
     }
 
     /// <summary>
@@ -1798,7 +1859,7 @@ public sealed class ExplorerTurn
 
     private PersistedSpend ReadOtherWorkspaceSpend(EventStream stream, SessionId sessionId, RunId runId, string today)
     {
-        if (!_enforceDefaultSpendCaps || _userSpendReader is null) return new(0m, 0m, 0m, false);
+        if (!_enforceDailySpendCap || _userSpendReader is null) return new(0m, 0m, 0m, false);
         decimal? daily = 0m;
         var incomplete = false;
         try
@@ -2101,10 +2162,10 @@ public sealed class ExplorerTurn
     private void ValidateSessionDaily(decimal totalSessionCost, decimal totalDailyCost,
         decimal sessionCap, decimal dailyCap, string today)
     {
-        if (totalSessionCost > sessionCap)
+        if (_enforceSessionSpendCap && totalSessionCost > sessionCap)
             throw new BudgetExceededException("límite de sesión ($" + sessionCap + ")",
                 new("session", _sessionCapUsd, sessionCap, null, null));
-        if (totalDailyCost > dailyCap)
+        if (_enforceDailySpendCap && totalDailyCost > dailyCap)
             throw new BudgetExceededException("límite diario ($" + dailyCap + ")",
                 new("daily", _dailyCapUsd, dailyCap, null, today));
     }
@@ -3173,14 +3234,18 @@ public sealed class ExplorerTurn
 
     private IReadOnlyList<ToolDefinition> VisibleTools()
     {
-        IEnumerable<ToolDefinition> all = _catalog.Definitions();
+        IReadOnlyDictionary<string, int>? ranks = null;
         if (_resolvedAgentProfile is not null)
         {
-            var ranks = _resolvedAgentProfile.PreferredTools.Select((tool, index) => (tool, index))
+            ranks = _resolvedAgentProfile.PreferredTools.Select((tool, index) => (tool, index))
                 .ToDictionary(pair => pair.tool.ToString(), pair => pair.index, StringComparer.Ordinal);
-            // A preference changes disclosure order only. It never creates an allowlist or a grant.
-            all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
         }
+        // A preference changes ordering only. Basic capabilities are ranked first by the
+        // boundary, so a low visible-tool cap cannot accidentally hide read/search behind plans.
+        if (_boundary is not null) return _boundary.VisibleTools(_catalog.Definitions(), ranks);
+
+        IEnumerable<ToolDefinition> all = _catalog.Definitions();
+        if (ranks is not null) all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
         var visible = new List<ToolDefinition>();
         foreach (var tool in all)
         {

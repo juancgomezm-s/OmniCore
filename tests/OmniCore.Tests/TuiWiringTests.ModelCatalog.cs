@@ -189,6 +189,33 @@ public sealed partial class TuiWiringTests
         });
     }
 
+    [Theory]
+    [InlineData("es")]
+    [InlineData("en")]
+    [InlineData("fr")]
+    [InlineData("it")]
+    public void Model_catalog_empty_output_field_saves_no_limit_in_every_locale(string locale) => RunTuiTest(fx =>
+    {
+        var host = new ModelCatalogFixture();
+        fx.StartTui(modelCatalogPreferences: host,
+            localeSelection: new LocaleSelection(locale, LocaleSelectionSource.CommandLine), initialColumns: 80, initialRows: 25);
+        fx.Invoke(fx.App.ShowModelCatalogPreferences);
+        ClickId(fx, "model-catalog-add");
+        fx.Invoke(() =>
+        {
+            Assert.Empty(Assert.IsType<TextField>(Descendants(fx.App.Overlay!)
+                .Single(view => view.Id == "model-catalog-max-output")).Text.ToString());
+            SetField(fx.App.Overlay!, "model-catalog-id", "uncapped-model");
+            SetField(fx.App.Overlay!, "model-catalog-provider", "fixture");
+            SetField(fx.App.Overlay!, "model-catalog-context", "8192");
+            SetField(fx.App.Overlay!, "model-catalog-usable-context", "6144");
+        });
+        AssertModelCatalogLayoutFits(fx);
+        ClickId(fx, "model-catalog-save");
+        Assert.Equal(1, host.Saves);
+        Assert.Null(host.Models.Single(model => model.Id == "uncapped-model").MaxOutput);
+    });
+
     private static void SetField(View root, string id, string value) =>
         Assert.IsType<TextField>(Descendants(root).Single(view => view.Id == id)).Text = value;
 

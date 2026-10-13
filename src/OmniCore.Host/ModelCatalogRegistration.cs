@@ -26,7 +26,7 @@ internal static class ModelCatalogRegistration
         var oldModels = File.Exists(modelPath) ? File.ReadAllText(modelPath) : null;
         var loaded = new ConfigLoader().Load(oldProviders, oldModels);
         var providers = Parse(oldProviders ?? "providers:\n  local: { baseUrl: http://127.0.0.1:8080, auth: none }\n");
-        var models = Parse(oldModels ?? (oldProviders is null ? "models:\n  local-worker: { provider: local, context: 8192, maxOutput: 2048 }\n" : "models: {}\n"));
+        var models = Parse(oldModels ?? (oldProviders is null ? "models:\n  local-worker: { provider: local, context: 8192 }\n" : "models: {}\n"));
         var providerMap = (YamlMappingNode)providers.Children[new YamlScalarNode("providers")];
         var providerId = loaded.Providers?.Providers?.FirstOrDefault(p => p.Value.Family == "OpenAIResponses" && p.Value.Profile == "codex").Key;
         if (providerId is null)
@@ -48,12 +48,15 @@ internal static class ModelCatalogRegistration
                 continue; // Preserve the user's limits, aliases, routing and qualification data.
             }
             var context = model.ContextWindow ?? 8192;
-            var output = Math.Min(context, model.MaxOutputTokens ?? 2048);
-            ((YamlMappingNode)models.Children[new YamlScalarNode("models")]).Add(model.Id, new YamlMappingNode
+            var entry = new YamlMappingNode
             {
-                { "provider", providerId }, { "context", new YamlScalarNode(context.ToString(CultureInfo.InvariantCulture)) },
-                { "maxOutput", new YamlScalarNode(output.ToString(CultureInfo.InvariantCulture)) }
-            });
+                { "provider", providerId }, { "context", new YamlScalarNode(context.ToString(CultureInfo.InvariantCulture)) }
+            };
+            // Discovery reports provider capacity, not a user-requested generation quota.
+            // Preserve explicit registration limits without inventing one during discovery.
+            if (!discovery && model.MaxOutputTokens is { } output)
+                entry.Add("maxOutput", new YamlScalarNode(Math.Min(context, output).ToString(CultureInfo.InvariantCulture)));
+            ((YamlMappingNode)models.Children[new YamlScalarNode("models")]).Add(model.Id, entry);
         }
         if (catalog.All(m => loaded.Registry.Model(m.Id) is not null) && loaded.Registry.Provider(providerId) is not null) return providerId;
         var newProviders = Save(providers);

@@ -59,10 +59,10 @@ public sealed class LiveQwenReceiptDiagnosticTests
             OmniHost.CreateTlsHandler(descriptor.BaseUrl, descriptor.TrustedCertificatePath));
         var secrets = new SimpleSecretProvider("OMNI_").With(descriptor.Auth.SecretRef!, credential!);
         var provider = new OpenAiChatCompatibleProvider(descriptor, secrets,
-            () => new HttpClient(handler, false) { Timeout = TimeSpan.FromMinutes(35) },
+            () => new HttpClient(handler, false) { Timeout = TimeSpan.FromMinutes(60) },
             new OpenAiProviderOptions { MaxRetries = 0 });
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMinutes(35));
+        timeout.CancelAfter(TimeSpan.FromMinutes(60));
         var started = DateTimeOffset.UtcNow;
         ModelResponse? completed = null;
         string? failure = null;
@@ -83,7 +83,7 @@ public sealed class LiveQwenReceiptDiagnosticTests
             handler.HttpStatus, wireEqualsAdapter, exactReceipt, failure,
             finalTextPreview = final.Length > 1600 ? final[..1600] : final,
             stopReason = completed?.StopReason.ToString(), requests = handler.Requests,
-            timeoutSeconds = 2100, configuredTlsPreserved = true, started, completedAt = DateTimeOffset.UtcNow,
+            timeoutSeconds = 3600, configuredTlsPreserved = true, started, completedAt = DateTimeOffset.UtcNow,
         }, new JsonSerializerOptions { WriteIndented = true }));
         Assert.True(handler.ResultPreserved, "tool_result_changed_before_http_send");
         Assert.True(wireEqualsAdapter, "raw_visible_response_differs_from_adapter_or_transport_failed:" + failure);

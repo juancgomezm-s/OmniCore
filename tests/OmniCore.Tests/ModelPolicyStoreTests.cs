@@ -88,7 +88,7 @@ public sealed class ModelPolicyStoreTests
                 DestructiveActionPolicy.Allow, 4, 444, 0.44, requirePriorRead: true,
                 requireExpectedVersionToken: false, requirePostEditValidation: true,
                 allowParallelMutations: true),
-            "user", "nota con \"comillas\" y \\ barra");
+            "user", "nota con \"comillas\" y \\ barra", maxModelStepsPerTurn: 3, maxToolCallsPerTurn: 9);
 
         using (var store = NewStore(dir))
         {
@@ -110,6 +110,8 @@ public sealed class ModelPolicyStoreTests
             Assert.True(read.Policy.MutationPolicy.AllowParallelMutations);
             Assert.Equal(DestructiveActionPolicy.Allow, read.Policy.MutationPolicy.MoveOrRename);
             Assert.Contains(ModelToolCapability.Network, read.Policy.ToolPolicy.CapabilityCeiling);
+            Assert.Equal(3, read.Policy.MaxModelStepsPerTurn);
+            Assert.Equal(9, read.Policy.MaxToolCallsPerTurn);
             Assert.True(key.Equals(read.Key));
         }
     }

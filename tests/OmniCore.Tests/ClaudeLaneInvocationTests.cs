@@ -59,7 +59,7 @@ public sealed class ClaudeLaneInvocationTests
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "omni-claude-lane"));
         var profile = Profile();
         Assert.Throws<InvalidDataException>(() => ClaudeLaneInvocationBuilder.Build(profile,
-            Packet(root, new TaskBudget(null, 8000, 4, 12)), EffectivePolicy(full: true), "{}",
+            Packet(root, new TaskBudget(null, null, null, 12)), EffectivePolicy(full: true), "{}",
             Path.Combine(root, "claude.exe"), root, null, PermissionPolicy()));
         Assert.Throws<InvalidDataException>(() => ClaudeLaneInvocationBuilder.Build(profile,
             Packet(Path.Combine(root, "elsewhere"), new TaskBudget(0.25m, 8000, 4, 12)), EffectivePolicy(full: true), "{}",
@@ -69,6 +69,41 @@ public sealed class ClaudeLaneInvocationTests
                 PermissionScope.With(["**"], [], [], [], [], false), [new ToolId("filesystem.read")]),
             Packet(root, new TaskBudget(0.25m, 8000, 4, 12)), EffectivePolicy(full: true), "{}",
             Path.Combine(root, "claude.exe"), root, null, PermissionPolicy()));
+    }
+
+    [Fact]
+    public void Invocation_omits_absent_token_and_cost_quotas_but_keeps_finite_turn_and_tool_limits()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "omni-claude-lane"));
+        var invocation = ClaudeLaneInvocationBuilder.Build(Profile(),
+            Packet(root, new TaskBudget(null, null, 4, 12)), EffectivePolicy(full: true), "{}",
+            Path.Combine(root, "claude.exe"), root, null, PermissionPolicy());
+
+        Assert.DoesNotContain("--max-budget-usd", invocation.Arguments);
+        Assert.Equal("4", ValueAfter(invocation.Arguments, "--max-turns"));
+        Assert.Null(invocation.StreamLimits.MaximumTokens);
+        Assert.Null(invocation.StreamLimits.MaximumCostUsd);
+        Assert.Null(invocation.StreamLimits.MaximumReportedCostUsd);
+        Assert.Equal(12, invocation.StreamLimits.MaximumToolCalls);
+    }
+
+    [Fact]
+    public void Token_and_cost_ceilings_are_independent_when_only_one_is_declared()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "omni-claude-lane"));
+        var tokenOnly = ClaudeLaneInvocationBuilder.Build(Profile(),
+            Packet(root, new TaskBudget(null, 8000, 4, 12)), EffectivePolicy(full: true), "{}",
+            Path.Combine(root, "claude.exe"), root, null, PermissionPolicy());
+        Assert.DoesNotContain("--max-budget-usd", tokenOnly.Arguments);
+        Assert.Equal(8000, tokenOnly.StreamLimits.MaximumTokens);
+        Assert.Null(tokenOnly.StreamLimits.MaximumCostUsd);
+
+        var costOnly = ClaudeLaneInvocationBuilder.Build(Profile(),
+            Packet(root, new TaskBudget(0.25m, null, 4, 12)), EffectivePolicy(full: true), "{}",
+            Path.Combine(root, "claude.exe"), root, null, PermissionPolicy());
+        Assert.Equal("0.25", ValueAfter(costOnly.Arguments, "--max-budget-usd"));
+        Assert.Null(costOnly.StreamLimits.MaximumTokens);
+        Assert.Equal(0.25m, costOnly.StreamLimits.MaximumCostUsd);
     }
 
     [Fact]

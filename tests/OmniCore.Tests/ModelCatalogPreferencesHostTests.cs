@@ -4,6 +4,33 @@ using OmniCore.Host;
 
 public sealed class ModelCatalogPreferencesHostTests
 {
+    [Fact]
+    public void Default_local_model_has_capacity_metadata_but_no_requested_output_limit()
+    {
+        var loaded = new ConfigLoader().Load(null, null);
+        var model = loaded.Registry.Model("local-worker")!;
+        Assert.Equal(2048, model.MaxOutputTokens);
+        Assert.False(model.OutputLimitConfigured);
+        Assert.Null(ModelRoutingHost.OutputTokenLimit(model, loaded.Registry.Provider("local")));
+    }
+
+    [Fact]
+    public void Clearing_output_limit_removes_it_from_yaml_and_the_actual_request_selection()
+    {
+        using var fixture = new Fixture();
+        var before = fixture.Host.Read(CancellationToken.None);
+        var saved = fixture.Host.Save(new ModelCatalogDraft("fixture-model", "fixture", 8192, 6144,
+            null, null, ["fixture-alias"], "fixture-model"), before.Revision, CancellationToken.None);
+        Assert.Null(Assert.Single(saved.Models).MaxOutput);
+        Assert.DoesNotContain("maxOutput:", File.ReadAllText(fixture.Models));
+        var loaded = new ConfigLoader().Load(File.ReadAllText(fixture.Providers), File.ReadAllText(fixture.Models));
+        var model = loaded.Registry.Model("fixture-model")!;
+        Assert.False(model.OutputLimitConfigured);
+        Assert.Null(ModelRoutingHost.OutputTokenLimit(model, loaded.Registry.Provider("fixture")));
+        Assert.Equal(8192, model.ContextWindow);
+        Assert.Equal(new[] { "fixture-alias" }, model.Aliases);
+    }
+
     private sealed class Fixture : IDisposable
     {
         internal readonly string Root = Path.Combine(Path.GetTempPath(), "omnicore-model-catalog-" + Guid.NewGuid().ToString("N"));

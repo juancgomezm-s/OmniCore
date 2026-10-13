@@ -120,8 +120,8 @@ public sealed partial class TuiApp
         void Update()
         {
             foreach (var item in effects) item.Button.Text = item.Label + " · " + _animationPreferences.Effect(item.Phase);
-            enabled.Text = _localization.Resolve("shell.animations") + " · " + (_animationPreferences.Enabled ? "ON" : "OFF");
-            reduced.Text = _localization.Resolve("shell.reduced_motion") + " · " + (_animationPreferences.ReducedMotion ? "ON" : "OFF");
+            enabled.Text = _localization.Resolve("shell.animations") + " · " + _localization.Resolve(_animationPreferences.Enabled ? "shell.state.on" : "shell.state.off");
+            reduced.Text = _localization.Resolve("shell.reduced_motion") + " · " + _localization.Resolve(_animationPreferences.ReducedMotion ? "shell.state.on" : "shell.state.off");
             speed.Text = _localization.Resolve("shell.interval") + " · " + _animationPreferences.IntervalMilliseconds + " ms";
             ascii.Text = _localization.Resolve("shell.characters") + " · " + (_animationPreferences.Ascii ? "ASCII *" : "Unicode ✦");
             description.Text = _previewEffect + _localization.Resolve("shell.preview");

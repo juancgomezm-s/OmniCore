@@ -116,7 +116,7 @@ public sealed partial class TuiApp
         var detailsText = current is null ? "" : string.Join("\n", new[]
         {
             ModelCatalogText("context") + ": " + current.Context.ToString(CultureInfo.InvariantCulture)
-                + " · " + ModelCatalogText("maxOutput") + ": " + current.MaxOutput.ToString(CultureInfo.InvariantCulture),
+                + " · " + ModelCatalogText("maxOutput") + ": " + (current.MaxOutput?.ToString(CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off")),
             ModelCatalogText("aliases") + ": " + (current.Aliases.Count == 0 ? "—" : string.Join(", ", current.Aliases)),
             current.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
                 + string.Join("; ", current.DeleteBlockers.Select(ModelCatalogError))
@@ -136,7 +136,7 @@ public sealed partial class TuiApp
         string Details(ModelCatalogModel? model) => model is null ? "" : string.Join("\n", new[]
         {
             ModelCatalogText("context") + ": " + model.Context.ToString("N0", CultureInfo.InvariantCulture)
-                + " · " + ModelCatalogText("maxOutput") + ": " + model.MaxOutput.ToString("N0", CultureInfo.InvariantCulture)
+                + " · " + ModelCatalogText("maxOutput") + ": " + (model.MaxOutput?.ToString("N0", CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off"))
                 + " · " + ModelCatalogText("aliases") + ": " + (model.Aliases.Count == 0 ? "—" : string.Join(", ", model.Aliases)),
             model.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
                 + string.Join("; ", model.DeleteBlockers.Select(ModelCatalogError))
@@ -256,7 +256,7 @@ public sealed partial class TuiApp
         }
         var context = Field("model-catalog-context", "context", existing?.Context.ToString(CultureInfo.InvariantCulture) ?? "8192");
         var usable = Field("model-catalog-usable-context", "usableContext", existing?.RecommendedUsableContext.ToString(CultureInfo.InvariantCulture) ?? "8192");
-        var output = Field("model-catalog-max-output", "maxOutput", existing?.MaxOutput.ToString(CultureInfo.InvariantCulture) ?? "2048");
+        var output = Field("model-catalog-max-output", "maxOutput", existing?.MaxOutput?.ToString(CultureInfo.InvariantCulture) ?? "");
         var parameters = Field("model-catalog-parameters", "parameters", existing?.ParametersBillions?.ToString("R", PreferenceInput.Culture(_locale)) ?? "");
         frame.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText("aliases") });
         var aliases = new TextView { Id = "model-catalog-aliases", X = 25, Y = y, Width = Dim.Fill(4), Height = 2,
@@ -274,9 +274,15 @@ public sealed partial class TuiApp
         save.Accepted += (_, _) =>
         {
             if (!long.TryParse(context.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var contextValue)
-                || !long.TryParse(usable.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var usableValue)
-                || !long.TryParse(output.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var outputValue))
+                || !long.TryParse(usable.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var usableValue))
             { status.Text = ModelCatalogText("invalidLimits"); return; }
+            long? outputValue = null;
+            if (!string.IsNullOrWhiteSpace(output.Text.ToString()))
+            {
+                if (!long.TryParse(output.Text.ToString(), NumberStyles.None, CultureInfo.InvariantCulture, out var parsedOutput))
+                { status.Text = ModelCatalogText("invalidLimits"); return; }
+                outputValue = parsedOutput;
+            }
             double? parametersValue = null;
             if (!string.IsNullOrWhiteSpace(parameters.Text.ToString()))
             {

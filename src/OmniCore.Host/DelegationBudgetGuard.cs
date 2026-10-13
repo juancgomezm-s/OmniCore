@@ -5,8 +5,9 @@ using OmniCore.Infrastructure;
 
 namespace OmniCore.Host;
 
-/// <summary>Child ceilings supplement, never replace, Run/session/routing guards.
-/// Unknown usage or an unbounded invocation is not permission to spend.</summary>
+/// <summary>Declared child ceilings supplement, never replace, Run/session/routing guards.
+/// A missing token/currency ceiling means that dimension is uncapped at this Lane; every
+/// parent Run/coordination ceiling that was actually declared remains enforced separately.</summary>
 internal static class DelegationBudgetGuard
 {
     internal static void Validate(IReadOnlyList<DomainEvent> journal, IEventCodecRegistry codecs,
@@ -36,8 +37,9 @@ internal static class DelegationBudgetGuard
             || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow)))
             throw new InvalidOperationException("Child coordination authorization revoked or expired.");
         var budget = definition.Budget;
-        if (budget.MaxTurns is not > 0 || budget.MaxToolCalls is not > 0 || budget.MaxTokens is not > 0 || budget.MaxCostUsd is not >= 0)
-            throw new InvalidOperationException("Child requires finite budgets.");
+        if (budget.MaxTurns is not > 0 || budget.MaxToolCalls is not > 0
+            || budget.MaxTokens is < 0 || budget.MaxCostUsd is < 0)
+            throw new InvalidOperationException("Child requires finite Turn/tool ceilings and non-negative optional quotas.");
         var own = journal.Where(e => e.RunId == run && e.LaneId == lane).ToArray();
         var facts = own.Select(codecs.Decode).ToArray();
         var turns = facts.OfType<TurnStarted>().Count();
@@ -49,18 +51,25 @@ internal static class DelegationBudgetGuard
         if (tools + (tool is not null && !facts.OfType<ToolCallRequested>().Any(t => t.ToolCallId == tool) ? 1 : 0) > budget.MaxToolCalls)
             throw new InvalidOperationException("Child tool budget exhausted.");
         var pool = RunBudgetPool.For(store);
-        var tokens = RunTokenBudgetReader.Read(own, codecs, run, budget.MaxTokens,
-            (evt, step) => pool.OwnsPendingPrimary(evt, step, reservations));
-        if (tokens.Remaining is not { } remaining || remaining < 0 || invocation && (maximumTokens is null || maximumTokens > remaining))
-            throw new InvalidOperationException($"Child token budget insufficient or unknown (remaining={tokens.Remaining?.ToString() ?? "unknown"}, required={maximumTokens?.ToString() ?? "unknown"}, limit={tokens.Limit?.ToString() ?? "unknown"}, reason={tokens.Limitation ?? "none"}).");
-        var reader = new CanonicalSpendReader(codecs, artifacts);
-        var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-        var primary = reader.ReadPrimary(own, session, run, day,
-            (evt, step) => pool.OwnsPendingPrimary(evt, step, reservations));
-        var meta = reader.ReadMeta(own, session, run, day);
-        if (primary.Incomplete || meta.Incomplete || primary.RunUsd is null || meta.RunUsd is null)
-            throw new InvalidOperationException("Child spend accounting unknown.");
-        if (invocation && maximumCost is null || primary.RunUsd + meta.RunUsd + (invocation ? maximumCost : 0m) > budget.MaxCostUsd)
-            throw new InvalidOperationException("Child cost budget insufficient.");
+        if (budget.MaxTokens is { } tokenLimit)
+        {
+            var tokens = RunTokenBudgetReader.Read(own, codecs, run, tokenLimit,
+                (evt, step) => pool.OwnsPendingPrimary(evt, step, reservations));
+            if (tokens.Remaining is not { } remaining || remaining < 0
+                || invocation && (maximumTokens is null || maximumTokens > remaining))
+                throw new InvalidOperationException($"Child token quota insufficient or unknown (remaining={tokens.Remaining?.ToString() ?? "unknown"}, required={maximumTokens?.ToString() ?? "unknown"}, limit={tokens.Limit?.ToString() ?? "unknown"}, reason={tokens.Limitation ?? "none"}).");
+        }
+        if (budget.MaxCostUsd is { } costLimit)
+        {
+            var reader = new CanonicalSpendReader(codecs, artifacts);
+            var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+            var primary = reader.ReadPrimary(own, session, run, day,
+                (evt, step) => pool.OwnsPendingPrimary(evt, step, reservations));
+            var meta = reader.ReadMeta(own, session, run, day);
+            if (primary.Incomplete || meta.Incomplete || primary.RunUsd is null || meta.RunUsd is null)
+                throw new InvalidOperationException("Child spend accounting unknown.");
+            if (invocation && maximumCost is null || primary.RunUsd + meta.RunUsd + (invocation ? maximumCost : 0m) > costLimit)
+                throw new InvalidOperationException("Child cost quota insufficient.");
+        }
     }
 }

@@ -17,10 +17,10 @@ public static class ModelRoutingHost
     /// Chat uses the legacy max_tokens contract; unsupported endpoints fail rather than retry
     /// without the limit. The subscription backend has no applied bound.</summary>
     public static long? OutputTokenLimit(ModelDefinition model, ProviderDescriptor? provider) =>
-        provider?.Family == ProviderFamily.AnthropicMessages
+        model.OutputLimitConfigured && (provider?.Family == ProviderFamily.AnthropicMessages
         || provider?.Family == ProviderFamily.OpenAiChatCompatible
         || (provider?.Family == ProviderFamily.OpenAIResponses
-            && !string.Equals(provider.Profile, "codex", StringComparison.OrdinalIgnoreCase))
+            && !string.Equals(provider.Profile, "codex", StringComparison.OrdinalIgnoreCase)))
             ? model.MaxOutputTokens > 0 ? model.MaxOutputTokens : null
             : null;
 
@@ -34,7 +34,7 @@ public static class ModelRoutingHost
             .Select(pair => AuthorizedModelRoute.From(RouteFor(pair.Model, pair.Provider), pair.Provider!.BillingMode))
             .ToArray();
         return new SessionRoutingPolicy(1, routes, routes.Select(route => route.BillingMode).Distinct().ToArray(),
-            false, loaded.SessionCapUsd, originProviderId).Freeze();
+            false, loaded.Settings?.Budget?.Session, originProviderId).Freeze();
     }
 
     /// <summary>Ruta 1:1 del YAML existente; un endpoint override define una ruta distinta.</summary>

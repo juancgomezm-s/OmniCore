@@ -11,6 +11,9 @@ namespace OmniCore.Host;
 internal sealed record DelegationWork(SessionId Session, RunId Run, Delegation Delegation,
     ExecutionScopeState Scope, AgentProfile Profile, string Objective, TaskBudget Budget,
     WorktreeIdentity? Worktree, TaskPacket? TaskPacket, string EffectiveRoot, string WorkingState);
+internal enum DelegationWakeClaimKind { Claimed, AlreadyClaimed, Resolved, Failed, Unavailable }
+internal sealed record DelegationWakeClaim(DelegationWakeClaimKind Kind, WakeRequest? Request = null,
+    ArtifactRef? ResultRef = null, string? Objective = null);
 
 public sealed partial class OmniServer
 {
@@ -22,6 +25,90 @@ public sealed partial class OmniServer
         if (_lastSessionId is not { } session || _lastRunId is not { } run) throw new InvalidOperationException("No active Run.");
         return _store.ReadFrom(session, 1).Where(e => e.RunId == run).Select(_codecs.Decode)
             .OfType<DelegationCreated>().Single(e => e.Delegation.DelegationId == id).Delegation;
+    }
+
+    internal ModelStepStarted? SourceModelStepForDelegation(Delegation delegation) =>
+        DelegationSourceModelStep(_store.ReadFrom(_lastSessionId ?? throw new InvalidOperationException("No Session."), 1),
+            delegation);
+
+    internal DelegationWakeClaim ClaimDelegationReturnWake(DelegationId id)
+    {
+        var session = _lastSessionId ?? throw new InvalidOperationException("No active Session.");
+        var run = _lastRunId ?? throw new InvalidOperationException("No active Run.");
+        lock (_modeAuthorityMutationGate)
+        {
+            var journal = _store.ReadFrom(session, 1);
+            var delegation = journal.Select(_codecs.Decode).OfType<DelegationCreated>()
+                .SingleOrDefault(item => item.Delegation.DelegationId == id)?.Delegation;
+            if (delegation is null) return new(DelegationWakeClaimKind.Unavailable);
+            if (!journal.Any(evt => evt.RunId == run && _codecs.Decode(evt) is DelegationReturned item
+                    && item.DelegationId == id))
+                return new(DelegationWakeClaimKind.Unavailable);
+            EnsureDelegationReturnWake(session, run, delegation, journal);
+            journal = _store.ReadFrom(session, 1);
+            var returned = journal.Where(evt => evt.RunId == run).Single(evt =>
+                _codecs.Decode(evt) is DelegationReturned item && item.DelegationId == id);
+            var resultRef = ((DelegationReturned)_codecs.Decode(returned)).ResultRef;
+            var wakeEvent = journal.SingleOrDefault(evt => evt.RunId == run
+                && _codecs.Decode(evt) is WakeRequestCreated created
+                && created.Request.SourceEvent == new EvidenceEventRef(session, returned.EventId));
+            if (wakeEvent is null) return new(DelegationWakeClaimKind.Unavailable);
+            var request = ((WakeRequestCreated)_codecs.Decode(wakeEvent)).Request;
+            var records = PreM6RecordProjection.Replay(session, _codecs, journal);
+            var phase = records.Records["wake:" + request.WakeRequestId].Phase;
+            var facts = journal.Where(evt => evt.RunId == run).Select(_codecs.Decode).ToArray();
+            var rootTask = facts.OfType<TaskCreated>().SingleOrDefault(task => task.ParentTaskId is null);
+            if (rootTask is null) return new(DelegationWakeClaimKind.Unavailable);
+            var runProjection = RunProjection.Replay(session, run, _codecs,
+                journal.Where(evt => evt.RunId == run).ToArray());
+            if (runProjection.State != RunState.Running || runProjection.ModeAuthority?.Mode != RunMode.Orchestrate
+                || runProjection.ModeAuthority.Authorization is not { } authorization
+                || !runProjection.ModeAuthority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow)
+                || authorization.IsExpiredAt(DateTimeOffset.UtcNow))
+                return new(DelegationWakeClaimKind.Unavailable, request, resultRef, rootTask.Objective);
+            if (phase == PreM6RecordPhase.Resolved)
+                return new(DelegationWakeClaimKind.Resolved, request, resultRef, rootTask.Objective);
+            if (phase == PreM6RecordPhase.Failed)
+                return new(DelegationWakeClaimKind.Failed, request, resultRef, rootTask.Objective);
+            if (phase == PreM6RecordPhase.Accepted)
+                return new(DelegationWakeClaimKind.AlreadyClaimed, request, resultRef, rootTask.Objective);
+            var source = DelegationSourceModelStep(journal, delegation);
+            if (source is null || !SourceModelAllowsOrchestration(session, journal, source))
+                return new(DelegationWakeClaimKind.Unavailable, request, resultRef, rootTask.Objective);
+            var rootScope = AgentScope(run, facts, delegation.ParentExecutionId);
+            using var attributed = ExecutionScope.Begin(rootScope);
+            var createdEvent = journal.Single(evt => _codecs.Decode(evt) is WakeRequestCreated created
+                && created.Request.WakeRequestId == request.WakeRequestId);
+            new EventStream(_store, _codecs, session).AppendBatch(
+                [new WakeRequestAccepted(delegation.ParentExecutionId, request.WakeRequestId)],
+                DurabilityClass.Barrier, [rootScope], [new EventCausation(createdEvent.EventId)]);
+            return new(DelegationWakeClaimKind.Claimed, request, resultRef, rootTask.Objective);
+        }
+    }
+
+    internal void CompleteDelegationReturnWake(WakeRequest request, bool failed, string? reason = null)
+    {
+        var session = _lastSessionId ?? throw new InvalidOperationException("No active Session.");
+        var run = _lastRunId ?? throw new InvalidOperationException("No active Run.");
+        lock (_modeAuthorityMutationGate)
+        {
+            var journal = _store.ReadFrom(session, 1);
+            var phase = PreM6RecordProjection.Replay(session, _codecs, journal)
+                .Records["wake:" + request.WakeRequestId].Phase;
+            if (phase is PreM6RecordPhase.Resolved or PreM6RecordPhase.Failed) return;
+            var acceptedEvent = journal.Single(evt => _codecs.Decode(evt) is WakeRequestAccepted accepted
+                && accepted.WakeRequestId == request.WakeRequestId
+                && accepted.ExecutionId == request.TargetExecutionId);
+            var facts = journal.Where(evt => evt.RunId == run).Select(_codecs.Decode).ToArray();
+            var scope = AgentScope(run, facts, request.TargetExecutionId);
+            using var attributed = ExecutionScope.Begin(scope);
+            DomainEventPayload terminal = failed
+                ? new WakeRequestFailed(request.TargetExecutionId, request.WakeRequestId,
+                    string.IsNullOrWhiteSpace(reason) ? "Root continuation stopped before a durable completion receipt." : reason)
+                : new WakeRequestResolved(request.TargetExecutionId, request.WakeRequestId);
+            new EventStream(_store, _codecs, session).AppendBatch([terminal], DurabilityClass.Barrier,
+                [scope], [new EventCausation(acceptedEvent.EventId)]);
+        }
     }
 
     private bool HasExactlyBoundOpenExternalStep(IReadOnlyList<DomainEvent> events, LaneId lane,
@@ -105,6 +192,9 @@ public sealed partial class OmniServer
                 || !initialAuthority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
                 return Ack(RuntimeCommandOutcome.Deferred("CoordinationLimitsUnavailable"));
             if (initialDelegation is null) return Ack(RuntimeCommandOutcome.Deferred("DelegationUnavailable"));
+            var sourceModelStep = DelegationSourceModelStep(initial, initialDelegation);
+            if (sourceModelStep is null || !SourceModelAllowsOrchestration(session, initial, sourceModelStep))
+                return Ack(RuntimeCommandOutcome.Deferred("ModelProfileOrchestrationRevoked"));
             if (initialAuthorization.Limits.MaxAgents < 2)
                 return Ack(RuntimeCommandOutcome.Deferred("AgentOrDepthLimit"));
             var admittedProfile = ResolveLaneAgentProfile(session, run, initialDelegation.ChildLaneId);
@@ -173,7 +263,11 @@ public sealed partial class OmniServer
             var initialDelegationHistory = PreM6RecordProjection.Replay(session, _codecs, initial)
                 .Records["delegation:" + id];
             if (initialDelegationHistory.Phase is PreM6RecordPhase.Returned or PreM6RecordPhase.Failed)
+            {
+                if (initialDelegationHistory.Phase == PreM6RecordPhase.Returned)
+                    EnsureDelegationReturnWake(session, run, initialDelegation, initial);
                 return Ack(RuntimeCommandOutcome.NoOp());
+            }
             if (initialDelegationHistory.Phase == PreM6RecordPhase.Created)
             {
                 // Queue order must be decided before provisioning writes LaneProvisioning or
@@ -436,6 +530,10 @@ public sealed partial class OmniServer
                 capacity.Cancellation.Token.ThrowIfCancellationRequested();
                 if (history.Phase == PreM6RecordPhase.Created)
                 {
+                    var currentJournal = _store.ReadFrom(session, 1);
+                    var currentSource = DelegationSourceModelStep(currentJournal, delegation);
+                    if (currentSource is null || !SourceModelAllowsOrchestration(session, currentJournal, currentSource))
+                        return Ack(RuntimeCommandOutcome.Deferred("ModelProfileOrchestrationRevoked"));
                     var started = new AgentExecutionStarted(executionId, delegation.ChildLaneId, delegation.ProfileId,
                         delegation.ParentExecutionId, delegation.Relation, delegation.Supervision);
                     var binding = new SupervisionBinding(BindingId.New(), executionId, delegation.ParentExecutionId, 1);
@@ -530,6 +628,10 @@ public sealed partial class OmniServer
                     ? (ExecutionScopeState?)parentScope : work.Scope).ToArray();
                 new EventStream(_store, _codecs, session).AppendBatch(terminalEvents,
                     DurabilityClass.Barrier, terminalScopes);
+                // The returned artifact is durable before its wake is published. Recovery of
+                // ExecuteDelegation repairs the narrow crash window idempotently.
+                EnsureDelegationReturnWake(session, run, work.Delegation,
+                    _store.ReadFrom(session, 1));
             }
             return Ack(RuntimeCommandOutcome.Accepted());
         }
@@ -558,6 +660,38 @@ public sealed partial class OmniServer
             DelegationResultJson.Default.DelegationResultDocument) is { Version: 1 },
         _ => false,
     };
+
+    private void EnsureDelegationReturnWake(SessionId session, RunId run, Delegation delegation,
+        IReadOnlyList<DomainEvent> journal)
+    {
+        lock (_modeAuthorityMutationGate)
+        {
+        journal = _store.ReadFrom(session, 1);
+        // Compiled workflow stages have their own typed supervisor/result disposition. They
+        // are not user-authorized ORQ delegations and must not wake the conversational root.
+        if (ReadWorkflowStageForTask(session, run, delegation.ChildTaskId) is not null) return;
+        var returnedEvent = journal.Where(evt => evt.RunId == run)
+            .SingleOrDefault(evt => _codecs.Decode(evt) is DelegationReturned returned
+                && returned.DelegationId == delegation.DelegationId)
+            ?? throw new InvalidOperationException("Delegation return is not durable.");
+        var existing = journal.Select(_codecs.Decode).OfType<WakeRequestCreated>()
+            .Where(wake => wake.ExecutionId == delegation.ParentExecutionId
+                && wake.Request.SourceEvent == new EvidenceEventRef(session, returnedEvent.EventId))
+            .ToArray();
+        if (existing.Length > 1) throw new InvalidDataException("Delegation return has duplicate wake requests.");
+        if (existing.Length == 1) return;
+        var rootScope = AgentScope(run, journal.Where(evt => evt.RunId == run).Select(_codecs.Decode),
+            delegation.ParentExecutionId);
+        var request = new WakeRequest(WakeRequestId.New(), delegation.ParentExecutionId,
+            new EvidenceEventRef(session, returnedEvent.EventId),
+            "Managed delegation returned a durable result; resume the unchanged root objective with this result as data.",
+            1);
+        using var attributed = ExecutionScope.Begin(rootScope);
+        new EventStream(_store, _codecs, session).AppendBatch(
+            [new WakeRequestCreated(delegation.ParentExecutionId, request)], DurabilityClass.Barrier,
+            [rootScope], [new EventCausation(returnedEvent.EventId)]);
+        }
+    }
 
     private static bool MatchesCreatedEvent(LaneWorktreeCreated evt, WorktreeIdentity identity) =>
         evt.OwnershipId == identity.OwnershipId && evt.LaneId == identity.LaneId

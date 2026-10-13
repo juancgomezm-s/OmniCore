@@ -354,7 +354,8 @@ public sealed partial class OmniServer
         if (!string.Equals(request.Objective, expectedObjective, StringComparison.Ordinal)
             || request.Priority != 0 || request.MaximumPacketBytes is <= 0 or > ContextInheritanceService.MaximumDelegationPacketBytes
             || request.MaxTurns != 1 || request.MaxToolCalls is < 1 or > 4
-            || request.MaxTokens < 8_448 || request.MaxCostUsd < 0) return false;
+            || request.MaxTokens is < 8_448
+            || request.MaxCostUsd is < 0) return false;
         var context = ReadWorkflowContext(authorization);
         if (!Guid.TryParse(request.ProfileId, out var profileId) || profileId != context.RootProfile.Id.Value)
             return false;
@@ -432,7 +433,7 @@ public sealed partial class OmniServer
 
     internal DelegationCreateRequest WorkflowDelegationRequest(WorkflowRuntimeAuthorization authorization,
         WorkflowStage stage, WorkflowRunContext context, IReadOnlyList<string> selectedItems,
-        int maximumPacketBytes, long maxTokens, decimal maxCostUsd)
+        int maximumPacketBytes, long? maxTokens, decimal? maxCostUsd)
     {
         var definition = CompiledWorkflowCatalog.Stage(stage);
         return new DelegationCreateRequest(context.RootProfile.Id.ToString(),

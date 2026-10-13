@@ -11,9 +11,9 @@ public static class ModelCatalogPreferencesResources
             {
                 ["es"] = Build(
                     "Catálogo de modelos", "Catálogo de modelos", "Registra modelos que ya ofrece un proveedor configurado. No consulta la red ni ejecuta modelos.",
-                    "Modelos", "Proveedor", "Familia", "Contexto", "Contexto utilizable", "Salida máxima", "Parám. (miles M)",
+                    "Modelos", "Proveedor", "Familia", "Contexto", "Contexto utilizable", "Salida máx. (opcional)", "Parám. (miles M)",
                     "Aliases, uno por línea", "Agregar", "Editar", "Eliminar", "Guardar", "Cancelar", "Volver", "Nuevo modelo",
-                    "ID del modelo", "IDs y aliases se guardan literalmente; parámetros en miles de millones.",
+                    "ID del modelo", "ID y aliases literales · parámetros en miles de millones.\nSalida vacía: sin cota de OmniCore; rige el proveedor.",
                     "Eliminar sólo quita esta definición de User. Confirma que el modelo no se usa en otras carpetas; esas referencias no se pueden inspeccionar desde aquí.",
                     "Confirmar eliminación", "Eliminar modelo", "No se puede eliminar mientras haya referencias conocidas.",
                     "No hay modelos registrados.", "Selecciona un modelo para editar.", "La configuración no está disponible.",
@@ -27,9 +27,9 @@ public static class ModelCatalogPreferencesResources
                     "Referencia en una ruta de ejecución.", "En otras carpetas también podría haber referencias; no se modifican.", "Filtrar", "{index} de {total}", "inicio", "fin", "Ningún modelo coincide con el filtro.", "Modelo · Proveedor (familia) · Contexto"),
                 ["en"] = Build(
                     "Model catalog", "Model catalog", "Register models already offered by a configured provider. No network or model execution is used.",
-                    "Models", "Provider", "Family", "Context", "Usable context", "Maximum output", "Params (billions)",
+                    "Models", "Provider", "Family", "Context", "Usable context", "Max output (optional)", "Params (billions)",
                     "Aliases, one per line", "Add", "Edit", "Delete", "Save", "Cancel", "Back", "New model",
-                    "Model ID", "IDs and aliases are stored literally; parameter count is in billions.",
+                    "Model ID", "Literal IDs and aliases · parameters in billions.\nEmpty output: no OmniCore cap; provider limits still apply.",
                     "Delete only removes this User definition. Confirm the model is unused in other folders; their references cannot be inspected here.",
                     "Confirm deletion", "Delete model", "Deletion is blocked while known references exist.",
                     "No models are registered.", "Select a model to edit.", "Configuration is unavailable.",
@@ -43,9 +43,9 @@ public static class ModelCatalogPreferencesResources
                     "Reference in a routing list.", "Other folders may also reference this model; they are not changed.", "Filter", "{index} of {total}", "start", "end", "No model matches the filter.", "Model · Provider (family) · Context"),
                 ["fr"] = Build(
                     "Catalogue de modèles", "Catalogue de modèles", "Enregistre les modèles déjà proposés par un fournisseur configuré. Aucun accès réseau ni lancement de modèle.",
-                    "Modèles", "Fournisseur", "Famille", "Contexte", "Contexte utilisable", "Sortie maximale", "Param. (milliards)",
+                    "Modèles", "Fournisseur", "Famille", "Contexte", "Contexte utilisable", "Sortie max. (option.)", "Param. (milliards)",
                     "Alias, un par ligne", "Ajouter", "Modifier", "Supprimer", "Enregistrer", "Annuler", "Retour", "Nouveau modèle",
-                    "ID du modèle", "Les IDs et alias sont enregistrés tels quels ; le nombre de paramètres est en milliards.",
+                    "ID du modèle", "IDs et alias littéraux · paramètres en milliards.\nSortie vide : pas de plafond OmniCore ; limites du fournisseur.",
                     "La suppression retire uniquement cette définition User. Vérifiez l’absence d’usage dans les autres dossiers ; leurs références ne sont pas inspectées ici.",
                     "Confirmer la suppression", "Supprimer le modèle", "Suppression bloquée tant que des références connues existent.",
                     "Aucun modèle enregistré.", "Sélectionnez un modèle à modifier.", "Configuration indisponible.",
@@ -59,9 +59,9 @@ public static class ModelCatalogPreferencesResources
                     "Référence dans une liste de routage.", "D’autres dossiers peuvent référencer ce modèle ; ils ne sont pas modifiés.", "Filtrer", "{index} sur {total}", "début", "fin", "Aucun modèle ne correspond au filtre.", "Modèle · Fournisseur (famille) · Contexte"),
                 ["it"] = Build(
                     "Catalogo modelli", "Catalogo modelli", "Registra modelli già offerti da un provider configurato. Nessuna rete o esecuzione del modello.",
-                    "Modelli", "Provider", "Famiglia", "Contesto", "Contesto utilizzabile", "Output massimo", "Param. (mld)",
+                    "Modelli", "Provider", "Famiglia", "Contesto", "Contesto utilizzabile", "Output max. (opzionale)", "Param. (mld)",
                     "Alias, uno per riga", "Aggiungi", "Modifica", "Elimina", "Salva", "Annulla", "Indietro", "Nuovo modello",
-                    "ID modello", "ID e alias vengono salvati letteralmente; i parametri sono espressi in miliardi.",
+                    "ID modello", "ID e alias letterali · parametri in miliardi.\nOutput vuoto: nessun limite OmniCore; restano i limiti del provider.",
                     "L’eliminazione rimuove solo questa definizione User. Verifica che il modello non sia usato in altre cartelle; i relativi riferimenti non sono ispezionati qui.",
                     "Conferma eliminazione", "Elimina modello", "Eliminazione bloccata finché esistono riferimenti noti.",
                     "Nessun modello registrato.", "Seleziona un modello da modificare.", "Configurazione non disponibile.",

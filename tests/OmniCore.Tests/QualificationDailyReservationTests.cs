@@ -72,6 +72,28 @@ public sealed class QualificationDailyReservationTests
     };
 
     [Fact]
+    public async Task Undeclared_daily_quota_does_not_invent_a_twenty_dollar_limit()
+    {
+        var directory = TempDir();
+        try
+        {
+            var paths = WriteConfiguration(directory);
+            File.WriteAllText(Path.Combine(paths.ConfigDirectory, "settings.yaml"), "budget: {}\n");
+            var reservations = new SqliteSpendReservationStore(Path.Combine(paths.DataDirectory, "spend-reservations.db"));
+            Assert.Equal(SqliteSpendReservationStore.Admission.Reserved,
+                reservations.TryReserve("existing-owned-fixture-reservation", 25m,
+                    () => [new SqliteSpendReservationStore.Limit("daily", "user", 30m, 0m)]));
+            var probe = Probe();
+            var provider = new FixtureProvider(probe.Expected);
+            using var host = ModelQualificationHost.Create(directory);
+            await host.QualifyAsync(ModelId, Options(provider, probe), CancellationToken.None);
+            Assert.Equal(1, provider.StreamCalls);
+            // Only the explicit probe-suite budget applies. No real provider was used.
+        }
+        finally { DeletePrivateFixture(directory); }
+    }
+
+    [Fact]
     public async Task Metered_qualification_is_blocked_before_provider_when_user_daily_reservation_is_full()
     {
         var directory = TempDir();

@@ -51,9 +51,16 @@ public sealed record ModelPolicyRecordDto(
     int MaxFilesPerTurn,
     int MaxChangedLinesPerTurn,
     double MaxRewriteRatio,
+    int MaxModelStepsPerTurn,
+    int MaxToolCallsPerTurn,
+    bool RequirePriorRead,
+    bool RequireExpectedVersionToken,
+    bool RequirePostEditValidation,
     string? Note,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    bool AllowOrchestration = false,
+    int MaxGenerationSeconds = 300);
 
 /// <summary>Recomendación y avisos del onboarding sin exponer tipos de política del dominio.</summary>
 public sealed record ModelPolicyDraftDto(
@@ -250,6 +257,64 @@ public sealed class ModelPolicyHost : IDisposable
         }
     }
 
+    /// <summary>Restricts visible tools and capabilities and bounds work for one exact profile.
+    /// Capability values must be a subset of the saved category ceiling. Raising that ceiling
+    /// requires an explicit category change and still intersects with Harness, AgentProfile and Security.</summary>
+    public ModelPolicyRecordDto SetProfileControls(ModelPolicyKeyDto key, long expectedRevision,
+        int maxModelStepsPerTurn, int maxToolCallsPerTurn, int maxVisibleTools,
+        IReadOnlyList<string> capabilities, string mutationMode, int maxFilesPerTurn,
+        int maxChangedLinesPerTurn, double maxRewriteRatio, string deletePolicy,
+        string moveOrRenamePolicy, bool requirePriorRead, bool requireVersionToken,
+        bool requireValidation, bool allowOrchestration, int maxGenerationSeconds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(capabilities);
+        var domainKey = ToDomainKey(key);
+        var current = _service.Get(domainKey, cancellationToken)
+            ?? throw new InvalidOperationException("model policy is not configured");
+        var old = current.Policy;
+        if (maxVisibleTools < 0 || maxVisibleTools > old.ToolPolicy.MaxVisibleTools)
+            throw new ArgumentOutOfRangeException(nameof(maxVisibleTools));
+        if (maxModelStepsPerTurn is < 1 or > 8 || maxModelStepsPerTurn > old.MaxModelStepsPerTurn
+            || maxToolCallsPerTurn is < 1 or > 64 || maxToolCallsPerTurn > old.MaxToolCallsPerTurn)
+            throw new ArgumentException("turn controls may only restrict the saved model ceiling");
+        var previousMutation = old.MutationPolicy;
+        if (!Enum.TryParse<FileMutationMode>(mutationMode, false, out var parsedMode)
+            || MutationModeOrder(parsedMode) > MutationModeOrder(previousMutation.Mode)
+            || maxFilesPerTurn < 0 || maxFilesPerTurn > previousMutation.MaxFilesPerTurn
+            || maxChangedLinesPerTurn < 0 || maxChangedLinesPerTurn > previousMutation.MaxChangedLinesPerTurn
+            || double.IsNaN(maxRewriteRatio) || maxRewriteRatio < 0 || maxRewriteRatio > previousMutation.MaxRewriteRatio
+            || !Enum.TryParse<DestructiveActionPolicy>(deletePolicy, false, out var parsedDelete)
+            || DestructiveOrder(parsedDelete) > DestructiveOrder(previousMutation.Delete)
+            || !Enum.TryParse<DestructiveActionPolicy>(moveOrRenamePolicy, false, out var parsedMove)
+            || DestructiveOrder(parsedMove) > DestructiveOrder(previousMutation.MoveOrRename)
+            || previousMutation.RequirePriorRead && !requirePriorRead
+            || previousMutation.RequireExpectedVersionToken && !requireVersionToken
+            || previousMutation.RequirePostEditValidation && !requireValidation
+            || !old.AllowOrchestration && allowOrchestration
+            || maxGenerationSeconds is < 1 or > 3600 || maxGenerationSeconds > old.MaxGenerationSeconds)
+            throw new ArgumentException("mutation controls may only restrict the saved model ceiling");
+        var mutation = new FileMutationPolicy(parsedMode, parsedDelete, parsedMove, maxFilesPerTurn,
+            maxChangedLinesPerTurn, maxRewriteRatio, requirePriorRead, requireVersionToken,
+            requireValidation, previousMutation.AllowParallelMutations);
+        var requested = new HashSet<ModelToolCapability>();
+        foreach (var value in capabilities)
+        {
+            if (!Enum.TryParse<ModelToolCapability>(value, false, out var parsed)
+                || !old.ToolPolicy.Allows(parsed))
+                throw new ArgumentException("capability is outside the saved model ceiling", nameof(capabilities));
+            requested.Add(parsed);
+        }
+        var toolPolicy = new ModelToolPolicy(old.ToolPolicy.Mode, maxVisibleTools,
+            old.ToolPolicy.AllowToolDiscovery, requested);
+        var updated = new UserModelPolicy(old.Category, toolPolicy, mutation, old.Source,
+            old.Note, maxModelStepsPerTurn, maxToolCallsPerTurn, allowOrchestration, maxGenerationSeconds);
+        try { return ToRecord(_service.Set(domainKey, expectedRevision, updated, cancellationToken)); }
+        catch (ModelPolicyRevisionConflictException exception)
+        { throw new ModelPolicyRevisionConflict(exception.ExpectedRevision, exception.ActualRevision); }
+    }
+
     /// <summary>Elimina una política y conserva su historial.</summary>
     public void Delete(ModelPolicyKeyDto key, long expectedRevision, CancellationToken cancellationToken)
     {
@@ -315,6 +380,17 @@ public sealed class ModelPolicyHost : IDisposable
             policy.MutationPolicy.Mode.ToString(), policy.MutationPolicy.Delete.ToString(),
             policy.MutationPolicy.MoveOrRename.ToString(), policy.MutationPolicy.MaxFilesPerTurn,
             policy.MutationPolicy.MaxChangedLinesPerTurn, policy.MutationPolicy.MaxRewriteRatio,
-            policy.Note, stored.CreatedAt, stored.UpdatedAt);
+            policy.MaxModelStepsPerTurn, policy.MaxToolCallsPerTurn,
+            policy.MutationPolicy.RequirePriorRead, policy.MutationPolicy.RequireExpectedVersionToken,
+            policy.MutationPolicy.RequirePostEditValidation,
+            policy.Note, stored.CreatedAt, stored.UpdatedAt, policy.AllowOrchestration,
+            policy.MaxGenerationSeconds);
     }
+
+    private static int MutationModeOrder(FileMutationMode mode) => mode switch
+    { FileMutationMode.None => 0, FileMutationMode.PatchExisting => 1,
+        FileMutationMode.PatchAndCreate => 2, _ => 3 };
+
+    private static int DestructiveOrder(DestructiveActionPolicy policy) => policy switch
+    { DestructiveActionPolicy.Deny => 0, DestructiveActionPolicy.Ask => 1, _ => 2 };
 }

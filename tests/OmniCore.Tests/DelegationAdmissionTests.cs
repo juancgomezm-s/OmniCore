@@ -279,6 +279,8 @@ public sealed class DelegationAdmissionTests
         internal AgentProfile Writer { get; } = new(ProfileId.New(), "writer", 1, PermissionScope.With(["**"], ["**"], [], [], [], false), []);
         internal AgentProfile ForeignReader { get; } = new(ProfileId.New(), "outside", 1, PermissionScope.With(["outside/**"], [], [], [], [], false), []);
         internal AgentProfile RootProfile { get; }
+        internal ModelRoute SourceRoute { get; } = new("fixture", "http://fixture-root",
+            ProviderFamily.OpenAiChatCompatible, null, "fixture");
         internal ModelRoute MailboxRoute { get; } = new("fixture", "http://fixture", ProviderFamily.OpenAiChatCompatible,
             null, "fixture");
         private readonly bool _authorizeMailboxRoute;
@@ -316,9 +318,10 @@ public sealed class DelegationAdmissionTests
                 Artifacts, platformPathsFactory: () => OmniHost.CreatePlatformPaths(Path.Combine(DataRoot, "platform")));
             server.ConfigureWorkspaceRoot(Root);
             server.ConfigureAgentProfiles(new(new AgentProfileRegistry([Profile, Writer, ForeignReader]), RootProfile));
-            if (_authorizeMailboxRoute)
-                server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
-                    [AuthorizedModelRoute.From(MailboxRoute, BillingMode.Local)], [BillingMode.Local], false, null, "fixture"));
+            var routes = new List<AuthorizedModelRoute> { AuthorizedModelRoute.From(SourceRoute, BillingMode.Local) };
+            if (_authorizeMailboxRoute) routes.Add(AuthorizedModelRoute.From(MailboxRoute, BillingMode.Local));
+            server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
+                routes, [BillingMode.Local], false, null, "fixture"));
             return server;
         }
         internal void InitializeGitWorkspace(string? seedPath = null, string? seedContent = null)
@@ -355,15 +358,17 @@ public sealed class DelegationAdmissionTests
             if (process.ExitCode != 0)
                 throw new InvalidOperationException("Git fixture setup failed: " + string.Join(" | ", output));
         }
-        internal void Grant(int maxAgents = 3, int maxDepth = 1)
+        internal void Grant(int maxAgents = 3, int maxDepth = 1, decimal? maxSpendUsd = 1m)
         {
             var payload = "{\"cmd\":\"run.mode.select\",\"mode\":\"orq\",\"effort\":\"ultracode\",\"adaptive\":true,"
                 + "\"allowedModes\":\"plan,act,orq\",\"maxAgents\":" + maxAgents + ",\"maxDepth\":" + maxDepth
-                + ",\"maxTurns\":20,\"maxToolCalls\":20,\"maxElapsedSeconds\":3600,\"maxSpendUsd\":1}";
+                + ",\"maxTurns\":20,\"maxToolCalls\":20,\"maxElapsedSeconds\":3600"
+                + (maxSpendUsd is { } spend ? ",\"maxSpendUsd\":" + spend.ToString(System.Globalization.CultureInfo.InvariantCulture) : "") + "}";
             var ack = Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
             Assert.Equal("ok", ack.Status);
         }
-        internal ExplorerTurn Explorer(Func<ModelRequest, CancellationToken, ModelResponse>? complete = null)
+        internal ExplorerTurn Explorer(Func<ModelRequest, CancellationToken, ModelResponse>? complete = null,
+            bool outputLimitConfigured = true)
         {
             var catalog = new FakeCatalog();
             var executor = ScriptedToolExecutor.WithWorkspace(catalog, new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
@@ -372,7 +377,8 @@ public sealed class DelegationAdmissionTests
                 ProviderCalls++;
                 return new ModelResponse([new TextBlock("Respuesta española")], StopReason.EndTurn, new(2, 1, 0, 0, 0), null, new("fixture", "fixture", null));
             }), executor, catalog, new ContextMaterializer(new FakeTokenCounter(), []), new("fixture", "h", "t", "c", "o", "fixture"),
-                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), RuntimeStore, Codecs, Artifacts,
+                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, route: SourceRoute,
+                    maxOutputTokens: outputLimitConfigured ? 256 : null), RuntimeStore, Codecs, Artifacts,
                 new InMemoryAuditSink(), new RedactionPolicy(), pricing: new ModelPricing(0m, 0m), modelContextCapacity: 8192,
                 spendReservations: Reservations, maximumGenerationRequestAttempts: 1);
         }
@@ -394,7 +400,8 @@ public sealed class DelegationAdmissionTests
                 boundary: boundary, receiveMailbox: receiveMailbox);
             return new ExplorerTurn(complete, executor, tools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), []),
                 new("fixture", "h", "t", "c", "o", "fixture"),
-                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, maxOutputTokens: 256), RuntimeStore, Codecs,
+                new(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null, route: SourceRoute,
+                    maxOutputTokens: 256), RuntimeStore, Codecs,
                 Artifacts, new InMemoryAuditSink(), new RedactionPolicy(), pricing: new ModelPricing(0m, 0m),
                 modelContextCapacity: 8192, spendReservations: Reservations, maximumGenerationRequestAttempts: 1,
                 mailboxDeliveryCompleted: Server.ResolveMailboxDelivery);
@@ -405,6 +412,13 @@ public sealed class DelegationAdmissionTests
                 token => Explorer().Ask(question, "system", Session, Run, Lane, "state", token), CancellationToken.None);
             Assert.Null(result.Failure);
             Assert.Equal(StopReason.EndTurn, result.Result?.StopReason);
+            // Admission now requires an explicitly saved orchestration ceiling for the exact
+            // source route/model; test fixtures opt in rather than inheriting by provider brand.
+            using var policies = new SqliteModelPolicyStore(
+                OmniHost.CreatePlatformPaths(Path.Combine(DataRoot, "platform")).UserDatabasePath);
+            var key = ModelPolicyKey.For("fixture", "fixture");
+            policies.Set(key, policies.Get(key, CancellationToken.None)?.Revision ?? 0,
+                ModelPolicyPresets.FullAgent(), CancellationToken.None);
         }
         internal DomainEvent Source() => Store.ReadFrom(Session, 1).Last(e => Codecs.Decode(e) is ModelStepStarted);
         internal DelegationCreateRequest Request()
@@ -448,6 +462,8 @@ public sealed class DelegationAdmissionTests
         public void Dispose()
         {
             Close();
+            var policyDatabasePath = OmniHost.CreatePlatformPaths(Path.Combine(DataRoot, "platform")).UserDatabasePath;
+            SqliteConnection.ClearPool(new SqliteConnection("DataSource=" + policyDatabasePath));
             DeleteOwnedFixtureDirectory(Root);
             DeleteOwnedFixtureDirectory(DataRoot);
         }

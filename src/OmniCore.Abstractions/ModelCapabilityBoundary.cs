@@ -53,7 +53,9 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         {
             { "filesystem.read", ModelToolCapability.WorkspaceRead },
             { "filesystem.list", ModelToolCapability.WorkspaceRead },
+            { "artifact.read", ModelToolCapability.WorkspaceRead },
             { "filesystem.search", ModelToolCapability.Search },
+            { "search.text", ModelToolCapability.Search },
             { "reference.resolve", ModelToolCapability.ReferenceResolve },
             { "plan.propose", ModelToolCapability.PlanProposal },
             { "mode.propose", ModelToolCapability.PlanProposal },
@@ -257,6 +259,41 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// </summary>
     public int MaxVisibleTools() => _policy.ToolPolicy.MaxVisibleTools;
 
+    /// <summary>Discloses permitted tools in a stable, useful order before applying the visible
+    /// count. Basic workspace read/search and mailbox capabilities remain available ahead of
+    /// optional proposals and complex mutation/process capabilities when the list is small.</summary>
+    public IReadOnlyList<ToolDefinition> VisibleTools(IEnumerable<ToolDefinition> definitions,
+        IReadOnlyDictionary<string, int>? preferredOrder = null)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        preferredOrder ??= new Dictionary<string, int>(StringComparer.Ordinal);
+        return definitions.Where(tool => IsToolVisible(tool.Name))
+            .OrderBy(tool => DisclosurePriority(tool.Name))
+            .ThenBy(tool => preferredOrder.GetValueOrDefault(tool.Name, int.MaxValue))
+            .ThenBy(tool => tool.Name, StringComparer.Ordinal)
+            .Take(MaxVisibleTools()).ToArray();
+    }
+
+    private int DisclosurePriority(string toolName)
+    {
+        if (!_toolCapabilities.TryGetValue(toolName, out var capability)) return 100;
+        return capability switch
+        {
+            ModelToolCapability.PlanProposal when toolName == "user.ask" => 0,
+            ModelToolCapability.WorkspaceRead or ModelToolCapability.Search
+                or ModelToolCapability.ReferenceResolve or ModelToolCapability.AgentMailboxWait =>
+                    toolName == "artifact.read" ? 3 : 1,
+            ModelToolCapability.PatchExisting => 2,
+            ModelToolCapability.PlanProposal => 4,
+            ModelToolCapability.CreateFile or ModelToolCapability.ReplaceFile
+                or ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename => 5,
+            ModelToolCapability.ValidationProcess => 6,
+            ModelToolCapability.GeneralProcess => 7,
+            ModelToolCapability.Shell or ModelToolCapability.Network => 8,
+            _ => 100,
+        };
+    }
+
     /// <summary>
     /// True si la tool está clasificada Y su capacidad está dentro del techo del modelo
     /// (ADR-0044 §5.1): el ToolPlanner oculta así las tools no permitidas, reduciendo la
@@ -280,6 +317,14 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
                 capability = writeCapability.Value;
             }
         }
+
+        // Keep the planner aligned with both the capability ceiling and the mutation mode.
+        // A FullAgent profile may be narrowed to PatchExisting without exposing delete/move
+        // controls that the execution boundary would reject later.
+        if ((capability is ModelToolCapability.PatchExisting or ModelToolCapability.CreateFile
+            or ModelToolCapability.ReplaceFile or ModelToolCapability.DeleteFile
+            or ModelToolCapability.MoveOrRename) && !MutationAllowed(capability))
+            return false;
 
         return _policy.ToolPolicy.Allows(capability);
     }

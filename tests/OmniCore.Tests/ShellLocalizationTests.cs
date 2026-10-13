@@ -7,6 +7,19 @@ namespace OmniCore.Tests;
 public sealed class ShellLocalizationTests
 {
     [Theory]
+    [InlineData("es", "Aceptar", "Sí", "No")]
+    [InlineData("en", "OK", "On", "Off")]
+    [InlineData("fr", "OK", "Oui", "Non")]
+    [InlineData("it", "OK", "Sì", "No")]
+    public void Shared_shell_actions_and_toggle_states_use_the_selected_locale(string locale, string ok, string on, string off)
+    {
+        var text = new Localization(locale);
+        Assert.Equal(ok, text.Resolve("shell.ok"));
+        Assert.Equal(on, text.Resolve("shell.state.on"));
+        Assert.Equal(off, text.Resolve("shell.state.off"));
+    }
+
+    [Theory]
     [InlineData("es", "Modelo:")]
     [InlineData("en", "Model:")]
     [InlineData("fr", "Modèle :")]

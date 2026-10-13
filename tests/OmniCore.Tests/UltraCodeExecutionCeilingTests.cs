@@ -14,6 +14,31 @@ namespace OmniCore.Tests;
 /// <summary>Production Explorer/Host with private SQLite/CAS and scripted responses, no paid requests.</summary>
 public sealed class UltraCodeExecutionCeilingTests
 {
+    [Theory]
+    [InlineData("output")]
+    [InlineData("price")]
+    [InlineData("capacity")]
+    [InlineData("attempts")]
+    public void Undeclared_spend_quota_does_not_require_an_output_or_cost_quote(string unavailableBound)
+    {
+        using var fixture = new Fixture(maxSpend: null, maxTurns: 1);
+        var calls = 0;
+        var turn = fixture.MakeTurn((_, _) =>
+        {
+            calls++;
+            return Response([new TextBlock("Uncapped generation completed.")], StopReason.EndTurn);
+        }, missing: unavailableBound);
+        var completed = turn.Ask("reply", "system", fixture.Session, fixture.Run, fixture.Lane, "", CancellationToken.None);
+        Assert.Equal(StopReason.EndTurn, completed.StopReason);
+        Assert.Equal(1, calls);
+        Assert.Single(fixture.Payloads.OfType<ModelStepStarted>());
+        Assert.Single(fixture.Payloads.OfType<ModelStepCompleted>());
+        // Optional monetary quotas do not reset the separately declared turn ceiling.
+        var exhausted = turn.Ask("reply again", "system", fixture.Session, fixture.Run, fixture.Lane, "", CancellationToken.None);
+        Assert.Equal(StopReason.Cancelled, exhausted.StopReason);
+        Assert.Equal(1, calls);
+    }
+
     [Fact]
     public void Suspension_and_reopen_keep_one_turn_and_do_not_reset_tool_ceiling()
     {
@@ -200,7 +225,7 @@ public sealed class UltraCodeExecutionCeilingTests
         public RunId Run { get; }
         public LaneId Lane { get; }
         public IEnumerable<DomainEventPayload> Payloads => Store.ReadFrom(Session, 1).Select(Codecs.Decode);
-        public Fixture(int maxTurns = 4, int maxTools = 8, decimal maxSpend = 1m, int maxSeconds = 120)
+        public Fixture(int maxTurns = 4, int maxTools = 8, decimal? maxSpend = 1m, int maxSeconds = 120)
         {
             Directory.CreateDirectory(Root);
             Store = new SqliteEventStore(Path.Combine(Root, "journal.db"));
@@ -212,7 +237,7 @@ public sealed class UltraCodeExecutionCeilingTests
             var selection = "{\"cmd\":\"run.mode.select\",\"mode\":\"act\",\"effort\":\"ultracode\","
                 + "\"adaptive\":true,\"allowedModes\":\"plan,act,orq\",\"maxAgents\":1,\"maxDepth\":1,"
                 + "\"maxTurns\":" + maxTurns + ",\"maxToolCalls\":" + maxTools + ",\"maxElapsedSeconds\":" + maxSeconds + ","
-                + "\"maxSpendUsd\":" + maxSpend.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+                + "\"maxSpendUsd\":" + (maxSpend?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null") + "}";
             Assert.Equal("ok", server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), selection), CancellationToken.None).Status);
         }
         public ExplorerTurn MakeTurn(Func<ModelRequest, CancellationToken, ModelResponse> complete, string? missing = null)

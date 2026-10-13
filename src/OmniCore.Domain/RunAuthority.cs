@@ -8,21 +8,22 @@ public enum ProductEffort
     LegacyUnknown,
 }
 
-/// <summary>Finite user-selected ceilings for one UltraCode authorization (ADR-0047 §4).</summary>
+/// <summary>User-selected coordination ceilings. A null spend quota is not imposed;
+/// concurrency, depth, turns, tools and elapsed time remain explicit.</summary>
 public sealed record ModeSwitchLimits(
     int MaxAgents,
     int MaxDepth,
     int MaxTurns,
     int MaxToolCalls,
     long MaxElapsedSeconds,
-    decimal MaxSpendUsd)
+    decimal? MaxSpendUsd = null)
 {
     public void Validate()
     {
         if (MaxAgents < 0 || MaxDepth < 0 || MaxTurns <= 0 || MaxToolCalls <= 0
             || MaxElapsedSeconds <= 0 || MaxSpendUsd < 0)
             throw new ArgumentOutOfRangeException(nameof(ModeSwitchLimits),
-                "Mode-switch limits must be explicit, finite, and non-negative (turns/tools/time must be positive).");
+                "Coordination limits must be finite and non-negative; an optional spend quota cannot be negative.");
     }
 }
 

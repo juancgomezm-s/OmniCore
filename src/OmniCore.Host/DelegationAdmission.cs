@@ -31,10 +31,10 @@ public sealed partial class OmniServer
                 || !Guid.TryParse(request.SourceEventId, out var sourceId) || sourceId == Guid.Empty
                 || string.IsNullOrWhiteSpace(request.Objective) || request.Objective.Length > 4096
                 || request.SelectedItemIds is null || request.MaxTurns <= 0 || request.MaxToolCalls <= 0
-                || request.MaxTokens <= 0 || request.MaxCostUsd < 0
+                || request.MaxTokens is <= 0 || request.MaxCostUsd is < 0
                 || request.Priority is < -1000 or > 1000
                 || request.MaximumPacketBytes is <= 0 or > ContextInheritanceService.MaximumDelegationPacketBytes)
-                throw new ArgumentException("Explicit profile, source, objective and finite budgets are required.");
+                throw new ArgumentException("Explicit profile, source, objective, finite Turn/tool limits and optional non-negative token/cost quotas are required.");
             var selection = new ContextInheritancePolicy(request.SelectedItemIds);
             lock (_modeAuthorityMutationGate)
             {
@@ -68,6 +68,9 @@ public sealed partial class OmniServer
                     || source.ExecutionId is not { } parentId || source.LaneId is not { } parentLane
                     || source.TaskId != projection.RootTask)
                     throw new ArgumentException("Source must identify an attributed root context snapshot.");
+                if (_codecs.Decode(source) is not ModelStepStarted sourceStep
+                    || !SourceModelAllowsOrchestration(session, journal, sourceStep))
+                    return Deferred("ModelProfileOrchestrationDisabled");
                 var parent = own.Select(_codecs.Decode).OfType<AgentExecutionStarted>()
                     .FirstOrDefault(e => e.ExecutionId == parentId);
                 if (parent is null || parent.ParentExecutionId is not null || parent.LaneId != parentLane)
@@ -96,42 +99,62 @@ public sealed partial class OmniServer
                 // capacity and depth are rejected here.
                 if (limits.MaxDepth < 1 || limits.MaxAgents < 2)
                     return Deferred("AgentOrDepthLimit");
-                if (children.Any(t => t.Budget.MaxTurns is null || t.Budget.MaxToolCalls is null || t.Budget.MaxCostUsd is null))
+                if (children.Any(t => t.Budget.MaxTurns is null || t.Budget.MaxToolCalls is null))
                     return Deferred("ChildBudgetAccountingUnavailable");
-                var spendReader = new CanonicalSpendReader(_codecs, _artifacts);
-                var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-                var primary = spendReader.ReadPrimary(own, session, run, day);
-                var meta = spendReader.ReadMeta(own, session, run, day);
-                if (primary.Incomplete || meta.Incomplete || primary.RunUsd is null || meta.RunUsd is null)
-                    return Deferred("SpendAccountingUnavailable");
-                var spent = primary.RunUsd.Value + meta.RunUsd.Value;
+                var rootBudget = payloads.OfType<RunCreated>().Single().Budget;
+                var hasCostCeiling = request.MaxCostUsd is not null || limits.MaxSpendUsd is not null
+                    || rootBudget.MaxCostUsd is not null;
+                decimal spent = 0m;
+                if (hasCostCeiling)
+                {
+                    var spendReader = new CanonicalSpendReader(_codecs, _artifacts);
+                    var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                    var primary = spendReader.ReadPrimary(own, session, run, day);
+                    var meta = spendReader.ReadMeta(own, session, run, day);
+                    if (primary.Incomplete || meta.Incomplete || primary.RunUsd is null || meta.RunUsd is null)
+                        return Deferred("SpendAccountingUnavailable");
+                    spent = primary.RunUsd.Value + meta.RunUsd.Value;
+                }
                 var usedToolCalls = checked(payloads.OfType<ToolCallRequested>().LongCount()
                     + ExternalLaneAccounting.ToolUseCount(payloads.OfType<ExternalLaneUsageRecorded>(),
                         payloads.OfType<ExternalLaneActivityObserved>()));
                 if ((long)request.MaxTurns + allocations.Turns
                         + payloads.OfType<TurnStarted>().LongCount() > limits.MaxTurns
                     || (long)request.MaxToolCalls + allocations.ToolCalls
-                        + usedToolCalls > limits.MaxToolCalls
-                    || request.MaxCostUsd + allocations.CostUsd
-                        + spent > limits.MaxSpendUsd)
+                        + usedToolCalls > limits.MaxToolCalls)
                     return Deferred("CoordinationBudgetLimit");
-                var rootBudget = payloads.OfType<RunCreated>().Single().Budget;
+                decimal? childCostLimit = request.MaxCostUsd;
+                long? childTokenLimit = request.MaxTokens;
+                if (limits.MaxSpendUsd is { } coordinationCost)
+                {
+                    var remaining = coordinationCost - spent - allocations.CostUsd;
+                    if (remaining <= 0 || request.MaxCostUsd is { } requestedCost && requestedCost > remaining)
+                        return Deferred("CoordinationBudgetLimit");
+                    childCostLimit = childCostLimit is { } requested ? Math.Min(requested, remaining) : remaining;
+                }
                 if (rootBudget.MaxTokens is { } tokens)
                 {
                     var tokenBudget = RunTokenBudgetReader.Read(own, _codecs, run, tokens);
-                    if (tokenBudget.Remaining is null || children.Any(t => t.Budget.MaxTokens is null))
+                    if (tokenBudget.Remaining is null)
                         return Deferred("TokenAccountingUnavailable");
-                    if (checked(request.MaxTokens + allocations.Tokens) > tokenBudget.Remaining)
+                    var remaining = tokenBudget.Remaining.Value - allocations.Tokens;
+                    if (remaining <= 0 || request.MaxTokens is { } requestedTokens && requestedTokens > remaining)
                         return Deferred("ParentTokenBudgetLimit");
+                    childTokenLimit = childTokenLimit is { } requested ? Math.Min(requested, remaining) : remaining;
                 }
-                if (rootBudget.MaxCostUsd is { } cost && request.MaxCostUsd + allocations.CostUsd
-                    + spent > cost) return Deferred("ParentCostBudgetLimit");
+                if (rootBudget.MaxCostUsd is { } cost)
+                {
+                    var remaining = cost - spent - allocations.CostUsd;
+                    if (remaining <= 0 || request.MaxCostUsd is { } requestedCost && requestedCost > remaining)
+                        return Deferred("ParentCostBudgetLimit");
+                    childCostLimit = childCostLimit is { } requested ? Math.Min(requested, remaining) : remaining;
+                }
                 if (rootBudget.MaxTurns is { } turns && (long)request.MaxTurns + allocations.Turns
                     + payloads.OfType<TurnStarted>().LongCount() > turns) return Deferred("ParentTurnBudgetLimit");
                 if (rootBudget.MaxToolCalls is { } calls && (long)request.MaxToolCalls + allocations.ToolCalls
                     + usedToolCalls > calls) return Deferred("ParentToolBudgetLimit");
                 var childTask = new TaskCreated(TaskId.New(), run, request.Objective, Array.Empty<TaskDependency>(),
-                    new TaskBudget(request.MaxCostUsd, request.MaxTokens, request.MaxTurns, request.MaxToolCalls), projection.RootTask);
+                    new TaskBudget(childCostLimit, childTokenLimit, request.MaxTurns, request.MaxToolCalls), projection.RootTask);
                 var childLane = new LaneCreated(LaneId.New(), childTask.TaskId, profile.Id,
                     profile.Revision, AgentProfileFingerprint.Hash(profile));
                 var target = new DelegationContextTarget(DelegationId.New(), parentId, childLane.LaneId,

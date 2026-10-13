@@ -20,7 +20,7 @@ public interface IModelCatalogPreferencesHost
 public sealed record ModelCatalogProvider(string Id, string Family);
 
 public sealed record ModelCatalogModel(string Id, string ProviderId, long Context,
-    long RecommendedUsableContext, long MaxOutput, double? ParametersBillions,
+    long RecommendedUsableContext, long? MaxOutput, double? ParametersBillions,
     IReadOnlyList<string> Aliases, bool CanDelete, IReadOnlyList<string> DeleteBlockers);
 
 public sealed record ModelCatalogPreferencesSnapshot(bool Available, string Revision,
@@ -33,7 +33,7 @@ public sealed record ModelCatalogPreferencesSnapshot(bool Available, string Revi
 
 /// <summary>Only model fields already supported by models.yaml/ConfigLoader are exposed here.</summary>
 public sealed record ModelCatalogDraft(string Id, string ProviderId, long Context,
-    long RecommendedUsableContext, long MaxOutput, double? ParametersBillions,
+    long RecommendedUsableContext, long? MaxOutput, double? ParametersBillions,
     IReadOnlyList<string> Aliases, string? ExistingId = null)
 {
     public override string ToString() => "ModelCatalogDraft [configuration]";
@@ -95,7 +95,7 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
                     var blockers = ReferencesTo(model.Id, model.Aliases, loaded.Registry, loaded.Models?.Routing,
                         loaded.Settings?.DefaultModel, ScopeDefaults(files));
                     return new ModelCatalogModel(model.Id, model.ProviderId, model.ContextWindow,
-                        model.RecommendedUsableContext, model.MaxOutputTokens, model.ParameterCountBillions,
+                        model.RecommendedUsableContext, model.OutputLimitConfigured ? model.MaxOutputTokens : null, model.ParameterCountBillions,
                         model.Aliases.ToArray(), workspaceScopeAvailable && blockers.Count == 0,
                         blockers);
                 }).ToArray();
@@ -159,7 +159,7 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
             Put(entry, "provider", draft.ProviderId);
             Put(entry, "context", draft.Context.ToString(CultureInfo.InvariantCulture));
             Put(entry, "recommendedUsableContext", draft.RecommendedUsableContext.ToString(CultureInfo.InvariantCulture));
-            Put(entry, "maxOutput", draft.MaxOutput.ToString(CultureInfo.InvariantCulture));
+            Put(entry, "maxOutput", draft.MaxOutput?.ToString(CultureInfo.InvariantCulture));
             Put(entry, "parametersBillions", draft.ParametersBillions?.ToString("R", CultureInfo.InvariantCulture));
             PutList(entry, "aliases", draft.Aliases);
             var updated = Serialize(root);

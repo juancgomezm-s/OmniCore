@@ -345,7 +345,7 @@ public sealed partial class ModelQualificationHost : IDisposable
                 ?? throw new ModelQualificationCostEvidenceUnavailableException();
             observer = new QualificationSpendAccounting(_store, _paths.DataDirectory, key.QualificationKeyHash(),
                 probes, bound, generationAttempts!.Value, provider.BillingMode, options.MaxTotalCostUsd,
-                _configuration?.DailyCapUsd ?? 20m);
+                _configuration?.Settings?.Budget?.Daily);
         }
         var runner = new ProbeRunner(connectedProvider,
             options.PerProbeTimeout ?? ProbeRunner.DefaultPerProbeTimeout,
