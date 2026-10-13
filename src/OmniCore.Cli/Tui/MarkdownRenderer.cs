@@ -20,7 +20,8 @@ internal static class MarkdownRenderer
     private static MarkdownPipeline CreateInlinePipeline()
     {
         var builder = new MarkdownPipelineBuilder()
-            .UseEmphasisExtras(Markdig.Extensions.EmphasisExtras.EmphasisExtraOptions.Strikethrough);
+            .UseEmphasisExtras(Markdig.Extensions.EmphasisExtras.EmphasisExtraOptions.Strikethrough)
+            .UseAutoLinks(new Markdig.Extensions.AutoLinks.AutoLinkOptions { AllowDomainWithoutPeriod = true });
         // Blocks (including streaming fences and terminal-sized tables) are handled below.
         // A paragraph-only pipeline still uses CommonMark's inline delimiter parser.
         builder.BlockParsers.Clear();
@@ -133,7 +134,7 @@ internal static class MarkdownRenderer
         }
     }
 
-    private static IEnumerable<IReadOnlyList<ConversationSpan>> SplitLineBreaks(IReadOnlyList<ConversationSpan> spans)
+    internal static IEnumerable<IReadOnlyList<ConversationSpan>> SplitLineBreaks(IReadOnlyList<ConversationSpan> spans)
     {
         var line = new List<ConversationSpan>();
         foreach (var span in spans)
@@ -152,12 +153,13 @@ internal static class MarkdownRenderer
     {
         var result = new List<ConversationSpan>();
         var html = new List<(string Tag, TextStyle Decoration, ConversationStyle Style, string? Title)>();
+        string? activeLink = null;
         void Add(string value, ConversationStyle style, TextStyle decoration)
         {
             if (value.Length == 0) return;
-            if (result.LastOrDefault() is { } last && last.Style == style && last.Decoration == decoration)
+            if (result.LastOrDefault() is { } last && last.Style == style && last.Decoration == decoration && last.LinkTarget == activeLink)
                 result[^1] = last with { Text = last.Text + value };
-            else result.Add(new(value, style, decoration));
+            else result.Add(new(value, style, decoration, activeLink));
         }
         void Visit(ContainerInline container, TextStyle decoration = TextStyle.None, ConversationStyle style = ConversationStyle.Text)
         {
@@ -184,12 +186,23 @@ internal static class MarkdownRenderer
                         break;
                     case LinkInline link:
                         if (link.IsImage) Add("Imagen: ", ConversationStyle.Muted, decoration);
+                        var previousLink = activeLink;
+                        activeLink = !link.IsImage && OmniCore.Client.WebLinkTarget.TryParse(link.Url, out _) ? link.Url : null;
+                        var labelStart = result.Count;
+                        var priorLength = result.LastOrDefault()?.Text.Length ?? 0;
                         Visit(link, decoration | TextStyle.Underline, ConversationStyle.Heading);
-                        var label = string.Concat(result.TakeLast(1).Select(span => span.Text));
+                        var label = string.Concat(result.Skip(Math.Max(0, labelStart - 1)).Select(span => span.Text));
+                        if (labelStart > 0) label = label[priorLength..];
                         if (!string.IsNullOrEmpty(link.Url) && label != link.Url)
                             Add(" (" + link.Url + ")", ConversationStyle.Muted, decoration);
+                        activeLink = previousLink;
                         break;
-                    case AutolinkInline auto: Add(auto.Url, ConversationStyle.Heading, effective | TextStyle.Underline); break;
+                    case AutolinkInline auto:
+                        var prior = activeLink;
+                        activeLink = OmniCore.Client.WebLinkTarget.TryParse(auto.Url, out _) ? auto.Url : null;
+                        Add(auto.Url, ConversationStyle.Heading, effective | TextStyle.Underline);
+                        activeLink = prior;
+                        break;
                     case HtmlInline tag: RenderTag(tag.Tag, effective, color); break;
                     case LineBreakInline: Add("\n", color, effective); break;
                     case ContainerInline nested: Visit(nested, decoration, style); break;

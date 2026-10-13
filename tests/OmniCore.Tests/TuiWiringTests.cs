@@ -1965,7 +1965,7 @@ public sealed partial class TuiWiringTests
         Assert.True(list.HasFocus);
         var search = fx.App.Overlay.SubViews.OfType<TextField>().Single();
         KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "filtro por descripción");
-        fx.Invoke(() => search.Text = "Lee el contenido");
+        fx.Invoke(() => search.Text = "página acotada");
         fx.Wait(() => list.Source.Count == 1 && detail.Text.ToString().Contains("filesystem.read"), "descripción española busca herramienta");
         Assert.Contains("sin modificarlo", detail.Text);
         fx.Invoke(() => search.Text = "");

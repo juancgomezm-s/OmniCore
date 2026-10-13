@@ -1,6 +1,7 @@
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Views;
 using Terminal.Gui.Input;
+using Terminal.Gui.Drivers;
 
 namespace OmniCore.Cli;
 
@@ -13,6 +14,12 @@ namespace OmniCore.Cli;
 internal class StyledTextPresenter : TextView
 {
     internal bool Dimmed { get; set; }
+    private readonly Dictionary<(int Row, int Column), string> _links = new();
+    private System.Drawing.Point _sourcePoint;
+    private System.Drawing.Point? _mouseDown;
+    private bool _dragged;
+    private bool _loadingStyled;
+    internal event Action<string>? LinkActivated;
     // Internal cell metadata; normalize the one-step background marker before drawing.
     private static readonly Color AccentMarker = new("#061823");
     private static bool IsDecoration(Cell cell) => cell.Attribute?.Background == AccentMarker;
@@ -23,6 +30,39 @@ internal class StyledTextPresenter : TextView
         ScrollBars = true;
         ConversationScrollBarStyle.Attach(VerticalScrollBar, () => Dimmed);
         AddCommand(Command.Copy, () => CopySelection());
+        UnwrappedCursorPositionChanged += (_, point) => _sourcePoint = point;
+        TextChanged += (_, _) => { if (!_loadingStyled) _links.Clear(); };
+        KeyDown += (_, key) =>
+        {
+            if (key.KeyCode == KeyCode.Enter && ActivateCurrentLink()) key.Handled = true;
+        };
+    }
+
+    internal bool ActivateCurrentLink()
+    {
+        var point = WordWrap ? _sourcePoint : InsertionPoint;
+        if (!_links.TryGetValue((point.Y, point.X), out var target)
+            && !(SelectedText.Length > 0 && _links.TryGetValue((point.Y, point.X - 1), out target))) return false;
+        if (LinkActivated is null) return false;
+        LinkActivated.Invoke(target!);
+        return true;
+    }
+
+    protected override bool OnMouseEvent(Mouse mouse)
+    {
+        if (mouse.IsPressed)
+        {
+            if (_mouseDown is null) { _mouseDown = mouse.Position; _dragged = false; }
+            else if (_mouseDown != mouse.Position) _dragged = true;
+        }
+        var handled = base.OnMouseEvent(mouse);
+        if (mouse.Flags.HasFlag(MouseFlags.LeftButtonClicked))
+        {
+            _mouseDown = null;
+            if (!_dragged && ActivateCurrentLink()) handled = true;
+            _dragged = false;
+        }
+        return handled;
     }
 
     // Keep clipboard output independent of style serialization: extract only
@@ -40,12 +80,20 @@ internal class StyledTextPresenter : TextView
 
     internal void LoadStyled(IReadOnlyList<IReadOnlyList<ConversationSpan>> lines, int width, bool noColor)
     {
+        _links.Clear();
+        var admittedTargets = new Dictionary<string, bool>(StringComparer.Ordinal);
         var rows = new List<List<Cell>>();
         foreach (var line in lines)
         {
             var cells = new List<Cell>();
             foreach (var span in line)
             {
+                var linked = false;
+                if (span.LinkTarget is { } target)
+                {
+                    if (!admittedTargets.TryGetValue(target, out linked))
+                        admittedTargets[target] = linked = OmniCore.Client.WebLinkTarget.TryParse(target, out _);
+                }
                 var attribute = new Terminal.Gui.Drawing.Attribute(
                     noColor ? Color.None : new Color(Foreground(span.Style)),
                     IsAccent(span.Style) ? AccentMarker : noColor ? Color.None : new Color(IsCode(span.Style) ? "#0A2330" : "#061822"),
@@ -54,6 +102,8 @@ internal class StyledTextPresenter : TextView
                 while (elements.MoveNext())
                 {
                     var cell = new Cell(attribute, false, elements.GetTextElement());
+                    if (linked)
+                        _links[(rows.Count, cells.Count)] = span.LinkTarget!;
                     cells.Add(cell);
                 }
             }
@@ -68,7 +118,9 @@ internal class StyledTextPresenter : TextView
             }
             rows.Add(cells);
         }
-        Load(rows);
+        _loadingStyled = true;
+        try { Load(rows); }
+        finally { _loadingStyled = false; }
     }
 
     private static bool IsCode(ConversationStyle style) => style is >= ConversationStyle.Code and <= ConversationStyle.SyntaxPunctuation;

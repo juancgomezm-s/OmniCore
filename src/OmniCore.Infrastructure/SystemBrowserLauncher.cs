@@ -14,13 +14,17 @@ namespace OmniCore.Infrastructure;
 /// </summary>
 public sealed class SystemBrowserLauncher : IBrowserLauncher
 {
+    private readonly bool _allowHttp;
+    // OAuth callers retain HTTPS-only behavior; explicit web-link actions may use HTTP.
+    public SystemBrowserLauncher(bool allowHttp = false) => _allowHttp = allowHttp;
+
     public async Task<BrowserLaunchResult> LaunchAsync(Uri url, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(url);
 
-        // Solo https: una URL de authorize con otro esquema no es el protocolo de Anthropic, y
-        // abrirla sería entregar el code a un handler local.
-        if (!string.Equals(url.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        // OAuth stays HTTPS-only; explicit browser links may also use HTTP.
+        if (!url.IsAbsoluteUri || url.OriginalString.Any(char.IsControl) || url.UserInfo.Length != 0
+            || (url.Scheme != Uri.UriSchemeHttps && !(_allowHttp && url.Scheme == Uri.UriSchemeHttp)))
         {
             return BrowserLaunchResult.Failed(BrowserLaunchFailure.UnsupportedUrl);
         }

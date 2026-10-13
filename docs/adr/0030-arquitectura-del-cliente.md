@@ -87,6 +87,23 @@ En modo TUI, Terminal.Gui es el dueño de la consola, así que Spectre **no escr
 - **Test nuevo:** los paquetes `Terminal.Gui` y `Spectre.Console*` solo pueden aparecer en `OmniCore.Cli`.
 - **Futuros clientes** (OmniCoder, desktop) reutilizan `OmniCore.Client` sin arrastrar el terminal.
 
+### 7. Enlaces de conversación (2026-10-13)
+
+El renderer conserva el destino de enlaces Markdown y URLs visibles como metadata de
+presentación, incluyendo tablas, estilos, reflow y scroll. En la TUI, clic simple o Enter
+con el cursor/selección sobre el enlace abre el navegador predeterminado mediante una
+fachada Host y el launcher de plataforma. Arrastrar para seleccionar/copiar no abre nada;
+renderizar o recibir una respuesta tampoco. Cambiar el contenido elimina destinos previos.
+
+Solo enlaces web HTTP(S) absolutos sin credenciales ni controles son activables; un texto
+externo no selecciona ejecutables ni handlers de otros esquemas. Los ejemplos de código
+permanecen literales. Es una acción explícita del cliente, sin tool del modelo ni escritura
+en el journal. La política HTTPS del launcher OAuth se conserva.
+
+Plain emite hipervínculos OSC 8 en stdout interactivo; el gesto de apertura lo administra
+la terminal. Stdout redirigido y `TERM=dumb` conservan el texto original, sin secuencias de
+enlaces. Los errores y la ayuda de TUI se resuelven en es/en/fr/it.
+
 ## Clasificación
 
 | Elemento | Categoría |
