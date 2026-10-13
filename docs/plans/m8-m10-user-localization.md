@@ -97,6 +97,15 @@ Project de instrucciones ya integrado es la base, no el cierre de skills complet
 
 Orden: integrar bases → completar commands/preferences/skills → hooks/MCP → cerrar candidatos/uso Session → cerrar OpenRouter OR1–OR5 → integración M8. OpenRouter reutiliza las superficies de preferencias y puede avanzar sin depender del conector web/MCP. Los bloques pueden compartir contratos ya construidos; cada entrega contiene backend, ruta Host/Protocol, presentación y pruebas. Los límites Strong de red/creación de archivos quedan explícitos hasta que el sandbox imponga el techo exacto; ninguna traducción habilita esas capacidades.
 
+**Compatibilidad MCP verificada el 2026-10-13:** fijar y registrar la revisión wire
+soportada. La [revisión 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)
+usa metadata por solicitud; las revisiones anteriores usan `initialize`. El
+[binding HTTP actual](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)
+requiere cabeceras de versión/método/nombre y admite JSON o SSE por solicitud.
+Una implementación de una revisión anterior declara esa compatibilidad y no mezcla
+sus mensajes con los actuales. Fixtures comprueban el dialecto y el rechazo de
+revisiones no soportadas; no se acredita compatibilidad universal por hablar JSON-RPC.
+
 **Salida M8:** todos los pendientes anteriores, skills completas y OpenRouter OR1–OR5, además de `tool.search`, read paginado e integración web/MCP cableados; aislamiento/autoridad verificados y recorridos propios es/en/fr/it sin fallback, incluyendo error y cancelación. Skills completas y OpenRouter no quedan diferidos a M9/M10 por disponer sólo de una base parcial. Memoria Project/Workspace/Global continúa en M10. Las pantallas de preferencias ya construidas se amplían al existir el backend; no se duplican.
 
 ## M9: Host separado y experiencia entre procesos

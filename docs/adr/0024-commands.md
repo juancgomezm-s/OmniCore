@@ -81,6 +81,16 @@ public abstract record CommandOutcome;   // ClientActionRequested | ServerComman
 
 ## Clasificación
 
+### Checkpoint M8 integrado (2026-10-13, `cd6f12f`)
+
+Los aliases explícitos User ya se persisten en `settings.yaml`, se editan en
+preferencias y normalizan solo la cabeza del comando en CLI/TUI, conservando sus
+argumentos. Admiten destinos cualificados de extensión, reservan nombres Core y
+aparecen en completado. En CLI se resuelven por el registro tipado: un destino
+desconocido se diagnostica y no se convierte en petición al modelo. Esta entrega
+actualiza el pendiente de aliases del corte anterior; no cierra los demás scopes,
+aportes ni la integración final de M8.
+
 | Elemento | Categoría |
 |---|---|
 | Regla "el Engine nunca interpreta `/`", `CommandInvocation`, `ClientCommandRegistry` mínimo con los commands de M1 (`/plan`, `/tasks`, `/events`, `/exit`), mapeo a `WireCommand` | **Necesario desde M1** |

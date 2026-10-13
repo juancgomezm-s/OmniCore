@@ -49,6 +49,19 @@
 
 ## Clasificación
 
+### Checkpoint M8 integrado (2026-10-13, `cd6f12f`)
+
+`toolPreferences` User se guarda con revisión/lease y llega al planner y al
+fingerprint efectivo. Solo aplica si ambos IDs ya son elegibles/visibles, comparten
+tags y clase de efecto y la alternativa no aumenta el riesgo. La comparación no
+acredita equivalencia semántica completa entre esquemas.
+
+Una sustitución protegida pide Ask y registra `ToolPreferenceSubstitutionApproved`
+por origen, destino e identidad de descriptor/esquema/paquete. Se reutiliza solo en
+la misma Session y para esa identidad; cambiar el paquete o la Session exige otro
+Ask. Un grant ordinario no acredita sustitución, y PermissionPolicy/Deny se evalúan
+en cada llamada. MCP y los demás pendientes de M8 conservan su estado abierto.
+
 | Elemento | Categoría |
 |---|---|
 | `ToolDescriptor.Source` y `.Protection`, reglas de namespace; en M1, `FakeTool` como `BuiltIn` | **Necesario desde M1** (solo tipos) |
