@@ -54,6 +54,7 @@ public static class ClientCommandResources
         ["client.tools.description.missing"] = ("Le fournisseur n’a pas décrit la fonction de cet outil.", "Il fornitore non ha descritto la funzione di questo strumento."),
         ["client.tools.description.original"] = ("Description du fournisseur (langue d’origine) : ", "Descrizione del fornitore (lingua originale): "),
         ["client.tools.policy.plan"] = ("Bloqué en mode Plan : cet outil ne se limite pas à la lecture.", "Bloccato in modalità Plan: lo strumento non è di sola lettura."),
+        ["client.tools.policy.act_only"] = ("Disponible uniquement en ACT : le Run actuel ne l’inclut pas dans son catalogue.", "Disponibile solo in ACT: il Run attuale non lo include nel suo catalogo."),
         ["client.tools.policy.boundary"] = ("Bloqué par les limites de capacité du modèle.", "Bloccato dai limiti di capacità del modello."),
         ["client.tools.policy.boundary_ask"] = ("Les limites du modèle exigent une confirmation ; les autres autorisations restent applicables.", "I limiti del modello richiedono conferma; restano valide le altre autorizzazioni."),
         ["client.tools.policy.ask"] = ("La politique exige une confirmation ; d’autres limites peuvent empêcher l’exécution.", "La politica richiede conferma; altri limiti possono impedire l’esecuzione."),

@@ -28,8 +28,8 @@ public sealed class PreferencesCenterTests
     [Theory]
     [InlineData("es", "local", "local_engines")]
     [InlineData("en", "permissions", "tools_security")]
-    [InlineData("fr", "mémoire", "context_memory")]
-    [InlineData("it", "barra laterale", "interface")]
+    [InlineData("fr", "mémoire", "diagnostics_data")]
+    [InlineData("it", "barra laterale", "general")]
     public void Category_search_matches_localized_titles_and_four_language_synonyms(
         string locale, string query, string expectedCategory)
     {

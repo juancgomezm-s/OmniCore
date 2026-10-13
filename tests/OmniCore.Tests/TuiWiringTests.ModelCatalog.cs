@@ -220,5 +220,31 @@ public sealed partial class TuiWiringTests
                         $"label should remain readable at this width: {label.Text}");
         });
     }
+
+    [Fact]
+    public void Model_catalog_filters_and_reports_position_with_wraparound()
+    {
+        RunTuiTest(fx =>
+        {
+            var host = new ModelCatalogFixture();
+            for (var index = 0; index < 40; index++)
+                host.Models.Add(new($"bulk-{index:00}", "fixture", 8192, 6144, 2048, null, [], true, []));
+            fx.StartTui(modelCatalogPreferences: host, initialColumns: 120, initialRows: 35);
+            fx.Invoke(fx.App.ShowModelCatalogPreferences);
+            var overlay = fx.App.Overlay!;
+            var list = Descendants(overlay).OfType<ListView>().Single(view => view.Id == "model-catalog-list");
+            var position = Descendants(overlay).OfType<Label>().Single(view => view.Id == "model-catalog-position");
+            Assert.StartsWith("1 de 41", position.Text.ToString());
+            fx.Invoke(() => { list.SetFocus(); list.SelectedItem = 40; });
+            fx.Wait(() => position.Text.ToString().Contains("41 de 41"), "posición final informada");
+            Assert.Contains("fin", position.Text.ToString());
+            fx.Invoke(() => list.NewKeyDownEvent(Terminal.Gui.Input.Key.CursorDown));
+            fx.Wait(() => list.SelectedItem == 0, "bajar desde el final vuelve al inicio");
+            fx.Invoke(() => Assert.IsType<TextField>(Descendants(overlay).Single(view => view.Id == "model-catalog-filter")).Text = "bulk-1");
+            fx.Wait(() => list.Source!.Count == 10, "el filtro reduce la lista");
+            Assert.Contains("(41)", position.Text.ToString());
+            AssertModelCatalogLayoutFits(fx);
+        });
+    }
 }
 #pragma warning restore CS0618

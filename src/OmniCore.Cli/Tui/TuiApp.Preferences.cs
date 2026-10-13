@@ -193,9 +193,10 @@ public sealed partial class TuiApp
 
         var controls = new List<View>();
         void Add(View view) { controls.Add(view); contentPanel.Add(view); }
+        void Section(string key, int at) => contentPanel.Add(MenuIndent.Heading(Pref(key), at));
         void AddAction(string id, string key, int y, Action action)
         {
-            var button = new Button { Id = id, X = 2, Y = y, Width = Dim.Fill(3),
+            var button = new Button { Id = id, X = MenuIndent.Level1, Y = y, Width = Dim.Fill(3),
                 TextAlignment = Alignment.Start, Text = Pref(key) };
             button.Accepted += (_, _) => action(); Add(button);
         }
@@ -203,8 +204,8 @@ public sealed partial class TuiApp
         switch (selected.Id)
         {
             case "general":
-                Add(new Label { Id = "preferences-locale-label", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("locale_label") });
-                var language = new ListView { Id = "preferences-locale", X = 2, Y = y,
+                Add(new Label { Id = "preferences-locale-label", X = MenuIndent.Level0, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("locale_label") });
+                var language = new ListView { Id = "preferences-locale", X = MenuIndent.Level1, Y = y,
                     Width = Dim.Fill(4), Height = 4, ShowMarks = false };
                 language.SetSource(new ObservableCollection<string>(new[]
                     { Pref("locale_es"), Pref("locale_en"), Pref("locale_fr"), Pref("locale_it") }));
@@ -217,7 +218,7 @@ public sealed partial class TuiApp
                         ApplyPreferenceLocale(_preferencesDraftLocale, frame, categoryPage: true);
                 };
                 Add(language); y += 4;
-                Add(new Label { X = 2, Y = y, Width = Dim.Fill(4), Height = 2,
+                Add(new Label { X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2,
                     Text = Pref(_localeSelection?.HasProcessOverride == true ? "locale_override" : "locale_note") }); y += 2;
                 var sourceKey = _localeSelection?.HasProcessOverride == true ? _localeSelection.Source switch
                 {
@@ -226,28 +227,37 @@ public sealed partial class TuiApp
                 } : _preferencesDraftLocale != (_preferencesLocaleSnapshot?.Locale ?? _locale)
                     ? "source_preview" : _localeSelection?.Source == LocaleSelectionSource.UserSetting
                         || _preferencesLocaleSnapshot?.IsConfigured == true ? "source_user" : "source_default";
-                Add(new Label { Id = "preferences-locale-source", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1,
+                Add(new Label { Id = "preferences-locale-source", X = MenuIndent.Level1, Y = y, Width = Dim.Percent(50), Height = 1,
                     Text = Pref("source_label") + ": " + Pref(sourceKey) + " · " + Pref("locale_" + _locale) });
-                Add(new Label { Id = "preferences-locale-saved", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1,
+                Add(new Label { Id = "preferences-locale-saved", X = Pos.Percent(50) + MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1,
                     Text = Pref("preference_label") + ": " + Pref(_preferencesLocaleSnapshot?.IsConfigured == true ? "preference_saved" : "preference_default")
                         + " · " + (_preferencesLocaleSnapshot?.Locale ?? _locale) });
+                // Heading and its two actions share one row so General fits an 80x25 terminal.
+                var interfaceHeading = new Label { Id = "omni-section", X = MenuIndent.Level0, Y = y,
+                    Width = Pref("section_interface").Length + 2, Height = 1, Text = "▸ " + Pref("section_interface") };
+                contentPanel.Add(interfaceHeading);
+                var sidebarOpen = new Button { Id = "preferences-sidebar-open", X = Pos.Right(interfaceHeading) + 2, Y = y, Text = Pref("sidebar_open") };
+                sidebarOpen.Accepted += (_, _) => { CloseOverlay(); ShowSidebarSettings(); };
+                var animationsOpen = new Button { Id = "preferences-animations-open", X = Pos.Right(sidebarOpen) + 2, Y = y, Text = Pref("animations_open") };
+                animationsOpen.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); };
+                Add(sidebarOpen); Add(animationsOpen);
                 break;
             case "accounts_connections":
-                Add(new Label { Id = "preferences-account-heading", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("account_title") });
+                Add(new Label { Id = "preferences-account-heading", X = MenuIndent.Level0, Y = y++, Width = Dim.Fill(4), Height = 1, Text = "▸ " + Pref("account_title") });
                 try
                 {
                     _account ??= _accountOverride ?? new TuiAccountHost();
                     var state = _account.Status();
                     var status = state.LoggedIn ? state.AccountIdMasked + " · " + AccountUi(state.Expired ? "status.expired" : "status.connected") : AccountUi("status.disconnected");
                     AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(fromPreferences: true); });
-                    Add(new Label { Id = "preferences-account-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = status });
+                    Add(new Label { Id = "preferences-account-status", X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1, Text = status });
                 }
                 catch
                 {
                     AddAction("preferences-account-open", "account_open", y++, () => { CloseOverlay(); ShowAccount(fromPreferences: true); });
-                    Add(new Label { Id = "preferences-account-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = AccountUi("status.unavailable") });
+                    Add(new Label { Id = "preferences-account-status", X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1, Text = AccountUi("status.unavailable") });
                 }
-                var claudeOpen = new Button { Id = "preferences-claude-open", X = 2, Y = y++,
+                var claudeOpen = new Button { Id = "preferences-claude-open", X = MenuIndent.Level1, Y = y++,
                     Width = Dim.Fill(3), TextAlignment = Alignment.Start, Text = AccountUi("action.manageClaude") };
                 claudeOpen.Accepted += (_, _) => { CloseOverlay(); ShowClaudeAccounts(); };
                 Add(claudeOpen);
@@ -261,57 +271,59 @@ public sealed partial class TuiApp
                                 : row.SignedIn ? "status.connected" : "status.notConfigured" : "status.unavailable")));
                 }
                 catch { claudeSummary = AccountUi("status.unavailable"); }
-                Add(new Label { Id = "preferences-claude-status", X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = claudeSummary });
+                Add(new Label { Id = "preferences-claude-status", X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1, Text = claudeSummary });
+                y++;
+                Section("api_title", y++);
                 AddAction("preferences-api-open", "api_open", y++, () => { CloseOverlay(); ShowProviderConnections(); });
-                Add(new Label { Id = "preferences-api-status", X = 2, Y = y, Width = Dim.Fill(4), Height = 1,
+                Add(new Label { Id = "preferences-api-status", X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 1,
                     Text = AccountUi("help.providerState") });
                 break;
             case "local_engines":
                 ShowLocalEngineList(contentPanel, y);
                 break;
             case "models_execution":
+                Section("section_models", y++);
                 AddAction("preferences-models-open", "models_open", y, () => { CloseOverlay(); ShowPolicyPreferences("models_execution"); });
-                var catalogButton = new Button { Id = "preferences-model-catalog-open", X = 2, Y = y + 2,
+                var catalogButton = new Button { Id = "preferences-model-catalog-open", X = MenuIndent.Level1, Y = y + 2,
                     Width = Dim.Fill(3), TextAlignment = Alignment.Start, Text = _localization.Resolve("modelCatalogPreferences.open") };
                 catalogButton.Accepted += (_, _) => { CloseOverlay(); ShowModelCatalogPreferences(); };
                 Add(catalogButton);
                 break;
             case "tools_security":
+                Section("section_tools", y++);
                 AddAction("preferences-tools-open", "tools_open", y, () => RunPreferenceAction(ClientActionIds.ToolsInspect)); y += 2;
+                Section("section_permissions", y++);
                 AddAction("preferences-permissions-open", "permissions_open", y++, () => { CloseOverlay(); ShowSecurityPreferences("tools_security"); });
-                Add(new Label { X = 2, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("permissions_hint") });
-                break;
-            case "interface":
-                AddAction("preferences-sidebar-open", "sidebar_open", y, () => { CloseOverlay(); ShowSidebarSettings(); }); y += 2;
-                AddAction("preferences-animations-open", "animations_open", y, () => { CloseOverlay(); ShowAnimationSettings(); });
-                break;
-            case "context_memory":
-                Add(new Label { X = 2, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("context_hint") }); y += 2;
-                AddAction("preferences-context-open", "context_open", y++, () => RunPreferenceAction(ClientActionIds.ContextInspect));
-                Add(new Label { X = 2, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("usage_label") });
-                if (_turnUsage is { } usage)
-                {
-                    var tokens = usage.SessionTokenMeasurement is { } measurement
-                        ? UsagePresentation.Tokens(measurement, _locale) : Pref("usage_unknown");
-                    var cost = UsagePresentation.Cost(usage.SessionCost);
-                    Add(new Label { Id = "preferences-usage-value", X = 2, Y = y, Width = Dim.Fill(4), Height = 2,
-                        Text = tokens + (cost is null ? "" : " · " + cost) + " · " + usage.AsOf.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'", System.Globalization.CultureInfo.InvariantCulture) });
-                    y += 2;
-                }
-                else { Add(new Label { Id = "preferences-usage-value", X = 2, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("usage_unknown") }); y += 2; }
-                AddAction("preferences-memory-open", "memory_open", y, () => RunPreferenceAction(ClientActionIds.MemorySession));
+                Add(new Label { X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("permissions_hint") });
                 break;
             case "extensions_skills":
-                Add(new Label { X = 2, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("extensions_hint") }); y += 2;
+                Section("section_extensions", y++);
+                Add(new Label { X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("extensions_hint") }); y += 2;
                 AddAction("preferences-extensions-open", "extensions_open", y++, () => RunPreferenceAction(ClientActionIds.ExtensionsInspect));
                 AddAction("preferences-skills-open", "skills_open", y++, () => RunPreferenceAction(ClientActionIds.SkillsInspect));
-                var commandsButton = new Button { Id = "preferences-commands-open", X = 2, Y = y,
+                var commandsButton = new Button { Id = "preferences-commands-open", X = MenuIndent.Level1, Y = y,
                     Width = Dim.Fill(4), TextAlignment = Alignment.Start, Text = _localization.Resolve("catalog.title") };
                 commandsButton.Accepted += (_, _) => ShowCommandPreferences();
                 Add(commandsButton);
                 break;
             case "diagnostics_data":
-                AddAction("preferences-diagnostics-open", "diagnostics_open", y, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); });
+                Section("section_diagnostics", y++);
+                AddAction("preferences-diagnostics-open", "diagnostics_open", y, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); }); y += 2;
+                Section("section_context", y++);
+                Add(new Label { X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("context_hint") }); y += 2;
+                AddAction("preferences-context-open", "context_open", y++, () => RunPreferenceAction(ClientActionIds.ContextInspect));
+                Add(new Label { X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1, Text = Pref("usage_label") });
+                if (_turnUsage is { } usage)
+                {
+                    var tokens = usage.SessionTokenMeasurement is { } measurement
+                        ? UsagePresentation.Tokens(measurement, _locale) : Pref("usage_unknown");
+                    var cost = UsagePresentation.Cost(usage.SessionCost);
+                    Add(new Label { Id = "preferences-usage-value", X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2,
+                        Text = tokens + (cost is null ? "" : " · " + cost) + " · " + usage.AsOf.ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'", System.Globalization.CultureInfo.InvariantCulture) });
+                    y += 2;
+                }
+                else { Add(new Label { Id = "preferences-usage-value", X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("usage_unknown") }); y += 2; }
+                AddAction("preferences-memory-open", "memory_open", y, () => RunPreferenceAction(ClientActionIds.MemorySession));
                 break;
         }
         frame.Add(_preferencesNotice);
@@ -562,8 +574,15 @@ public sealed partial class TuiApp
             return;
         }
         var rows = snapshot.Engines.ToArray();
-        var listHeight = Math.Max(2, Math.Min(6, contentPanel.Frame.Height - y - 10));
-        var list = new ListView { Id = "local-engine-list", X = 2, Y = y,
+        contentPanel.Add(MenuIndent.Heading(Pref("local_engines_heading") + " (" + rows.Length + ")", y++));
+        contentPanel.Add(new Label { Id = "local-engine-modes", X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2,
+            Text = Pref("local_modes_help") });
+        y += 2;
+        _localEngineIdWidth = Math.Clamp(rows.Length == 0 ? 8 : rows.Max(row => row.ProviderId.Length), 8, 24);
+        contentPanel.Add(new Label { Id = "local-engine-columns", X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1,
+            Text = Pref("local_columns") });
+        var listHeight = Math.Max(2, Math.Min(10, contentPanel.Frame.Height - y - 10));
+        var list = new ListView { Id = "local-engine-list", X = MenuIndent.Level1, Y = y,
             Width = Dim.Fill(4), Height = listHeight,
             CanFocus = rows.Length > 0, ShowMarks = false };
         list.SetSource(new ObservableCollection<string>(rows.Select(row => LocalEngineRowText(row))));
@@ -571,20 +590,20 @@ public sealed partial class TuiApp
             : Array.FindIndex(rows, row => row.ProviderId == _localEngineSelectedProviderId);
         if (rows.Length > 0) list.SelectedItem = selectedIndex >= 0 ? selectedIndex : 0;
         var listBottom = y + listHeight;
-        var status = new Label { Id = "local-engine-runtime-status", X = 2, Y = listBottom + 1,
+        var status = new Label { Id = "local-engine-runtime-status", X = MenuIndent.Level1, Y = listBottom + 1,
             Width = Dim.Fill(4), Height = 2, Text = LocalEngineStatusText(SelectedRow()) };
         var actionY = listBottom + 3;
-        var add = new Button { Id = "local-engine-add", X = 2, Y = actionY,
+        var add = new Button { Id = "local-engine-add", X = MenuIndent.Level1, Y = actionY,
             Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_add"),
             Enabled = snapshot.Diagnostics.Count == 0 };
         add.Accepted += (_, _) => ShowLocalEngineEditor(snapshot, null);
         var edit = new Button { Id = "local-engine-edit", X = Pos.Right(add) + 1, Y = actionY,
             Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_edit") };
-        var runtime = new Button { Id = "local-engine-runtime", X = 2, Y = actionY + 2,
+        var runtime = new Button { Id = "local-engine-runtime", X = MenuIndent.Level1, Y = actionY + 2,
             Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_runtime_check") };
         var delete = new Button { Id = "local-engine-delete", X = Pos.Right(runtime) + 1, Y = actionY + 2,
             Width = Dim.Percent(47), Height = 2, TextAlignment = Alignment.Start, Text = Pref("local_delete") };
-        var notice = new Label { Id = "local-engine-notice", X = 2, Y = actionY + 5,
+        var notice = new Label { Id = "local-engine-notice", X = MenuIndent.Level1, Y = actionY + 5,
             Width = Dim.Fill(4), Height = 3, Text = _localEngineNotice ?? LocalEngineDiagnostics(snapshot) };
         void SyncSelection()
         {
@@ -627,7 +646,7 @@ public sealed partial class TuiApp
                 ShowLocalEngineDeleteConfirmation(row, snapshot);
         };
         if (rows.Length == 0)
-            contentPanel.Add(new Label { Id = "local-engine-empty", X = 2, Y = y - 1,
+            contentPanel.Add(new Label { Id = "local-engine-empty", X = MenuIndent.Level1, Y = y,
                 Width = Dim.Fill(4), Height = 1, Text = Pref("local_empty") });
         contentPanel.Add(list, status, notice, add, edit, runtime, delete);
         ConfigurePreferenceScroll(contentPanel, actionY + 8);
@@ -750,11 +769,14 @@ public sealed partial class TuiApp
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true; confirm.SetFocus();
     }
 
+    private int _localEngineIdWidth = 8;
+
     private string LocalEngineRowText(LocalEngineConfigurationRow row)
     {
         var mode = row.Mode == "managed" ? Pref("local_managed") : Pref("local_attach");
-        var endpoint = row.BaseUrl;
-        return row.ProviderId + " · " + mode + " · " + endpoint
+        var target = row.Mode == "managed" && row.Executable is { Length: > 0 } executable
+            ? Path.GetFileName(executable) + " → " + row.BaseUrl : row.BaseUrl;
+        return row.ProviderId.PadRight(_localEngineIdWidth) + "  " + mode.PadRight(26) + "  " + target
             + (row.CanEdit ? "" : " · " + LocalEngineError("sensitive"));
     }
 

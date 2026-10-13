@@ -2375,9 +2375,16 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var catalog = _diagnosticCatalog ?? OmniHost.CreateExplorerTools().Catalog();
             var boundary = _diagnosticBoundary;
             var entries = new List<string>();
-            foreach (var definition in catalog.Definitions())
+            // The inspector lists every built-in tool, not only the active Run's catalog: tools
+            // outside it (e.g. writes before an ACT Run) are shown as unavailable, never as allowed.
+            var actCatalog = OmniHost.CreateActTools().Catalog();
+            var rows = catalog.Definitions().Select(definition => (Definition: definition, Catalog: catalog, Active: true))
+                .Concat(actCatalog.Definitions()
+                    .Where(definition => catalog.Find(new ToolId(definition.Name)) is null)
+                    .Select(definition => (Definition: definition, Catalog: actCatalog, Active: false)));
+            foreach (var (definition, owner, active) in rows)
             {
-                var tool = catalog.Find(new ToolId(definition.Name));
+                var tool = owner.Find(new ToolId(definition.Name));
                 if (tool is null) continue;
                 var descriptor = tool.Descriptor;
                 var effect = descriptor.EffectClass;
@@ -2390,6 +2397,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 var boundaryDecision = boundary?.Evaluate(intent);
                 var modeRejected = _diagnosticMode == RunMode.Plan && !descriptor.ReadOnly;
                 var decision = modeRejected ? "reject:PLAN mode"
+                    : !active ? "unavailable:act catalog"
                     : boundaryDecision is { Allowed: false } ? "reject:ModelCapabilityBoundary"
                     : boundaryDecision is { RequiresAsk: true } ? "ask:ModelCapabilityBoundary"
                     : descriptor.Destructive ? "ask:permission policy"
@@ -2403,7 +2411,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         + "@" + descriptor.Source.Version) + ","
                     + JsonObj.Field("effectClass", effect.ToString()) + ","
                     + JsonObj.Field("decision", decision) + ","
-                    + JsonObj.FieldBool("visible", boundaryVisible && !modeRejected) + "}");
+                    + JsonObj.FieldBool("visible", active && boundaryVisible && !modeRejected) + "}");
             }
             return new SessionQueryResult("tools", "{" + JsonObj.Field("mode", _diagnosticMode.ToString())
                 + ",\"tools\":[" + string.Join(",", entries) + "]}");

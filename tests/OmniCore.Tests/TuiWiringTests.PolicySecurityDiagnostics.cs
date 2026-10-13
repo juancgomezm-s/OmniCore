@@ -82,7 +82,7 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => fx.App.Overlay?.Id == "security-preferences", "seguridad visible");
         var form = fx.App.Overlay!.SubViews.Single(view => view.Id == "security-preferences-form");
         Assert.True(form.VerticalScrollBar.ScrollableContentSize > 0, "controles completos deben quedar en viewport desplazable");
-        ExportPreferenceFrame(fx, columns, rows, scene, "Perfil de permisos");
+        ExportPreferenceFrame(fx, columns, rows, scene, "Nivel de autonomía en ACT");
 
         var beforeDraft = host.Read();
         var profile = Descendants(form).OfType<TextField>().Single(field => field.Id!.ToString() == "security-profile");
@@ -130,5 +130,27 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => fx.App.Overlay is { Title: not null }, "resultado confirmado de mantenimiento visible");
         Assert.False(Directory.Exists(workspaceData));
         Click(fx, "OK");
+    });
+
+    [Fact]
+    public void Security_level_buttons_select_the_permission_profile_without_typing() => RunTuiTest(fx =>
+    {
+        var host = SecurityPreferencesHost.Create(fx.Workspace,
+            Path.Combine(fx.Root, "security-level-data"), Path.Combine(fx.Root, "security-level-config"));
+        fx.StartTui(initialColumns: 120, initialRows: 35, securityPreferences: host);
+        fx.Invoke(() => fx.App.ShowSecurityPreferences("tools_security"));
+        fx.Wait(() => fx.App.Overlay?.Id == "security-preferences", "seguridad visible");
+        var form = fx.App.Overlay!.SubViews.Single(view => view.Id == "security-preferences-form");
+        var profile = Descendants(form).OfType<TextField>().Single(field => field.Id == "security-profile");
+        var restrict = Descendants(form).OfType<Button>().Single(button => button.Id == "security-level-conservative");
+        ClickId(fx, "security-level-conservative");
+        Assert.Equal("Conservative", PreferenceInput.CanonicalValue("security.profile", profile.Text.ToString(), "es",
+            "Conservative", "Balanced", "Autonomous"));
+        Assert.StartsWith("\u25CF", restrict.Text.ToString());
+        Assert.Contains(Descendants(form).OfType<Label>(), label => label.Id == "omni-detail" && label.Text.ToString().Length > 20);
+        ClickId(fx, "security-save");
+        fx.Wait(() => fx.App.Overlay?.Id == "security-preferences-confirm", "confirmación visible");
+        Click(fx, "Confirmar");
+        Assert.Equal("Conservative", host.Read().Profile);
     });
 }

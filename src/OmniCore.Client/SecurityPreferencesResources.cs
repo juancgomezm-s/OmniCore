@@ -5,6 +5,18 @@ public static class SecurityPreferencesResources
 {
     private static readonly (string Key, string Es, string En, string Fr, string It)[] Rows =
     [
+        ("securityPreferences.level_heading", "Nivel de autonomía en ACT", "Autonomy level in ACT", "Niveau d’autonomie en ACT", "Livello di autonomia in ACT"),
+        ("securityPreferences.level_restrict", "Restringir", "Restrict", "Restreindre", "Limita"),
+        ("securityPreferences.level_ask", "Preguntar", "Ask", "Demander", "Chiedi"),
+        ("securityPreferences.level_free", "Libre", "Free", "Libre", "Libero"),
+        ("securityPreferences.level_restrict_help", "Pide confirmación antes de escribir archivos y antes de compilar, probar o usar la red. Leer el workspace sigue permitido.", "Asks before writing files and before building, testing or using the network. Reading the workspace stays allowed.", "Demande avant d’écrire des fichiers et avant de compiler, tester ou utiliser le réseau. La lecture reste autorisée.", "Chiede prima di scrivere file e prima di compilare, testare o usare la rete. La lettura resta consentita."),
+        ("securityPreferences.level_ask_help", "Escribe en el workspace sin preguntar; pide confirmación para compilar, probar y su red. Procesos externos, shell y escrituras fuera siempre preguntan.", "Writes in the workspace without asking; asks before building, testing and their network. External processes, shell and outside writes always ask.", "Écrit dans l’espace sans demander ; demande pour compiler, tester et leur réseau. Processus externes, shell et écritures externes demandent toujours.", "Scrive nello spazio senza chiedere; chiede per compilare, testare e la loro rete. Processi esterni, shell e scritture esterne chiedono sempre."),
+        ("securityPreferences.level_free_help", "Predeterminado. Escribe, compila y prueba en el workspace sin preguntar. Procesos externos, shell, otra red y escrituras fuera siguen preguntando; los secretos nunca.", "Default. Writes, builds and tests in the workspace without asking. External processes, shell, other network and outside writes still ask; secrets never.", "Par défaut. Écrit, compile et teste sans demander. Processus externes, shell, autre réseau et écritures externes demandent encore ; secrets jamais.", "Predefinito. Scrive, compila e testa senza chiedere. Processi esterni, shell, altra rete e scritture esterne chiedono ancora; segreti mai."),
+        ("securityPreferences.rules_heading", "Reglas por herramienta", "Per-tool rules", "Règles par outil", "Regole per strumento"),
+        ("securityPreferences.tool_pick", "Elegir herramienta ›", "Pick tool ›", "Choisir l’outil ›", "Scegli strumento ›"),
+        ("securityPreferences.decision_cycle", "Cambiar decisión ›", "Change decision ›", "Changer la décision ›", "Cambia decisione ›"),
+        ("securityPreferences.decision_short", "Decisión", "Decision", "Décision", "Decisione"),
+        ("securityPreferences.trust_heading", "Confianza del workspace", "Workspace trust", "Confiance de l’espace", "Attendibilità dello spazio"),
         ("securityPreferences.title", "Herramientas y seguridad", "Tools and security", "Outils et sécurité", "Strumenti e sicurezza"),
         ("securityPreferences.unavailable", "No se pudo leer el estado de seguridad.", "Security state could not be read.", "Impossible de lire l’état de sécurité.", "Impossibile leggere lo stato di sicurezza."),
         ("securityPreferences.scope_note", "Perfil y reglas: Usuario. Confianza: sólo esta área de trabajo.", "Profile and rules: User. Trust: this workspace only.", "Profil et règles : utilisateur. Confiance : cet espace uniquement.", "Profilo e regole: utente. Attendibilità: solo questa area di lavoro."),
@@ -16,7 +28,7 @@ public static class SecurityPreferencesResources
         ("securityPreferences.decision.allow", "Permitir", "Allow", "Autoriser", "Consenti"),
         ("securityPreferences.decision.ask", "Preguntar", "Ask", "Demander", "Chiedi"),
         ("securityPreferences.decision.deny", "Denegar", "Deny", "Refuser", "Nega"),
-        ("securityPreferences.tool_id", "ID exacto de herramienta", "Exact tool ID", "ID exact de l’outil", "ID esatto dello strumento"),
+        ("securityPreferences.tool_id", "ID de herramienta", "Exact tool ID", "ID exact de l’outil", "ID esatto dello strumento"),
         ("securityPreferences.decision", "Decisión: Permitir / Preguntar / Denegar", "Decision: Allow / Ask / Deny", "Décision : Autoriser / Demander / Refuser", "Decisione: Consenti / Chiedi / Nega"),
         ("securityPreferences.rule_note", "Las reglas sólo afectan herramientas identificadas por su ID exacto.", "Rules affect only tools identified by their exact ID.", "Les règles ne concernent que les outils identifiés par leur ID exact.", "Le regole riguardano solo strumenti identificati dal loro ID esatto."),
         ("securityPreferences.rule_add", "Preparar regla", "Draft rule", "Préparer une règle", "Prepara regola"),

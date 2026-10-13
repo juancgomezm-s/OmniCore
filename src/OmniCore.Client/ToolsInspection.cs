@@ -71,6 +71,7 @@ public static class ToolInspectionPresentation
     public static string Decision(ToolInspectionRow row, Localization text) => text.Resolve(row.Decision switch
     {
         "reject:PLAN mode" => "client.tools.policy.plan",
+        "unavailable:act catalog" => "client.tools.policy.act_only",
         "reject:ModelCapabilityBoundary" => "client.tools.policy.boundary",
         "ask:ModelCapabilityBoundary" => "client.tools.policy.boundary_ask",
         "ask:permission policy" => "client.tools.policy.ask",

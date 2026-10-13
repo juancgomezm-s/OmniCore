@@ -21,6 +21,8 @@ public static class PreferencesUiResources
     }
 
     private static readonly Dictionary<string, string> _es = Resource(
+        "local_engines_heading", "Motores configurados", "local_columns", "ID del provider · Modo · Destino", "local_modes_help", "Servidor existente: tú lo arrancas y OmniCore solo se conecta al endpoint. Administrado: OmniCore lo inicia y detiene con el ejecutable y los argumentos indicados.",
+        "section_language", "Idioma", "section_interface", "Interfaz", "section_diagnostics", "Diagnóstico", "section_context", "Contexto y memoria", "section_tools", "Herramientas", "section_permissions", "Permisos", "section_models", "Modelos", "section_extensions", "Extensiones y skills",
         "title", "Preferencias", "search", "Buscar", "search_hint", "Escribe para filtrar · Ctrl+F", "no_matches", "No hay categorías coincidentes.",
         "back", "Volver", "close", "Cerrar", "save", "Guardar", "cancel", "Cancelar", "reload", "Recargar", "help", "↑↓ categoría · Tab panel · Esc volver",
         "help_narrow", "↑↓ categoría · Enter abrir · Esc volver", "help_detail", "Tab controles · Esc volver",
@@ -93,6 +95,8 @@ public static class PreferencesUiResources
         "kind", "Tipo", "source", "Origen", "importance", "Importancia", "confidence", "Confianza", "created", "Creado", "tags", "Etiquetas");
 
     private static readonly Dictionary<string, string> _en = Resource(
+        "local_engines_heading", "Configured engines", "local_columns", "Provider ID · Mode · Target", "local_modes_help", "Existing server: you start it and OmniCore only connects to the endpoint. Managed: OmniCore starts and stops it with the given executable and arguments.",
+        "section_language", "Language", "section_interface", "Interface", "section_diagnostics", "Diagnostics", "section_context", "Context and memory", "section_tools", "Tools", "section_permissions", "Permissions", "section_models", "Models", "section_extensions", "Extensions and skills",
         "title", "Preferences", "search", "Search", "search_hint", "Type to filter · Ctrl+F", "no_matches", "No matching categories.",
         "back", "Back", "close", "Close", "save", "Save", "cancel", "Cancel", "reload", "Reload", "help", "↑↓ category · Tab panel · Esc back",
         "help_narrow", "↑↓ category · Enter open · Esc back", "help_detail", "Tab controls · Esc back",
@@ -165,6 +169,8 @@ public static class PreferencesUiResources
         "kind", "Kind", "source", "Source", "importance", "Importance", "confidence", "Confidence", "created", "Created", "tags", "Tags");
 
     private static readonly Dictionary<string, string> _fr = Resource(
+        "local_engines_heading", "Moteurs configurés", "local_columns", "ID du provider · Mode · Cible", "local_modes_help", "Serveur existant : vous le lancez et OmniCore se connecte seulement à l’endpoint. Géré : OmniCore le démarre et l’arrête avec l’exécutable et les arguments indiqués.",
+        "section_language", "Langue", "section_interface", "Interface", "section_diagnostics", "Diagnostic", "section_context", "Contexte et mémoire", "section_tools", "Outils", "section_permissions", "Autorisations", "section_models", "Modèles", "section_extensions", "Extensions et skills",
         "title", "Préférences", "search", "Rechercher", "search_hint", "Saisir pour filtrer · Ctrl+F", "no_matches", "Aucune catégorie correspondante.",
         "back", "Retour", "close", "Fermer", "save", "Enregistrer", "cancel", "Annuler", "reload", "Recharger", "help", "↑↓ catégorie · Tab panneau · Échap retour",
         "help_narrow", "↑↓ catégorie · Entrée ouvrir · Échap retour", "help_detail", "Tab commandes · Échap retour",
@@ -237,6 +243,8 @@ public static class PreferencesUiResources
         "kind", "Type", "source", "Source", "importance", "Importance", "confidence", "Confiance", "created", "Créé", "tags", "Étiquettes");
 
     private static readonly Dictionary<string, string> _it = Resource(
+        "local_engines_heading", "Motori configurati", "local_columns", "ID provider · Modalità · Destinazione", "local_modes_help", "Server esistente: lo avvii tu e OmniCore si collega solo all’endpoint. Gestito: OmniCore lo avvia e lo arresta con l’eseguibile e gli argomenti indicati.",
+        "section_language", "Lingua", "section_interface", "Interfaccia", "section_diagnostics", "Diagnostica", "section_context", "Contesto e memoria", "section_tools", "Strumenti", "section_permissions", "Autorizzazioni", "section_models", "Modelli", "section_extensions", "Estensioni e skills",
         "title", "Preferenze", "search", "Cerca", "search_hint", "Digita per filtrare · Ctrl+F", "no_matches", "Nessuna categoria corrispondente.",
         "back", "Indietro", "close", "Chiudi", "save", "Salva", "cancel", "Annulla", "reload", "Ricarica", "help", "↑↓ categoria · Tab pannello · Esc indietro",
         "help_narrow", "↑↓ categoria · Invio apri · Esc indietro", "help_detail", "Tab controlli · Esc indietro",

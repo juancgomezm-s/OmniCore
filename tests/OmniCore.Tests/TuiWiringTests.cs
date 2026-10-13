@@ -862,7 +862,7 @@ public sealed partial class TuiWiringTests
                 string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
-            var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Preferencias", "settings-fr" => "Préférences", "settings-it" => "Preferenze", "settings-override" => "Preferences", "settings-local" => "visual-local", "settings-local-editor" => "visual-local", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel lateral · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Preferencias", "settings-fr" => "Préférences", "settings-it" => "Preferenze", "settings-override" => "Preferences", "settings-local" => "visual-local", "settings-local-editor" => "visual-local", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
             if (scene == "animations-braille") marker = "braille-spinner";
             if (scene == "tools") marker = "Herramientas";
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
@@ -876,7 +876,7 @@ public sealed partial class TuiWiringTests
                 if (scene != "table") Assert.DoesNotContain("┌", text);
                 if (scene == "sidebar-settings")
                 {
-                    Assert.Contains("Alcance: Área de trabajo", text); Assert.Contains("core.context", text);
+                    Assert.Contains("Alcance: Área de trabajo", text); Assert.Contains("CONTEXTO", text); Assert.DoesNotContain("core.context", text);
                     Assert.Contains("Visibilidad", text); Assert.Contains("Prioridad", text);
                     Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay!.BorderStyle);
                     var buttons = fx.App.Overlay.SubViews.OfType<Button>().ToArray();
@@ -1463,7 +1463,7 @@ public sealed partial class TuiWiringTests
         fx.StartTui();
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferencias visibles");
         var journalCount = fx.Server.SubscribeSince(0).Count;
-        ChoosePreferenceCategory(fx, "interface");
+        ChoosePreferenceCategory(fx, "general");
         Click(fx, "Indicadores y animaciones");
         fx.Wait(() => fx.App.Overlay!.SubViews.Any(v => v.Id == "animation-preview"), "vista previa visible");
         var preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
@@ -1497,7 +1497,7 @@ public sealed partial class TuiWiringTests
         var transcript = conversation.Text?.ToString();
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro de preferencias visible");
         var preferencesOverlay = Assert.IsType<FrameView>(fx.App.Overlay);
-        Assert.Equal(9, Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source!.Count);
+        Assert.Equal(PreferenceCategoryCatalog.All.Count, Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source!.Count);
         var categories = Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories");
         Assert.Equal(columns >= 100, preferencesOverlay.SubViews.Any(view => view.Id == "preferences-panel"));
         var search = Descendants(preferencesOverlay).OfType<TextField>().Single(view => view.Id == "preferences-search");
@@ -1518,8 +1518,8 @@ public sealed partial class TuiWiringTests
             "Esc vuelve a navegación estrecha/ancha");
         fx.Invoke(() => search = Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search"));
         fx.Invoke(() => search.Text = "");
-        fx.Wait(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source?.Count == 9,
-            "limpiar búsqueda recupera las nueve categorías");
+        fx.Wait(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source?.Count == PreferenceCategoryCatalog.All.Count,
+            "limpiar búsqueda recupera todas las categorías");
         ChoosePreferenceCategory(fx, "general");
         AssertPreferencesGeneralLayoutFit(fx);
         var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
@@ -1681,7 +1681,7 @@ public sealed partial class TuiWiringTests
             fx.InjectKey(new Key(KeyCode.Esc));
             fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Preferencias") == true,
                 "Escape vuelve del centro al índice");
-            ChoosePreferenceCategory(fx, "context_memory");
+            ChoosePreferenceCategory(fx, "diagnostics_data");
             ClickId(fx, "preferences-context-open");
             fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "session-preferences-details"),
                 "consulta de contexto de sólo lectura visible");
@@ -2083,7 +2083,7 @@ public sealed partial class TuiWiringTests
 
         Type(fx, "/context");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /context no abre el overlay");
-        Assert.Contains("snapshot", OverlayText(fx.App.Overlay!));
+        Assert.DoesNotContain("\"snapshot\"", OverlayText(fx.App.Overlay!)); // decoded, never raw JSON
 
         // El mismo cableado Query→overlay sirve la vista de plan desde el estado real del journal.
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc no cierra el overlay de /context");
@@ -3244,5 +3244,18 @@ public sealed partial class TuiWiringTests
             _fixturePolicies?.Dispose();
             try { Directory.Delete(Root, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
+    }
+
+    [Fact]
+    public void Readable_json_decodes_unicode_and_labels_nested_values()
+    {
+        using var document = System.Text.Json.JsonDocument.Parse("{\"runState\":\"\\u25CB idle\",\"items\":[\"a\",\"b\"],\"nested\":{\"maxOutput\":2048,\"ok\":true}}");
+        var text = TuiApp.ReadableJson(document.RootElement);
+        Assert.DoesNotContain("\\u", text);
+        Assert.DoesNotContain("{", text);
+        Assert.Contains("Run state: \u25CB idle", text);
+        Assert.Contains("  \u2022 a", text);
+        Assert.Contains("  Max output: 2048", text);
+        Assert.Contains("  Ok: \u2713", text);
     }
 }

@@ -1336,31 +1336,47 @@ public sealed partial class TuiApp
     {
         if (_window is null) return;
         CloseOverlay(); RefreshSidebarPreferences();
-        var frame = OverlayFrame(_localization.Resolve("shell.sidebar_settings"), 19);
+        var frame = OverlayFrame(_localization.Resolve("shell.sidebar_settings"), 22);
         var scope = "Workspace";
         string ScopeLabel() => _localization.Resolve("shell.sidebar_scope") + UiCompletionResources.EnumLabel("scope", scope, _locale);
         string LayoutLabel() => _localization.Resolve("shell.sidebar_mode") + _localization.Resolve("shell." + _sidebarSettings.Preferences.Mode);
-        var scopeButton = new Button { X = 2, Y = 2, Text = ScopeLabel() };
+        var scopeButton = new Button { X = MenuIndent.Level0, Y = 2, Text = ScopeLabel() };
         var mode = new Button { X = Pos.Right(scopeButton) + 1, Y = 2, Text = LayoutLabel() };
-        var list = new ListView { Id = "omni-model-list", X = 2, Y = 4, Width = Dim.Fill(2), Height = Dim.Fill(6) };
-        var notice = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1 };
-        var ids = _sidebarWidgets.Select(w => w.Id).ToArray();
+        var heading = MenuIndent.Heading(_localization.Resolve("shell.widget_list_heading"), 4);
+        var list = new ListView { Id = "omni-model-list", X = MenuIndent.Level1, Y = 5, Width = Dim.Fill(2), Height = Dim.Fill(10) };
+        var description = new Label { Id = "omni-detail", X = MenuIndent.Level1, Y = Pos.AnchorEnd(9), Width = Dim.Fill(2), Height = 2 };
+        var help = new Label { Id = "omni-help", X = MenuIndent.Level1, Y = Pos.AnchorEnd(4), Width = Dim.Fill(2), Height = 2 };
+        var notice = new Label { Id = "omni-help", X = MenuIndent.Level0, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1 };
+        var widgets = _sidebarWidgets.ToArray();
+        var ids = widgets.Select(w => w.Id).ToArray();
+        string DescriptionOf(string id) => _localization.Resolve(ShellUiResources.ContainsKey("shell.widget_desc." + id)
+            ? "shell.widget_desc." + id : "shell.widget_desc.other");
+        void Describe()
+        {
+            if (Selected() is { } id) description.Text = DescriptionOf(id);
+        }
         void Update()
         {
             var selected = list.SelectedItem;
-            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(ids.Select(id =>
+            var titleWidth = Math.Max(8, widgets.Length == 0 ? 8 : widgets.Max(w => w.Title.Length));
+            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(widgets.Select(widget =>
             {
-                var setting = _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id) ?? new();
-                return id + " · " + _localization.Resolve("shell." + setting.Visible) + " · "
-                    + _localization.Resolve(setting.Expanded ? "shell.expanded" : "shell.compact") + " · "
-                    + (setting.Priority?.ToString() ?? _localization.Resolve("shell.default"));
+                var setting = _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(widget.Id) ?? new();
+                return widget.Title.PadRight(titleWidth) + "  "
+                    + _localization.Resolve("shell.widget_label_visibility") + _localization.Resolve("shell." + setting.Visible) + " · "
+                    + _localization.Resolve("shell.widget_label_size") + _localization.Resolve(setting.Expanded ? "shell.expanded" : "shell.compact") + " · "
+                    + _localization.Resolve("shell.widget_label_priority")
+                    + (setting.Priority?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.default"));
             })));
             if (ids.Length > 0) list.SelectedItem = Math.Clamp(selected ?? 0, 0, ids.Length - 1);
             notice.Text = _sidebarSettings.Diagnostics.Count > 0 ? string.Join(" · ", _sidebarSettings.Diagnostics)
-                : _localization.Resolve("shell.user_trusted_project_workspace_session_pinned");
+                : _localization.Resolve("shell.sidebar_precedence");
             mode.Text = LayoutLabel();
+            Describe();
         }
         string? Selected() => list.SelectedItem is { } index && index >= 0 && index < ids.Length ? ids[index] : null;
+        list.ValueChanged += (_, _) => Describe();
+        help.Text = _localization.Resolve("shell.sidebar_settings_help");
         void Save(string key, string value)
         {
             if (!SaveSidebarSetting(scope, key, value, false)) notice.Text = _localization.Resolve("shell.not_saved_check_yaml_or_reload");
@@ -1372,9 +1388,9 @@ public sealed partial class TuiApp
             var values = new[] { "auto", "stacked", "tabbed", "overlay" };
             Save("sidebar.mode", values[(Array.IndexOf(values, _sidebarSettings.Preferences.Mode) + 1) % values.Length]);
         };
-        var visible = new Button { X = 2, Y = Pos.AnchorEnd(5), Text = _localization.Resolve("shell.visibility") };
-        var expand = new Button { X = Pos.Right(visible) + 1, Y = Pos.AnchorEnd(5), Text = _localization.Resolve("shell.expand") };
-        var reset = new Button { X = Pos.Right(expand) + 1, Y = Pos.AnchorEnd(5), Text = _localization.Resolve("shell.reset") };
+        var visible = new Button { X = MenuIndent.Level1, Y = Pos.AnchorEnd(7), Text = _localization.Resolve("shell.visibility") };
+        var expand = new Button { X = Pos.Right(visible) + 1, Y = Pos.AnchorEnd(7), Text = _localization.Resolve("shell.expand") };
+        var reset = new Button { X = Pos.Right(expand) + 1, Y = Pos.AnchorEnd(7), Text = _localization.Resolve("shell.reset") };
         visible.Accepted += (_, _) =>
         {
             if (Selected() is not { } id || id == "core.session") return;
@@ -1383,11 +1399,11 @@ public sealed partial class TuiApp
         };
         expand.Accepted += (_, _) => { if (Selected() is { } id) Save("widgets." + id + ".expanded", _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id)?.Expanded == true ? "false" : "true"); };
         reset.Accepted += (_, _) => { if (Selected() is { } id) foreach (var key in new[] { "visible", "expanded", "priority" }) Save("widgets." + id + "." + key, "reset"); };
-        var up = new Button { X = 2, Y = Pos.AnchorEnd(4), Text = _localization.Resolve("shell.priority") };
-        var down = new Button { X = Pos.Right(up) + 1, Y = Pos.AnchorEnd(4), Text = _localization.Resolve("shell.priority_67") };
+        var up = new Button { X = MenuIndent.Level1, Y = Pos.AnchorEnd(6), Text = _localization.Resolve("shell.priority") };
+        var down = new Button { X = Pos.Right(up) + 1, Y = Pos.AnchorEnd(6), Text = _localization.Resolve("shell.priority_67") };
         void Priority(int delta) { if (Selected() is { } id) Save("widgets." + id + ".priority", Math.Clamp((_sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id)?.Priority ?? _sidebarWidgets.First(w => w.Id == id).DefaultPriority) + delta, -1000, 1000).ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         up.Accepted += (_, _) => Priority(10); down.Accepted += (_, _) => Priority(-10);
-        frame.Add(scopeButton, mode, list, visible, expand, reset, up, down, notice);
+        frame.Add(scopeButton, mode, heading, list, description, visible, expand, reset, up, down, help, notice);
         Update(); ApplyTheme(frame); _overlay = frame; _window.Add(frame); list.SetFocus();
     }
 
@@ -1535,6 +1551,10 @@ public sealed partial class TuiApp
         return frame;
     }
 
+    // Menus (category lists and overlay title bars) use a violet slate so they never blend
+    // into the blue-slate panel surface they sit next to.
+    private const string MenuSurface = "#2E2647";
+
     private static void ApplyTheme(View view, string surface = "#061822", bool dimmed = false)
     {
         // Framework defaults invert whole titles and edit fields. Keep a quiet surface;
@@ -1547,12 +1567,12 @@ public sealed partial class TuiApp
                 || view.Id?.StartsWith("model-catalog-", StringComparison.Ordinal) == true
                 || view.Id is "policy-preferences" or "security-preferences" or "security-preferences-confirm"
                     or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences")) surface = "#202C3B";
-        else if (view.Id == "omni-menu-title") surface = "#344559";
+        else if (view.Id == "omni-menu-title") surface = MenuSurface;
         else if (view.Id is "omni-model-list" or "tools-list" or "session-preferences-list" or "model-catalog-list"
             or "commands-list" or "security-rules" or "security-grants" or "diagnostics-configuration") surface = "#142636";
         else if (view.Id == "session-preferences-details") surface = "#1B2836";
         else if (view.Id == "preferences-panel") surface = "#202C3B";
-        else if (view.Id == "preferences-categories") surface = "#142636";
+        else if (view.Id == "preferences-categories") surface = MenuSurface;
         else if (view.Id is "preferences-search" or "commands-filter") surface = "#102331";
         else if (view is TextField) surface = "#293E51";
         else if (view.Id == "preferences-accent") surface = noColor ? "#061822" : "#67D4D0";
@@ -1560,7 +1580,8 @@ public sealed partial class TuiApp
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
         var background = noColor ? Color.None : new Color(surface);
         var foreground = view.Id == "omni-help" ? "#B9CBDF"
-            : view.Id is "omni-heading" or "omni-activity-label" ? "#85E6DF" : "#F4F7FB";
+            : view.Id is "omni-heading" or "omni-activity-label" or "omni-section" or "preferences-account-heading" or "preferences-locale-label" ? "#85E6DF"
+            : view.Id == "omni-detail" ? "#D6E2EE" : "#F4F7FB";
         if (dimmed) foreground = "#405666";
         var primary = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(foreground), background);
         var accent = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(dimmed ? "#405666" : "#67D4D0"), background);
@@ -1569,7 +1590,7 @@ public sealed partial class TuiApp
             ? noColor ? new Terminal.Gui.Drawing.Attribute(Color.None, Color.None, TextStyle.Reverse)
                 : new Terminal.Gui.Drawing.Attribute(new Color("#FFFFFF"), new Color("#3D5068")) : primary;
 #pragma warning restore CS0618
-        if (view.Id is "omni-model-list" or "tools-list" && !noColor)
+        if (view.Id is "omni-model-list" or "tools-list" or "preferences-categories" && !noColor)
             focus = new Terminal.Gui.Drawing.Attribute(new Color("#061822"), new Color("#67D4D0"));
         if (view is Button button)
         {
@@ -2028,25 +2049,78 @@ public sealed partial class TuiApp
         if (_status is not null) _status.Text = StatusText();
     }
 
+    /// <summary>Renders JSON as indented "label: value" lines with strings decoded (no \u escapes).</summary>
+    internal static string ReadableJson(System.Text.Json.JsonElement element, Func<string, string?>? labels = null)
+    {
+        var builder = new System.Text.StringBuilder();
+        string Label(string name)
+        {
+            if (labels?.Invoke(name) is { } known) return known;
+            var spaced = System.Text.RegularExpressions.Regex.Replace(name, "(?<=[a-z0-9])(?=[A-Z])", " ").ToLowerInvariant();
+            return spaced.Length == 0 ? name : char.ToUpperInvariant(spaced[0]) + spaced[1..];
+        }
+        static string Scalar(System.Text.Json.JsonElement value) => value.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.String => value.GetString() ?? "",
+            System.Text.Json.JsonValueKind.Null => "—",
+            System.Text.Json.JsonValueKind.True => "✓",
+            System.Text.Json.JsonValueKind.False => "✗",
+            _ => value.GetRawText(),
+        };
+        void Write(System.Text.Json.JsonElement value, int depth, string? prefix)
+        {
+            var pad = new string(' ', depth * 2);
+            switch (value.ValueKind)
+            {
+                case System.Text.Json.JsonValueKind.Object:
+                case System.Text.Json.JsonValueKind.Array:
+                    if (prefix is not null) builder.Append(pad).Append(prefix).AppendLine(":");
+                    var childDepth = prefix is null ? depth : depth + 1;
+                    if (value.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        foreach (var property in value.EnumerateObject()) Write(property.Value, childDepth, Label(property.Name));
+                    else
+                        foreach (var item in value.EnumerateArray()) Write(item, childDepth, "•");
+                    break;
+                default:
+                    var text = Scalar(value);
+                    if (text.Contains('\n'))
+                    {
+                        builder.Append(pad).Append(prefix).AppendLine(":");
+                        foreach (var line in text.Replace("\r\n", "\n").Split('\n')) builder.Append(pad).Append("  ").AppendLine(line);
+                    }
+                    else builder.Append(pad).Append(prefix is null ? "" : prefix == "•" ? "• " : prefix + ": ").AppendLine(text);
+                    break;
+            }
+        }
+        Write(element, 0, null);
+        return builder.ToString().TrimEnd();
+    }
+
     private void ShowMessage(string message)
     {
         if (_window is null) return;
         CloseOverlay();
-        // Diagnostic JSON is inspected as structured text, not a clipped single-line blob.
+        // Query results arrive as JSON; show them as decoded, labelled text instead of escaped JSON.
+        var title = _localization.Resolve("shell.notice");
         try
         {
             using var document = System.Text.Json.JsonDocument.Parse(message);
-            using var buffer = new MemoryStream();
-            using (var writer = new System.Text.Json.Utf8JsonWriter(buffer,
-                new System.Text.Json.JsonWriterOptions { Indented = true })) document.RootElement.WriteTo(writer);
-            message = System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+            var root = document.RootElement;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Object && root.EnumerateObject().ToArray() is [var only]
+                && only.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                if (ShellUiResources.ContainsKey("shell.json_title." + only.Name)) title = _localization.Resolve("shell.json_title." + only.Name);
+                message = only.Value.GetString() ?? "";
+            }
+            else message = ReadableJson(root, name => ShellUiResources.ContainsKey("shell.json_label." + name)
+                ? _localization.Resolve("shell.json_label." + name) : null);
         }
         catch (System.Text.Json.JsonException) { }
-        var lines = message.Split('\n');
+        var lines = message.Replace("\r\n", "\n").Split('\n');
         var available = Math.Max(1, (_window.Frame.Height > 0 ? _window.Frame.Height : 25) - 9);
         var visible = lines.Take(available).ToArray();
         if (lines.Length > available) visible[^1] = "…";
-        var frame = OverlayFrame(_localization.Resolve("shell.notice"), Math.Max(6, visible.Length + 5));
+        var frame = OverlayFrame(title, Math.Max(6, visible.Length + 5));
         frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = visible.Length, Text = string.Join("\n", visible) });
         var ok = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = "OK" };
         ok.Accepted += (_, _) => CloseOverlay(); frame.Add(ok); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();

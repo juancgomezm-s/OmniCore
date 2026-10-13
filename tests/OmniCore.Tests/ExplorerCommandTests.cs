@@ -84,7 +84,8 @@ public sealed class ExplorerCommandTests
 
         using var document = System.Text.Json.JsonDocument.Parse(
             server.Query("tools", CancellationToken.None)!.Json);
-        var entry = document.RootElement.GetProperty("tools").EnumerateArray().Single();
+        var entry = document.RootElement.GetProperty("tools").EnumerateArray()
+            .Single(tool => tool.GetProperty("toolId").GetString() == "custom.reconcilable");
         Assert.Equal(EffectClass.Reconcilable, catalog.Find(new ToolId("custom.reconcilable"))!
             .Descriptor.EffectClass);
         Assert.Equal("Reconcilable", entry.GetProperty("effectClass").GetString());
@@ -177,5 +178,26 @@ public sealed class ExplorerCommandTests
             server.Query("tools", CancellationToken.None)!.Json);
         Assert.Contains(actDocument.RootElement.GetProperty("tools").EnumerateArray(),
             tool => tool.GetProperty("decision").GetString() == "reject:ModelCapabilityBoundary");
+    }
+
+    [Fact]
+    public void Tools_query_lists_act_tools_as_unavailable_before_any_act_run()
+    {
+        // Before an ACT Run the active catalog is the read-only Explorer one; the inspector still
+        // lists write/process tools so users can find them, but never as visible or allowed.
+        var server = OmniHost.CreateInMemoryServer();
+        using var document = System.Text.Json.JsonDocument.Parse(server.Query("tools", CancellationToken.None)!.Json);
+        var tools = document.RootElement.GetProperty("tools").EnumerateArray().ToArray();
+        var explorer = OmniHost.CreateExplorerTools().Catalog();
+        var actOnly = OmniHost.CreateActTools().Catalog().Definitions()
+            .Where(definition => explorer.Find(new ToolId(definition.Name)) is null).Select(definition => definition.Name).ToArray();
+        Assert.NotEmpty(actOnly);
+        foreach (var name in actOnly)
+        {
+            var row = Assert.Single(tools, tool => tool.GetProperty("visibleName").GetString() == name);
+            Assert.False(row.GetProperty("visible").GetBoolean(), name);
+            Assert.NotEqual("permission policy", row.GetProperty("decision").GetString());
+        }
+        Assert.Equal(tools.Length, tools.Select(tool => tool.GetProperty("visibleName").GetString()).Distinct().Count());
     }
 }

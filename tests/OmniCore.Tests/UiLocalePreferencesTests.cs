@@ -59,9 +59,9 @@ public sealed class UiLocalePreferencesTests
     [Fact]
     public void Preferences_and_legacy_copy_are_real_in_all_four_locales_without_fallback()
     {
-        Assert.Equal(9, PreferenceCategoryCatalog.All.Count);
-        Assert.Equal(27, PreferenceCategoryCatalog.Keys.Count);
-        Assert.Equal(27, PreferenceCategoryCatalog.Keys.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(7, PreferenceCategoryCatalog.All.Count);
+        Assert.Equal(21, PreferenceCategoryCatalog.Keys.Count);
+        Assert.Equal(21, PreferenceCategoryCatalog.Keys.Distinct(StringComparer.Ordinal).Count());
         foreach (var locale in UiLocaleCodes.Supported)
         {
             var localization = new Localization(locale);
@@ -72,7 +72,7 @@ public sealed class UiLocalePreferencesTests
                 Assert.Equal(locale, resolved.ResourceLocale);
                 Assert.NotEqual(key, resolved.Text);
             }
-            Assert.Equal(9, PreferenceCategoryCatalog.Resolve(localization).Count);
+            Assert.Equal(7, PreferenceCategoryCatalog.Resolve(localization).Count);
         }
 
         var frenchLegacy = new Localization("fr").ResolveDetailed("tool.process.exec.running");

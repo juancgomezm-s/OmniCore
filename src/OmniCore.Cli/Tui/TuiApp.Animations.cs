@@ -130,7 +130,7 @@ public sealed partial class TuiApp
         var help = new Label { Id = "omni-help", X = 2, Y = 13, Width = Dim.Fill(2), Height = 1,
             Text = _localization.Resolve("shell.enter_changes_off_keeps_status_without_motion") };
         var close = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _localization.Resolve("shell.close") };
-        close.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("interface", categoryPage: true); };
+        close.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("general", categoryPage: true); };
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) { _conversation.Dimmed = true; _conversation.SetNeedsDraw(); }
         frame.Add(notice, _animationPreview, description, enabled, reduced, speed, ascii, help, close);

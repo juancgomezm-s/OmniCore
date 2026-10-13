@@ -21,40 +21,52 @@ public sealed partial class TuiApp
             Width = Dim.Fill(4), Height = Dim.Fill(9), ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar };
         var note = new Label { Id = "policy-preferences-notice", X = 2, Y = Pos.AnchorEnd(6),
             Width = Dim.Fill(4), Height = 1, Text = snapshot.Available ? PolicyPref("scope_note") : PolicyPref("unavailable") };
+        var fieldHelp = new Label { Id = "omni-detail", X = 2, Y = Pos.AnchorEnd(8), Width = Dim.Fill(4), Height = 2 };
+        void Explain(View field, string key)
+        {
+            field.HasFocusChanged += (_, _) => { if (field.HasFocus) fieldHelp.Text = PolicyPref("help." + key); };
+        }
+        const int fieldX = MenuIndent.Level1 + 29;
         var y = 0;
-        panel.Add(new Label { X = 2, Y = y++, Width = Dim.Fill(4), Height = 1,
+        panel.Add(MenuIndent.Heading(PolicyPref("section_defaults"), y++));
+        panel.Add(new Label { X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1,
             Text = PolicyPref("effective_model") + ": " + (snapshot.EffectiveDefaultModel ?? PolicyPref("not_set"))
                 + " · " + PolicyPref("source") + ": " + (snapshot.DefaultModelSource is { } modelSource
                     ? UiCompletionResources.EnumLabel("source", modelSource, _locale) : PolicyPref("default")) });
-        var defaultLabel = new Label { X = 2, Y = y, Width = 27, Height = 1, Text = PolicyPref("default_model") };
-        var model = new TextField { Id = "policy-default-model", X = 31, Y = y++, Width = Dim.Fill(4), Height = 1,
+        var defaultLabel = new Label { X = MenuIndent.Level1, Y = y, Width = 27, Height = 1, Text = PolicyPref("default_model") };
+        var model = new TextField { Id = "policy-default-model", X = fieldX, Y = y++, Width = Dim.Fill(4), Height = 1,
             Text = snapshot.UserDefaultModel ?? "" };
         panel.Add(defaultLabel, model);
-        var sessionLabel = new Label { X = 2, Y = y, Width = 27, Height = 1, Text = PolicyPref("session_cap") };
-        var session = new TextField { Id = "policy-session-cap", X = 31, Y = y++, Width = Dim.Percent(30), Height = 1,
+        var sessionLabel = new Label { X = MenuIndent.Level1, Y = y, Width = 27, Height = 1, Text = PolicyPref("session_cap") };
+        var session = new TextField { Id = "policy-session-cap", X = fieldX, Y = y++, Width = Dim.Percent(30), Height = 1,
             Text = snapshot.SessionCapUsd?.ToString(PreferenceInput.Culture(_locale)) ?? "" };
-        var dailyLabel = new Label { X = 2, Y = y, Width = 27, Height = 1, Text = PolicyPref("daily_cap") };
-        var daily = new TextField { Id = "policy-daily-cap", X = 31, Y = y++, Width = Dim.Percent(30), Height = 1,
+        var dailyLabel = new Label { X = MenuIndent.Level1, Y = y, Width = 27, Height = 1, Text = PolicyPref("daily_cap") };
+        var daily = new TextField { Id = "policy-daily-cap", X = fieldX, Y = y++, Width = Dim.Percent(30), Height = 1,
             Text = snapshot.DailyCapUsd?.ToString(PreferenceInput.Culture(_locale)) ?? "" };
         panel.Add(sessionLabel, session, dailyLabel, daily);
+        Explain(model, "default_model"); Explain(session, "session_cap"); Explain(daily, "daily_cap");
         y++;
+        panel.Add(MenuIndent.Heading(PolicyPref("section_routes"), y++));
         var route = snapshot.Routing;
-        TextField Route(string id, string label, IReadOnlyList<string> aliases)
+        TextField Route(string id, string label, IReadOnlyList<string> aliases, string helpKey)
         {
-            panel.Add(new Label { X = 2, Y = y, Width = 27, Height = 1, Text = label });
-            var field = new TextField { Id = id, X = 31, Y = y++, Width = Dim.Fill(4), Height = 1,
+            panel.Add(new Label { X = MenuIndent.Level1, Y = y, Width = 27, Height = 1, Text = label });
+            var field = new TextField { Id = id, X = fieldX, Y = y++, Width = Dim.Fill(4), Height = 1,
                 Text = string.Join(", ", aliases) };
+            Explain(field, helpKey);
             panel.Add(field); return field;
         }
-        var meta = Route("policy-route-meta", PolicyPref("route_meta"), route.Meta);
-        var exploration = Route("policy-route-exploration", PolicyPref("route_exploration"), route.Exploration);
-        var implementation = Route("policy-route-implementation", PolicyPref("route_implementation"), route.Implementation);
-        var reasoning = Route("policy-route-reasoning", PolicyPref("route_reasoning"), route.Reasoning);
-        var architecture = Route("policy-route-architecture", PolicyPref("route_architecture"), route.Architecture);
+        var exploration = Route("policy-route-exploration", PolicyPref("route_exploration"), route.Exploration, "route_exploration");
+        var implementation = Route("policy-route-implementation", PolicyPref("route_implementation"), route.Implementation, "route_implementation");
         var preferLocal = Route("policy-route-prefer-local", PolicyPref("prefer_local"),
-            route.PreferLocal is { } local ? [local ? "true" : "false"] : []);
-        var escalationMode = Route("policy-escalation-mode", PolicyPref("escalation_mode"), [route.EscalationMode]);
-        var escalationChain = Route("policy-escalation-chain", PolicyPref("escalation_chain"), route.EscalationChain);
+            route.PreferLocal is { } local ? [local ? "true" : "false"] : [], "prefer_local");
+        var meta = Route("policy-route-meta", PolicyPref("route_meta"), route.Meta, "route_meta");
+        var reasoning = Route("policy-route-reasoning", PolicyPref("route_reasoning"), route.Reasoning, "route_reasoning");
+        var architecture = Route("policy-route-architecture", PolicyPref("route_architecture"), route.Architecture, "route_architecture");
+        y++;
+        panel.Add(MenuIndent.Heading(PolicyPref("section_escalation"), y++));
+        var escalationMode = Route("policy-escalation-mode", PolicyPref("escalation_mode"), [route.EscalationMode], "escalation_mode");
+        var escalationChain = Route("policy-escalation-chain", PolicyPref("escalation_chain"), route.EscalationChain, "escalation_chain");
         var save = new Button { Id = "policy-preferences-save", X = 2, Y = Pos.AnchorEnd(4), Text = PolicyPref("save") };
         var saveRoutes = new Button { Id = "policy-preferences-save-routes", X = Pos.Percent(36), Y = Pos.AnchorEnd(4), Text = PolicyPref("save_routes") };
         save.Enabled = saveRoutes.Enabled = snapshot.Available;
@@ -101,15 +113,16 @@ public sealed partial class TuiApp
         var back = new Button { Id = "policy-preferences-back", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = PolicyPref("back") };
         back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("models_execution", categoryPage: true); };
         frame.KeyDown += (_, key) => { if (key.KeyCode == KeyCode.Esc) { key.Handled = true; CloseOverlay(); ShowPreferences("models_execution", categoryPage: true); } };
-        panel.Add(new Label { Id = "policy-preferences-help", X = 2, Y = y + 1,
+        panel.Add(new Label { Id = "policy-preferences-help", X = MenuIndent.Level1, Y = y + 1,
             Width = Dim.Fill(4), Height = 2, Text = PolicyPref("route_help") });
-        var resetReasoning = new Button { Id = "policy-reasoning-reset", X = 2, Y = y + 4,
+        var resetReasoning = new Button { Id = "policy-reasoning-reset", X = MenuIndent.Level1, Y = y + 4,
             Text = PolicyPref("reasoning_reset") };
         resetReasoning.Accepted += (_, _) => HandleReasoningCommand("default reset");
-        panel.Add(resetReasoning, new Label { Id = "policy-reasoning-note", X = 2, Y = y + 6,
+        panel.Add(resetReasoning, new Label { Id = "policy-reasoning-note", X = MenuIndent.Level1, Y = y + 6,
             Width = Dim.Fill(4), Height = 2, Text = PolicyPref("reasoning_note") });
         ConfigurePreferenceScroll(panel, y + 9);
-        frame.Add(panel, note, save, saveRoutes, models, back);
+        fieldHelp.Text = PolicyPref("help.default_model");
+        frame.Add(panel, fieldHelp, note, save, saveRoutes, models, back);
         if (!snapshot.Available) { model.Enabled = session.Enabled = daily.Enabled = false; }
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); model.SetFocus();
     }
