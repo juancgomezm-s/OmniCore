@@ -28,6 +28,28 @@ implementar, con contratos de respuesta y compatibilidad explícitos. El Engine 
 `IModelProvider`; la lógica específica de OpenRouter queda en los adaptadores/servicios
 de integración. Las credenciales y endpoints sólo se configuran en User (ADR-0039).
 
+### Contratos oficiales verificados el 2026-10-13
+
+- [`GET /api/v1/key`](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key)
+  consulta la clave actual: `limit`, `limit_remaining`, `usage`, `limit_reset` e
+  `is_management_key`. Un límite nulo no significa saldo cero. `budgets` y
+  `effective_budget` describen otros presupuestos aplicables; no son saldo de cuenta.
+- [`GET /api/v1/credits`](https://openrouter.ai/docs/api/api-reference/credits/get-remaining-credits)
+  requiere una clave de gestión y devuelve `total_credits` y `total_usage`. Una
+  clave normal puede recibir 403: mantener conexión y límite de clave válidos,
+  mostrar saldo no disponible y explicar el requisito. No solicitar, crear ni
+  elevar una credencial de gestión automáticamente. Si se configura, su uso y
+  almacenamiento protegido requieren elección explícita del usuario.
+- [`GET /api/v1/models`](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties)
+  admite paginación `offset >= 0`, `limit` de 1 a 1000; omitir ambos devuelve el
+  catálogo completo. Usar páginas y cotas explícitas. `pricing.prompt/completion`
+  son strings por token; la conversión a precio por millón debe ser explícita.
+  Conservar datos no informados; capacidades del catálogo no cualifican por sí
+  solas el modelo ni autorizan herramientas.
+
+Estos contratos orientan fixtures y manejo de respuestas; la lectura de documentación
+no constituye aceptación autenticada de la cuenta del usuario.
+
 ## Condición de cierre M8
 
 **Disponibilidad confirmada por el usuario (2026-10-13):** aún no hay conexión
