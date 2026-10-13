@@ -12,8 +12,9 @@ public interface IWebLinkHost
 public sealed class WebLinkHost : IWebLinkHost
 {
     private readonly IBrowserLauncher _browser;
-    public WebLinkHost(IBrowserLauncher? browser = null) =>
-        _browser = browser ?? new SystemBrowserLauncher(allowHttp: true);
+    public WebLinkHost() : this(new SystemBrowserLauncher(allowHttp: true)) { }
+    public WebLinkHost(IBrowserLauncher browser) =>
+        _browser = browser ?? throw new ArgumentNullException(nameof(browser));
 
     public async Task<bool> OpenAsync(string target, CancellationToken cancellationToken)
     {
