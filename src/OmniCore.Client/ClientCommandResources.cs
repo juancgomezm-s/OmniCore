@@ -3,9 +3,11 @@ namespace OmniCore.Client;
 /// <summary>Shared human command/tool copy. Existing Spanish/English legacy values stay authoritative.</summary>
 public static class ClientCommandResources
 {
-    public static IReadOnlyCollection<string> Keys => Legacy.Keys.Concat(New.Keys).ToArray();
+    public static IReadOnlyCollection<string> Keys => Legacy.Keys.Concat(New.Keys).Concat(OpenRouterResources.Keys)
+        .Concat(LegacyLocaleResources.Keys).Distinct(StringComparer.Ordinal).ToArray();
     public static IReadOnlyCollection<string> LegacyKeys => Legacy.Keys.ToArray();
-    internal static bool ContainsKey(string key) => Legacy.ContainsKey(key) || New.ContainsKey(key);
+    internal static bool ContainsKey(string key) => Legacy.ContainsKey(key) || New.ContainsKey(key)
+        || OpenRouterResources.ContainsKey(key) || LegacyLocaleResources.ContainsKey(key);
 
     internal static bool TryTranslate(string locale, string key, out string text)
     {
@@ -14,6 +16,7 @@ public static class ClientCommandResources
             text = locale switch { "en" => added.En, "fr" => added.Fr, "it" => added.It, _ => added.Es };
             return true;
         }
+        if (OpenRouterResources.TryTranslate(locale, key, out text)) return true;
         if (locale is "fr" or "it" && Legacy.TryGetValue(key, out var existing))
         {
             text = locale == "fr" ? existing.Fr : existing.It;

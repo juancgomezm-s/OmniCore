@@ -22,12 +22,15 @@ public sealed partial class TuiWiringTests
     {
         using var sessionQuery = JsonDocument.Parse(fx.Server.Query("memory.session", CancellationToken.None)!.Json);
         var sessionId = sessionQuery.RootElement.GetProperty("session").GetString()!;
+        var hostPaths = new DefaultPlatformPaths(Path.Combine(fx.Root, "host-data"), Path.Combine(fx.Root, "host-config"));
+        var memoryStore = new OmniCore.Memory.SessionMemoryStore(OmniHost.WorkspaceDataDirectory(hostPaths, fx.Workspace));
+        var scope = MemoryScope.ForSession(fx.Server.LastSessionId()!);
         for (var index = 0; index < 14; index++)
         {
-            var payload = "{\"cmd\":\"memory.session.add\",\"content\":"
-                + "\"fixture note " + index.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + "\",\"expectedSessionId\":\"" + sessionId + "\"}";
-            Assert.Equal("ok", fx.Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None).Status);
+            memoryStore.Add(new MemoryRecord("fixture-memory-" + index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                scope, MemoryKind.Fact, "fixture note " + index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                .75, .9, MemorySource.UserStated, DateTimeOffset.UtcNow.AddMinutes(-index), null,
+                MemoryExpirationKind.Never, ["session", "user"], [], null), CancellationToken.None);
         }
         fx.StartTui(initialColumns: width, initialRows: height);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences opened");

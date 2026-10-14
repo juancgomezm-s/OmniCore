@@ -55,6 +55,7 @@ public sealed class ClientActionTests
             ["context"] = ClientActionIds.ContextInspect, ["tools"] = ClientActionIds.ToolsInspect,
             ["extensions"] = ClientActionIds.ExtensionsInspect,
             ["hooks"] = ClientActionIds.HooksInspect,
+            ["openrouter"] = ClientActionIds.OpenRouterInspect, ["mcp"] = ClientActionIds.McpInspect,
             ["commands"] = ClientActionIds.CommandsInspect,
             ["skills"] = ClientActionIds.SkillsInspect,
             ["memory"] = ClientActionIds.MemorySession,
@@ -133,7 +134,7 @@ public sealed class ClientActionTests
         client.Queries["context"] = new string('x', 2500);
         client.Queries["tools"] = "{\"tools\":[]}";
         client.Queries["commands"] = "{\"catalog\":{\"commands\":[{\"id\":\"core:explain\",\"enabled\":true}]}}";
-        client.Queries["skills"] = "{\"workspaceTrusted\":true,\"skills\":[{\"id\":\"progress.compile\",\"state\":\"Discovered\"}]}";
+        client.Queries["skills"] = "{\"workspaceTrusted\":true,\"skills\":[{\"id\":\"progress.compile\",\"scope\":\"Project\",\"trust\":\"Trusted\",\"state\":\"Discovered\",\"budgetTokens\":1200,\"modelInvocable\":true}]}";
         Assert.Equal("{\"plan\":true}", Run("plan", Context(client)).Text);
         Assert.Equal("{\"tools\":[]}", Run("tools", Context(client)).Text);
         Assert.Contains("core:explain", Run("commands", Context(client)).Text);
@@ -201,11 +202,11 @@ public sealed class ClientActionTests
     public void Skills_command_lists_and_sends_explicit_session_activation_or_release()
     {
         var client = new FakeClient();
-        client.Queries["skills"] = "{\"workspaceTrusted\":true,\"skills\":[{\"id\":\"progress.compile\",\"state\":\"Activated\"}]}";
+        client.Queries["skills"] = "{\"session\":null,\"workspaceTrusted\":true,\"skills\":[{\"id\":\"progress.compile\",\"scope\":\"Project\",\"trust\":\"Trusted\",\"state\":\"Activated\",\"budgetTokens\":1200,\"modelInvocable\":true}]}";
 
         Assert.Contains("progress.compile", Run("skills", Context(client)).Text);
         var loaded = Run("skills", Context(client), "load", "progress.compile");
-        Assert.Contains("Activated", loaded.Text);
+        Assert.Contains(Context(client).Text.Resolve("client.skills.state.Activated"), loaded.Text);
         using (var command = JsonDocument.Parse(Assert.Single(client.Sent)))
         {
             Assert.Equal("skills.activate", command.RootElement.GetProperty("cmd").GetString());
@@ -215,14 +216,14 @@ public sealed class ClientActionTests
         Run("skills", Context(client), "release", "progress.compile");
         using var released = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("skills.release", released.RootElement.GetProperty("cmd").GetString());
-        Assert.Equal("Uso: /skills [load|release <skill-id>]", Run("skills", Context(client), "other", "x").Text);
+        Assert.Equal(Context(client).Text.Resolve("client.skills.usage"), Run("skills", Context(client), "other", "x").Text);
     }
 
     [Fact]
     public void Memory_command_queries_and_uses_trusted_user_actions_for_changes()
     {
         var client = new FakeClient();
-        client.Queries["memory.session"] = "{\"records\":[{\"content\":\"fixture\"}]}";
+        client.Queries["memory.session"] = "{\"session\":null,\"workspaceTrusted\":false,\"records\":[{\"id\":\"fixture-memory\",\"kind\":\"Fact\",\"content\":\"fixture\",\"source\":\"User\"}],\"candidates\":[]}";
 
         Assert.Contains("fixture", Run("memory", Context(client), "session").Text);
         Assert.Contains("fixture", Run("memory", Context(client), "session", "add", "keep the test focused").Text);
@@ -236,7 +237,7 @@ public sealed class ClientActionTests
         using var forget = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("memory.session.forget", forget.RootElement.GetProperty("cmd").GetString());
         Assert.Equal("abc123", forget.RootElement.GetProperty("memoryId").GetString());
-        Assert.Equal("Uso: /memory session [add <texto>|forget <memory-id>]", Run("memory", Context(client), "workspace").Text);
+        Assert.Equal(Context(client).Text.Resolve("client.memory.usage"), Run("memory", Context(client), "workspace").Text);
     }
 
     [Fact]

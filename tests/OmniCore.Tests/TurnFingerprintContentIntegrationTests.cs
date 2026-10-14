@@ -42,7 +42,7 @@ public sealed class TurnFingerprintContentIntegrationTests
                 Assert.Equal(StopReason.EndTurn, result.StopReason);
                 recorded = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<TurnStarted>()).Fingerprint!;
                 Assert.NotNull(recorded);
-                Assert.Equal(5, recorded.Components.Count);
+                Assert.Equal(6, recorded.Components.Count);
                 foreach (var component in recorded.Components)
                 {
                     Assert.NotNull(component.Content);
@@ -64,6 +64,8 @@ public sealed class TurnFingerprintContentIntegrationTests
                     c => c.Name == "tools.plan").Hash)!);
                 Assert.Equal(Assert.Single(catalog.Definitions()).InputSchemaJson,
                     tools.RootElement.GetProperty("tools")[0].GetProperty("inputSchemaJson").GetString());
+                Assert.Equal("{\"toolPreferences\":{}}", artifacts.GetText(Assert.Single(fingerprint.Components,
+                    c => c.Name == "tools.preferences").Hash));
                 using var prompt = JsonDocument.Parse(artifacts.GetText(Assert.Single(fingerprint.Components,
                     c => c.Name == "prompt.template").Hash)!);
                 Assert.Contains("exact system instruction", prompt.RootElement.GetProperty("renderedText").GetString()!);

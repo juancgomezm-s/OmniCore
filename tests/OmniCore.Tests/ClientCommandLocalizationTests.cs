@@ -34,10 +34,10 @@ public sealed class ClientCommandLocalizationTests
     }
 
     [Theory]
-    [InlineData("es", "Comandos disponibles:", "Uso:", "Lee el contenido")]
-    [InlineData("en", "Available commands:", "Usage:", "Reads a project")]
-    [InlineData("fr", "Commandes disponibles :", "Utilisation :", "Lit le contenu")]
-    [InlineData("it", "Comandi disponibili:", "Uso:", "Legge il contenuto")]
+    [InlineData("es", "Comandos disponibles:", "Uso:", "Lee una página acotada")]
+    [InlineData("en", "Available commands:", "Usage:", "Reads a bounded page")]
+    [InlineData("fr", "Commandes disponibles :", "Utilisation :", "Lit une page limitée")]
+    [InlineData("it", "Comandi disponibili:", "Uso:", "Legge una pagina limitata")]
     public async Task Help_usage_and_tool_descriptions_are_localized_without_translating_identifiers(
         string locale, string heading, string usage, string description)
     {

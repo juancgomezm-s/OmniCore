@@ -2906,7 +2906,7 @@ public sealed class ExplorerTurn
             var componentHashText = savedPlan.GetProperty("componentHash").GetString();
             var artifactHashText = savedPlan.GetProperty("artifactHash").GetString();
             var artifactSize = savedPlan.GetProperty("artifactSize").GetInt64();
-            if (savedPlan.GetProperty("componentVersion").GetString() != "2")
+            if (savedPlan.GetProperty("componentVersion").GetString() != "3")
                 throw new InvalidDataException("Persisted discovered tool plan version is unsupported.");
             if (string.IsNullOrWhiteSpace(savedFingerprint) || string.IsNullOrWhiteSpace(componentHashText)
                 || !TryContentHash(componentHashText, out var componentHash)

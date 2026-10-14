@@ -287,6 +287,9 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
                 or ModelToolCapability.ReferenceResolve or ModelToolCapability.AgentMailboxWait =>
                     toolName == "artifact.read" ? 3 : 1,
             ModelToolCapability.PatchExisting => 2,
+            // An explicitly authorized PlanProposal ceiling should not hide the advisory
+            // mode proposal behind the newer memory proposal when MaxVisibleTools is tight.
+            ModelToolCapability.PlanProposal when toolName == "mode.propose" => 3,
             ModelToolCapability.PlanProposal => 4,
             ModelToolCapability.CreateFile or ModelToolCapability.ReplaceFile
                 or ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename => 5,

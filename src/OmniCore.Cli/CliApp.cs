@@ -399,12 +399,7 @@ public sealed class CliApp
     }
 
     private static ITuiProviderConnectionHost CreateOpenRouterHost()
-    {
-        var paths = OmniHost.CreatePlatformPaths();
-        var credentials = OmniHost.CreateUserCredentialStore(paths);
-        return new TuiProviderConnectionHost(new ProviderConnectionService(credentials, paths), paths,
-            new OpenRouterConnectionService(credentials, paths));
-    }
+        => OmniHost.CreateTuiProviderConnectionHost();
 
     private static async Task<string?> ReadOpenRouterKeyAsync(CancellationToken cancellationToken)
     {

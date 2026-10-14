@@ -24,7 +24,9 @@ internal static class ProjectExtensionPackageCatalog
         {
             var candidates = loader.Discover(root, trust, workspaceTrusted: trusted);
             var grants = candidates.Where(candidate => candidate.Manifest?.Id is not null)
-                .ToDictionary(candidate => candidate.Manifest!.Id!, store.ConsentedCapabilities, StringComparer.Ordinal);
+                .GroupBy(candidate => candidate.Manifest!.Id!, StringComparer.Ordinal)
+                .Where(group => group.Count() == 1)
+                .ToDictionary(group => group.Key, group => store.ConsentedCapabilities(group.Single()), StringComparer.Ordinal);
             result.AddRange(loader.DiscoverWithConsents(root, trust, workspaceTrusted: trusted, grants)
                 .Where(candidate => candidate.Status == ExtensionDiscoveryStatus.Ready && candidate.Manifest is not null)
                 .Select(candidate => (candidate, (IReadOnlySet<string>)store.ConsentedCapabilities(candidate))));

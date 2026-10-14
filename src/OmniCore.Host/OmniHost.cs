@@ -133,6 +133,15 @@ public sealed class OmniHost
     public static ICredentialStore CreateUserCredentialStore(IPlatformPaths paths) =>
         CreateCredentialStore(paths.DataDirectory);
 
+    /// <summary>Creates the production provider-connection facade without exposing platform abstractions to CLI.</summary>
+    public static ITuiProviderConnectionHost CreateTuiProviderConnectionHost()
+    {
+        var paths = CreatePlatformPaths();
+        var credentials = CreateUserCredentialStore(paths);
+        return new TuiProviderConnectionHost(new ProviderConnectionService(credentials, paths), paths,
+            new OpenRouterConnectionService(credentials, paths));
+    }
+
     /// <summary>
     /// Piezas del login OAuth nativo de Claude para un provider declarado en providers.yaml
     /// (ADR-0011 §3.3, plan claude-oauth-plan). Devuelve null si el provider no declara seccion

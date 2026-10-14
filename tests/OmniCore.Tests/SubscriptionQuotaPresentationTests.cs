@@ -54,7 +54,9 @@ public sealed class SubscriptionQuotaPresentationTests
     [Fact]
     public void Stale_window_preserves_its_measurement_time_and_marks_the_presentation()
     {
-        var quota = Quota() with { Availability = MetricAvailability.Stale, LastQueryAttemptAt = Now.AddMinutes(2) };
+        var quota = Quota() with { Availability = MetricAvailability.Stale, LastQueryAttemptAt = Now.AddMinutes(2),
+            Windows = Quota().Windows.Select(window => window with
+            { RemainingPercent = window.RemainingPercent with { Availability = MetricAvailability.Stale } }).ToArray() };
         Assert.Equal("chatgpt 7d remaining 80% stale", UsagePresentation.AccountQuota(quota));
         var encoded = JsonSerializer.Serialize(Snapshot(quota), ObservabilityJson.Options);
         var decoded = Assert.IsType<UsageSnapshot>(JsonSerializer.Deserialize<UsageSnapshot>(encoded, ObservabilityJson.Options));

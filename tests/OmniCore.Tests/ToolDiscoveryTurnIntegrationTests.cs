@@ -141,6 +141,7 @@ public sealed class ToolDiscoveryTurnIntegrationTests
                 var stepFingerprint = snapshot.RootElement.GetProperty("fingerprint").GetString();
                 Assert.NotEqual(discoveryPlanHash, stepFingerprint);
                 var toolPlanHash = snapshot.RootElement.GetProperty("toolPlan").GetProperty("artifactHash").GetString()!;
+                Assert.Equal("3", snapshot.RootElement.GetProperty("toolPlan").GetProperty("componentVersion").GetString());
                 using var toolPlan = System.Text.Json.JsonDocument.Parse(artifacts.GetText(ParseHash(toolPlanHash))!);
                 var persistedDefinitions = toolPlan.RootElement.GetProperty("tools").EnumerateArray()
                     .Select(entry => (Name: entry.GetProperty("visibleName").GetString(),
@@ -160,7 +161,10 @@ public sealed class ToolDiscoveryTurnIntegrationTests
             var resumed = turn.Ask("continue", "fixture system", session, run.RunId, run.RootLane, "",
                 CancellationToken.None);
             Assert.True(resumed.StopReason == StopReason.EndTurn,
-                "Resume failed: " + resumed.StopReason + " / " + resumed.FailureDiagnostic + " / " + string.Join("; ", resumed.ToolCalls.Select(call => call.Summary)));
+                "Resume failed: " + resumed.StopReason + " / " + resumed.FailureDiagnostic + " / final=" + resumed.FinalText
+                    + " / calls=" + calls + " requests=" + requests.Count + " / "
+                    + string.Join(",", store.ReadFrom(session, 1).Select(codecs.Decode).TakeLast(14).Select(item => item.GetType().Name))
+                    + " / " + string.Join("; ", resumed.ToolCalls.Select(call => call.Summary)));
             Assert.Equal(3, requests.Count);
             Assert.Contains(requests[2].Tools, tool => tool.Name == "fixture.git.read");
             Assert.DoesNotContain(requests[2].Messages.SelectMany(message => message.Content)

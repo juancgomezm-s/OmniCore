@@ -130,7 +130,12 @@ public sealed class ExplorerCommandTests
             var result = server.Query("context", CancellationToken.None)!.Json;
             using var snapshot = System.Text.Json.JsonDocument.Parse(result);
             var root = snapshot.RootElement.GetProperty("snapshot");
-            Assert.Equal(fingerprint.Hash(), root.GetProperty("fingerprint").GetString());
+            var modelStep = store.ReadFrom(session, 1).Select(codecs.Decode).OfType<ModelStepStarted>()
+                .OrderBy(item => item.StepIndex).Last();
+            using var effectiveContext = System.Text.Json.JsonDocument.Parse(artifacts.GetText(modelStep.ContextSnapshotRef!.Hash)!);
+            Assert.Equal(effectiveContext.RootElement.GetProperty("fingerprint").GetString(),
+                root.GetProperty("fingerprint").GetString());
+            Assert.NotEqual(fingerprint.Hash(), root.GetProperty("fingerprint").GetString());
             Assert.True(root.GetProperty("tokenCount").GetInt32() > 0);
             Assert.True(root.GetProperty("tokenBudget").GetInt64() > 0);
             var item = root.GetProperty("items").EnumerateArray().First();

@@ -70,7 +70,15 @@ public sealed class M2IntegrationTests
         Assert.NotNull(turnStarted.ContextSnapshotRef);
         Assert.Equal(ArtifactKind.ContextSnapshot, turnStarted.ContextSnapshotRef!.Kind);
         var snapshot = artifacts.GetText(turnStarted.ContextSnapshotRef.Hash);
-        Assert.Contains(fingerprint.Hash(), snapshot!);
+        using var stepContext = System.Text.Json.JsonDocument.Parse(snapshot!);
+        var stepFingerprint = stepContext.RootElement.GetProperty("fingerprint").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(stepFingerprint));
+        Assert.NotEqual(fingerprint.Hash(), stepFingerprint);
+        var modelStep = Assert.Single(events.Select(server.AcquireCodecs().Decode).OfType<ModelStepStarted>(),
+            item => item.StepIndex == 0);
+        using var modelStepContext = System.Text.Json.JsonDocument.Parse(artifacts.GetText(modelStep.ContextSnapshotRef!.Hash)!);
+        Assert.Equal(stepFingerprint, modelStepContext.RootElement.GetProperty("fingerprint").GetString());
+        Assert.Equal("3", modelStepContext.RootElement.GetProperty("toolPlan").GetProperty("componentVersion").GetString());
         Assert.Contains("working-state", snapshot!);
 
         var approvalId = server.RequestPlanApprovalIfNeeded();

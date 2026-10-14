@@ -251,9 +251,23 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
             var state = State(session);
             if (quota.Availability == MetricAvailability.Unknown && state.Quotas.TryGetValue(quota.ProviderId, out var prior)
                 && prior.Availability is MetricAvailability.Reported or MetricAvailability.Stale && prior.Windows.Count > 0)
-                quota = prior with { Availability = MetricAvailability.Stale, Limitation = quota.Limitation, LastQueryAttemptAt = quota.AsOf };
+                quota = prior with
+                {
+                    Availability = MetricAvailability.Stale,
+                    Limitation = quota.Limitation,
+                    LastQueryAttemptAt = quota.AsOf,
+                    Windows = prior.Windows.Select(window => window with
+                    {
+                        UsedPercent = MarkStale(window.UsedPercent),
+                        RemainingPercent = MarkStale(window.RemainingPercent),
+                    }).ToArray(),
+                };
             state.Quotas[quota.ProviderId] = quota;
         }
+
+        static Metric<double?> MarkStale(Metric<double?> metric) => metric.Availability == MetricAvailability.Reported
+            ? metric with { Availability = MetricAvailability.Stale }
+            : metric;
     }
     public SessionObservabilitySnapshot Snapshot(SessionId session, long afterActivitySequence = 0)
     {
