@@ -324,3 +324,22 @@ y permisos de symlink no disponibles. Log local:
 `C:/Users/juanc/AppData/Local/Temp/OmniCore-M8-verified-20261014.log`.
 No se realizaron inferencias ni aceptación autenticada. La construcción y correcciones
 automatizadas M8 quedan verificadas; OR5 continúa pendiente de la configuración del usuario.
+
+## Instalación global de las correcciones (2026-10-14)
+
+`main` remoto recibió el árbol verificado y su acta en
+`1982d484fa6d2a3ba6cc73d2247beecc0cd39154` (código `09ad2ba`). La instalación global npm
+desde ese commit exacto terminó con **exit 0**, usando caché nueva, `--foreground-scripts`,
+`--install-links`, `--allow-scripts=omnicore-cli@0.1.0` y `--strict-ssl=true`, con
+`NODE_TLS_REJECT_UNAUTHORIZED` retirado del proceso. Prepare compiló Release y publicó
+`dist/npm`; npm emitió su aviso allow-scripts después de ejecutar la preparación. No se
+repitió la instalación ni se cambió la versión de npm.
+
+Smoke del comando global: `omni.cmd --help` **exit 0**, apertura TUI por omisión;
+`omni.cmd /openrouter status` **exit 0**, `openrouter · Sin configurar · 0 modelos registrados`.
+Son comprobaciones locales sin HTTP ni inferencia. No se repitió campaña visual. Los commits
+documentales posteriores sólo registran esta evidencia; no requieren otra instalación.
+
+**Pendiente único de aceptación M8: OR5 autenticado**, conexión, catálogo y créditos, una vez
+que el usuario configure OpenRouter con la interfaz ya instalada. No se declara cerrado el
+hito con una cuenta ausente ni se sustituye esa aceptación con fixtures.
