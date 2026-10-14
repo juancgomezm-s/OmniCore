@@ -1,6 +1,6 @@
 # OmniCore — Arquitectura (revisión v0.6)
 
-**Prioridad vigente del usuario (2026-10-14): `P0-OMNI-UNIFICACION` está ABIERTO / BLOQUEANTE. No ampliar funcionalidades hasta cerrar globalmente la unificación visual y funcional OmniCoder–OmniCore–OmniLlama. Ver [§24, gate obligatorio](#p0-omni-unificacion); las fechas/estados históricos inferiores se conservan como evidencia previa.**
+**Homologación global (2026-10-14): `P0-OMNI-UNIFICACION` CERRADO en el alcance aceptado: OmniCoder Electron, OmniCore CLI/TUI y OmniLlama React; Svelte fuera de esta fase. El usuario confirma aceptación y animación funcionando en el otro equipo. Se levanta este bloqueo; continúan los criterios propios de cada milestone y la construcción M9 autorizada con un solo worker Luna en alto.**
 
 - **Fecha:** 2026-09-24 (revisión); 2026-09-25 (auditoría de M1); 2026-09-26 (cableado de M2 + cierre de bloqueantes); 2026-09-27 (cierre M2 e2e + decisiones 0044/0045)
 - **Estado:** M1 implementado; M2 construido y cableado end-to-end (125 tests verdes, Windows).
@@ -734,7 +734,7 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 
 ### P0-OMNI-UNIFICACION
 
-**Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** ABIERTO / BLOQUEANTE. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).
+**Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).
 
 **Aclaración vigente del usuario para OmniCore (2026-10-14):** el objetivo es homologar la
 experiencia de uso. El usuario considera que OmniCore ya ofrece una buena referencia y que,
@@ -762,15 +762,17 @@ Por instrucción del usuario, OmniCoder, OmniCore y OmniLlama deben ofrecer una 
 
 **Sin objetivos de peso:** no fijar presupuestos ni umbrales de tamaño de bundle, EXE o memoria para este gate. Reutilizar las piezas que aporten coherencia y mantener procesamiento/runtime en sus capas actuales; cualquier medición se registra como observación, no como un objetivo numérico impuesto.
 
-**Registro global de cierre — pendiente:**
+**Registro global de cierre — 2026-10-14:**
 
 | Aplicación | Conformidad con el contrato común | Evidencia / aceptación |
 |---|---|---|
-| OmniCoder | Pendiente | Sin cierre de unificación registrado |
-| OmniCore | **Contribución local cerrada; cierre global separado** | Experiencia/menús conservados por indicación del usuario; corregidos recorte del prompt y pérdida de borrador ante rechazos/referencia no disponible. U-C01–U-C12 resueltos para el alcance actual en el [acta local](../validation/omnicore-homologation-closure-20261014.md). No acredita aceptación de los otros productos ni transporte externo M9. |
-| OmniLlama | Pendiente | Sin cierre de unificación registrado |
+| OmniCoder Electron/React | **Cerrado en el alcance aceptado** | Base 95bbeea + correcciones locales revisadas; build EXIT 0, app 49/49, ProductUI Electron 6/6 y NO_ORPHANS reportados por su owner. Usuario acepta la experiencia actual (2026-10-14). Fixtures no acreditan inferencia ni integración Core. |
+| OmniCore CLI/TUI | **Cerrado en el alcance aceptado** | 9946a7f; U-C01–U-C12 resueltos para Core, 316 casos del área y 62 de arquitectura verificados. Usuario acepta menús/experiencia y diferencias de terminal. OR5 permanece separado. |
+| OmniLlama React | **Cerrado en el alcance aceptado** | 44e9bfe; 59/59 UI, build/ESLint/nativo y smoke reales registrados; Qwen y QA diferenciados. Usuario confirma animación remota funcionando y acepta el alcance React. Svelte queda fuera. |
 
-El acta local distingue la corrección y evidencia nuevas de la suite M8 ya disponible. Su cierre no acredita por sí solo la validación cruzada ni levanta el gate global.
+El acta local conserva la evidencia de Core; este registro global agrega las evidencias de los otros productos y la aceptación explícita del usuario, sin volver a ejecutar sus suites.
+
+**Aceptación y alcance registrados (2026-10-14):** el usuario respondió «Sí; acepto ese alcance y ya funciona la animación» al confirmar las tres experiencias y excluir Svelte de esta fase. Se levantó P0 global; no se declara cerrada la migración de runtime, OR5 de M8 ni M9. [Evidencia consolidada](https://github.com/juancgomezm-s/OmniCore/blob/main/docs/validation/omni-family-homologation-closure-20261014.md). Se autoriza comenzar M9 con un solo worker Luna en alto. Las condiciones anteriores describen el gate antes de este cierre; ya no bloquean el backlog por homologación.
 
 **Aplicación en OmniCore:** homologar las superficies CLI/TUI y los modelos de presentación disponibles, manteniendo `ClientProjection`, `IOmniClient`, acciones/commands tipados, `LocalizedText`, procedencia y disponibilidad real de métricas. La TUI adapta roles/glyphs/jerarquía de la familia; plain/`NO_COLOR`/ASCII conservan el significado. La salida JSON mantiene su contrato de máquina.
 
@@ -820,7 +822,7 @@ de referencia de producto para Electron/WebUI; **OmniCore conserva su experienci
 Sus componentes y los mapeos existentes de OmniLlama sirven para contrastar acciones y estados
 compatibles, sin imponer a Core otra estructura ni reiniciar la definición visual.
 Las correcciones de alcance más recientes de cada producto prevalecen sobre su gate general
-y sobre esta fotografía. La aceptación global de familia sigue pendiente.
+y sobre esta fotografía. La aceptación global de familia queda registrada en el acta consolidada del 2026-10-14.
 
 | Fuente inspeccionada | Revisión y procedencia de la fotografía | Consecuencia para Core |
 |---|---|---|
@@ -860,14 +862,14 @@ y el alcance de aceptación correspondiente.
    ante referencia no disponible/comando desconocido o input rechazado. Reintentar no duplica
    entradas. No se adelantan `media.read`, palette, perfiles ni paneles nuevos.
 3. **UC-D resuelto en Core:** evidencia focal del cambio y evidencia anterior identificadas por
-   separado en el acta. El cierre cruzado con los otros productos conserva su registro global;
+   separado en el acta. El cierre cruzado con los otros productos queda registrado en el acta global;
    no se convierte en una campaña adicional de rediseño de Core. U-C12 sigue en M9.
 
 **Decisión vigente: mantener la UI de Core y atender sólo discrepancias concretas.** Los IDs y
 lotes anteriores se conservan para trazabilidad de las referencias de los otros planes, no como
 una orden de construirlos todos. La contribución local queda cerrada; reabrir sólo ante un
 defecto concreto reproducible. OR5 de M8 conserva su aceptación independiente; P0 tampoco la
-sustituye. M9/M10 mantienen sus propios criterios de salida y el gate global. Los resultados
+sustituye. M9/M10 mantienen sus propios criterios de salida; el gate global de homologación está cerrado. Los resultados
 nuevos de build/tests están en el acta local; no acreditan inferencia ni cuenta autenticada.
 
 ### Milestones técnicos conservados, sujetos al gate global

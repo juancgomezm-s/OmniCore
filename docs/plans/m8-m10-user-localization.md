@@ -4,7 +4,7 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 
 ## Estado vigente (2026-10-14)
 
-**Bloqueante previo `P0-OMNI-UNIFICACION` (2026-10-14):** aplicar [el gate global de arquitectura §24](../architecture/arquitectura.md#p0-omni-unificacion) antes de ampliar M8–M10 o sus planes derivados. Se permite corregir y verificar las brechas existentes y completar solo la integración mínima necesaria para la coherencia visual/funcional OmniCoder–OmniCore–OmniLlama. Nuevas herramientas, perfiles, paneles, transportes o prestaciones deben justificar su relación imprescindible con ese gate o esperar a su cierre global. Los checkpoints y autorizaciones de ampliación anteriores conservan historia, pero no levantan este bloqueo.
+**`P0-OMNI-UNIFICACION` cerrado globalmente (2026-10-14):** [acta consolidada](../validation/omni-family-homologation-closure-20261014.md), evidencias de los tres productos y aceptación del usuario de OmniCoder Electron, OmniCore CLI/TUI y OmniLlama React, con Svelte fuera de esta fase. El usuario confirma animación remota funcionando. Se levanta el bloqueo de homologación y se autoriza iniciar M9 con un solo worker Luna en alto; los criterios técnicos y de aceptación propios de M8–M10 continúan vigentes. OR5 autenticado sigue pendiente y no se declara M8 cerrado.
 
 **Alcance aclarado por el usuario (2026-10-14): conservar la experiencia y los menús actuales de OmniCore, considerados una buena referencia.** La [matriz U-C01–U-C12](../architecture/arquitectura.md#matriz-ejecutable-de-omnicore--u-c01-a-u-c12-2026-10-14) se usa para contraste puntual, no como doce trabajos ni como una campaña de rediseño. Sólo corregir discrepancias concretas de uso; reutilizar la evidencia existente y completar lo necesario para el cierre cruzado. Los cuatro idiomas de Core se conservan. U-C12 mantiene su alcance técnico M9 y no queda construido por homologar pantallas.
 
@@ -15,8 +15,8 @@ conservando menús/navegación y explicitando diferencias de capacidad. Corregid
 del prompt ordinario y la pérdida del borrador ante rechazos/referencias no disponibles;
 evidencia y resolución de cada fila en [el acta local](../validation/omnicore-homologation-closure-20261014.md).
 No queda una campaña UC-A–UC-D de Core por ejecutar. El cierre global de las tres aplicaciones
-es separado y conserva su gate. El próximo pendiente propio de M8 es OR5 autenticado;
-después corresponde el alcance M9 previsto cuando se levante el gate global. No construir
+está registrado por separado en el acta consolidada. El pendiente propio de M8 es OR5 autenticado;
+el usuario autoriza iniciar el alcance M9 previsto conservando ese pendiente explícito. No construir
 otra interfaz ni anticipar M9/M10 para aparentar paridad.
 
 Las cinco brechas posteriores a `084d5a8` están corregidas en `75a5a67`: discovery MCP, latch de validación, hook terminal al aceptar, restauración de memoria olvidada y techo de permisos de skills. `09ad2ba` conserva la autoridad del workspace cuando su ruta durable queda redactada; prueba reapertura y rechazo de otro checkout sin exponer secretos. Build de solución sin advertencias ni errores; suite integral: 4,505 correctas, 0 fallos y 11 omisiones explícitas (incluye arquitectura). OR5 autenticado sigue pendiente de configurar la cuenta del usuario; M8 no se declara cerrado. La evidencia vigente tiene precedencia sobre los checkpoints históricos; [acta M8](../validation/m8-extensibility-20261011.md).
