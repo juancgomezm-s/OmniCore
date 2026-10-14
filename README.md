@@ -194,7 +194,7 @@ La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 o
 | **Local / llama.cpp** | Chat compatible, configuración y supervisión de host local | Quick real de Qwen en la configuración documentada; no cualifica automáticamente cualquier modelo local. |
 | **OpenAI Responses API** | Adapter nativo | Fixtures; aceptación con API de pago no acreditada en el cierre M5. |
 | **Anthropic Messages** | Adapter nativo y semántica del proveedor | Fixtures; aceptación autenticada de API pendiente. |
-| **OpenRouter** | Adapter compatible y contratos de saldo de cuenta/límite de clave | Cierre completo asignado a M8: conexión, interfaz CLI/TUI, catálogo y créditos; implementación y aceptación autenticada pendientes según [OR1–OR5](docs/plans/openrouter-closure.md). |
+| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | OR1–OR4 integrados en `3273026`, con 21/21 pruebas focales offline. Aceptación autenticada OR5 pendiente según [el plan](docs/plans/openrouter-closure.md); M8 sigue abierto. |
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 
@@ -236,6 +236,29 @@ una banda posterior de .NET 10, según `global.json`. `npm` compila la CLI duran
 la instalación; después, `omni` necesita el runtime de .NET 10. Para actualizarla,
 repite el comando de instalación. Esta distribución framework-dependent sólo
 está preparada para Windows; Linux queda pendiente.
+
+### Configurar OpenRouter
+
+En la TUI abre Preferencias, la categoría de cuentas y conexiones y
+**Conexiones API…**. Selecciona OpenRouter y **Conectar…** para guardar la clave
+en el almacén de credenciales del usuario. **Probar** consulta su validez;
+**Descubrir modelos** abre el catálogo, cuyo refresh se solicita explícitamente.
+Registra sólo los modelos elegidos y luego selecciónalos mediante el selector
+de modelos habitual.
+
+También puedes configurar la conexión por CLI:
+
+```powershell
+omni /openrouter connect
+omni /openrouter status
+```
+
+La primera orden solicita la clave con entrada oculta; no la agregues a los
+argumentos. Usa el ID mostrado en `status` con `test`, `refresh`, `catalog`,
+`register`, `credits` o `disconnect`; la ayuda de `/openrouter` muestra la sintaxis.
+Consultar conexión, catálogo y créditos no genera respuestas de modelos. El
+límite/uso de una clave y el saldo de cuenta se muestran por separado; un dato
+no disponible no se convierte en cero.
 
 ### Explorar sin credenciales ni llamadas al modelo
 
