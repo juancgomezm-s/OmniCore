@@ -1,6 +1,7 @@
 namespace OmniCore.Tests;
 
 using OmniCore.Client;
+using OmniCore.Context;
 using OmniCore.Extensions;
 using OmniCore.Abstractions;
 using OmniCore.Host;
@@ -11,9 +12,35 @@ using OmniCore.Tools;
 using TrustLevel = OmniCore.Domain.TrustLevel;
 using PermissionDecision = OmniCore.Domain.PermissionDecision;
 using ToolCallId = OmniCore.Domain.ToolCallId;
+using SessionId = OmniCore.Domain.SessionId;
+using RunId = OmniCore.Domain.RunId;
+using ExecutionFingerprint = OmniCore.Domain.ExecutionFingerprint;
+using ContextItemKind = OmniCore.Domain.ContextItemKind;
+using ContributionCategory = OmniCore.Domain.ContributionCategory;
+using ScopeLevel = OmniCore.Domain.ScopeLevel;
 
 public sealed class ExtensionManifestTests
 {
+    [Fact]
+    public void Extension_tool_tags_can_match_an_equivalent_control_without_lowering_its_risk_or_effect()
+    {
+        var manifest = new ExtensionManifestLoader().Load(Manifest.Replace(
+            "schema: schemas/compile.json", "schema: schemas/compile.json\n      tags: [process, execution]", StringComparison.Ordinal));
+        var declaration = Assert.Single(manifest.Provides!.Tools!);
+        Assert.Equal(["process", "execution"], declaration.Tags);
+        var extension = new DiscoveredExtension("C:\\fixture", manifest, ExtensionDiscoveryStatus.Ready,
+            null, new string('b', 64), new string('c', 64), TrustLevel.Project);
+        var tool = new ExtensionTool(extension, declaration, "{\"type\":\"object\"}",
+            new CountingRpcClient(), "C:\\workspace");
+
+        Assert.Equal(["process", "execution"], tool.Descriptor.Tags);
+        Assert.Equal(ToolRisk.High, tool.Descriptor.Risk);
+        Assert.Equal(OmniCore.Domain.EffectClass.NonIdempotent, tool.Descriptor.EffectClass);
+        Assert.False(tool.Descriptor.ReadOnly);
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(Manifest.Replace(
+            "schema: schemas/compile.json", "schema: schemas/compile.json\n      tags: [not valid]", StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void Optional_ui_resources_are_literal_bounded_and_do_not_change_execution_identity()
     {
@@ -103,6 +130,18 @@ public sealed class ExtensionManifestTests
             Assert.Equal(ExtensionDiscoveryStatus.IncompatibleApi, incompatible.Status);
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Extension_skill_declarations_reject_duplicate_and_escaping_package_paths()
+    {
+        var loader = new ExtensionManifestLoader();
+        var requested = Manifest.Replace("capabilities: [tool.register]",
+            "capabilities: [tool.register, skill.register]", StringComparison.Ordinal);
+        Assert.Throws<InvalidDataException>(() => loader.Load(requested.Replace("  tools:",
+            "  skills: [../outside]\n  tools:", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => loader.Load(requested.Replace("  tools:",
+            "  skills: [skills/one, skills/one]\n  tools:", StringComparison.Ordinal)));
     }
 
     [Fact]
@@ -203,6 +242,10 @@ public sealed class ExtensionManifestTests
         Directory.CreateDirectory(extensionPath);
         File.WriteAllText(Path.Combine(extensionPath, ExtensionManifestLoader.ManifestFileName), Manifest);
         var paths = OmniHost.CreatePlatformPaths(data);
+        var userExtensionPath = Path.Combine(data, "extensions", "fixture.user-query");
+        Directory.CreateDirectory(userExtensionPath);
+        File.WriteAllText(Path.Combine(userExtensionPath, ExtensionManifestLoader.ManifestFileName),
+            Manifest.Replace("acme.progress", "fixture.user-query", StringComparison.Ordinal));
         var server = OmniHost.CreateInMemoryServer();
         server.ConfigurePlatformPaths(() => paths);
         server.ConfigureWorkspaceRoot(workspace);
@@ -210,12 +253,19 @@ public sealed class ExtensionManifestTests
         {
             var untrusted = server.Query("extensions", CancellationToken.None)!.Json;
             using (var snapshot = System.Text.Json.JsonDocument.Parse(untrusted))
-                Assert.Equal("WorkspaceTrustRequired", snapshot.RootElement.GetProperty("extensions")[0].GetProperty("status").GetString());
+            {
+                var extensions = snapshot.RootElement.GetProperty("extensions");
+                Assert.Equal("WorkspaceTrustRequired", Assert.Single(extensions.EnumerateArray(), item =>
+                    item.GetProperty("scope").GetString() == "Project").GetProperty("status").GetString());
+                Assert.Equal("ConsentRequired", Assert.Single(extensions.EnumerateArray(), item =>
+                    item.GetProperty("scope").GetString() == "User").GetProperty("status").GetString());
+            }
 
             new WorkspaceTrustStore(paths).SetTrusted(workspace, true);
             var trustedWorkspace = server.Query("extensions", CancellationToken.None)!.Json;
             using var trustedSnapshot = System.Text.Json.JsonDocument.Parse(trustedWorkspace);
-            Assert.Equal("ConsentRequired", trustedSnapshot.RootElement.GetProperty("extensions")[0].GetProperty("status").GetString());
+            Assert.All(trustedSnapshot.RootElement.GetProperty("extensions").EnumerateArray(), item =>
+                Assert.Equal("ConsentRequired", item.GetProperty("status").GetString()));
 
             var clientResult = await new ClientActionHandler().ExecuteAsync(
                 new ClientActionInvocation(ClientActionIds.ExtensionsInspect, [], "slash"),
@@ -282,6 +332,155 @@ public sealed class ExtensionManifestTests
                 invoker: new NeverInvokedRpcClient()));
         }
         finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task Consented_extension_context_contributor_runs_through_strong_stdio_with_metadata_only_input()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-context-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "data"));
+        var package = Path.Combine(workspace, ".omnicore", "extensions", "fixture.context");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.context
+            version: 1.0.0
+            displayName: Fixture context
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              contextContributors: [knowledge.note]
+              validators: [verify-build]
+            requests:
+              capabilities: [context.contribute, completion.validate]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        try
+        {
+            var loader = new ExtensionManifestLoader();
+            var candidate = Assert.Single(loader.Discover(Path.Combine(workspace, ".omnicore", "extensions"),
+                TrustLevel.Project, workspaceTrusted: true));
+            Assert.Equal(ExtensionDiscoveryStatus.ConsentRequired, candidate.Status);
+            var invoker = new ExtensionRpcProcessInvoker(new ProtocolFixtureLauncher("contributor"));
+            Assert.Empty(ProjectExtensionContributors.Load(workspace, paths, workspaceTrusted: true, invoker));
+            new ExtensionConsentStore(paths, workspace).Grant(candidate,
+                new HashSet<string>(["context.contribute", "completion.validate"], StringComparer.Ordinal));
+            var contributor = Assert.Single(ProjectExtensionContributors.Load(workspace, paths,
+                workspaceTrusted: true, invoker));
+            var fingerprint = new ExecutionFingerprint("fixture", "h", "t", "c", "o", "build");
+            var request = new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 0, fingerprint);
+            var items = await contributor.GetContextAsync(request, CancellationToken.None);
+            var item = Assert.Single(items);
+            Assert.Equal(ContextItemKind.Knowledge, item.Kind);
+            Assert.Equal("offline contributed knowledge", item.Content);
+            Assert.Equal(ContributionCategory.Knowledge, item.Provenance.Category);
+            Assert.StartsWith("Extension:fixture.context@1.0.0:", item.Provenance.ComponentSource,
+                StringComparison.Ordinal);
+            Assert.Equal(OmniCore.Domain.ScopeLevel.Project, item.Provenance.Scope);
+            var validatorLauncher = new ProtocolFixtureLauncher("validator");
+            var validators = ProjectExtensionValidators.Load(workspace, paths, workspaceTrusted: true,
+                request.SessionId, request.RunId, new ExtensionRpcProcessInvoker(validatorLauncher));
+            var result = Assert.Single(Assert.Single(validators).Run(TestContext.Current.CancellationToken));
+            Assert.True(result.Passed);
+            Assert.Equal("extension:fixture.context:verify-build", result.Key);
+            var validatorLaunch = validatorLauncher.LastLaunch!;
+            Assert.Equal(SandboxStrength.Strong, validatorLaunch.RequestedStrength);
+            Assert.Equal(SandboxNetworkMode.Deny, validatorLaunch.Network.Mode);
+            Assert.DoesNotContain(validatorLaunch.AllowedPaths, path => !path.Path.StartsWith(package,
+                StringComparison.OrdinalIgnoreCase));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task User_extension_tools_contributors_and_validators_are_hash_consented_and_run_strong()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-user-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "data"));
+        var package = Path.Combine(paths.DataDirectory, "extensions", "fixture.user");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(package, "schema.json"), "{\"type\":\"object\"}");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.user
+            version: 1.0.0
+            displayName: User fixture
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              tools:
+                - name: compile
+                  schema: schema.json
+              contextContributors: [knowledge.note]
+              validators: [verify-build]
+            requests:
+              capabilities: [tool.register, context.contribute, completion.validate]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        try
+        {
+            var loader = new ExtensionManifestLoader();
+            var candidate = Assert.Single(loader.Discover(Path.Combine(paths.DataDirectory, "extensions"),
+                TrustLevel.Trusted, workspaceTrusted: false));
+            Assert.Equal(ExtensionDiscoveryStatus.ConsentRequired, candidate.Status);
+            var capabilities = new HashSet<string>(["tool.register", "context.contribute", "completion.validate"],
+                StringComparer.Ordinal);
+            new ExtensionConsentStore(paths, ScopeLevel.User).Grant(candidate, capabilities);
+
+            var rpcToolLauncher = new ProtocolFixtureLauncher("tool");
+            var tools = ProjectExtensionTools.Load(workspace, paths, workspaceTrusted: false,
+                new ExtensionRpcProcessInvoker(rpcToolLauncher));
+            var tool = Assert.Single(tools);
+            Assert.Equal(OmniCore.Domain.ScopeLevel.User, tool.Descriptor.Source.Scope);
+            Assert.Equal(TrustLevel.Trusted, tool.Descriptor.Source.Trust);
+            var permission = ScriptedPermissionPolicy.WithTool("ext.fixture.user.compile", PermissionDecision.Allow)
+                .WithModeDefaults(OmniCore.Domain.RunMode.Act);
+            var execution = new ScriptedToolExecutor(new FakeCatalog().Add(tool), permission, workspace,
+                null, null, null, false, additionalBoundaries: [((ExtensionTool)tool).Boundary]);
+            var toolResult = execution.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id,
+                "user-extension", "{}"), userApprovesAsk: true, CancellationToken.None);
+            Assert.True(toolResult.Succeeded, toolResult.Summary + " | "
+                + string.Join(" | ", toolResult.Events.Select(evt => evt.GetType().Name + ":" + evt))
+                + " | launches=" + rpcToolLauncher.Starts.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            Assert.Equal(1, rpcToolLauncher.Starts);
+            var toolLaunch = rpcToolLauncher.LastLaunch!;
+            Assert.Equal(SandboxStrength.Strong, toolLaunch.RequestedStrength);
+            Assert.Equal(SandboxNetworkMode.Deny, toolLaunch.Network.Mode);
+            var contributor = Assert.Single(ProjectExtensionContributors.Load(workspace, paths,
+                workspaceTrusted: false, new ExtensionRpcProcessInvoker(new ProtocolFixtureLauncher("contributor"))));
+            var request = new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 0,
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "build"));
+            var item = Assert.Single(await contributor.GetContextAsync(request, CancellationToken.None));
+            Assert.Equal(OmniCore.Domain.ScopeLevel.User, item.Provenance.Scope);
+
+            var validators = ProjectExtensionValidators.Load(workspace, paths, workspaceTrusted: false,
+                request.SessionId, request.RunId, new ExtensionRpcProcessInvoker(new ProtocolFixtureLauncher("validator")));
+            Assert.True(Assert.Single(Assert.Single(validators).Run(TestContext.Current.CancellationToken)).Passed);
+            new ExtensionConsentStore(paths, ScopeLevel.User).Revoke("fixture.user");
+            var afterRevoke = execution.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(),
+                tool.Descriptor.Id, "revoked-user-extension", "{}"), userApprovesAsk: true,
+                TestContext.Current.CancellationToken);
+            Assert.False(afterRevoke.Succeeded);
+            Assert.Equal(1, rpcToolLauncher.Starts);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
 
     [Fact]
@@ -617,6 +816,9 @@ public sealed class ExtensionManifestTests
             var (stdout, timedOut) = fixture switch
             {
                 "hook" => ("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"continue\"}}", false),
+                "contributor" => ("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"items\":[{\"id\":\"fixture-note\",\"kind\":\"knowledge\",\"content\":\"offline contributed knowledge\"}]}}", false),
+                "tool" => ("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"ok\":true}}", false),
+                "validator" => ("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"results\":[{\"id\":\"verify-build\",\"passed\":true,\"summary\":\"offline check passed\"}]}}", false),
                 "malformed" => ("{broken", false),
                 "version" => ("{\"jsonrpc\":2,\"id\":\"1\",\"result\":{}}", false),
                 "id" => ("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}", false),

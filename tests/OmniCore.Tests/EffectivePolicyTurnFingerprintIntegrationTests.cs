@@ -3,10 +3,12 @@ using OmniCore.Context;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Execution;
+using OmniCore.Extensions;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
 using OmniCore.Security;
+using OmniCore.Sandbox;
 using OmniCore.Tools;
 
 namespace OmniCore.Tests;
@@ -124,6 +126,119 @@ public sealed class EffectivePolicyTurnFingerprintIntegrationTests
 
             Assert.Contains("fixture.source", observation.ToolsSent);
             Assert.DoesNotContain("fixture.target", observation.ToolsSent);
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    [Fact]
+    public void Real_extension_alternative_keeps_process_risk_effect_and_extension_boundary_and_requires_ask()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-extension-tool-preference-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var core = new ProcessExecTool(new NeverLaunchingProcessLauncher(), new PathBoundaryValidator());
+            var manifest = new ExtensionManifest
+            {
+                ManifestVersion = 1,
+                Id = "fixture",
+                Version = "1.0.0",
+                DisplayName = "Fixture extension",
+                Runtime = new ExtensionRuntimeManifest { Kind = "stdio", Command = "fixture-runner" },
+                Requests = new ExtensionRequestsManifest
+                {
+                    Permissions = new ExtensionPermissionManifest
+                    {
+                        Process = [new ExtensionProcessPermissionManifest { Executable = "fixture-runner" }],
+                    },
+                },
+            };
+            var extension = new DiscoveredExtension(root, manifest, ExtensionDiscoveryStatus.Ready, null,
+                new string('a', 64), new string('b', 64), TrustLevel.Project);
+            var invoker = new ExtensionFixtureInvoker();
+            var extensionTool = new ExtensionTool(extension,
+                new ExtensionToolManifest { Name = "runner", Schema = "{}", Tags = ["process", "execution"] },
+                "{}", invoker, root);
+            Assert.Equal(core.Descriptor.Tags.Order(StringComparer.Ordinal),
+                extensionTool.Descriptor.Tags.Order(StringComparer.Ordinal));
+            Assert.Equal(core.Descriptor.Risk, extensionTool.Descriptor.Risk);
+            Assert.Equal(ToolRisk.High, extensionTool.Descriptor.Risk);
+            Assert.Equal(core.Descriptor.EffectClass, extensionTool.Descriptor.EffectClass);
+            Assert.Equal(EffectClass.NonIdempotent, extensionTool.Descriptor.EffectClass);
+
+            var catalog = new FakeCatalog().Add(core).Add(extensionTool);
+            var policyKey = ModelPolicyKey.For("fixture-provider", "fixture-model");
+            var harness = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 16,
+                GuidanceLevel.Full, 3, PlanControl.ModelDriven, 8);
+            var policy = Resolve(policyKey, harness, ModelPolicyPresets.FullAgent(), revision: 1);
+            var capabilities = ModelCapabilityBoundary.CoreTools.ToDictionary(pair => pair.Key, pair => pair.Value,
+                StringComparer.Ordinal);
+            capabilities.Add("ext.fixture.runner", ModelToolCapability.GeneralProcess);
+            var boundary = new ModelCapabilityBoundary(policy, capabilities, new FileReadRegistry(root));
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session, "real extension substitution");
+            var callId = ToolCallId.New();
+            var requests = new List<ModelRequest>();
+            var modelCalls = 0;
+            var turn = new ExplorerTurn((request, _) =>
+            {
+                requests.Add(request);
+                modelCalls++;
+                return modelCalls == 1
+                    ? new ModelResponse([new ToolCallBlock(callId, "run-extension", "ext.fixture.runner", "{}")],
+                        StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture-model", null))
+                    : new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                        new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture-model", null));
+            }, new ScriptedToolExecutor(catalog,
+                ScriptedPermissionPolicy.WithTool("ext.fixture.runner", PermissionDecision.Allow), root,
+                boundary, new InMemoryAuditSink(), _ => "allow_once", isInteractive: true), catalog,
+                new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture-model"), 8192, ToolMode.Direct, null),
+                store, codecs, new FileArtifactStore(Path.Combine(root, "artifacts")), new InMemoryAuditSink(),
+                new RedactionPolicy(), harness: harness, boundary: boundary, recordEffectiveFingerprint: true,
+                toolPreferences: new Dictionary<string, string> { ["process.exec"] = "ext.fixture.runner" });
+
+            var outcome = turn.Ask("use selected runner", "fixture system", session, run.RunId,
+                run.RootLane, "", CancellationToken.None);
+            var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            Assert.Equal(StopReason.EndTurn, outcome.StopReason);
+            Assert.DoesNotContain("process.exec", requests[0].Tools.Select(tool => tool.Name));
+            Assert.Contains("ext.fixture.runner", requests[0].Tools.Select(tool => tool.Name));
+            Assert.True(events.OfType<InteractionRequested>().Any(item => item.Kind == InteractionKind.Permission),
+                string.Join(",", events.Select(item => item.GetType().Name)) + " :: "
+                + string.Join(" | ", events.OfType<ToolCallRejected>().Select(item => item.Reason)));
+            Assert.Single(events.OfType<ToolPreferenceSubstitutionApproved>());
+            Assert.Contains(events.OfType<ToolCallSucceeded>(), item => item.ToolCallId == callId);
+            Assert.Equal(1, invoker.Calls);
+            Assert.Equal("tools/call", invoker.Method);
+            Assert.Equal("fixture-runner", Path.GetFileName(invoker.Executable));
+
+            // The extension's own declared permission ceiling is enforced by Prepare, even after selection.
+            var mismatchedManifest = new ExtensionManifest
+            {
+                ManifestVersion = 1, Id = "blocked", Version = "1.0.0", DisplayName = "Blocked",
+                Runtime = new ExtensionRuntimeManifest { Kind = "stdio", Command = "not-allowed" },
+                Requests = new ExtensionRequestsManifest { Permissions = new ExtensionPermissionManifest
+                    { Process = [new ExtensionProcessPermissionManifest { Executable = "another-runner" }] } },
+            };
+            var mismatched = new ExtensionTool(new DiscoveredExtension(root, mismatchedManifest,
+                ExtensionDiscoveryStatus.Ready, null, new string('c', 64), new string('d', 64), TrustLevel.Project),
+                new ExtensionToolManifest { Name = "blocked", Schema = "{}", Tags = ["process", "execution"] },
+                "{}", invoker, root);
+            var rejected = mismatched.Prepare(new ValidatedToolCall(callId, mismatched.Descriptor.Id,
+                "fixture", "{}"), new ToolPreparationContext(root, DateTimeOffset.UtcNow));
+            Assert.IsType<PreparationRejected>(rejected);
+            Assert.Equal(1, invoker.Calls);
         }
         finally
         {
@@ -339,5 +454,26 @@ public sealed class EffectivePolicyTurnFingerprintIntegrationTests
         public ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
             CancellationToken cancellationToken, EventStream stream) =>
             throw new InvalidOperationException("The scripted provider returns EndTurn; no tool should execute.");
+    }
+
+    private sealed class NeverLaunchingProcessLauncher : ISandboxProcessLauncher
+    {
+        public ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch,
+            CancellationToken cancellationToken) => throw new InvalidOperationException("process.exec is substituted before execution");
+    }
+
+    private sealed class ExtensionFixtureInvoker : IExtensionRpcInvoker
+    {
+        public int Calls { get; private set; }
+        public string? Method { get; private set; }
+        public string? Executable { get; private set; }
+        public System.Threading.Tasks.Task<string> InvokeAsync(DiscoveredExtension extension, string method, string parametersJson,
+            ResourceClaims authorizedClaims, CancellationToken cancellationToken)
+        {
+            Calls++;
+            Method = method;
+            Executable = authorizedClaims.Process?.Executable;
+            return System.Threading.Tasks.Task.FromResult("""{"jsonrpc":"2.0","result":{"content":[]}}""");
+        }
     }
 }

@@ -42,6 +42,7 @@ public sealed class ExplorerTurn
 
     private readonly bool _recordEffectiveFingerprint;
     private readonly IReadOnlyList<ActiveSkillFingerprint>? _activeSkills;
+    private readonly IReadOnlySet<string> _activeSkillToolIds;
     private readonly AgentProfile? _resolvedAgentProfile;
     private readonly IReadOnlyDictionary<string, string> _toolPreferences;
     private readonly IReadOnlyList<IHook> _lifecycleHooks;
@@ -314,6 +315,7 @@ public sealed class ExplorerTurn
         IModelProvider? metaModelProvider = null, long? modelContextCapacity = null,
         bool recordEffectiveFingerprint = false, UserWorkspaceSpendReader? userSpendReader = null,
         IReadOnlyList<ActiveSkillFingerprint>? activeSkills = null,
+        IReadOnlyList<string>? activeSkillToolIds = null,
         Func<SessionId, RunId, LaneId, TurnId, int, InteractionId?>? quotaAdmission = null,
         Func<bool>? quotaAllowsMeta = null,
         SqliteSpendReservationStore? spendReservations = null,
@@ -347,6 +349,7 @@ public sealed class ExplorerTurn
         _fingerprintArtifacts = fingerprintArtifacts?.ToArray() ?? Array.Empty<IPreparedArtifact>();
         _recordEffectiveFingerprint = recordEffectiveFingerprint;
         _activeSkills = activeSkills?.ToArray();
+        _activeSkillToolIds = new HashSet<string>(activeSkillToolIds ?? [], StringComparer.Ordinal);
         _selection = selection;
         _store = store;
         _codecs = codecs;
@@ -385,6 +388,12 @@ public sealed class ExplorerTurn
 
     /// <summary>Journal del Turn (tests: para abrir en él el Run al que pertenece el Turn).</summary>
     internal IEventStore JournalStore => _store;
+
+    /// <summary>Reads skill validator inputs through the same tool, boundary, and permission path
+    /// used by the current Turn. A failed or denied read remains fail-closed.</summary>
+    internal SkillValidationReadResult? ReadForSkillValidation(string relativePath,
+        CancellationToken cancellationToken) =>
+        (_tools as ScriptedToolExecutor)?.ReadForSkillValidation(relativePath, cancellationToken);
 
     /// <summary>Ledger de mutaciones del Run activo, compartido con las tools del boundary.</summary>
     internal MutationLedger? MutationLedger => _boundary?.ReadRegistry().Ledger;
@@ -2452,7 +2461,7 @@ public sealed class ExplorerTurn
                 || item.Kind == ContextItemKind.Constraint || item.Kind == ContextItemKind.File
                 || item.Kind == ContextItemKind.Summary || item.Kind == ContextItemKind.Checkpoint
                 || item.Kind == ContextItemKind.Knowledge
-                || item.Kind == ContextItemKind.Memory)
+                || item.Kind == ContextItemKind.Memory || item.Kind == ContextItemKind.Skill)
             {
                 if (item.Content.Length > 0)
                 {
@@ -3633,7 +3642,8 @@ public sealed class ExplorerTurn
         {
             var visibleIds = new HashSet<string>(StringComparer.Ordinal)
                 { "filesystem.read", "filesystem.list", "filesystem.search", "search.text",
-                    "reference.resolve", "tool.search", "user.ask", "artifact.read" };
+                    "reference.resolve", "tool.search", "user.ask", "artifact.read", "skill.load" };
+            visibleIds.UnionWith(_activeSkillToolIds);
             if (discoveredToolIds is not null) visibleIds.UnionWith(discoveredToolIds);
             definitions = definitions.Where(tool => visibleIds.Contains(tool.Name)).ToArray();
         }

@@ -131,11 +131,12 @@ public sealed class ExtensionManifestLoader
         return sequence.Select(item =>
         {
             var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("extension tool");
-            ManifestYamlAst.CheckKeys(map, "extension tool", "name", "schema");
+            ManifestYamlAst.CheckKeys(map, "extension tool", "name", "schema", "tags");
             return new ExtensionToolManifest
             {
                 Name = ManifestYamlAst.OptionalString(map, "name", "tool.name"),
                 Schema = ManifestYamlAst.OptionalString(map, "schema", "tool.schema"),
+                Tags = ManifestYamlAst.OptionalStringList(map, "tags", "tool.tags"),
             };
         }).ToList();
     }
@@ -314,13 +315,29 @@ public sealed class ExtensionManifestLoader
                 || permissions.Paths?.Read?.Concat(permissions.Paths?.Write ?? []).Any(UnsafeRelativePattern) == true))
             throw new InvalidDataException("The extension permission ceiling contains an empty rule.");
         if (manifest.Provides?.Tools?.Any(tool => string.IsNullOrWhiteSpace(tool.Name)
-            || string.IsNullOrWhiteSpace(tool.Schema)) == true)
+            || string.IsNullOrWhiteSpace(tool.Schema)
+            || tool.Tags?.Count > 16
+            || tool.Tags?.Any(tag => string.IsNullOrWhiteSpace(tag)
+                || !System.Text.RegularExpressions.Regex.IsMatch(tag, "^[a-z0-9][a-z0-9._-]{0,47}$",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant)) == true
+            || tool.Tags?.Distinct(StringComparer.Ordinal).Count() != tool.Tags?.Count) == true)
             throw new InvalidDataException("Each extension tool requires a name and a schema path.");
         var declaredTools = manifest.Provides?.Tools ?? [];
         if (manifest.Provides?.Commands?.Any(command => string.IsNullOrWhiteSpace(command.Name)
             || command.Kind != "Extension" || string.IsNullOrWhiteSpace(command.Tool)) == true
             || manifest.Provides?.Commands?.Any(command => !declaredTools.Any(tool => tool.Name == command.Tool)) == true)
             throw new InvalidDataException("Each extension command must bind to a declared extension tool.");
+        if (manifest.Provides?.Skills is { } skills && (skills.Count > 16
+            || skills.Any(path => string.IsNullOrWhiteSpace(path) || path.Length > 240 || UnsafeRelativePattern(path))
+            || skills.Distinct(StringComparer.Ordinal).Count() != skills.Count))
+            throw new InvalidDataException("Extension skill paths must be unique, bounded package-relative directories.");
+        foreach (var declarations in new[] { manifest.Provides?.ContextContributors,
+                     manifest.Provides?.Validators, manifest.Provides?.CompletionGates })
+            if (declarations is { } names && (names.Count > 16 || names.Any(name => string.IsNullOrWhiteSpace(name)
+                || !System.Text.RegularExpressions.Regex.IsMatch(name, "^[a-z0-9][a-z0-9._-]{0,63}$",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+                || names.Distinct(StringComparer.Ordinal).Count() != names.Count))
+                throw new InvalidDataException("Extension contribution identifiers must be unique bounded slugs.");
         var requests = new HashSet<string>(manifest.Requests?.Capabilities ?? [], StringComparer.Ordinal);
         var requiredCapabilities = new List<string>();
         if (manifest.Provides?.Tools?.Count > 0) requiredCapabilities.Add("tool.register");
@@ -328,6 +345,8 @@ public sealed class ExtensionManifestLoader
         if (manifest.Provides?.Skills?.Count > 0) requiredCapabilities.Add("skill.register");
         if (manifest.Provides?.Hooks?.Count > 0) requiredCapabilities.Add("hook.register");
         if (manifest.Provides?.ContextContributors?.Count > 0) requiredCapabilities.Add("context.contribute");
+        if (manifest.Provides?.Validators?.Count > 0) requiredCapabilities.Add("completion.validate");
+        if (manifest.Provides?.CompletionGates?.Count > 0) requiredCapabilities.Add("completion.gate");
         foreach (var hook in manifest.Provides?.Hooks ?? [])
         {
             if (!Enum.TryParse<HookCapability>(hook.Capabilities?.FirstOrDefault(), false, out _)

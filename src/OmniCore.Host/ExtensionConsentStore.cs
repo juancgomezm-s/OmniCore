@@ -11,10 +11,19 @@ public sealed class ExtensionConsentStore
     private readonly string _file;
 
     public ExtensionConsentStore(IPlatformPaths paths, string workspaceRoot)
+        : this(paths, ScopeLevel.Project, workspaceRoot) { }
+
+    public ExtensionConsentStore(IPlatformPaths paths, ScopeLevel scope, string? workspaceRoot = null)
     {
         ArgumentNullException.ThrowIfNull(paths);
-        var id = WorkspaceId.Of(WorkspaceTrustStore.Canonical(workspaceRoot)).ToString();
-        _file = Path.Combine(paths.DataDirectory, "workspaces", id, "extension-consent.tsv");
+        if (scope == ScopeLevel.Project)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
+            var id = WorkspaceId.Of(WorkspaceTrustStore.Canonical(workspaceRoot)).ToString();
+            _file = Path.Combine(paths.DataDirectory, "workspaces", id, "extension-consent.tsv");
+        }
+        else if (scope == ScopeLevel.User) _file = Path.Combine(paths.DataDirectory, "extensions", "extension-consent.tsv");
+        else throw new ArgumentOutOfRangeException(nameof(scope));
     }
 
     public IReadOnlySet<string> ConsentedCapabilities(DiscoveredExtension extension)

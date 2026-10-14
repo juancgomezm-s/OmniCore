@@ -68,7 +68,8 @@ public sealed class ExtensionRpcProcessInvoker : IExtensionRpcInvoker
             ?? throw new InvalidDataException("The authorized extension intent has no workspace scope."));
         var boundary = new ExtensionBoundary(extension.Manifest.Requests?.Permissions ?? new ExtensionPermissionManifest(),
             extension.Manifest.Id!, workspaceRoot,
-            new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust,
+            new ComponentSource(SourceKind.Extension,
+                extension.Trust == TrustLevel.Project ? ScopeLevel.Project : ScopeLevel.User, extension.Trust,
                 extension.Manifest.Id!, extension.Manifest.Version!));
         if (!boundary.AllowsClaims(authorizedClaims))
             throw new InvalidDataException("The authorized extension claims exceed the manifest or workspace scope.");

@@ -35,6 +35,8 @@ public sealed class ExtensionToolManifest
 {
     public string? Name { get; set; }
     public string? Schema { get; set; }
+    /// <summary>Search/planning tags only. Risk, effect and permission ceilings remain Host-derived.</summary>
+    public List<string>? Tags { get; set; }
 }
 
 public sealed class ExtensionCommandManifest
@@ -171,8 +173,9 @@ public sealed class ExtensionBoundary : IToolIntentBoundary
         ArgumentNullException.ThrowIfNull(intent);
         if (!intent.ToolId.ToString().StartsWith("ext." + _source.Owner + ".", StringComparison.Ordinal))
             return ModelCapabilityDecision.Allow();
-        if (_source.Kind != SourceKind.Extension || _source.Scope != ScopeLevel.Project
-            || _source.Trust is TrustLevel.Untrusted or TrustLevel.ThirdParty
+        var sourceTrusted = (_source.Scope == ScopeLevel.Project && _source.Trust == TrustLevel.Project)
+            || (_source.Scope == ScopeLevel.User && _source.Trust == TrustLevel.Trusted);
+        if (_source.Kind != SourceKind.Extension || !sourceTrusted
             || (_extensionId.Length > 0 && !string.Equals(_source.Owner, _extensionId, StringComparison.Ordinal))
             || !intent.ToolId.ToString().StartsWith("ext." + _source.Owner + ".", StringComparison.Ordinal))
             return ModelCapabilityDecision.Reject("extension source or scope is outside its declared boundary", null);

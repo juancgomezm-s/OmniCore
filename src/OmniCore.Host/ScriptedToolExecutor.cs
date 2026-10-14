@@ -133,6 +133,64 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         CancellationToken cancellationToken) =>
         Run(validated, userApprovesAsk, cancellationToken, null);
 
+    /// <summary>Runs a bounded validator read through the same ToolRuntime, path boundary,
+    /// model-capability ceiling, and PermissionPolicy as model reads. These system reads never
+    /// populate the per-Run model read registry, so they cannot authorize a later patch.</summary>
+    internal SkillValidationReadResult? ReadForSkillValidation(string relativePath,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || _catalog.Find(new ToolId("filesystem.read")) is null)
+            return null;
+        var safePath = relativePath.Replace('\\', '/');
+        var content = new System.Text.StringBuilder();
+        string? expectedVersion = null;
+        const int pageSize = 500;
+        const int maximumPages = 4;
+        for (var page = 0; page < maximumPages; page++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var offset = page * pageSize + 1;
+            var arguments = "{\"path\":\"" + System.Text.Json.JsonEncodedText.Encode(safePath).ToString() + "\""
+                + ",\"offset\":" + offset.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"limit\":" + pageSize.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+            var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"),
+                "skill-validator-" + Guid.NewGuid().ToString("N"), arguments);
+            var outcome = Run(call, userApprovesAsk: false, cancellationToken, stream: null,
+                recordReadRegistry: false);
+            if (!outcome.Succeeded || outcome.Preview is not { } preview) return new(false, null);
+            if (!TryAppendSkillValidationPage(preview, content, ref expectedVersion, out var hasMore))
+                return new(false, null);
+            if (!hasMore)
+                return new(true, content.ToString());
+        }
+        return new(false, null);
+    }
+
+    internal static bool TryAppendSkillValidationPage(string preview, System.Text.StringBuilder content,
+        ref string? expectedVersion, out bool hasMore)
+    {
+        hasMore = false;
+        var separator = preview.IndexOf('\n');
+        var version = preview.LastIndexOf("\n\n[version:", StringComparison.Ordinal);
+        if (separator < 0 || version <= separator) return false;
+        var versionStart = version + "\n\n[version:".Length;
+        var versionEnd = preview.IndexOf(']', versionStart);
+        if (versionEnd < 0) return false;
+        var pageVersion = preview[versionStart..versionEnd];
+        if (pageVersion.Length != 64 || !pageVersion.All(Uri.IsHexDigit)
+            || (expectedVersion is not null && !string.Equals(expectedVersion, pageVersion,
+                StringComparison.OrdinalIgnoreCase))) return false;
+        var marker = preview[..separator];
+        if (!marker.StartsWith("[lines:", StringComparison.Ordinal)
+            || marker.Contains(";contentTruncated:true]", StringComparison.Ordinal)) return false;
+        expectedVersion = pageVersion;
+        hasMore = marker.Contains(";hasMore:true;", StringComparison.Ordinal);
+        // This is the authorized/redacted content body, not its presentation header. Preserve
+        // exact line breaks so multiline file-contains rules have their original semantics.
+        content.Append(preview[(separator + 1)..version]);
+        return true;
+    }
+
     /// <summary>
     /// Pipeline real con escritura en vivo del journal (ADR-0002 §2): cuando el intent declara un
     /// efecto (EffectClass ≠ None), <c>ToolCallStarted</c> se persiste con commit Barrier ANTES de
@@ -212,7 +270,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
 
     private ToolOutcome Run(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken, EventStream? stream, ToolCallRequestReceipt? requestReceipt = null,
-        bool requiresSubstitutionAsk = false, ProtectedToolSubstitution? protectedSubstitution = null)
+        bool requiresSubstitutionAsk = false, ProtectedToolSubstitution? protectedSubstitution = null,
+        bool recordReadRegistry = true)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -290,7 +349,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now);
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
-        var execContext = new ToolExecutionContext(_workspaceRoot, _boundary?.ReadRegistry(),
+        var execContext = new ToolExecutionContext(_workspaceRoot,
+            recordReadRegistry ? _boundary?.ReadRegistry() : null,
             payload => emit(payload), _interactionResponder, _audit, _isInteractive, _weakSandboxConsent,
             beforeEffect: intent =>
             {

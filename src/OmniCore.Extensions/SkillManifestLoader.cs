@@ -12,14 +12,21 @@ public sealed class SkillManifestLoader
     public const string ManifestFileName = "skill.yaml";
     public const string InstructionsFileName = "instructions.md";
     private const int MaximumInstructionsCharacters = 65_536;
+    private const int MaximumResourceCharacters = 65_536;
+    private const int MaximumTotalResourceCharacters = 262_144;
     public IReadOnlyList<DiscoveredSkill> Discover(string root, ScopeLevel scope = ScopeLevel.Project,
         TrustLevel trust = TrustLevel.Project, bool workspaceTrusted = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        if (scope != ScopeLevel.Project || trust is TrustLevel.Untrusted or TrustLevel.ThirdParty)
+        if (scope is not (ScopeLevel.BuiltIn or ScopeLevel.User or ScopeLevel.Project
+                or ScopeLevel.Workspace or ScopeLevel.Session)
+            || trust == TrustLevel.Untrusted
+            || ((scope is ScopeLevel.Project or ScopeLevel.Workspace) && !workspaceTrusted)
+            || (scope == ScopeLevel.BuiltIn && trust != TrustLevel.Core))
             return [];
         var fullRoot = Path.GetFullPath(root);
-        if (!workspaceTrusted || !Directory.Exists(fullRoot) || HasReparsePointToVolumeRoot(fullRoot)) return [];
+        if (((scope is ScopeLevel.Project or ScopeLevel.Workspace) && !workspaceTrusted)
+            || !Directory.Exists(fullRoot) || HasReparsePointToVolumeRoot(fullRoot)) return [];
         var skills = new List<DiscoveredSkill>();
         foreach (var directory in Directory.EnumerateDirectories(fullRoot).Order(StringComparer.OrdinalIgnoreCase))
         {
@@ -44,6 +51,36 @@ public sealed class SkillManifestLoader
         return skills;
     }
 
+    /// <summary>Discovers one explicitly declared package directory without enumerating siblings.</summary>
+    public DiscoveredSkill? DiscoverSingle(string directory, ScopeLevel scope, TrustLevel trust,
+        bool workspaceTrusted = false)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
+        if (scope is not (ScopeLevel.BuiltIn or ScopeLevel.User or ScopeLevel.Project
+                or ScopeLevel.Workspace or ScopeLevel.Session)
+            || trust == TrustLevel.Untrusted
+            || ((scope is ScopeLevel.Project or ScopeLevel.Workspace) && !workspaceTrusted)
+            || (scope == ScopeLevel.BuiltIn && trust != TrustLevel.Core)) return null;
+        var full = Path.GetFullPath(directory);
+        if (!Directory.Exists(full) || HasReparsePointToVolumeRoot(full)) return null;
+        var manifestPath = Path.Combine(full, ManifestFileName);
+        if (!File.Exists(manifestPath) || (File.GetAttributes(manifestPath) & FileAttributes.ReparsePoint) != 0)
+            return null;
+        var bytes = File.ReadAllBytes(manifestPath);
+        var hash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        try
+        {
+            return new(full, Load(Encoding.UTF8.GetString(bytes)), scope, trust, hash,
+                SkillLifecycleState.Discovered, null);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or YamlException
+            or InvalidOperationException or FormatException or ArgumentException)
+        {
+            return new(full, new SkillManifest { Id = Path.GetFileName(full), Version = "invalid" }, scope,
+                TrustLevel.Untrusted, hash, SkillLifecycleState.Conflict, "Invalid skill manifest: " + exception.Message);
+        }
+    }
+
     public SkillManifest Load(string yaml)
     {
         ArgumentNullException.ThrowIfNull(yaml);
@@ -52,7 +89,7 @@ public sealed class SkillManifestLoader
         {
             var root = ManifestYamlAst.ReadRoot(yaml, "skill manifest");
             ManifestYamlAst.CheckKeys(root, "skill manifest", "id", "version", "displayName", "sealed", "priority",
-                "modelInvocable", "activation", "execution", "tools");
+                "modelInvocable", "budgetTokens", "activation", "execution", "tools", "contributions");
             manifest = new SkillManifest
             {
                 Id = ManifestYamlAst.OptionalString(root, "id", "id"),
@@ -63,6 +100,8 @@ public sealed class SkillManifestLoader
                     ? ManifestYamlAst.Int(priorityNode, "priority") : 0,
                 ModelInvocable = ManifestYamlAst.Optional(root, "modelInvocable") is { } modelInvocableNode
                     && ManifestYamlAst.Bool(modelInvocableNode, "modelInvocable"),
+                BudgetTokens = ManifestYamlAst.Optional(root, "budgetTokens") is { } budgetNode
+                    ? ManifestYamlAst.Int(budgetNode, "budgetTokens") : 2048,
                 Tools = ManifestYamlAst.OptionalStringList(root, "tools", "tools"),
             };
             if (ManifestYamlAst.OptionalMap(root, "activation", "activation", "paths", "extensions", "languages",
@@ -83,6 +122,18 @@ public sealed class SkillManifestLoader
                     Context = ManifestYamlAst.OptionalString(execution, "context", "execution.context"),
                     PreferredModelAlias = ManifestYamlAst.OptionalString(execution, "preferredModelAlias", "execution.preferredModelAlias"),
                 };
+            if (ManifestYamlAst.OptionalMap(root, "contributions", "contributions", "tools", "workflows",
+                "validators", "contributors", "knowledge") is { } contributions)
+                manifest.Contributions = new SkillContributionsManifest
+                {
+                    Tools = ManifestYamlAst.OptionalStringList(contributions, "tools", "contributions.tools"),
+                    Workflows = ManifestYamlAst.OptionalStringList(contributions, "workflows", "contributions.workflows"),
+                    Validators = ManifestYamlAst.OptionalStringList(contributions, "validators", "contributions.validators"),
+                    Contributors = ManifestYamlAst.OptionalStringList(contributions, "contributors", "contributions.contributors"),
+                    Knowledge = ManifestYamlAst.OptionalStringList(contributions, "knowledge", "contributions.knowledge"),
+                };
+            if (manifest.Contributions?.Tools is { Count: > 0 } declaredTools)
+                manifest.Tools = (manifest.Tools ?? []).Concat(declaredTools).Distinct(StringComparer.Ordinal).ToList();
         }
         catch (YamlException exception)
         {
@@ -93,7 +144,13 @@ public sealed class SkillManifestLoader
                 System.Text.RegularExpressions.RegexOptions.CultureInvariant)
             || string.IsNullOrWhiteSpace(manifest.Version)
             || manifest.Priority is < -100 or > 100
-            || manifest.Tools?.Any(string.IsNullOrWhiteSpace) == true
+            || manifest.BudgetTokens is < 1 or > 16_384
+            || manifest.Tools?.Count > 32
+            || manifest.Tools?.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 160
+                || !System.Text.RegularExpressions.Regex.IsMatch(value, "^[a-zA-Z0-9][a-zA-Z0-9._:-]*$",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant)) == true
+            || manifest.Contributions is { } refs && ResourceLists(refs).Any(pair =>
+                pair.List is { } list && (list.Count > 16 || list.Any(value => !SafeAssetPath(value))))
             || manifest.Activation?.Paths?.Any(UnsafePattern) == true
             || manifest.Activation?.Extensions?.Any(value => string.IsNullOrWhiteSpace(value) || !value.StartsWith('.')) == true)
             throw new InvalidDataException("The skill manifest is missing required metadata or contains an invalid activation rule.");
@@ -158,8 +215,7 @@ public sealed class SkillManifestLoader
     {
         ArgumentNullException.ThrowIfNull(skill);
         if (skill.State is SkillLifecycleState.Conflict or SkillLifecycleState.Released
-            || skill.Trust is TrustLevel.Untrusted or TrustLevel.ThirdParty
-            || skill.Scope != ScopeLevel.Project)
+            || skill.Trust is TrustLevel.Untrusted or TrustLevel.ThirdParty)
             throw new InvalidOperationException("The skill source cannot be activated.");
         var directory = Path.GetFullPath(skill.Directory);
         if (HasReparsePointToVolumeRoot(directory))
@@ -176,8 +232,45 @@ public sealed class SkillManifestLoader
         if (instructions.Length > MaximumInstructionsCharacters)
             throw new InvalidDataException("The skill instructions exceed the size limit.");
         var manifest = Load(Encoding.UTF8.GetString(manifestBytes));
+        var estimatedTokens = Math.Max(1, (instructions.Length + 3) / 4);
+        if (estimatedTokens > manifest.BudgetTokens)
+            throw new InvalidDataException("The skill instructions exceed their declared context token budget.");
+        var resources = new List<LoadedSkillResource>();
+        var totalCharacters = 0;
+        foreach (var (kind, paths) in ResourceLists(manifest.Contributions ?? new()))
+        foreach (var relativePath in paths ?? [])
+        {
+            var fullPath = Path.GetFullPath(Path.Combine(directory,
+                relativePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar)));
+            if (!fullPath.StartsWith(directory.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+                || !File.Exists(fullPath) || HasReparsePoint(directory, fullPath))
+                throw new InvalidDataException("A skill contribution is missing or linked outside its package.");
+            var bytes = File.ReadAllBytes(fullPath);
+            string content;
+            try { content = new UTF8Encoding(false, true).GetString(bytes); }
+            catch (DecoderFallbackException exception)
+            { throw new InvalidDataException("A skill contribution is not valid UTF-8.", exception); }
+            if (content.Length > MaximumResourceCharacters
+                || totalCharacters > MaximumTotalResourceCharacters - content.Length)
+                throw new InvalidDataException("Skill contributions exceed their aggregate size limit.");
+            totalCharacters += content.Length;
+            resources.Add(new(kind, relativePath, content, Convert.ToHexStringLower(SHA256.HashData(bytes))));
+        }
+        var loadedTokens = resources.Where(resource => resource.Kind is not SkillResourceKind.Validator)
+            .Sum(resource => Math.Max(1, (resource.Content.Length + 3) / 4));
+        if (loadedTokens > manifest.BudgetTokens - estimatedTokens)
+            throw new InvalidDataException("Loaded skill contributions exceed their declared context token budget.");
+        var instructionsHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(instructions)));
+        var identity = "instructions:" + instructionsHash + "\n" + string.Join("\n", resources
+            .OrderBy(resource => resource.Kind).ThenBy(resource => resource.RelativePath, StringComparer.Ordinal)
+            .Select(resource => resource.Kind + ":" + resource.RelativePath + ":" + resource.Sha256));
+        var packageContentHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+        if (skill.ParentPackageSha256 is { Length: > 0 } parentHash)
+            packageContentHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
+                "parent:" + skill.ParentPackageId + ":" + parentHash + ":" + packageContentHash)));
         return new(skill with { Manifest = manifest, State = SkillLifecycleState.Loaded }, instructions,
-            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(instructions))));
+            instructionsHash, resources.AsReadOnly(), packageContentHash);
     }
 
     private static bool HasReparsePoint(string root, string path)
@@ -209,6 +302,24 @@ public sealed class SkillManifestLoader
         var normalized = value.Replace('\\', '/');
         return string.IsNullOrWhiteSpace(value) || Path.IsPathRooted(value)
             || normalized.Split('/').Any(part => part is ".." or ".");
+    }
+
+    private static bool SafeAssetPath(string value)
+    {
+        var normalized = value.Replace('\\', '/');
+        var extension = Path.GetExtension(normalized);
+        return value.Length is > 0 and <= 240 && !Path.IsPathRooted(value)
+            && !value.Any(char.IsControl)
+            && !normalized.Split('/').Any(part => part is ".." or "." or "")
+            && extension is ".md" or ".yaml" or ".yml" or ".json";
+    }
+
+    private static IEnumerable<(SkillResourceKind Kind, List<string>? List)> ResourceLists(SkillContributionsManifest manifest)
+    {
+        yield return (SkillResourceKind.Workflow, manifest.Workflows);
+        yield return (SkillResourceKind.Validator, manifest.Validators);
+        yield return (SkillResourceKind.Contributor, manifest.Contributors);
+        yield return (SkillResourceKind.Knowledge, manifest.Knowledge);
     }
 
     private static bool Glob(string pattern, string path)

@@ -10,21 +10,13 @@ public static class ProjectExtensionHooks
     public static IReadOnlyList<IHook> Load(string workspaceRoot, IPlatformPaths paths, bool workspaceTrusted,
         IExtensionRpcInvoker invoker)
     {
-        if (!workspaceTrusted) return [];
         ArgumentNullException.ThrowIfNull(invoker);
-        var root = Path.Combine(Path.GetFullPath(workspaceRoot), ".omnicore", "extensions");
-        var loader = new ExtensionManifestLoader();
-        var store = new ExtensionConsentStore(paths, workspaceRoot);
-        var candidates = loader.Discover(root, TrustLevel.Project, workspaceTrusted);
-        var grants = candidates.Where(candidate => candidate.Manifest?.Id is not null)
-            .ToDictionary(candidate => candidate.Manifest!.Id!, store.ConsentedCapabilities, StringComparer.Ordinal);
-        var ready = loader.DiscoverWithConsents(root, TrustLevel.Project, workspaceTrusted, grants)
-            .Where(candidate => candidate.Status == ExtensionDiscoveryStatus.Ready && candidate.Manifest is not null)
-            .ToArray();
+        var ready = ProjectExtensionPackageCatalog.Ready(workspaceRoot, paths, workspaceTrusted);
         var hooks = new List<IHook>();
-        foreach (var extension in ready)
+        foreach (var package in ready)
         {
-            var consented = store.ConsentedCapabilities(extension);
+            var extension = package.Extension;
+            var consented = package.Capabilities;
             if (!consented.Contains("hook.register")) continue;
             var declarations = extension.Manifest!.Provides?.Hooks ?? [];
             for (var index = 0; index < declarations.Count; index++)

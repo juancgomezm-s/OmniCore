@@ -50,6 +50,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunModeAuthorityRevoked())
             .Plus(Typed.RunReasoningPreferenceSelected())
             .Plus(Typed.RunReasoningPreferenceRevoked())
+            .Plus(Typed.SkillActivationChanged())
             .Plus(Typed.RunInteractionResumed())
             .Plus(Typed.SessionCreated())
             .Plus(Typed.SessionRoutingPolicySet())
@@ -408,6 +409,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(RunModeAuthorityRevoked))]
 [JsonSerializable(typeof(RunReasoningPreferenceSelected))]
 [JsonSerializable(typeof(RunReasoningPreferenceRevoked))]
+[JsonSerializable(typeof(SkillActivationChanged))]
 [JsonSerializable(typeof(RunInteractionResumed))]
 [JsonSerializable(typeof(RunModeAuthority))]
 [JsonSerializable(typeof(ModeSwitchAuthorization))]
@@ -642,6 +644,9 @@ public sealed class Typed
 
     public static CodecPair RunReasoningPreferenceRevoked() =>
         Of(EventType.Of("run.reasoning_preference_revoked"), EventJsonContext.Default.RunReasoningPreferenceRevoked);
+
+    public static CodecPair SkillActivationChanged() =>
+        Of(EventType.Of("skills.activation_changed"), EventJsonContext.Default.SkillActivationChanged);
 
     public static CodecPair RunInteractionResumed() =>
         Of(EventType.Of("run.interaction_resumed"), EventJsonContext.Default.RunInteractionResumed);

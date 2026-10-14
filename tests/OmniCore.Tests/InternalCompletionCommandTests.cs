@@ -1,17 +1,342 @@
 using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
+using OmniCore.Extensions;
 using OmniCore.Engine;
+using OmniCore.Execution;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 using OmniCore.Security;
 using OmniCore.Tools;
+using OmniCore.Sandbox;
 
 namespace OmniCore.Tests;
 
 public sealed class InternalCompletionCommandTests
 {
+    [Fact]
+    public void Skill_validator_pages_preserve_multiline_content_and_reject_mixed_versions()
+    {
+        const string firstHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string changedHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        var joined = new System.Text.StringBuilder();
+        string? version = null;
+        Assert.True(ScriptedToolExecutor.TryAppendSkillValidationPage(
+            "[lines:1-1/2;hasMore:true;contentTruncated:false]\nfirst line\n\n\n[version:" + firstHash + "]", joined,
+            ref version, out var more));
+        Assert.True(more);
+        Assert.True(ScriptedToolExecutor.TryAppendSkillValidationPage(
+            "[lines:2-2/2;hasMore:false;contentTruncated:false]\nsecond line\n\n\n[version:" + firstHash + "]",
+            joined, ref version, out more));
+        Assert.False(more);
+        Assert.Contains("first line\nsecond line", joined.ToString(), StringComparison.Ordinal);
+
+        var mixed = new System.Text.StringBuilder();
+        string? mixedVersion = null;
+        Assert.True(ScriptedToolExecutor.TryAppendSkillValidationPage(
+            "[lines:1-1/2;hasMore:true;contentTruncated:false]\nfirst\n\n[version:" + firstHash + "]",
+            mixed, ref mixedVersion, out more));
+        Assert.False(ScriptedToolExecutor.TryAppendSkillValidationPage(
+            "[lines:2-2/2;hasMore:false;contentTruncated:false]\nsecond\n\n[version:" + changedHash + "]",
+            mixed, ref mixedVersion, out more));
+    }
+
+    [Fact]
+    public void Delegated_skill_snapshot_does_not_reconcile_or_import_principal_session_skills()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-delegated-skill-snapshot-" + Guid.NewGuid().ToString("N"));
+        var session = SessionId.New();
+        const string manifestA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string manifestB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string contentA = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        const string contentB = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        try
+        {
+            var store = new SessionSkillActivationStore(root);
+            store.Activate(session, ScopeLevel.User, "parent.user", manifestA, contentA, "User");
+            store.ActivateAutomatic(session, ScopeLevel.Project, "parent.automatic", manifestB, contentB);
+            var before = store.ReadDetailed(session);
+
+            // This is the snapshot chosen by OmniCliRuntime for delegation != null. The accepted
+            // context packet is added by ExplorerTurn separately; principal skills are not.
+            var snapshot = SkillTurnComposition.CreateDelegatedSnapshot(new FakeTokenCounter());
+
+            Assert.Empty(snapshot.Candidates);
+            Assert.Empty(snapshot.LoadedSkills);
+            Assert.Empty(snapshot.Fingerprints);
+            Assert.Empty(snapshot.ToolIds);
+            Assert.False(snapshot.Validators.HasValidators);
+            Assert.Empty(snapshot.Materializer.Contributors());
+            Assert.Equal(before, store.ReadDetailed(session));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Skill_validator_runs_at_the_real_act_completion_gate_and_blocks_completion_when_it_fails()
+    {
+        using var setup = new Setup();
+        var manifest = new SkillManifest { Id = "fixture.validator", Version = "1", BudgetTokens = 64 };
+        var skill = new DiscoveredSkill(setup.Root, manifest, ScopeLevel.Session, TrustLevel.Trusted,
+            new string('a', 64), SkillLifecycleState.Loaded, null);
+        const string rule = "{\"id\":\"output-check\",\"kind\":\"file-contains\",\"path\":\"output.txt\",\"text\":\"verified\"}";
+        var resource = new LoadedSkillResource(SkillResourceKind.Validator, "validators/output.json", rule,
+            new string('b', 64));
+        var validator = new SkillCompletionValidator([new LoadedSkill(skill, "fixture instructions",
+            new string('c', 64), [resource], new string('d', 64))]);
+        var calls = 0;
+        var catalog = new FakeCatalog();
+        var turn = new ExplorerTurn((_, _) =>
+        {
+            calls++;
+            return new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+        }, ScriptedToolExecutor.WithWorkspace(catalog,
+            new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), setup.Root), catalog,
+            new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+            new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+            new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+            setup.Store, setup.Codecs, setup.Artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+
+        var exit = OmniCliRuntime.Create(setup.Root).RunActLoop(turn, _ => { }, "objective", "instructions",
+            setup.Session, setup.Run, setup.Lane, "", null, null, setup.Server, setup.Artifacts,
+            new InMemoryAuditSink(), null, interactive: false, "en", TestContext.Current.CancellationToken,
+            subsequentTurnFactory: _ => null, skillValidators: validator);
+
+        Assert.Equal(1, exit);
+        Assert.Equal(1, calls);
+        var events = setup.Store.ReadFrom(setup.Session, 1);
+        Assert.Contains(events, evt => evt.Type.ToString() == "run.validation_rejected");
+        Assert.DoesNotContain(events, evt => evt.Type.ToString() == "run.completed");
+    }
+
+    [Fact]
+    public void Same_run_act_factory_refreshes_skill_context_tools_fingerprint_and_validator_after_skill_load()
+    {
+        using var setup = new Setup();
+        var paths = OmniHost.CreatePlatformPaths(Path.Combine(setup.Root, "user-data"));
+        var extensionPackage = Path.Combine(setup.Root, ".omnicore", "extensions", "fixture.package");
+        Directory.CreateDirectory(extensionPackage);
+        File.WriteAllText(Path.Combine(extensionPackage, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(extensionPackage, "schema.json"), "{\"type\":\"object\"}");
+        File.WriteAllText(Path.Combine(extensionPackage, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.package
+            version: 1
+            displayName: Fixture package
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              tools:
+                - name: compile
+                  schema: schema.json
+              contextContributors: [knowledge.note]
+              validators: [verify-build]
+            requests:
+              capabilities: [tool.register, context.contribute, completion.validate]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        new WorkspaceTrustStore(paths).SetTrusted(setup.Root, true);
+        var extensionCandidate = Assert.Single(new ExtensionManifestLoader().Discover(
+            Path.Combine(setup.Root, ".omnicore", "extensions"), TrustLevel.Project, workspaceTrusted: true));
+        new ExtensionConsentStore(paths, setup.Root).Grant(extensionCandidate,
+            new HashSet<string>(["tool.register", "context.contribute", "completion.validate"], StringComparer.Ordinal));
+        var extensionLauncher = new ExtensionFixtureLauncher();
+        var extensionInvoker = new ExtensionRpcProcessInvoker(extensionLauncher);
+        var package = Path.Combine(setup.Root, ".omnicore", "skills", "fixture.skill");
+        Directory.CreateDirectory(Path.Combine(package, "validators"));
+        File.WriteAllText(Path.Combine(package, "skill.yaml"), """
+            id: fixture.skill
+            version: 1
+            modelInvocable: true
+            budgetTokens: 256
+            tools: [ext.fixture.package.compile]
+            contributions:
+              validators: [validators/output.json]
+            """);
+        const string instructions = "Apply the active compile guidance on the next Turn.";
+        File.WriteAllText(Path.Combine(package, "instructions.md"), instructions);
+        File.WriteAllText(Path.Combine(package, "validators", "output.json"),
+            "{\"id\":\"output-exists\",\"kind\":\"file-exists\",\"path\":\"output.txt\"}");
+        File.WriteAllText(Path.Combine(setup.Root, "output.txt"), "verified");
+
+        var dataDirectory = Path.Combine(setup.Root, "user-data");
+        var workspaceData = Path.Combine(setup.Root, "workspace-data");
+        var activationStore = new SessionSkillActivationStore(dataDirectory);
+        var sources = new SkillSourceCatalog();
+        IReadOnlyList<DiscoveredSkill> Discover() => sources.Discover(setup.Root, dataDirectory,
+            workspaceData, setup.Session, workspaceTrusted: true);
+        var composition = new SkillTurnComposition(setup.Session, activationStore, Discover,
+            new SkillSelectionLimits(4, 1024), new FakeTokenCounter(), workspaceData,
+            guidanceEnabled: true, includeWorkingState: false, workingState: "",
+            extensionValidatorFactory: () => ProjectExtensionValidators.Load(setup.Root, paths,
+                workspaceTrusted: true, setup.Session, setup.Run, extensionInvoker),
+            extensionContributorFactory: () => ProjectExtensionContributors.Load(setup.Root, paths,
+                workspaceTrusted: true, extensionInvoker));
+        var skillLoad = new SkillLoadTool(setup.Session, activationStore, new SkillManifestLoader(), Discover,
+            new SkillSelectionLimits(4, 1024));
+        var requests = new List<ModelRequest>();
+        var snapshots = new List<SkillTurnCompositionSnapshot>();
+        var modelCall = 0;
+        ExplorerTurn BuildTurn()
+        {
+            var snapshot = composition.Refresh();
+            snapshots.Add(snapshot);
+            var catalog = new FakeCatalog().Add(new ReadFileTool(new PathBoundaryValidator()));
+            var extensionTools = ProjectExtensionTools.Load(setup.Root, paths,
+                workspaceTrusted: true, extensionInvoker);
+            foreach (var extensionTool in extensionTools) catalog.Add(extensionTool);
+            var extensionBoundaries = extensionTools.OfType<ExtensionTool>()
+                .Select(tool => (OmniCore.Abstractions.IToolIntentBoundary)tool.Boundary).ToArray();
+            catalog.Add(skillLoad);
+            var permission = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+            {
+                ["skill.load"] = PermissionDecision.Allow,
+                ["filesystem.read"] = PermissionDecision.Allow,
+                ["ext.fixture.package.compile"] = PermissionDecision.Allow,
+            }).WithModeDefaults(RunMode.Act);
+            var executor = new ScriptedToolExecutor(catalog, permission, setup.Root, boundary: null,
+                audit: null, interactionResponder: interaction =>
+                    interaction.Kind == InteractionKind.Permission ? "allow_once" : null,
+                isInteractive: true,
+                additionalBoundaries: extensionBoundaries);
+            return new ExplorerTurn((request, _) =>
+            {
+                requests.Add(request);
+                var current = modelCall++;
+                if (current == 0)
+                    return new ModelResponse([new ToolCallBlock(ToolCallId.New(), "load-skill", "skill.load",
+                            "{\"id\":\"fixture.skill\"}")], StopReason.ToolUse,
+                        new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                if (current == 2)
+                    return new ModelResponse([new ToolCallBlock(ToolCallId.New(), "extension-compile",
+                        "ext.fixture.package.compile", "{}")], StopReason.ToolUse,
+                        new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                return new ModelResponse([new TextBlock("ready")], StopReason.EndTurn,
+                    new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+            }, executor, catalog,
+                snapshot.Materializer, new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Discovered, null),
+                setup.Store, setup.Codecs, setup.Artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                recordEffectiveFingerprint: true, activeSkills: snapshot.Fingerprints,
+                activeSkillToolIds: snapshot.ToolIds);
+        }
+
+        var responderCall = 0;
+        var diagnostics = new List<string>();
+        var runtime = OmniCliRuntime.Create(setup.Root);
+        var firstTurn = BuildTurn();
+        var exit = runtime.RunActLoop(firstTurn, diagnostics.Add, "load skill", "instructions",
+            setup.Session, setup.Run, setup.Lane, "", new WorkspaceGatesYaml { Acceptance = true }, null,
+            setup.Server, setup.Artifacts, new InMemoryAuditSink(), null, interactive: true, "en",
+            TestContext.Current.CancellationToken,
+            acceptanceResponder: _ => responderCall++ == 0 ? "revise" : "accept",
+            subsequentTurnFactory: _ => BuildTurn(), skillValidatorFactory: () =>
+                snapshots.Count == 0 ? null : snapshots[^1].Validators);
+
+        Assert.True(exit == 0, string.Join("\n", diagnostics));
+        Assert.Equal(4, requests.Count);
+        Assert.Contains(requests[0].Tools, tool => tool.Name == "skill.load");
+        Assert.DoesNotContain(requests[1].Tools, tool => tool.Name == "ext.fixture.package.compile");
+        Assert.Contains(requests[2].Tools, tool => tool.Name == "ext.fixture.package.compile");
+        Assert.Contains(instructions, requests[2].Instructions ?? "", StringComparison.Ordinal);
+        Assert.Contains("offline extension contribution", requests[2].Instructions ?? "", StringComparison.Ordinal);
+        Assert.Contains(extensionLauncher.Methods, method => method == "context/contribute");
+        Assert.Contains(extensionLauncher.Methods, method => method == "completion/validate");
+        Assert.Equal(1, extensionLauncher.Methods.Count(method => method == "tools/call"));
+        var extensionLaunch = extensionLauncher.LastLaunch!;
+        Assert.Equal(SandboxStrength.Strong, extensionLaunch.RequestedStrength);
+        Assert.Equal(SandboxNetworkMode.Deny, extensionLaunch.Network.Mode);
+        Assert.Empty(snapshots[0].Fingerprints);
+        Assert.Empty(snapshots[0].LoadedSkills);
+        Assert.True(snapshots[0].Validators.HasValidators); // The separately consented extension validator is already active.
+        Assert.Single(snapshots[1].Fingerprints);
+        Assert.True(snapshots[1].Validators.HasValidators);
+        var turns = setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode).OfType<TurnStarted>().ToArray();
+        Assert.Equal(2, turns.Length);
+        Assert.NotEqual(turns[0].Fingerprint!.Components.Single(item => item.Name == "skills.active").Hash,
+            turns[1].Fingerprint!.Components.Single(item => item.Name == "skills.active").Hash);
+        Assert.Contains(setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode),
+            evt => evt is RunCompleted);
+        Assert.True(activationStore.Release(setup.Session, ScopeLevel.Project, "fixture.skill"));
+        var releasedSnapshot = composition.Refresh();
+        Assert.Empty(releasedSnapshot.Fingerprints);
+        Assert.Empty(releasedSnapshot.ToolIds);
+        Assert.Empty(releasedSnapshot.LoadedSkills);
+        Assert.True(releasedSnapshot.Validators.HasValidators); // Installed extension validator survives skill release.
+        var releasedValidation = releasedSnapshot.Validators.Run(setup.Root, _ => null,
+            TestContext.Current.CancellationToken);
+        Assert.Equal("extension:fixture.package:verify-build", Assert.Single(releasedValidation).Key);
+    }
+
+    [Fact]
+    public void Consent_bound_extension_validator_result_reaches_the_real_completion_gate()
+    {
+        using var setup = new Setup();
+        var paths = OmniHost.CreatePlatformPaths(Path.Combine(setup.Root, "user-data"));
+        var package = Path.Combine(setup.Root, ".omnicore", "extensions", "fixture.validator");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.validator
+            version: 1
+            displayName: Fixture validator
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              validators: [verify-build]
+            requests:
+              capabilities: [completion.validate]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        new WorkspaceTrustStore(paths).SetTrusted(setup.Root, true);
+        var candidate = Assert.Single(new ExtensionManifestLoader().Discover(
+            Path.Combine(setup.Root, ".omnicore", "extensions"), TrustLevel.Project, workspaceTrusted: true));
+        new ExtensionConsentStore(paths, setup.Root).Grant(candidate,
+            new HashSet<string>(["completion.validate"], StringComparer.Ordinal));
+        var launcher = new ExtensionFixtureLauncher(validatorPassed: false);
+        var validators = ProjectExtensionValidators.Load(setup.Root, paths, workspaceTrusted: true,
+            setup.Session, setup.Run, new ExtensionRpcProcessInvoker(launcher));
+        var gate = new SkillCompletionValidator([], validators);
+        var catalog = new FakeCatalog();
+        var turn = new ExplorerTurn((_, _) => new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null)),
+            ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), setup.Root), catalog,
+            new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+            new ExecutionFingerprint("fixture", "h", "t", "c", "o", "extension-validator"),
+            new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null), setup.Store,
+            setup.Codecs, setup.Artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+
+        var diagnostics = new List<string>();
+        var exit = OmniCliRuntime.Create(setup.Root).RunActLoop(turn, diagnostics.Add, "objective", "instructions",
+            setup.Session, setup.Run, setup.Lane, "", null, null, setup.Server, setup.Artifacts,
+            new InMemoryAuditSink(), null, interactive: false, "en", TestContext.Current.CancellationToken,
+            skillValidators: gate);
+
+        Assert.Equal(1, exit);
+        Assert.Contains(launcher.Methods, method => method == "completion/validate");
+        Assert.Equal(SandboxStrength.Strong, launcher.LastLaunch!.RequestedStrength);
+        var events = setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode).ToArray();
+        Assert.Contains(events, item => item is RunValidationRejected rejection
+            && rejection.Missing.Any(value => value.Contains("extension:fixture.validator:verify-build", StringComparison.Ordinal)));
+        Assert.DoesNotContain(events, item => item is RunCompleted);
+    }
+
     [Fact]
     public void Completion_true_and_validation_false_are_both_accepted_evaluations_with_exact_ranges()
     {
@@ -342,5 +667,41 @@ public sealed class InternalCompletionCommandTests
 
         public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive) =>
             _inner.ReadFrom(sessionId, fromSequenceInclusive);
+    }
+
+    private sealed class ExtensionFixtureLauncher(bool validatorPassed = true) : ISandboxProcessLauncher
+    {
+        public List<string> Methods { get; } = [];
+        public int Starts { get; private set; }
+        public SandboxLaunchSpec? LastLaunch { get; private set; }
+
+        public ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch,
+            CancellationToken cancellationToken)
+        {
+            Starts++;
+            LastLaunch = launch;
+            using var request = System.Text.Json.JsonDocument.Parse(launch.InitialStandardInput ?? "{}");
+            var method = request.RootElement.GetProperty("method").GetString()!;
+            Methods.Add(method);
+            var response = method switch
+            {
+                "context/contribute" => "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"items\":[{\"id\":\"runtime-note\",\"kind\":\"knowledge\",\"content\":\"offline extension contribution\"}]}}",
+                "completion/validate" => "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"results\":[{\"id\":\"verify-build\",\"passed\":"
+                    + (validatorPassed ? "true" : "false") + ",\"summary\":\"offline validator passed\"}]}}",
+                "tools/call" => "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"ok\":true}}",
+                _ => throw new InvalidOperationException("Unexpected extension method " + method),
+            };
+            return ValueTask.FromResult<ISandboxProcessControl>(new ExtensionFixtureControl(
+                response));
+        }
+    }
+
+    private sealed class ExtensionFixtureControl(string response) : ISandboxProcessControl
+    {
+        public ValueTask<SandboxProcessOutput> WaitForExitAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(new SandboxProcessOutput(0,
+                [new SandboxOutputChunk(SandboxOutputStream.StandardOutput, response)], TimedOut: false));
+        public ValueTask TerminateAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

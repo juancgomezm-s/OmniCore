@@ -34,11 +34,12 @@ public sealed class ExtensionLifecycleHook : IHook
         if (requested.Count == 0) throw new InvalidDataException("Extension hook must declare capabilities.");
         var granted = requested.Where(capability => consentedCapabilities.Contains("hook." + capability.ToString().ToLowerInvariant()))
             .ToHashSet();
-        var source = new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust,
+        var scope = extension.Trust == TrustLevel.Project ? ScopeLevel.Project : ScopeLevel.User;
+        var source = new ComponentSource(SourceKind.Extension, scope, extension.Trust,
             id, version, extension.PackageSha256);
         Registration = new HookRegistration(id + ".hook." + declarationIndex.ToString(System.Globalization.CultureInfo.InvariantCulture),
             source, point, requested, granted, HookArgumentAccess.Redacted, explicitlyActivated,
-            WorkspaceTrusted: true, Timeout: TimeSpan.FromSeconds(30));
+            WorkspaceTrusted: extension.Trust == TrustLevel.Project, Timeout: TimeSpan.FromSeconds(30));
     }
 
     public async ValueTask<HookResult> ExecuteAsync(HookContext context, CancellationToken cancellationToken)
@@ -95,7 +96,7 @@ public sealed class ExtensionLifecycleHook : IHook
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    private static HookResult ParseAnnotations(JsonElement result)
+    private HookResult ParseAnnotations(JsonElement result)
     {
         if (!result.TryGetProperty("items", out var array) || array.ValueKind != JsonValueKind.Array || array.GetArrayLength() > 16)
             throw new InvalidDataException("Extension hook annotations are invalid.");
@@ -110,7 +111,7 @@ public sealed class ExtensionLifecycleHook : IHook
                 Math.Max(1, (content.GetString()!.Length + 3) / 4), ContextPriority.Low,
                 RetentionPolicy.ConversationWindow,
                 new ContextProvenance("extension-hook", ContributionCategory.Knowledge,
-                    "extension", ScopeLevel.Project, false)));
+                    "extension", _extension.Trust == TrustLevel.Project ? ScopeLevel.Project : ScopeLevel.User, false)));
         }
         return new HookAnnotate(items);
     }

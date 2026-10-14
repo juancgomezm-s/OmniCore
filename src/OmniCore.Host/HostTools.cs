@@ -131,5 +131,15 @@ public sealed class HostTools
         _catalog.Add(tool);
     }
 
+    internal void RegisterSkillLoadTool(ITool tool)
+    {
+        ArgumentNullException.ThrowIfNull(tool);
+        if (tool is not SkillLoadTool || tool.Descriptor.Id.ToString() != "skill.load"
+            || tool.Descriptor.Source.Kind != SourceKind.BuiltIn
+            || tool.Descriptor.EffectClass != EffectClass.None)
+            throw new InvalidOperationException("Only the Core, no-external-effect skill loader can enter a session catalog.");
+        _catalog.Add(tool);
+    }
+
     public PlanProposeTool PlanPropose() => _planPropose;
 }

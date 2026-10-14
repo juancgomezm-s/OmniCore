@@ -10,24 +10,28 @@ public sealed class ExtensionTool : ITool
     private readonly DiscoveredExtension _extension;
     private readonly ExtensionToolManifest _tool;
     private readonly IExtensionRpcInvoker _invoker;
+    private readonly Func<bool>? _stillConsented;
     public ExtensionBoundary Boundary { get; }
     public IReadOnlyDictionary<string, string>? UiDescriptions => _extension.Manifest?.UiResources?
         .Where(pair => pair.Value.ContainsKey("tool." + _tool.Name + ".description"))
         .ToDictionary(pair => pair.Key, pair => pair.Value["tool." + _tool.Name + ".description"], StringComparer.Ordinal);
 
     public ExtensionTool(DiscoveredExtension extension, ExtensionToolManifest tool, string schemaJson,
-        IExtensionRpcInvoker invoker, string workspaceRoot)
+        IExtensionRpcInvoker invoker, string workspaceRoot, Func<bool>? stillConsented = null)
     {
         _extension = extension ?? throw new ArgumentNullException(nameof(extension));
         _tool = tool ?? throw new ArgumentNullException(nameof(tool));
         _invoker = invoker ?? throw new ArgumentNullException(nameof(invoker));
+        _stillConsented = stillConsented;
         if (extension.Status != ExtensionDiscoveryStatus.Ready || extension.Manifest?.Id is not { Length: > 0 } id
             || extension.Manifest.Version is not { Length: > 0 } version || tool.Name is not { Length: > 0 } name)
             throw new ArgumentException("Only a ready extension with a valid tool declaration can be registered.");
+        var tags = tool.Tags is { Count: > 0 } declaredTags ? declaredTags : ["extension", id];
+        var scope = extension.Trust == TrustLevel.Project ? ScopeLevel.Project : ScopeLevel.User;
         Descriptor = new ToolDescriptor(new ToolId("ext." + id + "." + name),
             "Extension tool from " + extension.Manifest.DisplayName + ": " + name,
-            new InputSchema(schemaJson), ["extension", id], readOnly: false, destructive: false,
-            ToolRisk.High, new ComponentSource(SourceKind.Extension, ScopeLevel.Project, extension.Trust, id, version,
+            new InputSchema(schemaJson), tags, readOnly: false, destructive: false,
+            ToolRisk.High, new ComponentSource(SourceKind.Extension, scope, extension.Trust, id, version,
                 extension.PackageSha256),
             ToolProtection.None, EffectClass.NonIdempotent);
         Boundary = new ExtensionBoundary(extension.Manifest.Requests?.Permissions ?? new ExtensionPermissionManifest(),
@@ -38,6 +42,9 @@ public sealed class ExtensionTool : ITool
 
     public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
     {
+        if (_stillConsented is not null && !_stillConsented())
+            return new PreparationRejected("Extension consent or package identity changed.", null,
+                ToolErrorCode.PermissionDenied);
         try
         {
             using var _ = JsonDocument.Parse(call.NormalizedArgumentsJson);
@@ -70,6 +77,9 @@ public sealed class ExtensionTool : ITool
         if (!Equals(intent.Intent.ToolId, Descriptor.Id))
             return new ToolResult("Extension tool authorization did not match.", null, null, 0, false,
                 EffectOutcome.None, isError: true, ToolErrorCode.ToolFailure);
+        if (_stillConsented is not null && !_stillConsented())
+            return new ToolResult("Extension consent or package identity changed.", null, null, 0, false,
+                EffectOutcome.None, isError: true, ToolErrorCode.PermissionDenied);
         try
         {
             var parameters = "{\"name\":\"" + Escape(_tool.Name!) + "\""

@@ -11,9 +11,12 @@ public sealed record SkillManifest
     public bool Sealed { get; set; }
     public int Priority { get; set; }
     public bool ModelInvocable { get; set; }
+    /// <summary>Maximum context tokens this skill may contribute in a single materialization.</summary>
+    public int BudgetTokens { get; set; } = 2048;
     public SkillActivationManifest? Activation { get; set; }
     public SkillExecutionManifest? Execution { get; set; }
     public List<string>? Tools { get; set; }
+    public SkillContributionsManifest? Contributions { get; set; }
 }
 
 public sealed class SkillActivationManifest
@@ -32,6 +35,20 @@ public sealed class SkillExecutionManifest
     public string? PreferredModelAlias { get; set; }
 }
 
+/// <summary>Static package contributions; paths are read-only data, never executable code.</summary>
+public sealed class SkillContributionsManifest
+{
+    public List<string>? Tools { get; set; }
+    public List<string>? Workflows { get; set; }
+    public List<string>? Validators { get; set; }
+    public List<string>? Contributors { get; set; }
+    public List<string>? Knowledge { get; set; }
+}
+
+public enum SkillResourceKind { Workflow, Validator, Contributor, Knowledge }
+
+public sealed record LoadedSkillResource(SkillResourceKind Kind, string RelativePath, string Content, string Sha256);
+
 public enum SkillLifecycleState
 {
     Discovered,
@@ -43,6 +60,8 @@ public enum SkillLifecycleState
 }
 
 public sealed record DiscoveredSkill(string Directory, SkillManifest Manifest, ScopeLevel Scope,
-    TrustLevel Trust, string ManifestSha256, SkillLifecycleState State, string? Diagnostic);
+    TrustLevel Trust, string ManifestSha256, SkillLifecycleState State, string? Diagnostic,
+    string? ParentPackageSha256 = null, string? ParentPackageId = null);
 
-public sealed record LoadedSkill(DiscoveredSkill Skill, string Instructions, string ContentSha256);
+public sealed record LoadedSkill(DiscoveredSkill Skill, string Instructions, string ContentSha256,
+    IReadOnlyList<LoadedSkillResource>? Resources = null, string? PackageContentSha256 = null);

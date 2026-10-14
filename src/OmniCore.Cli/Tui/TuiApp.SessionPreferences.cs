@@ -140,7 +140,8 @@ public sealed partial class TuiApp
             var value = _sessionPreferencesRows[index].Value;
             if (value is ExtensionPresentation extension && _sessionPreferencesQuery == "extensions")
             {
-                var eligible = data.WorkspaceTrusted == true && !string.IsNullOrEmpty(data.SessionId)
+                var eligible = (extension.Scope == "User" || data.WorkspaceTrusted == true)
+                    && !string.IsNullOrEmpty(data.SessionId)
                     && !string.IsNullOrWhiteSpace(extension.Id) && !extension.AmbiguousId
                     && (extension.Status is "Ready" or "ConsentRequired");
                 if (extension.ConsentedCapabilities.Count > 0)
@@ -251,6 +252,7 @@ public sealed partial class TuiApp
             ExtensionName(extension),
             string.IsNullOrWhiteSpace(extension.Id) ? "" : SessionPref("id") + ": " + Safe(extension.Id),
             SessionPref("extension.version") + ": " + Safe(extension.Version ?? SessionPref("unknown")),
+            SessionPref("scope") + ": " + EnumLabel("scope", extension.Scope),
             SessionPref("extension.status") + ": " + EnumLabel("extension.state", extension.Status),
             SessionPref("extension.requested") + ": " + (extension.RequestedCapabilities.Count == 0 ? SessionPref("unknown") : Safe(string.Join(", ", extension.RequestedCapabilities), 512)),
             SessionPref("extension.consented") + ": " + (extension.ConsentedCapabilities.Count == 0 ? SessionPref("no") : Safe(string.Join(", ", extension.ConsentedCapabilities), 512)),
@@ -395,6 +397,7 @@ public sealed partial class TuiApp
         var caps = "[" + string.Join(",", capabilities.Select(capability => "\"" + JsonObj.Escape(capability) + "\"")) + "]";
         var payload = "{" + JsonObj.Field("cmd", "extensions.consent")
             + "," + JsonObj.Field("extensionId", extension.Id)
+            + "," + JsonObj.Field("scope", extension.Scope)
             + "," + JsonObj.Field("version", extension.Version ?? "")
             + "," + JsonObj.Field("manifestSha256", extension.ManifestSha256)
             + "," + JsonObj.Field("packageSha256", extension.PackageSha256)

@@ -261,16 +261,18 @@ public sealed class ClientActionHandler : IClientActionHandler
     {
         var json = context.Client.Query(name, CancellationToken.None)?.Json;
         if (json is null) return new ClientActionResult(context.Text.Resolve("client.no_data"));
+        if (name == "skills") return new ClientActionResult(SkillsInspectionPresentation.Format(json, context.Text));
         return new ClientActionResult(json.Length <= MaxMessageLength ? json : json[..MaxMessageLength] + "…");
     }
 
     private static ClientActionResult Skills(ClientActionInvocation invocation, ClientContext context)
     {
         if (invocation.Arguments.Count == 0) return Query(context, "skills");
-        if (invocation.Arguments.Count != 2 || invocation.Arguments[0] is not ("load" or "release"))
+        if (invocation.Arguments.Count is < 2 or > 3 || invocation.Arguments[0] is not ("load" or "release"))
             return new ClientActionResult(context.Text.Resolve("client.skills.usage"));
         var command = invocation.Arguments[0] == "load" ? "skills.activate" : "skills.release";
-        var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("skillId", invocation.Arguments[1]) + "}";
+        var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("skillId", invocation.Arguments[1])
+            + (invocation.Arguments.Count == 3 ? "," + JsonObj.Field("scope", invocation.Arguments[2]) : "") + "}";
         var ack = context.Client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         if (ack.Status != "ok") return new ClientActionResult(ack.Error is { } error
             ? context.Text.ResolveWire(error) : context.Text.Resolve("client.skills.rejected"));

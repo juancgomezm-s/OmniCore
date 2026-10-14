@@ -1054,8 +1054,9 @@ public sealed class OmniCliRuntime : IDisposable
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
         if (turnBoost is not null && turnBoostId is null) turnBoostId = Guid.NewGuid();
+        var workspaceRoot = _workspaceRoot ?? Directory.GetCurrentDirectory();
         var paths = OmniHost.CreatePlatformPaths();
-        var workspaceData = OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
+        var workspaceData = OmniHost.WorkspaceDataDirectory(paths, workspaceRoot);
         LoadedUserConfiguration loaded;
         try { loaded = OmniHost.LoadUserConfiguration(paths); }
         catch (ConfigValidationException ex)
@@ -1071,14 +1072,14 @@ public sealed class OmniCliRuntime : IDisposable
             WriteDiagnostics(ex.Diagnostics, writeLine);
             return 1;
         }
-        var trust = new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+        var trust = new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot);
         using var policyService = OmniHost.CreateModelPolicyService(null);
-        var workspaceSelectionId = ModelPolicyHost.WorkspaceSelectionId(_workspaceRoot);
+        var workspaceSelectionId = ModelPolicyHost.WorkspaceSelectionId(workspaceRoot);
         var storedSelection = policyService.CurrentSelection(workspaceSelectionId, cancellationToken);
         WorkspaceConfigurationResult workspaceConfig;
         try
         {
-            workspaceConfig = ScopedSettingsLoader.Load(paths, _workspaceRoot, trust,
+            workspaceConfig = ScopedSettingsLoader.Load(paths, workspaceRoot, trust,
                 alias =>
                 {
                     try { _ = registry.Resolve(alias); return true; }
@@ -1402,7 +1403,7 @@ public sealed class OmniCliRuntime : IDisposable
             var laneId = delegation?.ChildLaneId ?? server.LastLaneId() ?? LaneId.New();
             var promptOrigin = routingResume is not null ? routingResume.Origin
                 : conversationOnly ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
-            if (delegation is null)
+            if (delegation is null && _workspaceRoot is not null)
             {
             var followUp = server.QueueFollowUpPromptCommand(sessionId, runId, laneId, prompt, promptOrigin);
             if (followUp.Failure is { } followUpFailure)
@@ -1543,7 +1544,7 @@ public sealed class OmniCliRuntime : IDisposable
                 : WorkflowStagePolicyFingerprint(effectivePolicy, workflowStage.Definition);
 
             // Un boundary (y su registro de lecturas) por Run, canonizado contra la raíz del workspace.
-            var boundary = CreateBoundary(effectivePolicy, _workspaceRoot);
+            var boundary = CreateBoundary(effectivePolicy, workspaceRoot);
             if (act && effectivePolicy.IsFallback)
                 writeLine(Text(LocalizedText.Of("coder.policy.observeOnly")));
             if (delegation is null && !act && OmniServer.RequirePlanApprovalInteraction(server.RequestPlanApprovalCommand()) is { } pendingApproval)
@@ -1594,16 +1595,20 @@ public sealed class OmniCliRuntime : IDisposable
                 : executingAct
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                     worktreeIntegrationCoordinator: delegation is null
-                        ? OmniHost.CreateWorktreeIntegrationCoordinator(_workspaceRoot, paths, artifacts) : null)
+                        ? OmniHost.CreateWorktreeIntegrationCoordinator(workspaceRoot, paths, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
             IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
-            if (delegation is null && workspaceConfig.Trusted)
+            IReadOnlyList<IContextContributor> extensionContributors = Array.Empty<IContextContributor>();
+            var extensionRpcInvoker = new ExtensionRpcProcessInvoker();
+            if (delegation is null)
             {
                 try
                 {
-                    lifecycleHooks = ProjectExtensionHooks.Load(_workspaceRoot, paths,
-                        workspaceTrusted: true, invoker: new ExtensionRpcProcessInvoker());
+                    lifecycleHooks = ProjectExtensionHooks.Load(workspaceRoot, paths,
+                        workspaceTrusted: true, invoker: extensionRpcInvoker);
+                    extensionContributors = ProjectExtensionContributors.Load(workspaceRoot, paths,
+                        workspaceTrusted: true, extensionRpcInvoker);
                 }
                 catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
                     or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
@@ -1613,12 +1618,12 @@ public sealed class OmniCliRuntime : IDisposable
                     return 1;
                 }
             }
-            if (delegation is null && executingAct && workspaceConfig.Trusted)
+            if (delegation is null && executingAct && _workspaceRoot is not null)
             {
                 try
                 {
-                    foreach (var extensionTool in ProjectExtensionTools.Load(_workspaceRoot, paths,
-                        workspaceTrusted: true, invoker: new ExtensionRpcProcessInvoker()))
+                    foreach (var extensionTool in ProjectExtensionTools.Load(workspaceRoot, paths,
+                        workspaceTrusted: true, invoker: extensionRpcInvoker))
                     {
                         hostTools.RegisterExtensionTool(extensionTool);
                         if (extensionTool is ExtensionTool trustedExtensionTool)
@@ -1648,7 +1653,7 @@ public sealed class OmniCliRuntime : IDisposable
                         workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
                             .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
                         workflowStage.VerifyCwd!);
-                    boundary = CreateBoundary(effectivePolicy, _workspaceRoot, hostTools.Catalog());
+                    boundary = CreateBoundary(effectivePolicy, workspaceRoot, hostTools.Catalog());
                 }
                 catch (Exception failure) when (failure is ArgumentException or InvalidOperationException)
                 {
@@ -1658,7 +1663,6 @@ public sealed class OmniCliRuntime : IDisposable
                 }
             }
             if (delegation is null) server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary, effectiveMode);
-            var workspaceRoot = _workspaceRoot;
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
             var audit = new FileAuditSink(paths.DataDirectory);
             var interactive = UseConsoleInput && !Console.IsInputRedirected;
@@ -1669,17 +1673,63 @@ public sealed class OmniCliRuntime : IDisposable
                     extensionBoundaries)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     agentProfile, receiveMailbox);
-            var loadedProjectSkills = LoadActiveProjectSkills(server, workspaceConfig.Trusted, cancellationToken);
-            var activeSkillFingerprints = loadedProjectSkills.Select(skill => new ActiveSkillFingerprint(
-                skill.Skill.Manifest.Id!, skill.Skill.Manifest.Version!, ContentHash.Sha256(skill.ContentSha256))).ToArray();
-            var skillContributors = loadedProjectSkills.Select(skill =>
-                (IContextContributor)new SkillContextContributor(sessionId, skill)).ToArray();
-            var contentContributors = skillContributors.Cast<IContextContributor>().Append(
-                new SessionMemoryContextContributor(new SessionMemoryStore(workspaceData))).ToArray();
-            var contributors = executingAct
-                ? contentContributors
-                : new IContextContributor[] { new WorkingStateContributor(workingState) }.Concat(contentContributors).ToArray();
-            var materializer = new ContextMaterializer(tokenCounter, contributors);
+            var skillLimits = SkillSelectionLimits.FromHarness(harness,
+                (int)Math.Clamp(usableContext / 8, 1, 16_384));
+            var skillSourceCatalog = new SkillSourceCatalog();
+            var skillActivationContext = SkillActivationContext.FromInput(prompt, workingState, workspaceRoot);
+            IReadOnlyList<DiscoveredSkill> DiscoverSkills() => delegation is null
+                ? skillSourceCatalog.DiscoverWithExtensions(workspaceRoot, paths.DataDirectory, workspaceData,
+                    sessionId, workspaceConfig.Trusted,
+                    ProjectExtensionPackageCatalog.Ready(workspaceRoot, paths, workspaceConfig.Trusted),
+                    skillActivationContext)
+                : [];
+            IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
+            SkillCompletionValidator skillCompletionValidators = new([]);
+            IReadOnlyList<DiscoveredSkill> skillCandidates = [];
+            IReadOnlyList<ActiveSkillFingerprint> activeSkillFingerprints = [];
+            ContextMaterializer? materializer = null;
+            var skillStore = new SessionSkillActivationStore(OmniHost.WorkspaceDataDirectory(paths, workspaceRoot));
+            var skillComposition = new SkillTurnComposition(sessionId, skillStore,
+                DiscoverSkills, skillLimits, tokenCounter, workspaceData, harness.GuidanceLevel != GuidanceLevel.Off,
+                includeWorkingState: !executingAct, workingState, extensionContributors,
+                extensionValidatorFactory: () => delegation is null
+                    ? ProjectExtensionValidators.Load(workspaceRoot, paths, workspaceConfig.Trusted,
+                        sessionId, runId, extensionRpcInvoker)
+                    : [],
+                extensionContributorFactory: () => delegation is null
+                    ? ProjectExtensionContributors.Load(workspaceRoot, paths, workspaceConfig.Trusted,
+                        extensionRpcInvoker)
+                    : [],
+                emitLifecycle: payload => new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId)
+                    .Append(payload, DurabilityClass.Barrier));
+            void RefreshSkillComposition()
+            {
+                if (delegation is not null)
+                {
+                    // The child receives only the selected-context packet validated by
+                    // ExplorerTurn.MaterializeTurnContext. Never read/reconcile the principal's
+                    // Session activation store or add its skills, tools, or validators to this Lane.
+                    var delegatedSnapshot = SkillTurnComposition.CreateDelegatedSnapshot(tokenCounter);
+                    skillCandidates = delegatedSnapshot.Candidates;
+                    loadedProjectSkills = delegatedSnapshot.LoadedSkills;
+                    skillCompletionValidators = delegatedSnapshot.Validators;
+                    activeSkillFingerprints = delegatedSnapshot.Fingerprints;
+                    materializer = delegatedSnapshot.Materializer;
+                    return;
+                }
+                var composition = skillComposition.Refresh();
+                skillCandidates = composition.Candidates;
+                loadedProjectSkills = composition.LoadedSkills;
+                skillCompletionValidators = composition.Validators;
+                activeSkillFingerprints = composition.Fingerprints;
+                materializer = composition.Materializer;
+            }
+            RefreshSkillComposition();
+            if (delegation is null && skillCandidates.Count > 0)
+                hostTools.RegisterSkillLoadTool(new SkillLoadTool(sessionId,
+                    skillStore,
+                    new SkillManifestLoader(),
+                    DiscoverSkills, skillLimits));
             var questionnaireService = new QuestionnaireInteractionService(server.AcquireStore(),
                 server.AcquireCodecs(), artifacts);
             QuestionnaireAskOutcome? QuestionnaireResponder(InteractionId interactionId, QuestionnaireSchema schema)
@@ -1735,6 +1785,10 @@ public sealed class OmniCliRuntime : IDisposable
                 IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null,
                 ModelCapabilityBoundary? turnBoundary = null, ContextMaterializer? turnMaterializer = null)
             {
+                // Each principal retry gets a fresh view of Session activation/release state.
+                // A Turn already in flight keeps its immutable tool/context plan.
+                if (turnExecutor is null && turnCatalog is null && turnBoundary is null && turnMaterializer is null)
+                    RefreshSkillComposition();
                 var requestedToolName = pendingForcedToolName;
                 pendingForcedToolName = null;
                 var selection = new ModelSelection(new ModelIdValue(model), usableContext, effectivePolicy.ToolPolicy.Mode,
@@ -1748,7 +1802,7 @@ public sealed class OmniCliRuntime : IDisposable
                         throw new InvalidOperationException("Child route authorization unavailable.");
                     return server.Observability.Complete(sessionId, provider, request, modelDefinition?.ContextWindow, token);
                 }, turnExecutor ?? executor,
-                    turnCatalog ?? hostTools.Catalog(), turnMaterializer ?? materializer, preparedFingerprint.Fingerprint, selection, server.AcquireStore(),
+                    turnCatalog ?? hostTools.Catalog(), turnMaterializer ?? materializer!, preparedFingerprint.Fingerprint, selection, server.AcquireStore(),
                     server.AcquireCodecs(), artifacts, audit, new RedactionPolicy(), harness, turnBoundary ?? boundary,
                     loaded.Pricing(model), enforceDefaultSpendCaps: false,
                     sessionCapUsd: sessionCap, dailyCapUsd: loaded.DailyCapUsd,
@@ -1756,6 +1810,8 @@ public sealed class OmniCliRuntime : IDisposable
                     metaModelProvider: delegation is null ? provider : null, modelContextCapacity: modelDefinition?.ContextWindow,
                     recordEffectiveFingerprint: true, fingerprintArtifacts: preparedFingerprint.Artifacts,
                     userSpendReader: new UserWorkspaceSpendReader(paths.DataDirectory, workspaceData), activeSkills: activeSkillFingerprints,
+                    activeSkillToolIds: loadedProjectSkills.SelectMany(skill => skill.Skill.Manifest.Tools ?? [])
+                        .Distinct(StringComparer.Ordinal).ToArray(),
                     quotaAdmission: providerDescription?.BillingMode == BillingMode.IncludedQuota
                         ? QuotaAdmission : null,
                     quotaAllowsMeta: providerDescription?.BillingMode == BillingMode.IncludedQuota
@@ -1798,7 +1854,7 @@ public sealed class OmniCliRuntime : IDisposable
                             throw new InvalidOperationException("LaneTaskPacketBindingUnavailable");
                     }
                     else if (!AgentPermissionScopeSubset.IsReadOnly(work.Profile.PermissionCeiling)
-                        || !SameCanonicalWorkspace(laneRoot, _workspaceRoot)
+                        || !SameCanonicalWorkspace(laneRoot, workspaceRoot)
                         || workflowStage?.Definition.Stage == WorkflowStage.Implement)
                         throw new InvalidOperationException("UnownedLaneWorkspaceUnavailable");
 
@@ -1859,7 +1915,7 @@ public sealed class OmniCliRuntime : IDisposable
                     var childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog());
                     if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
                     {
-                        var verifyCwd = MapWorkflowCwdToLane(_workspaceRoot, laneRoot, workflowStage.VerifyCwd!);
+                        var verifyCwd = MapWorkflowCwdToLane(workspaceRoot, laneRoot, workflowStage.VerifyCwd!);
                         if (verifyCwd is null)
                             throw new InvalidOperationException("WorkflowVerifierOutsideLane");
                         var processTool = childTools.Catalog().Find(new ToolId("process.exec"))
@@ -2002,9 +2058,9 @@ public sealed class OmniCliRuntime : IDisposable
                                     throw new InvalidOperationException("Delegated continuation requires the active ORQ authority.");
                                 var rootTools = OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                                     worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
-                                        _workspaceRoot, paths, artifacts));
-                                var rootBoundary = CreateBoundary(effectivePolicy, _workspaceRoot, rootTools.Catalog());
-                                var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), _workspaceRoot,
+                                        workspaceRoot, paths, artifacts));
+                                var rootBoundary = CreateBoundary(effectivePolicy, workspaceRoot, rootTools.Catalog());
+                                var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), workspaceRoot,
                                     rootBoundary, restrictions, runId, audit, interactionResponder, interactive,
                                     artifacts, rootProfile);
                                 var rootTurn = BuildTurn(productReasoning, reasoningResolution, rootExecutor,
@@ -2079,33 +2135,36 @@ public sealed class OmniCliRuntime : IDisposable
                     return 3;
                 }
             }
+            ExplorerTurn? BuildSubsequentActTurn(int _, IToolExecutor? subsequentExecutor = null,
+                FakeCatalog? subsequentCatalog = null)
+            {
+                try
+                {
+                    var nextResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
+                        server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
+                    route.ReasoningCapability.ValidateRequest(nextResolution.AppliedRequest);
+                    return BuildTurn(nextResolution.AppliedRequest, nextResolution,
+                        subsequentExecutor, subsequentCatalog);
+                }
+                catch (InvalidOperationException)
+                {
+                    writeLine(Text(Localized("host.reasoning.current_conflict", [])));
+                    return null;
+                }
+            }
             if (act)
             {
-                ExplorerTurn? BuildSubsequentActTurn(int _)
-                {
-                    try
-                    {
-                        var nextResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
-                            server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
-                        route.ReasoningCapability.ValidateRequest(nextResolution.AppliedRequest);
-                        return BuildTurn(nextResolution.AppliedRequest, nextResolution);
-                    }
-                    catch (InvalidOperationException)
-                    {
-                        writeLine(Text(Localized("host.reasoning.current_conflict", [])));
-                        return null;
-                    }
-                }
                 stallEscalationLoop = true;
                 return RunActLoop(turn, writeLine, prompt, instruction, sessionId, runId, laneId, workingState,
                     workspaceConfig.Settings?.Gates, restrictions, server, artifacts, audit,
                     interactionResponder, interactive, locale, cancellationToken, promptOrigin,
                     instructionSnapshot: instructionSnapshot,
-                    subsequentTurnFactory: reasoningResolution?.Source == ReasoningSelectionSource.TurnBoost
-                        ? BuildSubsequentActTurn : null,
+                    subsequentTurnFactory: attempt => BuildSubsequentActTurn(attempt),
                     turnBoostId: turnBoostId ?? reasoningResolution?.TurnBoostId,
                     turnBoostConsumed: turnBoostConsumed, delegationId: delegation?.DelegationId,
-                    escalateOnStall: delegation is null ? EscalateOnStall : null);
+                    escalateOnStall: delegation is null ? EscalateOnStall : null,
+                    skillValidators: skillCompletionValidators,
+                    skillValidatorFactory: () => skillCompletionValidators);
             }
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
@@ -2178,8 +2237,8 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts),
                         worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
-                            _workspaceRoot, paths, artifacts));
-                    var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), _workspaceRoot,
+                            workspaceRoot, paths, artifacts));
+                    var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
                         server.ResolveLaneAgentProfile(sessionId, runId, laneId));
                     var approvedResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
@@ -2196,7 +2255,11 @@ public sealed class OmniCliRuntime : IDisposable
                         sessionId, runId, laneId, approvedState, workspaceConfig.Settings?.Gates, restrictions,
                         server, artifacts, audit, interactionResponder, interactive, locale, cancellationToken,
                         instructionSnapshot: approvedSnapshot, delegationId: delegation?.DelegationId,
-                        escalateOnStall: delegation is null ? EscalateOnStall : null);
+                        escalateOnStall: delegation is null ? EscalateOnStall : null,
+                        skillValidators: skillCompletionValidators,
+                        skillValidatorFactory: () => skillCompletionValidators,
+                        subsequentTurnFactory: attempt => BuildSubsequentActTurn(attempt,
+                            actExecutor, actTools.Catalog()));
                 }
             }
 
@@ -2619,7 +2682,8 @@ public sealed class OmniCliRuntime : IDisposable
         Func<InteractionRequested, string?>? acceptanceResponder = null,
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
         Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
-        Func<int?>? escalateOnStall = null)
+        Func<int?>? escalateOnStall = null, SkillCompletionValidator? skillValidators = null,
+        Func<SkillCompletionValidator?>? skillValidatorFactory = null)
     {
         // Las mutaciones y las roturas de validación quedan completas solo al cerrar el bucle:
         // la evidencia de cada Turn usado (el inicial y los que cree la fábrica) se entrega entonces.
@@ -2635,7 +2699,7 @@ public sealed class OmniCliRuntime : IDisposable
             return RunActLoopCore(turn, writeLine, objective, instruction, sessionId, runId, laneId, workingState,
                 gateConfiguration, restrictions, server, artifacts, audit, interactionResponder, interactive, locale,
                 cancellationToken, origin, acceptanceResponder, instructionSnapshot, tracked, turnBoostId,
-                turnBoostConsumed, delegationId, escalateOnStall);
+                turnBoostConsumed, delegationId, escalateOnStall, skillValidators, skillValidatorFactory);
         }
         finally
         {
@@ -2652,11 +2716,13 @@ public sealed class OmniCliRuntime : IDisposable
         Func<InteractionRequested, string?>? acceptanceResponder = null,
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
         Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
-        Func<int?>? escalateOnStall = null)
+        Func<int?>? escalateOnStall = null, SkillCompletionValidator? skillValidators = null,
+        Func<SkillCompletionValidator?>? skillValidatorFactory = null)
     {
         var hasExternalGates = gateConfiguration is { Build: not null } or { Test: not null };
         var hasAcceptance = gateConfiguration?.Acceptance == true;
-        var hasAnyGate = hasExternalGates || hasAcceptance;
+        var hasAnyGate = hasExternalGates || hasAcceptance || skillValidators?.HasValidators == true
+            || skillValidatorFactory is not null;
         var nextPrompt = objective;
         IReadOnlyList<ExternalCompletionGateResult>? acceptedResults = null;
         const int maxTurns = 16;
@@ -2670,6 +2736,9 @@ public sealed class OmniCliRuntime : IDisposable
                 if (nextTurn is null) return 1;
                 activeTurn = nextTurn;
             }
+            // A Turn factory may have refreshed the durable skill selection. Resolve its
+            // validators only after that factory runs so gates match the exact next Turn.
+            var activeSkillValidators = skillValidatorFactory?.Invoke() ?? skillValidators;
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => activeTurn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
                     token, origin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
@@ -2732,17 +2801,26 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     checkResults = acceptedResults;
                 }
-                else if (gateConfiguration is not null && hasAnyGate)
+                else if ((gateConfiguration is not null && hasAnyGate) || activeSkillValidators?.HasValidators == true)
                 {
-                    var runEvents = server.AcquireStore().ReadFrom(sessionId, 1);
-                    var run = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), runEvents);
-                    var runner = new ConfiguredCompletionGates(gateConfiguration, _workspaceRoot, runId,
-                        laneId, run.RootTask, restrictions, audit, artifacts,
-                        interactionResponder, interactive);
-                    checkResults = runner.Run(stream, cancellationToken);
+                    if (gateConfiguration is not null && hasAnyGate)
+                    {
+                        var runEvents = server.AcquireStore().ReadFrom(sessionId, 1);
+                        var run = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), runEvents);
+                        var runner = new ConfiguredCompletionGates(gateConfiguration,
+                            _workspaceRoot ?? Directory.GetCurrentDirectory(), runId,
+                            laneId, run.RootTask, restrictions, audit, artifacts,
+                            interactionResponder, interactive);
+                        checkResults = runner.Run(stream, cancellationToken);
+                    }
+                    if (activeSkillValidators?.HasValidators == true)
+                        checkResults = checkResults.Concat(activeSkillValidators.Run(
+                            _workspaceRoot ?? Directory.GetCurrentDirectory(),
+                            path => activeTurn.ReadForSkillValidation(path, cancellationToken),
+                            cancellationToken)).ToArray();
                 }
                 return checkResults;
-            }, turn.MutationLedger);
+            }, activeTurn.MutationLedger);
             if (completion.Failure is { } completionFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(completionFailure);
             if (completion.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
@@ -2755,9 +2833,22 @@ public sealed class OmniCliRuntime : IDisposable
                 return 1;
             }
             foreach (var gate in checkResults)
-                writeLine(Text(Localized("cli.runtime.gate.result", ("name", gate.Key),
+            {
+                var skillValidator = gate.Key.StartsWith("skill:", StringComparison.Ordinal);
+                var extensionValidator = gate.Key.StartsWith("extension:", StringComparison.Ordinal);
+                var gateName = skillValidator ? Text(LocalizedText.Of("cli.runtime.skill.validator.name"))
+                    : extensionValidator ? Text(LocalizedText.Of("cli.runtime.extension.validator.name")) : gate.Key;
+                var gateSummary = skillValidator
+                    ? Text(LocalizedText.Of(gate.Passed ? "cli.runtime.skill.validator.passed" : "cli.runtime.skill.validator.failed"))
+                    : extensionValidator
+                        ? Text(Localized("cli.runtime.extension.validator.result",
+                            ("status", Text(LocalizedText.Of(gate.Passed ? "cli.runtime.gate.passed" : "cli.runtime.gate.failed"))),
+                            ("summary", gate.Summary)))
+                        : gate.Summary;
+                writeLine(Text(Localized("cli.runtime.gate.result", ("name", gateName),
                     ("status", Text(LocalizedText.Of(gate.Passed ? "cli.runtime.gate.passed" : "cli.runtime.gate.failed"))),
-                    ("summary", gate.Summary))));
+                    ("summary", gateSummary))));
+            }
             if (completed)
             {
                 if (!hasExternalGates)
@@ -2795,7 +2886,7 @@ public sealed class OmniCliRuntime : IDisposable
                     acceptedResults = acceptedResults.Append(new ExternalCompletionGateResult("acceptance", true,
                         "confirmado por el usuario")).ToArray();
                     var resumedEvaluation = server.CheckRunCompletionAndGate(sessionId, runId,
-                        _ => acceptedResults, turn.MutationLedger);
+                        _ => acceptedResults, activeTurn.MutationLedger);
                     if (resumedEvaluation.Failure is { } resumedFailure)
                         System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(resumedFailure);
                     if (resumedEvaluation.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
@@ -3444,34 +3535,19 @@ public sealed class OmniCliRuntime : IDisposable
     }
 
     private IReadOnlyList<LoadedSkill> LoadActiveProjectSkills(OmniServer server, bool workspaceTrusted,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, SkillSelectionLimits? skillLimits = null)
     {
-        if (!workspaceTrusted) return [];
-        var query = server.Query("skills", cancellationToken)?.Json;
-        if (string.IsNullOrWhiteSpace(query)) return [];
-        using var state = JsonDocument.Parse(query);
-        if (!state.RootElement.TryGetProperty("skills", out var entries)
-            || entries.ValueKind != JsonValueKind.Array) return [];
-        var requested = entries.EnumerateArray().Where(item => item.TryGetProperty("state", out var status)
-                && status.GetString() == SkillLifecycleState.Activated.ToString())
-            .Select(item => (Id: item.GetProperty("id").GetString()!,
-                Hash: item.GetProperty("manifestSha256").GetString()!)).ToArray();
-        if (requested.Length == 0) return [];
-        var loader = new SkillManifestLoader();
-        var discovered = SkillManifestLoader.ResolvePrecedence(loader.Discover(
-            Path.Combine(_workspaceRoot, ".omnicore", "skills"), ScopeLevel.Project, TrustLevel.Project,
-            workspaceTrusted: true));
-        var result = new List<LoadedSkill>();
-        foreach (var (id, hash) in requested)
-        {
-            var skill = discovered.SingleOrDefault(candidate => candidate.Manifest.Id == id
-                && candidate.State == SkillLifecycleState.Discovered)
-                ?? throw new InvalidDataException("An active skill is no longer available or has a precedence conflict.");
-            if (!string.Equals(skill.ManifestSha256, hash, StringComparison.Ordinal))
-                throw new InvalidDataException("An active skill changed during Run composition; activate it again.");
-            result.Add(loader.Activate(skill));
-        }
-        return result;
+        cancellationToken.ThrowIfCancellationRequested();
+        var session = server.LastSessionId()
+            ?? throw new InvalidOperationException("An active skill requires a Session.");
+        var paths = OmniHost.CreatePlatformPaths();
+        var workspaceData = OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
+        var store = new SessionSkillActivationStore(workspaceData);
+        var candidates = new SkillSourceCatalog().DiscoverWithExtensions(_workspaceRoot, paths.DataDirectory,
+            workspaceData, session, workspaceTrusted, ProjectExtensionPackageCatalog.Ready(
+                _workspaceRoot, paths, workspaceTrusted));
+        return new SkillActivationResolver().LoadCandidates(candidates, session, store,
+            limits: skillLimits);
     }
 
     internal static ModelDefinition? ResolveExplicitModel(LoadedUserConfiguration loaded, string modelId)

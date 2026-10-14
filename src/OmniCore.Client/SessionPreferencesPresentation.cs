@@ -29,6 +29,7 @@ public sealed record ExtensionPresentation(string Id, string DisplayName, string
     IReadOnlyList<string> RequestedCapabilities, IReadOnlyList<string> ConsentedCapabilities, bool AmbiguousId = false)
 {
     public IReadOnlyDictionary<string, ExtensionUiText>? UiResources { get; init; }
+    public string Scope { get; init; } = "Project";
     public ExtensionUiText? TextFor(string locale) => UiResources?.GetValueOrDefault(OmniCore.Protocol.UiLocaleCodes.NormalizeOrDefault(locale));
 }
 
@@ -117,7 +118,7 @@ public static class SessionPreferencesPresentation
             String(item, "trust") ?? "Unknown", String(item, "status") ?? "Unknown",
             String(item, "manifestSha256") ?? "", String(item, "packageSha256") ?? "", String(item, "consentHash") ?? "",
             Strings(item, "requestedCapabilities"), Strings(item, "consentedCapabilities"), Boolean(item, "ambiguousId") ?? false)
-        { UiResources = ExternalUiResources.ReadExtension(item) };
+        { UiResources = ExternalUiResources.ReadExtension(item), Scope = String(item, "scope") ?? "Project" };
     }
 
     private static SkillPresentation? DecodeSkill(JsonElement item)
