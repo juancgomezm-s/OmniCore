@@ -31,7 +31,7 @@ public sealed partial class TuiWiringTests
         }
         fx.StartTui(initialColumns: width, initialRows: height);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences opened");
-        ChoosePreferenceCategory(fx, "diagnostics_data");
+        ChoosePreferenceCategory(fx, "context_sessions");
         ClickId(fx, "preferences-memory-open");
         fx.Wait(() => fx.App.Overlay?.Id == "session-preferences", "typed memory preferences screen opened");
 

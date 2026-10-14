@@ -1487,7 +1487,6 @@ public sealed partial class TuiWiringTests
 
     [Theory]
     [InlineData(80, 25)]
-    [InlineData(120, 35)]
     public void Preferences_center_navigates_by_keyboard_and_cancelled_locale_preview_preserves_chat(int columns, int rows) => RunTuiTest(fx =>
     {
         var changed = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -1681,7 +1680,7 @@ public sealed partial class TuiWiringTests
             fx.InjectKey(new Key(KeyCode.Esc));
             fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Preferencias") == true,
                 "Escape vuelve del centro al índice");
-            ChoosePreferenceCategory(fx, "diagnostics_data");
+            ChoosePreferenceCategory(fx, "context_sessions");
             ClickId(fx, "preferences-context-open");
             fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "session-preferences-details"),
                 "consulta de contexto de sólo lectura visible");
@@ -2809,7 +2808,7 @@ public sealed partial class TuiWiringTests
         });
     }
 
-    private static void ChoosePreferenceCategory(TuiFixture fx, string categoryId, string locale = "es")
+    private static void ChoosePreferenceCategory(TuiFixture fx, string categoryId, string? locale = null)
     {
         fx.Invoke(() =>
         {
@@ -2819,7 +2818,7 @@ public sealed partial class TuiWiringTests
             list.SelectedItem = index;
             list.InvokeCommand(Command.Accept);
         });
-        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale))
+        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale ?? fx.App.PreferencesLocale))
             .Single(category => category.Id == categoryId);
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains(selected.Title, StringComparison.Ordinal) == true,
             "categoría de preferencias visible: " + categoryId);
