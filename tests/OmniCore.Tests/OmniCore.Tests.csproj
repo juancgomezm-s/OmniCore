@@ -25,6 +25,10 @@
     <PackageReference Include="xunit.v3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\..\docs\protocol\stdio\1.0\goldens.jsonl" Link="protocol\stdio\1.0\goldens.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <Target Name="CopySandboxTestProcess" AfterTargets="Build">
     <ItemGroup>
       <SandboxTestProcessFiles Include="$(MSBuildThisFileDirectory)..\OmniCore.SandboxTestProcess\bin\$(Configuration)\net10.0\OmniCore.SandboxTestProcess.*" />

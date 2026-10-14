@@ -49,6 +49,19 @@ DomainEvent (schema vN) --[upcasters al leer]--> DomainEvent (schema actual) --[
 - **`CausationId`:** es un id tipado `EventId | CommandId`, y todo `WireCommand`/`CommandAck` lleva `CommandId`.
 - **DTOs wire:** todos viven en `OmniCore.Protocol` con **sus propios tipos de id** (string) y enums propios. Nunca referencian Domain; `ProtocolMapper` (Host) los traduce.
 
+### Transporte stdio v1.0 (primer bloque M9, 2026-10-14)
+
+El framing CLI↔Host está versionado por `ProtocolVersion`, sin modificar `EventSchemaVersion` ni
+el schema durable. `WireFrame` codifica una envoltura JSON por línea con UTF-8 estricto, sin BOM y
+un máximo de 1,048,576 bytes por frame antes de decodificar. EOF solo es normal entre frames;
+EOF dentro de uno, JSON inválido, UTF-8 inválido y exceso del límite son errores de conexión.
+
+El saludo de request/respuesta y las operaciones implementadas están fijados en
+[`docs/protocol/stdio/1.0`](../protocol/stdio/1.0/README.md). `subscribe` recibe `fromSequence` y
+devuelve el replay disponible por lote. No implica entrega push, lease, deduplicación, reconexión
+ni garantía exactly-once. Cambios de framing/wire incrementarán `ProtocolVersion`; cambios del
+evento durable siguen el versionado independiente de §1.
+
 ## Clasificación
 
 | Elemento | Categoría |

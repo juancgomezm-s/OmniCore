@@ -66,10 +66,42 @@ public interface IOmniTransport
 - `OmniHost.RunAsync(CliClient.RunAsync)` se elimina en M1, cuando exista el primer `IOmniClient` in-process.
 - Stdio llega en M9 y Named Pipes después, sin cambiar el código del CLI.
 
+### 4. Implementación M9 — primer bloque (2026-10-14)
+
+El primer bloque incorpora `omni host --stdio` y el consumidor `omni stdio` sobre el cliente de
+proceso `StdioOmniClient`. El framing v1.0 es JSON Lines: UTF-8 estricto, una envoltura JSON por
+línea, máximo 1 MiB **medido en bytes UTF-8**, sin BOM. La conexión debe negociar `hello` antes
+de requests; la respuesta lleva el mismo `messageId`, versión elegida y capabilities exactas.
+Requests correlacionados son `command` (envoltura `WireEnvelope`), `query` y `subscribe` con
+`fromSequence`; replay es request/response por lotes de eventos del journal, no un stream push.
+Los acks preservan `CommandAck.Outcome`, `FirstSeq` y `LastSeq`.
+
+Cada response usa el mismo límite de 1 MiB. Si el lote replay completo o una query excede el frame,
+el Host rechaza la request con `unsupported_request` y no envía una respuesta parcial. V1.0 no
+incluye `nextCursor` ni `toSequence` para paginar un lote grande.
+
+El Host usa el `OmniCliRuntime` y journal persistente existentes. stdout queda reservado al wire;
+diagnósticos del protocolo van a stderr. El primer dispatch admite `sim`, `sim.resume` y
+`session.input`, además de los read models `state`,
+`sessionIdentity`, `workingState`, `commands`, `sessionSidebar`, `changedFiles`, `agents` y
+`sessionObservability`. La TUI e in-process conservan su composition root actual.
+
+La capability `session.input` solo indica que el Host acepta ese command tipado y aplica sus
+políticas normales. No acredita identidad humana externa: el transporte solo llama a
+`IOmniClient.Send`, nunca a `ITrustedUserActionClient`, y no acepta un flag de origen. Todo command
+fuera de la lista se rechaza explícitamente. La negociación no publica soporte para autoridad
+humana externa, inferencia remota como garantía, `media.read` ni procesos persistentes/PTY.
+
+Este checkpoint no implementa lease multiproceso, reconexión/deduplicación/consulta de resultados
+ambiguos, push streaming ni exactly-once. Repetir el request después de perder una respuesta puede
+repetir efectos; el replay local desde N solo vuelve a leer eventos durables. Falta el consumidor
+TypeScript de OmniCoder, controles `media.read` y procesos/ConPTY. El contrato y goldens consumibles
+v1.0 están en [`docs/protocol/stdio/1.0`](../protocol/stdio/1.0/README.md).
+
 ## Clasificación
 
 | Elemento | Categoría |
 |---|---|
 | `IOmniClient`, `WireEnvelope`/`WireEvent`/`WireCommand` mínimos, `InProcessTransport`, `ProtocolMapper` para los eventos que usa el CLI de M1 | **Necesario desde M1** |
-| `StdioTransport` (M9), negociación de versión (M9) | **Contract now / implementation later** |
+| `StdioTransport`, negociación de versión, primer Host hijo, cliente de proceso, dispatch acotado y goldens (M9, primer bloque 2026-10-14) | **Implementado parcialmente; detalles y límites en §4** |
 | Named Pipes y autenticación de clientes remotos | **Deferable** |
