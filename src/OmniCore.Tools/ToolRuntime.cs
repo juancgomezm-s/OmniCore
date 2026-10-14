@@ -295,7 +295,7 @@ public sealed class ToolRuntime
             // ADR-0034/0036 §5: el Ask abre un InteractionRequest con sujeto y opciones del
             // servidor. El default es Deny (más restrictiva, ADR-0034 §1).
             var interaction = new InteractionRequested(interactionId, InteractionKind.Permission,
-                SubjectJson(validated.ToolId.ToString(), execContext.ProtectedSubstitution),
+                SubjectJson(intent, execContext.ProtectedSubstitution),
                 OptionsJson(_policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }
                     && IsGrantableAsk(decision.Layers)),
                 "deny", null, null, null, null, 0, 1);
@@ -739,14 +739,42 @@ public sealed class ToolRuntime
     }
 
     /// <summary>Sujeto de la interacción (redactado; ADR-0034 §1, ADR-0018).</summary>
-    private static string SubjectJson(string tool, ProtectedToolSubstitution? substitution = null)
+    private static string SubjectJson(ToolIntent intent, ProtectedToolSubstitution? substitution = null)
     {
-        var subject = "{\"operation\":\"" + Esc(tool) + "\",\"risk\":\"low\",\"reason\":\"permission.required\"";
-        if (substitution is not null)
-            subject += ",\"toolPreferenceSubstitution\":{\"sourceToolId\":\""
-                + Esc(substitution.SourceToolId) + "\",\"targetToolId\":\""
-                + Esc(substitution.TargetToolId) + "\"}";
-        return subject + "}";
+        var reason = substitution?.SourceToolId == "mcp.first-effect"
+            ? "mcp.first_effect" : "permission.required";
+        var details = new List<string>();
+        foreach (var network in intent.Claims.Network)
+            details.Add("network: " + network.Host + (network.Port is { } port ? ":" + port : ""));
+        if (intent.Claims.Process is { } process)
+            details.Add("process: " + process.Executable);
+        foreach (var read in intent.Claims.Reads) details.Add("read: " + read);
+        foreach (var write in intent.Claims.Writes) details.Add("write: " + write);
+        using var output = new System.IO.MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("operation", intent.ToolId.ToString());
+            writer.WriteString("risk", intent.Risk.ToString().ToLowerInvariant());
+            writer.WriteString("reason", reason);
+            if (substitution is not null && substitution.SourceToolId != "mcp.first-effect")
+            {
+                writer.WriteStartObject("toolPreferenceSubstitution");
+                writer.WriteString("sourceToolId", substitution.SourceToolId);
+                writer.WriteString("targetToolId", substitution.TargetToolId);
+                writer.WriteEndObject();
+            }
+            writer.WriteStartArray("details");
+            foreach (var detail in details)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("value", SecretRedactorRegistry.Current?.Redact(detail) ?? detail);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(output.ToArray());
     }
 
     /// <summary>Opciones decididas por el servidor; el default (más restrictiva) es Deny.</summary>

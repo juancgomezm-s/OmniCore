@@ -35,6 +35,34 @@ if (args.Length == 1 && args[0] == "stdin-echo")
     return 0;
 }
 
+if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
+{
+    var line = Console.ReadLine();
+    if (line is null) return 27;
+    using var request = System.Text.Json.JsonDocument.Parse(line);
+    var root = request.RootElement;
+    if (root.GetProperty("jsonrpc").GetString() != "2.0"
+        || root.GetProperty("id").GetInt64() != 1
+        || root.GetProperty("params").GetProperty("_meta")
+            .GetProperty("io.modelcontextprotocol/protocolVersion").GetString() != "2026-07-28") return 28;
+    if (args[0] == "mcp-stall")
+    {
+        await Task.Delay(TimeSpan.FromMinutes(5));
+        return 0;
+    }
+    if (args[0] == "mcp-error")
+    {
+        Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32603,\"message\":\"fixture error\"}}");
+        return 0;
+    }
+    var method = root.GetProperty("method").GetString();
+    var result = method == "server/discover"
+        ? "{\"protocolVersions\":[\"2026-07-28\"],\"capabilities\":{}}"
+        : "{\"tools\":[{\"name\":\"fixture.lookup\",\"inputSchema\":{\"type\":\"object\"}}]}";
+    Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + result + "}");
+    return 0;
+}
+
 if (args.Length == 1 && args[0] is "claude-stream" or "claude-stream-fail")
 {
     Console.WriteLine("{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"fixture-session\",\"model\":\"claude-haiku-5-5\",\"tools\":[\"Read\"]}");

@@ -37,6 +37,7 @@ public sealed class OmniCliRuntime : IDisposable
     private bool _providerDeprecationShown;
     internal SandboxStrength ProcessSandboxStrengthForTests { get; set; } = SandboxStrength.Strong;
     internal Func<OmniCore.Abstractions.IProcessRuntime>? ProcessRuntimeFactoryForTests { get; set; }
+    internal Func<ISandboxProcessLauncher>? McpSandboxLauncherFactoryForTests { get; set; }
     internal Func<string?>? ClaudeExecutableLocatorForTests { get; set; }
     internal Action<OmniServer, WorkflowRuntimeAuthorization>? BeforeWorkflowCompletionGateForTests { get; set; }
 
@@ -144,6 +145,49 @@ public sealed class OmniCliRuntime : IDisposable
         var requested = new HashSet<string>(extension.Manifest.Requests?.Capabilities ?? [], StringComparer.Ordinal);
         store.Grant(extension, requested);
         return new(true, extensionId, requested.Order(StringComparer.Ordinal).ToArray());
+    }
+
+    /// <summary>Explicitly trusts/revokes one hash-bound MCP server without probing it.</summary>
+    public void SetMcpTrust(string serverId, bool trusted)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
+        var paths = OmniHost.CreatePlatformPaths();
+        var workspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot);
+        new McpServerStore(paths, workspaceRoot, new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot))
+            .Trust(serverId, trusted);
+    }
+
+    public void AddMcpStdio(string serverId, string executable, IReadOnlyList<string> args)
+    {
+        var paths = OmniHost.CreatePlatformPaths();
+        var workspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot);
+        new McpServerStore(paths, workspaceRoot, new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot))
+            .AddStdio(serverId, executable, args);
+    }
+
+    public void AddMcpHttp(string serverId, string endpoint)
+    {
+        var paths = OmniHost.CreatePlatformPaths();
+        var workspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot);
+        new McpServerStore(paths, workspaceRoot, new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot))
+            .AddHttp(serverId, endpoint);
+    }
+
+    public void SetMcpCredential(string serverId, string secret, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(secret)) throw new InvalidOperationException("MCP credential cannot be empty.");
+        var paths = OmniHost.CreatePlatformPaths();
+        var workspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(_workspaceRoot);
+        var store = new McpServerStore(paths, workspaceRoot, new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot));
+        var reference = "mcp:" + serverId + ":auth:" + Guid.NewGuid().ToString("N");
+        var credentials = OmniHost.CreateUserCredentialStore(paths);
+        credentials.Save(reference, secret, cancellationToken);
+        try { store.SetCredentialReference(serverId, reference); }
+        catch
+        {
+            try { credentials.Delete(reference, CancellationToken.None); } catch { }
+            throw;
+        }
     }
 
     private static async Task<ProviderQuotaSnapshot> QueryConfiguredQuotaAsync(string providerId, CancellationToken token)
@@ -496,6 +540,14 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 if (!capabilities.TryAdd(tool.Descriptor.Id.ToString(), ModelToolCapability.GeneralProcess))
                     throw new InvalidOperationException("Extension capability registration collides with a built-in tool id: "
+                        + tool.Descriptor.Id);
+            }
+            foreach (var tool in catalog.RegisteredTools().Where(tool => tool.Descriptor.Source.Kind == SourceKind.Mcp))
+            {
+                var capability = tool.Descriptor.Tags.Contains("stdio", StringComparer.Ordinal)
+                    ? ModelToolCapability.GeneralProcess : ModelToolCapability.Network;
+                if (!capabilities.TryAdd(tool.Descriptor.Id.ToString(), capability))
+                    throw new InvalidOperationException("MCP capability registration collides with a built-in tool id: "
                         + tool.Descriptor.Id);
             }
         }
@@ -1601,6 +1653,7 @@ public sealed class OmniCliRuntime : IDisposable
             IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
             IReadOnlyList<IContextContributor> extensionContributors = Array.Empty<IContextContributor>();
             var extensionRpcInvoker = new ExtensionRpcProcessInvoker();
+            extensionBoundaries.Add(new McpIntentBoundary());
             if (delegation is null)
             {
                 try
@@ -1634,6 +1687,29 @@ public sealed class OmniCliRuntime : IDisposable
                     or InvalidOperationException or UnauthorizedAccessException)
                 {
                     writeLine(Text(Localized("cli.runtime.extension.compose_failed",
+                        ("diagnostic", ExternalDiagnostic(failure.Message)))));
+                    return 1;
+                }
+            }
+            if (delegation is null)
+            {
+                try
+                {
+                    var mcpStore = new McpServerStore(paths, workspaceRoot,
+                        new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot));
+                    var mcpLauncher = McpSandboxLauncherFactoryForTests?.Invoke()
+                        ?? OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
+                    var stdio = new McpStrongStdioTransport(mcpLauncher);
+                    var http = new McpStreamableHttpTransport();
+                    foreach (var mcpTool in mcpStore.DiscoverTools(stdio, http, cancellationToken))
+                        hostTools.RegisterMcpTool(mcpTool);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
+                    or InvalidOperationException or UnauthorizedAccessException or ArgumentException or TimeoutException
+                    or HttpRequestException or NotSupportedException)
+                {
+                    writeLine(Text(Localized("cli.runtime.mcp.compose_failed",
                         ("diagnostic", ExternalDiagnostic(failure.Message)))));
                     return 1;
                 }

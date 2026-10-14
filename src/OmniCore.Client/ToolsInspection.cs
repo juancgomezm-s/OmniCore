@@ -59,7 +59,11 @@ public static class ToolInspectionPresentation
 {
     public static string Description(ToolInspectionRow row, Localization text)
     {
-        var key = "client.tool." + row.ToolId + ".description";
+        var key = row.ToolId.EndsWith(".web.search", StringComparison.Ordinal)
+            ? "client.tool.mcp.web.search.description"
+            : row.ToolId.EndsWith(".web.fetch", StringComparison.Ordinal)
+                ? "client.tool.mcp.web.fetch.description"
+                : "client.tool." + row.ToolId + ".description";
         // Do not attribute a built-in explanation to a plugin with a similar name.
         if (row.Source == "BuiltIn:BuiltIn:Core:core@1" && Localization.HasInBoth(key))
             return text.Resolve(key);

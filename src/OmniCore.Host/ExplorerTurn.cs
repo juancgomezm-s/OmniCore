@@ -1560,13 +1560,20 @@ public sealed class ExplorerTurn
                     else if (_tools is ScriptedToolExecutor scripted)
                     {
                         var substitution = _protectedPreferenceSubstitutions.GetValueOrDefault(call.ToolName);
-                        var substitutionAsk = substitution is not null
-                            && !_approvedProtectedPreferenceIdentities.Contains(ApprovalKey(substitution));
+                        var mcpApproval = _catalog.Find(new ToolId(call.ToolName)) switch
+                        {
+                            McpTool mcp => mcp.FirstEffectApproval,
+                            McpWebTool web => web.FirstEffectApproval,
+                            _ => null,
+                        };
+                        var requiredApproval = substitution ?? mcpApproval;
+                        var substitutionAsk = requiredApproval is not null
+                            && !_approvedProtectedPreferenceIdentities.Contains(ApprovalKey(requiredApproval));
                         outcome = requestReceipt is not null
                             ? scripted.ExecuteTool(validated, false, cancellationToken, stream,
-                                requestReceipt, substitutionAsk ? substitution : null)
+                                requestReceipt, substitutionAsk ? requiredApproval : null)
                             : scripted.ExecuteTool(validated, false, cancellationToken, stream,
-                                substitutionAsk ? substitution : null);
+                                substitutionAsk ? requiredApproval : null);
                         foreach (var approval in outcome.Events.OfType<ToolPreferenceSubstitutionApproved>())
                             _approvedProtectedPreferenceIdentities.Add(ApprovalKey(approval.SourceToolId,
                                 approval.TargetToolId, approval.IdentityHash));

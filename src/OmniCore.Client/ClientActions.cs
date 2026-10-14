@@ -15,6 +15,7 @@ public static class ClientActionIds
     public const string ExtensionsInspect = "extensions.inspect";
     public const string HooksInspect = "hooks.inspect";
     public const string OpenRouterInspect = "openrouter.inspect";
+    public const string McpInspect = "mcp.inspect";
     public const string CommandsInspect = "commands.inspect";
     public const string SkillsInspect = "skills.inspect";
     public const string MemorySession = "memory.session";
@@ -73,6 +74,7 @@ public sealed class ClientCommandRegistry
             new("extensions", ClientActionIds.ExtensionsInspect, "client.command.extensions"),
             new("hooks", ClientActionIds.HooksInspect, "client.command.hooks"),
             new("openrouter", ClientActionIds.OpenRouterInspect, "client.command.openrouter"),
+            new("mcp", ClientActionIds.McpInspect, "client.command.mcp"),
             new("commands", ClientActionIds.CommandsInspect, "client.command.commands"),
             new("skills", ClientActionIds.SkillsInspect, "client.command.skills"),
             new("memory", ClientActionIds.MemorySession, "client.command.memory"),
@@ -134,6 +136,7 @@ public sealed class ClientActionHandler : IClientActionHandler
             ClientActionIds.ExtensionsInspect => Query(context, "extensions"),
             ClientActionIds.HooksInspect => Query(context, "hooks"),
             ClientActionIds.OpenRouterInspect => OpenRouter(invocation, context, cancellationToken),
+            ClientActionIds.McpInspect => Query(context, "mcp"),
             ClientActionIds.CommandsInspect => Query(context, "commands"),
             ClientActionIds.SkillsInspect => Skills(invocation, context),
             ClientActionIds.MemorySession => Memory(invocation, context),

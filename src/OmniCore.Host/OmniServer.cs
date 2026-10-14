@@ -2363,6 +2363,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         ? values : new HashSet<string>(StringComparer.Ordinal), scope));
             }
         }
+        if (name == "mcp")
+        {
+            var paths = _platformPathsFactory();
+            var workspace = _workspaceRoot ?? Environment.CurrentDirectory;
+            var trusted = _workspaceRoot is not null && new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+            // Inspection is deliberately configuration-only: it never probes a process or endpoint.
+            return new SessionQueryResult(name, new McpServerStore(paths, workspace, trusted).InspectionJson());
+        }
         if (name == "hooks")
         {
             if (_workspaceRoot is null) return new SessionQueryResult(name,

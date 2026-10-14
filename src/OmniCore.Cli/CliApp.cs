@@ -95,6 +95,7 @@ public sealed class CliApp
         if (command == "model") return ModelPolicyCommands.Run(args, selectedLocalization: Loc());
         if (command == "worktree") return WorktreeCommands.RunAsync(args, CancellationToken.None, Loc());
         if (command == "trust") return RunTrust(args);
+        if (command == "mcp") return RunMcp(args);
         if (command == "extensions") return RunExtensions(args);
         if (command is "login" or "logout" && args.Length >= 2 && args[1] == "claude")
         {
@@ -225,6 +226,97 @@ public sealed class CliApp
             Console.WriteLine(Loc().Resolve("cli.extension.consent.failed", "diagnostic", exception.Message));
             return Task.FromResult(1);
         }
+    }
+
+    private static Task<int> RunMcp(string[] args)
+    {
+        if (args.Length == 1 || args is ["mcp", "list"])
+        {
+            var query = Runtime.Connect(CancellationToken.None).Query("mcp", CancellationToken.None);
+            if (query is null)
+            {
+                Console.WriteLine(Loc().Resolve("cli.no_data", "command", "mcp"));
+                return Task.FromResult(1);
+            }
+            RenderDiagnostic("mcp", query.Json);
+            return Task.FromResult(0);
+        }
+        if (args.Length >= 4 && args[1] == "add-stdio")
+        {
+            try
+            {
+                Runtime.AddMcpStdio(args[2], args[3], args.Skip(4).ToArray());
+                Console.WriteLine(Loc().Resolve("mcp.add.done", "id", args[2]));
+                return Task.FromResult(0);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or IOException
+                or ArgumentException or InvalidDataException or UnauthorizedAccessException)
+            { Console.WriteLine(Loc().Resolve("mcp.trust.failed", "diagnostic", exception.Message)); return Task.FromResult(1); }
+        }
+        if (args.Length == 4 && args[1] == "add-http")
+        {
+            try
+            {
+                Runtime.AddMcpHttp(args[2], args[3]);
+                Console.WriteLine(Loc().Resolve("mcp.add.done", "id", args[2]));
+                return Task.FromResult(0);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or IOException
+                or ArgumentException or InvalidDataException or UnauthorizedAccessException)
+            { Console.WriteLine(Loc().Resolve("mcp.trust.failed", "diagnostic", exception.Message)); return Task.FromResult(1); }
+        }
+        if (args.Length == 3 && args[1] == "credential")
+        {
+            var secret = ReadMcpSecret();
+            if (secret is null) return Task.FromResult(2);
+            try
+            {
+                Runtime.SetMcpCredential(args[2], secret, CancellationToken.None);
+                Console.WriteLine(Loc().Resolve("mcp.credential.done", "id", args[2]));
+                return Task.FromResult(0);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or IOException
+                or ArgumentException or InvalidDataException or UnauthorizedAccessException)
+            { Console.WriteLine(Loc().Resolve("mcp.trust.failed", "diagnostic", exception.Message)); return Task.FromResult(1); }
+        }
+        if (args.Length != 3 || args[1] is not ("trust" or "revoke"))
+        {
+            Console.WriteLine(Loc().Resolve("mcp.usage"));
+            return Task.FromResult(2);
+        }
+        try
+        {
+            Runtime.SetMcpTrust(args[2], trusted: args[1] == "trust");
+            Console.WriteLine(Loc().Resolve(args[1] == "trust" ? "mcp.trust.done" : "mcp.revoke.done",
+                "id", args[2]));
+            return Task.FromResult(0);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or ArgumentException
+            or InvalidDataException or UnauthorizedAccessException)
+        {
+            Console.WriteLine(Loc().Resolve("mcp.trust.failed", "diagnostic", exception.Message));
+            return Task.FromResult(1);
+        }
+    }
+
+    private static string? ReadMcpSecret()
+    {
+        Console.Write(Loc().Resolve("mcp.credential.prompt"));
+        if (Console.IsInputRedirected) return Console.In.ReadLine();
+        var value = new System.Text.StringBuilder();
+        while (true)
+        {
+            var key = Console.ReadKey(intercept: true);
+            if (key.Key == ConsoleKey.Enter) { Console.WriteLine(); break; }
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (value.Length > 0) value.Length--;
+                continue;
+            }
+            if (key.Key == ConsoleKey.Escape) { Console.WriteLine(); return null; }
+            if (!char.IsControl(key.KeyChar)) value.Append(key.KeyChar);
+        }
+        return value.ToString();
     }
 
     private static Task<int> RunTypedCommand(string[] args)
@@ -922,6 +1014,8 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("extensions.usage"));
         Console.WriteLine(Loc().Resolve("commands.hooks.help"));
         Console.WriteLine(Loc().Resolve("hooks.usage"));
+        Console.WriteLine(Loc().Resolve("commands.mcp.help"));
+        Console.WriteLine(Loc().Resolve("mcp.usage"));
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine(Loc().Resolve("commands.workflow.help"));
         Console.WriteLine(Loc().Resolve("cli.usage.model"));

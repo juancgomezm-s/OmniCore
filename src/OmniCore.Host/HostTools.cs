@@ -131,6 +131,15 @@ public sealed class HostTools
         _catalog.Add(tool);
     }
 
+    internal void RegisterMcpTool(ITool tool)
+    {
+        ArgumentNullException.ThrowIfNull(tool);
+        if (tool is not (McpTool or McpWebTool) || tool.Descriptor.Source.Kind != SourceKind.Mcp
+            || tool.Descriptor.Source.Trust is not (TrustLevel.Trusted or TrustLevel.Project))
+            throw new InvalidOperationException("Only configured trusted MCP sources may enter a session catalog.");
+        _catalog.Add(tool);
+    }
+
     internal void RegisterSkillLoadTool(ITool tool)
     {
         ArgumentNullException.ThrowIfNull(tool);
