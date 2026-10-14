@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using OmniCore.Cli;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
@@ -25,6 +26,88 @@ public sealed class StdioTransportTests
         Assert.Throws<EndOfStreamException>(() => WireFrame.Read(truncated));
         using var empty = new MemoryStream([0x0A]);
         Assert.Throws<InvalidDataException>(() => WireFrame.Read(empty));
+
+        using var noMultiFrame = new MemoryStream();
+        Assert.Throws<InvalidDataException>(() => WireFrame.Write(noMultiFrame, "{\"one\":1}\n{\"two\":2}"));
+        Assert.Empty(noMultiFrame.ToArray());
+        Assert.Throws<InvalidDataException>(() => WireFrame.Write(noMultiFrame, "{\"one\":1}\r"));
+        Assert.Empty(noMultiFrame.ToArray());
+        WireFrame.Write(noMultiFrame, "{\"text\":\"line1\\nline2\"}");
+        Assert.Equal("{\"text\":\"line1\\nline2\"}\n", System.Text.Encoding.UTF8.GetString(noMultiFrame.ToArray()));
+    }
+
+    [Fact]
+    public void Malformed_requests_return_canonical_errors_and_host_continues_without_dispatching_them()
+    {
+        using var requests = new MemoryStream();
+        WireFrame.Write(requests, "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"h1\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}");
+        var malformed = new[]
+        {
+            ("q-missing", "{\"operation\":\"query\"}"),
+            ("q-type", "{\"operation\":\"query\",\"name\":3}"),
+            ("s-missing", "{\"operation\":\"subscribe\"}"),
+            ("s-range", "{\"operation\":\"subscribe\",\"fromSequence\":9223372036854775808}"),
+            ("c-missing", "{\"operation\":\"command\"}"),
+        };
+        foreach (var (id, payload) in malformed)
+            WireFrame.Write(requests, WireEnvelope.Command(id, payload).ToJson());
+        WireFrame.Write(requests, WireEnvelope.Command("q-valid", "{\"operation\":\"query\",\"name\":\"state\"}").ToJson());
+        requests.Position = 0;
+        using var output = new MemoryStream();
+        using var diagnostics = new StringWriter();
+        var client = new RecordingClient();
+        Assert.Equal(0, StdioProtocolHost.Run(client, requests, output, diagnostics,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(string.Empty, diagnostics.ToString());
+        Assert.Equal(1, client.QueryCount);
+        Assert.Equal(0, client.SendCount);
+        Assert.Equal(0, client.SubscribeCount);
+
+        output.Position = 0;
+        Assert.Equal(MessageTypes.Response, WireEnvelope.FromJson(WireFrame.Read(output)!).MessageType);
+        foreach (var _ in malformed)
+        {
+            var error = WireEnvelope.FromJson(WireFrame.Read(output)!);
+            Assert.Equal(MessageTypes.Error, error.MessageType);
+            Assert.Contains("unsupported_request", error.PayloadJson, StringComparison.Ordinal);
+        }
+        var valid = WireEnvelope.FromJson(WireFrame.Read(output)!);
+        Assert.Equal(MessageTypes.Response, valid.MessageType);
+        Assert.Contains("state", valid.PayloadJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Handshake_timeout_and_cancellation_kill_the_owned_child_process()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-stall-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var script = Path.Combine(root, "stall.ps1");
+        var pidFile = Path.Combine(root, "child.pid");
+        File.WriteAllText(script, "$PID | Set-Content -LiteralPath '" + pidFile + "'; Start-Sleep -Seconds 30");
+        try
+        {
+            var timedOut = Assert.Throws<TimeoutException>(() => StdioOmniClient.Start("powershell.exe",
+                ["-NoProfile", "-NonInteractive", "-File", script], root, TimeSpan.FromSeconds(2),
+                TestContext.Current.CancellationToken));
+            Assert.Contains("negotiation", timedOut.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.True(File.Exists(pidFile));
+            AssertChildExited(int.Parse(File.ReadAllText(pidFile).Trim(), System.Globalization.CultureInfo.InvariantCulture));
+
+            File.Delete(pidFile);
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            cancellation.CancelAfter(TimeSpan.FromSeconds(2));
+#pragma warning disable xUnit1051 // The linked token also carries the test cancellation token.
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Task.Run(() => StdioOmniClient.Start(
+                "powershell.exe", ["-NoProfile", "-NonInteractive", "-File", script], root,
+                TimeSpan.FromSeconds(5), cancellation.Token)));
+#pragma warning restore xUnit1051
+            Assert.True(File.Exists(pidFile));
+            AssertChildExited(int.Parse(File.ReadAllText(pidFile).Trim(), System.Globalization.CultureInfo.InvariantCulture));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
     }
 
     [Fact]
@@ -125,6 +208,17 @@ public sealed class StdioTransportTests
         Assert.IsAssignableFrom<IOmniClient>(client);
         Assert.IsAssignableFrom<ITrustedUserActionClient>(client);
         Assert.Empty(client.SubscribeSince(0));
+    }
+
+    [Fact]
+    public void Stdio_cli_does_not_treat_a_rejected_outcome_as_success_when_legacy_status_is_ok()
+    {
+        Assert.False(CliApp.IsStdioAckSuccessful(new CommandAck("c1", "ok", null,
+            RuntimeCommandOutcome.Rejected())));
+        Assert.True(CliApp.IsStdioAckSuccessful(new CommandAck("c2", "ok", null,
+            RuntimeCommandOutcome.Accepted())));
+        Assert.False(CliApp.IsStdioAckSuccessful(new CommandAck("c3", "error", null,
+            RuntimeCommandOutcome.Accepted())));
     }
 
     [Fact]
@@ -266,7 +360,8 @@ public sealed class StdioTransportTests
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(root, "config"));
             Environment.CurrentDirectory = workspace;
             var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
-            using var client = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace);
+            using var client = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace,
+                cancellationToken: TestContext.Current.CancellationToken);
             Assert.DoesNotContain("human.authority", client.Capabilities);
             var forgedHumanAction = WireEnvelope.Command(Ids.NewV7(),
                 "{\"cmd\":\"mode.default.set\",\"human\":true,\"mode\":\"Act\"}");
@@ -336,6 +431,22 @@ public sealed class StdioTransportTests
         try { process.WaitForExit(3000); } catch (InvalidOperationException) { }
     }
 
+    private static void AssertChildExited(int processId)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTime.UtcNow < deadline)
+        {
+            try
+            {
+                using var child = Process.GetProcessById(processId);
+                if (child.HasExited) return;
+            }
+            catch (ArgumentException) { return; }
+            Thread.Sleep(25);
+        }
+        Assert.Fail($"Owned handshake fixture process {processId} did not exit after cancellation/timeout.");
+    }
+
     private static string FindRepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
@@ -349,5 +460,27 @@ public sealed class StdioTransportTests
         public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) =>
             [WireEnvelope.Event("event-1", "{\"large\":\"" + new string('x', StdioProtocol.MaximumFrameBytes) + "\"}")];
         public SessionQueryResult? Query(string name, CancellationToken cancellationToken) => null;
+    }
+
+    private sealed class RecordingClient : IOmniClient
+    {
+        public int QueryCount { get; private set; }
+        public int SendCount { get; private set; }
+        public int SubscribeCount { get; private set; }
+        public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken)
+        {
+            SendCount++;
+            return CommandAck.Ok(command.MessageId);
+        }
+        public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence)
+        {
+            SubscribeCount++;
+            return [];
+        }
+        public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
+        {
+            QueryCount++;
+            return new SessionQueryResult(name, "{\"ready\":true}");
+        }
     }
 }

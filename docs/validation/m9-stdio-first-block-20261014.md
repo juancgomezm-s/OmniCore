@@ -18,6 +18,17 @@ recibió su replay, y un segundo CLI/Host consultó el journal persistido (`stat
 La prueba aisló `OMNICORE_DATA_DIR` y `OMNICORE_CONFIG_DIR` en temporales y no configuró provider,
 por lo que no ejecutó ni facturó inferencia.
 
+Corrección focal del mismo bloque: los campos ausentes, tipos/rangos no válidos y envelopes internos
+inválidos ahora responden `unsupported_request` y permiten continuar con la siguiente consulta; la
+prueba verifica que los cinco rechazos no llaman comandos, replay ni queries y que el Host sigue
+vivo para una consulta válida, sin diagnóstico falso de arranque. `WireFrame.Write` rechaza CR/LF
+físicos antes de escribir bytes; un LF escapado dentro de JSON permanece un único frame. El cliente
+aplica un plazo de handshake configurable, de 10 s por defecto, enlazado con cancelación; al vencer
+el plazo o cancelarse termina únicamente el proceso hijo que abrió y no fabrica respuesta. Un fixture
+PowerShell real que no envía hello comprobó timeout y cancelación con plazos de 2 s, PID propio y
+salida del hijo. Los comandos `input` y `sim` consideran `Outcome=Rejected` fallo incluso si el campo
+compatible `Status` contiene `ok`, con mensaje localizado es/en/fr/it.
+
 ## Límites abiertos
 
 `subscribe` es replay request/response por lotes, no entrega push. No hay lease de escritor entre
@@ -36,6 +47,6 @@ de M8 sigue pendiente por separado.
 
 - `dotnet build src/OmniCore.Cli/OmniCore.Cli.csproj --no-restore` — correcto, net10, 0 warnings y 0 errors.
 - `dotnet build src/OmniCore.Client/OmniCore.Client.csproj -f net8.0 --no-restore` — correcto, Client y Protocol net8, 0 warnings y 0 errors.
-- `dotnet test tests/OmniCore.Tests/OmniCore.Tests.csproj --filter FullyQualifiedName~StdioTransportTests` — 9 pruebas focales PASS: CLI/Host hijo, persistencia/replay, Unicode, goldens consumidos por el test, versión incompatible, framing inválido y sobredimensionado, respuesta de replay acotada, EOF/cancelación, límite in-process y uso/diagnóstico es/en/fr/it.
+- `dotnet test tests/OmniCore.Tests/OmniCore.Tests.csproj --filter FullyQualifiedName~StdioTransportTests` — 12 pruebas focales PASS: CLI/Host hijo, persistencia/replay, Unicode, goldens consumidos por el test, versión incompatible, framing inválido/acotado y CR/LF físicos, continuidad después de requests malformadas, timeout/cancelación de handshake con proceso fixture real, rechazo de Outcome, respuesta de replay acotada, EOF, límite in-process y recursos/diagnóstico es/en/fr/it.
 
 No se ejecutó la suite integral.

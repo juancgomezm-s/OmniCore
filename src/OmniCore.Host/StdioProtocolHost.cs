@@ -54,7 +54,8 @@ public static class StdioProtocolHost
                     WireFrame.Write(output, WireEnvelope.Response(request.MessageId, result).ToJson());
                 }
                 catch (Exception ex) when (ex is InvalidDataException or ArgumentException or JsonException
-                    or InvalidOperationException or NotSupportedException)
+                    or InvalidOperationException or NotSupportedException or FormatException
+                    or KeyNotFoundException or OverflowException)
                 {
                     WireFrame.Write(output, Error(request.MessageId, "unsupported_request", "Request is not supported.").ToJson());
                 }
@@ -82,7 +83,10 @@ public static class StdioProtocolHost
         {
             case StdioProtocol.CommandOperation:
             {
-                var commandJson = root.GetProperty("command").GetRawText();
+                if (!root.TryGetProperty("command", out var commandElement)
+                    || commandElement.ValueKind != JsonValueKind.Object)
+                    throw new InvalidDataException();
+                var commandJson = commandElement.GetRawText();
                 var command = ParseEnvelope(commandJson);
                 if (command.Version != ProtocolVersions.V1 || command.MessageType != MessageTypes.Command)
                     throw new InvalidDataException();
@@ -103,7 +107,10 @@ public static class StdioProtocolHost
             }
             case StdioProtocol.QueryOperation:
             {
-                var name = root.GetProperty("name").GetString();
+                if (!root.TryGetProperty("name", out var nameElement)
+                    || nameElement.ValueKind != JsonValueKind.String)
+                    throw new InvalidDataException();
+                var name = nameElement.GetString();
                 if (string.IsNullOrWhiteSpace(name) || !StdioProtocol.IsSupportedQuery(name))
                     throw new InvalidDataException();
                 var result = client.Query(name, CancellationToken.None);
@@ -112,8 +119,10 @@ public static class StdioProtocolHost
             }
             case StdioProtocol.SubscribeOperation:
             {
-                var from = root.GetProperty("fromSequence").GetInt64();
-                if (from < 0) throw new InvalidDataException();
+                if (!root.TryGetProperty("fromSequence", out var fromElement)
+                    || fromElement.ValueKind != JsonValueKind.Number
+                    || !fromElement.TryGetInt64(out var from) || from < 0)
+                    throw new InvalidDataException();
                 var events = client.SubscribeSince(from);
                 var encodedEvents = EncodeEvents(events);
                 return "{\"events\":[" + encodedEvents + "]}";

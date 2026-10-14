@@ -175,6 +175,11 @@ frame, hello correlacionado y capabilities honestas; operaciones construidas: `s
 `session.input`, ocho read models enumerados en ADR-0019 §4 y replay por lotes desde N. El ack
 transporta `Outcome/FirstSeq/LastSeq`. Se mantienen rutas in-process y TUI. Goldens del wire real:
 [`docs/protocol/stdio/1.0`](../protocol/stdio/1.0/README.md).
+El handshake del cliente tiene plazo configurable (10 s por defecto) y token de cancelación; el
+timeout/cancelación limpia sólo el hijo propio. Frames con CR/LF físicos se rechazan antes de escribir;
+los LF escapados son válidos. Las requests con campos malformados reciben `unsupported_request` y
+no derriban la conexión; `input`/`sim` no consideran exitoso `Outcome=Rejected` aunque `Status=ok`.
+El acta focal registra pruebas con proceso fixture real y plazos de 2 s.
 
 **Pendiente del siguiente bloque y del cierre M9:** lease multiwriter/heartbeat, reconexión,
 deduplicación y lectura de resultado ambiguo; autoridad humana externa segura; stream push y

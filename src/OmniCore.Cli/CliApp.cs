@@ -253,7 +253,11 @@ public sealed class CliApp
                         inputAck.FirstSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
                         + "," + JsonObj.FieldRaw("lastSeq",
                         inputAck.LastSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null") + "}");
-                    if (inputAck.Status != "ok") return Task.FromResult(1);
+                    if (!IsStdioAckSuccessful(inputAck))
+                    {
+                        Console.Error.WriteLine(inputAck.Error ?? Loc().Resolve("cli.stdio.command_rejected"));
+                        return Task.FromResult(1);
+                    }
                     foreach (var envelope in client.SubscribeSince(inputAck.FirstSeq ?? 1))
                         new JsonRenderer().Emit(envelope);
                     var stateAfterInput = client.Query("state", CancellationToken.None);
@@ -271,22 +275,25 @@ public sealed class CliApp
                         ? "{" + JsonObj.Field("cmd", "sim.resume") + "}"
                         : "{" + JsonObj.Field("cmd", "sim") + "," + JsonObj.Field("scenario", "multi-item-plan") + "}";
                     var ack = client.Send(WireEnvelope.Command(Ids.NewV7(), simCommand), CancellationToken.None);
-                    if (ack.Status != "ok")
+                    if (!IsStdioAckSuccessful(ack))
                     {
-                        Console.Error.WriteLine(ack.Error ?? "Stdio Host rejected the simulation command.");
+                        Console.Error.WriteLine(ack.Error ?? Loc().Resolve("cli.stdio.command_rejected"));
                         return Task.FromResult(1);
                     }
                     return RenderEvents(client, jsonOutput, 0, "stdio-sim");
             }
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or OperationCanceledException
-                or ObjectDisposedException or System.ComponentModel.Win32Exception)
+                or ObjectDisposedException or System.ComponentModel.Win32Exception or TimeoutException)
             {
                 Console.Error.WriteLine(Loc().Resolve("cli.stdio.connect_failed"));
                 return Task.FromResult(1);
             }
         }
     }
+
+    internal static bool IsStdioAckSuccessful(CommandAck ack) =>
+        ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Rejected;
 
     private static Task<int> RunResolve(string[] args)
     {

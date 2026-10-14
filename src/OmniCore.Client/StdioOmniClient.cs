@@ -14,7 +14,7 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
     private int _disposed;
     private int _exchangeActive;
 
-    private StdioOmniClient(Process process)
+    private StdioOmniClient(Process process, TimeSpan handshakeTimeout, CancellationToken cancellationToken)
     {
         _process = process;
         _input = process.StandardInput.BaseStream;
@@ -22,7 +22,14 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
         var hello = WireEnvelope.Hello();
         var payload = "{\"supportedVersions\":[\"1.0\"],\"client\":\"omnicore-cli\"}";
         var request = new WireEnvelopeBuilder(hello.MessageId, MessageTypes.Hello, payload).Build();
-        var response = Exchange(request, CancellationToken.None);
+        using var handshake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        handshake.CancelAfter(handshakeTimeout);
+        WireEnvelope response;
+        try { response = Exchange(request, handshake.Token); }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"The stdio Host did not complete protocol negotiation within {handshakeTimeout}.");
+        }
         if (response.MessageType != MessageTypes.Response)
             throw new InvalidDataException("Host did not answer protocol negotiation.");
         using var document = JsonDocument.Parse(response.PayloadJson);
@@ -40,11 +47,15 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
     public IReadOnlySet<string> Capabilities { get; }
 
     public static StdioOmniClient Start(string executable, IReadOnlyList<string> arguments,
-        string workingDirectory)
+        string workingDirectory, TimeSpan? handshakeTimeout = null, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         ArgumentNullException.ThrowIfNull(arguments);
         ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
+        cancellationToken.ThrowIfCancellationRequested();
+        var timeout = handshakeTimeout ?? TimeSpan.FromSeconds(10);
+        if (timeout <= TimeSpan.Zero || timeout == Timeout.InfiniteTimeSpan)
+            throw new ArgumentOutOfRangeException(nameof(handshakeTimeout), "The stdio handshake timeout must be finite and positive.");
         var start = new ProcessStartInfo(executable)
         {
             WorkingDirectory = Path.GetFullPath(workingDirectory),
@@ -52,6 +63,7 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = false,
+            CreateNoWindow = true,
         };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         var process = new Process { StartInfo = start, EnableRaisingEvents = true };
@@ -60,7 +72,7 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
             process.Dispose();
             throw new InvalidOperationException("Could not start the OmniCore stdio Host process.");
         }
-        try { return new StdioOmniClient(process); }
+        try { return new StdioOmniClient(process, timeout, cancellationToken); }
         catch
         {
             StopOwnedProcess(process);

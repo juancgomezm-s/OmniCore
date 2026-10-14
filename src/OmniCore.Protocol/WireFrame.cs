@@ -34,6 +34,10 @@ public static class WireFrame
     {
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(json);
+        // JSON Lines has exactly one physical line per frame. Reject raw separators before
+        // touching the stream; escaped JSON string newlines remain ordinary characters.
+        if (json.Contains('\r') || json.Contains('\n'))
+            throw new InvalidDataException("A stdio protocol frame must contain exactly one JSON line.");
         var byteCount = StrictUtf8.GetByteCount(json);
         if (byteCount > StdioProtocol.MaximumFrameBytes)
             throw new InvalidDataException("Stdio protocol frame exceeds the configured limit.");
