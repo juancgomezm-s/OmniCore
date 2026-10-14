@@ -736,6 +736,16 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado:** ABIERTO / BLOQUEANTE.
 
+**Aclaración vigente del usuario para OmniCore (2026-10-14):** el objetivo es homologar la
+experiencia de uso. El usuario considera que OmniCore ya ofrece una buena referencia y que,
+con los últimos cambios del menú, queda poco por corregir. **Conservar la experiencia, los menús
+y la navegación actuales.** La matriz inferior es una lista de contraste; no obliga a rediseñar
+cada superficie, redefinir temas ni construir funciones que falten en otro producto. Sólo abrir
+una adaptación de Core ante una discrepancia concreta de uso, con su efecto y corrección mínima
+identificados. Esta aclaración prevalece sobre la secuencia de lotes propuesta anteriormente.
+Se registra la valoración del usuario sobre Core; el cierre cruzado de las tres aplicaciones
+continúa separado y no se declara automáticamente por esta actualización documental.
+
 Por instrucción del usuario, OmniCoder, OmniCore y OmniLlama deben ofrecer una experiencia de familia **visual y funcionalmente coherente** antes de ampliar sus funcionalidades. Este gate prevalece sobre el orden del backlog y sobre indicaciones históricas de «puede empezar ahora», «independiente de Core» o «diferible». Los cierres y evidencias anteriores conservan su significado histórico; no acreditan la unificación.
 
 **Regla de ejecución:** mientras este gate siga abierto en cualquiera de los tres planes, no iniciar ni continuar ampliaciones de funcionalidades en ninguna aplicación. Solo avanzar en inventario, diseño, adaptación, integración mínima y validación imprescindibles para la unificación, o en mantenimiento/correcciones de defectos y seguridad existentes, sin abrir alcance nuevo. Cada tarea admitida debe señalar el criterio de este gate que atiende y la evidencia que producirá; una prioridad histórica o una dependencia técnica por sí solas no levantan el bloqueo.
@@ -757,7 +767,7 @@ Por instrucción del usuario, OmniCoder, OmniCore y OmniLlama deben ofrecer una 
 | Aplicación | Conformidad con el contrato común | Evidencia / aceptación |
 |---|---|---|
 | OmniCoder | Pendiente | Sin cierre de unificación registrado |
-| OmniCore | Pendiente | Sin cierre de unificación registrado |
+| OmniCore | Experiencia actual a conservar; cierre cruzado pendiente | El usuario considera buena la referencia de Core y sus últimos menús (2026-10-14). No se registra un nuevo defecto de uso ni se compromete un rediseño. |
 | OmniLlama | Pendiente | Sin cierre de unificación registrado |
 
 Esta actualización incorpora instrucciones de planificación; no implementa la unificación ni acredita nuevos resultados de build, pruebas o runtime.
@@ -766,7 +776,11 @@ Esta actualización incorpora instrucciones de planificación; no implementa la 
 
 Terminal.Gui/Spectre y estilos concretos permanecen en los renderers; no introducir CSS, React, Electron ni lógica visual en Engine/Domain/Protocol. Preservar los invariantes de ADR-0019, 0024, 0025 y 0030–0034: estados y decisiones autoritativos, cancelación propagada e interacciones humanas canónicas. Homologar los contratos de presentación que necesiten OmniCoder/OmniLlama mediante adaptadores y deltas explícitos, sin duplicar motores ni forzar a todos los providers al protocolo OpenAI.
 
-La definición de roles/paleta y la coherencia de las superficies existentes pasan a prioridad bloqueante; construir otra aplicación desktop o nuevas animaciones no se exige para cerrarlo. Las correcciones ya abiertas de M8 pueden continuar como mantenimiento; ampliar M8/M9/M10 o el frame Git posterior queda condicionado al gate, salvo la integración mínima justificada por un criterio de unificación.
+Los roles y convenciones ya construidos son la base de la comprobación, sin volver a definirlos
+por el solo hecho de comparar productos. Construir otra aplicación desktop o nuevas animaciones
+no se exige para cerrar el gate. Las correcciones ya abiertas de M8 pueden continuar como
+mantenimiento; ampliar M8/M9/M10 o el frame Git posterior conserva sus dependencias y no se
+autoriza por presentar una diferencia visual como nueva funcionalidad necesaria.
 
 #### Matriz ejecutable de OmniCore — U-C01 a U-C12 (2026-10-14)
 
@@ -775,13 +789,15 @@ sin cambios en `src/tests` hasta `3275742`. Las filas describen pendientes de Co
 de construcción de los donantes. La fotografía inicial de los planes de OmniCoder y OmniLlama
 quedó superada; sus revisiones de alcance y entregas se recogen en la actualización siguiente.
 La matriz vive aquí; los otros planes la referencian por estos IDs, sin crear otra memoria
-de desarrollo. **Todas las filas tienen aceptación de paridad pendiente.** «Existente» acredita
-un consumidor localizado; «parcial» identifica una diferencia o cobertura aún no acreditada;
-«no disponible» no habilita construir una prestación futura para aparentar paridad.
+de desarrollo. **Las filas son comprobaciones, no doce trabajos obligatorios.** «Existente» acredita
+un consumidor localizado; «parcial» identifica una diferencia de capacidad o cobertura, no un
+defecto de experiencia por sí mismo. Una prestación «no disponible» puede conservarse como
+diferencia explícita y no habilita construirla para aparentar paridad. La valoración del usuario
+sobre los menús de Core se registra arriba; no exige repetir su rediseño ni sus pruebas sin cambios.
 La suite M8 registrada en [su acta](../validation/m8-extensibility-20261011.md) cubre ese árbol,
 no constituye una validación cruzada de familia ni una nueva prueba ejecutada para esta matriz.
 
-| ID / superficie | Estado y consumidor real de OmniCore | Pieza de familia / adaptación requerida | Responsable por capa / evidencia de salida pendiente |
+| ID / superficie | Estado y consumidor real de OmniCore | Referencia de contraste; adaptar sólo ante discrepancia concreta | Responsable / evidencia a reutilizar o ampliar si hay cambios |
 |---|---|---|---|
 | **U-C01 · Marca, roles y temas** (P0.2–3) | **Parcial.** `ThemeRole` y glyphs en [TuiPresentation](../../src/OmniCore.Client/TuiPresentation.cs); estilos/`NO_COLOR` en [TuiApp](../../src/OmniCore.Cli/Tui/TuiApp.cs). Roles existentes no acreditan un contrato común de temas. | Cotejar tokens de OmniCoder y adaptación React de OmniLlama; acordar tabla rol→significado→estilo terminal. Mantener marca OmniCore y logo propio de OmniLlama; colores de renderer fuera de Protocol. No declarar claro/sistema soportados sin consumidor. | **Client/Cli.** Tabla de roles y diferencias de plataforma; capturas de conversación/preferencias con color y `NO_COLOR`, glyph+texto, foco/selección legibles. |
 | **U-C02 · Conversación e historial** (P0.1,3–4) | **Existente; paridad pendiente.** [ClientProjection](../../src/OmniCore.Client/ClientProjection.cs), [ConversationPresentation](../../src/OmniCore.Cli/Tui/ConversationPresentation.cs) y [ConversationView](../../src/OmniCore.Cli/Tui/ConversationView.cs) proyectan hilo literal y Markdown sin escribir journal. | Homologar jerarquía usuario/asistente/herramienta/aviso con los hilos existentes de Electron y React; conservar posición de lectura, texto y procedencia. | **Client/Cli.** Mismo escenario de hilo largo, Unicode, scroll/reapertura y respuesta con error/cancelación; `ConversationHistoryCanonicalTests`, `ConversationMarkdownRegressionTests` y recorrido real de cada aplicación. |
@@ -796,9 +812,10 @@ no constituye una validación cruzada de familia ni una nueva prueba ejecutada p
 | **U-C11 · Idiomas, accesibilidad y borradores** (P0.2–4,6) | **Existente en es/en/fr/it; paridad pendiente.** [Localization](../../src/OmniCore.Client/Localization.cs), recursos Client, preferencias `ui.locale` y adaptación terminal. | Conservar los cuatro idiomas de Core en todas las filas; registrar idiomas efectivamente disponibles en Electron/WebUI. `NO_COLOR`, ASCII, teclado, foco y movimiento reducido se prueban donde el renderer los soporte; diferencia ausente exige adaptación o aceptación explícita. | **Client/Cli.** Matriz idioma×superficie×estado, formatos regionales y copia literal de código/rutas/IDs; cambiar idioma/panel preserva borrador y selección. `ClientCommandLocalizationTests`, `ShellLocalizationTests` y wiring focal. |
 | **U-C12 · Frontera Electron→Core** (P0.5; M9) | **No disponible externamente.** [IOmniClient/ITrustedUserActionClient](../../src/OmniCore.Protocol/Wire.cs) y Host son in-process; marker de acción humana no serializable. `CommandAck.Outcome/FirstSeq/LastSeq` ya existen. Stdio MCP no es transporte cliente→Host. | Delimitar el contrato mínimo necesario para integrar Electron: schemas/goldens/versiones/capabilities, resultado de command, origen humano verificado y ownership/reconexión. Types net8 no constituyen binding TS ni autorizan un host TS competidor. | **Protocol/Host; adapter de producto en OmniCoder.** Contrato publicado y pruebas negativas de command sin autoridad, respuesta tardía/duplicada, incompatibilidad, gap y resultado desconocido sin repetir efectos. Implementación M9 sólo como integración mínima justificada por P0, o tras cierre global. |
 
-**Actualización de los donantes y del alcance — 2026-10-14:** la referencia de producto y
-presentación ya elegida es **OmniCoder**. UC-A debe cotejar y adaptar ese contrato y el mapeo
-ya existente en OmniLlama, sin reiniciar una definición visual entre tres alternativas.
+**Actualización de los donantes y del alcance — 2026-10-14:** **OmniCoder** conserva su papel
+de referencia de producto para Electron/WebUI; **OmniCore conserva su experiencia CLI/TUI actual**.
+Sus componentes y los mapeos existentes de OmniLlama sirven para contrastar acciones y estados
+compatibles, sin imponer a Core otra estructura ni reiniciar la definición visual.
 Las correcciones de alcance más recientes de cada producto prevalecen sobre su gate general
 y sobre esta fotografía. La aceptación global de familia sigue pendiente.
 
@@ -825,34 +842,29 @@ y sobre esta fotografía. La aceptación global de familia sigue pendiente.
   qué commit/bundle está instalado y qué se observa realmente en el navegador/terminal; igualdad
   de bytes o pruebas de fuente no acreditan movimiento, visibilidad ni aceptación del usuario.
 
-**Control de cambios antes de UC-A y de cada adaptación:** releer los encabezados de alcance,
-entregas y exclusiones de ambos planes y comparar HEAD/árbol/hash documental con esta fotografía.
-Si cambian, reconciliar las filas afectadas antes de implementar. Un commit base no identifica
-por sí solo el plan cuando hay cambios sin confirmar; no trasladar sus pendientes antiguos al
-backlog ni ignorar una retirada explícita. Los planes de los otros productos permanecen bajo sus
-owners. Los IDs U-C son la parte de Core; una divergencia «no aplicable» requiere motivo de
-plataforma/capacidad y la aceptación de alcance prevista en P0.7.
+**Control antes de una corrección:** leer primero el alcance vigente del propio plan de Core.
+Si se reutiliza una pieza de otro producto, comprobar su revisión y las instrucciones recientes
+que la afectan; no convertir una fotografía antigua en una orden de reconstruirla. Los otros
+planes mantienen sus owners. Una diferencia de plataforma/capacidad se documenta con su motivo
+y el alcance de aceptación correspondiente.
 
-**Secuencia de lotes amplios de OmniCore, un worker a la vez:**
+**Trabajo restante de Core, acotado por la aclaración del usuario:**
 
-1. **UC-A · Contrato y navegación:** reconciliar primero las revisiones de alcance de los donantes;
-   resolver U-C01/U-C09/U-C11 y el mapa de acciones/estados desde la referencia OmniCoder y las
-   adaptaciones existentes de OmniLlama. Entrega: roles, vocabulario, atajos, idiomas y diferencias,
-   con source/owner por acción; no dar por cerrada ninguna fila sólo por editar la tabla.
-2. **UC-B · Conversación:** adaptar U-C02–U-C05 como un recorrido continuo de composer/hilo/código,
-   respetando capacidades disponibles y fuente literal. Entrega: cambios de renderer y evidencia
-   focal de envío/cancelación/borrador/copia, sin adelantar `media.read` ni palette de M10.
-3. **UC-C · Detalle y preferencias:** resolver U-C06–U-C08/U-C10, aplicando el contrato del lote A.
-   Entrega: views/actions hasta su consumidor, estados negativos y evidencia de persistencia.
-   U-C12 se especifica con los dueños de Protocol/Host y OmniCoder antes de cualquier adapter externo.
-4. **UC-D · Paridad y cierre:** agrupar los recorridos de las tres aplicaciones sobre commits
-   identificados; capturas/celdas de renderer y evidencia runtime con procedencia. Ejecutar focales
-   por contrato cambiado y regresión de integración una vez al cierre, repitiéndola sólo ante
-   cambios/fallos que lo justifiquen. Registrar tu conformidad global en los tres planes.
+1. **Contraste puntual (UC-A):** conservar la referencia actual y registrar únicamente discrepancias
+   que afecten una acción, un estado, su comprensión o la conservación de datos. No se registra
+   ahora un nuevo defecto de uso de Core que justifique iniciar cambios de interfaz.
+2. **Corrección condicional (UC-B/UC-C):** sólo si aparece esa discrepancia, implementar el ajuste
+   mínimo y verificar su recorrido, con un worker a la vez. No abrir los lotes como campañas de
+   rediseño ni adelantar `media.read`, palette, perfiles o nuevos paneles.
+3. **Evidencia y cierre (UC-D):** reutilizar la evidencia disponible y completar sólo la comparación
+   que falte de las acciones comunes existentes. Probar el recorrido modificado si hay corrección;
+   no repetir suites amplias ni campañas visuales por editar el plan. Conservar el registro de
+   aceptación y diferencias entre productos. U-C12 mantiene su contrato técnico M9 independiente.
 
-**Próxima tarea ejecutable: UC-A.** Este inventario no implementa adaptaciones ni acredita nuevos
-build/tests/live. OR5 pendiente de M8 conserva su aceptación independiente; la validación visual
-P0 tampoco la sustituye. Los bloques futuros M9/M10 mantienen sus propios criterios de salida.
+**Decisión vigente: mantener la UI de Core y atender sólo discrepancias concretas.** Los IDs y
+lotes anteriores se conservan para trazabilidad de las referencias de los otros planes, no como
+una orden de construirlos todos. OR5 de M8 conserva su aceptación independiente; P0 tampoco la
+sustituye. M9/M10 mantienen sus propios criterios de salida. No se acreditan nuevos build/tests/live.
 
 ### Milestones técnicos conservados, sujetos al gate global
 
