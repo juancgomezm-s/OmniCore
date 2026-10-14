@@ -621,10 +621,11 @@ public sealed partial class TuiApp
     private void SubmitComposer()
     {
         if (_composer is null) return;
-        var rawInput = _composer.Text?.ToString()?.Trim() ?? "";
+        var rawInput = _composer.Text?.ToString() ?? "";
         var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
             .Read().CommandAliases);
-        var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput));
+        // Whitespace is grammar for commands, but remains literal in a conversation prompt.
+        var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
         if (input == "/animation" || input.StartsWith("/animation ", StringComparison.Ordinal))
         {
             HandleAnimationCommand(input.Length > 10 ? input[11..].Trim() : "");
@@ -907,7 +908,7 @@ public sealed partial class TuiApp
         {
             if (!CommandLineParser.TryParse(input, out var invocation) || invocation is null) return;
             var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), CommandInvocationJson.Encode(invocation)), CancellationToken.None);
-            if (ack.Status == "ok")
+            if (ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Rejected)
             {
                 var outcome = _client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
                 var text = JsonObj.Parse(outcome);
@@ -918,7 +919,11 @@ public sealed partial class TuiApp
                     {
                         if (!StartModelTurn("", workflow: workflow, workflowCommandId: workflowCommandId)) return;
                     }
-                    else ShowMessage(_localization.Resolve("shell.this_workflow_command_requires_the_local_host"));
+                    else
+                    {
+                        ShowMessage(_localization.Resolve("shell.this_workflow_command_requires_the_local_host"));
+                        return;
+                    }
                 }
                 else if (text.TryGetValue("outcome", out _)
                     && TryReadOutcome(outcome, out var expanded))
@@ -928,19 +933,24 @@ public sealed partial class TuiApp
                         if (outcomeDocument.RootElement.GetProperty("outcome").TryGetProperty("toolName", out var toolName)
                             && toolName.GetString() is { Length: > 0 } selectedTool) forcedToolName = selectedTool;
                     if (_turnHost is not null) { if (!StartModelTurn(expanded, extensionToolName: forcedToolName)) return; }
-                    else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(expanded) + "\""));
+                    else if (!SubmitSessionInput(expanded)) return;
                 }
             }
-            else ShowMessage("/" + invocation.Name + ": " + CommandError(ack.Error));
+            else
+            {
+                ShowMessage("/" + invocation.Name + ": " + CommandError(ack.Error));
+                return;
+            }
         }
         else if (input[0] == '@')
         {
             ShowMessage(_localization.Resolve("shell.references.unavailable"));
+            return;
         }
         else
         {
-            if (_turnHost is not null) { if (!StartModelTurn(input)) return; }
-            else SendCommand("session.input", "\"text\":" + ("\"" + JsonObj.Escape(input) + "\""));
+            if (_turnHost is not null) { if (!StartModelTurn(rawInput)) return; }
+            else if (!SubmitSessionInput(rawInput)) return;
         }
         _composer.Text = "";
         PollEvents();
@@ -2665,7 +2675,15 @@ public sealed partial class TuiApp
         catch (System.Text.Json.JsonException) { return false; }
     }
 
-    private void SendCommand(string command, string fields) => _client.Send(
+    private bool SubmitSessionInput(string text)
+    {
+        var ack = SendCommand("session.input", JsonObj.Field("text", text));
+        if (ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Rejected) return true;
+        ShowMessage(CommandError(ack.Error));
+        return false;
+    }
+
+    private CommandAck SendCommand(string command, string fields) => _client.Send(
         WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":" + ("\"" + JsonObj.Escape(command) + "\"") + (fields.Length == 0 ? "" : "," + fields) + "}"),
         CancellationToken.None);
 

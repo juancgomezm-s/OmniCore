@@ -10,6 +10,15 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 
 Registro de base de los donantes (2026-10-14): OmniCoder mantiene su referencia de producto Electron/WebUI; OmniLlama tiene entregas de composer, fuentes/resultados/comandos/trazas y animaciones/Markdown, con revisiones posteriores registradas en su propio plan. Sus perfiles por conversación fueron retirados. Ese registro no obliga a trasladar funciones a Core ni a sustituir su experiencia CLI/TUI. Si una corrección concreta reutiliza una pieza, consultar la revisión y el alcance vigentes de esa pieza.
 
+**Contribución de OmniCore a P0 cerrada (2026-10-14, Windows):** revisadas U-C01–U-C12,
+conservando menús/navegación y explicitando diferencias de capacidad. Corregidos el recorte
+del prompt ordinario y la pérdida del borrador ante rechazos/referencias no disponibles;
+evidencia y resolución de cada fila en [el acta local](../validation/omnicore-homologation-closure-20261014.md).
+No queda una campaña UC-A–UC-D de Core por ejecutar. El cierre global de las tres aplicaciones
+es separado y conserva su gate. El próximo pendiente propio de M8 es OR5 autenticado;
+después corresponde el alcance M9 previsto cuando se levante el gate global. No construir
+otra interfaz ni anticipar M9/M10 para aparentar paridad.
+
 Las cinco brechas posteriores a `084d5a8` están corregidas en `75a5a67`: discovery MCP, latch de validación, hook terminal al aceptar, restauración de memoria olvidada y techo de permisos de skills. `09ad2ba` conserva la autoridad del workspace cuando su ruta durable queda redactada; prueba reapertura y rechazo de otro checkout sin exponer secretos. Build de solución sin advertencias ni errores; suite integral: 4,505 correctas, 0 fallos y 11 omisiones explícitas (incluye arquitectura). OR5 autenticado sigue pendiente de configurar la cuenta del usuario; M8 no se declara cerrado. La evidencia vigente tiene precedencia sobre los checkpoints históricos; [acta M8](../validation/m8-extensibility-20261011.md).
 
 ## Cortes históricos de integración y dependencias

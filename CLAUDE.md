@@ -10,6 +10,13 @@ Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe func
 
 **Alcance de Core aclarado por el usuario (2026-10-14): conservar la experiencia y los menús actuales, que ya considera una buena referencia.** La matriz U-C es una lista de contraste, no un programa obligatorio de rediseño. Leer primero el plan vigente de Core; abrir sólo correcciones de discrepancias concretas de uso, con verificación proporcional. Consultar un donante sólo para la pieza implicada y respetar sus cambios/retiradas recientes. No reconstruir superficies sanas ni adelantar funciones de M9/M10 por buscar paridad visual.
 
+**Contribución de OmniCore a la homologación cerrada en Windows (2026-10-14):** U-C01–U-C12
+resueltos para el alcance actual, con diferencias explícitas; menús conservados y corregidos
+recorte del prompt/pérdida de borrador ante rechazo o referencia no disponible. Evidencia en
+`docs/validation/omnicore-homologation-closure-20261014.md`. No reiniciar los lotes UC por
+capacidades diferidas; reabrir sólo por un defecto concreto. El gate global y OR5 autenticado
+de M8 permanecen separados; el transporte externo M9 no está construido.
+
 ## Comandos
 
 ```bash
