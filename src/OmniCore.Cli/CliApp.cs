@@ -62,6 +62,27 @@ public sealed class CliApp
 
     public static Task<int> RunAsync(string[] args)
     {
+        if ((args.Length == 2 || args.Length == 4 && args[2] == "--locale")
+            && args[0] == "host" && args[1] == "--stdio")
+        {
+            var protocolOutput = Console.OpenStandardOutput();
+            Console.SetOut(TextWriter.Null);
+            var hostLocale = UiLocaleCodes.NormalizeOrDefault(args.Length == 4
+                ? args[3] : Environment.GetEnvironmentVariable("OMNI_LOCALE"));
+            var hostText = new Localization(hostLocale);
+            try
+            {
+                var client = Runtime.Connect(CancellationToken.None);
+                return Task.FromResult(StdioProtocolHost.Run(client, Console.OpenStandardInput(),
+                    protocolOutput, Console.Error, localizeDiagnostic: key => hostText.Resolve(key)));
+            }
+            catch (Exception)
+            {
+                Console.Error.WriteLine(hostText.Resolve("stdio.host.start_failed"));
+                return Task.FromResult(1);
+            }
+        }
+
         var parsedLocale = LocaleArgumentParser.Parse(args);
         args = parsedLocale.Arguments;
         var savedLocale = ReadUserLocale();
@@ -89,6 +110,7 @@ public sealed class CliApp
         var command = args[0];
         if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
+        if (command == "stdio") return RunStdioClientAsync(args);
         if (command is "explain" or "explore") return RunExplain(args);
         if (command == "ask") return RunAsk(args);
         if (command == "act") return RunAct(args);
@@ -147,6 +169,123 @@ public sealed class CliApp
 
         Console.WriteLine(Loc().Resolve("cli.ask_assumed", "command", command));
         return RunAsk(new[] { "ask", string.Join(" ", args) });
+    }
+
+    private static Task<int> RunStdioClientAsync(string[] args)
+    {
+        if (args.Length < 2 || args[1] is not ("sim" or "query" or "input"))
+        {
+            Console.WriteLine(Loc().Resolve("cli.stdio.usage"));
+            return Task.FromResult(2);
+        }
+
+        if (args[1] == "query" && (args.Length != 3 || !StdioProtocol.IsSupportedQuery(args[2])))
+        {
+            Console.WriteLine(Loc().Resolve("cli.stdio.query_help"));
+            return Task.FromResult(2);
+        }
+        if (args[1] == "input" && args.Length < 3)
+        {
+            Console.WriteLine(Loc().Resolve("cli.stdio.input_usage"));
+            return Task.FromResult(2);
+        }
+        if (args[1] == "sim" && args.Skip(2).Any(value => value is not ("--resume" or "--json")))
+        {
+            Console.WriteLine(Loc().Resolve("cli.stdio.sim_usage"));
+            return Task.FromResult(2);
+        }
+
+        StdioOmniClient client;
+        try
+        {
+            var processPath = Environment.ProcessPath
+                ?? throw new InvalidOperationException("Current executable path is unavailable.");
+            var isDotnetHost = Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+            var executable = processPath;
+            var childArgs = new List<string>();
+            if (isDotnetHost)
+            {
+                var entryAssembly = Path.Combine(AppContext.BaseDirectory, "omni.dll");
+                if (!File.Exists(entryAssembly))
+                    throw new InvalidOperationException("Current CLI assembly path is unavailable.");
+                childArgs.Add(entryAssembly);
+            }
+            childArgs.Add("host");
+            childArgs.Add("--stdio");
+            childArgs.Add("--locale");
+            childArgs.Add(Loc().Locale);
+            client = StdioOmniClient.Start(executable, childArgs, Environment.CurrentDirectory);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or InvalidDataException
+            or System.ComponentModel.Win32Exception)
+        {
+            Console.Error.WriteLine(Loc().Resolve("cli.stdio.connect_failed"));
+            return Task.FromResult(1);
+        }
+
+        using (client)
+        {
+            try
+            {
+            switch (args[1])
+            {
+                case "query":
+                    if (args.Length != 3 || !StdioProtocol.IsSupportedQuery(args[2]))
+                    {
+                        Console.WriteLine(Loc().Resolve("cli.stdio.query_help"));
+                        return Task.FromResult(2);
+                    }
+                    var query = client.Query(args[2], CancellationToken.None);
+                    if (query is null) return Task.FromResult(1);
+                    Console.WriteLine(query.Json);
+                    return Task.FromResult(0);
+                case "input":
+                    if (args.Length < 3)
+                    {
+                        Console.WriteLine(Loc().Resolve("cli.stdio.input_usage"));
+                        return Task.FromResult(2);
+                    }
+                    var input = string.Join(" ", args.Skip(2));
+                    var inputPayload = "{" + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", input) + "}";
+                    var inputAck = client.Send(WireEnvelope.Command(Ids.NewV7(), inputPayload), CancellationToken.None);
+                    Console.WriteLine("{" + JsonObj.Field("status", inputAck.Status) + "," + JsonObj.Field("outcome",
+                        inputAck.Outcome?.Kind.ToString() ?? "Unknown") + "," + JsonObj.FieldRaw("firstSeq",
+                        inputAck.FirstSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
+                        + "," + JsonObj.FieldRaw("lastSeq",
+                        inputAck.LastSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null") + "}");
+                    if (inputAck.Status != "ok") return Task.FromResult(1);
+                    foreach (var envelope in client.SubscribeSince(inputAck.FirstSeq ?? 1))
+                        new JsonRenderer().Emit(envelope);
+                    var stateAfterInput = client.Query("state", CancellationToken.None);
+                    if (stateAfterInput is not null) Console.WriteLine(stateAfterInput.Json);
+                    return Task.FromResult(0);
+                default:
+                    var resume = args.Skip(2).Contains("--resume", StringComparer.Ordinal);
+                    var jsonOutput = args.Skip(2).Contains("--json", StringComparer.Ordinal);
+                    if (args.Skip(2).Any(value => value is not ("--resume" or "--json")))
+                    {
+                        Console.WriteLine(Loc().Resolve("cli.stdio.sim_usage"));
+                        return Task.FromResult(2);
+                    }
+                    var simCommand = resume
+                        ? "{" + JsonObj.Field("cmd", "sim.resume") + "}"
+                        : "{" + JsonObj.Field("cmd", "sim") + "," + JsonObj.Field("scenario", "multi-item-plan") + "}";
+                    var ack = client.Send(WireEnvelope.Command(Ids.NewV7(), simCommand), CancellationToken.None);
+                    if (ack.Status != "ok")
+                    {
+                        Console.Error.WriteLine(ack.Error ?? "Stdio Host rejected the simulation command.");
+                        return Task.FromResult(1);
+                    }
+                    return RenderEvents(client, jsonOutput, 0, "stdio-sim");
+            }
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or OperationCanceledException
+                or ObjectDisposedException or System.ComponentModel.Win32Exception)
+            {
+                Console.Error.WriteLine(Loc().Resolve("cli.stdio.connect_failed"));
+                return Task.FromResult(1);
+            }
+        }
     }
 
     private static Task<int> RunResolve(string[] args)

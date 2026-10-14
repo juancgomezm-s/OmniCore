@@ -111,5 +111,5 @@ enlaces. Los errores y la ayuda de TUI se resuelven en es/en/fr/it.
 | Proyecto `OmniCore.Client` y test de frontera de frameworks visuales | **Ahora** (estructura, sin lógica) |
 | `ClientProjection`, `ClientState`, `PlainRenderer`, `JsonRenderer`, para `/plan`, `/tasks`, `/events` y `omni sim` | **Necesario desde M1** |
 | TUI v0 con Terminal.Gui + `SpectreSegmentAdapter` | **Contract now / implementation later**: track TUI **después de M3**, en paralelo a M4 (decisión del usuario). Hasta entonces, el cliente interactivo es el plain renderer |
-| Homologación de superficies existentes, roles y temas de la familia OmniCoder–OmniCore–OmniLlama | **P0 / BLOQUEANTE** por instrucción del usuario del 2026-10-14: [gate global de arquitectura §24](../architecture/arquitectura.md#p0-omni-unificacion). Preserva las capas, el protocolo JSON y las autoridades de este ADR. |
+| Homologación de superficies existentes, roles y temas de la familia OmniCoder–OmniCore–OmniLlama | **P0 global cerrado con alcance aceptado el 2026-10-14**: [acta global](../validation/omni-family-homologation-closure-20261014.md). El transporte stdio M9 no homologa ni concede autoridad a un cliente externo. |
 | Cliente desktop nuevo y animaciones nuevas | **Fully deferable**; no son requisito para el gate de unificación |

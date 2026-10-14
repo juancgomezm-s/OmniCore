@@ -168,6 +168,21 @@ revisiones no soportadas; no se acredita compatibilidad universal por hablar JSO
 
 ## M9: Host separado y experiencia entre procesos
 
+**Checkpoint implementado en este worktree (2026-10-14): primer bloque transversal real del transporte.**
+`omni host --stdio` sirve el runtime/journal persistente existente; `StdioOmniClient` y `omni stdio`
+son consumidor y entrada CLI reales. Contrato v1.0: JSON Lines UTF-8 estricto, máximo 1 MiB por
+frame, hello correlacionado y capabilities honestas; operaciones construidas: `sim`, `sim.resume`,
+`session.input`, ocho read models enumerados en ADR-0019 §4 y replay por lotes desde N. El ack
+transporta `Outcome/FirstSeq/LastSeq`. Se mantienen rutas in-process y TUI. Goldens del wire real:
+[`docs/protocol/stdio/1.0`](../protocol/stdio/1.0/README.md).
+
+**Pendiente del siguiente bloque y del cierre M9:** lease multiwriter/heartbeat, reconexión,
+deduplicación y lectura de resultado ambiguo; autoridad humana externa segura; stream push y
+supervisión de OmniCoder/TypeScript; `media.read`; controles de procesos persistentes y ConPTY.
+Replay del journal no acredita reconexión sin duplicación, recuperación del estado del cliente ni
+exactly-once. El CLI stdio no ofrece la TUI y no reenvía bytes arbitrarios ni acepta capabilities
+de humano. OR5 autenticado M8 sigue pendiente en su milestone separado.
+
 | Bloque restante | Construcción | Presentación y aceptación |
 |---|---|---|
 | Transporte y negociación | Stdio real, framing, backpressure, `hello`/versiones/capabilities, Host separado y read models persistidos. Reusar DTOs Protocol y source generation/multi-target; stdout reservado al protocolo, diagnóstico fuera del stream. | Errores de arranque, incompatible/desconocido/desconectado y recuperación con código/clave/args. UTF-8 probado cruzando proceso con caracteres de los cuatro idiomas. Recursos opcionales desconocidos tienen diagnóstico seguro, sin romper framing ni afirmar cobertura. |

@@ -102,7 +102,7 @@ La URL `origin` se normaliza así antes del hash:
 ### 6. Multi-target net8 para las librerías compartidas con OmniCoder
 
 - **Proyectos:** `OmniCore.Protocol`, `OmniCore.Client` y `OmniCore.Sandbox` compilan para **`net10.0;net8.0`**. Es la única excepción a "todo en .NET 10".
-- **Integración:** OmniCoder (net8) los referencia sin migrar y habla con OmniCore **por stdio** (M9) o in-process si en algún momento migra. El adapter `IAgentRuntime` de OmniCoder usa `IOmniClient` y `WireEvent`s (ver la corrección de la spec §98).
+- **Integración:** OmniCoder (net8) los referencia sin migrar y hablará con OmniCore por stdio. El primer bloque M9 ya publica `StdioOmniClient` y wire v1.0 con compilación net8/net10; falta el adapter `IAgentRuntime` de OmniCoder y su aceptación real. Dicho adapter usará `IOmniClient` y `WireEvent`s (ver la corrección de la spec §98).
 - **Restricción:** en esas tres librerías no se usan APIs exclusivas de net10.
 - **Test:** un test de arquitectura verifica que solo ellas apuntan a net8 y que las tres lo hacen (`Only_shared_libraries_target_net8`).
 
