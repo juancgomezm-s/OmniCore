@@ -7,7 +7,7 @@ using System.Text.Json;
 public sealed record SessionPreferencesData(string QueryName, string? SessionId, bool? WorkspaceTrusted,
     ContextSnapshotPresentation? Context, IReadOnlyList<ExtensionPresentation> Extensions,
     IReadOnlyList<SkillPresentation> Skills, IReadOnlyList<MemoryPresentation> Memory,
-    bool Available = true)
+    bool Available = true, IReadOnlyList<MemoryCandidatePresentation>? MemoryCandidates = null)
 {
     public static SessionPreferencesData Unavailable(string queryName) =>
         new(queryName, null, null, null, [], [], [], Available: false);
@@ -38,6 +38,8 @@ public sealed record SkillPresentation(string Id, string DisplayName, string? Ve
 
 public sealed record MemoryPresentation(string Id, string Kind, string Content, string Source,
     double? Importance, double? Confidence, string? CreatedAt, IReadOnlyList<string> Tags);
+public sealed record MemoryCandidatePresentation(string Id, string Kind, string Content, string Origin,
+    string Decision, string? Reason, string? ConflictMemoryId, int? Occurrences, string? ProposedAt);
 
 public static class SessionPreferencesPresentation
 {
@@ -59,8 +61,10 @@ public static class SessionPreferencesPresentation
                 "skills" when ValidNullableString(root, "session") && IsBoolean(root, "workspaceTrusted")
                     && ValidObjectArray(root, "skills") => new(queryName, session, trusted, null, [],
                     Array(root, "skills").Select(DecodeSkill).Where(item => item is not null).Cast<SkillPresentation>().ToArray(), []),
-                "memory.session" when ValidNullableString(root, "session") && ValidObjectArray(root, "records") => new(queryName, session, trusted, null, [], [],
-                    Array(root, "records").Select(DecodeMemory).Where(item => item is not null).Cast<MemoryPresentation>().ToArray()),
+                "memory.session" when ValidNullableString(root, "session") && ValidObjectArray(root, "records")
+                    && (!root.TryGetProperty("candidates", out var candidates) || candidates.ValueKind == JsonValueKind.Array) => new(queryName, session, trusted, null, [], [],
+                    Array(root, "records").Select(DecodeMemory).Where(item => item is not null).Cast<MemoryPresentation>().ToArray(),
+                    MemoryCandidates: Array(root, "candidates").Select(DecodeCandidate).Where(item => item is not null).Cast<MemoryCandidatePresentation>().ToArray()),
                 _ => SessionPreferencesData.Unavailable(queryName),
             };
         }
@@ -138,6 +142,15 @@ public static class SessionPreferencesPresentation
         return new(id, String(item, "kind") ?? "unknown", String(item, "content") ?? "",
             String(item, "source") ?? "unknown", Number(item, "importance"), Number(item, "confidence"),
             String(item, "createdAt"), Strings(item, "tags"));
+    }
+
+    private static MemoryCandidatePresentation? DecodeCandidate(JsonElement item)
+    {
+        var id = String(item, "id");
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        return new(id, String(item, "kind") ?? "Fact", String(item, "content") ?? "",
+            String(item, "origin") ?? "Unknown", String(item, "decision") ?? "unknown",
+            String(item, "reason"), String(item, "conflictMemoryId"), Integer(item, "occurrences"), String(item, "proposedAt"));
     }
 
     private static JsonElement[] Array(JsonElement element, string name) =>

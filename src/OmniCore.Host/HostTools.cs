@@ -150,5 +150,14 @@ public sealed class HostTools
         _catalog.Add(tool);
     }
 
+    internal void RegisterMemoryProposeTool(ITool tool)
+    {
+        ArgumentNullException.ThrowIfNull(tool);
+        if (tool is not MemoryProposeTool || tool.Descriptor.Id.ToString() != "memory.propose"
+            || tool.Descriptor.Source.Kind != SourceKind.BuiltIn || tool.Descriptor.EffectClass != EffectClass.None)
+            throw new InvalidOperationException("Only the Core, no-external-effect Session memory proposal tool may enter the principal catalog.");
+        _catalog.Add(tool);
+    }
+
     public PlanProposeTool PlanPropose() => _planPropose;
 }

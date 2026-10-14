@@ -24,6 +24,22 @@ public sealed class SessionPreferencesPresentationTests
     }
 
     [Fact]
+    public void Memory_promotion_prompt_options_and_host_errors_are_localized_in_all_supported_locales()
+    {
+        foreach (var locale in new[] { "es", "en", "fr", "it" })
+        {
+            var text = new Localization(locale);
+            Assert.False(string.IsNullOrWhiteSpace(text.Resolve("interaction.memory_promotion.title")));
+            Assert.False(string.IsNullOrWhiteSpace(text.Resolve("interaction.memory_promotion.promote")));
+            Assert.False(string.IsNullOrWhiteSpace(text.Resolve("interaction.memory_promotion.reject")));
+            Assert.True(SessionPreferencesResources.TryTranslate(locale,
+                "sessionPreferences.error.memory_approval_not_pending", out var error));
+            Assert.False(string.IsNullOrWhiteSpace(error));
+            Assert.DoesNotContain("sessionPreferences.error", error, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void Context_presentation_is_typed_and_keeps_unknown_or_estimated_metrics_honest()
     {
         var data = SessionPreferencesPresentation.Decode("context", """
@@ -59,6 +75,33 @@ public sealed class SessionPreferencesPresentationTests
         Assert.Equal("line one\nline two", memory.Content);
         Assert.DoesNotContain("instruction", System.Text.Json.JsonSerializer.Serialize(memory));
         Assert.Equal("line one line two", SessionPreferencesPresentation.SafeText(memory.Content));
+    }
+
+    [Fact]
+    public void Candidate_decisions_are_typed_localized_metadata_and_contents_remain_verbatim()
+    {
+        const string raw = "Use dotnet test with this exact phrase.";
+        var json = "{\"scope\":\"Session\",\"session\":\"s1\",\"records\":[],\"candidates\":[{"
+            + "\"id\":\"candidate-1\",\"kind\":\"Convention\",\"content\":\"" + raw
+            + "\",\"origin\":\"Model\",\"decision\":\"ask\",\"reason\":null,"
+            + "\"conflictMemoryId\":\"memory-1\",\"occurrences\":1,\"proposedAt\":\"2026-10-13T00:00:00Z\"}]}";
+        var data = SessionPreferencesPresentation.Decode("memory.session", json);
+        var candidate = Assert.Single(data.MemoryCandidates!);
+        Assert.Equal(raw, candidate.Content);
+        Assert.Equal("ask", candidate.Decision);
+        foreach (var locale in new[] { "es", "en", "fr", "it" })
+        {
+            var localization = new Localization(locale);
+            var text = MemoryInspectionPresentation.Format(json, localization);
+            Assert.Contains(raw, text, StringComparison.Ordinal);
+            Assert.Contains(localization.Resolve("sessionPreferences.enum.memory.kind.convention"), text,
+                StringComparison.Ordinal);
+            Assert.Contains(localization.Resolve("sessionPreferences.enum.memory.origin.model"), text,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("\"decision\"", text, StringComparison.Ordinal);
+        }
+        Assert.Contains("requiere confirmación", MemoryInspectionPresentation.Format(json, new Localization("es")), StringComparison.Ordinal);
+        Assert.Contains("confirmation requise", MemoryInspectionPresentation.Format(json, new Localization("fr")), StringComparison.Ordinal);
     }
 
     [Fact]

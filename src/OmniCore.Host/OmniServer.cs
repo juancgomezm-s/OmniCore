@@ -676,7 +676,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         if (commandName is "skills.activate" or "skills.release")
             return ChangeSessionSkillActivation(command, commandName, fields, trustedUserAction);
-        if (commandName is "memory.session.add" or "memory.session.forget")
+        if (commandName is "memory.session.add" or "memory.session.forget" or "memory.session.propose"
+            or "memory.session.promote" or "memory.session.reject")
             return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
         if (commandName == "extensions.consent")
             return ChangeProjectExtensionConsent(command, fields, trustedUserAction);
@@ -1964,6 +1965,96 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             }
     }
 
+    private InteractionRequested? FindPendingMemoryPromotion(SessionId session, InteractionId interactionId)
+    {
+        var pending = PendingMemoryPromotionRequests(session);
+        return pending.SingleOrDefault(request => request.InteractionId == interactionId);
+    }
+
+    private InteractionRequested? FindPendingMemoryPromotion(SessionId session, string candidateId)
+    {
+        var matches = PendingMemoryPromotionRequests(session)
+            .Where(request => ReadMemoryPromotionIdentity(request.SubjectJson).CandidateId == candidateId).ToArray();
+        if (matches.Length > 1) throw new InvalidDataException("sessionPreferences.error.memory_approval_ambiguous");
+        return matches.SingleOrDefault();
+    }
+
+    private InteractionRequested[] PendingMemoryPromotionRequests(SessionId session)
+    {
+        var pending = new Dictionary<InteractionId, InteractionRequested>();
+        foreach (var evt in _store.ReadFrom(session, 1))
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case InteractionRequested request when request.Kind == InteractionKind.MemoryPromotion:
+                    pending[request.InteractionId] = request;
+                    break;
+                case InteractionResolved resolved:
+                    pending.Remove(resolved.InteractionId);
+                    break;
+                case InteractionExpired expired:
+                    pending.Remove(expired.InteractionId);
+                    break;
+            }
+        }
+        return pending.Values.ToArray();
+    }
+
+    private static (string CandidateId, string ConflictMemoryId) ReadMemoryPromotionIdentity(string subjectJson)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(subjectJson);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("operation", out var operation) || operation.GetString() != "memory.promotion"
+                || !root.TryGetProperty("candidateId", out var candidate) || candidate.ValueKind != System.Text.Json.JsonValueKind.String
+                || !root.TryGetProperty("conflictMemoryId", out var conflict) || conflict.ValueKind != System.Text.Json.JsonValueKind.String)
+                throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
+            var candidateId = candidate.GetString(); var conflictId = conflict.GetString();
+            if (string.IsNullOrWhiteSpace(candidateId) || string.IsNullOrWhiteSpace(conflictId))
+                throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
+            return (candidateId, conflictId);
+        }
+        catch (System.Text.Json.JsonException exception)
+        {
+            throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid", exception);
+        }
+    }
+
+    private void ApplyMemoryPromotionDecision(SessionId session, InteractionRequested request, string optionId,
+        string commandId, RunControlService control)
+    {
+        if (request.Kind != InteractionKind.MemoryPromotion)
+            throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
+        var identity = ReadMemoryPromotionIdentity(request.SubjectJson);
+        var optionIds = new HashSet<string>(StringComparer.Ordinal);
+        using (var options = System.Text.Json.JsonDocument.Parse(request.OptionsJson))
+        {
+            foreach (var option in options.RootElement.EnumerateArray())
+                if (option.TryGetProperty("id", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.String)
+                    optionIds.Add(id.GetString()!);
+        }
+        if (request.DefaultOptionId != "reject" || !optionIds.SetEquals(["promote", "reject"])
+            || optionId is not ("promote" or "reject"))
+            throw new InvalidInteractionOptionException(request.InteractionId, optionId);
+
+        if (_workspaceRoot is null) throw new InvalidOperationException("sessionPreferences.error.session_unavailable");
+        var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
+        IReadOnlyList<DomainEventPayload> ReadJournal() => _store.ReadFrom(session, 1).Select(_codecs.Decode).ToArray();
+        void Emit(DomainEventPayload payload) => new EventStream(_store, _codecs, session)
+            .Append(payload, DurabilityClass.Barrier);
+        var policy = new SessionMemoryPolicy(session, store, ReadJournal, Emit);
+        var proposed = ReadJournal().OfType<MemoryCandidateProposed>()
+            .LastOrDefault(item => item.CandidateId == identity.CandidateId)
+            ?? throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
+        if (proposed.Decision != "ask"
+            || !string.Equals(proposed.ConflictMemoryId ?? "", identity.ConflictMemoryId, StringComparison.Ordinal))
+            throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
+        if (optionId == "promote") policy.Promote(identity.CandidateId, identity.ConflictMemoryId);
+        else policy.Reject(identity.CandidateId);
+        control.Respond(session, request.InteractionId, optionId, commandId);
+    }
+
     private CommandAck ChangeSessionMemory(WireEnvelope command, string commandName,
         IReadOnlyDictionary<string, string> fields, bool trustedUserAction, CancellationToken cancellationToken)
     {
@@ -1981,6 +2072,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
             var scope = MemoryScope.ForSession(session);
+            IReadOnlyList<DomainEventPayload> ReadJournal() => _store.ReadFrom(session, 1).Select(_codecs.Decode).ToArray();
+            void Emit(DomainEventPayload payload) => new EventStream(_store, _codecs, session)
+                .Append(payload, DurabilityClass.Barrier);
+            var memoryPolicy = new SessionMemoryPolicy(session, store, ReadJournal, Emit);
             if (commandName == "memory.session.forget")
             {
                 var id = fields.GetValueOrDefault("memoryId") ?? "";
@@ -1989,16 +2084,24 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     : new CommandAck(command.MessageId, "error", "No Session memory item has that id.", RuntimeCommandOutcome.Rejected());
             }
 
-            var content = fields.GetValueOrDefault("content") ?? "";
-            if (content.Length > 4096 || string.IsNullOrWhiteSpace(content))
-                throw new ArgumentException("Session memory content must contain 1 to 4096 characters.");
-            var redacted = new PiiRedactor().Redact(content);
-            if (!string.Equals(content, redacted, StringComparison.Ordinal))
-                throw new InvalidOperationException("Sensitive-looking content was rejected and not stored.");
-            var record = new MemoryRecord(Guid.NewGuid().ToString("N"), scope, MemoryKind.Fact, content,
-                0.7, 1.0, MemorySource.UserStated, DateTimeOffset.UtcNow, null,
-                MemoryExpirationKind.WithScope, ["user-stated"], [], null);
-            _ = store.Add(record, cancellationToken);
+            var candidateId = fields.GetValueOrDefault("candidateId") ?? "";
+            if (commandName is "memory.session.reject" or "memory.session.promote")
+            {
+                if (fields.ContainsKey("supersedesId"))
+                    throw new InvalidOperationException("sessionPreferences.error.memory_supersedes_host_only");
+                var pending = FindPendingMemoryPromotion(session, candidateId)
+                    ?? throw new InvalidOperationException("sessionPreferences.error.memory_approval_not_pending");
+                var control = new RunControlService(_store, _codecs);
+                ApplyMemoryPromotionDecision(session, pending,
+                    commandName == "memory.session.promote" ? "promote" : "reject", command.MessageId, control);
+            }
+            else
+            {
+                var content = fields.GetValueOrDefault("content") ?? "";
+                if (content.Length > 2048 || string.IsNullOrWhiteSpace(content))
+                    throw new ArgumentException("sessionPreferences.error.memory_invalid");
+                _ = memoryPolicy.Propose(content, MemoryKind.Fact, MemoryCandidateOrigin.User);
+            }
             return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
@@ -2483,10 +2586,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (name is "memory" or "memory.session")
         {
             if (_workspaceRoot is null || _lastSessionId is not { } session)
-                return new SessionQueryResult("memory.session", "{\"scope\":\"Session\",\"session\":null,\"records\":[]}");
+            return new SessionQueryResult("memory.session", "{\"scope\":\"Session\",\"session\":null,\"records\":[],\"candidates\":[]}");
             var scope = MemoryScope.ForSession(session);
             var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
             var records = store.Read(scope, cancellationToken);
+            var journal = _store.ReadFrom(session, 1).Select(_codecs.Decode).ToArray();
+            var candidates = SessionMemoryPolicy.ProjectForPresentation(journal);
             var entries = records.Select(record => "{" + string.Join(",", new[]
             {
                 JsonObj.Field("id", record.Id),
@@ -2498,8 +2603,19 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 JsonObj.Field("createdAt", record.CreatedAt.ToString("O", CultureInfo.InvariantCulture)),
                 "\"tags\":[" + string.Join(",", record.Tags.Select(tag => "\"" + JsonObj.Escape(tag) + "\"")) + "]",
             }) + "}");
+            var candidateJson = candidates.Select(candidate => "{" + string.Join(",", new[]
+            {
+                JsonObj.Field("id", candidate.Id), JsonObj.Field("kind", candidate.Kind.ToString()),
+                JsonObj.Field("content", new PiiRedactor().Redact(candidate.Content)),
+                JsonObj.Field("origin", candidate.Origin), JsonObj.Field("decision", candidate.Decision),
+                candidate.Reason is null ? "\"reason\":null" : JsonObj.Field("reason", candidate.Reason),
+                candidate.ConflictMemoryId is null ? "\"conflictMemoryId\":null" : JsonObj.Field("conflictMemoryId", candidate.ConflictMemoryId),
+                "\"occurrences\":" + candidate.Occurrences.ToString(CultureInfo.InvariantCulture),
+                JsonObj.Field("proposedAt", candidate.ProposedAt.ToString("O", CultureInfo.InvariantCulture)),
+            }) + "}");
             return new SessionQueryResult("memory.session", "{\"scope\":\"Session\","
-                + JsonObj.Field("session", session.ToString()) + ",\"records\":[" + string.Join(",", entries) + "]}");
+                + JsonObj.Field("session", session.ToString()) + ",\"records\":[" + string.Join(",", entries)
+                + "],\"candidates\":[" + string.Join(",", candidateJson) + "]}");
         }
         if (name == "modePreference")
         {
@@ -3060,7 +3176,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         outcomeSequenceBefore = sequenceBeforeResponse;
                         if (optionId == "accept") EnsureLaneAcceptanceFresh(session, interaction);
                         lock (_modeAuthorityMutationGate)
-                            control.Respond(session, interaction, optionId, command.MessageId);
+                        {
+                            var pendingMemoryPromotion = FindPendingMemoryPromotion(session, interaction);
+                            if (pendingMemoryPromotion is not null)
+                                ApplyMemoryPromotionDecision(session, pendingMemoryPromotion, optionId,
+                                    command.MessageId, control);
+                            else
+                                control.Respond(session, interaction, optionId, command.MessageId);
+                        }
                         AuditEffectResolutions(session, sequenceBeforeResponse, interaction);
                         if (control.UnreconciledEffects(session).Count == 0) _recoveryProblem = null;
                     }

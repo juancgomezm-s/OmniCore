@@ -113,12 +113,17 @@ public sealed class EventStream
     /// <summary>Durably admits one exact tool request and returns a process-local capability
     /// for the matching ToolRuntime call.</summary>
     public ToolCallRequestReceipt AppendToolCallRequestAdmitted(ToolCallRequested request,
-        Action<IReadOnlyList<DomainEvent>> admit)
+        Action<IReadOnlyList<DomainEvent>> admit, string? matchingArgumentsJson = null)
     {
+        if (matchingArgumentsJson is not null
+            && (request.ToolName != "memory.propose"
+                || request.ArgumentsJson != "{\"screenedByMemoryPolicy\":true}"))
+            throw new ArgumentException("Only the screened memory.propose request may carry an in-memory argument match.",
+                nameof(matchingArgumentsJson));
         var persisted = AppendAdmitted(request, DurabilityClass.Standard, admit);
         if (_codecs.Decode(persisted) is not ToolCallRequested decoded || decoded != request)
             throw new InvalidDataException("Tool request receipt does not match its canonical event.");
-        return new ToolCallRequestReceipt(persisted, request);
+        return new ToolCallRequestReceipt(persisted, request, matchingArgumentsJson);
     }
 
     public bool IsCurrentToolCallRequestReceipt(ToolCallRequestReceipt receipt, ValidatedToolCall call)

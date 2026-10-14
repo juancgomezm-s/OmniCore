@@ -265,6 +265,7 @@ public sealed class ClientActionHandler : IClientActionHandler
         var json = context.Client.Query(name, CancellationToken.None)?.Json;
         if (json is null) return new ClientActionResult(context.Text.Resolve("client.no_data"));
         if (name == "skills") return new ClientActionResult(SkillsInspectionPresentation.Format(json, context.Text));
+        if (name == "memory.session") return new ClientActionResult(MemoryInspectionPresentation.Format(json, context.Text));
         return new ClientActionResult(json.Length <= MaxMessageLength ? json : json[..MaxMessageLength] + "…");
     }
 
@@ -290,6 +291,8 @@ public sealed class ClientActionHandler : IClientActionHandler
     {
         if (invocation.Arguments.Count == 1 && invocation.Arguments[0] == "session")
             return Query(context, "memory.session");
+        if (invocation.Arguments is ["session", "candidates"])
+            return Query(context, "memory.session");
         if (invocation.Arguments.Count >= 3 && invocation.Arguments[0] == "session"
             && invocation.Arguments[1] == "add")
         {
@@ -299,14 +302,25 @@ public sealed class ClientActionHandler : IClientActionHandler
         if (invocation.Arguments.Count == 3 && invocation.Arguments[0] == "session"
             && invocation.Arguments[1] == "forget")
             return SendMemory(context, "memory.session.forget", "memoryId", invocation.Arguments[2]);
+        if (invocation.Arguments.Count == 3 && invocation.Arguments[0] == "session"
+            && invocation.Arguments[1] == "promote")
+            return SendMemory(context, "memory.session.promote", "candidateId", invocation.Arguments[2]);
+        if (invocation.Arguments.Count == 3 && invocation.Arguments[0] == "session"
+            && invocation.Arguments[1] == "reject")
+            return SendMemory(context, "memory.session.reject", "candidateId", invocation.Arguments[2]);
+        if (invocation.Arguments.Count >= 3 && invocation.Arguments[0] == "session"
+            && invocation.Arguments[1] == "propose")
+            return SendMemory(context, "memory.session.propose", "content", string.Join(" ", invocation.Arguments.Skip(2)));
         return new ClientActionResult(context.Text.Resolve("client.memory.usage"));
     }
 
-    private static ClientActionResult SendMemory(ClientContext context, string command, string field, string value)
+    private static ClientActionResult SendMemory(ClientContext context, string command, string field, string value,
+        string? extraField = null, string? extraValue = null)
     {
         if (context.Client is not ITrustedUserActionClient trusted)
             return new ClientActionResult(context.Text.Resolve("client.memory.trusted_required"));
-        var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field(field, value) + "}";
+        var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field(field, value)
+            + (extraField is null ? "" : "," + JsonObj.Field(extraField, extraValue ?? "")) + "}";
         var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
         if (ack.Status != "ok") return new ClientActionResult(ack.Error is { } error
             ? context.Text.ResolveWire(error) : context.Text.Resolve("client.memory.rejected"));

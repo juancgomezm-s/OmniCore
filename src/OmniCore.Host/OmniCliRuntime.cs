@@ -1806,6 +1806,17 @@ public sealed class OmniCliRuntime : IDisposable
                     skillStore,
                     new SkillManifestLoader(),
                     DiscoverSkills, skillLimits));
+            SessionMemoryPolicy? sessionMemoryPolicy = null;
+            if (delegation is null)
+            {
+                var memoryStore = new SessionMemoryStore(workspaceData);
+                IReadOnlyList<DomainEventPayload> ReadMemoryJournal() => server.AcquireStore()
+                    .ReadFrom(sessionId, 1).Select(server.AcquireCodecs().Decode).ToArray();
+                void AppendMemoryEvent(DomainEventPayload payload) => new EventStream(server.AcquireStore(),
+                    server.AcquireCodecs(), sessionId).Append(payload, DurabilityClass.Barrier);
+                sessionMemoryPolicy = new SessionMemoryPolicy(sessionId, memoryStore, ReadMemoryJournal, AppendMemoryEvent);
+                hostTools.RegisterMemoryProposeTool(new MemoryProposeTool(sessionMemoryPolicy));
+            }
             var questionnaireService = new QuestionnaireInteractionService(server.AcquireStore(),
                 server.AcquireCodecs(), artifacts);
             QuestionnaireAskOutcome? QuestionnaireResponder(InteractionId interactionId, QuestionnaireSchema schema)
@@ -1903,7 +1914,8 @@ public sealed class OmniCliRuntime : IDisposable
                     enforceSessionSpendCap: hasSessionSpendCap,
                     enforceDailySpendCap: hasDailySpendCap,
                     toolPreferences: loaded.Settings?.ToolPreferences,
-                    lifecycleHooks: lifecycleHooks);
+                    lifecycleHooks: lifecycleHooks,
+                    sessionMemoryPolicy: sessionMemoryPolicy);
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
@@ -3183,9 +3195,24 @@ public sealed class OmniCliRuntime : IDisposable
             InteractionKind.BudgetExceeded => "interaction.budget_exceeded.title",
             InteractionKind.ModelRouteConsent => "interaction.model_route_consent.title",
             InteractionKind.StallResolution => "interaction.stall_resolution.title",
+            InteractionKind.MemoryPromotion => "interaction.memory_promotion.title",
             _ => "interaction.permission.title",
         };
         writeLine(Text(LocalizedText.Of(titleKey)));
+        if (request.Kind == InteractionKind.MemoryPromotion)
+        {
+            try
+            {
+                using var subject = JsonDocument.Parse(request.SubjectJson);
+                var root = subject.RootElement;
+                if (root.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String)
+                    writeLine(Text(LocalizedText.Of("interaction.memory_promotion.candidate")) + ": " + content.GetString());
+                if (root.TryGetProperty("conflictMemoryId", out var conflict)
+                    && conflict.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(conflict.GetString()))
+                    writeLine(Text(LocalizedText.Of("interaction.memory_promotion.conflict")) + ": " + conflict.GetString());
+            }
+            catch (JsonException) { return request.DefaultOptionId; }
+        }
         if (request.Kind == InteractionKind.WeakSandboxConsent)
             writeLine(Text(LocalizedText.Of("interaction.weak_sandbox.warning")));
         var choices = new List<(string Id, string Label)>();
@@ -3209,6 +3236,8 @@ public sealed class OmniCliRuntime : IDisposable
                     "deny" when request.Kind == InteractionKind.ModelRouteConsent => "interaction.model_route_consent.deny",
                     "continue" when request.Kind == InteractionKind.StallResolution => "interaction.stall_resolution.continue",
                     "stop" when request.Kind == InteractionKind.StallResolution => "interaction.stall_resolution.stop",
+                    "promote" when request.Kind == InteractionKind.MemoryPromotion => "interaction.memory_promotion.promote",
+                    "reject" when request.Kind == InteractionKind.MemoryPromotion => "interaction.memory_promotion.reject",
                     _ => request.Kind == InteractionKind.WeakSandboxConsent
                         ? "interaction.weak_sandbox.deny" : "interaction.permission.deny",
                 };

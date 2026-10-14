@@ -22,6 +22,7 @@ using PersistedSpend = OmniCore.Host.CanonicalSpendReader.Snapshot;
 /// </summary>
 public sealed class ExplorerTurn
 {
+    private const string MemoryProposalJournalArgumentsJson = "{\"screenedByMemoryPolicy\":true}";
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IEventStore,
         System.Collections.Concurrent.ConcurrentDictionary<(SessionId, RunId, LaneId?), SemaphoreSlim>> RunExecutionGates = new();
     public const int MaxSteps = 8;
@@ -46,6 +47,7 @@ public sealed class ExplorerTurn
     private readonly AgentProfile? _resolvedAgentProfile;
     private readonly IReadOnlyDictionary<string, string> _toolPreferences;
     private readonly IReadOnlyList<IHook> _lifecycleHooks;
+    private readonly SessionMemoryPolicy? _sessionMemoryPolicy;
     private readonly LifecycleHookDispatcher _hookDispatcher = new();
     private readonly Dictionary<string, ProtectedToolSubstitution> _protectedPreferenceSubstitutions = new(StringComparer.Ordinal);
     private readonly HashSet<string> _approvedProtectedPreferenceIdentities = new(StringComparer.Ordinal);
@@ -329,7 +331,8 @@ public sealed class ExplorerTurn
         int maxGenerationSeconds = 300,
         bool? enforceSessionSpendCap = null, bool? enforceDailySpendCap = null,
         IReadOnlyDictionary<string, string>? toolPreferences = null,
-        IReadOnlyList<IHook>? lifecycleHooks = null)
+        IReadOnlyList<IHook>? lifecycleHooks = null,
+        SessionMemoryPolicy? sessionMemoryPolicy = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -343,6 +346,7 @@ public sealed class ExplorerTurn
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(toolPreferences, StringComparer.Ordinal);
         _lifecycleHooks = lifecycleHooks?.ToArray() ?? Array.Empty<IHook>();
+        _sessionMemoryPolicy = sessionMemoryPolicy;
         _catalog = catalog;
         _materializer = materializer;
         _fingerprint = WithHookFingerprint(fingerprint, _lifecycleHooks);
@@ -1370,7 +1374,7 @@ public sealed class ExplorerTurn
                         resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields,
                         new GenerationRequestAttemptEvidence(generationAttempts.ObservedSends,
                             _maximumGenerationRequestAttempts)), DurabilityClass.Barrier);
-                    RecordUsedSessionMemory(sessionId, materialized.Items);
+                    RecordUsedSessionMemory(sessionId, turnId, stepIndex, materialized.Items, request.Instructions ?? string.Empty, stream);
                     if (TokenUsageValidation.IsInvalid(resolved.Usage, resolved.ReportedUsageFields))
                     {
                         invalidUsageObserved = true;
@@ -1490,7 +1494,10 @@ public sealed class ExplorerTurn
 
                 // Una respuesta ToolUse conserva sus bloques y orden en un solo mensaje.
                 // Se mantiene la redacción vigente; el replay opaco requiere una política aparte.
-                messages.Add(RedactMessage(new ModelMessage(MessageRole.Assistant, resolved.Content.ToArray())));
+                var durableAssistantContent = resolved.Content.Select(block => block is ToolCallBlock memoryCall
+                    ? memoryCall with { ArgumentsJson = SafeToolArguments(memoryCall.ToolName, memoryCall.ArgumentsJson) }
+                    : block).ToArray();
+                messages.Add(RedactMessage(new ModelMessage(MessageRole.Assistant, durableAssistantContent)));
 
                 var pendingDiscoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
                 foreach (ToolCallBlock call in toolBlocks)
@@ -1515,7 +1522,7 @@ public sealed class ExplorerTurn
                     var exposed = ReadTurnToolCallCount(stream, turnId) < _maxToolCallsPerTurn
                         && !lifecycleDeniedToolIds.Contains(call.ToolName)
                         && VisibleTools(discoveredToolIds).Any(tool => tool.Name == call.ToolName);
-                    var redactedArguments = _redaction.Redact(call.ArgumentsJson);
+                    var redactedArguments = SafeToolArguments(call.ToolName, call.ArgumentsJson);
                     var hookDecision = exposed
                         ? DispatchLifecycle(LifecyclePoint.BeforeTool, call.ToolName, redactedArguments)
                         : HookDispatchResult.Empty;
@@ -1531,14 +1538,15 @@ public sealed class ExplorerTurn
                     if (!deferQuestionRequest && (!exposed || _tools is ScriptedToolExecutor))
                     {
                         var persistedArguments = call.ToolName == "user.ask"
-                            ? QuestionnaireArgumentDigest(call.ArgumentsJson) : call.ArgumentsJson;
+                            ? QuestionnaireArgumentDigest(call.ArgumentsJson)
+                            : call.ToolName == "memory.propose" ? MemoryProposalJournalArgumentsJson : call.ArgumentsJson;
                         var requested = new ToolCallRequested(call.Id, validated.ProviderCallId,
                             call.ToolName, persistedArguments);
                         requestReceipt = stream.AppendToolCallRequestAdmitted(requested, journal =>
                         {
                             ValidateCounterBudget(journal, newTurn: false, newToolCall: call.Id);
                             ValidateUltraCode(toolCall: call.Id);
-                        });
+                        }, call.ToolName == "memory.propose" ? call.ArgumentsJson : null);
                     }
                     ToolOutcome outcome;
                     if (!exposed)
@@ -1665,6 +1673,18 @@ public sealed class ExplorerTurn
                             toPersist.Add(new ToolCallPrepared(prepared.ToolCallId,
                                 "{\"questionnaireArtifact\":\"" + questionnaireArtifactId + "\"}"));
                         }
+                        else if (call.ToolName == "memory.propose" && evt is ToolCallRequested memoryRequested)
+                        {
+                            // The proposal may contain sensitive text. Its screened candidate
+                            // event is the durable source; never persist raw tool arguments.
+                            toPersist.Add(new ToolCallRequested(memoryRequested.ToolCallId, memoryRequested.ProviderCallId,
+                                memoryRequested.ToolName, MemoryProposalJournalArgumentsJson));
+                        }
+                        else if (call.ToolName == "memory.propose" && evt is ToolCallPrepared memoryPrepared)
+                        {
+                            toPersist.Add(new ToolCallPrepared(memoryPrepared.ToolCallId,
+                                MemoryProposalJournalArgumentsJson));
+                        }
                         else
                         {
                             toPersist.Add(evt);
@@ -1702,12 +1722,19 @@ public sealed class ExplorerTurn
                     else
                         stream.AppendBatch(toPersist, DurabilityClass.Standard);
 
+                    if (call.ToolName == "process.exec" && outcome.Succeeded && _sessionMemoryPolicy is not null)
+                    {
+                        try { _sessionMemoryPolicy.ObserveSuccessfulDotnetValidation(call.Id.ToString(), call.ArgumentsJson); }
+                        catch (Exception exception) when (exception is IOException or InvalidDataException
+                            or UnauthorizedAccessException or ArgumentException) { }
+                    }
+
                     if (lifecycleDeniedTurn)
                     {
                         var completed = outcome.Succeeded && planError is null;
                         allToolCalls.Add(new ToolUseTrace(call.ToolName, completed,
                             _redaction.Redact(planError ?? outcome.Summary ?? ""),
-                            _redaction.Redact(call.ArgumentsJson)));
+                            SafeToolArguments(call.ToolName, call.ArgumentsJson)));
                         throw new LifecycleHookWithheldException("lifecycle.hook.tool_outcome_withheld");
                     }
 
@@ -1717,7 +1744,7 @@ public sealed class ExplorerTurn
                     if (pendingPermission is { } permissionInteractionId)
                     {
                         allToolCalls.Add(new ToolUseTrace(call.ToolName, true, "awaiting input",
-                            _redaction.Redact(call.ArgumentsJson)));
+                            SafeToolArguments(call.ToolName, call.ArgumentsJson)));
                         return new TurnResult(null, StopReason.InputRequired, steps, usage,
                             allToolCalls.ToArray(), null, permissionInteractionId);
                     }
@@ -1739,7 +1766,7 @@ public sealed class ExplorerTurn
                         if (answer is null || answer.IsInputRequired)
                         {
                             allToolCalls.Add(new ToolUseTrace(call.ToolName, true, "awaiting input",
-                                _redaction.Redact(call.ArgumentsJson)));
+                                SafeToolArguments(call.ToolName, call.ArgumentsJson)));
                             return new TurnResult(null, StopReason.InputRequired, steps, usage,
                                 allToolCalls.ToArray(), null, interactionId);
                         }
@@ -1759,7 +1786,7 @@ public sealed class ExplorerTurn
                             if (!resolution.Accepted)
                             {
                                 allToolCalls.Add(new ToolUseTrace(call.ToolName, true, "answer rejected",
-                                    _redaction.Redact(call.ArgumentsJson)));
+                                    SafeToolArguments(call.ToolName, call.ArgumentsJson)));
                                 return new TurnResult(null, StopReason.InputRequired, steps, usage,
                                     allToolCalls.ToArray(), null, interactionId);
                             }
@@ -1779,7 +1806,7 @@ public sealed class ExplorerTurn
                         });
                         messages.Add(askResult);
                         allToolCalls.Add(new ToolUseTrace(call.ToolName, !answer!.IsInvalid,
-                            answer.Status, _redaction.Redact(call.ArgumentsJson)));
+                            answer.Status, SafeToolArguments(call.ToolName, call.ArgumentsJson)));
                         continue;
                     }
 
@@ -1791,7 +1818,7 @@ public sealed class ExplorerTurn
                     var resultText = succeeded ? content : "error: " + _redaction.Redact(planError ?? outcome.Summary ?? "failed");
                     allToolCalls.Add(new ToolUseTrace(call.ToolName, succeeded,
                         _redaction.Redact(planError ?? outcome.Summary ?? ""),
-                        _redaction.Redact(call.ArgumentsJson)));
+                        SafeToolArguments(call.ToolName, call.ArgumentsJson)));
 
                     var toolResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
                         new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
@@ -3127,10 +3154,24 @@ public sealed class ExplorerTurn
         return new PreparedTurnContext(prepared, selectedMessages.ToArray());
     }
 
-    private void RecordUsedSessionMemory(SessionId sessionId, IReadOnlyList<ContextItem> items)
+    private void RecordUsedSessionMemory(SessionId sessionId, TurnId turnId, int modelStepIndex,
+        IReadOnlyList<ContextItem> items, string renderedInstructions, EventStream stream)
     {
+        // RenderContext(snapshot) is the exact Instructions value placed in ModelRequest.
+        // Require the exact rendered line before recording use, so a future contributor/filter
+        // change cannot count a retrieved-but-omitted memory item.
+        var renderedLines = renderedInstructions.Split('\n').ToHashSet(StringComparer.Ordinal);
+        var includedMemories = items.Where(item => item.Kind == ContextItemKind.Memory
+                && renderedLines.Contains("- " + item.Content.Replace("\n", " ")))
+            .ToArray();
+        var memoryIds = includedMemories.Where(item => item.Id.StartsWith("memory.", StringComparison.Ordinal))
+            .Select(item => item.Id["memory.".Length..]).Distinct(StringComparer.Ordinal)
+            .Take(500).ToArray();
+        if (memoryIds.Length == 0) return;
+        var usedAt = DateTimeOffset.UtcNow;
+        stream.Append(new MemoryUsed(turnId, modelStepIndex, memoryIds, usedAt), DurabilityClass.Barrier);
         foreach (var contributor in _materializer.Contributors().OfType<SessionMemoryContextContributor>())
-            contributor.RecordUsed(sessionId, items, DateTimeOffset.UtcNow, CancellationToken.None);
+            contributor.RecordUsed(sessionId, includedMemories, usedAt, CancellationToken.None);
     }
 
     private static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,
@@ -3365,7 +3406,7 @@ public sealed class ExplorerTurn
                     break;
                 case ToolCallBlock call:
                     blocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                        _redaction.Redact(call.ArgumentsJson)));
+                        SafeToolArguments(call.ToolName, call.ArgumentsJson)));
                     break;
                 case ToolResultBlock result:
                     blocks.Add(new ToolResultBlock(result.Id, RedactBlocks(result.Content), result.IsError));
@@ -3387,6 +3428,9 @@ public sealed class ExplorerTurn
 
         return new ModelMessage(message.Role, blocks.ToArray());
     }
+
+    private string SafeToolArguments(string toolName, string argumentsJson) =>
+        toolName == "memory.propose" ? MemoryProposalJournalArgumentsJson : _redaction.Redact(argumentsJson);
 
     private ArtifactRef? VerifiedOpaqueStateRef(ArtifactRef? artifact)
     {

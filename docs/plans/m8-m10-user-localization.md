@@ -127,6 +127,13 @@ Project de instrucciones ya integrado es la base, no el cierre de skills complet
 
 Orden: integrar bases → completar commands/preferences/skills → hooks/MCP → cerrar candidatos/uso Session → cerrar OpenRouter OR1–OR5 → integración M8. OpenRouter reutiliza las superficies de preferencias y puede avanzar sin depender del conector web/MCP. Los bloques pueden compartir contratos ya construidos; cada entrega contiene backend, ruta Host/Protocol, presentación y pruebas. Los límites Strong de red/creación de archivos quedan explícitos hasta que el sandbox imponga el techo exacto; ninguna traducción habilita esas capacidades.
 
+La aceptación de memoria incluye el `InteractionRequested` de tipo `MemoryPromotion`
+y su resolución canónica (ADR-0034); un estado textual `ask` por sí solo no acredita
+esa ruta. Las decisiones se recuperan sobre todo el journal aunque la vista limite
+la cantidad de candidatos. Las propuestas sensibles no conservan argumentos brutos
+en las proyecciones durables propias; la excepción de receipt en memoria para
+`memory.propose` no permite desacoplar argumentos canónicos de otras herramientas.
+
 **Compatibilidad MCP verificada el 2026-10-13:** fijar y registrar la revisión wire
 soportada. La [revisión 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)
 usa metadata por solicitud; las revisiones anteriores usan `initialize`. El

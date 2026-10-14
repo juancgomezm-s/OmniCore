@@ -80,6 +80,9 @@ public sealed partial class TuiApp
             case "memory.session":
                 foreach (var memory in data.Memory)
                     _sessionPreferencesRows.Add(new(SessionPreferencesPresentation.SafeText(memory.Content, 112), MemoryDetails(memory), memory));
+                foreach (var candidate in data.MemoryCandidates ?? [])
+                    _sessionPreferencesRows.Add(new(SessionPref("memory.candidate") + " · "
+                        + SessionPreferencesPresentation.SafeText(candidate.Content, 96), MemoryCandidateDetails(candidate), candidate));
                 break;
         }
     }
@@ -167,6 +170,14 @@ public sealed partial class TuiApp
             else if (value is MemoryPresentation memory && _sessionPreferencesQuery == "memory.session")
             {
                 action.Text = SessionPref("memory.forget"); action.Visible = true; action.Enabled = data.SessionId is not null;
+            }
+            else if (value is MemoryCandidatePresentation candidate && _sessionPreferencesQuery == "memory.session")
+            {
+                if (candidate.Decision == "ask")
+                {
+                    action.Text = SessionPref("memory.promote"); action.Visible = true; action.Enabled = data.SessionId is not null;
+                    secondary.Text = SessionPref("memory.reject"); secondary.Visible = true; secondary.Enabled = data.SessionId is not null;
+                }
             }
         }
 
@@ -284,6 +295,15 @@ public sealed partial class TuiApp
         SessionPref("confidence") + ": " + (memory.Confidence?.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) ?? SessionPref("unknown")),
         SessionPref("memory.tags") + ": " + (memory.Tags.Count == 0 ? SessionPref("unknown") : Safe(string.Join(", ", memory.Tags), 512)));
 
+    private string MemoryCandidateDetails(MemoryCandidatePresentation candidate) => string.Join(Environment.NewLine,
+        SessionPref("memory.candidate") + ": " + Safe(candidate.Id),
+        SessionPref("memory.content") + ":", SafeMultiline(candidate.Content),
+        SessionPref("memory.kind") + ": " + EnumLabel("memory.kind", candidate.Kind),
+        SessionPref("memory.decision") + ": " + EnumLabel("memory.candidate.state", candidate.Decision),
+        SessionPref("memory.source") + ": " + EnumLabel("memory.origin", candidate.Origin),
+        candidate.ConflictMemoryId is null ? "" : SessionPref("memory.conflict") + ": " + Safe(candidate.ConflictMemoryId),
+        SessionPref("memory.created") + ": " + Safe(candidate.ProposedAt ?? SessionPref("unknown")));
+
     private string Safe(string value, int maximumLength = 240) => SessionPreferencesPresentation.SafeText(value, maximumLength);
     private string SafeMultiline(string value) => new string(value.Select(character =>
         char.IsControl(character) && character is not ('\r' or '\n' or '\t') ? ' ' : character).ToArray());
@@ -318,12 +338,23 @@ public sealed partial class TuiApp
             ConfirmSessionChange(SessionPref("title.memory"), MemoryDetails(memory) + Environment.NewLine
                 + SessionPref("memory.confirm_forget"),
                 () => SendMemoryForget(data, memory));
+        else if (value is MemoryCandidatePresentation candidate && primary.Text == SessionPref("memory.promote"))
+            ConfirmSessionChange(SessionPref("title.memory"), MemoryCandidateDetails(candidate) + Environment.NewLine
+                + SessionPref("memory.confirm_promote"), () => SendMemoryCandidate(data, "memory.session.promote", candidate));
     }
 
     private void ExecuteGrantAction(int index, Button secondary)
     {
         if (!secondary.Visible || !secondary.Enabled || index < 0 || index >= _sessionPreferencesRows.Count
-            || _sessionPreferencesData is not { } data || _sessionPreferencesRows[index].Value is not ExtensionPresentation extension) return;
+            || _sessionPreferencesData is not { } data) return;
+        if (_sessionPreferencesRows[index].Value is MemoryCandidatePresentation candidate
+            && secondary.Text == SessionPref("memory.reject"))
+        {
+            ConfirmSessionChange(SessionPref("title.memory"), MemoryCandidateDetails(candidate) + Environment.NewLine
+                + SessionPref("memory.confirm_reject"), () => SendMemoryCandidate(data, "memory.session.reject", candidate));
+            return;
+        }
+        if (_sessionPreferencesRows[index].Value is not ExtensionPresentation extension) return;
         ConfirmSessionChange(SessionPref("title.extensions"), ExtensionDetails(extension) + Environment.NewLine
             + SessionPref("extension.confirm_grant") + Environment.NewLine
             + string.Join(", ", extension.RequestedCapabilities.Select(cap => Safe(cap, 128))),
@@ -381,6 +412,13 @@ public sealed partial class TuiApp
 
     private void SendMemoryForget(SessionPreferencesData data, MemoryPresentation memory) => SendSessionPreferenceCommand(
         data, "memory.session.forget", "memoryId", memory.Id);
+
+    private void SendMemoryCandidate(SessionPreferencesData data, string command, MemoryCandidatePresentation candidate)
+    {
+        var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("candidateId", candidate.Id)
+            + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "") + "}";
+        SendSessionPreferencePayload(data, payload);
+    }
 
     private void SendSkillChange(SessionPreferencesData data, SkillPresentation skill, bool activate)
     {

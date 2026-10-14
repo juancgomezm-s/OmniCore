@@ -166,6 +166,10 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.MetaModelInvocationCompleted())
             .Plus(Typed.MetaModelInvocationFailed())
             .Plus(Typed.MetaModelInvocationNotDispatched())
+            .Plus(Typed.MemoryCandidateProposed())
+            .Plus(Typed.MemoryPromoted())
+            .Plus(Typed.MemoryRejected())
+            .Plus(Typed.MemoryUsed())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
@@ -540,6 +544,10 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(MetaModelInvocationFailed))]
 [JsonSerializable(typeof(MetaModelInvocationNotDispatched))]
 [JsonSerializable(typeof(HookApplied))]
+[JsonSerializable(typeof(MemoryCandidateProposed))]
+[JsonSerializable(typeof(MemoryPromoted))]
+[JsonSerializable(typeof(MemoryRejected))]
+[JsonSerializable(typeof(MemoryUsed))]
 internal sealed partial class EventJsonContext : JsonSerializerContext
 {
 }
@@ -995,4 +1003,13 @@ public sealed class Typed
 
     public static CodecPair MetaModelInvocationNotDispatched() =>
         Of(EventType.Of("meta_model.invocation_not_dispatched"), EventJsonContext.Default.MetaModelInvocationNotDispatched);
+
+    public static CodecPair MemoryCandidateProposed() =>
+        Of(EventType.Of("memory.candidate_proposed"), EventJsonContext.Default.MemoryCandidateProposed);
+    public static CodecPair MemoryPromoted() =>
+        Of(EventType.Of("memory.promoted"), EventJsonContext.Default.MemoryPromoted);
+    public static CodecPair MemoryRejected() =>
+        Of(EventType.Of("memory.rejected"), EventJsonContext.Default.MemoryRejected);
+    public static CodecPair MemoryUsed() =>
+        Of(EventType.Of("memory.used"), EventJsonContext.Default.MemoryUsed);
 }

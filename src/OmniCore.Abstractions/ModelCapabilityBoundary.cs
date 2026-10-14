@@ -71,6 +71,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             { "process.exec", ModelToolCapability.GeneralProcess },
             { "shell.exec", ModelToolCapability.Shell },
             { "user.ask", ModelToolCapability.PlanProposal },
+            { "memory.propose", ModelToolCapability.PlanProposal },
             // A receive is a bounded, side-effect-free wait on the bound execution mailbox.
             { "core.agents.mailbox.receive", ModelToolCapability.AgentMailboxWait },
             // Tool de simulación de M1: escribe, se clasifica como reemplazo.
