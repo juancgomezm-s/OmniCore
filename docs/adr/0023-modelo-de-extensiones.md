@@ -74,10 +74,10 @@ Correspondencia con ADR-0020: `Plugin` → `ThirdParty` (o `Trusted` si el usuar
 
 **Servidores MCP** (como extensiones de `SourceKind.Mcp`):
 
-- **MCP local configurado por el usuario** (en su `settings.yaml`): nivel `Trusted`, con un techo de permisos declarado en esa configuración (equivalente a `requests.permissions`). Corre con sandbox `Strong`.
+- **MCP local configurado por el usuario:** nivel `Trusted`, con un techo de permisos declarado en la configuración. El contrato inicial de M8 usa `<UserConfig>/mcp/servers.json`: ejecutable/argv/cwd exactos, sandbox `Strong`, sin red ni paths adicionales. No interpreta `requests.permissions` de paquetes como grants.
 - **MCP declarado en el repo** (`.omnicore/` o `.mcp.json`): nivel `Project`; requiere workspace confiable y consentimiento.
 - **MCP remoto:** `Untrusted` salvo que el usuario lo marque `Trusted` explícitamente. Los argumentos salientes pasan por el redactor (ADR-0018).
-- **Primer uso:** las tools MCP con efecto hacen `Ask` en su primer uso por sesión, salvo que la fuente sea `Trusted`.
+- **Primer uso:** el contrato inicial de M8 aplica `Ask` al primer efecto también en fuentes `Trusted`. El receipt durable de Session liga identidad efectiva de configuración/confianza, tool/schema y referencia de credencial; un grant genérico no lo sustituye ni levanta un Deny. La anotación remota `readOnlyHint` sólo se respeta bajo opción User explícita.
 
 ### 5. `ComponentSource`: origen común de todo componente
 
@@ -129,7 +129,7 @@ consentimiento separado y no hereda el trust del repo. Tools, contributors y
 validators tienen consumidores; `provides.skills` conserva el origen y hash del
 padre consentido. Contributors/validators son metadata-only en este contrato.
 `completion.gate` aún necesita consumidor en H, los puntos de hooks restantes
-siguen abiertos y MCP está en construcción. Los fixtures no acreditan ejecutar
+siguen abiertos. MCP/web se integró en `5481ca3`: wire 2026-07-28, confianza por origen, consentimiento de primer efecto por Session y límites de transporte documentados; no acredita enforcement de egress interno remoto. Los fixtures no acreditan ejecutar
 binarios reales de paquetes. [Evidencia M8](../validation/m8-extensibility-20261011.md).
 
 | Elemento | Categoría |
