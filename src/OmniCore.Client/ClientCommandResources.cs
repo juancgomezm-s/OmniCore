@@ -39,6 +39,7 @@ public static class ClientCommandResources
         ["client.command.context"] = ("affiche le contexte destiné au modèle", "mostra il contesto destinato al modello"),
         ["client.command.tools"] = ("affiche les outils et leurs décisions d’autorisation", "mostra gli strumenti e le relative decisioni di autorizzazione"),
         ["client.command.extensions"] = ("affiche les extensions découvertes et leur niveau de confiance", "mostra le estensioni rilevate e il livello di attendibilità"),
+        ["client.command.hooks"] = ("affiche les hooks du projet, leur état et leurs autorisations", "mostra gli hook del progetto, lo stato e le autorizzazioni"),
         ["client.command.commands"] = ("affiche les commandes disponibles, leur priorité et les conflits", "mostra i comandi disponibili, le priorità e i conflitti"),
         ["client.command.skills"] = ("consulte ou active une compétence du projet pour cette session", "consulta o attiva una competenza del progetto per questa sessione"),
         ["client.command.memory"] = ("consulte, ajoute ou supprime la mémoire de cette session", "consulta, aggiunge o elimina la memoria di questa sessione"),
@@ -89,6 +90,7 @@ public static class ClientCommandResources
         ["client.action.context.inspect"] = ("Examiner le contexte", "Esamina il contesto"),
         ["client.action.tools.inspect"] = ("Examiner les outils", "Esamina gli strumenti"),
         ["client.action.extensions.inspect"] = ("Examiner les extensions", "Esamina le estensioni"),
+        ["client.action.hooks.inspect"] = ("Examiner les hooks", "Esamina gli hook"),
         ["client.action.commands.inspect"] = ("Examiner les commandes", "Esamina i comandi"),
         ["client.action.skills.inspect"] = ("Examiner les compétences", "Esamina le competenze"),
         ["client.action.memory.session"] = ("Gérer la mémoire de la session", "Gestisci la memoria della sessione"),
@@ -99,6 +101,11 @@ public static class ClientCommandResources
 
     private static readonly Dictionary<string, (string Es, string En, string Fr, string It)> New = new(StringComparer.Ordinal)
     {
+        ["lifecycle.hook.model_invocation_withheld"] = ("La restricción o validación pendiente de un hook impidió llamar al modelo.", "A hook restriction or unresolved required validation prevented the model call.", "Une restriction de hook ou une validation obligatoire non résolue a empêché l’appel au modèle.", "Una restrizione di un hook o una validazione obbligatoria irrisolta ha impedito la chiamata al modello."),
+        ["lifecycle.hook.model_result_withheld"] = ("La restricción o validación pendiente de un hook impidió aceptar el resultado del modelo.", "A hook restriction or unresolved required validation prevented accepting the model result.", "Une restriction de hook ou une validation obligatoire non résolue a empêché l’acceptation du résultat du modèle.", "Una restrizione di un hook o una validazione obbligatoria irrisolta ha impedito di accettare il risultato del modello."),
+        ["lifecycle.hook.completion_withheld"] = ("No se completó el turno porque una restricción de hook o una validación obligatoria sigue pendiente.", "The turn was not completed because a hook restriction or required validation remains unresolved.", "Le tour n’a pas été terminé car une restriction de hook ou une validation obligatoire reste non résolue.", "Il turno non è stato completato perché una restrizione di un hook o una validazione obbligatoria è ancora irrisolta."),
+        ["lifecycle.hook.tool_restricted"] = ("La ejecución de la herramienta fue bloqueada por un hook.", "Tool execution was blocked by a hook.", "L’exécution de l’outil a été bloquée par un hook.", "L’esecuzione dello strumento è stata bloccata da un hook."),
+        ["lifecycle.hook.tool_outcome_withheld"] = ("El hook bloqueó la continuación después de registrar el resultado de la herramienta.", "A hook blocked continuation after the tool outcome was recorded.", "Un hook a bloqué la suite après l’enregistrement du résultat de l’outil.", "Un hook ha bloccato la continuazione dopo aver registrato il risultato dello strumento."),
         ["tool.error.read_page_bounds"] = ("Argumentos de página inválidos: offset={offset}, limit={limit}. Usa offset ≥ 1 y limit entre 1 y 500.", "Invalid page arguments: offset={offset}, limit={limit}. Use offset ≥ 1 and limit from 1 to 500.", "Arguments de page invalides : offset={offset}, limit={limit}. Utilisez offset ≥ 1 et limit de 1 à 500.", "Argomenti di pagina non validi: offset={offset}, limit={limit}. Usa offset ≥ 1 e limit da 1 a 500."),
         ["tool.error.search_bounds"] = ("Consulta inválida: longitud de query={queryLength}, maxResults={maxResults}. query admite 1–256 caracteres y maxResults de 1 a 8.", "Invalid search arguments: query length={queryLength}, maxResults={maxResults}. query accepts 1–256 characters and maxResults from 1 to 8.", "Arguments de recherche invalides : longueur de query={queryLength}, maxResults={maxResults}. query accepte 1 à 256 caractères et maxResults de 1 à 8.", "Argomenti di ricerca non validi: lunghezza query={queryLength}, maxResults={maxResults}. query accetta 1–256 caratteri e maxResults da 1 a 8."),
         ["tool.error.search_result_limit"] = ("El catálogo excede el límite de respuesta de {maxBytes} bytes.", "The catalog response exceeds the {maxBytes}-byte limit.", "La réponse du catalogue dépasse la limite de {maxBytes} octets.", "La risposta del catalogo supera il limite di {maxBytes} byte."),

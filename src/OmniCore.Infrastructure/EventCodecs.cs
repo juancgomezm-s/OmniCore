@@ -38,6 +38,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunValidationRejected())
             .Plus(Typed.PostEditValidationPending())
             .Plus(Typed.PostEditValidationConsumed())
+            .Plus(Typed.HookApplied())
             .Plus(Typed.RunCompleted())
             .Plus(Typed.RunSummaryRecorded())
             .Plus(Typed.RunFailed())
@@ -536,6 +537,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(MetaModelInvocationCompleted))]
 [JsonSerializable(typeof(MetaModelInvocationFailed))]
 [JsonSerializable(typeof(MetaModelInvocationNotDispatched))]
+[JsonSerializable(typeof(HookApplied))]
 internal sealed partial class EventJsonContext : JsonSerializerContext
 {
 }
@@ -604,6 +606,9 @@ public sealed class Typed
 
     public static CodecPair PostEditValidationConsumed() =>
         Of(EventType.Of("post_edit_validation.consumed"), EventJsonContext.Default.PostEditValidationConsumed);
+
+    public static CodecPair HookApplied() =>
+        Of(EventType.Of("hook.applied"), EventJsonContext.Default.HookApplied);
 
     public static CodecPair RunCompleted() =>
         Of(EventType.Of("run.completed"), EventJsonContext.Default.RunCompleted);

@@ -237,7 +237,7 @@ public sealed class CliApp
         var client = Runtime.Connect(CancellationToken.None);
         // ADR-0024: el resto de ClientCommands (/help, /exit, /plan, /tasks, /events, /permissions, /cancel,
         // /interrupt) se resuelven a su ClientAction; /context y /tools conservan su render propio de abajo.
-        if (invocation.Name is not ("context" or "tools" or "extensions")
+        if (invocation.Name is not ("context" or "tools" or "extensions" or "hooks")
             && ClientCommandRegistry.Default.TryResolve(invocation, out var clientAction) && clientAction is not null)
         {
             var context = new ClientContext(client, Loc(), PermissionsListing);
@@ -246,7 +246,7 @@ public sealed class CliApp
             Console.WriteLine(result.Text);
             return Task.FromResult(0);
         }
-        if (invocation.Name is "context" or "tools" or "extensions")
+        if (invocation.Name is "context" or "tools" or "extensions" or "hooks")
         {
             if (invocation.Name == "tools")
             {
@@ -308,6 +308,7 @@ public sealed class CliApp
         {
             "context" => Loc().Resolve("cli.diagnostic.context"),
             "tools" => Loc().Resolve("cli.diagnostic.tools"),
+            "hooks" => Loc().Resolve("cli.diagnostic.hooks"),
             _ => Loc().Resolve("cli.diagnostic.extensions"),
         });
         try
@@ -346,6 +347,24 @@ public sealed class CliApp
                     Console.WriteLine("  " + (id ?? "<" + Loc().Resolve("cli.diagnostic.extension.invalid_id") + ">")
                         + (version is null ? "" : "@" + version) + " · " + status);
                     if (extension.TryGetProperty("diagnostic", out var diagnostic) && diagnostic.ValueKind == System.Text.Json.JsonValueKind.String)
+                        Console.WriteLine("    " + FormatExternalDiagnostic(diagnostic.GetString()));
+                }
+            }
+            else if (name == "hooks")
+            {
+                if (root.TryGetProperty("workspaceTrusted", out var trusted) && !trusted.GetBoolean())
+                    Console.WriteLine("  " + Loc().Resolve("cli.diagnostic.hooks.untrusted"));
+                var hooks = root.GetProperty("hooks").EnumerateArray().ToArray();
+                if (hooks.Length == 0) Console.WriteLine("  " + Loc().Resolve("cli.diagnostic.hook.no_entries"));
+                foreach (var hook in hooks)
+                {
+                    var state = KnownDiagnosticValue("cli.diagnostic.hook.state.", hook.GetProperty("state").GetString(),
+                        "enabled", "consentrequired", "workspacetrustrequired", "invalidmanifest", "incompatibleapi", "untrusted");
+                    Console.WriteLine("  " + hook.GetProperty("id").GetString() + " · "
+                        + Loc().Resolve("cli.diagnostic.hook.point") + " " + hook.GetProperty("point").GetString()
+                        + " · " + state);
+                    if (hook.TryGetProperty("diagnostic", out var diagnostic)
+                        && diagnostic.ValueKind == System.Text.Json.JsonValueKind.String)
                         Console.WriteLine("    " + FormatExternalDiagnostic(diagnostic.GetString()));
                 }
             }
@@ -763,6 +782,8 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
         Console.WriteLine(Loc().Resolve("commands.extensions.help"));
         Console.WriteLine(Loc().Resolve("extensions.usage"));
+        Console.WriteLine(Loc().Resolve("commands.hooks.help"));
+        Console.WriteLine(Loc().Resolve("hooks.usage"));
         Console.WriteLine(Loc().Resolve("commands.explain.help"));
         Console.WriteLine(Loc().Resolve("commands.workflow.help"));
         Console.WriteLine(Loc().Resolve("cli.usage.model"));

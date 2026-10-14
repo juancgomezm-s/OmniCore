@@ -44,6 +44,8 @@ public sealed class ExplorerTurn
     private readonly IReadOnlyList<ActiveSkillFingerprint>? _activeSkills;
     private readonly AgentProfile? _resolvedAgentProfile;
     private readonly IReadOnlyDictionary<string, string> _toolPreferences;
+    private readonly IReadOnlyList<IHook> _lifecycleHooks;
+    private readonly LifecycleHookDispatcher _hookDispatcher = new();
     private readonly Dictionary<string, ProtectedToolSubstitution> _protectedPreferenceSubstitutions = new(StringComparer.Ordinal);
     private readonly HashSet<string> _approvedProtectedPreferenceIdentities = new(StringComparer.Ordinal);
 
@@ -63,6 +65,47 @@ public sealed class ExplorerTurn
     private readonly RedactionPolicy _redaction;
 
     private readonly HarnessPolicy? _harness;
+
+    private static ExecutionFingerprint WithHookFingerprint(ExecutionFingerprint baseline, IReadOnlyList<IHook> hooks)
+    {
+        if (hooks.Count == 0) return baseline;
+        var descriptor = new System.Text.StringBuilder();
+        static void Add(System.Text.StringBuilder target, string? value)
+        {
+            value ??= "";
+            target.Append(value.Length.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                .Append(':').Append(value).Append(';');
+        }
+        foreach (var hook in hooks.OrderBy(item => item.Registration.Id, StringComparer.Ordinal))
+        {
+            var registration = hook.Registration;
+            Add(descriptor, registration.Id);
+            Add(descriptor, registration.Source.Kind.ToString());
+            Add(descriptor, registration.Source.Scope.ToString());
+            Add(descriptor, registration.Source.Trust.ToString());
+            Add(descriptor, registration.Source.Owner);
+            Add(descriptor, registration.Source.Version);
+            Add(descriptor, registration.Source.ContentIdentity);
+            Add(descriptor, registration.Point.ToString());
+            Add(descriptor, registration.EffectiveArgumentAccess.ToString());
+            Add(descriptor, registration.Timeout?.TotalMilliseconds.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+            Add(descriptor, registration.Enabled.ToString());
+            Add(descriptor, registration.WorkspaceTrusted.ToString());
+            Add(descriptor, registration.FullArgumentsConsented.ToString());
+            foreach (var capability in registration.RequestedCapabilities.Order()) Add(descriptor, "request:" + capability);
+            foreach (var capability in registration.GrantedCapabilities.Order()) Add(descriptor, "grant:" + capability);
+            foreach (var eventType in (registration.EventTypeFilters ?? new HashSet<string>()).Order(StringComparer.Ordinal))
+                Add(descriptor, "event:" + eventType);
+            Add(descriptor, "end");
+        }
+        var hash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(descriptor.ToString())));
+        var components = baseline.Components.Where(component => component.Name != "lifecycle.hooks")
+            .Append(new FingerprintComponent("lifecycle.hooks", "1", ContentHash.Sha256(hash))).ToArray();
+        return new ExecutionFingerprint(baseline.ModelKey, baseline.HarnessPolicyHash, baseline.ToolkitHash,
+            baseline.ContextPolicyHash, baseline.OverridesHash, baseline.Build, baseline.ModelPolicyHash,
+            baseline.TokenizerHash, components);
+    }
 
     private TokenUsage ReadTurnModelStepUsage(EventStream stream, TurnId turnId, out bool invalid)
     {
@@ -283,7 +326,8 @@ public sealed class ExplorerTurn
         int maxModelStepsPerTurn = MaxSteps, int maxToolCallsPerTurn = 32,
         int maxGenerationSeconds = 300,
         bool? enforceSessionSpendCap = null, bool? enforceDailySpendCap = null,
-        IReadOnlyDictionary<string, string>? toolPreferences = null)
+        IReadOnlyDictionary<string, string>? toolPreferences = null,
+        IReadOnlyList<IHook>? lifecycleHooks = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -296,9 +340,10 @@ public sealed class ExplorerTurn
         _toolPreferences = toolPreferences is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
             : new Dictionary<string, string>(toolPreferences, StringComparer.Ordinal);
+        _lifecycleHooks = lifecycleHooks?.ToArray() ?? Array.Empty<IHook>();
         _catalog = catalog;
         _materializer = materializer;
-        _fingerprint = fingerprint;
+        _fingerprint = WithHookFingerprint(fingerprint, _lifecycleHooks);
         _fingerprintArtifacts = fingerprintArtifacts?.ToArray() ?? Array.Empty<IPreparedArtifact>();
         _recordEffectiveFingerprint = recordEffectiveFingerprint;
         _activeSkills = activeSkills?.ToArray();
@@ -540,6 +585,7 @@ public sealed class ExplorerTurn
         var stream = new EventStream(_store, _codecs, sessionId);
         var resumedTurnId = FindOpenTurn(stream, runId, laneId);
         var isResume = resumedTurnId is not null;
+        var turnId = resumedTurnId ?? TurnId.New();
         var originalStart = isResume ? stream.EventsSince(1).LastOrDefault(evt =>
             evt.RunId == runId && _codecs.Decode(evt) is TurnStarted start
                 && start.TurnId == resumedTurnId && start.LaneId == laneId) : null;
@@ -588,6 +634,57 @@ public sealed class ExplorerTurn
             return new TurnResult("Cannot execute Turn: durable AgentProfile revision or content differs from its applied configuration.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var discoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
+        var lifecycleAnnotations = new List<ContextItem>();
+        var lifecycleAnnotationIds = new HashSet<string>(StringComparer.Ordinal);
+        var lifecycleDeniedToolIds = new HashSet<string>(StringComparer.Ordinal);
+        var lifecycleDeniedTurn = false;
+        var requiredLifecycleValidations = new Dictionary<string, HookRequireValidation>(StringComparer.Ordinal);
+        foreach (var persistedHook in stream.EventsSince(1).Where(evt => evt.RunId == runId)
+            .Select(_codecs.Decode).OfType<HookApplied>()
+            .Where(applied => applied.TurnId == turnId && applied.Result == "validation_required"))
+        {
+            foreach (var validatorId in persistedHook.DetailIds ?? [])
+            {
+                if (validatorId.Length is > 0 and <= 160)
+                    requiredLifecycleValidations.TryAdd(validatorId,
+                        new HookRequireValidation(validatorId, "Previously requested lifecycle validation is unresolved."));
+            }
+        }
+        HookDispatchResult DispatchLifecycle(LifecyclePoint point, string? toolId = null,
+            string? redactedArguments = null)
+        {
+            if (_lifecycleHooks.Count == 0) return HookDispatchResult.Empty;
+            var result = _hookDispatcher.DispatchAsync(_lifecycleHooks,
+                new HookContext(point, toolId, redactedArguments, point.ToString()), cancellationToken)
+                .AsTask().GetAwaiter().GetResult();
+            foreach (var annotation in result.Annotations)
+                if (lifecycleAnnotationIds.Add(annotation.Id)) lifecycleAnnotations.Add(annotation);
+            lifecycleDeniedTurn |= result.Denied;
+            lifecycleDeniedToolIds.UnionWith(result.DeniedToolIds);
+            foreach (var validation in result.Validations)
+                requiredLifecycleValidations.TryAdd(validation.ValidatorId, validation);
+            foreach (var applied in result.Applications)
+                stream.Append(new HookApplied(runId, turnId, applied.HookId, point.ToString(), applied.Result,
+                    applied.DetailIds));
+            try
+            {
+                var details = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["point"] = point.ToString(),
+                    ["hookCount"] = _lifecycleHooks.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["denied"] = result.Denied.ToString(),
+                    ["deniedToolIds"] = string.Join(",", result.DeniedToolIds.Order(StringComparer.Ordinal)),
+                    ["annotationCount"] = result.Annotations.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["requiredValidationCount"] = result.Validations.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["warningCodes"] = string.Join(",", result.Warnings.Select(warning => warning.Split(':')[0])
+                        .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)),
+                };
+                _audit.Record(new AuditRecord("hook.dispatch", null, sessionId, runId, DateTimeOffset.UtcNow,
+                    runId.ToString(), details), CancellationToken.None);
+            }
+            catch (Exception) { /* diagnostics never change the dispatch decision */ }
+            return result;
+        }
         var preparedTurnFingerprint = _recordEffectiveFingerprint
             ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(discoveredToolIds),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
@@ -644,14 +741,14 @@ public sealed class ExplorerTurn
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null,
                 pendingInteraction.InteractionId);
         }
-        var turnId = resumedTurnId ?? TurnId.New();
         var turnTask = FindTaskForLane(runEvents, runId, laneId);
         var executionId = HostAgentInvocation.Resolve(_store, _codecs, sessionId, runId, turnTask, laneId, stream);
         using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
             turnTask, laneId, turnId, ExecutionId: executionId));
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
         IReadOnlyList<ToolDefinition> RequestTools() => ReadTurnToolCallCount(stream, turnId) >= _maxToolCallsPerTurn
-            ? Array.Empty<ToolDefinition>() : VisibleTools(discoveredToolIds);
+            ? Array.Empty<ToolDefinition>() : VisibleTools(discoveredToolIds)
+                .Where(tool => !lifecycleDeniedToolIds.Contains(tool.Name)).ToArray();
         void RefreshStepFingerprint(IReadOnlyList<ToolDefinition> requestTools)
         {
             var configured = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog,
@@ -1019,13 +1116,18 @@ public sealed class ExplorerTurn
                 return new TurnResult("Presupuesto agotado: " + ex.Detail, StopReason.Cancelled, 0,
                     usage, allToolCalls.ToArray(), null);
             }
+            var initialModelHooks = DispatchLifecycle(LifecyclePoint.BeforeModel);
+            if (initialModelHooks.Denied || initialModelHooks.Validations.Count > 0
+                || requiredLifecycleValidations.Count > 0)
+                throw new LifecycleHookWithheldException("lifecycle.hook.model_invocation_withheld");
             RefreshStepFingerprint(RequestTools());
             var preparedContext = MaterializeTurnContext(stream, sessionId, runId, laneId, turnId,
                 workingStateText, instruction, messages, messageOwners, stepFingerprint, cancellationToken, CanInvokeMeta,
                 hasReservationBoundary ? ReserveMeta : null,
                 hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
                 hasReservationBoundary ? FinishMeta : null,
-                hasReservationBoundary ? id => _spendReservations!.ReleaseBeforeDispatch(MetaReservationId(id)) : null);
+                hasReservationBoundary ? id => _spendReservations!.ReleaseBeforeDispatch(MetaReservationId(id)) : null,
+                lifecycleAnnotations);
             var materialized = preparedContext.Snapshot;
 
             // ContextOverflow: el contenido protegido no cabe ni después de recortar la conversación.
@@ -1110,6 +1212,10 @@ public sealed class ExplorerTurn
             // admissions already written for this Turn before allowing another model/tool step.
             for (var step = nextModelStepIndex; step < _maxModelStepsPerTurn; step++)
             {
+                var modelHooks = step == nextModelStepIndex ? initialModelHooks : DispatchLifecycle(LifecyclePoint.BeforeModel);
+                if (modelHooks.Denied || lifecycleDeniedTurn || modelHooks.Validations.Count > 0
+                    || requiredLifecycleValidations.Count > 0)
+                    throw new LifecycleHookWithheldException("lifecycle.hook.model_invocation_withheld");
                 var requestTools = RequestTools();
                 RefreshStepFingerprint(requestTools);
                 if (_quotaAdmission?.Invoke(sessionId, runId, laneId, turnId, nextModelStepIndex) is { } quotaInteraction)
@@ -1128,7 +1234,8 @@ public sealed class ExplorerTurn
                         hasReservationBoundary ? ReserveMeta : null,
                         hasReservationBoundary ? id => _spendReservations!.MarkDispatched(MetaReservationId(id)) : null,
                         hasReservationBoundary ? FinishMeta : null,
-                        hasReservationBoundary ? id => _spendReservations!.ReleaseBeforeDispatch(MetaReservationId(id)) : null);
+                        hasReservationBoundary ? id => _spendReservations!.ReleaseBeforeDispatch(MetaReservationId(id)) : null,
+                        lifecycleAnnotations);
                     materialized = preparedContext.Snapshot;
                     if (materialized.Overflowed)
                     {
@@ -1304,6 +1411,9 @@ public sealed class ExplorerTurn
                         catch (OverflowException) { throw UnrepresentableSpend(budgeted); }
                     }
                     if (checkpointFailure is not null) throw checkpointFailure;
+                    var afterModelHooks = DispatchLifecycle(LifecyclePoint.AfterModel);
+                    if (afterModelHooks.Denied || afterModelHooks.Validations.Count > 0)
+                        throw new LifecycleHookWithheldException("lifecycle.hook.model_result_withheld");
                     ValidateUltraCode();
                     // This invocation is already durable, but unreported usage cannot
                     // authorize tools or another invocation within the same Ask. Checking
@@ -1357,6 +1467,14 @@ public sealed class ExplorerTurn
 
                 if (resolved.StopReason != StopReason.ToolUse || toolBlocks.Count == 0)
                 {
+                    var completionHooks = DispatchLifecycle(LifecyclePoint.BeforeCompletion);
+                    if (completionHooks.Denied || completionHooks.Validations.Count > 0
+                        || requiredLifecycleValidations.Count > 0)
+                    {
+                        stop = StopReason.Error;
+                        finalText = "lifecycle.hook.completion_withheld";
+                        break;
+                    }
                     stop = resolved.StopReason;
                     break;
                 }
@@ -1368,6 +1486,8 @@ public sealed class ExplorerTurn
                 var pendingDiscoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
                 foreach (ToolCallBlock call in toolBlocks)
                 {
+                    if (lifecycleDeniedTurn)
+                        throw new LifecycleHookWithheldException("lifecycle.hook.tool_outcome_withheld");
                     try
                     {
                         ValidateUltraCode(toolCall: call.Id);
@@ -1384,7 +1504,15 @@ public sealed class ExplorerTurn
                     var validated = new ValidatedToolCall(call.Id, new ToolId(call.ToolName),
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
                     var exposed = ReadTurnToolCallCount(stream, turnId) < _maxToolCallsPerTurn
+                        && !lifecycleDeniedToolIds.Contains(call.ToolName)
                         && VisibleTools(discoveredToolIds).Any(tool => tool.Name == call.ToolName);
+                    var redactedArguments = _redaction.Redact(call.ArgumentsJson);
+                    var hookDecision = exposed
+                        ? DispatchLifecycle(LifecyclePoint.BeforeTool, call.ToolName, redactedArguments)
+                        : HookDispatchResult.Empty;
+                    var permissionDecision = exposed
+                        ? DispatchLifecycle(LifecyclePoint.BeforePermission, call.ToolName, redactedArguments)
+                        : HookDispatchResult.Empty;
                     ToolCallRequestReceipt? requestReceipt = null;
                     // user.ask has no external effect. Keep its schema in CAS and append its
                     // sanitized request + tool outcome + InteractionRequested atomically only
@@ -1412,6 +1540,14 @@ public sealed class ExplorerTurn
                                 new ToolCallRejected(call.Id, "tool no disponible para este modelo",
                                     ToolErrorCode.UnknownTool)
                             });
+                    else if (hookDecision.Denied || hookDecision.Validations.Count > 0
+                        || permissionDecision.Denied || permissionDecision.Validations.Count > 0
+                        || requiredLifecycleValidations.Count > 0 || lifecycleDeniedToolIds.Contains(call.ToolName))
+                        outcome = ToolOutcome.Failed("lifecycle.hook.tool_restricted", null,
+                            ToolCallState.Rejected, new DomainEventPayload[] {
+                                new ToolCallRejected(call.Id, "lifecycle.hook.tool_restricted",
+                                    ToolErrorCode.PermissionDenied)
+                            });
                     else if (_tools is ScriptedToolExecutor scripted)
                     {
                         var substitution = _protectedPreferenceSubstitutions.GetValueOrDefault(call.ToolName);
@@ -1427,6 +1563,9 @@ public sealed class ExplorerTurn
                                 approval.TargetToolId, approval.IdentityHash));
                     }
                     else outcome = _tools.ExecuteTool(validated, false, cancellationToken, stream);
+                    if (!outcome.Succeeded)
+                        DispatchLifecycle(LifecyclePoint.ToolFailed, call.ToolName, redactedArguments);
+                    DispatchLifecycle(LifecyclePoint.AfterTool, call.ToolName, redactedArguments);
 
                     // Discovery affects only the next request. Every selected tool still has
                     // to pass the ToolRuntime schema, boundary, PermissionPolicy and Execute path.
@@ -1546,6 +1685,15 @@ public sealed class ExplorerTurn
                         });
                     else
                         stream.AppendBatch(toPersist, DurabilityClass.Standard);
+
+                    if (lifecycleDeniedTurn)
+                    {
+                        var completed = outcome.Succeeded && planError is null;
+                        allToolCalls.Add(new ToolUseTrace(call.ToolName, completed,
+                            _redaction.Redact(planError ?? outcome.Summary ?? ""),
+                            _redaction.Redact(call.ArgumentsJson)));
+                        throw new LifecycleHookWithheldException("lifecycle.hook.tool_outcome_withheld");
+                    }
 
                     if (call.ToolName == "core.agents.mailbox.receive")
                         _mailboxDeliveryCompleted?.Invoke(call.Id);
@@ -1711,16 +1859,21 @@ public sealed class ExplorerTurn
             {
             }
 
-            return new TurnResult(null, ex is OperationCanceledException ? StopReason.Cancelled : StopReason.Error,
+            return new TurnResult(ex is LifecycleHookWithheldException ? ex.Message : null,
+                ex is OperationCanceledException ? StopReason.Cancelled : StopReason.Error,
                 steps, usage, allToolCalls.ToArray(), null)
             {
-                FailureDiagnostic = ex is GenerationDeadlineExceededException deadline
+                FailureDiagnostic = ex is LifecycleHookWithheldException hookWithheld
+                    ? hookWithheld.Message
+                    : ex is GenerationDeadlineExceededException deadline
                     ? "OmniCore cancelled generation after " + deadline.Seconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
                         + " seconds. The provider may continue work if it does not honor cancellation; reasoning is provider-controlled."
                     : _redaction.Redact(ex.GetType().Name + ": " + (ex.Message ?? "turn failed")),
             };
         }
     }
+
+    private sealed class LifecycleHookWithheldException(string message) : InvalidOperationException(message) { }
 
     private sealed class GenerationDeadlineExceededException(int seconds)
         : OperationCanceledException("Configured generation deadline elapsed.")
@@ -2298,6 +2451,7 @@ public sealed class ExplorerTurn
                 || item.Kind == ContextItemKind.Task || item.Kind == ContextItemKind.Decision
                 || item.Kind == ContextItemKind.Constraint || item.Kind == ContextItemKind.File
                 || item.Kind == ContextItemKind.Summary || item.Kind == ContextItemKind.Checkpoint
+                || item.Kind == ContextItemKind.Knowledge
                 || item.Kind == ContextItemKind.Memory)
             {
                 if (item.Content.Length > 0)
@@ -2771,7 +2925,7 @@ public sealed class ExplorerTurn
         ExecutionFingerprint fingerprint, CancellationToken cancellationToken,
         Func<bool>? canInvokeMeta = null, Func<string, bool>? reserveMeta = null,
         Action<string>? dispatchMeta = null, Action<string, decimal?, long>? finishMeta = null,
-        Action<string>? releaseMeta = null)
+        Action<string>? releaseMeta = null, IReadOnlyList<ContextItem>? hookAnnotations = null)
     {
         var contextTask = FindTaskForLane(stream.EventsSince(1), runId, laneId);
         var contributors = new List<IContextContributor>();
@@ -2780,6 +2934,9 @@ public sealed class ExplorerTurn
         var inherited = new ContextInheritanceService(_store, _codecs, _artifacts)
             .FindDelegationProjection(sessionId, runId, laneId);
         if (inherited is not null) contributors.Add(new RedactingContextContributor(inherited, _redaction));
+        if (hookAnnotations is { Count: > 0 })
+            contributors.Add(new RedactingContextContributor(
+                new LifecycleAnnotationContributor(hookAnnotations), _redaction));
         var hasWorkingState = false;
         foreach (var contributor in _materializer.Contributors())
         {
@@ -3617,5 +3774,15 @@ public sealed class ExplorerTurn
         }
 
         return false;
+    }
+
+    private sealed class LifecycleAnnotationContributor(IReadOnlyList<ContextItem> items) : IContextContributor
+    {
+        public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>(items);
+        }
     }
 }

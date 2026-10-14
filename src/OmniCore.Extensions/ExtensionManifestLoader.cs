@@ -2,6 +2,7 @@ namespace OmniCore.Extensions;
 
 using System.Security.Cryptography;
 using System.Text;
+using OmniCore.Abstractions;
 using OmniCore.Domain;
 using YamlDotNet.Core;
 using YamlDotNet.RepresentationModel;
@@ -327,6 +328,18 @@ public sealed class ExtensionManifestLoader
         if (manifest.Provides?.Skills?.Count > 0) requiredCapabilities.Add("skill.register");
         if (manifest.Provides?.Hooks?.Count > 0) requiredCapabilities.Add("hook.register");
         if (manifest.Provides?.ContextContributors?.Count > 0) requiredCapabilities.Add("context.contribute");
+        foreach (var hook in manifest.Provides?.Hooks ?? [])
+        {
+            if (!Enum.TryParse<HookCapability>(hook.Capabilities?.FirstOrDefault(), false, out _)
+                && hook.Capabilities?.Count > 0)
+                throw new InvalidDataException("Hook capabilities must use the supported Observe, Annotate, Restrict, or RequireValidation names.");
+            foreach (var capability in hook.Capabilities ?? [])
+            {
+                if (!Enum.TryParse<HookCapability>(capability, false, out var parsed))
+                    throw new InvalidDataException("Hook capabilities must use the supported Observe, Annotate, Restrict, or RequireValidation names.");
+                requiredCapabilities.Add("hook." + parsed.ToString().ToLowerInvariant());
+            }
+        }
         if (requiredCapabilities.Any(capability => !requests.Contains(capability)))
             throw new InvalidDataException("The manifest does not request a capability required by its declared components.");
         if (manifest.Provides?.Tools?.Count > 0 && manifest.Requests?.Permissions?.Process?.Count is not > 0)

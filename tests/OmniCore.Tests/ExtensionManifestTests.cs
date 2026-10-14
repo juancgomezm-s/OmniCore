@@ -420,6 +420,101 @@ public sealed class ExtensionManifestTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Project_hook_uses_the_existing_strong_stdio_extension_boundary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-hook-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(workspace, ".omnicore", "extensions", "fixture.hooks");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.hooks
+            version: 1.0.0
+            displayName: Fixture hooks
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              hooks:
+                - point: BeforeModel
+                  capabilities: [Observe]
+            requests:
+              capabilities: [hook.register, hook.observe]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        try
+        {
+            var consented = new HashSet<string>(["hook.register", "hook.observe"], StringComparer.Ordinal);
+            var extension = Assert.Single(new ExtensionManifestLoader().Discover(
+                Path.Combine(workspace, ".omnicore", "extensions"), TrustLevel.Project,
+                workspaceTrusted: true, consented));
+            var launcher = new ProtocolFixtureLauncher("hook");
+            var hook = new ExtensionLifecycleHook(extension, 0, workspace,
+                new ExtensionRpcProcessInvoker(launcher), consented, explicitlyActivated: true);
+            var result = await hook.ExecuteAsync(new OmniCore.Abstractions.HookContext(
+                OmniCore.Abstractions.LifecyclePoint.BeforeModel, EventType: "BeforeModel"),
+                TestContext.Current.CancellationToken);
+            Assert.IsType<OmniCore.Abstractions.HookContinue>(result);
+            Assert.Equal(OmniCore.Sandbox.SandboxStrength.Strong, launcher.LastLaunch!.RequestedStrength);
+            Assert.Contains("hooks/execute", launcher.LastLaunch.InitialStandardInput, StringComparison.Ordinal);
+            Assert.DoesNotContain("secret", launcher.LastLaunch.InitialStandardInput, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Project_hooks_are_not_registered_until_capability_consent_is_hash_bound()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-extension-hook-consent-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(workspace, ".omnicore", "extensions", "fixture.hooks");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.hooks
+            version: 1.0.0
+            displayName: Fixture hooks
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              hooks:
+                - point: BeforeModel
+                  capabilities: [Observe]
+            requests:
+              capabilities: [hook.register, hook.observe]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        try
+        {
+            var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "data"));
+            Assert.Empty(ProjectExtensionHooks.Load(workspace, paths, workspaceTrusted: true, new CountingRpcClient()));
+            var candidate = Assert.Single(new ExtensionManifestLoader().Discover(
+                Path.Combine(workspace, ".omnicore", "extensions"), TrustLevel.Project, workspaceTrusted: true));
+            new ExtensionConsentStore(paths, workspace).Grant(candidate,
+                new HashSet<string>(["hook.register", "hook.observe"], StringComparer.Ordinal));
+            var registered = Assert.Single(ProjectExtensionHooks.Load(workspace, paths, workspaceTrusted: true,
+                new CountingRpcClient()));
+            Assert.True(registered.Registration.Enabled);
+            Assert.Equal(TrustLevel.Project, registered.Registration.Source.Trust);
+            Assert.True(registered.Registration.IsEligible(OmniCore.Abstractions.HookCapability.Observe));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
     public void Extension_process_runs_only_after_permission_pipeline_authorizes_the_tool_intent()
     {
         var manifest = new ExtensionManifest
@@ -514,11 +609,14 @@ public sealed class ExtensionManifestTests
     private sealed class ProtocolFixtureLauncher(string fixture) : ISandboxProcessLauncher
     {
         public int Starts { get; private set; }
+        public SandboxLaunchSpec? LastLaunch { get; private set; }
         public ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch, CancellationToken cancellationToken)
         {
             Starts++;
+            LastLaunch = launch;
             var (stdout, timedOut) = fixture switch
             {
+                "hook" => ("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"kind\":\"continue\"}}", false),
                 "malformed" => ("{broken", false),
                 "version" => ("{\"jsonrpc\":2,\"id\":\"1\",\"result\":{}}", false),
                 "id" => ("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}", false),

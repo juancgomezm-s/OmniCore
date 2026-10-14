@@ -2249,6 +2249,60 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 + ",\"session\":" + ( _lastSessionId is { } currentSession ? "\"" + JsonObj.Escape(currentSession.ToString()) + "\"" : "null")
                 + ",\"extensions\":[" + string.Join(",", entries) + "]}");
         }
+        if (name == "hooks")
+        {
+            if (_workspaceRoot is null) return new SessionQueryResult(name,
+                "{\"workspaceTrusted\":false,\"hooks\":[]}");
+            var trusted = new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(_workspaceRoot);
+            var root = Path.Combine(_workspaceRoot, ".omnicore", "extensions");
+            var loader = new ExtensionManifestLoader();
+            var discovered = loader.Discover(root, TrustLevel.Project, trusted);
+            var consents = new ExtensionConsentStore(_platformPathsFactory(), _workspaceRoot);
+            var granted = discovered.Where(extension => extension.Manifest?.Id is not null)
+                .GroupBy(extension => extension.Manifest!.Id!, StringComparer.Ordinal)
+                .Where(group => group.Count() == 1)
+                .ToDictionary(group => group.Key, group => consents.ConsentedCapabilities(group.Single()), StringComparer.Ordinal);
+            if (trusted) discovered = loader.DiscoverWithConsents(root, TrustLevel.Project, trusted, granted);
+            var entries = new List<string>();
+            foreach (var extension in discovered)
+            {
+                var id = extension.Manifest?.Id;
+                var capabilities = id is not null && granted.TryGetValue(id, out var existing)
+                    ? existing : new HashSet<string>(StringComparer.Ordinal);
+                var declarations = extension.Manifest?.Provides?.Hooks ?? [];
+                for (var index = 0; index < declarations.Count; index++)
+                {
+                    var declaration = declarations[index];
+                    var requested = declaration.Capabilities ?? [];
+                    var missing = requested.Where(capability => !capabilities.Contains(
+                        "hook." + capability.ToLowerInvariant())).ToArray();
+                    var enabled = trusted && extension.Status == ExtensionDiscoveryStatus.Ready
+                        && capabilities.Contains("hook.register") && missing.Length == 0
+                        && Enum.TryParse<LifecyclePoint>(declaration.Point, ignoreCase: false, out var point)
+                        && LifecycleHookSupport.IsSupported(point);
+                    var state = !trusted ? "WorkspaceTrustRequired"
+                        : extension.Status != ExtensionDiscoveryStatus.Ready ? extension.Status.ToString()
+                        : !Enum.TryParse<LifecyclePoint>(declaration.Point, ignoreCase: false, out var declaredPoint)
+                            || !LifecycleHookSupport.IsSupported(declaredPoint) ? "UnsupportedPoint"
+                        : enabled ? "Enabled" : "ConsentRequired";
+                    entries.Add("{" + string.Join(",", new[]
+                    {
+                        id is null ? "\"id\":null" : JsonObj.Field("id", id + ".hook." + index.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                        id is null ? "\"extensionId\":null" : JsonObj.Field("extensionId", id),
+                        JsonObj.Field("point", declaration.Point ?? "unknown"),
+                        JsonObj.Field("state", state),
+                        JsonObj.FieldBool("enabled", enabled),
+                        "\"requestedCapabilities\":[" + string.Join(",", requested.Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]",
+                        "\"consentedCapabilities\":[" + string.Join(",", requested
+                            .Where(value => !missing.Contains(value, StringComparer.Ordinal))
+                            .Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]",
+                        extension.Diagnostic is { } diagnostic ? JsonObj.Field("diagnostic", diagnostic) : "\"diagnostic\":null",
+                    }) + "}");
+                }
+            }
+            return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
+                + ",\"hooks\":[" + string.Join(",", entries) + "]}");
+        }
         if (name == "skills")
         {
             if (_workspaceRoot is null) return new SessionQueryResult(name, "{\"workspaceTrusted\":false,\"session\":"

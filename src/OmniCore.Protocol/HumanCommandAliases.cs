@@ -25,6 +25,7 @@ public static class HumanCommandAliases
         new Entry("skills", "habilidades", "compétences", "competenze"),
         new Entry("memory", "memoria", "mémoire", "memoria"),
         new Entry("extensions", "extensiones", "extensions", "estensioni"),
+        new Entry("hooks", "ganchos", "hooks", "hooks"),
         new Entry("cancel", "cancelar", "annuler", "annulla"),
         new Entry("interrupt", "interrumpir", "interrompre", "interrompi"),
         new Entry("agents", "agentes", "agents", "agenti"),

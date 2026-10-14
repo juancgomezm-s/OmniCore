@@ -13,6 +13,7 @@ public static class ClientActionIds
     public const string ContextInspect = "context.inspect";
     public const string ToolsInspect = "tools.inspect";
     public const string ExtensionsInspect = "extensions.inspect";
+    public const string HooksInspect = "hooks.inspect";
     public const string CommandsInspect = "commands.inspect";
     public const string SkillsInspect = "skills.inspect";
     public const string MemorySession = "memory.session";
@@ -69,6 +70,7 @@ public sealed class ClientCommandRegistry
             new("context", ClientActionIds.ContextInspect, "client.command.context"),
             new("tools", ClientActionIds.ToolsInspect, "client.command.tools"),
             new("extensions", ClientActionIds.ExtensionsInspect, "client.command.extensions"),
+            new("hooks", ClientActionIds.HooksInspect, "client.command.hooks"),
             new("commands", ClientActionIds.CommandsInspect, "client.command.commands"),
             new("skills", ClientActionIds.SkillsInspect, "client.command.skills"),
             new("memory", ClientActionIds.MemorySession, "client.command.memory"),
@@ -128,6 +130,7 @@ public sealed class ClientActionHandler : IClientActionHandler
             ClientActionIds.ContextInspect => Query(context, "context"),
             ClientActionIds.ToolsInspect => InspectTools(context, cancellationToken),
             ClientActionIds.ExtensionsInspect => Query(context, "extensions"),
+            ClientActionIds.HooksInspect => Query(context, "hooks"),
             ClientActionIds.CommandsInspect => Query(context, "commands"),
             ClientActionIds.SkillsInspect => Skills(invocation, context),
             ClientActionIds.MemorySession => Memory(invocation, context),

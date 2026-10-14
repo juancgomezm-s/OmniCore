@@ -1597,6 +1597,22 @@ public sealed class OmniCliRuntime : IDisposable
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(_workspaceRoot, paths, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
+            IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
+            if (delegation is null && workspaceConfig.Trusted)
+            {
+                try
+                {
+                    lifecycleHooks = ProjectExtensionHooks.Load(_workspaceRoot, paths,
+                        workspaceTrusted: true, invoker: new ExtensionRpcProcessInvoker());
+                }
+                catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
+                    or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
+                {
+                    writeLine(Text(Localized("cli.runtime.extension.compose_failed",
+                        ("diagnostic", ExternalDiagnostic(failure.Message)))));
+                    return 1;
+                }
+            }
             if (delegation is null && executingAct && workspaceConfig.Trusted)
             {
                 try
@@ -1754,7 +1770,8 @@ public sealed class OmniCliRuntime : IDisposable
                     maxGenerationSeconds: effectivePolicy.MaxGenerationSeconds,
                     enforceSessionSpendCap: hasSessionSpendCap,
                     enforceDailySpendCap: hasDailySpendCap,
-                    toolPreferences: loaded.Settings?.ToolPreferences);
+                    toolPreferences: loaded.Settings?.ToolPreferences,
+                    lifecycleHooks: lifecycleHooks);
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
@@ -2120,7 +2137,7 @@ public sealed class OmniCliRuntime : IDisposable
 
             if (!string.IsNullOrEmpty(result.FinalText))
             {
-                writeLine(result.FinalText);
+                writeLine(ResolveWire(result.FinalText));
             }
 
             writeLine(Text(Localized("cli.runtime.turn.summary",
@@ -2681,7 +2698,7 @@ public sealed class OmniCliRuntime : IDisposable
             }
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
                 writeLine(FormatToolTrace(trace));
-            if (!string.IsNullOrEmpty(result.FinalText)) writeLine(result.FinalText);
+            if (!string.IsNullOrEmpty(result.FinalText)) writeLine(ResolveWire(result.FinalText));
             writeLine(Text(Localized("cli.runtime.turn.summary",
                 ("reason", StopReasonLabel(result.StopReason)),
                 ("steps", result.Steps.ToString()),
@@ -2869,7 +2886,7 @@ public sealed class OmniCliRuntime : IDisposable
 
     private string FormatToolTrace(ExplorerTurn.ToolUseTrace trace) =>
         Text(LocalizedText.Of("cli.tool.activity", "tool", trace.ToolName)) + " → "
-        + Text(LocalizedText.Of(trace.Succeeded ? "cli.tool.ok" : "cli.tool.failed")) + ": " + trace.Summary;
+        + Text(LocalizedText.Of(trace.Succeeded ? "cli.tool.ok" : "cli.tool.failed")) + ": " + ResolveWire(trace.Summary ?? "");
 
     private static InteractionRequested? FindPendingInteraction(IReadOnlyList<DomainEvent> events,
         IEventCodecRegistry codecs, InteractionKind kind)

@@ -1977,6 +1977,26 @@ public sealed partial class TuiWiringTests
     });
 
     [Fact]
+    public void Hooks_slash_and_localized_alias_reach_the_shared_query_action_in_the_TUI() => RunTuiTest(fx =>
+    {
+        const string json = "{\"workspaceTrusted\":true,\"hooks\":[{\"id\":\"fixture.hook.0\",\"state\":\"UnsupportedPoint\",\"enabled\":false}]}";
+        var client = new HookQueryClient(fx.Server, json);
+        fx.StartTui(client: client);
+
+        Type(fx, "/hooks");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "diagnóstico de hooks visible");
+        Assert.Contains("Hooks del proyecto", fx.App.Overlay!.Title);
+        Assert.Contains("UnsupportedPoint", OverlayText(fx.App.Overlay));
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cierra diagnóstico de hooks");
+
+        Type(fx, "/ganchos");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "alias localizado consulta hooks");
+        Assert.Contains("UnsupportedPoint", OverlayText(fx.App.Overlay!));
+        Assert.Equal(2, client.Queries);
+        Assert.Equal(0, client.Commands);
+    });
+
+    [Fact]
     public void Tools_catalog_empty_missing_and_invalid_data_are_explicit_and_never_submit_work() => RunTuiTest(fx =>
     {
         var client = new ToolQueryClient(fx.Server, "{\"mode\":\"Act\",\"tools\":[]}");
@@ -2060,6 +2080,20 @@ public sealed partial class TuiWiringTests
             if (name != "tools") return inner.Query(name, token);
             Interlocked.Increment(ref Queries);
             return Json is { } value ? new(name, value) : null;
+        }
+    }
+
+    private sealed class HookQueryClient(IOmniClient inner, string json) : IOmniClient
+    {
+        internal int Queries, Commands;
+        public CommandAck Send(WireEnvelope command, CancellationToken token)
+        { Interlocked.Increment(ref Commands); return inner.Send(command, token); }
+        public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => inner.SubscribeSince(fromSequence);
+        public SessionQueryResult? Query(string name, CancellationToken token)
+        {
+            if (name != "hooks") return inner.Query(name, token);
+            Interlocked.Increment(ref Queries);
+            return new(name, json);
         }
     }
 

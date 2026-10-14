@@ -2476,6 +2476,15 @@ public sealed partial class TuiApp
         }
         if (action.ActionId == ClientActionIds.CommandsInspect && bare)
         { _viewFromChat = true; ShowCommandPreferences(); return true; }
+        if (action.ActionId == ClientActionIds.HooksInspect && bare)
+        {
+            var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
+            var result = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None)
+                .AsTask().GetAwaiter().GetResult();
+            _viewFromChat = true;
+            ShowPreferenceText(_localization.Resolve("sessionPreferences.title.hooks"), result.Text);
+            return true;
+        }
         if (action.ActionId == ClientActionIds.HelpShow)
         {
             var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);

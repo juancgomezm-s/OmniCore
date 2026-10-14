@@ -11,6 +11,7 @@ public sealed class ClientActionTests
     private sealed class FakeClient : IOmniClient, ITrustedUserActionClient
     {
         internal Dictionary<string, string?> Queries { get; } = new(StringComparer.Ordinal);
+        internal List<string> Queried { get; } = [];
         internal List<string> Sent { get; } = [];
         internal List<WireEnvelope> Events { get; } = [];
 
@@ -24,8 +25,11 @@ public sealed class ClientActionTests
 
         public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => Events;
 
-        public SessionQueryResult? Query(string name, CancellationToken cancellationToken) =>
-            Queries.TryGetValue(name, out var json) && json is not null ? new SessionQueryResult(name, json) : null;
+        public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
+        {
+            Queried.Add(name);
+            return Queries.TryGetValue(name, out var json) && json is not null ? new SessionQueryResult(name, json) : null;
+        }
     }
 
     private static ClientContext Context(FakeClient client, Func<string>? permissions = null, string locale = "es") =>
@@ -50,6 +54,7 @@ public sealed class ClientActionTests
             ["tasks"] = ClientActionIds.ViewTasks, ["events"] = ClientActionIds.ViewEvents,
             ["context"] = ClientActionIds.ContextInspect, ["tools"] = ClientActionIds.ToolsInspect,
             ["extensions"] = ClientActionIds.ExtensionsInspect,
+            ["hooks"] = ClientActionIds.HooksInspect,
             ["commands"] = ClientActionIds.CommandsInspect,
             ["skills"] = ClientActionIds.SkillsInspect,
             ["memory"] = ClientActionIds.MemorySession,
@@ -139,6 +144,23 @@ public sealed class ClientActionTests
 
         client.Queries["agents"] = "null";
         Assert.Equal("Sin sesión", Run("tasks", Context(client)).Text);
+    }
+
+    [Fact]
+    public async Task Hooks_slash_command_and_localized_alias_query_the_host_without_model_or_process_calls()
+    {
+        var client = new FakeClient();
+        const string diagnostic = "{\"workspaceTrusted\":true,\"hooks\":[{\"id\":\"sample.hook.0\",\"state\":\"UnsupportedPoint\",\"enabled\":false}]}";
+        client.Queries["hooks"] = diagnostic;
+        Assert.Equal(diagnostic, Run("hooks", Context(client)).Text);
+
+        Assert.True(ClientCommandRegistry.Default.TryResolve(new CommandInvocation("ganchos", [], "Typed"),
+            out var alias));
+        Assert.Equal(ClientActionIds.HooksInspect, alias!.ActionId);
+        var response = await new ClientActionHandler().ExecuteAsync(alias, Context(client), CancellationToken.None);
+        Assert.Equal(diagnostic, response.Text);
+        Assert.Empty(client.Sent);
+        Assert.Equal(new[] { "hooks", "hooks" }, client.Queried);
     }
 
     [Fact]
