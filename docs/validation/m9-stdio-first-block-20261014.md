@@ -50,3 +50,28 @@ de M8 sigue pendiente por separado.
 - `dotnet test tests/OmniCore.Tests/OmniCore.Tests.csproj --filter FullyQualifiedName~StdioTransportTests` — 12 pruebas focales PASS: CLI/Host hijo, persistencia/replay, Unicode, goldens consumidos por el test, versión incompatible, framing inválido/acotado y CR/LF físicos, continuidad después de requests malformadas, timeout/cancelación de handshake con proceso fixture real, rechazo de Outcome, respuesta de replay acotada, EOF, límite in-process y recursos/diagnóstico es/en/fr/it.
 
 No se ejecutó la suite integral.
+
+## Integración y revisión del supervisor
+
+Worker único Luna alto: `f3a70d7` y corrección `84e534a`, integrados en `main` por `93b86ae`.
+El supervisor revisó contrato, cliente, Host y consumidor CLI; la entrega inicial se devolvió
+al mismo worker por requests malformadas, framing saliente y negociación sin plazo. La entrega
+corregida preserva el diagnóstico seguro y la autoridad real. La revisión final agrega la
+captura localizada de timeout/cancelación durante el arranque CLI y una omisión explícita de
+la fixture PowerShell en plataformas distintas de Windows, sin afirmar que se probó Linux.
+
+Sobre el árbol integrado con esos ajustes:
+
+- `dotnet build OmniCore.slnx --no-restore -v:q`: EXIT 0, 0 advertencias/errores, 35.96 s.
+- `dotnet test tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --filter "FullyQualifiedName~StdioTransportTests" -v:q`: 12 correctas, 0 fallos, 0 omitidas en Windows; 18.042 s.
+- `dotnet test tests/OmniCore.ArchitectureTests/OmniCore.ArchitectureTests.csproj --no-build --no-restore -v:q`: 62 correctas, 0 fallos, 0 omitidas; 3.007 s.
+
+Logs del supervisor en `%TEMP%`: `OmniCore-M9-integrated-build-20261014.log`,
+`OmniCore-M9-integrated-tests-20261014.log` y `OmniCore-M9-integrated-architecture-20261014.log`.
+Esta pasada completa los controles de arquitectura sobre el árbol integrado y sustituye la
+evidencia de branch para este checkpoint. No se repitió la suite integral de M8 ni se invocó
+un provider. M9-A se considera integrado; M9 continúa abierto con los límites anteriores.
+
+El siguiente bloque de construcción es lease de escritor entre procesos y recuperación de
+conexión/resultado, incluyendo replay paginado y deduplicación. La autoridad humana externa
+y el consumer TS necesitan ese ownership/contrato; no se habilitan mediante un booleano wire.

@@ -217,7 +217,7 @@ public sealed class CliApp
             client = StdioOmniClient.Start(executable, childArgs, Environment.CurrentDirectory);
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or InvalidDataException
-            or System.ComponentModel.Win32Exception)
+            or System.ComponentModel.Win32Exception or TimeoutException or OperationCanceledException)
         {
             Console.Error.WriteLine(Loc().Resolve("cli.stdio.connect_failed"));
             return Task.FromResult(1);

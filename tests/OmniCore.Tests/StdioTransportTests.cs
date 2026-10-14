@@ -79,6 +79,8 @@ public sealed class StdioTransportTests
     [Fact]
     public async Task Handshake_timeout_and_cancellation_kill_the_owned_child_process()
     {
+        if (!OperatingSystem.IsWindows())
+            Assert.Skip("La fixture adversaria de negociación requiere Windows PowerShell; no acredita Linux.");
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-stall-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var script = Path.Combine(root, "stall.ps1");
