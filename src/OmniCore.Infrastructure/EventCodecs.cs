@@ -39,6 +39,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.PostEditValidationPending())
             .Plus(Typed.PostEditValidationConsumed())
             .Plus(Typed.HookApplied())
+            .Plus(Typed.HookValidationResolved())
             .Plus(Typed.RunCompleted())
             .Plus(Typed.RunSummaryRecorded())
             .Plus(Typed.RunFailed())
@@ -200,7 +201,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("worktree.integration_state.recorded"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_requested"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_approved"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_completed"), 1));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_completed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 2));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -544,6 +547,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(MetaModelInvocationFailed))]
 [JsonSerializable(typeof(MetaModelInvocationNotDispatched))]
 [JsonSerializable(typeof(HookApplied))]
+[JsonSerializable(typeof(HookValidationResolved))]
 [JsonSerializable(typeof(MemoryCandidateProposed))]
 [JsonSerializable(typeof(MemoryPromoted))]
 [JsonSerializable(typeof(MemoryRejected))]
@@ -618,7 +622,10 @@ public sealed class Typed
         Of(EventType.Of("post_edit_validation.consumed"), EventJsonContext.Default.PostEditValidationConsumed);
 
     public static CodecPair HookApplied() =>
-        Of(EventType.Of("hook.applied"), EventJsonContext.Default.HookApplied);
+        Of(EventType.Of("hook.applied"), EventJsonContext.Default.HookApplied, 3);
+
+    public static CodecPair HookValidationResolved() =>
+        Of(EventType.Of("hook.validation_resolved"), EventJsonContext.Default.HookValidationResolved);
 
     public static CodecPair RunCompleted() =>
         Of(EventType.Of("run.completed"), EventJsonContext.Default.RunCompleted);

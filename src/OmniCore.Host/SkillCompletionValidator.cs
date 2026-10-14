@@ -32,14 +32,26 @@ public sealed class SkillCompletionValidator
 
     public bool HasValidators => _rules.Count > 0 || _extensionValidators.Count > 0;
 
+    internal IEnumerable<(string HookId, string ResultKey)> HookValidationIdentities() =>
+        _rules.Select(rule => ($"skill.{rule.SkillId}.{rule.Id}", $"skill:{rule.SkillId}:{rule.Id}"))
+            .Concat(_extensionValidators.SelectMany(validator => validator.HookValidationIdentities()))
+            .ToArray();
+
     public IReadOnlyList<ExternalCompletionGateResult> Run(string workspaceRoot,
-        Func<string, SkillValidationReadResult?> readThroughPolicy, CancellationToken cancellationToken = default)
+        Func<string, SkillValidationReadResult?> readThroughPolicy, CancellationToken cancellationToken = default,
+        string? boundedRunContextJson = null, IReadOnlySet<string>? requestedHookIds = null,
+        IReadOnlySet<string>? excludedHookIds = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
         ArgumentNullException.ThrowIfNull(readThroughPolicy);
         var root = Path.GetFullPath(workspaceRoot);
         var results = new List<ExternalCompletionGateResult>(_rules.Count);
-        foreach (var rule in _rules)
+        var effectiveRequested = requestedHookIds;
+        if (effectiveRequested is null && excludedHookIds is { Count: > 0 })
+            effectiveRequested = HookValidationIdentities().Select(identity => identity.HookId)
+                .Where(id => !excludedHookIds.Contains(id)).ToHashSet(StringComparer.Ordinal);
+        foreach (var rule in effectiveRequested is null ? _rules : _rules.Where(rule =>
+            effectiveRequested.Contains($"skill.{rule.SkillId}.{rule.Id}")))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var path = ResolvePath(root, rule.Path);
@@ -61,9 +73,11 @@ public sealed class SkillCompletionValidator
                     or DecoderFallbackException or ArgumentException or InvalidOperationException) { passed = false; }
             }
             results.Add(new("skill:" + rule.SkillId + ":" + rule.Id, passed,
-                passed ? "Skill validator passed." : "Skill validator failed."));
+                passed ? "Skill validator passed." : "Skill validator failed.", ValidatorId:
+                    $"skill.{rule.SkillId}.{rule.Id}"));
         }
-        foreach (var validator in _extensionValidators) results.AddRange(validator.Run(cancellationToken));
+        foreach (var validator in _extensionValidators)
+            results.AddRange(validator.Run(cancellationToken, boundedRunContextJson, effectiveRequested));
         return results;
     }
 

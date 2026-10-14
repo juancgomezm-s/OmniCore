@@ -86,6 +86,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private string? _workspaceRoot;
     private Func<IPlatformPaths> _platformPathsFactory = () => OmniHost.CreatePlatformPaths();
+    private Func<IExtensionRpcInvoker> _lifecycleRpcInvokerFactory = static () => new ExtensionRpcProcessInvoker();
     private readonly Func<IPlatformPaths, OpenRouterConnectionService>? _openRouterServiceFactory;
     private SessionRoutingPolicy _newSessionRoutingPolicy = SessionRoutingPolicy.Empty();
     private AgentProfileConfiguration.Loaded _agentProfiles = new(new AgentProfileRegistry([]), null);
@@ -179,6 +180,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     internal void ConfigurePlatformPaths(Func<IPlatformPaths> factory) =>
         _platformPathsFactory = factory ?? throw new ArgumentNullException(nameof(factory));
+
+    internal void ConfigureLifecycleRpcInvoker(Func<IExtensionRpcInvoker> factory) =>
+        _lifecycleRpcInvokerFactory = factory ?? throw new ArgumentNullException(nameof(factory));
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
         IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null,
@@ -1756,6 +1760,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             // Establish the existing workspace marker before committing its reference. The
             // journal initialization is all-or-nothing; no incomplete Run becomes selectable.
             var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
+            var hookPaths = _platformPathsFactory();
+            var lifecycleHooks = ProjectExtensionHooks.Load(physicalWorkspaceRoot, hookPaths,
+                new WorkspaceTrustStore(hookPaths).IsTrusted(physicalWorkspaceRoot),
+                _lifecycleRpcInvokerFactory());
+            var sessionStartingApplications = DispatchCreationHooks(lifecycleHooks,
+                LifecyclePoint.SessionStarting, "session.created", runId, taskId, laneId);
             var creationEvents = new List<DomainEventPayload>
             {
                 new SessionCreated(sessionId,
@@ -1787,6 +1797,18 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 new PlanCreated(planId, runId, PlanItemId.New(), objective),
             });
             stream.AppendBatch(creationEvents, DurabilityClass.Barrier);
+            AppendLifecycleApplications(stream, sessionStartingApplications,
+                new ExecutionScopeState(runId, taskId, laneId));
+            foreach (var (point, eventType, pointTask, pointLane) in new[]
+            {
+                (LifecyclePoint.SessionStarted, "session.started", (TaskId?)taskId, (LaneId?)laneId),
+                (LifecyclePoint.RunStarting, "run.started", (TaskId?)taskId, (LaneId?)laneId),
+                (LifecyclePoint.TaskCreated, "task.created", (TaskId?)taskId, (LaneId?)laneId),
+                (LifecyclePoint.LaneStarting, "lane.started", (TaskId?)taskId, (LaneId?)laneId),
+            })
+                AppendLifecycleApplications(stream,
+                    DispatchCreationHooks(lifecycleHooks, point, eventType, runId, pointTask, pointLane),
+                    new ExecutionScopeState(runId, pointTask, pointLane));
 
             _lastSessionId = sessionId;
             _lastRunId = runId;
@@ -1802,6 +1824,84 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             return FailedDurableCommandAck(command, sessionId, 0,
                 "No se pudo completar la creación del Run.", newSession: true);
         }
+    }
+
+    private static IReadOnlyList<HookApplied> DispatchCreationHooks(IReadOnlyList<IHook> hooks,
+        LifecyclePoint point, string eventType, RunId? runId, TaskId? taskId = null, LaneId? laneId = null)
+    {
+        if (hooks.Count == 0) return [];
+        var result = new LifecycleHookDispatcher().DispatchAsync(hooks,
+            new HookContext(point, EventType: eventType, TaskId: taskId?.ToString(), LaneId: laneId?.ToString()),
+            CancellationToken.None)
+            .AsTask().GetAwaiter().GetResult();
+        if (result.Denied || result.Validations.Count > 0 || result.DeniedToolIds.Count > 0)
+            throw new InvalidOperationException("Lifecycle hook requested an unsupported restriction at " + point + ".");
+        return result.Applications.Select(application => new HookApplied(runId, null,
+            application.HookId, point.ToString(), application.Result, application.DetailIds)).ToArray();
+    }
+
+    private static void AppendLifecycleApplications(EventStream stream, IReadOnlyList<HookApplied> applications,
+        ExecutionScopeState? scope = null)
+    {
+        if (applications.Count > 0)
+        {
+            using var execution = scope is { } executionScope ? ExecutionScope.Begin(executionScope) : null;
+            stream.AppendBatch(applications, DurabilityClass.Barrier);
+        }
+    }
+
+    private void DispatchRunStartLifecycle(SessionId session, RunId runId)
+    {
+        var events = _store.ReadFrom(session, 1);
+        var createdTask = events.Select(_codecs.Decode).OfType<TaskCreated>().LastOrDefault(task => task.RunId == runId);
+        var createdLane = createdTask is null ? null : events.Select(_codecs.Decode).OfType<LaneCreated>()
+            .LastOrDefault(lane => lane.TaskId == createdTask.TaskId);
+        var hooks = LoadLifecycleHooks(session, events);
+        var stream = new EventStream(_store, _codecs, session);
+        foreach (var (point, eventType) in new[]
+        {
+            (LifecyclePoint.RunStarting, "run.started"),
+            (LifecyclePoint.TaskCreated, "task.created"),
+            (LifecyclePoint.LaneStarting, "lane.started"),
+        })
+            AppendLifecycleApplications(stream, DispatchCreationHooks(hooks, point, eventType, runId,
+                createdTask?.TaskId, createdLane?.LaneId), createdTask is null ? null
+                    : new ExecutionScopeState(runId, createdTask.TaskId, createdLane?.LaneId));
+    }
+
+    internal void DispatchCreatedTaskLifecycle(SessionId session, RunId run, TaskId task, LaneId lane)
+    {
+        var events = _store.ReadFrom(session, 1);
+        var hooks = LoadLifecycleHooks(session, events);
+        AppendLifecycleApplications(new EventStream(_store, _codecs, session), DispatchCreationHooks(hooks,
+            LifecyclePoint.TaskCreated, "task.created", run, task, lane), new ExecutionScopeState(run, task, lane));
+    }
+
+    internal void DispatchStartedLaneLifecycle(SessionId session, RunId run, TaskId task, LaneId lane)
+    {
+        var events = _store.ReadFrom(session, 1);
+        var hooks = LoadLifecycleHooks(session, events);
+        AppendLifecycleApplications(new EventStream(_store, _codecs, session), DispatchCreationHooks(hooks,
+            LifecyclePoint.LaneStarting, "lane.started", run, task, lane), new ExecutionScopeState(run, task, lane));
+    }
+
+    private IReadOnlyList<IHook> LoadLifecycleHooks(SessionId session, IReadOnlyList<DomainEvent>? events = null)
+    {
+        events ??= _store.ReadFrom(session, 1);
+        var workspace = events.Select(_codecs.Decode).OfType<WorkspaceRootEstablished>()
+            .LastOrDefault()?.CanonicalRoot ?? _workspaceRoot ?? Path.GetFullPath(".");
+        var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+        var paths = _platformPathsFactory();
+        return ProjectExtensionHooks.Load(physicalRoot, paths,
+            new WorkspaceTrustStore(paths).IsTrusted(physicalRoot), _lifecycleRpcInvokerFactory());
+    }
+
+    private void DispatchRunTerminalLifecycle(SessionId session, RunId runId, LifecyclePoint point)
+    {
+        var events = _store.ReadFrom(session, 1);
+        AppendLifecycleApplications(new EventStream(_store, _codecs, session),
+            DispatchCreationHooks(LoadLifecycleHooks(session, events), point, "run.failed", runId),
+            new ExecutionScopeState(runId));
     }
 
     /// <summary>Store del servidor (para el Turn de Explorer, que persiste en el mismo journal).</summary>
@@ -3124,7 +3224,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         if (!TryParseRunMode(requestedMode, out mode))
                             throw new FormatException("mode de session.input inválido");
                     }
+                    var startsRun = control.ActiveRun(session) is null;
                     _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin());
+                    if (startsRun && _lastRunId is { } startedRun)
+                        DispatchRunStartLifecycle(session, startedRun);
                     _lastSessionId = session;
                     break;
                 }
@@ -3184,6 +3287,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                             else
                                 control.Respond(session, interaction, optionId, command.MessageId);
                         }
+                        var failedTransition = _store.ReadFrom(session, 1)
+                            .Where(evt => evt.Sequence > sequenceBeforeResponse && evt.RunId is not null)
+                            .Select(evt => _codecs.Decode(evt)).OfType<RunFailed>().LastOrDefault();
+                        if (failedTransition is not null)
+                            DispatchRunTerminalLifecycle(session, failedTransition.RunId, LifecyclePoint.RunFailed);
                         AuditEffectResolutions(session, sequenceBeforeResponse, interaction);
                         if (control.UnreconciledEffects(session).Count == 0) _recoveryProblem = null;
                     }
@@ -3745,7 +3853,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     internal (bool? Completed, CommandAck Ack, Exception? Failure) CheckRunCompletionAndGate(SessionId sessionId, RunId runId,
         Func<EventStream, IReadOnlyList<ExternalCompletionGateResult>>? runExternalGates,
-        MutationLedger? mutationLedger)
+        MutationLedger? mutationLedger,
+        Func<LifecyclePoint, HookDispatchResult>? lifecycleDispatch = null)
     {
         var ambientCommand = CausationScope.Current as CommandCausation;
         var commandId = ambientCommand?.CommandId ?? CommandId.New();
@@ -3790,7 +3899,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var stream = new EventStream(_store, _codecs, sessionId);
             var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
                 new ProgressReconciler(), _store, _codecs, sessionId, stream,
-                runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger);
+                runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger,
+                lifecycleDispatch);
             if (_artifacts is not null)
                 new RunSummaryService(_store, _codecs, _artifacts, OmniCliRuntime.RedactSensitive).EnsureRecorded(sessionId);
             var ack = CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
@@ -3852,6 +3962,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var workspace = _workspaceRoot is { Length: > 0 } configured
             ? Path.GetFullPath(configured)
             : Path.GetFullPath(".");
+        var paths = _platformPathsFactory();
+        var hooks = ProjectExtensionHooks.Load(workspace, paths,
+            new WorkspaceTrustStore(paths).IsTrusted(workspace), _lifecycleRpcInvokerFactory());
+        var startingApplications = DispatchCreationHooks(hooks, LifecyclePoint.SessionStarting,
+            "session.created", null);
         var creation = new List<DomainEventPayload>
         {
             new SessionCreated(session, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
@@ -3864,7 +3979,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             creation.Add(new WorkspaceRootEstablished(session, physicalRoot, DateTimeOffset.UtcNow,
                 WorkspaceRootIdentity.Establish(physicalRoot)));
         }
-        new EventStream(_store, _codecs, session).AppendBatch(creation, DurabilityClass.Barrier);
+        var stream = new EventStream(_store, _codecs, session);
+        stream.AppendBatch(creation, DurabilityClass.Barrier);
+        AppendLifecycleApplications(stream, startingApplications);
+        AppendLifecycleApplications(stream, DispatchCreationHooks(hooks, LifecyclePoint.SessionStarted,
+            "session.started", null));
     }
 
     private void EnsureLaneAcceptanceFresh(SessionId session, InteractionId interaction)

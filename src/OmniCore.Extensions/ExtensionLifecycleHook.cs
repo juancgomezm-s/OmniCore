@@ -91,6 +91,8 @@ public sealed class ExtensionLifecycleHook : IHook
                 writer.WriteStringValue(context.RedactedArgumentsJson);
             }
             if (context.EventType is not null) writer.WriteString("eventType", context.EventType);
+            if (context.TaskId is not null) writer.WriteString("taskId", context.TaskId);
+            if (context.LaneId is not null) writer.WriteString("laneId", context.LaneId);
             writer.WriteEndObject();
         }
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());

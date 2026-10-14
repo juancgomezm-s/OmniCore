@@ -15,6 +15,21 @@ namespace OmniCore.Tests;
 
 public sealed class InternalCompletionCommandTests
 {
+    private sealed class LifecycleTestHook(HookRegistration registration, string validatorId) : IHook
+    {
+        public HookRegistration Registration { get; } = registration;
+        public ValueTask<HookResult> ExecuteAsync(HookContext context, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<HookResult>(new HookRequireValidation(validatorId, "fixture requires validation"));
+    }
+
+    private sealed class LifecycleRestrictionTestHook(HookRegistration registration) : IHook
+    {
+        public HookRegistration Registration { get; } = registration;
+        public ValueTask<HookResult> ExecuteAsync(HookContext context, CancellationToken cancellationToken) =>
+            ValueTask.FromResult<HookResult>(new HookRestrict(
+                new HashSet<string>(["process.exec"], StringComparer.Ordinal), "fixture restricts process"));
+    }
+
     [Fact]
     public void Skill_validator_pages_preserve_multiline_content_and_reject_mixed_versions()
     {
@@ -109,6 +124,102 @@ public sealed class InternalCompletionCommandTests
         var events = setup.Store.ReadFrom(setup.Session, 1);
         Assert.Contains(events, evt => evt.Type.ToString() == "run.validation_rejected");
         Assert.DoesNotContain(events, evt => evt.Type.ToString() == "run.completed");
+    }
+
+    [Fact]
+    public void Unknown_required_validator_preflights_configured_build_before_any_gate_effect()
+    {
+        using var setup = new Setup();
+        static IHook Requires(string id, string validatorId) => new LifecycleTestHook(new HookRegistration(
+            id, new ComponentSource(SourceKind.Extension, ScopeLevel.Project, TrustLevel.Core, "fixture", "1"),
+            LifecyclePoint.BeforeValidation, new HashSet<HookCapability>([HookCapability.RequireValidation]),
+            new HashSet<HookCapability>([HookCapability.RequireValidation]), HookArgumentAccess.None,
+            Enabled: true, WorkspaceTrusted: true), validatorId);
+        var hooks = new[] { Requires("fixture.requires_unknown", "fixture.missing"),
+            Requires("fixture.requires_build", "build") };
+        var catalog = new FakeCatalog();
+        var turn = new ExplorerTurn((_, _) => new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("scripted", "test", null)),
+            ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), setup.Root), catalog,
+            new ContextMaterializer(new FakeTokenCounter(), []),
+            new ExecutionFingerprint("scripted", "h", "t", "c", "o", "test"),
+            new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
+            setup.Store, setup.Codecs, setup.Artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+            lifecycleHooks: hooks);
+
+        _ = OmniCliRuntime.Create(setup.Root).RunActLoop(turn, _ => { }, "objective", "instructions",
+            setup.Session, setup.Run, setup.Lane, "", new WorkspaceGatesYaml { Build = ["fixture-build"] },
+            null, setup.Server, setup.Artifacts, new InMemoryAuditSink(), null, interactive: false, "en",
+            TestContext.Current.CancellationToken);
+
+        var events = setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode).ToArray();
+        Assert.Contains(events.OfType<HookValidationResolved>(), item => item.ValidatorId == "fixture.missing"
+            && !item.Passed);
+        Assert.Contains(events.OfType<HookValidationResolved>(), item => item.ValidatorId == "build" && !item.Passed);
+        Assert.DoesNotContain(events, item => item is ToolCallRequested requested
+            && requested.ToolName == "process.exec");
+        Assert.DoesNotContain(events, item => item is ToolCallStarted);
+    }
+
+    [Fact]
+    public void Before_validation_restriction_latches_through_after_validation_without_gate_or_rpc()
+    {
+        using var setup = new Setup();
+        static HookRegistration Registration(string id, LifecyclePoint point, HookCapability capability) =>
+            new(id, new ComponentSource(SourceKind.Extension, ScopeLevel.Project, TrustLevel.Core, "fixture", "1"),
+                point, new HashSet<HookCapability>([capability]), new HashSet<HookCapability>([capability]),
+                HookArgumentAccess.None, Enabled: true, WorkspaceTrusted: true);
+        var validatorId = "extension.fixture.h_validator.verify-build";
+        var hooks = new IHook[]
+        {
+            new LifecycleRestrictionTestHook(Registration("fixture.block_validation", LifecyclePoint.BeforeValidation,
+                HookCapability.Restrict)),
+            new LifecycleTestHook(Registration("fixture.requires_after_validation", LifecyclePoint.AfterValidation,
+                HookCapability.RequireValidation), validatorId),
+        };
+        var manifest = new ExtensionManifest
+        {
+            ManifestVersion = 1,
+            Id = "fixture.h_validator",
+            Version = "1",
+            DisplayName = "Fixture validator",
+            Publisher = "tests",
+            OmnicoreApi = "1.0",
+            Runtime = new ExtensionRuntimeManifest { Kind = "process", Command = "runtime.exe", Args = [] },
+            Provides = new ExtensionProvidesManifest { Validators = ["verify-build"] },
+        };
+        var extension = new DiscoveredExtension(setup.Root, manifest, ExtensionDiscoveryStatus.Ready,
+            null, new string('a', 64), new string('b', 64), TrustLevel.Project);
+        var launcher = new ExtensionFixtureLauncher();
+        var validator = new SkillCompletionValidator([], [new ExtensionCompletionValidator(extension,
+            ["verify-build"], setup.Root, setup.Session, setup.Run, new ExtensionRpcProcessInvoker(launcher))]);
+        var catalog = new FakeCatalog();
+        var turn = new ExplorerTurn((_, _) => new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("scripted", "test", null)),
+            ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), setup.Root), catalog,
+            new ContextMaterializer(new FakeTokenCounter(), []),
+            new ExecutionFingerprint("scripted", "h", "t", "c", "o", "test"),
+            new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
+            setup.Store, setup.Codecs, setup.Artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+            lifecycleHooks: hooks);
+
+        _ = OmniCliRuntime.Create(setup.Root).RunActLoop(turn, _ => { }, "objective", "instructions",
+            setup.Session, setup.Run, setup.Lane, "", new WorkspaceGatesYaml { Build = ["fixture-build"] },
+            null, setup.Server, setup.Artifacts, new InMemoryAuditSink(), null, interactive: false, "en",
+            TestContext.Current.CancellationToken, skillValidators: validator);
+
+        var events = setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode).ToArray();
+        Assert.Empty(launcher.Methods);
+        Assert.DoesNotContain(events, item => item is ToolCallRequested requested
+            && requested.ToolName == "process.exec");
+        Assert.DoesNotContain(events, item => item is ToolCallStarted);
+        Assert.Contains(events.OfType<HookApplied>(), item => item.Point == LifecyclePoint.AfterValidation.ToString()
+            && item.Result == "validation_required" && item.DetailIds?.Contains(validatorId) == true);
+        Assert.Contains(events.OfType<HookValidationResolved>(), item => item.ValidatorId == validatorId
+            && !item.Passed);
+        Assert.DoesNotContain(events, item => item is RunCompleted);
     }
 
     [Fact]
@@ -335,6 +446,125 @@ public sealed class InternalCompletionCommandTests
         Assert.Contains(events, item => item is RunValidationRejected rejection
             && rejection.Missing.Any(value => value.Contains("extension:fixture.validator:verify-build", StringComparison.Ordinal)));
         Assert.DoesNotContain(events, item => item is RunCompleted);
+    }
+
+    [Fact]
+    public void Consent_bound_extension_completion_gate_runs_through_strong_rpc_and_blocks_run_on_false()
+    {
+        using var setup = new Setup();
+        var paths = OmniHost.CreatePlatformPaths(Path.Combine(setup.Root, "user-data-gate"));
+        var package = Path.Combine(setup.Root, ".omnicore", "extensions", "fixture.gate");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.gate
+            version: 1
+            displayName: Fixture completion gate
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              completionGates: [workspace-ready]
+            requests:
+              capabilities: [completion.gate]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        new WorkspaceTrustStore(paths).SetTrusted(setup.Root, true);
+        var candidate = Assert.Single(new ExtensionManifestLoader().Discover(
+            Path.Combine(setup.Root, ".omnicore", "extensions"), TrustLevel.Project, workspaceTrusted: true));
+        new ExtensionConsentStore(paths, setup.Root).Grant(candidate,
+            new HashSet<string>(["completion.gate"], StringComparer.Ordinal));
+        var launcher = new ExtensionFixtureLauncher(validatorPassed: true, completionGatePassed: false);
+        var validators = ProjectExtensionValidators.Load(setup.Root, paths, workspaceTrusted: true,
+            setup.Session, setup.Run, new ExtensionRpcProcessInvoker(launcher));
+        var gates = new SkillCompletionValidator([], validators);
+        Assert.True(gates.HasValidators);
+        var turn = new ExplorerTurn((_, _) => new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null)),
+            ScriptedToolExecutor.WithWorkspace(new FakeCatalog(),
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), setup.Root), new FakeCatalog(),
+            new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
+            new ExecutionFingerprint("fixture", "h", "t", "c", "o", "completion-gate"),
+            new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null), setup.Store,
+            setup.Codecs, setup.Artifacts, new InMemoryAuditSink(), new RedactionPolicy());
+
+        var diagnostics = new List<string>();
+        var exit = OmniCliRuntime.Create(setup.Root).RunActLoop(turn, diagnostics.Add, "objective", "instructions",
+            setup.Session, setup.Run, setup.Lane, "", null, null, setup.Server, setup.Artifacts,
+            new InMemoryAuditSink(), null, interactive: false, "en", TestContext.Current.CancellationToken,
+            skillValidators: gates);
+
+        Assert.Equal(1, exit);
+        Assert.Contains("completion/gate", launcher.Methods);
+        Assert.Equal(SandboxStrength.Strong, launcher.LastLaunch!.RequestedStrength);
+        Assert.Equal(SandboxNetworkMode.Deny, launcher.LastLaunch.Network.Mode);
+        using (var request = System.Text.Json.JsonDocument.Parse(launcher.LastLaunch.InitialStandardInput!))
+        {
+            Assert.Equal("completion/gate", request.RootElement.GetProperty("method").GetString());
+            Assert.True(request.RootElement.GetProperty("params").GetProperty("runContext")
+                .GetProperty("evidence").GetArrayLength() > 0);
+        }
+        Assert.Contains(setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode), evt =>
+            evt is RunValidationRejected rejected
+                && rejected.Missing.Any(missing => missing.Contains("completion.gate:fixture.gate:workspace-ready",
+                    StringComparison.Ordinal)));
+        Assert.DoesNotContain(setup.Store.ReadFrom(setup.Session, 1).Select(setup.Codecs.Decode),
+            evt => evt is RunCompleted);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Cached_extension_validator_never_calls_a_method_after_its_exact_capability_is_revoked(
+        bool retainCompletionGate)
+    {
+        using var setup = new Setup();
+        var paths = OmniHost.CreatePlatformPaths(Path.Combine(setup.Root, "user-data-capability-revoke"));
+        new WorkspaceTrustStore(paths).SetTrusted(setup.Root, true);
+        var package = Path.Combine(setup.Root, ".omnicore", "extensions", "fixture.dual-gate");
+        Directory.CreateDirectory(package);
+        File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
+        File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+            manifestVersion: 1
+            id: fixture.dual-gate
+            version: 1
+            displayName: Fixture dual gate
+            publisher: tests
+            omnicoreApi: '1.0'
+            provides:
+              validators: [verify-build]
+              completionGates: [workspace-ready]
+            requests:
+              capabilities: [completion.validate, completion.gate]
+              permissions:
+                process:
+                  - executable: runtime.exe
+            runtime:
+              kind: process
+              command: runtime.exe
+              args: []
+            """);
+        var candidate = Assert.Single(new ExtensionManifestLoader().Discover(
+            Path.Combine(setup.Root, ".omnicore", "extensions"), TrustLevel.Project, workspaceTrusted: true));
+        var consent = new ExtensionConsentStore(paths, setup.Root);
+        consent.Grant(candidate, new HashSet<string>(["completion.validate", "completion.gate"], StringComparer.Ordinal));
+        var launcher = new ExtensionFixtureLauncher();
+        var cached = Assert.Single(ProjectExtensionValidators.Load(setup.Root, paths, workspaceTrusted: true,
+            setup.Session, setup.Run, new ExtensionRpcProcessInvoker(launcher)));
+
+        consent.Grant(candidate, new HashSet<string>([retainCompletionGate ? "completion.gate" : "completion.validate"],
+            StringComparer.Ordinal));
+        var outcomes = cached.Run(TestContext.Current.CancellationToken);
+
+        Assert.Empty(launcher.Methods);
+        Assert.Equal(2, outcomes.Count);
+        Assert.All(outcomes, outcome => Assert.False(outcome.Passed));
     }
 
     [Fact]
@@ -669,7 +899,8 @@ public sealed class InternalCompletionCommandTests
             _inner.ReadFrom(sessionId, fromSequenceInclusive);
     }
 
-    private sealed class ExtensionFixtureLauncher(bool validatorPassed = true) : ISandboxProcessLauncher
+    private sealed class ExtensionFixtureLauncher(bool validatorPassed = true,
+        bool completionGatePassed = true) : ISandboxProcessLauncher
     {
         public List<string> Methods { get; } = [];
         public int Starts { get; private set; }
@@ -688,6 +919,8 @@ public sealed class InternalCompletionCommandTests
                 "context/contribute" => "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"items\":[{\"id\":\"runtime-note\",\"kind\":\"knowledge\",\"content\":\"offline extension contribution\"}]}}",
                 "completion/validate" => "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"results\":[{\"id\":\"verify-build\",\"passed\":"
                     + (validatorPassed ? "true" : "false") + ",\"summary\":\"offline validator passed\"}]}}",
+                "completion/gate" => "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"results\":[{\"id\":\"workspace-ready\",\"passed\":"
+                    + (completionGatePassed ? "true" : "false") + ",\"summary\":\"offline gate result\"}]}}",
                 "tools/call" => "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"ok\":true}}",
                 _ => throw new InvalidOperationException("Unexpected extension method " + method),
             };

@@ -1915,7 +1915,44 @@ public sealed class OmniCliRuntime : IDisposable
                     enforceDailySpendCap: hasDailySpendCap,
                     toolPreferences: loaded.Settings?.ToolPreferences,
                     lifecycleHooks: lifecycleHooks,
-                    sessionMemoryPolicy: sessionMemoryPolicy);
+                    sessionMemoryPolicy: sessionMemoryPolicy,
+                    resolveLifecycleValidations: delegation is null
+                        ? (ids, read, context, token) =>
+                        {
+                            var requested = ids.ToHashSet(StringComparer.Ordinal);
+                            var outcomes = new List<ExternalCompletionGateResult>();
+                            var selectedCore = requested.Where(id => id is "build" or "test")
+                                .ToHashSet(StringComparer.Ordinal);
+                            var available = skillCompletionValidators.HookValidationIdentities()
+                                .Select(identity => identity.HookId).ToHashSet(StringComparer.Ordinal);
+                            if (workspaceConfig.Settings?.Gates?.Build is not null) available.Add("build");
+                            if (workspaceConfig.Settings?.Gates?.Test is not null) available.Add("test");
+                            var unknown = requested.Where(id => !available.Contains(id)).ToArray();
+                            // Required validation cannot invent an implementation or elevate an
+                            // Explore/PLAN lane into process execution.
+                            if (unknown.Length > 0 || selectedCore.Count > 0 && !IsProcessValidatorExecutionAuthorized(server.CurrentRunMode()))
+                                return requested.Order(StringComparer.Ordinal).Select(id =>
+                                    new ExternalCompletionGateResult("hook.validation:" + id, false,
+                                        unknown.Contains(id, StringComparer.Ordinal)
+                                            ? "The required validator is unknown or unavailable."
+                                            : "The required validation set was withheld because a requested validator is unavailable or process execution is not authorized in PLAN mode.",
+                                        ValidatorId: id)).ToArray();
+                            if (selectedCore.Count > 0 && workspaceConfig.Settings?.Gates is { } selectedGateConfig)
+                            {
+                                var journal = server.AcquireStore().ReadFrom(sessionId, 1);
+                                var projection = RunProjection.Replay(sessionId, runId,
+                                    server.AcquireCodecs(), journal);
+                                var gateRunner = new ConfiguredCompletionGates(selectedGateConfig, workspaceRoot,
+                                    runId, laneId, projection.RootTask, restrictions, audit, artifacts,
+                                    interactionResponder, interactive);
+                                outcomes.AddRange(gateRunner.Run(new EventStream(server.AcquireStore(),
+                                    server.AcquireCodecs(), sessionId), token, selectedCore));
+                            }
+                            outcomes.AddRange(skillCompletionValidators.Run(workspaceRoot, read, token,
+                                context, requested));
+                            return outcomes;
+                        }
+                        : null);
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
@@ -2739,6 +2776,23 @@ public sealed class OmniCliRuntime : IDisposable
         }
     }
 
+    private static string BuildLifecycleValidationContext(OmniServer server, SessionId sessionId,
+        RunId runId, TurnId turnId)
+    {
+        var codecs = server.AcquireCodecs();
+        var events = server.AcquireStore().ReadFrom(sessionId, 1)
+            .Where(evt => evt.RunId == runId).ToArray();
+        var run = events.Select(codecs.Decode).OfType<RunCreated>().SingleOrDefault();
+        var redaction = new RedactionPolicy();
+        var objective = run?.Objective ?? "";
+        if (objective.Length > 2048) objective = objective[..2048];
+        objective = redaction.Redact(objective);
+        return LifecycleValidationContextBuilder.Build(sessionId, runId, turnId, objective,
+            events, codecs, redaction);
+    }
+
+    internal static bool IsProcessValidatorExecutionAuthorized(RunMode mode) => mode == RunMode.Act;
+
     private static bool ReportModePolicyTransition(InternalCommandResult? transition, Action<string> writeLine)
     {
         if (transition is null) return true;
@@ -2883,15 +2937,112 @@ public sealed class OmniCliRuntime : IDisposable
             // executor or run ACT completion gates after a policy downgrade to PLAN.
             if (server.CurrentRunMode() == RunMode.Plan) return 0;
             IReadOnlyList<ExternalCompletionGateResult> checkResults = Array.Empty<ExternalCompletionGateResult>();
+            var lifecycleTurnId = result.TurnId
+                ?? throw new InvalidOperationException("A completed Act turn has no durable Turn identity.");
+            var lifecycleContext = BuildLifecycleValidationContext(server, sessionId, runId,
+                lifecycleTurnId);
             var completion = server.CheckRunCompletionAndGate(sessionId, runId, stream =>
             {
-                if (acceptedResults is not null)
+                var results = new List<ExternalCompletionGateResult>();
+                IReadOnlyList<ExternalCompletionGateResult> RunSelectedValidators(
+                    IReadOnlyList<HookRequireValidation> requests)
                 {
-                    checkResults = acceptedResults;
+                    if (requests.Count == 0) return [];
+                    var requested = requests.Select(item => item.ValidatorId)
+                        .ToHashSet(StringComparer.Ordinal);
+                    var selectedResults = new List<ExternalCompletionGateResult>();
+                    var selectedCore = requested.Where(id => id is "build" or "test")
+                        .ToHashSet(StringComparer.Ordinal);
+                    var available = activeSkillValidators?.HookValidationIdentities()
+                        .Select(identity => identity.HookId).ToHashSet(StringComparer.Ordinal)
+                        ?? new HashSet<string>(StringComparer.Ordinal);
+                    if (gateConfiguration?.Build is not null) available.Add("build");
+                    if (gateConfiguration?.Test is not null) available.Add("test");
+                    var unknown = requested.Where(id => !available.Contains(id)).ToArray();
+                    var preflightBlocked = unknown.Length > 0
+                        || selectedCore.Count > 0 && !IsProcessValidatorExecutionAuthorized(server.CurrentRunMode());
+                    if (preflightBlocked)
+                    {
+                        // Preflight the whole request set before invoking any process or extension RPC.
+                        selectedResults.AddRange(requests.Select(request => new ExternalCompletionGateResult(
+                            "hook.validation:" + request.ValidatorId, false,
+                            unknown.Contains(request.ValidatorId, StringComparer.Ordinal)
+                                ? "The required validator is unknown or unavailable."
+                                : "The required validation set was withheld because a requested validator is unavailable or process execution is not authorized in PLAN mode.",
+                            ValidatorId: request.ValidatorId)));
+                    }
+                    else
+                    {
+                        if (selectedCore.Count > 0 && gateConfiguration is not null)
+                        {
+                            var runEvents = server.AcquireStore().ReadFrom(sessionId, 1);
+                            var run = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), runEvents);
+                            var runner = new ConfiguredCompletionGates(gateConfiguration,
+                                _workspaceRoot ?? Directory.GetCurrentDirectory(), runId,
+                                laneId, run.RootTask, restrictions, audit, artifacts,
+                                interactionResponder, interactive);
+                            selectedResults.AddRange(runner.Run(stream, cancellationToken, selectedCore));
+                        }
+                        if (activeSkillValidators?.HasValidators == true)
+                            selectedResults.AddRange(activeSkillValidators.Run(
+                                _workspaceRoot ?? Directory.GetCurrentDirectory(),
+                                path => activeTurn.ReadForSkillValidation(path, cancellationToken),
+                                cancellationToken, lifecycleContext, requested));
+                    }
+                    foreach (var request in requests)
+                        if (!selectedResults.Any(result => string.Equals(result.ValidatorId,
+                                request.ValidatorId, StringComparison.Ordinal)))
+                            selectedResults.Add(new ExternalCompletionGateResult(
+                                "hook.validation:" + request.ValidatorId, false,
+                                "The required validator is unknown, unavailable, or returned no result.",
+                                ValidatorId: request.ValidatorId));
+                    var evidenceHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+                        System.Text.Encoding.UTF8.GetBytes(lifecycleContext + "\n"
+                            + string.Join("|", requests.Select(item => item.ValidatorId).Order(StringComparer.Ordinal)))));
+                    foreach (var request in requests)
+                    {
+                        var outcome = selectedResults.SingleOrDefault(item =>
+                            string.Equals(item.ValidatorId, request.ValidatorId, StringComparison.Ordinal));
+                        var safeSummary = RedactSensitive(outcome?.Summary
+                            ?? "Validator is unknown, unavailable, or missing.");
+                        if (safeSummary.Length > 512) safeSummary = safeSummary[..512];
+                        stream.Append(new HookValidationResolved(runId, lifecycleTurnId,
+                            request.ValidatorId, evidenceHash, outcome?.Passed == true,
+                            safeSummary), DurabilityClass.Barrier);
+                    }
+                    return selectedResults;
                 }
-                else if ((gateConfiguration is not null && hasAnyGate) || activeSkillValidators?.HasValidators == true)
+                var beforeValidation = activeTurn.DispatchCompletionLifecycle(sessionId, runId,
+                    lifecycleTurnId, LifecyclePoint.BeforeValidation, lifecycleContext,
+                    cancellationToken);
+                var validationBlocked = beforeValidation.Denied || beforeValidation.DeniedToolIds.Count > 0;
+                if (validationBlocked)
                 {
-                    if (gateConfiguration is not null && hasAnyGate)
+                    results.Add(new ExternalCompletionGateResult("lifecycle.validation.before", false,
+                        beforeValidation.Denied
+                            ? "A lifecycle hook withheld validation."
+                            : "A lifecycle restriction withheld validation."));
+                    foreach (var request in beforeValidation.Validations)
+                        stream.Append(new HookValidationResolved(runId, lifecycleTurnId,
+                            request.ValidatorId, Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+                                System.Text.Encoding.UTF8.GetBytes(lifecycleContext + "\n" + request.ValidatorId))),
+                            false, "Validation was withheld by a lifecycle restriction."), DurabilityClass.Barrier);
+                }
+                else if (acceptedResults is not null)
+                {
+                    results.AddRange(acceptedResults);
+                }
+                else
+                {
+                    var requestedValidationResults = RunSelectedValidators(beforeValidation.Validations);
+                    results.AddRange(requestedValidationResults);
+                    var beforeValidationIds = beforeValidation.Validations.Select(item => item.ValidatorId)
+                        .ToHashSet(StringComparer.Ordinal);
+                    var requestedValidationsPassed = beforeValidation.Validations.All(request =>
+                        requestedValidationResults.Any(result => result.Passed
+                            && string.Equals(result.ValidatorId, request.ValidatorId, StringComparison.Ordinal)));
+                    validationBlocked = !requestedValidationsPassed;
+                    if (requestedValidationsPassed && gateConfiguration is not null && hasAnyGate)
                     {
                         var runEvents = server.AcquireStore().ReadFrom(sessionId, 1);
                         var run = RunProjection.Replay(sessionId, runId, server.AcquireCodecs(), runEvents);
@@ -2899,16 +3050,86 @@ public sealed class OmniCliRuntime : IDisposable
                             _workspaceRoot ?? Directory.GetCurrentDirectory(), runId,
                             laneId, run.RootTask, restrictions, audit, artifacts,
                             interactionResponder, interactive);
-                        checkResults = runner.Run(stream, cancellationToken);
+                        results.AddRange(runner.Run(stream, cancellationToken,
+                            excludedValidatorIds: beforeValidationIds));
                     }
-                    if (activeSkillValidators?.HasValidators == true)
-                        checkResults = checkResults.Concat(activeSkillValidators.Run(
+                    if (requestedValidationsPassed && activeSkillValidators?.HasValidators == true)
+                        results.AddRange(activeSkillValidators.Run(
                             _workspaceRoot ?? Directory.GetCurrentDirectory(),
                             path => activeTurn.ReadForSkillValidation(path, cancellationToken),
-                            cancellationToken)).ToArray();
+                            cancellationToken, lifecycleContext, excludedHookIds: beforeValidationIds));
                 }
+                var afterValidation = activeTurn.DispatchCompletionLifecycle(sessionId, runId,
+                    lifecycleTurnId, LifecyclePoint.AfterValidation,
+                    JsonSerializer.Serialize(new LifecycleAfterValidationJson(lifecycleContext,
+                        results.Select(result => new LifecycleValidationOutcomeJson(result.Key, result.Passed))
+                            .Take(64).ToArray()), LifecycleJsonContext.Default.LifecycleAfterValidationJson), cancellationToken);
+                if (afterValidation.Denied)
+                {
+                    validationBlocked = true;
+                    results.Add(new ExternalCompletionGateResult("lifecycle.validation.after", false,
+                        "A lifecycle hook withheld validated evidence."));
+                }
+                else if (afterValidation.DeniedToolIds.Count > 0)
+                {
+                    validationBlocked = true;
+                    results.Add(new ExternalCompletionGateResult("lifecycle.validation.after", false,
+                        "A lifecycle restriction withheld validated evidence."));
+                }
+                if (afterValidation.Validations.Count > 0 && validationBlocked)
+                {
+                    // AfterValidation may observe a prior failure, but cannot run more validators
+                    // or turn a blocked validation boundary into a pass.
+                    foreach (var request in afterValidation.Validations)
+                    {
+                        var evidenceHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+                            System.Text.Encoding.UTF8.GetBytes(lifecycleContext + "\n" + request.ValidatorId)));
+                        stream.Append(new HookValidationResolved(runId, lifecycleTurnId,
+                            request.ValidatorId, evidenceHash, false,
+                            "Validation remained blocked by an earlier lifecycle result."), DurabilityClass.Barrier);
+                        if (!results.Any(result => !result.Passed
+                                && string.Equals(result.ValidatorId, request.ValidatorId, StringComparison.Ordinal)))
+                            results.Add(new ExternalCompletionGateResult("hook.validation:" + request.ValidatorId,
+                                false, "Validation remained blocked by an earlier lifecycle result.",
+                                ValidatorId: request.ValidatorId));
+                    }
+                }
+                else if (afterValidation.Validations.Count > 0)
+                {
+                    var resolvedAfter = RunSelectedValidators(afterValidation.Validations);
+                    foreach (var request in afterValidation.Validations)
+                    {
+                        var outcome = resolvedAfter.SingleOrDefault(item => string.Equals(item.ValidatorId,
+                            request.ValidatorId, StringComparison.Ordinal));
+                        results.RemoveAll(item => string.Equals(item.ValidatorId, request.ValidatorId,
+                            StringComparison.Ordinal));
+                        results.Add(outcome ?? new ExternalCompletionGateResult("hook.validation:" + request.ValidatorId,
+                            false, "The required validator is missing or did not pass for this Run validation.",
+                            ValidatorId: request.ValidatorId));
+                    }
+                }
+
+                var required = server.AcquireStore().ReadFrom(sessionId, 1)
+                    .Where(evt => evt.RunId == runId).Select(server.AcquireCodecs().Decode)
+                    .OfType<HookApplied>().Where(applied => applied.Result == "validation_required")
+                    .SelectMany(applied => applied.DetailIds ?? [])
+                    .Distinct(StringComparer.Ordinal).Take(64).ToArray();
+                foreach (var validatorId in required)
+                {
+                    if (!results.Any(result => result.Passed
+                            && string.Equals(result.ValidatorId, validatorId,
+                                StringComparison.Ordinal)))
+                        results.Add(new ExternalCompletionGateResult("hook.validation:" + validatorId, false,
+                            "The required validator is missing or did not pass for this Run validation.",
+                            ValidatorId: validatorId));
+                }
+                checkResults = results.AsReadOnly();
                 return checkResults;
-            }, activeTurn.MutationLedger);
+            }, activeTurn.MutationLedger, point => activeTurn.DispatchCompletionLifecycle(sessionId, runId,
+                lifecycleTurnId, point, JsonSerializer.Serialize(new LifecycleAfterValidationJson(lifecycleContext,
+                    checkResults.Select(item => new LifecycleValidationOutcomeJson(item.Key, item.Passed))
+                        .Take(64).ToArray()), LifecycleJsonContext.Default.LifecycleAfterValidationJson),
+                cancellationToken));
             if (completion.Failure is { } completionFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(completionFailure);
             if (completion.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted

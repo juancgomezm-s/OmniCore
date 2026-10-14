@@ -552,6 +552,7 @@ public sealed partial class OmniServer
                         ? (ExecutionScopeState?)parentScope : scope).ToArray();
                     new EventStream(_store, _codecs, session).AppendBatch(admissionEvents,
                         DurabilityClass.Barrier, scopes);
+                    DispatchStartedLaneLifecycle(session, run, task.TaskId, delegation.ChildLaneId);
                     // The journal Barrier now owns all references. Release the CAS GC
                     // publication lease before entering Explorer: the child Turn acquires
                     // its own publication lease and the store lease is intentionally exclusive.

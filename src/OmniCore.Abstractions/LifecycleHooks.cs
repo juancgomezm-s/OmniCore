@@ -14,18 +14,36 @@ public enum LifecyclePoint
 public enum HookCapability { Observe, Annotate, Restrict, RequireValidation }
 public enum HookArgumentAccess { None, Redacted, Full }
 
-/// <summary>Lifecycle points with an actual M8 consumer. Other declared points remain disabled
-/// until their owning engine/session subsystem wires them.</summary>
+/// <summary>Lifecycle points with an actual M8 consumer. A declared point without an owning
+/// transition consumer stays disabled rather than silently appearing active.</summary>
 public static class LifecycleHookSupport
 {
-    public static bool IsSupported(LifecyclePoint point) => point is LifecyclePoint.BeforeModel
-        or LifecyclePoint.AfterModel or LifecyclePoint.BeforeTool or LifecyclePoint.AfterTool
-        or LifecyclePoint.ToolFailed or LifecyclePoint.BeforePermission or LifecyclePoint.BeforeCompletion;
+    public static bool IsSupported(LifecyclePoint point) => Enum.IsDefined(point);
+
+    /// <summary>Capabilities are available only where their result still has a real consumer.</summary>
+    public static bool IsCapabilitySupported(LifecyclePoint point, HookCapability capability) => capability switch
+    {
+        HookCapability.Observe => true,
+        HookCapability.Annotate => point is LifecyclePoint.BeforeModel or LifecyclePoint.AfterModel
+            or LifecyclePoint.BeforeTool or LifecyclePoint.AfterTool or LifecyclePoint.ToolFailed
+            or LifecyclePoint.BeforePermission or LifecyclePoint.BeforeCompact or LifecyclePoint.AfterCompact,
+        HookCapability.Restrict => point is LifecyclePoint.BeforeModel or LifecyclePoint.AfterModel
+            or LifecyclePoint.BeforeTool or LifecyclePoint.AfterTool or LifecyclePoint.ToolFailed
+            or LifecyclePoint.BeforePermission or LifecyclePoint.BeforeCompact or LifecyclePoint.AfterCompact
+            or LifecyclePoint.BeforeValidation or LifecyclePoint.AfterValidation
+            or LifecyclePoint.BeforeCompletion,
+        HookCapability.RequireValidation => point is LifecyclePoint.BeforeModel or LifecyclePoint.AfterModel
+            or LifecyclePoint.BeforeTool or LifecyclePoint.AfterTool or LifecyclePoint.ToolFailed
+            or LifecyclePoint.BeforePermission or LifecyclePoint.BeforeValidation
+            or LifecyclePoint.AfterValidation or LifecyclePoint.BeforeCompletion,
+        _ => false,
+    };
 }
 
 /// <summary>Only data that the Host has already filtered/redacted can enter a hook.</summary>
 public sealed record HookContext(LifecyclePoint Point, string? ToolId = null,
-    string? RedactedArgumentsJson = null, string? EventType = null);
+    string? RedactedArgumentsJson = null, string? EventType = null,
+    string? TaskId = null, string? LaneId = null);
 
 /// <summary>Capability ceiling and explicit activation for one declared hook.</summary>
 public sealed record HookRegistration(string Id, ComponentSource Source, LifecyclePoint Point,
@@ -241,6 +259,9 @@ public sealed class LifecycleHookRegistry
             throw new ArgumentException("Hook registration id is invalid.", nameof(hook));
         if (_hooks.ContainsKey(registration.Id))
             throw new InvalidOperationException("Hook registration id is already in use.");
+        if (explicitlyActivated && registration.RequestedCapabilities.Any(capability =>
+                !LifecycleHookSupport.IsCapabilitySupported(registration.Point, capability)))
+            throw new InvalidOperationException("Hook registration requests a capability without a lifecycle consumer.");
         var grants = consented is null
             ? new HashSet<HookCapability>()
             : new HashSet<HookCapability>(consented);

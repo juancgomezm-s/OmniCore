@@ -47,12 +47,18 @@ internal sealed class ConfiguredCompletionGates
         _weakSandboxConsent = OmniHost.GetWeakSandboxConsentState(runId);
     }
 
-    public IReadOnlyList<ExternalCompletionGateResult> Run(EventStream stream, CancellationToken cancellationToken)
+    public IReadOnlyList<ExternalCompletionGateResult> Run(EventStream stream, CancellationToken cancellationToken,
+        IReadOnlySet<string>? requestedValidatorIds = null, IReadOnlySet<string>? excludedValidatorIds = null)
     {
         var results = new List<ExternalCompletionGateResult>();
-        RunCommand("build", _configuration.Build, stream, results, cancellationToken);
-        RunCommand("test", _configuration.Test, stream, results, cancellationToken);
-        if (_configuration.Acceptance && results.All(result => result.Passed))
+        if ((requestedValidatorIds is null || requestedValidatorIds.Contains("build"))
+            && excludedValidatorIds?.Contains("build") != true)
+            RunCommand("build", _configuration.Build, stream, results, cancellationToken);
+        if ((requestedValidatorIds is null || requestedValidatorIds.Contains("test"))
+            && excludedValidatorIds?.Contains("test") != true)
+            RunCommand("test", _configuration.Test, stream, results, cancellationToken);
+        if (requestedValidatorIds is null && (excludedValidatorIds is null || excludedValidatorIds.Count == 0)
+            && _configuration.Acceptance && results.All(result => result.Passed))
         {
             var interaction = new InteractionRequested(InteractionId.New(), InteractionKind.AcceptanceConfirmation,
                 "{\"operation\":\"completion.acceptance\",\"reason\":\"Se requiere confirmación del usuario para completar el Run\"}",
@@ -73,7 +79,7 @@ internal sealed class ConfiguredCompletionGates
             || scope.LaneId != _laneId || scope.TurnId is null)
         {
             results.Add(new ExternalCompletionGateResult(key, false,
-                "El gate necesita atribución durable de Run/Task/Lane/Turn antes de ejecutar."));
+                "El gate necesita atribución durable de Run/Task/Lane/Turn antes de ejecutar.", ValidatorId: key));
             return;
         }
         var executable = argv[0];
@@ -97,7 +103,7 @@ internal sealed class ConfiguredCompletionGates
         if (outcome.Succeeded)
         {
             results.Add(new ExternalCompletionGateResult(key, true,
-                RedactAndCap(outcome.Summary ?? "completado")));
+                RedactAndCap(outcome.Summary ?? "completado"), ValidatorId: key));
             return;
         }
 
@@ -105,7 +111,7 @@ internal sealed class ConfiguredCompletionGates
         var artifact = _artifacts.PutText(output, "text/plain; charset=utf-8", ArtifactKind.ProcessOutput,
             Sensitivity.Sensitive);
         results.Add(new ExternalCompletionGateResult(key, false,
-            RedactAndCap(outcome.Summary ?? "falló"), OutputArtifact: artifact));
+            RedactAndCap(outcome.Summary ?? "falló"), OutputArtifact: artifact, ValidatorId: key));
     }
 
     private static string ProcessArguments(string executable, IReadOnlyList<string> arguments, string cwd,

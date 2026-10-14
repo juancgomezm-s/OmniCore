@@ -17,7 +17,8 @@ using OmniCore.Domain;
 /// <c>CompletedWithIssues</c> si la <c>FailurePolicy</c> es <c>AllowPartial</c>.
 /// </summary>
 public sealed record ExternalCompletionGateResult(string Key, bool Passed, string Summary,
-    InteractionRequested? PendingInteraction = null, ArtifactRef? OutputArtifact = null);
+    InteractionRequested? PendingInteraction = null, ArtifactRef? OutputArtifact = null,
+    string? ValidatorId = null);
 
 public sealed class RunCoupon
 {
@@ -31,7 +32,8 @@ public sealed class RunCoupon
     public bool CheckCompletionAndGate(PlanService planService, ProgressReconciler reconciler,
         IEventStore store, IEventCodecRegistry codecs, SessionId sessionId, EventStream stream,
         Func<IReadOnlyList<ExternalCompletionGateResult>>? runExternalGates = null,
-        MutationLedger? mutationLedger = null)
+        MutationLedger? mutationLedger = null,
+        Func<LifecyclePoint, HookDispatchResult>? lifecycleDispatch = null)
     {
         var rootTask = _run.RootTask;
         var pipeline = new LaneCompletionPipeline();
@@ -212,16 +214,19 @@ public sealed class RunCoupon
         if (failedRequired.Count == 0)
         {
             stream.Append(new RunCompleted(_run.Id, RunOutcome.Completed));
+            _ = lifecycleDispatch?.Invoke(LifecyclePoint.RunCompleted);
             return true;
         }
 
         if (_run.FailurePolicy == FailurePolicy.AllowPartial)
         {
             stream.Append(new RunCompleted(_run.Id, RunOutcome.CompletedWithIssues));
+            _ = lifecycleDispatch?.Invoke(LifecyclePoint.RunCompleted);
             return true;
         }
 
         stream.Append(new RunFailed(_run.Id, "items requeridos fallidos: " + string.Join(", ", failedRequired)));
+        _ = lifecycleDispatch?.Invoke(LifecyclePoint.RunFailed);
         return false;
     }
 

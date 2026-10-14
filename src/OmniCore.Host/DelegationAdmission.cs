@@ -184,6 +184,7 @@ public sealed partial class OmniServer
                     ? (ExecutionScopeState?)parentScope : childScope).ToArray();
                 new EventStream(_store, _codecs, session).AppendBatch(admissionEvents,
                     DurabilityClass.Barrier, eventScopes);
+                DispatchCreatedTaskLifecycle(session, run, childTask.TaskId, childLane.LaneId);
                 return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(), session, before.Value, commandId);
             }
         }

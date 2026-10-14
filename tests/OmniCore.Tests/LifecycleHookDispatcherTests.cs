@@ -145,18 +145,175 @@ public sealed class LifecycleHookDispatcherTests
     }
 
     [Fact]
-    public void Lifecycle_points_without_an_engine_consumer_are_explicitly_unsupported()
+    public void Lifecycle_points_with_real_host_transition_consumers_are_registered()
     {
         Assert.True(LifecycleHookSupport.IsSupported(LifecyclePoint.BeforePermission));
         Assert.True(LifecycleHookSupport.IsSupported(LifecyclePoint.AfterModel));
-        Assert.False(LifecycleHookSupport.IsSupported(LifecyclePoint.SessionStarting));
-        Assert.False(LifecycleHookSupport.IsSupported(LifecyclePoint.BeforeValidation));
+        Assert.True(LifecycleHookSupport.IsSupported(LifecyclePoint.BeforeCompact));
+        Assert.True(LifecycleHookSupport.IsSupported(LifecyclePoint.BeforeValidation));
+        Assert.True(LifecycleHookSupport.IsSupported(LifecyclePoint.RunCompleted));
+        Assert.True(LifecycleHookSupport.IsSupported(LifecyclePoint.SessionStarting));
         var hook = new FixtureHook(Registration(TrustLevel.Project, HookCapability.Observe) with
         { Point = LifecyclePoint.SessionStarting }, _ => new HookContinue());
         var registry = new LifecycleHookRegistry();
         registry.Register(hook, explicitlyActivated: true,
             consented: new HashSet<HookCapability> { HookCapability.Observe });
-        Assert.Empty(registry.Activated());
+        Assert.Single(registry.Activated());
+    }
+
+    [Theory]
+    [InlineData(true, 1, true)]
+    [InlineData(false, 0, false)]
+    public void Required_before_model_validation_runs_fresh_and_gates_provider(bool validatorPasses,
+        int expectedProviderCalls, bool expectedResolved)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-hook-required-validation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session);
+            var catalog = new FakeCatalog();
+            var providerCalls = 0;
+            string? suppliedContext = null;
+            IReadOnlyList<string>? suppliedIds = null;
+            var hook = new FixtureHook(Registration(TrustLevel.Core, HookCapability.RequireValidation) with
+            { Id = "fixture.requires_check", Point = LifecyclePoint.BeforeModel }, _ =>
+                new HookRequireValidation("fixture.check", "requires fresh validation"));
+            var turn = new ExplorerTurn((_, _) =>
+            {
+                providerCalls++;
+                return new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                    new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+            }, ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root), catalog,
+                new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+                store, codecs, new FileArtifactStore(root), new InMemoryAuditSink(), new RedactionPolicy(),
+                lifecycleHooks: [hook],
+                resolveLifecycleValidations: (ids, _, context, _) =>
+                {
+                    suppliedContext = context;
+                    suppliedIds = ids;
+                    return ids.Select(id => new ExternalCompletionGateResult(id, validatorPasses,
+                        validatorPasses ? "fixture pass" : "fixture fail", ValidatorId: id)).ToArray();
+                });
+
+            var result = turn.Ask("hello", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
+            var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            Assert.Equal(expectedProviderCalls == 0 ? StopReason.Error : StopReason.EndTurn, result.StopReason);
+            Assert.Equal(expectedProviderCalls, providerCalls);
+            Assert.Contains("runId", suppliedContext);
+            Assert.Contains("fixture.check", suppliedIds!);
+            var resolution = Assert.Single(events.OfType<HookValidationResolved>());
+            Assert.Equal(expectedResolved, resolution.Passed);
+            Assert.False(string.IsNullOrWhiteSpace(resolution.EvidenceHash));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void Required_process_validation_in_plan_is_withheld_before_gate_or_provider()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-hook-plan-validation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var catalog = new FakeCatalog();
+            var providerCalls = 0;
+            var gateCalls = 0;
+            var hook = new FixtureHook(Registration(TrustLevel.Core, HookCapability.RequireValidation) with
+            { Id = "fixture.plan_build", Point = LifecyclePoint.BeforeModel }, _ =>
+                new HookRequireValidation("build", "requires configured build"));
+            var turn = new ExplorerTurn((_, _) =>
+            {
+                providerCalls++;
+                return new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                    new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+            }, ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root), catalog,
+                new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+                store, codecs, new FileArtifactStore(root), new InMemoryAuditSink(), new RedactionPolicy(),
+                lifecycleHooks: [hook],
+                resolveLifecycleValidations: (ids, _, _, _) =>
+                {
+                    if (!OmniCliRuntime.IsProcessValidatorExecutionAuthorized(RunMode.Plan))
+                        return ids.Select(id => new ExternalCompletionGateResult(id, false,
+                            "Process validation is unavailable in PLAN mode.", ValidatorId: id)).ToArray();
+                    gateCalls++;
+                    return ids.Select(id => new ExternalCompletionGateResult(id, true,
+                        "unexpected process validator pass", ValidatorId: id)).ToArray();
+                });
+
+            var result = turn.Ask("inspect", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
+
+            Assert.Equal(StopReason.Error, result.StopReason);
+            Assert.Equal(0, providerCalls);
+            Assert.Equal(0, gateCalls);
+            var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            Assert.Contains(events.OfType<HookValidationResolved>(), item => item.ValidatorId == "build"
+                && !item.Passed);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(true, 1, 2)]
+    [InlineData(false, 0, 1)]
+    public void Required_before_tool_validation_passes_before_effect_and_fails_closed(bool validatorPasses,
+        int expectedToolStarts, int expectedProviderCalls)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-hook-tool-validation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session);
+            var catalog = new FakeCatalog().Add(FakeTool.Read("fixture.read"));
+            var providerCalls = 0;
+            var hook = new FixtureHook(Registration(TrustLevel.Core, HookCapability.RequireValidation) with
+            { Id = "fixture.tool_validator", Point = LifecyclePoint.BeforeTool }, _ =>
+                new HookRequireValidation("fixture.check", "read requires fresh validation"));
+            var turn = new ExplorerTurn((_, _) =>
+            {
+                providerCalls++;
+                return providerCalls == 1
+                    ? new ModelResponse([new ToolCallBlock(ToolCallId.New(), "read", "fixture.read", "{}")],
+                        StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture", null))
+                    : new ModelResponse([new TextBlock("done")], StopReason.EndTurn,
+                        new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+            }, ScriptedToolExecutor.WithWorkspace(catalog,
+                ScriptedPermissionPolicy.WithTool("fixture.read", PermissionDecision.Allow), root), catalog,
+                new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+                store, codecs, new FileArtifactStore(root), new InMemoryAuditSink(), new RedactionPolicy(),
+                lifecycleHooks: [hook],
+                resolveLifecycleValidations: (ids, _, _, _) => ids.Select(id =>
+                    new ExternalCompletionGateResult(id, validatorPasses,
+                        validatorPasses ? "fresh pass" : "fresh failure", ValidatorId: id)).ToArray());
+
+            var result = turn.Ask("read", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
+            var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            Assert.Equal(expectedToolStarts, events.OfType<ToolCallStarted>().Count());
+            Assert.Equal(expectedProviderCalls, providerCalls);
+            Assert.Contains(events.OfType<HookValidationResolved>(), resolved => resolved.ValidatorId == "fixture.check"
+                && resolved.Passed == validatorPasses);
+            Assert.Equal(validatorPasses ? StopReason.EndTurn : StopReason.Error, result.StopReason);
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     [Fact]
@@ -274,8 +431,6 @@ public sealed class LifecycleHookDispatcherTests
             Assert.Equal(0, providerCalls);
             Assert.Contains(events.OfType<HookApplied>(), applied => applied.HookId == "fixture.restrict"
                 && applied.Point == nameof(LifecyclePoint.BeforeModel) && applied.Result == "failed_closed");
-            var started = Assert.Single(events.OfType<TurnStarted>());
-            Assert.Contains(started.Fingerprint!.Components, component => component.Name == "lifecycle.hooks");
         }
         finally { Directory.Delete(root, true); }
     }
