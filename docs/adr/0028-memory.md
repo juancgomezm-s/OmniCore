@@ -101,6 +101,20 @@ public sealed record MemoryCandidate(
 
 ## Clasificación
 
+Checkpoint Session M8 `d53f37c`: `memory.propose` y propuestas User pasan por
+política con redacción/rechazo, conflicto con memoria activa de mayor confianza
+y confirmación `InteractionRequested(MemoryPromotion)`/`RespondToInteraction`.
+El Host fija el reemplazo; el cliente elige promover o rechazar. Las decisiones
+se recuperan del journal completo, independientemente del límite de la vista.
+La heurística inicial sólo acredita tres éxitos canónicos de .NET build/test;
+repetir texto del modelo no lo convierte en observación independiente.
+`MemoryUsed` se emite para memoria renderizada en la petición que obtiene respuesta
+del proveedor y actualiza `LastUsedAt`. Las proyecciones durables propias de
+`memory.propose` omiten argumentos brutos; el estado opaco del proveedor conserva
+su contrato separado. Project/Workspace/Global y consolidación semántica siguen
+fuera de este checkpoint; M8 aún requiere lifecycle/validación, suite integral y
+aceptación autenticada OpenRouter. [Evidencia](../validation/m8-extensibility-20261011.md).
+
 | Elemento | Categoría |
 |---|---|
 | `ContextItemKind.Memory` y `Knowledge`, slot `Memory` en `ContextBudget`, procedencia en `ContextItem` (ADR-0029) | **Necesario desde M1** (solo tipos; el Context Engine llega en M2) |
