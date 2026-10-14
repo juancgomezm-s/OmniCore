@@ -1,6 +1,12 @@
 # M8 Extensibility — baseline and delivery sequence
 
-Plataforma de trabajo Windows; validación M8 parcial y pendiente de cierre. Actualizado 2026-10-11. Rama `codex/m8-extensibility-20261011`, basada en `main` (`e3cae2f0f35d230baeb1e72fd83041620bc476dd`). M7 está cerrado en Windows; M8 todavía no.
+**Estado vigente, 2026-10-13:** bloques A–H construidos en main: aliases/toolPreferences, discovery/read paginado, hooks, skills/aportes, MCP/web, memoria Session y OpenRouter OR1–OR4. H (`d158de0`) conecta los 18 puntos de lifecycle, validadores reales y completion gates. Las correcciones de integración posteriores se describen al final. Build de solución correcto, cero advertencias/errores; suite integral del árbol corregido `2456b00`: 4,485 correctas, 0 fallos y 11 omisiones de 4,496 casos (9m 44s), incluida arquitectura. OR5 autenticado sigue pendiente de que el usuario configure su conexión. **M8 todavía no se declara cerrado.**
+
+Plataforma de aceptación: Windows. Los checkpoints inferiores conservan el estado y evidencia de su fecha; sus frases «pendiente», «sin commit» o «no integrado» no sustituyen este estado vigente. M7 está cerrado en Windows.
+
+## Registro histórico de alcance y entregas (2026-10-11 en adelante)
+
+El corte inicial fue la rama `codex/m8-extensibility-20261011`, basada en main `e3cae2f0f35d230baeb1e72fd83041620bc476dd`.
 
 ## Estado revisado y alineación con idiomas
 
@@ -238,3 +244,17 @@ Las creaciones posteriores de Task y Lane pasan por los owners de admisión/inic
 Focales de esta revisión: revocación de cada capacidad en wrapper cacheado **2/2**; conjunto con validator desconocido y gate `build` configurado **1/1** sin `ToolCallRequested`/inicio de proceso; `RequireValidation(build)` en PLAN **1/1** sin invocar validator/proveedor; Task/Lane real por delegación **1/1** con atribución correcta y sin despacho duplicado durante el Turn child. Build del proyecto de pruebas correcto, cero advertencias; `git diff --check` pasa. No se repitieron las baterías H anteriores ni se ejecutaron build de solución, arquitectura o suite completa. OR5 permanece pendiente de configuración del usuario; M8 no se declara cerrado.
 
 La revisión final también confirmó que `DeniedToolIds` de `BeforeValidation` no equivalen a `Denied` cuando el punto no tiene una ToolId asociada. Ahora cualquier restricción de ese punto bloquea conservadoramente el gate, y el latch se conserva al despachar `AfterValidation`: este hook puede observar, pero sus nuevas solicitudes no lanzan RPC/proceso ni cambian un resultado previo fallido. Focal combinado `BeforeValidation restrict(process.exec)` + `AfterValidation RequireValidation(extension validator)`: **1/1**, cero `ToolCallRequested`, cero llamadas a la extensión y sin `RunCompleted`; build de proyecto 0 warnings.
+
+## Checkpoint de integración posterior a H — correcciones de consumidores (2026-10-13)
+
+La primera suite completa posterior a H encontró fallos en consumidores existentes; se corrigieron sin relajar sus límites. La CLI ahora obtiene la fachada de conexiones OpenRouter desde Host, de modo que el ensamblado CLI no adquiere una referencia IL directa a Abstractions. El catálogo de paquetes agrupa IDs repetidos antes de formar grants y mantiene las entradas ambiguas sin consentimiento. Un refresh de cuota completamente fallido conserva medidas anteriores con estado `Stale` también en las ventanas internas; una lectura parcial OpenRouter conserva sus estados separados.
+
+Se alinearon los fixtures con los DTO actuales de skills/memoria y recursos de acciones OpenRouter, además de las descripciones paginadas de `filesystem.read`. `tools.preferences` queda incluido en las comprobaciones exactas del fingerprint. Los snapshots de `ModelStepStarted` se verifican contra el fingerprint efectivo de ese request, mientras `TurnStarted` conserva su fingerprint inicial. La recuperación de descubrimientos ahora acepta la versión vigente 3 del componente `tools.plan`; el plan recuperado sigue sujeto a hash, identidad, catálogo y elegibilidad actuales. El orden de divulgación da precedencia a `mode.propose` cuando el modelo ya tiene permiso `PlanProposal`, sin ampliar el techo ni la cantidad de herramientas visibles. La vista de memoria usa registros fixture insertados directamente para que la prueba de lista/forget no convierta datos seed similares en candidatos Ask.
+
+Focales de integración: acciones y localización cliente **26/26**; cuotas, status line, Lifecycle y extensiones ambiguas **51/51**; fingerprint CAS, snapshot de contexto, resume tool.search/user.ask, PLAN/ORQ y ruta física del modelo **6/6**; inspección TUI de memoria **2/2**; regla de referencias de `OmniCore.Cli` **1/1**. `git diff --check` pasa. No se repitió la suite completa ni se ejecutaron build de solución/arquitectura general; root realizará su corrida final una vez revisado este checkpoint. OR5 sigue pendiente de la configuración autorizada del usuario y M8 no se declara cerrado.
+
+## Verificación integral final del árbol `2456b00` (2026-10-13)
+
+Root revisó la entrega de Luna y ejecutó una sola repetición integral justificada por los 26 fallos encontrados en la primera corrida. `dotnet build OmniCore.slnx --no-restore -v:q`: correcto, 0 advertencias y 0 errores, incluidos proyectos multi-target. `dotnet test OmniCore.slnx --no-build --no-restore -v:q`: **4,496 casos, 4,485 correctos, 0 fallos y 11 omisiones**, duración 9m 44s; incluye la batería de arquitectura. Las omisiones corresponden a aceptación/diagnósticos live opt-in y permisos de symlink no disponibles. No se realizaron llamadas de inferencia ni se solicitaron claves en el chat. Log local: `C:/Users/juanc/AppData/Local/Temp/OmniCore-M8-final-20261013.log`.
+
+Los bloques A–H quedan construidos e integrados, con límites explícitos de transporte/sandbox, workflow Core y evidencia de validadores. **La única aceptación pendiente de cierre M8 es OR5 autenticado**, tras configurar OpenRouter mediante la interfaz ya disponible. Este resultado automatizado no sustituye esa aceptación. La actualización del paquete global se registra después de instalar el commit remoto verificado.

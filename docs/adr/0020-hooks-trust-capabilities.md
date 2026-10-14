@@ -60,14 +60,14 @@ principal y de compresión, o antes del siguiente efecto, conservando el outcome
 ya ejecutado. La composición está en el fingerprint y la validación pendiente
 es durable. CLI/TUI comparten `/hooks` y recursos es/en/fr/it.
 
-Los puntos Session/Run/Task/Lane/Compact/Validation y el validador real siguen
-pendientes de M8. La inspección los muestra deshabilitados como `UnsupportedPoint`;
-esta entrega no cierra hooks ni M8.
+**Checkpoint H `d158de0` (2026-10-13):** los 18 puntos tienen consumidores reales. Los owners de creación despachan Session/Run/Task/Lane, incluidos children, sin herencia de hooks del principal; Compact y Validation rodean sus operaciones reales. Los terminales sólo observan después de persistir RunCompleted/RunFailed. Las capacidades se validan por punto; un par sin consumidor se rechaza, sin habilitar restricciones retroactivas.
+
+RequireValidation resuelve IDs declarados exactos de skills, extensiones y gates Core configurados, sin ejecutar validadores hermanos. Preflight desconocido falla cerrado; Core build/test respeta modo ACT vigente. HookValidationResolved conserva evidencia y resultados redactados durables. BeforeValidation y AfterValidation mantienen un latch de fallo y no habilitan nuevos efectos tras una restricción. Validators/gates reciben JSON válido acotado a 8 KiB. `completion.gate` se consume por RPC Strong con consentimiento exacto; resultado ausente/falso impide completar. La verificación integral M8 y OR5 se acreditan separadamente en el acta.
 
 | Elemento | Categoría |
 |---|---|
-| Tipos `HookResult` (sin variante de ampliación) y puntos de ciclo de vida | **Contract now / implementation later** (M8) |
-| Niveles y capacidades | **Contract now / implementation later** (M8) |
+| Tipos `HookResult` (sin variante de ampliación) y puntos de ciclo de vida | **Implementado en M8**, checkpoints C/H; aceptación integral en el acta |
+| Niveles y capacidades | **Implementado en M8** con validación por punto y consentimiento exacto |
 | Firma de plugins, marketplace, hooks remotos autenticados | **Fully deferable** |
 
 Nada de este ADR es necesario para M1.

@@ -127,9 +127,7 @@ Checkpoint M8 `00c7618`: fuentes Project y Trusted/User comparten resolución,
 consentimiento por manifest/paquete y transporte Strong. User usa su store de
 consentimiento separado y no hereda el trust del repo. Tools, contributors y
 validators tienen consumidores; `provides.skills` conserva el origen y hash del
-padre consentido. Contributors/validators son metadata-only en este contrato.
-`completion.gate` aún necesita consumidor en H, los puntos de hooks restantes
-siguen abiertos. MCP/web se integró en `5481ca3`: wire 2026-07-28, confianza por origen, consentimiento de primer efecto por Session y límites de transporte documentados; no acredita enforcement de egress interno remoto. Los fixtures no acreditan ejecutar
+padre consentido. Contributors reciben metadata. H (`d158de0`) conecta validators/gates a contexto JSON válido de hasta 8 KiB, con objetivo y evidencia reciente redactada, sin API libre de archivos. `completion.gate` tiene consumidor Strong real, consentimiento propio y bloqueo de RunCompleted ante resultado ausente/falso. Los 18 puntos de hooks tienen owners reales y capacidades validadas por punto. MCP/web se integró en `5481ca3`: wire 2026-07-28, confianza por origen, consentimiento de primer efecto por Session y límites de transporte documentados; no acredita enforcement de egress interno remoto. Los fixtures no acreditan ejecutar
 binarios reales de paquetes. [Evidencia M8](../validation/m8-extensibility-20261011.md).
 
 | Elemento | Categoría |
