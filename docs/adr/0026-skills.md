@@ -61,9 +61,32 @@ Instrucciones, **context contributors** (fuera de proceso si la skill no es `Cor
 - `skill.yaml` puede declarar `permissions`, que actúan como **techo**. Es la misma capa `ExtensionBoundary` de ADR-0023 §6 y **nunca** amplía los permisos.
 - Una skill `Project` o `ThirdParty` que pide ejecutar procesos requiere consentimiento.
 
-### Estado M8 parcial (2026-10-11)
+### Estado histórico M8 parcial (2026-10-11)
 
 `SkillManifestLoader` implementa discovery Project solo con workspace confiable, evaluación de activadores (path, extensión, language, framework, task type), prioridad y precedencia por scope/confianza con soporte `sealed`. La ClientAction `/skills` inspecciona metadata y ejecuta `load|release <id>` como comando al Host. La selección se almacena fuera del repo por SessionId y hash del manifest. En la composición CLI, el Host vuelve a verificar la selección, lee `instructions.md` solo al activar, acota su tamaño, crea `ContextItem(Kind=Skill)` con procedencia y registra hash de contenido en `skills.active` del fingerprint. Solo están implementados los skills Project de instrucciones; otras contribuciones y scopes siguen pendientes.
+
+### Checkpoint integrado `00c7618` (2026-10-13)
+
+Scopes BuiltIn/User/Project/Workspace/Session, selector limitado por harness y
+presupuesto, índice metadata-only, `skill.load` y selección durable por identidad
+están conectados al Host/CLI. La composición se renueva por Turn del mismo Run;
+contexto, catálogo, fingerprint y validators cambian juntos. Activación automática
+genera lifecycle y su liberación suprime esa identidad; la explícita permite
+reactivar. Las skills declaradas por extensiones User/Project requieren
+`skill.register` consentido y conservan identidad del paquete padre.
+
+Instrucciones y recursos estáticos llegan al contexto; Knowledge conserva su
+categoría. Las referencias de tools llegan al catálogo/ToolRuntime sin ampliar
+permisos. Validators declarativos leen por el executor autorizado con versión
+consistente y sin habilitar patches. WorkflowCommand invoca el flujo Core compilado
+`core:explore-implement-verify`; no interpreta etapas arbitrarias del paquete.
+Tools/contributors/validators no Core de la extensión usan la Extension API Strong;
+los dos últimos reciben metadata acotada, sin acceso directo a archivos de workspace.
+
+48/48 focales del bloque, 15/15 de correcciones y 1/1 de aislamiento de delegación.
+La evidencia usa launcher fixture; no acredita ejecución real de paquetes.
+Lanes delegados conservan su packet aprobado y no reconcilian la selección Session
+del principal. Evidencia y límites: [acta M8](../validation/m8-extensibility-20261011.md).
 
 ### Condición de cierre M8 (2026-10-13)
 
@@ -81,5 +104,5 @@ de paquetes; no se trasladan a M9/M10 los pendientes clasificados como M8.
 |---|---|
 | `ContextItemKind.Skill` y el componente `skills.active` del fingerprint (ya existían) | **Necesario desde M1** (solo tipos) |
 | Discovery Project, `Discovered/Eligible/Activated/Loaded/Released/Conflict`, activación explícita, precedencia Project sealed/trust, `ContextItem(Kind=Skill)` y procedencia/fingerprint de instrucciones | **Implementado parcialmente en M8** |
-| `SkillSelector` con presupuesto, index/model invocation, tools/workflows/validators/contributors/knowledge aportados, scopes BuiltIn/User/Workspace/Session | **Pendiente de M8** |
+| `SkillSelector` con presupuesto, index/model invocation, referencias de tools, workflow Core invocable, validators y recursos de contributors/knowledge, scopes BuiltIn/User/Workspace/Session | **Integrado en M8 `00c7618`**, con alcance y evidencia del checkpoint anterior; validación general del hito pendiente |
 | Detección avanzada de frameworks, skills con tests propios | **Deferable** |

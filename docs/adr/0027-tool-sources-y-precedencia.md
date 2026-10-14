@@ -62,6 +62,12 @@ la misma Session y para esa identidad; cambiar el paquete o la Session exige otr
 Ask. Un grant ordinario no acredita sustitución, y PermissionPolicy/Deny se evalúan
 en cada llamada. MCP y los demás pendientes de M8 conservan su estado abierto.
 
+En `00c7618`, `ExtensionTool` admite tags declarados y acotados sin reducir el
+riesgo High ni el efecto NonIdempotent. El recorrido focal de alternativa real
+`ProcessExecTool`→`ExtensionTool` conserva Ask y el techo del manifest; un proceso
+fuera de ese techo se rechaza. Los tags permiten la comparación del planner y no
+acreditan equivalencia semántica completa ni conceden permisos.
+
 | Elemento | Categoría |
 |---|---|
 | `ToolDescriptor.Source` y `.Protection`, reglas de namespace; en M1, `FakeTool` como `BuiltIn` | **Necesario desde M1** (solo tipos) |

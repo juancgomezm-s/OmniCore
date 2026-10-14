@@ -61,8 +61,22 @@ pendientes de M8 y se muestran deshabilitados como `UnsupportedPoint`.
 registro elegido, créditos con scopes y antigüedad, CLI/TUI y status line.
 Evidencia focal offline 21/21 y revisión del root; no se repitió la suite amplia.
 OR5 con la cuenta del usuario permanece pendiente de configuración. M8 sigue
-abierto por skills/aportes completos, MCP/web, memoria Candidate/Policy/Ask y
+abierto por MCP/web, memoria Candidate/Policy/Ask y
 cableado restante de hooks, además de la validación final integrada.
+
+**Checkpoint `00c7618`:** ciclo de skills BuiltIn/User/Project/Workspace/Session,
+selector con presupuesto, índice y `skill.load` integrados en consumidores reales.
+Cada Turn recompone contexto, tools, fingerprint y validators; las automáticas
+tienen lifecycle y supresión al liberar. `provides.skills` requiere consentimiento
+de la extensión padre y su hash entra en la identidad activa. Extensiones User y
+Project comparten Extension API Strong con consentimiento separado. WorkflowCommand
+enlaza al flujo compilado Core; recursos declarativos y Knowledge conservan
+procedencia. Contributors/validators externos reciben metadata, sin API de archivos.
+Lanes delegados usan su packet canónico y no alteran la selección del principal.
+Evidencia: 48/48 focales del bloque, 15/15 de correcciones y 1/1 de aislamiento;
+root revisó sin repetir campañas. `completion.gate` permanece pendiente para el
+cableado final H. La validación real del launcher, arquitectura/build y suite
+integral no se acreditan por estos fixtures. M8 sigue abierto por E/F/H y OR5 real.
 
 El usuario incorpora las recomendaciones de la comparación y una lectura para modelos con visión al alcance M8–M10. Esta tabla distingue antecedentes de requisitos nuevos. Los nombres nuevos son contratos propuestos, pendientes de implementación y revisión; incluirlos en el roadmap no acredita un backend ni una herramienta visible al modelo.
 

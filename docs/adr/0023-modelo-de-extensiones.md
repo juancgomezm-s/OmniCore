@@ -123,6 +123,15 @@ su hash y exige revalidar el consentimiento existente; no crea permisos nuevos.
 
 ## Clasificación
 
+Checkpoint M8 `00c7618`: fuentes Project y Trusted/User comparten resolución,
+consentimiento por manifest/paquete y transporte Strong. User usa su store de
+consentimiento separado y no hereda el trust del repo. Tools, contributors y
+validators tienen consumidores; `provides.skills` conserva el origen y hash del
+padre consentido. Contributors/validators son metadata-only en este contrato.
+`completion.gate` aún necesita consumidor en H, los puntos de hooks restantes
+siguen abiertos y MCP está en construcción. Los fixtures no acreditan ejecutar
+binarios reales de paquetes. [Evidencia M8](../validation/m8-extensibility-20261011.md).
+
 | Elemento | Categoría |
 |---|---|
 | `TrustLevel`, `SourceKind`, `ComponentSource` (los usan `ToolDescriptor` y la procedencia de contexto desde M1/M2) | **Necesario desde M1** (solo tipos) |
