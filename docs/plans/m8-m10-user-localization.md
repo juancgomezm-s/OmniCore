@@ -175,6 +175,12 @@ revisiones no soportadas; no se acredita compatibilidad universal por hablar JSO
 
 **Salida M10:** v1 funcional con memoria completa, acciones/teclado/búsqueda/undo y evaluación, navegación/diagnósticos LSP, parche de varias operaciones con preview/recovery y canal de actualizaciones GitHub recuperable; cierre de los recorridos nuevos y existentes es/en/fr/it. P6/P7 cubren la suma del producto: una aceptación previa del centro de preferencias no cubre automáticamente estas superficies futuras. No reabrir funciones cerradas de M6/M7 para reconstruir sus bases.
 
+## Trabajo de TUI después de M10
+
+El frame completo de revisión y operaciones Git queda asignado después de M10 por decisión del usuario del 2026-10-13. [Post M10 Git Review](post-m10-tui-git-review.md) define diff lado a lado/unificado, selección por archivo/bloque/línea, preparar/quitar del índice/descartar, pull/merge y recuperación. No se añade a los criterios de cierre de M8–M10 ni se atribuye al visor histórico TUI-P2.
+
+CLI v1 y su paridad de acciones siguen en M10; la conexión CLI/OmniCoder al Host separado sigue en M9; el bridge MCP y web sigue en M8. Los transportes stdio de MCP y CLI↔Host no son intercambiables. La TUI funcional, traducciones y accesibilidad de las capacidades de cada hito mantienen su aceptación antes de ese bloque; el rediseño de preferencias acordado por separado continúa sin aplazarse automáticamente.
+
 ## Evidencia y seguimiento
 
 Ampliar el [inventario único](preferences-localization-inventory.md) por función, acción canónica, estado del flujo, fuente/alcance, claves es/en/fr/it, cultura, datos externos y test. Registrar estados separados: contrato, backend, cableado, presentación, validado en rama e integrado. Evitar porcentajes basados en contar títulos o DTOs.
