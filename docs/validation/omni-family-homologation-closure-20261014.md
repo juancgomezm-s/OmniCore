@@ -54,6 +54,12 @@ Hashes SHA-256 de las fuentes/pruebas locales aceptadas de OmniCoder:
 
 ## Continuación autorizada
 
+Publicación confirmada del registro de cierre en `main`: OmniCore `527925b`, OmniCoder
+`ecba22e` (incluye las fuentes/pruebas locales revisadas y su evidencia ya registrada),
+OmniLlama `b384da9` (documentación de cierre sobre `a620b4e`, que fija LF para builds WebUI
+reproducibles en Windows; no cambia las funcionalidades aceptadas de `44e9bfe`). Los tres
+push terminaron correctamente. Esto no afirma CI remoto nuevo aprobado ni repite suites.
+
 El bloqueo de ampliaciones por `P0-OMNI-UNIFICACION` queda levantado en los tres planes. El
 usuario ordena empezar **M9 con un solo worker Luna en alto**, preservando lo existente y
 evitando trabajo y regresiones duplicadas. Se comienza por Host separado, transporte stdio,
