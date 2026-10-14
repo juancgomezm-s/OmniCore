@@ -1,7 +1,8 @@
 # Cierre completo de OpenRouter — M8
 
-Requisito incorporado el 2026-10-13 por petición del usuario. Estado: **planificado,
-pendiente de implementación y aceptación**. Complementa [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad)
+Requisito incorporado el 2026-10-13 por petición del usuario. Estado: **OR1–OR4
+integrados en main `3273026`; OR5 autenticado y validación general M8 pendientes**.
+Complementa [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad)
 y el [plan M8–M10](m8-m10-user-localization.md). El cierre pertenece a **M8**:
 conexión, interfaz, catálogo y créditos forman una sola entrega verificable.
 
@@ -56,6 +57,21 @@ el idioma/cultura de presentación no convierte el valor ni determina su moneda.
 
 ## Condición de cierre M8
 
+**Checkpoint integrado `3273026`:** conexiones User con credential store, catálogo
+oficial acotado y registro de modelos elegidos, créditos separados por scope y
+acciones CLI/TUI comparten el backend real. Cachés ligadas a proveedor, referencia
+y generación de credencial; refresh fallido conserva datos con su antigüedad.
+Pruebas offline `FullyQualifiedName~OpenRouter`: 21/21, revisadas sin repetir la
+suite. El recorrido fixture incluye el adapter compatible con ID de modelo y
+credencial exactos; no acredita una inferencia ni una cuenta real. Evidencia:
+[acta M8](../validation/m8-extensibility-20261011.md).
+
+Configuración disponible en la superficie de conexiones de la TUI y mediante
+`omni /openrouter connect` (entrada de clave oculta, nunca en argumentos).
+`status`, `test <provider>`, `refresh <provider>`, `catalog <provider>`,
+`register <provider> <model-id>`, `credits <provider>` y `disconnect <provider>`
+consumen la misma integración. Abrir/listar no inicia consultas de red.
+
 **Disponibilidad confirmada por el usuario (2026-10-13):** aún no hay conexión
 OpenRouter configurada en OmniCore; el usuario la configurará cuando esté lista la
 interfaz. Construcción, integración y fixtures continúan. La aceptación autenticada
@@ -70,5 +86,5 @@ no habilita routing, escalación ni uso de modelos de pago (ADR-0046).
 
 El acta conserva evidencia automatizada, recorridos de cuatro idiomas y aceptación
 real por separado. Windows es la plataforma de cierre; los diferidos Linux/macOS
-existentes se mantienen explícitos. Esta ampliación define trabajo, no declara el
-backend o la interfaz ya implementados.
+existentes se mantienen explícitos. La construcción integrada no sustituye la
+aceptación autenticada pendiente ni cierra los demás bloques de M8.

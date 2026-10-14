@@ -57,6 +57,13 @@ una denegación posterior a una tool conserva su outcome y detiene llamadas sigu
 Los puntos Session/Run/Task/Lane/Compact/Validation y el validador real permanecen
 pendientes de M8 y se muestran deshabilitados como `UnsupportedPoint`.
 
+**Checkpoint `3273026`:** OpenRouter OR1–OR4 integrados: conexiones, catálogo y
+registro elegido, créditos con scopes y antigüedad, CLI/TUI y status line.
+Evidencia focal offline 21/21 y revisión del root; no se repitió la suite amplia.
+OR5 con la cuenta del usuario permanece pendiente de configuración. M8 sigue
+abierto por skills/aportes completos, MCP/web, memoria Candidate/Policy/Ask y
+cableado restante de hooks, además de la validación final integrada.
+
 El usuario incorpora las recomendaciones de la comparación y una lectura para modelos con visión al alcance M8–M10. Esta tabla distingue antecedentes de requisitos nuevos. Los nombres nuevos son contratos propuestos, pendientes de implementación y revisión; incluirlos en el roadmap no acredita un backend ni una herramienta visible al modelo.
 
 | Hito | Herramienta / mejora | Antecedente | Alcance y aceptación añadidos |

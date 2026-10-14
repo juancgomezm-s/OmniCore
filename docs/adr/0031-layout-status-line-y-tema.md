@@ -84,6 +84,10 @@ public enum QuotaKind { Credits, RateLimitWindow, TokenAllowance }
   La base de reporting se implementa en M5. El cierre completo de OpenRouter, incluida
   la consulta y presentación de créditos informados, queda asignado explícitamente a
   **M8** desde el 2026-10-13: [plan OR1–OR5](../plans/openrouter-closure.md).
+  En `3273026`, la consulta explícita llega a `ProviderQuotaSnapshot` y la
+  presentación compartida: límite de clave y saldo de cuenta separados, USD,
+  fuentes/fechas y valores obsoletos al fallar refresh o cambiar credencial.
+  Evidencia offline 21/21; aceptación autenticada pendiente de configurar la cuenta.
 - **Espacio insuficiente:** el grupo derecho se reduce primero (se quitan créditos, luego costo) y el izquierdo al final. El modelo nunca desaparece.
 
 ### 4. Responsive
