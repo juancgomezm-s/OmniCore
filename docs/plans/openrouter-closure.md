@@ -72,7 +72,7 @@ Configuración disponible en la superficie de conexiones de la TUI y mediante
 `register <provider> <model-id>`, `credits <provider>` y `disconnect <provider>`
 consumen la misma integración. Abrir/listar no inicia consultas de red.
 
-Instalación global local actualizada por npm desde el commit `3273026` (exit 0).
+Instalación global local actualizada por npm desde el commit remoto `29b6fcc` (exit 0), con los bloques A–H y las correcciones de integración `2456b00`.
 El comando global `/openrouter status` mostró `openrouter · Sin configurar ·
 0 modelos registrados`; `--help` confirmó la apertura TUI por omisión. Son smoke
 checks del paquete publicado y del estado local, sin HTTP ni aceptación autenticada.
