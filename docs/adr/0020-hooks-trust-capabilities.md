@@ -50,6 +50,20 @@ public sealed record HookFail(string Reason) : HookResult;
 
 ## Clasificación
 
+### Checkpoint M8 (2026-10-13, `00fc8d4`)
+
+Registro/dispatcher y hooks Project por Strong, consentimiento ligado al paquete,
+redacción de argumentos/anotaciones y auditoría `HookApplied` integrados. Siete puntos
+del Turn tienen consumidor: BeforeModel/AfterModel/BeforePermission/BeforeTool/
+AfterTool/ToolFailed/BeforeCompletion. Deny falla cerrado antes de proveedores
+principal y de compresión, o antes del siguiente efecto, conservando el outcome
+ya ejecutado. La composición está en el fingerprint y la validación pendiente
+es durable. CLI/TUI comparten `/hooks` y recursos es/en/fr/it.
+
+Los puntos Session/Run/Task/Lane/Compact/Validation y el validador real siguen
+pendientes de M8. La inspección los muestra deshabilitados como `UnsupportedPoint`;
+esta entrega no cierra hooks ni M8.
+
 | Elemento | Categoría |
 |---|---|
 | Tipos `HookResult` (sin variante de ampliación) y puntos de ciclo de vida | **Contract now / implementation later** (M8) |
