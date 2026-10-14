@@ -1,5 +1,7 @@
 # OmniCore — Arquitectura (revisión v0.6)
 
+**Prioridad vigente del usuario (2026-10-14): `P0-OMNI-UNIFICACION` está ABIERTO / BLOQUEANTE. No ampliar funcionalidades hasta cerrar globalmente la unificación visual y funcional OmniCoder–OmniCore–OmniLlama. Ver [§24, gate obligatorio](#p0-omni-unificacion); las fechas/estados históricos inferiores se conservan como evidencia previa.**
+
 - **Fecha:** 2026-09-24 (revisión); 2026-09-25 (auditoría de M1); 2026-09-26 (cableado de M2 + cierre de bloqueantes); 2026-09-27 (cierre M2 e2e + decisiones 0044/0045)
 - **Estado:** M1 implementado; M2 construido y cableado end-to-end (125 tests verdes, Windows).
 - **Alcance:**
@@ -729,6 +731,97 @@ Hay que verificar si Terminal.Gui v2 y el generador estático de YamlDotNet publ
 Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` con `WeakSandboxConsent`.
 
 ## 24. Roadmap M1–M10 (fuente de verdad)
+
+### P0-OMNI-UNIFICACION
+
+**Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado:** ABIERTO / BLOQUEANTE.
+
+Por instrucción del usuario, OmniCoder, OmniCore y OmniLlama deben ofrecer una experiencia de familia **visual y funcionalmente coherente** antes de ampliar sus funcionalidades. Este gate prevalece sobre el orden del backlog y sobre indicaciones históricas de «puede empezar ahora», «independiente de Core» o «diferible». Los cierres y evidencias anteriores conservan su significado histórico; no acreditan la unificación.
+
+**Regla de ejecución:** mientras este gate siga abierto en cualquiera de los tres planes, no iniciar ni continuar ampliaciones de funcionalidades en ninguna aplicación. Solo avanzar en inventario, diseño, adaptación, integración mínima y validación imprescindibles para la unificación, o en mantenimiento/correcciones de defectos y seguridad existentes, sin abrir alcance nuevo. Cada tarea admitida debe señalar el criterio de este gate que atiende y la evidencia que producirá; una prioridad histórica o una dependencia técnica por sí solas no levantan el bloqueo.
+
+**Criterios compartidos obligatorios:**
+
+1. **Inventario y matriz de paridad:** localizar en las tres aplicaciones las superficies de chat, composer, razonamiento, código/Markdown/tablas, contexto/fuentes, herramientas, ajustes, navegación y comandos. Registrar por pieza: existente, parcial, ausente, no aplicable, origen reutilizable, adaptación y validación pendiente. Compartir comportamiento donde la capacidad exista; representar claramente las capacidades ausentes o no compatibles. La unificación no exige construir todas las funciones propuestas ni un cliente nuevo.
+2. **Identidad y tokens de diseño:** respetar los nombres OmniCoder, OmniCore y **OmniLlama**, con su capitalización exacta. Conservar el logo actual de OmniLlama sin transformarlo. Acordar roles comunes de color, tipografía, espaciado, superficies, bordes, selección, foco, iconografía y estados. Reutilizar los assets existentes con rutas/procedencia/licencias y documentar la adaptación a terminal, Unicode/ASCII y `NO_COLOR` cuando corresponda. Las diferencias de plataforma se justifican; no se exige identidad de píxeles.
+3. **Componentes y presentación:** homologar la jerarquía del hilo, composer y adjuntos, razonamiento plegable, toolbar de código con lenguaje/copia exacta, tablas, llamadas a herramientas y detalles de contexto. Las estadísticas permanecen discretas, con unidades y significado comunes, sin inventar prefill, velocidades, costes, cuotas ni uso de contexto. Estados de carga, pensamiento, vacío, desconexión, aprobación, ejecución, error y cancelación deben tener texto/señal accesible y respetar el tema y movimiento reducido.
+4. **Comportamiento y vocabulario:** acordar nombres, ubicación lógica y respuesta de las acciones comunes: enviar, cancelar, copiar, adjuntar, elegir modelo, seleccionar herramientas, abrir ajustes y consultar contexto/fuentes. Homologar atajos disponibles, teclado/foco, ayuda, guardar/restablecer y explicación de valores heredados/personalizados. Preservar borrador, selección, conversación y preferencias al cambiar tema, idioma o panel; no traducir ni alterar contenido del usuario, respuestas, código o identificadores técnicos.
+5. **Contratos y fronteras:** los clientes presentan capacidades, resultados, procedencia y estados reales de su backend. Una etiqueta o gesto común no iguala operaciones con distinta autoridad o semántica. Mantener los adaptadores y las fronteras de cada producto, la autorización real de herramientas y los scopes/credenciales vigentes. La homologación no concede permisos, ejecuta herramientas por abrir pantallas ni fabrica éxito en capacidades no disponibles.
+6. **Validación cruzada:** ejecutar recorridos comparables en las superficies reales existentes de las tres aplicaciones: conversación, envío/cancelación, código y copia, ajustes y persistencia, contexto, y herramienta/fuente cuando la capacidad esté disponible. Registrar commits, comandos, resultados, capturas y diferencias de plataforma, incluidos errores y ausencia de capacidades. Las fixtures prueban presentación; su evidencia se distingue de conexión, ejecución e inferencia reales. Conservar los controles de arquitectura y las comprobaciones específicas de cada producto.
+7. **Cierre global verificable:** cerrar únicamente con matriz resuelta, evidencia por aplicación, discrepancias de las superficies comunes corregidas o aceptadas explícitamente y **conformidad visual/funcional del usuario registrada**. Actualizar el mismo identificador `P0-OMNI-UNIFICACION` y su registro de cierre en los tres planes. El cierre de una aplicación, una compilación verde, un cambio de branding o la edición de este plan no levantan por sí solos el bloqueo global.
+
+**Sin objetivos de peso:** no fijar presupuestos ni umbrales de tamaño de bundle, EXE o memoria para este gate. Reutilizar las piezas que aporten coherencia y mantener procesamiento/runtime en sus capas actuales; cualquier medición se registra como observación, no como un objetivo numérico impuesto.
+
+**Registro global de cierre — pendiente:**
+
+| Aplicación | Conformidad con el contrato común | Evidencia / aceptación |
+|---|---|---|
+| OmniCoder | Pendiente | Sin cierre de unificación registrado |
+| OmniCore | Pendiente | Sin cierre de unificación registrado |
+| OmniLlama | Pendiente | Sin cierre de unificación registrado |
+
+Esta actualización incorpora instrucciones de planificación; no implementa la unificación ni acredita nuevos resultados de build, pruebas o runtime.
+
+**Aplicación en OmniCore:** homologar las superficies CLI/TUI y los modelos de presentación disponibles, manteniendo `ClientProjection`, `IOmniClient`, acciones/commands tipados, `LocalizedText`, procedencia y disponibilidad real de métricas. La TUI adapta roles/glyphs/jerarquía de la familia; plain/`NO_COLOR`/ASCII conservan el significado. La salida JSON mantiene su contrato de máquina.
+
+Terminal.Gui/Spectre y estilos concretos permanecen en los renderers; no introducir CSS, React, Electron ni lógica visual en Engine/Domain/Protocol. Preservar los invariantes de ADR-0019, 0024, 0025 y 0030–0034: estados y decisiones autoritativos, cancelación propagada e interacciones humanas canónicas. Homologar los contratos de presentación que necesiten OmniCoder/OmniLlama mediante adaptadores y deltas explícitos, sin duplicar motores ni forzar a todos los providers al protocolo OpenAI.
+
+La definición de roles/paleta y la coherencia de las superficies existentes pasan a prioridad bloqueante; construir otra aplicación desktop o nuevas animaciones no se exige para cerrarlo. Las correcciones ya abiertas de M8 pueden continuar como mantenimiento; ampliar M8/M9/M10 o el frame Git posterior queda condicionado al gate, salvo la integración mínima justificada por un criterio de unificación.
+
+#### Matriz ejecutable de OmniCore — U-C01 a U-C12 (2026-10-14)
+
+Inventario estático del código en `b1ac564e557b21ec5402c142231f0a947ea2b640` y de los planes
+vigentes de OmniCoder (`PLAN_REALISTA.md`, §11.0) y OmniLlama (`OMNI_LLAMA.md`, P0).
+La matriz vive aquí; los otros planes la referencian por estos IDs, sin crear otra memoria
+de desarrollo. **Todas las filas tienen aceptación de paridad pendiente.** «Existente» acredita
+un consumidor localizado; «parcial» identifica una diferencia o cobertura aún no acreditada;
+«no disponible» no habilita construir una prestación futura para aparentar paridad.
+La suite M8 registrada en [su acta](../validation/m8-extensibility-20261011.md) cubre ese árbol,
+no constituye una validación cruzada de familia ni una nueva prueba ejecutada para esta matriz.
+
+| ID / superficie | Estado y consumidor real de OmniCore | Pieza de familia / adaptación requerida | Responsable por capa / evidencia de salida pendiente |
+|---|---|---|---|
+| **U-C01 · Marca, roles y temas** (P0.2–3) | **Parcial.** `ThemeRole` y glyphs en [TuiPresentation](../../src/OmniCore.Client/TuiPresentation.cs); estilos/`NO_COLOR` en [TuiApp](../../src/OmniCore.Cli/Tui/TuiApp.cs). Roles existentes no acreditan un contrato común de temas. | Cotejar tokens de OmniCoder y adaptación React de OmniLlama; acordar tabla rol→significado→estilo terminal. Mantener marca OmniCore y logo propio de OmniLlama; colores de renderer fuera de Protocol. No declarar claro/sistema soportados sin consumidor. | **Client/Cli.** Tabla de roles y diferencias de plataforma; capturas de conversación/preferencias con color y `NO_COLOR`, glyph+texto, foco/selección legibles. |
+| **U-C02 · Conversación e historial** (P0.1,3–4) | **Existente; paridad pendiente.** [ClientProjection](../../src/OmniCore.Client/ClientProjection.cs), [ConversationPresentation](../../src/OmniCore.Cli/Tui/ConversationPresentation.cs) y [ConversationView](../../src/OmniCore.Cli/Tui/ConversationView.cs) proyectan hilo literal y Markdown sin escribir journal. | Homologar jerarquía usuario/asistente/herramienta/aviso con los hilos existentes de Electron y React; conservar posición de lectura, texto y procedencia. | **Client/Cli.** Mismo escenario de hilo largo, Unicode, scroll/reapertura y respuesta con error/cancelación; `ConversationHistoryCanonicalTests`, `ConversationMarkdownRegressionTests` y recorrido real de cada aplicación. |
+| **U-C03 · Composer, referencias y cancelación** (P0.1,4–5) | **Parcial.** [ComposerView](../../src/OmniCore.Cli/Tui/ComposerView.cs) y handlers de [TuiApp](../../src/OmniCore.Cli/Tui/TuiApp.cs): Enter envía, Shift+Enter inserta línea; autocompletado `/` y `@`; interrupt/cancel y envío al runtime. Autocompletar una ruta no acredita un adjunto materializado. | Registrar semántica de enviar/interrumpir/cancelar frente a los composers de familia; probar preservación de borrador y foco al abrir paneles. Verificar referencias hasta el request real antes de marcarlas disponibles. Lectura visual `media.read` sigue en M9. | **Cli/Host.** Entrada exacta recibida, salto de línea, envío rechazado, cancelación real y borrador al cambiar panel/idioma; adjunto/referencia ausente se explica, sin botón que fabrique éxito. |
+| **U-C04 · Razonamiento público y actividad** (P0.3,5) | **Parcial.** [ActivityPresentation](../../src/OmniCore.Client/ActivityPresentation.cs) y status line muestran actividad/esfuerzo solicitado y aplicado; no se localizó un panel de razonamiento público plegable equivalente al de familia. | Distinguir estado de trabajo, esfuerzo y contenido público que el backend realmente entregue. Acordar presentación plegable sólo para ese contenido; falta de contenido debe seguir explícita. No convertir estado opaco del proveedor en texto de razonamiento. | **Client/Cli; contrato de datos Host cuando proceda.** Actividad, ausencia de contenido y contenido público disponible; expandir/plegar sin modificar transcript ni atribuir capacidades al modelo. |
+| **U-C05 · Código, Markdown, tablas y copia** (P0.3–4) | **Parcial.** [MarkdownRenderer](../../src/OmniCore.Cli/Tui/MarkdownRenderer.cs), [MarkdownTableRenderer](../../src/OmniCore.Cli/Tui/MarkdownTableRenderer.cs) y [StyledTextPresenter](../../src/OmniCore.Cli/Tui/StyledTextPresenter.cs); existe copia nativa de selección. No acredita toolbar/copiar bloque completo por identidad. | Reinterpretar toolbar de código de OmniCoder/OmniLlama como acción accesible de terminal, con lenguaje y copia exacta de fuente; no copiar filas envueltas, ANSI o adornos. | **Cli.** `ConversationPresentationTests`, `MarkdownRichPresentationTests`, `MarkdownTableRendererTests` y wiring de copia; prueba por bloque de indentación, líneas vacías, Unicode y ancho reducido. |
+| **U-C06 · Herramientas y MCP** (P0.3,5) | **Parcial.** Bloques Tool de `ClientProjection`, [ToolsInspection](../../src/OmniCore.Client/ToolsInspection.cs), [TuiApp.Tools](../../src/OmniCore.Cli/Tui/TuiApp.Tools.cs) y backend MCP M8. Tarjeta plegable/copia/duración comunes aún requieren cotejo. | Homologar nombres visibles, detalles y estados de ToolCard/ToolTrace; catálogo, selección, invocación y resultado son estados distintos. Conservar trust, destino, límites y autorización de Core; configuración y selección MCP no ejecutan una tool por abrir la vista. | **Client/Cli; Host conserva ejecución.** Tool solicitada/Ask/denegada/ejecutada/fallida/cancelada con identidad y salida redactada; duración sólo medida; escenarios comparables con MCP de OmniLlama y tools de OmniCoder cuando existan. |
+| **U-C07 · Contexto y fuentes** (P0.1,3,5) | **Parcial.** Acción `context.inspect`, [SessionObservabilityProjection](../../src/OmniCore.Client/SessionObservabilityProjection.cs), fingerprint y contexto materializado. No se acredita un visor RAG de fuentes con citas por disponer de `/context`. | Separar contexto enviado, recuperación de documentos y fuentes web/MCP; mostrar procedencia disponible y ausencia explícita. Un visor RAG nuevo no entra automáticamente a P0. | **Client/Cli/Host.** Consultar contexto sin inferencia; IDs/procedencia literales y disponibilidad real. Fuente navegable sólo si hay target válido; evidencia de cada backend, sin inventar citas. |
+| **U-C08 · Preferencias, modelos y conexiones** (P0.4–5) | **Existente; paridad pendiente.** [PreferencesPresentation](../../src/OmniCore.Client/PreferencesPresentation.cs), [TuiApp.Preferences](../../src/OmniCore.Cli/Tui/TuiApp.Preferences.cs), páginas de modelos/cuentas/conexiones y fachadas Host. OpenRouter OR5 autenticado pendiente. | Homologar grupos, guardar/restablecer, cancelación y valores efectivos/heredados. Los parámetros de arranque/muestreo propios de OmniLlama no se copian a providers incompatibles. Credenciales siguen en Host/User y entradas protegidas. | **Client/Cli/Host.** Cancelar sin mutar, edición concurrente, persistencia/reapertura, ruta solicitada/efectiva y error de conexión. Wiring en `TuiWiringTests.PreferenceLayoutAcceptance.cs`, `TuiWiringTests.PolicySecurityDiagnostics.cs` y partes de cuentas/modelos; cuenta real separada de fixture y de autorización de gasto. |
+| **U-C09 · Navegación, comandos y teclado** (P0.4) | **Parcial.** Sidebar, menús y [ClientActions](../../src/OmniCore.Client/ClientActions.cs) con aliases humanos. La TUI conserva rutas propias como `/preferences`; no se acredita palette global ni `keybindings.yaml` de M10. | Mapear acciones comunes a IDs canónicos/handler real y registrar diferencias de atajo por plataforma. Reusar patrones de navegación de la paleta de OmniCoder sin importar React a Core; ausencia de palette es una diferencia explícita, no un bloqueo automático que adelante M10. | **Client/Cli.** Tabla acción→command/handler→atajo→estado; menú/slash/tecla equivalentes donde estén construidos, ayuda localizada, foco al volver y command no disponible identificado. `ClientActionTests` y wiring de `TuiWiringTests.Commands.cs`. |
+| **U-C10 · Consumo, errores y estados** (P0.3,5) | **Existente; paridad pendiente.** [UsagePresentation](../../src/OmniCore.Client/UsagePresentation.cs), status line, DTOs de créditos/cuotas y recursos de errores. Métrica ausente no equivale a cero. | Homologar carga/pensamiento/aprobación/ejecución/desconexión/error/cancelación, unidad, scope, antigüedad y origen. Velocidades/prefill/costes no medidos siguen sin valor supuesto; estado no depende sólo del color. | **Client/Cli.** `ConversationUsageSafetyTests`, status line y recorridos negativos reales; dato desconocido, obsoleto y reportado diferenciados. Repetir consulta/evento no duplica gasto. |
+| **U-C11 · Idiomas, accesibilidad y borradores** (P0.2–4,6) | **Existente en es/en/fr/it; paridad pendiente.** [Localization](../../src/OmniCore.Client/Localization.cs), recursos Client, preferencias `ui.locale` y adaptación terminal. | Conservar los cuatro idiomas de Core en todas las filas; registrar idiomas efectivamente disponibles en Electron/WebUI. `NO_COLOR`, ASCII, teclado, foco y movimiento reducido se prueban donde el renderer los soporte; diferencia ausente exige adaptación o aceptación explícita. | **Client/Cli.** Matriz idioma×superficie×estado, formatos regionales y copia literal de código/rutas/IDs; cambiar idioma/panel preserva borrador y selección. `ClientCommandLocalizationTests`, `ShellLocalizationTests` y wiring focal. |
+| **U-C12 · Frontera Electron→Core** (P0.5; M9) | **No disponible externamente.** [IOmniClient/ITrustedUserActionClient](../../src/OmniCore.Protocol/Wire.cs) y Host son in-process; marker de acción humana no serializable. `CommandAck.Outcome/FirstSeq/LastSeq` ya existen. Stdio MCP no es transporte cliente→Host. | Delimitar el contrato mínimo necesario para integrar Electron: schemas/goldens/versiones/capabilities, resultado de command, origen humano verificado y ownership/reconexión. Types net8 no constituyen binding TS ni autorizan un host TS competidor. | **Protocol/Host; adapter de producto en OmniCoder.** Contrato publicado y pruebas negativas de command sin autoridad, respuesta tardía/duplicada, incompatibilidad, gap y resultado desconocido sin repetir efectos. Implementación M9 sólo como integración mínima justificada por P0, o tras cierre global. |
+
+**Donantes y límites:** los planes de OmniCoder y OmniLlama identifican paleta, ToolCard/ToolTrace,
+composer, código y contexto como piezas existentes o parciales. Son referencias de comportamiento,
+no certificación de que estén homologadas ni permiso para copiar motores, credenciales o schedulers.
+El responsable de cada producto conserva sus adaptaciones; los IDs U-C son la parte de OmniCore
+de la matriz global. Una divergencia que quede «no aplicable» debe explicar plataforma/capacidad
+y recibir la aceptación de alcance prevista en P0.7.
+
+**Secuencia de lotes amplios de OmniCore, un worker a la vez:**
+
+1. **UC-A · Contrato y navegación:** resolver U-C01/U-C09/U-C11 y el mapa de acciones/estados
+   usado por las demás filas. Entrega: roles, vocabulario, atajos, idiomas y diferencias acordadas,
+   con source/owner por acción; no dar por cerrada ninguna fila sólo por editar la tabla.
+2. **UC-B · Conversación:** adaptar U-C02–U-C05 como un recorrido continuo de composer/hilo/código,
+   respetando capacidades disponibles y fuente literal. Entrega: cambios de renderer y evidencia
+   focal de envío/cancelación/borrador/copia, sin adelantar `media.read` ni palette de M10.
+3. **UC-C · Detalle y preferencias:** resolver U-C06–U-C08/U-C10, aplicando el contrato del lote A.
+   Entrega: views/actions hasta su consumidor, estados negativos y evidencia de persistencia.
+   U-C12 se especifica con los dueños de Protocol/Host y OmniCoder antes de cualquier adapter externo.
+4. **UC-D · Paridad y cierre:** agrupar los recorridos de las tres aplicaciones sobre commits
+   identificados; capturas/celdas de renderer y evidencia runtime con procedencia. Ejecutar focales
+   por contrato cambiado y regresión de integración una vez al cierre, repitiéndola sólo ante
+   cambios/fallos que lo justifiquen. Registrar tu conformidad global en los tres planes.
+
+**Próxima tarea ejecutable: UC-A.** Este inventario no implementa adaptaciones ni acredita nuevos
+build/tests/live. OR5 pendiente de M8 conserva su aceptación independiente; la validación visual
+P0 tampoco la sustituye. Los bloques futuros M9/M10 mantienen sus propios criterios de salida.
+
+### Milestones técnicos conservados, sujetos al gate global
 
 > **Consolidado en la revisión integral v0.5.**
 > - Reemplaza la tabla anterior y sus dos tablas de agregados (v0.3 y v0.4).

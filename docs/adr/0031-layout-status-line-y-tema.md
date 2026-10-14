@@ -119,7 +119,7 @@ Los widgets y bloques consumen **roles**, nunca colores:
 - **El color nunca es la única señal de estado:** cada estado lleva glyph y texto.
 - **`NO_COLOR`:** se respeta la variable, con estilos solo con peso y atributos.
 - **Unicode:** un set ASCII sustituye los glyphs si el terminal no soporta Unicode.
-- **Temas:** un tema mapea `ThemeRole → estilo` del framework en el adapter. La paleta final y los temas quedan fuera de alcance por ahora.
+- **Temas:** un tema mapea `ThemeRole → estilo` del framework en el adapter. Por instrucción del usuario del 2026-10-14, la homologación de roles/paleta y superficies existentes queda dentro del [gate bloqueante de unificación de arquitectura §24](../architecture/arquitectura.md#p0-omni-unificacion). Se conservan las señales accesibles, disponibilidad de métricas, responsive y fronteras de este ADR.
 
 ## Clasificación
 
@@ -127,4 +127,5 @@ Los widgets y bloques consumen **roles**, nunca colores:
 |---|---|
 | `StatusLineModel`, `UsageSnapshot`, `Metric<T>`, `MetricAvailability`, `QuotaInfo`, `HeaderModel`, `ThemeRole` y glyphs: forman parte de `ClientState` y del protocolo (`UsageSnapshot` viaja como DTO) | **Necesario desde M1** (tipos; en M1 el plain renderer muestra tokens) |
 | Layout de 4 zonas, responsive y breakpoints (track TUI, después de M3), costo real y cuota por provider (M5); la status line resumida del plain renderer llega en M2 | **Contract now / implementation later** |
-| Paleta final, temas, animaciones | **Fully deferable** |
+| Homologación de roles/paleta/temas en las superficies existentes | **P0 / BLOQUEANTE**: `P0-OMNI-UNIFICACION`, antes de ampliar funcionalidades |
+| Animaciones nuevas | **Fully deferable**; no son requisito para cerrar la unificación |
