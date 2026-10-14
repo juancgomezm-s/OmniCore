@@ -72,6 +72,12 @@ Configuración disponible en la superficie de conexiones de la TUI y mediante
 `register <provider> <model-id>`, `credits <provider>` y `disconnect <provider>`
 consumen la misma integración. Abrir/listar no inicia consultas de red.
 
+Instalación global local actualizada por npm desde el commit `3273026` (exit 0).
+El comando global `/openrouter status` mostró `openrouter · Sin configurar ·
+0 modelos registrados`; `--help` confirmó la apertura TUI por omisión. Son smoke
+checks del paquete publicado y del estado local, sin HTTP ni aceptación autenticada.
+La configuración mediante la interfaz ya está disponible para el usuario.
+
 **Disponibilidad confirmada por el usuario (2026-10-13):** aún no hay conexión
 OpenRouter configurada en OmniCore; el usuario la configurará cuando esté lista la
 interfaz. Construcción, integración y fixtures continúan. La aceptación autenticada
