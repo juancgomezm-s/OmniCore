@@ -61,6 +61,35 @@ Instrucciones, **context contributors** (fuera de proceso si la skill no es `Cor
 - `skill.yaml` puede declarar `permissions`, que actúan como **techo**. Es la misma capa `ExtensionBoundary` de ADR-0023 §6 y **nunca** amplía los permisos.
 - Una skill `Project` o `ThirdParty` que pide ejecutar procesos requiere consentimiento.
 
+Contrato efectivo de `permissions`:
+
+- Las declaraciones opcionales `filesystem.read`, `filesystem.write`, `processes` y `network`
+  restringen únicamente los IDs que la skill declara en `tools`/`contributions.tools`.
+  Una skill sin `permissions` no añade un techo; `permissions: {}` declara un techo vacío.
+- Si varias skills activas declaran el mismo ID, se intersectan sus techos. Liberar una skill
+  quita sólo su restricción. Los IDs no declarados permanecen sujetos a las políticas normales.
+- La evaluación usa claims de `ToolIntent` antes de autorizar ejecución. Claims filesystem con
+  `..`, rutas fuera del workspace o globs no demostrables se rechazan. Un glob de claim sólo se
+  admite si coincide exactamente con su techo, o si un techo recursivo literal lo cubre. Para
+  `filesystem.list` y `search.text`, el claim de directorio puede consumir descendientes, por lo
+  que requiere cobertura explícita de subárbol (`src/**`); `src/*` no habilita lectura recursiva.
+  Para claims de archivo concreto, `*` y `?` coinciden dentro de un segmento y `**` cubre cero o
+  más segmentos. No se intenta demostrar inclusión entre globs arbitrarios.
+- El techo nunca constituye consentimiento ni grant de ejecución. Cada llamada conserva
+  ModelCapabilityBoundary, PermissionPolicy, ExtensionBoundary y la política de proceso. Un
+  proceso solicitado por una skill Project/ThirdParty requiere un Ask explícito aun cuando
+  `permissions` se omita; declarar el ejecutable sólo limita destinos posibles.
+- La identidad del manifest forma parte de `skills.active` en el fingerprint de cada Turn.
+  La activación/liberación recompone tools, contexto y validators en el siguiente Turn; la
+  composición de un child no hereda las skills ni su autoridad del principal.
+
+`execution.context` y `execution.preferredModelAlias` se conservan para compatibilidad del
+formato mostrado en la spec §52. Actualmente son metadatos descriptivos: no crean un fork ni
+seleccionan una ruta/modelo. La inspección marca esos manifests con diagnóstico de consumidor
+pendiente; `context` sólo acepta el valor conceptual `fork`, y los alias tienen sintaxis
+validada. Un consumidor futuro necesitará un ADR que defina límites de autoridad y presupuesto;
+no se infiere ejecución efectiva de que esos campos estén presentes.
+
 ### Estado histórico M8 parcial (2026-10-11)
 
 `SkillManifestLoader` implementa discovery Project solo con workspace confiable, evaluación de activadores (path, extensión, language, framework, task type), prioridad y precedencia por scope/confianza con soporte `sealed`. La ClientAction `/skills` inspecciona metadata y ejecuta `load|release <id>` como comando al Host. La selección se almacena fuera del repo por SessionId y hash del manifest. En la composición CLI, el Host vuelve a verificar la selección, lee `instructions.md` solo al activar, acota su tamaño, crea `ContextItem(Kind=Skill)` con procedencia y registra hash de contenido en `skills.active` del fingerprint. Solo están implementados los skills Project de instrucciones; otras contribuciones y scopes siguen pendientes.

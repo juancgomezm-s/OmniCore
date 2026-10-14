@@ -22,9 +22,10 @@ public record SessionCreated(SessionId SessionId, string WorkspaceId, string Wor
 /// el Host de forma automática (fallan cerrado). Cada sesión emite exactamente uno.
 ///
 /// <para><c>DurableIdentity</c> es el token de identidad de la raíz (ADR-0004 §5): se escribe como
-/// marcador dentro del propio workspace ({root}/.omnicore/workspace-id) al establecer la sesión y
-/// viaja en el evento para que la recuperación verifique, al reabrir, que la ruta sigue apuntando al
-/// MISMO árbol (mismo marcador). Sin él, una ruta reemplazada por symlink/junction pasaría el check
+/// hash de la ruta física canónica al establecer la sesión y viaja en el evento para que la
+/// recuperación verifique, al reabrir, que la ruta sigue resolviendo al MISMO destino físico.
+/// No escribe ni lee marcadores dentro del workspace. Sin él, una ruta reemplazada por
+/// symlink/junction pasaría el check
 /// de Directory.Exists y la recuperación clasificaría Applied contra un árbol equivocado. Vacío = la
 /// identidad no se pudo establecer: la sesión NO es recuperable automáticamente y la recuperación,
 /// ante cualquier efecto pendiente, FALLA CERRADO (bloquea).</para>

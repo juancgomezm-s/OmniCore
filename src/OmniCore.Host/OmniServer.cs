@@ -479,29 +479,20 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private string? VerifiedWorkspaceRoot(SessionId sessionId)
     {
         var (canonical, identity) = RecordedWorkspaceRoot(sessionId);
-        if (canonical is null || canonical!.Length == 0
-            || !Path.IsPathFullyQualified(canonical!))
+        var events = _store.ReadFrom(sessionId, 1);
+        if (!string.IsNullOrWhiteSpace(canonical)
+            && TryVerifyRecordedWorkspaceRoot(canonical!, identity ?? "") is { } recorded)
+            return recorded;
+
+        if (!string.IsNullOrWhiteSpace(_workspaceRoot))
         {
-            return null;
+            var bound = ResolveConfiguredWorkspaceRoot(events, _workspaceRoot!, identity ?? "");
+            if (bound is not null) return bound;
         }
 
-        // El workspace debe seguir existiendo en la misma ubicación, o no se reconcilia nada.
-        if (!Directory.Exists(canonical!))
-        {
-            return null;
-        }
-
-        // ADR-0004 §5 / auditoría M3: Directory.Exists no basta — una ruta reemplazada por
-        // symlink/junction sigue "existiendo" pero apunta a OTRO árbol. La identidad durable
-        // verifica que el marcador dentro del workspace sigue siendo el mismo token; si el
-        // token no existe (evento legacy / identidad no establecida) o no coincide (árbol
-        // sustituido / marcador borrado), NO se reconcilia nada: falla cerrado y visible.
-        if (!WorkspaceRootIdentity.Verify(canonical!, identity ?? ""))
-        {
-            return null;
-        }
-
-        return canonical;
+        // A configured path is only a recovery candidate when both its durable physical
+        // identity and the session's canonical WorkspaceId match. No cwd/display-path fallback.
+        return null;
     }
 
     /// <summary>
@@ -1888,12 +1879,77 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private IReadOnlyList<IHook> LoadLifecycleHooks(SessionId session, IReadOnlyList<DomainEvent>? events = null)
     {
         events ??= _store.ReadFrom(session, 1);
-        var workspace = events.Select(_codecs.Decode).OfType<WorkspaceRootEstablished>()
-            .LastOrDefault()?.CanonicalRoot ?? _workspaceRoot ?? Path.GetFullPath(".");
-        var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+        var established = events.Select(_codecs.Decode).OfType<WorkspaceRootEstablished>().LastOrDefault();
+        if (established is null)
+        {
+            // Legacy sessions can still load explicitly consented User/Trusted hooks. Without a
+            // durable root identity they never gain Project scope, even when a root was configured.
+            var userScopeRoot = !string.IsNullOrWhiteSpace(_workspaceRoot)
+                && Path.IsPathFullyQualified(_workspaceRoot)
+                ? _workspaceRoot : Path.GetFullPath(".");
+            var pathsWithoutProjectAuthority = _platformPathsFactory();
+            return ProjectExtensionHooks.Load(userScopeRoot, pathsWithoutProjectAuthority,
+                workspaceTrusted: false, _lifecycleRpcInvokerFactory());
+        }
+        var physicalRoot = TryVerifyRecordedWorkspaceRoot(established.CanonicalRoot,
+            established.DurableIdentity);
+        if (physicalRoot is null && !string.IsNullOrWhiteSpace(_workspaceRoot))
+            physicalRoot = ResolveConfiguredWorkspaceRoot(events, _workspaceRoot!, established.DurableIdentity);
+
+        if (physicalRoot is null) return [];
         var paths = _platformPathsFactory();
         return ProjectExtensionHooks.Load(physicalRoot, paths,
             new WorkspaceTrustStore(paths).IsTrusted(physicalRoot), _lifecycleRpcInvokerFactory());
+    }
+
+    /// <summary>
+    /// A journal path can be redacted because it is display/path data. Reopening may therefore use
+    /// a configured path only after proving both the physical-root identity and the canonical
+    /// WorkspaceId recorded for this session. This never accepts cwd or a merely matching project.
+    /// </summary>
+    private string? TryVerifyRecordedWorkspaceRoot(string candidate,
+        string durableIdentity)
+    {
+        if (!Path.IsPathFullyQualified(candidate) || !Directory.Exists(candidate)
+            || string.IsNullOrWhiteSpace(durableIdentity)) return null;
+
+        try
+        {
+            return WorkspaceRootIdentity.Verify(candidate, durableIdentity) ? candidate : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException
+            or System.Security.SecurityException)
+        {
+            return null;
+        }
+    }
+
+    private string? ResolveConfiguredWorkspaceRoot(IReadOnlyList<DomainEvent> events, string candidate,
+        string durableIdentity)
+    {
+        if (!Path.IsPathFullyQualified(candidate) || !Directory.Exists(candidate)
+            || string.IsNullOrWhiteSpace(durableIdentity)) return null;
+
+        try
+        {
+            var physical = ProjectIdentity.ResolvePhysicalWorkspaceRoot(candidate);
+            if (!WorkspaceRootIdentity.Verify(physical, durableIdentity)) return null;
+            var sessionWorkspaceId = events.Select(_codecs.Decode).OfType<SessionCreated>()
+                .LastOrDefault()?.WorkspaceId;
+            if (string.IsNullOrWhiteSpace(sessionWorkspaceId)) return null;
+            // SessionCreated may have captured the configured lexical path (legacy StartSession)
+            // or the physical path (StartRunAct); accept either only alongside the physical hash.
+            var configuredId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(candidate)).ToString();
+            var physicalId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physical)).ToString();
+            return string.Equals(sessionWorkspaceId, configuredId, StringComparison.Ordinal)
+                || string.Equals(sessionWorkspaceId, physicalId, StringComparison.Ordinal)
+                ? physical : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException
+            or System.Security.SecurityException)
+        {
+            return null;
+        }
     }
 
     private void DispatchRunTerminalLifecycle(SessionId session, RunId runId, LifecyclePoint point)

@@ -2,11 +2,14 @@ namespace OmniCore.Host;
 
 using OmniCore.Abstractions;
 using OmniCore.Execution;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>
-/// Identidad durable de la raíz del workspace (ADR-0004 §5bis): la ruta FÍSICA de la raíz, con
-/// todos los symlinks/junctions resueltos, capturada al establecer la sesión y persistida en
-/// <c>WorkspaceRootEstablished.DurableIdentity</c>.
+/// Identidad durable de la raíz del workspace (ADR-0004 §5bis): SHA-256 de la ruta FÍSICA de la
+/// raíz, con todos los symlinks/junctions resueltos, capturada al establecer la sesión y persistida
+/// en <c>WorkspaceRootEstablished.DurableIdentity</c>. No serializa la ruta dentro del identity
+/// token, para que la redacción de secretos del journal no rompa la comprobación al reabrir.
 ///
 /// Por qué: <c>Directory.Exists</c> no basta. Si la ruta de la raíz se sustituye por un enlace a
 /// otro árbol, sigue "existiendo" y la recuperación reconciliaría contra el árbol equivocado. Al
@@ -14,9 +17,7 @@ using OmniCore.Execution;
 /// falla cerrado.
 ///
 /// No escribe ni lee nada dentro del workspace: los datos de runtime viven fuera del repo
-/// (ADR-0039 §2) y el <c>.omnicore/</c> de un workspace no confiable no se consulta (INV-029). La
-/// versión anterior usaba un marcador en <c>{root}/.omnicore/workspace-id</c>, que un repo podía
-/// traer versionado como enlace a un archivo de secretos (su contenido acababa en el journal).
+/// (ADR-0039 §2) y el <c>.omnicore/</c> de un workspace no confiable no se consulta (INV-029).
 ///
 /// Limitación documentada: no detecta que un directorio real se sustituya por OTRO directorio real
 /// en la misma ruta (borrar y recrear). Para eso haría falta la identidad del sistema de archivos
@@ -24,7 +25,8 @@ using OmniCore.Execution;
 /// </summary>
 public static class WorkspaceRootIdentity
 {
-    private const string Prefix = "physical:";
+    private const string Prefix = "physical-sha256:";
+    private const string LegacyPrefix = "physical:";
 
     /// <summary>
     /// Establece la identidad de la raíz. Devuelve "" si la ruta no es absoluta, no existe o sus
@@ -41,7 +43,7 @@ public static class WorkspaceRootIdentity
         }
 
         var physical = boundary.ResolvePhysical(root);
-        return physical is null || physical.Length == 0 ? "" : Prefix + physical;
+        return physical is null || physical.Length == 0 ? "" : CurrentIdentity(physical);
     }
 
     /// <summary>
@@ -54,20 +56,45 @@ public static class WorkspaceRootIdentity
 
     internal static bool Verify(string root, string expectedIdentity, IPathBoundaryValidator boundary)
     {
-        if (string.IsNullOrEmpty(expectedIdentity) || !expectedIdentity.StartsWith(Prefix, StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(expectedIdentity))
         {
             return false;
         }
 
-        var current = Establish(root, boundary);
-        if (current.Length == 0)
+        var physical = EstablishPhysical(root, boundary);
+        if (physical is null)
         {
             return false;
         }
+
+        if (expectedIdentity.StartsWith(Prefix, StringComparison.Ordinal))
+        {
+            var currentIdentity = CurrentIdentity(physical);
+            return currentIdentity.Equals(expectedIdentity, StringComparison.Ordinal);
+        }
+
+        // Compatibility with journals written before the identity token was hashed. These
+        // legacy values are accepted only when their persisted full path has not been redacted.
+        if (!expectedIdentity.StartsWith(LegacyPrefix, StringComparison.Ordinal)) return false;
+        var current = LegacyPrefix + physical;
 
         // Misma regla de mayúsculas que la frontera de paths: Windows no las distingue.
         return OperatingSystem.IsWindows()
             ? current.Equals(expectedIdentity, StringComparison.OrdinalIgnoreCase)
             : current.Equals(expectedIdentity, StringComparison.Ordinal);
+    }
+
+    private static string? EstablishPhysical(string root, IPathBoundaryValidator boundary)
+    {
+        if (string.IsNullOrEmpty(root) || !Path.IsPathFullyQualified(root) || !Directory.Exists(root)) return null;
+        var physical = boundary.ResolvePhysical(root);
+        return physical is null || physical.Length == 0 ? null : physical;
+    }
+
+    private static string CurrentIdentity(string physicalRoot)
+    {
+        var canonical = ProjectIdentity.CanonicalWorkspacePath(physicalRoot);
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
+        return Prefix + Convert.ToHexStringLower(hash);
     }
 }

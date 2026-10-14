@@ -37,10 +37,17 @@ public sealed class LifecycleValidationHTests
     [Fact]
     public void Real_act_creation_dispatches_session_run_task_and_lane_lifecycle_points()
     {
-        var root = Path.Combine(Path.GetTempPath(), "OmniCore-lifecycle-start-" + Guid.NewGuid().ToString("N"));
+        var pathSecret = "m8-lifecycle-path-" + Guid.NewGuid().ToString("N");
+        SecretRedactor.Shared.RegisterSecret(pathSecret);
+        var root = Path.Combine(Path.GetTempPath(), "OmniCore-" + pathSecret);
         var workspace = Path.Combine(root, "workspace");
+        var otherWorkspace = Path.Combine(root, "other-workspace");
         var package = Path.Combine(workspace, ".omnicore", "extensions", "fixture.lifecycle");
         Directory.CreateDirectory(package);
+        Directory.CreateDirectory(Path.Combine(workspace, ".git"));
+        Directory.CreateDirectory(Path.Combine(otherWorkspace, ".git"));
+        File.WriteAllText(Path.Combine(workspace, ".git", "config"), "[remote \"origin\"]\n url = https://example.test/shared.git\n");
+        File.WriteAllText(Path.Combine(otherWorkspace, ".git", "config"), "[remote \"origin\"]\n url = https://example.test/shared.git\n");
         File.WriteAllText(Path.Combine(package, "runtime.exe"), "fixture runtime");
         File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
             manifestVersion: 1
@@ -73,6 +80,13 @@ public sealed class LifecycleValidationHTests
             """);
         try
         {
+            Assert.Equal(ProjectIdentity.FromWorkspaceRoot(workspace), ProjectIdentity.FromWorkspaceRoot(otherWorkspace));
+            Assert.NotEqual(WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
+                WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(otherWorkspace)).ToString());
+            Assert.False(WorkspaceRootIdentity.Verify(otherWorkspace, WorkspaceRootIdentity.Establish(workspace)));
+            Assert.False(WorkspaceRootIdentity.Verify(workspace, ""));
+            Assert.NotEqual(workspace, SecretRedactor.Shared.Redact(workspace));
+
             LifecycleRpcFixture.Reset();
             var paths = OmniHost.CreatePlatformPaths(Path.Combine(root, "user-data"));
             new WorkspaceTrustStore(paths).SetTrusted(workspace, true);
@@ -108,7 +122,8 @@ public sealed class LifecycleValidationHTests
                 workspaceTrusted: true));
             new ExtensionConsentStore(inputPaths, workspace).Grant(inputCandidate,
                 new HashSet<string>(["hook.register", "hook.observe"], StringComparer.Ordinal));
-            var inputServer = new OmniServer(store: new InMemoryEventStore(), codecs: EventCodecs.Create(),
+            var inputStore = new InMemoryEventStore();
+            var inputServer = new OmniServer(store: inputStore, codecs: EventCodecs.Create(),
                 audit: new InMemoryAuditSink(), platformPathsFactory: () => inputPaths);
             inputServer.ConfigureWorkspaceRoot(workspace);
             inputServer.ConfigureLifecycleRpcInvoker(static () => new LifecycleRpcFixture());
@@ -116,12 +131,41 @@ public sealed class LifecycleValidationHTests
                 + "," + JsonObj.Field("text", "ordinary input") + "}"), CancellationToken.None);
             Assert.Equal("ok", inputAck.Status);
             var inputSession = Assert.IsType<SessionId>(inputServer.LastSessionId());
-            var inputApplied = inputServer.AcquireStore().ReadFrom(inputSession, 1).Select(EventCodecs.Create().Decode)
-                .OfType<HookApplied>().ToArray();
-            Assert.Equal(new[] { LifecyclePoint.SessionStarting, LifecyclePoint.SessionStarted,
+            var inputEvents = inputStore.ReadFrom(inputSession, 1);
+            var inputPayloads = inputEvents
+                .Select(EventCodecs.Create().Decode).ToArray();
+            var inputApplied = inputPayloads.OfType<HookApplied>().ToArray();
+            var persistedWorkspaceRoot = inputPayloads.OfType<WorkspaceRootEstablished>()
+                .LastOrDefault()?.CanonicalRoot;
+            var persistedIdentity = inputPayloads.OfType<WorkspaceRootEstablished>()
+                .LastOrDefault()?.DurableIdentity;
+            var runPhysicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+            var trustedAtConfiguredRoot = new WorkspaceTrustStore(inputPaths).IsTrusted(workspace);
+            var trustedAtRunRoot = new WorkspaceTrustStore(inputPaths).IsTrusted(runPhysicalRoot);
+            var consentAfterInput = new ExtensionConsentStore(inputPaths, workspace)
+                .ConsentedCapabilities(inputCandidate);
+            var hooksAfterInput = ProjectExtensionHooks.Load(runPhysicalRoot, inputPaths, trustedAtRunRoot,
+                new LifecycleRpcFixture());
+            var inputDiagnostics = $"ack={inputAck.Status}/{inputAck.Outcome?.Kind}/{inputAck.Error}; "
+                + $"seq={inputAck.FirstSeq}-{inputAck.LastSeq}; session={inputSession}; run={inputServer.LastRunId()}; "
+                + $"workspaceRootEvents={inputPayloads.OfType<WorkspaceRootEstablished>().Count()}; "
+                + $"configuredRoot={workspace}; persistedRoot={persistedWorkspaceRoot}; runPhysicalRoot={runPhysicalRoot}; "
+                + $"runCreatedEvents={inputPayloads.OfType<RunCreated>().Count()}; "
+                + $"trustedConfiguredRoot={trustedAtConfiguredRoot}; trustedRunRoot={trustedAtRunRoot}; "
+                + $"candidateStatus={inputCandidate.Status}; consent={string.Join(',', consentAfterInput.Order(StringComparer.Ordinal))}; "
+                + $"loadedHookCount={hooksAfterInput.Count}; rpcCalls={LifecycleRpcFixture.Calls}";
+            Assert.DoesNotContain(pathSecret, string.Join("\n", inputEvents.Select(item => item.PayloadJson)),
+                StringComparison.Ordinal);
+            Assert.NotEqual(workspace, persistedWorkspaceRoot);
+            Assert.True(WorkspaceRootIdentity.Verify(workspace, persistedIdentity ?? ""));
+            Assert.False(WorkspaceRootIdentity.Verify(otherWorkspace, persistedIdentity ?? ""));
+            var expectedInputPoints = new[] { LifecyclePoint.SessionStarting, LifecyclePoint.SessionStarted,
                     LifecyclePoint.RunStarting, LifecyclePoint.TaskCreated, LifecyclePoint.LaneStarting }
-                .Select(point => point.ToString()).ToArray(),
-                inputApplied.Select(item => item.Point).ToArray());
+                .Select(point => point.ToString()).ToArray();
+            var actualInputPoints = inputApplied.Select(item => item.Point).ToArray();
+            Assert.True(expectedInputPoints.SequenceEqual(actualInputPoints),
+                inputDiagnostics + $"; expected={string.Join(',', expectedInputPoints)}; "
+                + $"actual={string.Join(',', actualInputPoints)}");
             Assert.Null(inputApplied[0].RunId);
             Assert.Null(inputApplied[1].RunId);
             Assert.All(inputApplied.Skip(2), item => Assert.Equal(inputServer.LastRunId(), item.RunId));
@@ -130,6 +174,44 @@ public sealed class LifecycleValidationHTests
                 .Select(EventCodecs.Create().Decode).OfType<TaskCreated>()).TaskId.ToString(),
                 LifecycleRpcFixture.LastTaskId);
             Assert.Equal(inputServer.LastLaneId()!.Value.ToString(), LifecycleRpcFixture.LastLaneId);
+
+            var run = Assert.Single(inputPayloads.OfType<RunCreated>());
+            var task = Assert.Single(inputPayloads.OfType<TaskCreated>());
+            var lane = Assert.Single(inputPayloads.OfType<LaneCreated>());
+            LifecycleRpcFixture.Reset();
+            var reopened = new OmniServer(store: inputStore, codecs: EventCodecs.Create(),
+                audit: new InMemoryAuditSink(), platformPathsFactory: () => inputPaths);
+            reopened.ConfigureWorkspaceRoot(workspace);
+            reopened.ConfigureLifecycleRpcInvoker(static () => new LifecycleRpcFixture());
+            reopened.DispatchStartedLaneLifecycle(inputSession, run.RunId, task.TaskId, lane.LaneId);
+            var afterReopen = inputStore.ReadFrom(inputSession, 1).Select(EventCodecs.Create().Decode)
+                .OfType<HookApplied>().ToArray();
+            Assert.Equal(6, afterReopen.Length);
+            Assert.Equal(LifecyclePoint.LaneStarting.ToString(), afterReopen[^1].Point);
+            Assert.Equal(1, LifecycleRpcFixture.Calls);
+
+            // A different physical checkout with the same ProjectId is not a fallback for this
+            // session, even when that checkout is independently trusted and consents to the hook.
+            var otherPackage = Path.Combine(otherWorkspace, ".omnicore", "extensions", "fixture.lifecycle");
+            Directory.CreateDirectory(otherPackage);
+            File.Copy(Path.Combine(package, "runtime.exe"), Path.Combine(otherPackage, "runtime.exe"));
+            File.Copy(Path.Combine(package, ExtensionManifestLoader.ManifestFileName),
+                Path.Combine(otherPackage, ExtensionManifestLoader.ManifestFileName));
+            new WorkspaceTrustStore(inputPaths).SetTrusted(otherWorkspace, true);
+            var otherCandidate = Assert.Single(new ExtensionManifestLoader().Discover(
+                Path.Combine(otherWorkspace, ".omnicore", "extensions"), TrustLevel.Project,
+                workspaceTrusted: true));
+            new ExtensionConsentStore(inputPaths, otherWorkspace).Grant(otherCandidate,
+                new HashSet<string>(["hook.register", "hook.observe"], StringComparer.Ordinal));
+            LifecycleRpcFixture.Reset();
+            var wrongRoot = new OmniServer(store: inputStore, codecs: EventCodecs.Create(),
+                audit: new InMemoryAuditSink(), platformPathsFactory: () => inputPaths);
+            wrongRoot.ConfigureWorkspaceRoot(otherWorkspace);
+            wrongRoot.ConfigureLifecycleRpcInvoker(static () => new LifecycleRpcFixture());
+            wrongRoot.DispatchStartedLaneLifecycle(inputSession, run.RunId, task.TaskId, lane.LaneId);
+            Assert.Equal(6, inputStore.ReadFrom(inputSession, 1).Select(EventCodecs.Create().Decode)
+                .OfType<HookApplied>().Count());
+            Assert.Equal(0, LifecycleRpcFixture.Calls);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }

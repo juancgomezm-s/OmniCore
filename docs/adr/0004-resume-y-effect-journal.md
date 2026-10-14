@@ -75,19 +75,27 @@ usa la raíz del run como frontera y autoridad de paths. Solo acepta como origen
 emitida en `WorkspaceRootEstablished` — nunca el cwd de un proceso posterior ni una ruta de display
 (`WorkspaceDisplayPath`).
 
-La integridad de esa raíz se refuerza con una **identidad durable**: la ruta física de la raíz,
-con todos los symlinks/junctions resueltos, capturada al crear la sesión y persistida en
+La integridad de esa raíz se refuerza con una **identidad durable**: el SHA-256 de la ruta física
+canónica, con todos los symlinks/junctions resueltos, capturado al crear la sesión y persistido en
 `WorkspaceRootEstablished.DurableIdentity`. Al reabrir (arranque del Host), la verificación exige que
 la raíz siga resolviendo a esa misma ruta física, además de `Directory.Exists`. Esto cierra el hueco
 en que una ruta sustituida por symlink/junction a otro árbol pasaría el check de existencia y la
 recuperación clasificaría `Applied` contra un árbol equivocado.
+
+Corrección M8 (2026-10-14): las rutas del journal siguen redactadas. Si esa redacción altera
+`CanonicalRoot`, el Host puede usar una raíz configurada explícitamente únicamente si su identidad
+física coincide con `DurableIdentity` y su `WorkspaceId` coincide con el de `SessionCreated`.
+Compartir un remoto Git o `ProjectId` no basta; nunca se usa cwd ni una ruta de display como
+autoridad. El formato nuevo es `physical-sha256:<hash>`; los tokens `physical:<ruta>` anteriores
+siguen verificándose cuando su ruta completa permanece intacta. Un token anterior redactado
+no permite reconstruir autoridad y falla cerrado.
 
 **Nada se escribe ni se lee dentro del workspace** (ADR-0039 §2, INV-029). Una primera versión usaba
 un marcador en `{root}/.omnicore/workspace-id`; se retiró en la integración de M3 (2026-09-29) porque
 un repo podía traer ese archivo versionado como enlace a un archivo de secretos, cuyo contenido
 acababa en el journal (INV-016).
 
-- Identidad ausente o de formato anterior en el evento, ruta movida/borrada o que resuelve a otro
+- Identidad ausente, ilegible o de formato no soportado en el evento, ruta movida/borrada o que resuelve a otro
   sitio → la recuperación **falla cerrado**: bloqueada, visible (`LastRecoveryProblem`), sin
   re-ejecutar ni clasificar `Applied`, y el Run no se continúa automáticamente.
 

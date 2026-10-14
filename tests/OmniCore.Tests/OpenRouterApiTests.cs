@@ -25,13 +25,16 @@ public sealed class OpenRouterApiTests
 
     private sealed class StalledBody : HttpContent
     {
+        private readonly TaskCompletionSource _readStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public System.Threading.Tasks.Task ReadStarted => _readStarted.Task;
+
         protected override System.Threading.Tasks.Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
             System.Threading.Tasks.Task.CompletedTask;
         protected override bool TryComputeLength(out long length) { length = 0; return false; }
         protected override System.Threading.Tasks.Task<Stream> CreateContentReadStreamAsync() =>
-            System.Threading.Tasks.Task.FromResult<Stream>(new StalledStream());
+            System.Threading.Tasks.Task.FromResult<Stream>(new StalledStream(_readStarted));
 
-        private sealed class StalledStream : Stream
+        private sealed class StalledStream(TaskCompletionSource readStarted) : Stream
         {
             public override bool CanRead => true;
             public override bool CanSeek => false;
@@ -42,6 +45,7 @@ public sealed class OpenRouterApiTests
             public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
             public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
             {
+                readStarted.TrySetResult();
                 await System.Threading.Tasks.Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
                 return 0;
             }
@@ -171,16 +175,24 @@ public sealed class OpenRouterApiTests
     [Fact]
     public async System.Threading.Tasks.Task TimeoutCoversResponseBodyAndUserCancellationStillPropagates()
     {
-        var handler = new FixtureHandler(
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StalledBody() },
-            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StalledBody() });
+        var timeoutBody = new StalledBody();
+        var handler = new FixtureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = timeoutBody });
         var api = new OpenRouterApi(() => new HttpClient(handler, disposeHandler: false),
-            () => DateTimeOffset.UtcNow, TimeSpan.FromMilliseconds(40));
+            () => DateTimeOffset.UtcNow, TimeSpan.FromMilliseconds(150));
         var timedOut = await api.TestKeyAsync(Key, TestContext.Current.CancellationToken);
         Assert.Equal(ProviderConnectionState.Unknown, timedOut.State);
         Assert.Equal("timeout", timedOut.Detail);
 
-        using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(20));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => api.TestKeyAsync(Key, cancellation.Token));
+        var cancellationBody = new StalledBody();
+        var cancellationHandler = new FixtureHandler(
+            _ => new HttpResponseMessage(HttpStatusCode.OK) { Content = cancellationBody });
+        var cancellationApi = new OpenRouterApi(() => new HttpClient(cancellationHandler, disposeHandler: false),
+            () => DateTimeOffset.UtcNow, TimeSpan.FromSeconds(10));
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var pending = cancellationApi.TestKeyAsync(Key, cancellation.Token);
+        await cancellationBody.ReadStarted.WaitAsync(TimeSpan.FromSeconds(2),
+            TestContext.Current.CancellationToken);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
     }
 }
