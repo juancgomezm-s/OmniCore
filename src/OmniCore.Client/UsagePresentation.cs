@@ -53,11 +53,10 @@ public static class UsagePresentation
                 : duration is > 0 && duration % 60 == 0 ? (duration / 60).Value.ToString(CultureInfo.InvariantCulture) + "h"
                 : duration is > 0 ? duration.Value.ToString(CultureInfo.InvariantCulture) + "m" : window.Id;
             var metric = window.RemainingPercent;
-            var reported = quota.Availability is MetricAvailability.Reported or MetricAvailability.Stale
-                && metric.Availability is MetricAvailability.Reported or MetricAvailability.Stale;
+            var reported = metric.Availability is MetricAvailability.Reported or MetricAvailability.Stale;
             var text = reported && metric.Value is { } value && double.IsFinite(value) && value is >= 0 and <= 100
                 ? value.ToString("0.##", CultureInfo.InvariantCulture) + "%" : Missing;
-            var stale = quota.Availability == MetricAvailability.Stale || metric.Availability == MetricAvailability.Stale;
+            var stale = metric.Availability == MetricAvailability.Stale;
             parts.Add(prefix + " " + label + " " + Ui(locale, "remaining") + " " + text + (stale ? " " + Ui(locale, "stale") : ""));
         }
         foreach (var credit in quota.Credits)
@@ -65,11 +64,12 @@ public static class UsagePresentation
             if (!Enum.IsDefined(credit.Scope)) continue;
             var amount = credit.Amount;
             var text = amount.Availability is MetricAvailability.Reported or MetricAvailability.Stale
-                && amount.Value is >= 0 ? amount.Value.Value.ToString("0.##", CultureInfo.InvariantCulture) : Missing;
+                && amount.Value is { } reported ? reported.ToString("0.##", CultureInfo.InvariantCulture) : Missing;
             var scope = Ui(locale, credit.Scope == CreditScope.AccountBalance ? "accountBalance" : "keyLimit");
-            var stale = quota.Availability == MetricAvailability.Stale || amount.Availability == MetricAvailability.Stale;
+            var stale = amount.Availability == MetricAvailability.Stale;
             parts.Add(prefix + " " + scope + " " + text + " " + credit.Unit
-                + (credit.Currency is null ? "" : " " + credit.Currency) + (stale ? " " + Ui(locale, "stale") : ""));
+                + (credit.Currency is null || string.Equals(credit.Currency, credit.Unit, StringComparison.Ordinal)
+                    ? "" : " " + credit.Currency) + (stale ? " " + Ui(locale, "stale") : ""));
         }
         return parts.Count == 0 ? prefix + " " + Ui(locale, "quota") + " " + Missing : string.Join(" · ", parts);
     }

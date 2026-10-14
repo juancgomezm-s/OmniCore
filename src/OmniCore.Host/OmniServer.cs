@@ -86,6 +86,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private string? _workspaceRoot;
     private Func<IPlatformPaths> _platformPathsFactory = () => OmniHost.CreatePlatformPaths();
+    private readonly Func<IPlatformPaths, OpenRouterConnectionService>? _openRouterServiceFactory;
     private SessionRoutingPolicy _newSessionRoutingPolicy = SessionRoutingPolicy.Empty();
     private AgentProfileConfiguration.Loaded _agentProfiles = new(new AgentProfileRegistry([]), null);
 
@@ -181,7 +182,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
         IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null,
-        Func<IPlatformPaths>? platformPathsFactory = null)
+        Func<IPlatformPaths>? platformPathsFactory = null,
+        Func<IPlatformPaths, OpenRouterConnectionService>? openRouterServiceFactory = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
@@ -190,6 +192,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _audit = audit;
         _artifacts = artifacts;
         _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
+        _openRouterServiceFactory = openRouterServiceFactory;
         _userSpendReader = userSpendReader;
         _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
         Observability = new SessionObservationHub(store, codecs, artifacts);
@@ -204,7 +207,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
         IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null,
-        Func<IPlatformPaths>? platformPathsFactory = null)
+        Func<IPlatformPaths>? platformPathsFactory = null,
+        Func<IPlatformPaths, OpenRouterConnectionService>? openRouterServiceFactory = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
@@ -213,6 +217,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _audit = audit;
         _artifacts = artifacts;
         _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
+        _openRouterServiceFactory = openRouterServiceFactory;
         _userSpendReader = userSpendReader;
         _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
         Observability = new SessionObservationHub(store, codecs, artifacts);
@@ -2168,6 +2173,51 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == OpenRouterProtocol.StatusQuery)
+        {
+            var paths = _platformPathsFactory();
+            var service = _openRouterServiceFactory?.Invoke(paths) ?? new OpenRouterConnectionService(paths: paths);
+            var loaded = OmniHost.LoadUserConfiguration(paths);
+            var rows = service.List(cancellationToken).Select(row => new OpenRouterProtocol.ProviderState(
+                row.ProviderId, row.State.ToString(), row.CanConnect, row.CanTest, row.CanDiscoverModels,
+                row.CanDisconnect,
+                ProviderConnectionMetadataStore.Read(paths.DataDirectory, row.ProviderId, cancellationToken).ValidatedAt,
+                ProviderConnectionMetadataStore.Read(paths.DataDirectory, row.ProviderId, cancellationToken).DiscoveredAt,
+                loaded.Registry.Models().Count(model => model.ProviderId == row.ProviderId))).ToArray();
+            return new SessionQueryResult(name, OpenRouterProtocol.EncodeStatus(rows));
+        }
+        if (name == OpenRouterProtocol.CreditsQuery
+            || name.StartsWith(OpenRouterProtocol.CreditsQuery + ":", StringComparison.Ordinal))
+        {
+            var paths = _platformPathsFactory();
+            var service = _openRouterServiceFactory?.Invoke(paths) ?? new OpenRouterConnectionService(paths: paths);
+            var available = service.List(cancellationToken).Where(row => row.CanTest).Select(row => row.ProviderId).ToArray();
+            string? requested = name == OpenRouterProtocol.CreditsQuery ? null : name[(OpenRouterProtocol.CreditsQuery.Length + 1)..];
+            var providerId = requested ?? (available.Length == 1 ? available[0] : null);
+            if (providerId is null && available.Length > 1)
+                return new SessionQueryResult(name, "{\"selectionRequired\":true,\"providerIds\":["
+                    + string.Join(",", available.Select(id => "\"" + JsonObj.Escape(id) + "\"")) + "]}");
+            if (providerId is null || !available.Contains(providerId, StringComparer.Ordinal))
+                return new SessionQueryResult(name, "null");
+            var snapshot = service.ReadCreditsAsync(providerId, cancellationToken).GetAwaiter().GetResult();
+            // The explicit credits action also refreshes the session-scoped status-line cache.
+            // It remains keyed by provider, so a reading for OpenRouter cannot replace another
+            // provider's quota or authorize routing/spend.
+            if (_lastSessionId is { } session)
+                Observability.SetQuota(session, OpenRouterQuota(providerId, snapshot));
+            decimal? Value(CreditScope scope) => snapshot.Measurements.FirstOrDefault(item => item.Scope == scope)?.Amount.Value;
+            string Source(CreditScope scope, string fallback) => snapshot.Measurements.FirstOrDefault(item => item.Scope == scope)?.Amount.Source ?? fallback;
+            var key = snapshot.Key;
+            var accountBalance = snapshot.Measurements.FirstOrDefault(item => item.Scope == CreditScope.AccountBalance);
+            var state = new OpenRouterProtocol.CreditState(providerId, snapshot.KeyAvailability.ToString(), key.AsOf,
+                snapshot.AccountBalanceAvailability.ToString(), accountBalance?.Amount.AsOf,
+                snapshot.Limitation, key.Limit, key.LimitRemaining, key.Usage,
+                Value(CreditScope.AccountBalance), snapshot.AsOf, snapshot.LastQueryAttemptAt,
+                key.IsManagementKey, key.LimitResetInterval, key.LimitResetAt, "USD",
+                Source(CreditScope.KeyLimit, "openrouter.key"),
+                snapshot.Measurements.FirstOrDefault(item => item.Scope == CreditScope.AccountBalance)?.Amount.Source);
+            return new SessionQueryResult(name, OpenRouterProtocol.EncodeCredits(state));
+        }
         if (name == UiLocalePreferencesProtocol.QueryName)
             return new(name, UiLocalePreferencesProtocol.Encode(new UserLocaleConfiguration(_platformPathsFactory()).Read()));
         if (name == "sidebarSettings") return new(name, SidebarPreferencesJson.Encode(SidebarSettings().Read()));
@@ -2188,7 +2238,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             if (_lastSessionId is null) return new SessionQueryResult("sessionObservability", "null");
             var after = name.Contains(':') && long.TryParse(name[(name.IndexOf(':') + 1)..], out var cursor) ? cursor : 0;
-            return new SessionQueryResult("sessionObservability", ObservabilityJson.Encode(Observability.Snapshot(_lastSessionId, after)));
+            var snapshot = Observability.Snapshot(_lastSessionId, after);
+            snapshot = snapshot with { Quotas = snapshot.Quotas.Select(quota => CurrentCredentialQuota(_lastSessionId, quota)).ToArray() };
+            return new SessionQueryResult("sessionObservability", ObservabilityJson.Encode(snapshot));
         }
         if (name == "commands")
         {
@@ -2553,6 +2605,43 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         return null;
+    }
+
+    internal static ProviderQuotaSnapshot OpenRouterQuota(string providerId, OpenRouterCreditSnapshot snapshot)
+    {
+        var availability = snapshot.Measurements.Any(item => item.Amount.Availability == MetricAvailability.Stale)
+            || snapshot.AccountBalanceAvailability == MetricAvailability.Stale
+            ? MetricAvailability.Stale
+            : snapshot.Measurements.Any(item => item.Amount.Availability == MetricAvailability.Reported)
+                ? MetricAvailability.Reported : snapshot.AccountBalanceAvailability;
+        return new ProviderQuotaSnapshot(providerId, null, "openrouter.credits", snapshot.AsOf,
+            availability, [], snapshot.Measurements, snapshot.Limitation, snapshot.LastQueryAttemptAt,
+            snapshot.CredentialGeneration);
+    }
+
+    internal ProviderQuotaSnapshot? CurrentCredentialQuota(SessionId session, string providerId)
+    {
+        var quota = Observability.Quota(session, providerId);
+        return quota is null ? null : CurrentCredentialQuota(session, quota);
+    }
+
+    private ProviderQuotaSnapshot CurrentCredentialQuota(SessionId session, ProviderQuotaSnapshot quota)
+    {
+        if (!string.Equals(quota.Source, "openrouter.credits", StringComparison.Ordinal)) return quota;
+        var current = ProviderConnectionMetadataStore.Read(_platformPathsFactory().DataDirectory,
+            quota.ProviderId, CancellationToken.None).CredentialGeneration;
+        if (!string.IsNullOrWhiteSpace(current)
+            && string.Equals(current, quota.CredentialGeneration, StringComparison.Ordinal)) return quota;
+        var stale = quota with
+        {
+            Availability = MetricAvailability.Stale,
+            Credits = quota.Credits.Select(credit => credit with
+            {
+                Amount = credit.Amount with { Availability = MetricAvailability.Stale },
+            }).ToArray(),
+        };
+        Observability.SetQuota(session, stale);
+        return stale;
     }
 
     private static string UiLocaleErrorKey(Exception exception)

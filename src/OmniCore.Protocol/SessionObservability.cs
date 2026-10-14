@@ -36,7 +36,8 @@ public sealed record ProviderUsageWindow(string Id, string? LimitId, int? Durati
     Metric<double?> UsedPercent, Metric<double?> RemainingPercent, DateTimeOffset? ResetsAt, string? ResetDescription);
 public sealed record ProviderQuotaSnapshot(string ProviderId, string? AccountId, string Source, DateTimeOffset AsOf,
     MetricAvailability Availability, IReadOnlyList<ProviderUsageWindow> Windows,
-    IReadOnlyList<CreditMeasurement> Credits, string? Limitation, DateTimeOffset? LastQueryAttemptAt = null);
+    IReadOnlyList<CreditMeasurement> Credits, string? Limitation, DateTimeOffset? LastQueryAttemptAt = null,
+    string? CredentialGeneration = null);
 
 /// <summary>Replayable readings plus transient activity. No credentials, prompts, filenames, or response text.</summary>
 public sealed record SessionObservabilitySnapshot(string SessionId, long BasedOnJournalSequence, DateTimeOffset AsOf,

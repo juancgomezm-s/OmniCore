@@ -35,12 +35,15 @@ public sealed partial class TuiWiringTests
         { cancellationToken.ThrowIfCancellationRequested(); LogoutCalls++; LastProviderId = providerId; }
     }
 
-    private sealed class ProviderConnectionsFixture : ITuiProviderConnectionHost
+    private sealed class ProviderConnectionsFixture : ITuiProviderConnectionHost, ITuiOpenRouterCatalogHost
     {
         public IReadOnlyList<ProviderConnectionMenuRow> Rows { get; init; } = [];
         public int ListCalls { get; private set; }
         public int OperationCalls { get; private set; }
         public string? LastProviderId { get; private set; }
+        public int CatalogBrowseCalls { get; private set; }
+        public int CatalogRefreshCalls { get; private set; }
+        public IReadOnlyList<string> RegisteredModels { get; private set; } = [];
         public IReadOnlyList<ProviderConnectionMenuRow> List(CancellationToken cancellationToken)
         { cancellationToken.ThrowIfCancellationRequested(); ListCalls++; return Rows; }
         public Task<ProviderConnectionMenuResult> ConnectAsync(string apiKey, bool validate, CancellationToken cancellationToken)
@@ -53,6 +56,28 @@ public sealed partial class TuiWiringTests
         { OperationCalls++; return Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Unknown, null, null)); }
         public void Disconnect(string providerId, CancellationToken cancellationToken)
         { OperationCalls++; LastProviderId = providerId; }
+        public bool SupportsOpenRouter(string providerId, CancellationToken cancellationToken) => providerId == "openrouter";
+        public OpenRouterCatalogPage BrowseOpenRouterCatalog(string providerId, string? search, int offset, int limit,
+            CancellationToken cancellationToken)
+        {
+            CatalogBrowseCalls++;
+            IReadOnlyList<OpenRouterModel> models = [new("openai/fixture-model", "Fixture model", "", 8000, 2000,
+                "0.0000001", "0.0000002", ["text"], ["text"], ["tools"], "{\"id\":\"openai/fixture-model\"}")];
+            return search is not null && !"openai/fixture-model".Contains(search, StringComparison.OrdinalIgnoreCase)
+                ? new([], 0, null, false, false, null)
+                : new(models.Skip(offset).Take(limit).ToArray(), 1, null, false, false, null);
+        }
+        public Task<OpenRouterCatalogPage> RefreshOpenRouterCatalogAsync(string providerId, string? search,
+            int offset, int limit, CancellationToken cancellationToken)
+        {
+            CatalogRefreshCalls++;
+            return Task.FromResult(BrowseOpenRouterCatalog(providerId, search, offset, limit, cancellationToken));
+        }
+        public int RegisterOpenRouterModels(string providerId, IReadOnlyList<string> modelIds,
+            CancellationToken cancellationToken)
+        { RegisteredModels = modelIds; return modelIds.Count; }
+        public Task<OpenRouterCreditSnapshot> ReadOpenRouterCreditsAsync(string providerId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class LocalEngineSupervisorFixture : ITuiLocalEngineSupervisor
@@ -192,6 +217,38 @@ public sealed partial class TuiWiringTests
         Assert.False(disconnect.Enabled);
         Assert.Equal(0, providers.OperationCalls);
         ExportPreferenceFrame(fx, 80, 25, "accounts-api", "anthropic");
+    });
+
+    [Fact]
+    public void OpenRouter_catalog_view_browses_locally_refreshes_explicitly_and_registers_only_selection() => RunTuiTest(fx =>
+    {
+        var providers = new ProviderConnectionsFixture
+        {
+            Rows = [new("openrouter", ProviderConnectionMethod.ApiKey, ProviderConnectionState.Connected,
+                BillingMode.MeteredCurrency, null, null, false, true, true, true, null, null) { Backend = "openrouter" }],
+        };
+        fx.StartTui(providerConnections: providers, initialColumns: 90, initialRows: 27);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences opened");
+        ChoosePreferenceCategory(fx, "accounts_connections");
+        ClickId(fx, "preferences-api-open");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "provider list visible");
+        ClickId(fx, "provider-discover");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "openrouter-catalog-models"), "catalog view visible");
+        Assert.Equal(0, providers.CatalogRefreshCalls);
+        Assert.Contains("openrouter.catalog.help", OpenRouterResources.Keys);
+        Assert.All(new[] { "es", "en", "fr", "it" }, locale =>
+            Assert.All(OpenRouterResources.Keys, key =>
+                Assert.True(OpenRouterResources.TryTranslate(locale, key, out var value) && !string.IsNullOrWhiteSpace(value), locale + " missing " + key)));
+
+        ClickId(fx, "openrouter-catalog-refresh");
+        fx.Wait(() => providers.CatalogRefreshCalls == 1 && providers.CatalogBrowseCalls >= 2
+            && Descendants(fx.App.Overlay!).OfType<Button>().Any(view => view.Id == "openrouter-catalog-refresh" && view.Enabled),
+            "explicit catalog refresh completes");
+        ClickId(fx, "openrouter-catalog-register");
+        fx.Wait(() => providers.RegisteredModels.Count > 0, "selected catalog model reaches Host registration");
+        Assert.Equal(["openai/fixture-model"], providers.RegisteredModels);
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"),
+            "catalog registration returns to provider connections");
     });
 
     [Fact]

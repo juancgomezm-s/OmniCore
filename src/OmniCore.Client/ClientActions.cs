@@ -14,6 +14,7 @@ public static class ClientActionIds
     public const string ToolsInspect = "tools.inspect";
     public const string ExtensionsInspect = "extensions.inspect";
     public const string HooksInspect = "hooks.inspect";
+    public const string OpenRouterInspect = "openrouter.inspect";
     public const string CommandsInspect = "commands.inspect";
     public const string SkillsInspect = "skills.inspect";
     public const string MemorySession = "memory.session";
@@ -71,6 +72,7 @@ public sealed class ClientCommandRegistry
             new("tools", ClientActionIds.ToolsInspect, "client.command.tools"),
             new("extensions", ClientActionIds.ExtensionsInspect, "client.command.extensions"),
             new("hooks", ClientActionIds.HooksInspect, "client.command.hooks"),
+            new("openrouter", ClientActionIds.OpenRouterInspect, "client.command.openrouter"),
             new("commands", ClientActionIds.CommandsInspect, "client.command.commands"),
             new("skills", ClientActionIds.SkillsInspect, "client.command.skills"),
             new("memory", ClientActionIds.MemorySession, "client.command.memory"),
@@ -131,6 +133,7 @@ public sealed class ClientActionHandler : IClientActionHandler
             ClientActionIds.ToolsInspect => InspectTools(context, cancellationToken),
             ClientActionIds.ExtensionsInspect => Query(context, "extensions"),
             ClientActionIds.HooksInspect => Query(context, "hooks"),
+            ClientActionIds.OpenRouterInspect => OpenRouter(invocation, context, cancellationToken),
             ClientActionIds.CommandsInspect => Query(context, "commands"),
             ClientActionIds.SkillsInspect => Skills(invocation, context),
             ClientActionIds.MemorySession => Memory(invocation, context),
@@ -176,6 +179,82 @@ public sealed class ClientActionHandler : IClientActionHandler
         var tools = ToolsInspectionJson.Decode(json);
         return tools is null ? new(context.Text.Resolve("client.tools.invalid"))
             : new ClientActionResult(json) { Tools = tools };
+    }
+
+    private static ClientActionResult OpenRouter(ClientActionInvocation invocation, ClientContext context,
+        CancellationToken cancellationToken)
+    {
+        if (invocation.Arguments.Count is 1 or 2
+            && invocation.Arguments[0].Equals("credits", StringComparison.OrdinalIgnoreCase))
+        {
+            string query;
+            try { query = invocation.Arguments.Count == 2
+                ? OpenRouterProtocol.CreditsQueryFor(invocation.Arguments[1]) : OpenRouterProtocol.CreditsQuery; }
+            catch (ArgumentException) { return new(context.Text.Resolve("openrouter.command.usage")); }
+            var credits = context.Client.Query(query, cancellationToken)?.Json;
+            if (credits is null or "null") return new(context.Text.Resolve("openrouter.status.empty"));
+            using var document = System.Text.Json.JsonDocument.Parse(credits);
+            var root = document.RootElement;
+            if (root.TryGetProperty("selectionRequired", out var selectionNode)
+                && selectionNode.ValueKind == System.Text.Json.JsonValueKind.True
+                && root.TryGetProperty("providerIds", out var providersNode)
+                && providersNode.ValueKind == System.Text.Json.JsonValueKind.Array)
+                return new(context.Text.Resolve("openrouter.credits.chooseProvider") + ": "
+                    + string.Join(", ", providersNode.EnumerateArray().Where(item => item.ValueKind == System.Text.Json.JsonValueKind.String)
+                        .Select(item => item.GetString())));
+            string Amount(string name) => root.TryGetProperty(name, out var value)
+                && value.ValueKind == System.Text.Json.JsonValueKind.Number
+                && value.TryGetDecimal(out var amount)
+                    ? amount.ToString("0.############################", System.Globalization.CultureInfo.InvariantCulture)
+                    : context.Text.Resolve("openrouter.credits.unknown");
+            var asOf = root.TryGetProperty("asOf", out var asOfNode) && DateTimeOffset.TryParse(asOfNode.GetString(), out var asOfValue)
+                ? asOfValue : DateTimeOffset.MinValue;
+            var attempted = root.TryGetProperty("lastAttemptAt", out var attemptNode) && DateTimeOffset.TryParse(attemptNode.GetString(), out var attemptValue)
+                ? attemptValue : asOf;
+            var keyAvailability = root.TryGetProperty("keyAvailability", out var keyAvailabilityNode)
+                ? keyAvailabilityNode.GetString() : (attempted > asOf ? "Stale" : "Reported");
+            var availability = root.TryGetProperty("availability", out var availabilityNode)
+                ? availabilityNode.GetString() : "Unknown";
+            var staleKey = keyAvailability == "Stale" ? context.Text.Resolve("openrouter.credits.stale") : string.Empty;
+            var staleAccount = availability == "Stale" ? context.Text.Resolve("openrouter.credits.stale") : string.Empty;
+            var keySource = root.TryGetProperty("keySource", out var keySourceNode) ? keySourceNode.GetString() : "openrouter.key";
+            var accountSource = root.TryGetProperty("accountSource", out var accountSourceNode)
+                && accountSourceNode.ValueKind == System.Text.Json.JsonValueKind.String ? accountSourceNode.GetString() : null;
+            return new ClientActionResult(string.Join("\n", new[]
+            {
+                context.Text.Resolve("openrouter.credits.title"),
+                context.Text.Resolve("openrouter.credits.provider") + ": "
+                    + (root.TryGetProperty("providerId", out var providerNode) ? providerNode.GetString() : "openrouter"),
+                context.Text.Resolve("openrouter.credits.keyLimit") + staleKey + ": " + Amount("keyLimitUsd"),
+                context.Text.Resolve("openrouter.credits.remaining") + staleKey + ": " + Amount("keyLimitRemainingUsd"),
+                context.Text.Resolve("openrouter.credits.usage") + staleKey + ": " + Amount("keyUsageUsd"),
+                context.Text.Resolve("openrouter.credits.accountBalance") + staleAccount + ": " + Amount("accountBalanceUsd"),
+                context.Text.Resolve("openrouter.credits.asOf") + ": " + (asOf == DateTimeOffset.MinValue ? context.Text.Resolve("openrouter.credits.unknown")
+                    : asOf.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'", System.Globalization.CultureInfo.InvariantCulture)),
+                context.Text.Resolve("openrouter.credits.source") + ": key=" + keySource
+                    + (accountSource is null ? string.Empty : "; account=" + accountSource),
+                availability == "NotSupported" ? context.Text.Resolve("openrouter.credits.balanceUnavailable") : string.Empty,
+            }.Where(value => value.Length > 0)));
+        }
+        if (invocation.Arguments.Count != 0)
+            return new ClientActionResult(context.Text.Resolve("openrouter.command.usage"));
+        var json = context.Client.Query(OpenRouterProtocol.StatusQuery, cancellationToken)?.Json;
+        if (json is null) return new ClientActionResult(context.Text.Resolve("client.no_data"));
+        using var statusDocument = System.Text.Json.JsonDocument.Parse(json);
+        var rows = statusDocument.RootElement;
+        if (rows.ValueKind != System.Text.Json.JsonValueKind.Array || rows.GetArrayLength() == 0)
+            return new ClientActionResult(context.Text.Resolve("openrouter.status.empty"));
+        var output = new List<string> { context.Text.Resolve("openrouter.status.title") };
+        foreach (var row in rows.EnumerateArray())
+        {
+            var id = row.TryGetProperty("providerId", out var idNode) ? idNode.GetString() : "openrouter";
+            var state = row.TryGetProperty("state", out var stateNode) ? stateNode.GetString() : "Unknown";
+            var count = row.TryGetProperty("registeredModelCount", out var countNode) && countNode.TryGetInt32(out var n) ? n : 0;
+            var stateText = context.Text.Resolve("openrouter.state." + (state ?? "Unknown"));
+            output.Add(id + " · " + stateText + " · " + count.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " " + context.Text.Resolve("openrouter.status.models"));
+        }
+        return new ClientActionResult(string.Join("\n", output));
     }
 
     private static ClientActionResult Query(ClientContext context, string name)

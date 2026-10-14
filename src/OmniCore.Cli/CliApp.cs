@@ -1,3 +1,4 @@
+using OmniCore.Abstractions;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
@@ -234,6 +235,9 @@ public sealed class CliApp
             return Task.FromResult(2);
         }
         var invocation = parsed!;
+        if (invocation.Name == "openrouter")
+            return RunOpenRouterCommandAsync(invocation.Arguments.ToArray(), CreateOpenRouterHost(),
+                ReadOpenRouterKeyAsync, CancellationToken.None);
         var client = Runtime.Connect(CancellationToken.None);
         // ADR-0024: el resto de ClientCommands (/help, /exit, /plan, /tasks, /events, /permissions, /cancel,
         // /interrupt) se resuelven a su ClientAction; /context y /tools conservan su render propio de abajo.
@@ -300,6 +304,140 @@ public sealed class CliApp
             Console.WriteLine(Loc().Resolve("cli.command_invalid_result", "command", invocation.Name));
             return Task.FromResult(1);
         }
+    }
+
+    private static ITuiProviderConnectionHost CreateOpenRouterHost()
+    {
+        var paths = OmniHost.CreatePlatformPaths();
+        var credentials = OmniHost.CreateUserCredentialStore(paths);
+        return new TuiProviderConnectionHost(new ProviderConnectionService(credentials, paths), paths,
+            new OpenRouterConnectionService(credentials, paths));
+    }
+
+    private static async Task<string?> ReadOpenRouterKeyAsync(CancellationToken cancellationToken)
+    {
+        Console.Write(Loc().Resolve("openrouter.cli.keyPrompt"));
+        if (Console.IsInputRedirected) return await Console.In.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+        var key = new System.Text.StringBuilder();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var keyInfo = Console.ReadKey(intercept: true);
+            if (keyInfo.Key == ConsoleKey.Enter) { Console.WriteLine(); break; }
+            if (keyInfo.Key == ConsoleKey.Backspace) { if (key.Length > 0) key.Length--; continue; }
+            if (!char.IsControl(keyInfo.KeyChar)) key.Append(keyInfo.KeyChar);
+        }
+        return key.ToString();
+    }
+
+    internal static async Task<int> RunOpenRouterCommandAsync(string[] args, ITuiProviderConnectionHost host,
+        Func<CancellationToken, Task<string?>> readKey, CancellationToken cancellationToken)
+    {
+        if (args.Length == 0 || args[0] == "status")
+            return await RunClientAction([], status: true).ConfigureAwait(false);
+        var operation = args[0].ToLowerInvariant();
+        if (operation == "credits" && args.Length <= 2)
+            return await RunClientAction(args.Skip(1).ToArray(), status: false).ConfigureAwait(false);
+        try
+        {
+            switch (operation)
+            {
+                case "connect" when args.Length is 1 or 2:
+                {
+                    var providerId = args.Length == 2 ? args[1] : SelectSingleProvider(host, cancellationToken);
+                    if (providerId is null) return Usage();
+                    var key = await readKey(cancellationToken).ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(key))
+                    { Console.WriteLine(Loc().Resolve("openrouter.cli.keyMissing")); return 2; }
+                    var result = await host.ConnectAsync(providerId, key, validate: true, cancellationToken).ConfigureAwait(false);
+                    Console.WriteLine(Loc().Resolve(result.State == ProviderConnectionState.Connected
+                        ? "openrouter.cli.connected" : "openrouter.cli.connectionFailed"));
+                    return result.State == ProviderConnectionState.Connected ? 0 : 1;
+                }
+                case "test" when args.Length == 2:
+                {
+                    var result = await host.TestAsync(args[1], cancellationToken).ConfigureAwait(false);
+                    Console.WriteLine(Loc().Resolve(result.State == ProviderConnectionState.Connected
+                        ? "openrouter.cli.testPassed" : "openrouter.cli.testFailed"));
+                    return result.State == ProviderConnectionState.Connected ? 0 : 1;
+                }
+                case "disconnect" when args.Length == 2:
+                    host.Disconnect(args[1], cancellationToken);
+                    Console.WriteLine(Loc().Resolve("openrouter.cli.disconnected"));
+                    return 0;
+                case "catalog" when args.Length is >= 2 and <= 3:
+                    return RenderOpenRouterCatalog(host, args[1], args.ElementAtOrDefault(2), cancellationToken);
+                case "refresh" when args.Length is >= 2 and <= 3:
+                {
+                    if (host is not ITuiOpenRouterCatalogHost catalog)
+                        throw new ProviderConnectionException("unsupported", "OpenRouter catalog is unavailable.");
+                    var page = await catalog.RefreshOpenRouterCatalogAsync(args[1], args.ElementAtOrDefault(2), 0, 30,
+                        cancellationToken).ConfigureAwait(false);
+                    PrintOpenRouterCatalog(page);
+                    return page.Error is null ? 0 : 1;
+                }
+                case "select" or "register" when args.Length == 3:
+                {
+                    if (host is not ITuiOpenRouterCatalogHost catalog)
+                        throw new ProviderConnectionException("unsupported", "OpenRouter catalog is unavailable.");
+                    var added = catalog.RegisterOpenRouterModels(args[1], [args[2]], cancellationToken);
+                    Console.WriteLine(Loc().Resolve("openrouter.cli.registered", new Dictionary<string, string>
+                    {
+                        ["model"] = args[2],
+                        ["count"] = added.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    }));
+                    return 0;
+                }
+                default: return Usage();
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException
+            or ProviderConnectionException or KeyNotFoundException)
+        {
+            Console.WriteLine(Loc().Resolve("openrouter.cli.operationFailed", "diagnostic", ex.Message));
+            return 1;
+        }
+
+        int Usage()
+        {
+            Console.WriteLine(Loc().Resolve("openrouter.command.usage"));
+            return 2;
+        }
+
+        async Task<int> RunClientAction(string[] actionArgs, bool status)
+        {
+            var client = Runtime.Connect(cancellationToken);
+            var result = new ClientActionHandler().ExecuteAsync(
+                new ClientActionInvocation(ClientActionIds.OpenRouterInspect,
+                    status ? [] : new[] { "credits" }.Concat(actionArgs).ToArray(), "cli"),
+                new ClientContext(client, Loc()), cancellationToken).AsTask().GetAwaiter().GetResult();
+            Console.WriteLine(result.Text);
+            return 0;
+        }
+    }
+
+    private static string? SelectSingleProvider(ITuiProviderConnectionHost host, CancellationToken cancellationToken)
+    {
+        var rows = host.List(cancellationToken).Where(row => row.Backend == "openrouter" && row.CanConnect).ToArray();
+        return rows.Length == 1 ? rows[0].ProviderId : null;
+    }
+
+    private static int RenderOpenRouterCatalog(ITuiProviderConnectionHost host, string providerId, string? search,
+        CancellationToken cancellationToken)
+    {
+        if (host is not ITuiOpenRouterCatalogHost catalog)
+            throw new ProviderConnectionException("unsupported", "OpenRouter catalog is unavailable.");
+        PrintOpenRouterCatalog(catalog.BrowseOpenRouterCatalog(providerId, search, 0, 30, cancellationToken));
+        return 0;
+    }
+
+    private static void PrintOpenRouterCatalog(OpenRouterCatalogPage page)
+    {
+        Console.WriteLine(Loc().Resolve("openrouter.status.title") + " · " + page.ProviderId);
+        foreach (var model in page.Models)
+            Console.WriteLine(model.Id + (model.Name is null ? "" : " · " + model.Name));
+        if (page.Stale) Console.WriteLine(Loc().Resolve("openrouter.catalog.stale"));
+        if (page.Error is not null) Console.WriteLine(Loc().Resolve("openrouter.catalog.failed"));
     }
 
     internal static void RenderDiagnostic(string name, string json)

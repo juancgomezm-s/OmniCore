@@ -408,7 +408,7 @@ public sealed class AnthropicModelCatalog
 
 /// <summary>Estado de conexión guardado de un provider (solo enmascarado y marcas de tiempo; ADR-0018).</summary>
 public sealed record ProviderConnectionMetadata(string? MaskedKey, string? ValidationState,
-    DateTimeOffset? ValidatedAt, DateTimeOffset? DiscoveredAt);
+    DateTimeOffset? ValidatedAt, DateTimeOffset? DiscoveredAt, string? CredentialGeneration = null);
 
 /// <summary>
 /// Metadatos no secretos de las conexiones, por provider id, en
@@ -449,7 +449,9 @@ public static class ProviderConnectionMetadataStore
                         ? masked.GetString() : null,
                     node.TryGetProperty("validationState", out var state) && state.ValueKind == JsonValueKind.String
                         ? Normalize(state.GetString()) : null,
-                    Stamp("validatedAt"), Stamp("discoveredAt"));
+                    Stamp("validatedAt"), Stamp("discoveredAt"),
+                    node.TryGetProperty("credentialGeneration", out var generation) && generation.ValueKind == JsonValueKind.String
+                        && Guid.TryParseExact(generation.GetString(), "N", out _) ? generation.GetString() : null);
             }
 
             return result;
@@ -484,6 +486,7 @@ public static class ProviderConnectionMetadataStore
                 writer.WriteString("validationState", pair.Value.ValidationState);
                 writer.WriteString("validatedAt", pair.Value.ValidatedAt?.ToString("O", CultureInfo.InvariantCulture));
                 writer.WriteString("discoveredAt", pair.Value.DiscoveredAt?.ToString("O", CultureInfo.InvariantCulture));
+                writer.WriteString("credentialGeneration", pair.Value.CredentialGeneration);
                 writer.WriteEndObject();
             }
 
@@ -514,6 +517,7 @@ public static class ProviderConnectionMetadataStore
                 writer.WriteString("validationState", pair.Value.ValidationState);
                 writer.WriteString("validatedAt", pair.Value.ValidatedAt?.ToString("O", CultureInfo.InvariantCulture));
                 writer.WriteString("discoveredAt", pair.Value.DiscoveredAt?.ToString("O", CultureInfo.InvariantCulture));
+                writer.WriteString("credentialGeneration", pair.Value.CredentialGeneration);
                 writer.WriteEndObject();
             }
 

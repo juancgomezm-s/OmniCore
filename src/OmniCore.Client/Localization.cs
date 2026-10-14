@@ -91,6 +91,8 @@ public sealed class Localization
     {
         if (LinkResources.TryTranslate(Locale, key, out var linkText))
             return new(linkText, Locale, Locale, false);
+        if (OpenRouterResources.TryTranslate(Locale, key, out var openRouterText))
+            return new(openRouterText, Locale, Locale, false);
         if (RuntimeCompletionResources.TryTranslate(Locale, key, out var runtimeCompletionText))
             return new(runtimeCompletionText, Locale, Locale, false);
         if (ModelCatalogPreferencesResources.TryTranslate(Locale, key, out var modelCatalogText))
@@ -144,6 +146,7 @@ public sealed class Localization
             && !UiCompletionResources.ContainsKey(key)
             && !PolicyPreferencesResources.ContainsKey(key)
             && !LinkResources.ContainsKey(key)
+            && !OpenRouterResources.ContainsKey(key)
             && !SecurityPreferencesResources.ContainsKey(key)
             && !DiagnosticsPreferencesResources.ContainsKey(key)
             && !ShellUiResources.ContainsKey(key)

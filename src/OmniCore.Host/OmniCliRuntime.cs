@@ -3499,7 +3499,7 @@ public sealed class OmniCliRuntime : IDisposable
         {
             // Account windows and credits are not interchangeable with response rate limits.
             // Read the cached measurement for this exact session/provider; rendering never queries credentials.
-            AccountQuota = _server.Observability.Quota(session, context.ProviderId),
+            AccountQuota = _server.CurrentCredentialQuota(session, context.ProviderId),
             Account = ClaudeOAuthAccount(context.ProviderId, OmniHost.CreatePlatformPaths()),
         };
     }
