@@ -114,7 +114,7 @@ public sealed class SkillTurnComposition
             .ThenBy(skill => skill.Skill.Manifest.Id, StringComparer.Ordinal).ToArray();
         var fingerprints = loaded.Select(skill => new ActiveSkillFingerprint(skill.Skill.Manifest.Id!,
             skill.Skill.Manifest.Version!, ContentHash.Sha256(
-                skill.PackageContentSha256 ?? skill.ContentSha256))).ToArray();
+                (skill.PackageContentSha256 ?? skill.ContentSha256) + "\nmanifest:" + skill.Skill.ManifestSha256))).ToArray();
         var contributors = loaded.Select(skill => (IContextContributor)new SkillContextContributor(_session, skill))
             .Append(new SkillIndexContributor(_session, candidates, _guidanceEnabled))
             .Append(new SessionMemoryContextContributor(new SessionMemoryStore(_workspaceData)))

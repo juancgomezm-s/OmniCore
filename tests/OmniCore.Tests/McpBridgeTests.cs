@@ -322,7 +322,7 @@ public sealed class McpBridgeTests
                 [], false, "user", "fixture-hash");
             var response = await transport.SendAsync(server, "server/discover", "{}", CancellationToken.None);
             var result = McpWire.Result(response, 1);
-            Assert.Contains("2026-07-28", result.GetProperty("protocolVersions").GetRawText());
+            Assert.Contains("2026-07-28", result.GetProperty("supportedVersions").GetRawText());
 
             var failing = server with { Args = ["mcp-error"] };
             await Assert.ThrowsAsync<InvalidDataException>(() => transport.SendAsync(failing,
@@ -455,7 +455,7 @@ public sealed class McpBridgeTests
             Assert.Equal(method, context.Request.Headers["Mcp-Method"]);
             var result = method switch
             {
-                "server/discover" => "{\"protocolVersions\":[\"2026-07-28\"],\"capabilities\":{}}",
+                "server/discover" => "{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{}}",
                 "tools/list" => "{\"tools\":[{\"name\":\"fixture.lookup\",\"description\":\"offline lookup\",\"annotations\":{\"readOnlyHint\":true},\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}]}",
                 "tools/call" => "{\"content\":[{\"type\":\"text\",\"text\":\"offline fixture result\"}]}",
                 _ => throw new InvalidOperationException("Unexpected fixture method.")
@@ -490,7 +490,7 @@ public sealed class McpBridgeTests
             }
             var result = method switch
             {
-                "server/discover" => "{\"protocolVersions\":[\"2026-07-28\"],\"capabilities\":{}}",
+                "server/discover" => "{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{}}",
                 "tools/list" => "{\"tools\":[{\"name\":\"lookup\",\"inputSchema\":{\"type\":\"object\"}},"
                     + "{\"name\":\"fetch\",\"inputSchema\":{\"type\":\"object\"}}]}",
                 "tools/call" when name == "lookup" =>

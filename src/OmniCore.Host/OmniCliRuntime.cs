@@ -1650,6 +1650,7 @@ public sealed class OmniCliRuntime : IDisposable
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(workspaceRoot, paths, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
+            IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
             IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
             IReadOnlyList<IContextContributor> extensionContributors = Array.Empty<IContextContributor>();
             var extensionRpcInvoker = new ExtensionRpcProcessInvoker();
@@ -1743,12 +1744,14 @@ public sealed class OmniCliRuntime : IDisposable
             var audit = new FileAuditSink(paths.DataDirectory);
             var interactive = UseConsoleInput && !Console.IsInputRedirected;
             var interactionResponder = CreateInteractionResponder(writeLine, locale);
+            if (delegation is null)
+                extensionBoundaries.Add(new SkillPermissionBoundary(() => loadedProjectSkills, workspaceRoot));
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox,
                     extensionBoundaries)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    agentProfile, receiveMailbox);
+                    agentProfile, receiveMailbox, extensionBoundaries);
             var skillLimits = SkillSelectionLimits.FromHarness(harness,
                 (int)Math.Clamp(usableContext / 8, 1, 16_384));
             var skillSourceCatalog = new SkillSourceCatalog();
@@ -1759,7 +1762,6 @@ public sealed class OmniCliRuntime : IDisposable
                     ProjectExtensionPackageCatalog.Ready(workspaceRoot, paths, workspaceConfig.Trusted),
                     skillActivationContext)
                 : [];
-            IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
             SkillCompletionValidator skillCompletionValidators = new([]);
             IReadOnlyList<DiscoveredSkill> skillCandidates = [];
             IReadOnlyList<ActiveSkillFingerprint> activeSkillFingerprints = [];
@@ -2187,7 +2189,7 @@ public sealed class OmniCliRuntime : IDisposable
                                 var rootBoundary = CreateBoundary(effectivePolicy, workspaceRoot, rootTools.Catalog());
                                 var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), workspaceRoot,
                                     rootBoundary, restrictions, runId, audit, interactionResponder, interactive,
-                                    artifacts, rootProfile);
+                                    artifacts, rootProfile, additionalBoundaries: extensionBoundaries);
                                 var rootTurn = BuildTurn(productReasoning, reasoningResolution, rootExecutor,
                                     rootTools.Catalog(), rootBoundary, materializer);
                                 var rootInstruction = TurnInstruction(effectiveMode, conversationOnly);
@@ -2365,7 +2367,8 @@ public sealed class OmniCliRuntime : IDisposable
                             workspaceRoot, paths, artifacts));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
-                        server.ResolveLaneAgentProfile(sessionId, runId, laneId));
+                        server.ResolveLaneAgentProfile(sessionId, runId, laneId),
+                        additionalBoundaries: extensionBoundaries);
                     var approvedResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
                         server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
                     route.ReasoningCapability.ValidateRequest(approvedResolution.AppliedRequest);
@@ -3076,6 +3079,8 @@ public sealed class OmniCliRuntime : IDisposable
                     results.Add(new ExternalCompletionGateResult("lifecycle.validation.after", false,
                         "A lifecycle restriction withheld validated evidence."));
                 }
+                if (results.Any(result => !result.Passed && result.Key != "acceptance"))
+                    validationBlocked = true;
                 if (afterValidation.Validations.Count > 0 && validationBlocked)
                 {
                     // AfterValidation may observe a prior failure, but cannot run more validators
@@ -3101,11 +3106,20 @@ public sealed class OmniCliRuntime : IDisposable
                     {
                         var outcome = resolvedAfter.SingleOrDefault(item => string.Equals(item.ValidatorId,
                             request.ValidatorId, StringComparison.Ordinal));
-                        results.RemoveAll(item => string.Equals(item.ValidatorId, request.ValidatorId,
-                            StringComparison.Ordinal));
-                        results.Add(outcome ?? new ExternalCompletionGateResult("hook.validation:" + request.ValidatorId,
+                        var resolved = outcome ?? new ExternalCompletionGateResult("hook.validation:" + request.ValidatorId,
                             false, "The required validator is missing or did not pass for this Run validation.",
-                            ValidatorId: request.ValidatorId));
+                            ValidatorId: request.ValidatorId);
+                        if (!resolved.Passed) validationBlocked = true;
+                        // A lifecycle validator cannot overwrite a prior failure for the same
+                        // evidence boundary. Keep the first failed outcome durable and visible.
+                        if (resolved.Passed)
+                        {
+                            results.RemoveAll(item => string.Equals(item.ValidatorId, request.ValidatorId,
+                                StringComparison.Ordinal) && item.Passed);
+                            results.Add(resolved);
+                        }
+                        else if (!results.Any(item => !item.Passed && string.Equals(item.ValidatorId,
+                                     request.ValidatorId, StringComparison.Ordinal))) results.Add(resolved);
                     }
                 }
 
@@ -3195,7 +3209,15 @@ public sealed class OmniCliRuntime : IDisposable
                     acceptedResults = acceptedResults.Append(new ExternalCompletionGateResult("acceptance", true,
                         "confirmado por el usuario")).ToArray();
                     var resumedEvaluation = server.CheckRunCompletionAndGate(sessionId, runId,
-                        _ => acceptedResults, activeTurn.MutationLedger);
+                        _ => acceptedResults, activeTurn.MutationLedger, point =>
+                        {
+                            var terminalEvidence = JsonSerializer.Serialize(new LifecycleAfterValidationJson(
+                                lifecycleContext, checkResults.Select(item => new LifecycleValidationOutcomeJson(
+                                    item.Key, item.Passed)).Take(64).ToArray()),
+                                LifecycleJsonContext.Default.LifecycleAfterValidationJson);
+                            return activeTurn.DispatchCompletionLifecycle(sessionId, runId, lifecycleTurnId,
+                                point, terminalEvidence, cancellationToken);
+                        });
                     if (resumedEvaluation.Failure is { } resumedFailure)
                         System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(resumedFailure);
                     if (resumedEvaluation.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted

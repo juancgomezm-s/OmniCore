@@ -170,6 +170,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.MemoryCandidateProposed())
             .Plus(Typed.MemoryPromoted())
             .Plus(Typed.MemoryRejected())
+            .Plus(Typed.MemoryForgotten())
             .Plus(Typed.MemoryUsed())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
@@ -551,6 +552,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(MemoryCandidateProposed))]
 [JsonSerializable(typeof(MemoryPromoted))]
 [JsonSerializable(typeof(MemoryRejected))]
+[JsonSerializable(typeof(MemoryForgotten))]
 [JsonSerializable(typeof(MemoryUsed))]
 internal sealed partial class EventJsonContext : JsonSerializerContext
 {
@@ -1017,6 +1019,8 @@ public sealed class Typed
         Of(EventType.Of("memory.promoted"), EventJsonContext.Default.MemoryPromoted);
     public static CodecPair MemoryRejected() =>
         Of(EventType.Of("memory.rejected"), EventJsonContext.Default.MemoryRejected);
+    public static CodecPair MemoryForgotten() =>
+        Of(EventType.Of("memory.forgotten"), EventJsonContext.Default.MemoryForgotten);
     public static CodecPair MemoryUsed() =>
         Of(EventType.Of("memory.used"), EventJsonContext.Default.MemoryUsed);
 }

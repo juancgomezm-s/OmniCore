@@ -895,7 +895,7 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
             var discovered = transport.SendAsync(server, "server/discover", "{}", cancellationToken)
                 .GetAwaiter().GetResult();
             var discoveryResult = McpWire.Result(discovered, 1);
-            if (!discoveryResult.TryGetProperty("protocolVersions", out var versions)
+            if (!discoveryResult.TryGetProperty("supportedVersions", out var versions)
                 || versions.ValueKind != JsonValueKind.Array
                 || !versions.EnumerateArray().Any(version => version.ValueKind == JsonValueKind.String
                     && version.GetString() == McpWire.Version))

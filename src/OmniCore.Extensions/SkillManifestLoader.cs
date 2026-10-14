@@ -38,7 +38,8 @@ public sealed class SkillManifestLoader
             try
             {
                 var manifest = Load(Encoding.UTF8.GetString(bytes));
-                skills.Add(new(directory, manifest, scope, trust, hash, SkillLifecycleState.Discovered, null));
+                skills.Add(new(directory, manifest, scope, trust, hash, SkillLifecycleState.Discovered,
+                    ExecutionMetadataDiagnostic(manifest)));
             }
             catch (Exception exception) when (exception is InvalidDataException or YamlException
                 or InvalidOperationException or FormatException or ArgumentException)
@@ -70,8 +71,9 @@ public sealed class SkillManifestLoader
         var hash = Convert.ToHexStringLower(SHA256.HashData(bytes));
         try
         {
-            return new(full, Load(Encoding.UTF8.GetString(bytes)), scope, trust, hash,
-                SkillLifecycleState.Discovered, null);
+            var manifest = Load(Encoding.UTF8.GetString(bytes));
+            return new(full, manifest, scope, trust, hash, SkillLifecycleState.Discovered,
+                ExecutionMetadataDiagnostic(manifest));
         }
         catch (Exception exception) when (exception is InvalidDataException or YamlException
             or InvalidOperationException or FormatException or ArgumentException)
@@ -89,7 +91,7 @@ public sealed class SkillManifestLoader
         {
             var root = ManifestYamlAst.ReadRoot(yaml, "skill manifest");
             ManifestYamlAst.CheckKeys(root, "skill manifest", "id", "version", "displayName", "sealed", "priority",
-                "modelInvocable", "budgetTokens", "activation", "execution", "tools", "contributions");
+                "modelInvocable", "budgetTokens", "activation", "execution", "permissions", "tools", "contributions");
             manifest = new SkillManifest
             {
                 Id = ManifestYamlAst.OptionalString(root, "id", "id"),
@@ -122,6 +124,21 @@ public sealed class SkillManifestLoader
                     Context = ManifestYamlAst.OptionalString(execution, "context", "execution.context"),
                     PreferredModelAlias = ManifestYamlAst.OptionalString(execution, "preferredModelAlias", "execution.preferredModelAlias"),
                 };
+            if (ManifestYamlAst.OptionalMap(root, "permissions", "permissions", "filesystem", "processes", "network") is { } permissions)
+            {
+                var result = new SkillPermissionManifest
+                {
+                    Processes = ManifestYamlAst.OptionalStringList(permissions, "processes", "permissions.processes"),
+                    Network = ManifestYamlAst.OptionalStringList(permissions, "network", "permissions.network"),
+                };
+                if (ManifestYamlAst.OptionalMap(permissions, "filesystem", "permissions.filesystem", "read", "write") is { } filesystem)
+                    result.Filesystem = new SkillPathPermissionManifest
+                    {
+                        Read = ManifestYamlAst.OptionalStringList(filesystem, "read", "permissions.filesystem.read"),
+                        Write = ManifestYamlAst.OptionalStringList(filesystem, "write", "permissions.filesystem.write"),
+                    };
+                manifest.Permissions = result;
+            }
             if (ManifestYamlAst.OptionalMap(root, "contributions", "contributions", "tools", "workflows",
                 "validators", "contributors", "knowledge") is { } contributions)
                 manifest.Contributions = new SkillContributionsManifest
@@ -149,6 +166,16 @@ public sealed class SkillManifestLoader
             || manifest.Tools?.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 160
                 || !System.Text.RegularExpressions.Regex.IsMatch(value, "^[a-zA-Z0-9][a-zA-Z0-9._:-]*$",
                     System.Text.RegularExpressions.RegexOptions.CultureInvariant)) == true
+            || manifest.Permissions is { } permissionsCeiling && PermissionPatterns(permissionsCeiling).Any(value =>
+                string.IsNullOrWhiteSpace(value) || value.Length > 240 || value.Any(char.IsControl)
+                || value.Replace('\\', '/').Split('/').Any(part => part == ".."))
+            || manifest.Permissions is { } permissionLists && PermissionPatterns(permissionLists).Count() > 64
+            || manifest.Permissions?.Processes?.Count > 32 || manifest.Permissions?.Network?.Count > 32
+            || manifest.Permissions?.Filesystem?.Read?.Count > 32 || manifest.Permissions?.Filesystem?.Write?.Count > 32
+            || manifest.Execution?.Context is { } executionContext && executionContext != "fork"
+            || manifest.Execution?.PreferredModelAlias is { } modelAlias && (modelAlias.Length > 64
+                || !System.Text.RegularExpressions.Regex.IsMatch(modelAlias, "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant))
             || manifest.Contributions is { } refs && ResourceLists(refs).Any(pair =>
                 pair.List is { } list && (list.Count > 16 || list.Any(value => !SafeAssetPath(value))))
             || manifest.Activation?.Paths?.Any(UnsafePattern) == true
@@ -156,6 +183,11 @@ public sealed class SkillManifestLoader
             throw new InvalidDataException("The skill manifest is missing required metadata or contains an invalid activation rule.");
         return manifest;
     }
+
+    private static string? ExecutionMetadataDiagnostic(SkillManifest manifest) =>
+        manifest.Execution is { Context: not null } or { PreferredModelAlias: not null }
+            ? "Skill execution metadata is parsed for compatibility but has no runtime consumer yet."
+            : null;
 
     public DiscoveredSkill EvaluateEligibility(DiscoveredSkill skill, string? relativePath = null,
         string? language = null, string? framework = null, string? taskType = null)
@@ -321,6 +353,10 @@ public sealed class SkillManifestLoader
         yield return (SkillResourceKind.Contributor, manifest.Contributors);
         yield return (SkillResourceKind.Knowledge, manifest.Knowledge);
     }
+
+    private static IEnumerable<string> PermissionPatterns(SkillPermissionManifest permissions) =>
+        (permissions.Filesystem?.Read ?? []).Concat(permissions.Filesystem?.Write ?? [])
+            .Concat(permissions.Processes ?? []).Concat(permissions.Network ?? []);
 
     private static bool Glob(string pattern, string path)
     {

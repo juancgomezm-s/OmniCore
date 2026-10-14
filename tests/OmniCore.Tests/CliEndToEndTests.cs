@@ -27,6 +27,75 @@ namespace OmniCore.Tests;
 public sealed class CliEndToEndTests
 {
     [Fact]
+    public async Task Explicit_project_skill_read_ceiling_is_applied_by_the_real_cli_runtime()
+    {
+        await InIsolatedCli(async (workspace, _, data, provider) =>
+        {
+            var allowedPath = Path.Combine(workspace, "src", "allowed.txt");
+            var deniedPath = Path.Combine(workspace, "other", "denied.txt");
+            Directory.CreateDirectory(Path.GetDirectoryName(allowedPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(deniedPath)!);
+            File.WriteAllText(allowedPath, "allowed fixture data");
+            File.WriteAllText(deniedPath, "must remain outside the skill ceiling");
+            var skillDirectory = Path.Combine(workspace, ".omnicore", "skills", "read.cap");
+            Directory.CreateDirectory(skillDirectory);
+            File.WriteAllText(Path.Combine(skillDirectory, "skill.yaml"), """
+                id: read.cap
+                version: 1
+                budgetTokens: 64
+                tools: [filesystem.read]
+                permissions:
+                  filesystem:
+                    read: ["src/allowed.txt"]
+                """);
+            File.WriteAllText(Path.Combine(skillDirectory, "instructions.md"), "Read only the declared fixture file.");
+
+            var runtime = OmniCliRuntime.Create(workspace);
+            runtime.SetWorkspaceTrusted(true);
+            CliApp.UseRuntimeForTests(runtime);
+            string? requestBody = null;
+            provider.RespondWith((index, request) => index switch
+            {
+                0 => TextResponse("session ready"),
+                1 => RecordAndCall(request, "allowed-read", "src/allowed.txt"),
+                2 => RecordAndCall(request, "denied-read", "other/denied.txt"),
+                _ => TextResponse("read plan finished"),
+            });
+
+            var started = await Run("ask", "start the workspace session");
+            Assert.Equal(0, started.Code);
+            var activation = await Run("/skills", "load", "read.cap", "Project");
+            Assert.Equal(0, activation.Code);
+            Assert.Contains("activada", activation.Output, StringComparison.OrdinalIgnoreCase);
+            var inspected = await Run("/skills");
+            Assert.Contains("read.cap", inspected.Output, StringComparison.Ordinal);
+            Assert.Contains("activada", inspected.Output, StringComparison.OrdinalIgnoreCase);
+            var result = await Run("ask", "read the approved and unapproved files");
+            Assert.Equal(0, result.Code);
+            Assert.Contains("filesystem.read", requestBody!, StringComparison.Ordinal);
+            var events = ReadCurrentSessionEvents(workspace);
+            Assert.Contains(events.OfType<SkillActivationChanged>(), item => item.Activated);
+            var activeFingerprint = Assert.Single(events.OfType<TurnStarted>().Last().Fingerprint!.Components,
+                item => item.Name == "skills.active");
+            var artifacts = OmniHost.CreateArtifactStore(OmniHost.WorkspaceDataDirectory(
+                OmniHost.CreatePlatformPaths(), workspace));
+            var activeSkillsJson = artifacts.GetText(activeFingerprint.Hash)!;
+            Assert.Contains("read.cap", activeSkillsJson, StringComparison.Ordinal);
+            Assert.Contains(events, item => item is ToolCallSucceeded);
+            Assert.True(events.OfType<ToolCallRejected>().Any(),
+                $"provider requests={provider.RequestCount}; tool requests={string.Join(" | ", events.OfType<ToolCallRequested>().Select(item => item.ToolName + " " + item.ArgumentsJson))}; completed={string.Join(" | ", events.OfType<ToolCallSucceeded>().Select(item => item.ToolCallId))}");
+            var rejected = Assert.Single(events.OfType<ToolCallRejected>());
+            Assert.Contains("skill.permissions.ceiling_exceeded", rejected.Reason, StringComparison.Ordinal);
+
+            string RecordAndCall(string request, string id, string path)
+            {
+                requestBody = request;
+                return ToolCallResponse(id, "filesystem.read", System.Text.Json.JsonSerializer.Serialize(new { path }));
+            }
+        });
+    }
+
+    [Fact]
     public async Task Claude_lane_runs_through_admission_owned_worktree_and_durable_session_barrier()
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>

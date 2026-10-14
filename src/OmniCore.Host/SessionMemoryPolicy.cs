@@ -27,6 +27,22 @@ public sealed class SessionMemoryPolicy
 
     public IReadOnlyList<MemoryCandidateView> Candidates() => Project(_journal());
 
+    /// <summary>Removes a promoted Session record and durably records the matching user tombstone.
+    /// If journal publication fails before the receipt lands, restores the exact prior record.</summary>
+    public bool Forget(string memoryId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(memoryId);
+        var scope = MemoryScope.ForSession(_session);
+        var record = _store.Read(scope, cancellationToken).FirstOrDefault(item => item.Id == memoryId);
+        if (record is null) return false;
+        var promoted = _journal().OfType<MemoryPromoted>().LastOrDefault(item => item.MemoryId == memoryId);
+        if (promoted is null) return _store.Remove(scope, memoryId, cancellationToken);
+        return _store.RemoveWithReceipt(scope, memoryId,
+            () => _emit(new MemoryForgotten(promoted.CandidateId, memoryId, DateTimeOffset.UtcNow)),
+            () => _journal().OfType<MemoryForgotten>().Any(item => item.MemoryId == memoryId),
+            cancellationToken);
+    }
+
     public MemoryCandidateView Propose(string content, MemoryKind kind, MemoryCandidateOrigin origin,
         IReadOnlyList<string>? evidence = null, Action<DomainEventPayload>? emit = null)
     {
@@ -39,8 +55,39 @@ public sealed class SessionMemoryPolicy
         var unsafeContent = !string.Equals(content, redacted, StringComparison.Ordinal)
             || Email.IsMatch(content) || Phone.IsMatch(content);
         var safeContent = unsafeContent ? "[sensitive candidate withheld]" : content.Trim();
-        var id = CandidateId(kind, safeContent);
+        var baseId = CandidateId(kind, safeContent);
         var journal = _journal();
+        var familyPrefix = baseId + "-user-";
+        var family = journal.OfType<MemoryCandidateProposed>().Where(item => item.CandidateId == baseId
+            || item.CandidateId.StartsWith(familyPrefix, StringComparison.Ordinal)).ToArray();
+        // The journal sequence is canonical. Wall-clock timestamps can move backwards/forwards
+        // across retries and must not select an older candidate generation.
+        var latestFamilyCandidate = family.LastOrDefault();
+        var familyIds = family.Select(item => item.CandidateId).ToHashSet(StringComparer.Ordinal);
+        (string? CandidateId, string? Decision) lastUserDecision = default;
+        foreach (var payload in journal)
+        {
+            if (payload is MemoryRejected { ReasonCode: "user.rejected" } rejected
+                && familyIds.Contains(rejected.CandidateId))
+                lastUserDecision = (rejected.CandidateId, "rejected");
+            else if (payload is MemoryForgotten forgotten && familyIds.Contains(forgotten.CandidateId))
+                lastUserDecision = (forgotten.CandidateId, "forgotten");
+        }
+        var hasUserDecision = lastUserDecision.CandidateId is not null
+            && string.Equals(lastUserDecision.CandidateId, latestFamilyCandidate?.CandidateId, StringComparison.Ordinal);
+        if (origin != MemoryCandidateOrigin.User && hasUserDecision)
+        {
+            var decidedCandidate = family.Last(item => item.CandidateId == lastUserDecision.CandidateId);
+            return new MemoryCandidateView(decidedCandidate.CandidateId, kind, safeContent,
+                decidedCandidate.Origin.ToString(), lastUserDecision.Decision!,
+                "user." + lastUserDecision.Decision, null, decidedCandidate.Occurrences, decidedCandidate.ProposedAt);
+        }
+
+        // A new explicit action after a durable user reject/forget creates a fresh generation.
+        // Otherwise all origins reuse the current family generation, making retries/reopens idempotent.
+        var id = origin == MemoryCandidateOrigin.User && hasUserDecision
+            ? NextExplicitUserCandidateId(baseId, journal)
+            : latestFamilyCandidate?.CandidateId ?? baseId;
         var prior = journal.OfType<MemoryCandidateProposed>().LastOrDefault(item => item.CandidateId == id);
         var current = ProjectCandidate(journal, id);
         var occurrences = Math.Min(100, (prior?.Occurrences ?? 0) + 1);
@@ -243,10 +290,13 @@ public sealed class SessionMemoryPolicy
         var promoted = events.OfType<MemoryPromoted>().Select(item => item.CandidateId).ToHashSet(StringComparer.Ordinal);
         var rejected = events.OfType<MemoryRejected>().GroupBy(item => item.CandidateId, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => group.Last().ReasonCode, StringComparer.Ordinal);
+        var forgotten = events.OfType<MemoryForgotten>().Select(item => item.CandidateId).ToHashSet(StringComparer.Ordinal);
         return proposals.Select(item => new MemoryCandidateView(item.CandidateId, item.Kind, item.Content,
-            item.Origin.ToString(), promoted.Contains(item.CandidateId) ? "promoted"
+            item.Origin.ToString(), forgotten.Contains(item.CandidateId) ? "forgotten"
+                : promoted.Contains(item.CandidateId) ? "promoted"
                 : rejected.ContainsKey(item.CandidateId) ? "rejected" : item.Decision,
-            rejected.GetValueOrDefault(item.CandidateId), item.ConflictMemoryId, item.Occurrences, item.ProposedAt)).ToArray();
+            forgotten.Contains(item.CandidateId) ? "user.forgotten" : rejected.GetValueOrDefault(item.CandidateId),
+            item.ConflictMemoryId, item.Occurrences, item.ProposedAt)).ToArray();
     }
 
     private IReadOnlyList<MemoryCandidateView> Project(IReadOnlyList<DomainEventPayload> events) => ProjectForPresentation(events);
@@ -258,9 +308,10 @@ public sealed class SessionMemoryPolicy
         if (proposal is null) return null;
         var promoted = events.OfType<MemoryPromoted>().LastOrDefault(item => item.CandidateId == candidateId);
         var rejected = events.OfType<MemoryRejected>().LastOrDefault(item => item.CandidateId == candidateId);
+        var forgotten = events.OfType<MemoryForgotten>().LastOrDefault(item => item.CandidateId == candidateId);
         return new MemoryCandidateView(candidateId, proposal.Kind, proposal.Content, proposal.Origin.ToString(),
-            promoted is not null ? "promoted" : rejected is not null ? "rejected" : proposal.Decision,
-            rejected?.ReasonCode, proposal.ConflictMemoryId, proposal.Occurrences, proposal.ProposedAt);
+            forgotten is not null ? "forgotten" : promoted is not null ? "promoted" : rejected is not null ? "rejected" : proposal.Decision,
+            forgotten is not null ? "user.forgotten" : rejected?.ReasonCode, proposal.ConflictMemoryId, proposal.Occurrences, proposal.ProposedAt);
     }
 
     private void EnsurePromotionInteraction(MemoryCandidateProposed candidate, Action<DomainEventPayload> publish)
@@ -310,6 +361,16 @@ public sealed class SessionMemoryPolicy
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(_session + "|" + kind + "|" + Normalize(content)));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static string NextExplicitUserCandidateId(string baseId, IReadOnlyList<DomainEventPayload> journal)
+    {
+        var prefix = baseId + "-user-";
+        var next = journal.OfType<MemoryCandidateProposed>()
+            .Where(item => item.CandidateId.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(item => int.TryParse(item.CandidateId[prefix.Length..], out var generation) ? generation : 0)
+            .DefaultIfEmpty(0).Max() + 1;
+        return prefix + next.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
     private static string Normalize(string value) => string.Join(' ', value.Normalize(NormalizationForm.FormKC)
         .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToUpperInvariant();

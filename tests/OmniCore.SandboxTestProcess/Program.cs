@@ -57,7 +57,7 @@ if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
     }
     var method = root.GetProperty("method").GetString();
     var result = method == "server/discover"
-        ? "{\"protocolVersions\":[\"2026-07-28\"],\"capabilities\":{}}"
+        ? "{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{}}"
         : "{\"tools\":[{\"name\":\"fixture.lookup\",\"inputSchema\":{\"type\":\"object\"}}]}";
     Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + result + "}");
     return 0;

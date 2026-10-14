@@ -136,6 +136,8 @@ public interface IMemoryStore
     IReadOnlyList<MemoryRecord> Read(MemoryScope scope, CancellationToken cancellationToken);
     MemoryRecord Add(MemoryRecord record, CancellationToken cancellationToken);
     bool Remove(MemoryScope scope, string memoryId, CancellationToken cancellationToken);
+    bool RemoveWithReceipt(MemoryScope scope, string memoryId, Action publishReceipt,
+        Func<bool> receiptIsDurable, CancellationToken cancellationToken);
     int MarkUsed(MemoryScope scope, IReadOnlyCollection<string> memoryIds, DateTimeOffset usedAt,
         CancellationToken cancellationToken);
 }

@@ -2171,7 +2171,6 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         try
         {
             var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
-            var scope = MemoryScope.ForSession(session);
             IReadOnlyList<DomainEventPayload> ReadJournal() => _store.ReadFrom(session, 1).Select(_codecs.Decode).ToArray();
             void Emit(DomainEventPayload payload) => new EventStream(_store, _codecs, session)
                 .Append(payload, DurabilityClass.Barrier);
@@ -2179,7 +2178,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             if (commandName == "memory.session.forget")
             {
                 var id = fields.GetValueOrDefault("memoryId") ?? "";
-                return store.Remove(scope, id, cancellationToken)
+                var removed = memoryPolicy.Forget(id, cancellationToken);
+                return removed
                     ? new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted())
                     : new CommandAck(command.MessageId, "error", "No Session memory item has that id.", RuntimeCommandOutcome.Rejected());
             }

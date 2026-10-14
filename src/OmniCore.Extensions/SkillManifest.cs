@@ -15,8 +15,23 @@ public sealed record SkillManifest
     public int BudgetTokens { get; set; } = 2048;
     public SkillActivationManifest? Activation { get; set; }
     public SkillExecutionManifest? Execution { get; set; }
+    public SkillPermissionManifest? Permissions { get; set; }
     public List<string>? Tools { get; set; }
     public SkillContributionsManifest? Contributions { get; set; }
+}
+
+/// <summary>Restrictive claims ceiling for tool IDs declared by this skill; never grants permission.</summary>
+public sealed class SkillPermissionManifest
+{
+    public SkillPathPermissionManifest? Filesystem { get; set; }
+    public List<string>? Processes { get; set; }
+    public List<string>? Network { get; set; }
+}
+
+public sealed class SkillPathPermissionManifest
+{
+    public List<string>? Read { get; set; }
+    public List<string>? Write { get; set; }
 }
 
 public sealed class SkillActivationManifest

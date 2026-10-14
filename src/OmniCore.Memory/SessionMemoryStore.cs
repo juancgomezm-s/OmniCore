@@ -91,6 +91,48 @@ public sealed class SessionMemoryStore : IMemoryStore
         }
     }
 
+    /// <summary>Atomically edits the record set, publishes its durable journal receipt, and
+    /// restores the exact prior set (including replacement links) if publication failed before
+    /// the receipt became durable.</summary>
+    public bool RemoveWithReceipt(MemoryScope scope, string memoryId, Action publishReceipt,
+        Func<bool> receiptIsDurable, CancellationToken cancellationToken)
+    {
+        scope.Validate();
+        ArgumentException.ThrowIfNullOrWhiteSpace(memoryId);
+        ArgumentNullException.ThrowIfNull(publishReceipt);
+        ArgumentNullException.ThrowIfNull(receiptIsDurable);
+        cancellationToken.ThrowIfCancellationRequested();
+        var path = PathFor(scope);
+        lock (Gate(path))
+        {
+            var prior = ReadFile(path, scope, cancellationToken).ToList();
+            var target = prior.FirstOrDefault(record => string.Equals(record.Id, memoryId, StringComparison.Ordinal));
+            if (target is null) return false;
+            var replacement = prior.ToList();
+            for (var index = 0; index < replacement.Count; index++)
+                if (string.Equals(replacement[index].Supersedes, target.Id, StringComparison.Ordinal))
+                    replacement[index] = replacement[index] with { Supersedes = target.Supersedes };
+            replacement.Remove(target);
+            WriteFile(path, replacement, cancellationToken);
+            try
+            {
+                publishReceipt();
+                return true;
+            }
+            catch (Exception publishFailure)
+            {
+                if (receiptIsDurable()) return true;
+                try { WriteFile(path, prior, CancellationToken.None); }
+                catch (Exception restoreFailure)
+                {
+                    throw new InvalidOperationException("sessionPreferences.error.memory_forget_rollback_failed",
+                        new AggregateException(publishFailure, restoreFailure));
+                }
+                throw;
+            }
+        }
+    }
+
     public int MarkUsed(MemoryScope scope, IReadOnlyCollection<string> memoryIds, DateTimeOffset usedAt,
         CancellationToken cancellationToken)
     {

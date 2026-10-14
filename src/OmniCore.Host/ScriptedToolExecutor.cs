@@ -120,9 +120,10 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     /// </summary>
     public static ScriptedToolExecutor WithWorkspace(FakeCatalog catalog, IPermissionPolicy policy,
         string workspaceRoot, ModelCapabilityBoundary? boundary,
-        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null) =>
+        Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
+        IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null) =>
         new ScriptedToolExecutor(catalog, policy, workspaceRoot, boundary, null, null, false,
-            artifacts: null, receiveMailbox: receiveMailbox);
+            artifacts: null, receiveMailbox: receiveMailbox, additionalBoundaries: additionalBoundaries);
 
     /// <summary>
     /// Pipeline sin journal, solo para tests del pipeline: nada se persiste y todos los eventos

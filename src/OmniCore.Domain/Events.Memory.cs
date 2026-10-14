@@ -25,6 +25,14 @@ public sealed record MemoryRejected(string CandidateId, string ReasonCode, DateT
     public int SchemaVersion() => 1;
 }
 
+/// <summary>Durable user tombstone for an explicitly forgotten promoted Session memory.</summary>
+public sealed record MemoryForgotten(string CandidateId, string MemoryId, DateTimeOffset ForgottenAt)
+    : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("memory.forgotten");
+    public int SchemaVersion() => 1;
+}
+
 public sealed record MemoryUsed(TurnId TurnId, int ModelStepIndex, IReadOnlyList<string> MemoryIds,
     DateTimeOffset UsedAt) : DomainEventPayload
 {
