@@ -8,6 +8,8 @@ Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe func
 
 **Prioridad bloqueante del usuario (2026-10-14):** antes de ampliar funcionalidades, leer `P0-OMNI-UNIFICACION` en arquitectura §24. La coherencia visual y funcional OmniCoder–OmniCore–OmniLlama debe cerrarse globalmente con evidencia y conformidad del usuario. Hasta entonces solo avanzar en unificación y mantenimiento definidos por el gate; un build, una entrega local o un milestone histórico no lo levantan. Los invariantes de runtime y fronteras siguen vigentes.
 
+Antes de ejecutar un lote U-C, reconfirmar alcance, entregas/exclusiones y HEAD/árbol/hash de los planes de los donantes: la matriz fotografía pendientes de Core, no una lista vigente de carencias de OmniLlama/OmniCoder. OmniCoder es la referencia visual elegida; las correcciones posteriores y las funciones retiradas prevalecen sobre el gate genérico. Reconciliar el plan antes de construir si la fotografía cambió.
+
 ## Comandos
 
 ```bash

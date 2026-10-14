@@ -770,8 +770,10 @@ La definición de roles/paleta y la coherencia de las superficies existentes pas
 
 #### Matriz ejecutable de OmniCore — U-C01 a U-C12 (2026-10-14)
 
-Inventario estático del código en `b1ac564e557b21ec5402c142231f0a947ea2b640` y de los planes
-vigentes de OmniCoder (`PLAN_REALISTA.md`, §11.0) y OmniLlama (`OMNI_LLAMA.md`, P0).
+Inventario estático del código de **OmniCore** en `b1ac564e557b21ec5402c142231f0a947ea2b640`,
+sin cambios en `src/tests` hasta `3275742`. Las filas describen pendientes de Core, no el estado
+de construcción de los donantes. La fotografía inicial de los planes de OmniCoder y OmniLlama
+quedó superada; sus revisiones de alcance y entregas se recogen en la actualización siguiente.
 La matriz vive aquí; los otros planes la referencian por estos IDs, sin crear otra memoria
 de desarrollo. **Todas las filas tienen aceptación de paridad pendiente.** «Existente» acredita
 un consumidor localizado; «parcial» identifica una diferencia o cobertura aún no acreditada;
@@ -794,17 +796,48 @@ no constituye una validación cruzada de familia ni una nueva prueba ejecutada p
 | **U-C11 · Idiomas, accesibilidad y borradores** (P0.2–4,6) | **Existente en es/en/fr/it; paridad pendiente.** [Localization](../../src/OmniCore.Client/Localization.cs), recursos Client, preferencias `ui.locale` y adaptación terminal. | Conservar los cuatro idiomas de Core en todas las filas; registrar idiomas efectivamente disponibles en Electron/WebUI. `NO_COLOR`, ASCII, teclado, foco y movimiento reducido se prueban donde el renderer los soporte; diferencia ausente exige adaptación o aceptación explícita. | **Client/Cli.** Matriz idioma×superficie×estado, formatos regionales y copia literal de código/rutas/IDs; cambiar idioma/panel preserva borrador y selección. `ClientCommandLocalizationTests`, `ShellLocalizationTests` y wiring focal. |
 | **U-C12 · Frontera Electron→Core** (P0.5; M9) | **No disponible externamente.** [IOmniClient/ITrustedUserActionClient](../../src/OmniCore.Protocol/Wire.cs) y Host son in-process; marker de acción humana no serializable. `CommandAck.Outcome/FirstSeq/LastSeq` ya existen. Stdio MCP no es transporte cliente→Host. | Delimitar el contrato mínimo necesario para integrar Electron: schemas/goldens/versiones/capabilities, resultado de command, origen humano verificado y ownership/reconexión. Types net8 no constituyen binding TS ni autorizan un host TS competidor. | **Protocol/Host; adapter de producto en OmniCoder.** Contrato publicado y pruebas negativas de command sin autoridad, respuesta tardía/duplicada, incompatibilidad, gap y resultado desconocido sin repetir efectos. Implementación M9 sólo como integración mínima justificada por P0, o tras cierre global. |
 
-**Donantes y límites:** los planes de OmniCoder y OmniLlama identifican paleta, ToolCard/ToolTrace,
-composer, código y contexto como piezas existentes o parciales. Son referencias de comportamiento,
-no certificación de que estén homologadas ni permiso para copiar motores, credenciales o schedulers.
-El responsable de cada producto conserva sus adaptaciones; los IDs U-C son la parte de OmniCore
-de la matriz global. Una divergencia que quede «no aplicable» debe explicar plataforma/capacidad
-y recibir la aceptación de alcance prevista en P0.7.
+**Actualización de los donantes y del alcance — 2026-10-14:** la referencia de producto y
+presentación ya elegida es **OmniCoder**. UC-A debe cotejar y adaptar ese contrato y el mapeo
+ya existente en OmniLlama, sin reiniciar una definición visual entre tres alternativas.
+Las correcciones de alcance más recientes de cada producto prevalecen sobre su gate general
+y sobre esta fotografía. La aceptación global de familia sigue pendiente.
+
+| Fuente inspeccionada | Revisión y procedencia de la fotografía | Consecuencia para Core |
+|---|---|---|
+| OmniCoder Electron, `PLAN_REALISTA.md` | HEAD `95bbeeaac6c9c9e8aeef369112944f9f8a6fca38` más árbol de trabajo; SHA-256 del plan `51F014CD800E7C4BB7BE22AA187DD21AD31D3892E8E031B2E8F4CE7DA5D1F01B`. Incluye reparación CI y cambios locales de interfaz. | Usar sus componentes/tokens como referencia y distinguir código confirmado de cambios locales. El avance de CI no construye por sí mismo el transporte M9. |
+| OmniLlama React, `OMNI_LLAMA.md` y `examples/server/webui/BRANDING.md` | HEAD `a89ee01f0284e33289d9ed3e2853f416cab20c6c` más árbol de reparación; SHA-256 del plan `144EFA6ACBAE988CA2DD066C439F18E5CA093593B3FDC0EBF3D09CD276F028A2`. `94d6aee` incorpora composer/fuentes/resultados sin perfiles y `a89ee01` animaciones/Markdown; el árbol inspeccionado contiene una reparación posterior de visibilidad/compilación incremental. | Separar las entregas confirmadas de la reparación aún local al inspeccionar. La validación escrita en su acta es evidencia reportada por su owner; esta actualización no la vuelve a ejecutar ni certifica el despliegue remoto. |
+
+- **U-C01/U-C03/U-C09/U-C11:** OmniLlama ya documenta el composer basado en `PromptDock`,
+  roles `ThemeRole`→tokens CSS, teclado, paleta y acciones de contexto/MCP. Cotejar ese contrato
+  y adaptar la TUI; no repetir su construcción como trabajo pendiente de OmniLlama.
+- **U-C06/U-C07/U-C09:** la autorización específica de OmniLlama incluye contexto/fuentes,
+  comandos rápidos, resultados y trazas MCP. Su entrega registra citas cuando existe metadata,
+  copia/descarga y aprobación por invocación. Esto supera la propuesta inicial de esas piezas;
+  la fuente documental no acredita automáticamente su consumidor en Core. Esa autorización no
+  se extiende a crear nuevos servicios RAG, endpoints o transportes de Core.
+- **U-C08:** los perfiles **por conversación de OmniLlama fueron retirados por el usuario**;
+  no proponerlos otra vez como requisito de homologación. Sus ajustes vuelven a la configuración
+  efectiva del servidor/Ajustes y selección MCP. Los perfiles técnicos de modelo ya existentes
+  en Core conservan su función y no equivalen a aquella prestación retirada.
+- **U-C04/U-C05/U-C10:** el donante incorpora reloj/segmentos de generación y Vista previa/Fuente
+  de Markdown, con corrección de separación de razonamiento. La reparación posterior coloca el
+  indicador en el composer y verifica el bundle incrustado. Para cualquier adaptación, comprobar
+  qué commit/bundle está instalado y qué se observa realmente en el navegador/terminal; igualdad
+  de bytes o pruebas de fuente no acreditan movimiento, visibilidad ni aceptación del usuario.
+
+**Control de cambios antes de UC-A y de cada adaptación:** releer los encabezados de alcance,
+entregas y exclusiones de ambos planes y comparar HEAD/árbol/hash documental con esta fotografía.
+Si cambian, reconciliar las filas afectadas antes de implementar. Un commit base no identifica
+por sí solo el plan cuando hay cambios sin confirmar; no trasladar sus pendientes antiguos al
+backlog ni ignorar una retirada explícita. Los planes de los otros productos permanecen bajo sus
+owners. Los IDs U-C son la parte de Core; una divergencia «no aplicable» requiere motivo de
+plataforma/capacidad y la aceptación de alcance prevista en P0.7.
 
 **Secuencia de lotes amplios de OmniCore, un worker a la vez:**
 
-1. **UC-A · Contrato y navegación:** resolver U-C01/U-C09/U-C11 y el mapa de acciones/estados
-   usado por las demás filas. Entrega: roles, vocabulario, atajos, idiomas y diferencias acordadas,
+1. **UC-A · Contrato y navegación:** reconciliar primero las revisiones de alcance de los donantes;
+   resolver U-C01/U-C09/U-C11 y el mapa de acciones/estados desde la referencia OmniCoder y las
+   adaptaciones existentes de OmniLlama. Entrega: roles, vocabulario, atajos, idiomas y diferencias,
    con source/owner por acción; no dar por cerrada ninguna fila sólo por editar la tabla.
 2. **UC-B · Conversación:** adaptar U-C02–U-C05 como un recorrido continuo de composer/hilo/código,
    respetando capacidades disponibles y fuente literal. Entrega: cambios de renderer y evidencia
