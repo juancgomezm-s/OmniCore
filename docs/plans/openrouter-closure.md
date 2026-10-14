@@ -1,7 +1,7 @@
 # Cierre completo de OpenRouter — M8
 
 Requisito incorporado el 2026-10-13 por petición del usuario. Estado: **OR1–OR4
-integrados en main `3273026`; OR5 autenticado y validación general M8 pendientes**.
+integrados en main `3273026`; OR5 autenticado pendiente y verificación final M8 aprobada (4,505 correctas, 0 fallos, 11 omisiones)**.
 Complementa [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad)
 y el [plan M8–M10](m8-m10-user-localization.md). El cierre pertenece a **M8**:
 conexión, interfaz, catálogo y créditos forman una sola entrega verificable.

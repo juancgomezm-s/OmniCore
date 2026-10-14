@@ -1,6 +1,6 @@
 # M8 Extensibility — baseline and delivery sequence
 
-**Estado vigente, 2026-10-13:** bloques A–H construidos en main: aliases/toolPreferences, discovery/read paginado, hooks, skills/aportes, MCP/web, memoria Session y OpenRouter OR1–OR4. H (`d158de0`) conecta los 18 puntos de lifecycle, validadores reales y completion gates. Las correcciones de integración posteriores se describen al final. Build de solución correcto, cero advertencias/errores; suite integral del árbol corregido `2456b00`: 4,485 correctas, 0 fallos y 11 omisiones de 4,496 casos (9m 44s), incluida arquitectura. OR5 autenticado sigue pendiente de que el usuario configure su conexión. **M8 todavía no se declara cerrado.**
+**Estado vigente, 2026-10-14:** las cinco brechas de la auditoría sobre `084d5a8` están corregidas en `75a5a67`: discovery MCP, latch de validación, hook terminal tras aceptación, memoria olvidada y techo `permissions` de skills. La verificación integral detectó además una ruta durable alterada por la redacción de secretos; `09ad2ba` la resuelve mediante identidad física hasheada y binding del workspace, sin quitar la redacción. Focales de esa corrección: 5/5 correctos, incluida reapertura y rechazo de otro checkout. **Verificación integral aprobada: build sin advertencias/errores; 4,505 pruebas correctas, 0 fallos y 11 omisiones explícitas, incluida arquitectura.** OR5 autenticado requiere configurar la cuenta del usuario. **M8 permanece abierto por esa aceptación; los checkpoints históricos no sustituyen la evidencia vigente.**
 
 Plataforma de aceptación: Windows. Los checkpoints inferiores conservan el estado y evidencia de su fecha; sus frases «pendiente», «sin commit» o «no integrado» no sustituyen este estado vigente. M7 está cerrado en Windows.
 
@@ -264,3 +264,63 @@ Los bloques A–H quedan construidos e integrados, con límites explícitos de t
 `main` remoto recibió H, correcciones y acta integral hasta `29b6fcc2310fc62f321fc1484f316d8154800df7`. Una instalación global npm desde ese commit exacto terminó con exit 0 (`--foreground-scripts --install-links --allow-scripts=omnicore-cli@0.1.0 --strict-ssl=true`, caché nueva). El proceso no usó `NODE_TLS_REJECT_UNAUTHORIZED=0`. Preparación Release desde Git correcta; npm ejecutó internamente prepare varias veces, dentro de la misma instalación.
 
 Smoke del comando global: `omni.cmd --help` exit 0, ayuda con apertura TUI por omisión y comandos nuevos; `omni.cmd /openrouter status` exit 0, `openrouter · Sin configurar · 0 modelos registrados`. Ambos checks son locales, sin HTTP ni inferencia. No se repitió campaña visual. El código instalado corresponde a `29b6fcc`; los commits documentales posteriores sólo registran esta evidencia. OR5 autenticado permanece pendiente de configuración del usuario.
+
+## Correcciones de la auditoría retrospectiva M8 (2026-10-14)
+
+Se alineó `server/discover` al campo MCP oficial `supportedVersions`; los fixtures de transporte local también lo usan. `AfterValidation` conserva el latch de fallo si un validator/gate real falla, y no permite que otro hook limpie el resultado ni dispare después otro efecto. La ruta de aceptación `true` pasa el dispatcher lifecycle hasta el evento terminal persistido, sin repetir el gate. Los tests de esta carpeta cubren la rama sin aceptación y la rama con aceptación.
+
+`/memory forget` publica `MemoryForgotten` durable y la edición de la store se revierte como conjunto bajo su lock si falla el receipt, conservando exactamente los links `Supersedes`. El re-add explícito User después de olvidar crea/reutiliza una generación idempotente aun cuando el candidato inicial fuera Model; la propuesta Model/Heuristic no revierte `forgotten` ni `rejected` del usuario.
+
+El techo `permissions` de skill se aplica a los `ToolIntent` reales declarados por skills activas, se intersecta para IDs compartidos y desaparece al liberar la skill. IDs no declarados y tools Core ajenas mantienen su política normal. Claims filesystem con globs no demostrables se rechazan; se admite identidad exacta del glob o cobertura mediante `**`/prefijo recursivo literal. `filesystem.list` y `search.text` exigen un techo de subárbol como `src/**`; `src/*` no autoriza recorrerlo. Se mantiene Ask de proceso para skills Project/ThirdParty aunque no declaren `permissions`. La integración CLI real carga `read.cap`, entrega el Turn fingerprintado y permite la lectura del fixture incluido mientras rechaza la ruta fuera del techo antes de ejecución.
+
+`execution.context: fork` y `execution.preferredModelAlias` se conservan como metadatos compatibles con §52, sin consumidor de fork/routing en M8; su presencia activa el diagnóstico visible de skill pendiente, y valores de contexto desconocidos se rechazan. No se atribuye efecto runtime a estos campos.
+
+Focales retrospectivos: `M8RetrospectiveAuditTests` **17/17 pass** y `CliEndToEndTests.Explicit_project_skill_read_ceiling_is_applied_by_the_real_cli_runtime` **1/1 pass**. Incluyen MCP supportedVersions, acceptance terminal, latch de validación, olvido/re-add/rechazo y rollback exacto de cadena antes y después del receipt, intersección/cobertura de claims, localización y consumidor CLI real. No se ejecutó la suite general, build de solución ni arquitectura; están reservados a root tras la revisión de esta entrega. OR5 autenticado sigue pendiente de la configuración del usuario; este checkpoint no cierra M8.
+
+### Ajustes de matcher y generación canónica (2026-10-14)
+
+El matcher de techos ahora compara globs de ruta con semántica de segmentos: `*`/`?` operan
+dentro del segmento y `**` coincide con cero o más segmentos. Así `src/*.cs` y `**/*.cs`
+autorizan los archivos concretos previstos y rechazan `src/main.txt`. La comprobación de
+inclusión de claims wildcard permanece conservadora: no se amplió `src/*` para cubrir `src/**`.
+La generación de candidatos User determina propuesta y decisión más recientes por orden del
+journal, no por reloj; la prueba adelanta el timestamp de la propuesta inicial, luego olvida,
+reagrega y reintenta, y confirma el mismo ID nuevo y un solo record.
+
+Focales nuevos de esta corrección: `Skill_ceiling_globs_match_concrete_file_segments_without_widening_claim_glob_inclusion`
+**1/1 pass** y `Memory_family_generation_follows_journal_order_when_proposal_clock_is_future_dated`
+**1/1 pass**. No se repitieron los 18 focales previos ni la suite general.
+
+## Corrección causal del despacho lifecycle — `09ad2ba` (2026-10-14)
+
+Las dos primeras corridas integrales posteriores a la auditoría terminaron con 2 y 1 fallos,
+respectivamente. La falla persistente de `session.input` no se consideró resuelta porque pasara
+aislada: el diagnóstico integral mostró `CanonicalRoot` con `[REDACTED]`, trust falso sobre esa
+ruta y sólo dos RPC, correspondientes a los hooks de Session. Un secreto sintético registrado
+que coincide con el directorio reproduce ahora el caso de forma determinista.
+
+El journal conserva su redacción de secretos y PII. La identidad nueva `physical-sha256` permite
+verificar una raíz configurada explícitamente contra la identidad física durable y el
+`WorkspaceId` de `SessionCreated` cuando la ruta registrada no es verificable. Una raíz del
+journal íntegra conserva su verificación anterior. No se usa cwd ni `WorkspaceDisplayPath` como
+autoridad de Project; las sesiones legacy sin raíz durable sólo pueden cargar hooks User/Trusted
+con consentimiento. Tokens `physical:<ruta>` anteriores intactos siguen verificándose; los
+redactados fallan cerrado. Se conserva la limitación de identidad de ruta frente a borrar/recrear
+un directorio físico en la misma ubicación (ADR-0004).
+
+La regresión atraviesa Host real, comprueba ausencia del secreto en todos los payloads, los cinco
+hooks al iniciar el Run, reapertura con el mismo store y cero despacho contra otro checkout del
+mismo `ProjectId`, aun confiable y consentido. Focales combinados con identidad M3 y OpenRouter:
+**5/5 correctos**. El fixture de cancelación OpenRouter espera la señal `ReadStarted` antes de
+cancelar; conserva la comprobación independiente del timeout de cuerpo, sin competir dos timers.
+El cierre del listener HTTP de la prueba de circuito sólo tolera `ObjectDisposedException` tras
+cancelación explícita; no oculta fallos de las aserciones de circuito.
+
+Verificación de solución sobre `09ad2ba`: `dotnet build OmniCore.slnx --no-restore -v:q`
+correcto, cero advertencias y errores (42.56 s). `dotnet test OmniCore.slnx --no-build
+--no-restore -v:q`: **4,516 casos, 4,505 correctos, 0 fallos y 11 omisiones**, duración
+10m 35s 966ms; incluye arquitectura. Las omisiones son aceptación/diagnósticos live opt-in
+y permisos de symlink no disponibles. Log local:
+`C:/Users/juanc/AppData/Local/Temp/OmniCore-M8-verified-20261014.log`.
+No se realizaron inferencias ni aceptación autenticada. La construcción y correcciones
+automatizadas M8 quedan verificadas; OR5 continúa pendiente de la configuración del usuario.

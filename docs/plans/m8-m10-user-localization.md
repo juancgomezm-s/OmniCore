@@ -2,9 +2,9 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-13)
+## Estado vigente (2026-10-14)
 
-Los bloques de construcción A–H están en main; H `d158de0` completa lifecycle/validación y `completion.gate`. Correcciones de integración en `2456b00`, revisadas y verificadas: build de solución 0 advertencias/errores; suite integral 4,485 correctas, 0 fallos, 11 omisiones explícitas (incluye arquitectura). OR5 autenticado espera la configuración del usuario; M8 permanece abierto por esa aceptación. No quedan los antiguos bloques E/F/H como trabajo futuro. Evidencia y límites en [el acta](../validation/m8-extensibility-20261011.md).
+Las cinco brechas posteriores a `084d5a8` están corregidas en `75a5a67`: discovery MCP, latch de validación, hook terminal al aceptar, restauración de memoria olvidada y techo de permisos de skills. `09ad2ba` conserva la autoridad del workspace cuando su ruta durable queda redactada; prueba reapertura y rechazo de otro checkout sin exponer secretos. Build de solución sin advertencias ni errores; suite integral: 4,505 correctas, 0 fallos y 11 omisiones explícitas (incluye arquitectura). OR5 autenticado sigue pendiente de configurar la cuenta del usuario; M8 no se declara cerrado. La evidencia vigente tiene precedencia sobre los checkpoints históricos; [acta M8](../validation/m8-extensibility-20261011.md).
 
 ## Cortes históricos de integración y dependencias
 
