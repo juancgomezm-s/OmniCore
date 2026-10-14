@@ -50,6 +50,10 @@ de integración. Las credenciales y endpoints sólo se configuran en User (ADR-0
 Estos contratos orientan fixtures y manejo de respuestas; la lectura de documentación
 no constituye aceptación autenticada de la cuenta del usuario.
 
+La [FAQ oficial, sección de créditos y facturación](https://openrouter.ai/docs/faq)
+identifica USD como unidad de precios y créditos. Mostrar esa unidad explícita;
+el idioma/cultura de presentación no convierte el valor ni determina su moneda.
+
 ## Condición de cierre M8
 
 **Disponibilidad confirmada por el usuario (2026-10-13):** aún no hay conexión
