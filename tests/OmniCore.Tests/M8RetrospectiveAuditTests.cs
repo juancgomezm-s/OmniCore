@@ -213,7 +213,8 @@ public sealed class M8RetrospectiveAuditTests
         {
             var text = new OmniCore.Client.Localization(locale);
             foreach (var key in new[] { "skill.permissions.ceiling_exceeded",
-                         "skill.permissions.process_consent_required", "client.memory.state.forgotten" })
+                         "skill.permissions.process_consent_required", "client.memory.state.forgotten",
+                         "sessionPreferences.error.memory_forget_rollback_failed" })
             {
                 var resolution = text.ResolveDetailed(key);
                 Assert.False(resolution.UsedFallback, $"{locale}: {key}");

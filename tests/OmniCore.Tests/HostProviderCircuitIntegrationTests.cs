@@ -52,6 +52,7 @@ public sealed class HostProviderCircuitIntegrationTests
             stop.Cancel();
             listener.Stop();
             try { await serving; } catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) when (stop.IsCancellationRequested) { }
         }
 
         async System.Threading.Tasks.Task Serve()

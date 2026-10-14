@@ -101,8 +101,15 @@ public sealed class LifecycleValidationHTests
             Assert.Equal(5, LifecycleRpcFixture.Calls);
 
             LifecycleRpcFixture.Reset();
+            var inputPaths = OmniHost.CreatePlatformPaths(Path.Combine(root, "input-user-data"));
+            new WorkspaceTrustStore(inputPaths).SetTrusted(workspace, true);
+            var inputCandidate = Assert.Single(new ExtensionManifestLoader().Discover(
+                Path.Combine(workspace, ".omnicore", "extensions"), TrustLevel.Project,
+                workspaceTrusted: true));
+            new ExtensionConsentStore(inputPaths, workspace).Grant(inputCandidate,
+                new HashSet<string>(["hook.register", "hook.observe"], StringComparer.Ordinal));
             var inputServer = new OmniServer(store: new InMemoryEventStore(), codecs: EventCodecs.Create(),
-                audit: new InMemoryAuditSink(), platformPathsFactory: () => paths);
+                audit: new InMemoryAuditSink(), platformPathsFactory: () => inputPaths);
             inputServer.ConfigureWorkspaceRoot(workspace);
             inputServer.ConfigureLifecycleRpcInvoker(static () => new LifecycleRpcFixture());
             var inputAck = inputServer.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "session.input")
