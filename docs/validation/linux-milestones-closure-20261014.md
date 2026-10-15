@@ -371,3 +371,27 @@ seis escenarios por paquete, verificación del journal y cuatro PTY reales con
 Escape/exit 0, evidencia `strict-sdk-path-b673/`. También se comprobó el aislamiento
 con los binarios previos 0789, sin atribuirlos al código final. La fuente C# no
 cambia en este último ajuste de scripts/evidencia.
+
+La pasada remota 3d0aa8b aprobó los tres jobs en
+[38680635315](https://github.com/juancgomezm-s/OmniCore/actions/runs/38680635315),
+pero el guard de integración detectó main avanzado y detuvo el merge. Se combina
+main ce805bf (M9-E y tema 572dacc) sin sustituir los cambios de SQLite/stdio;
+los conflictos fueron documentales. Sobre f8c9b49, Debian repite build limpio,
+**4562 total / 4543 PASS / 19 SKIP / 0 FAIL**, 12m51s, y ambas distribuciones
+con seis escenarios por paquete/cuatro PTY bajo PATH sin dotnet. Windows focal
+local: 28/28 PASS. La interfaz integrada se conserva en rama aparte con M9-E y
+**345/345 PASS**, pendiente de autorización de publicación según su plan.
+
+La [integral remota f8c9b49](https://github.com/juancgomezm-s/OmniCore/actions/runs/38683541843)
+aprueba Ubuntu (4543 PASS, 19 SKIP, 0 FAIL) y linux-package (artefacto
+11949471705, seis escenarios por paquete/cuatro PTY, cero warnings de linker).
+Windows da 4553 PASS, 8 SKIP y un único FAIL: el servidor PowerShell de prueba
+no llega a Ready en 90 segundos. El fixture entra en bucle si ReadLine devuelve
+null tras una conexión vacía o headers truncados. Una regresión con socket real
+reproduce Ready/Unreachable antes del arreglo (`managed-empty-probe-baseline.log`).
+El fixture ahora abandona ese cliente en EOF y acepta el siguiente. Dos variantes
+nuevas y el caso original pasan **3/3**, sin omisiones (`managed-empty-probe-fixed.log`).
+Se mantienen 3 MB de stdout, auth, reutilización entre dos turnos, parada del hijo,
+secretos y plazo de producción. Se añaden estos tres casos a la focal temprana,
+sin retirarlos de la integral. La siguiente pasada completa debe aprobar antes
+de integrar; ni esta focal ni la pasada anterior sustituyen ese requisito.
