@@ -308,3 +308,22 @@ La configuración del host y sus límites se acreditarán sólo si esos casos pa
 El usuario confirmó como referencia la captura de preferencias integradas de
 `bef4607`. Esa rama sigue conservada, respaldada y pendiente de integrar sobre M8;
 la recuperación de esa experiencia se prepara aparte de esta reparación Linux.
+
+La tentativa `f80182e` se canceló: aplicar/restaurar ACL en la raíz del volumen
+retuvo el paso de preparación. `1fa2794` elimina por completo esa modificación:
+sólo prepara el nuevo temporal sintético; no altera ACL de C:\\. En su
+[focal real](https://github.com/juancgomezm-s/OmniCore/actions/runs/38676088257/job/116230461966),
+Strong sigue denegando el archivo externo y Git supera NUL/getcwd, pero ahora
+devuelve «this operation must be run in a work tree». Los dos casos de caída
+siguen fallando con SQLite 10/1546. El empaquetado Linux de ese run pasa.
+
+Se integra el main nuevo `0ffdadb` (implementación M9-D) sin sustituir código;
+los conflictos son documentales y conservan los avances M9 y la evidencia Linux.
+Una instrumentación **temporal, sólo de tests**, intercepta la llamada real de
+SQLite SetEndOfFile y devuelve su resultado sin alterarlo, registrando errno/ruta
+si falla. No añade retries ni cambia Core. La focal remota añade lecturas reales
+de .git/HEAD/config y trazas Git en Strong, con y sin raíz de instalación declarada;
+cada salida distinta de cero hace fallar el diagnóstico. Se retirará esa
+instrumentación y el job adicional antes de validar los tres jobs finales.
+Las pasadas locales de 100 caídas sin error bajo instrumentación no acreditan una
+corrección: la anterior sin instrumentación sí reprodujo el I/O y CI sigue rojo.

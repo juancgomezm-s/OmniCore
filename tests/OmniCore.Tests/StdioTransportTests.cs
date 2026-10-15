@@ -114,7 +114,9 @@ public sealed class StdioTransportTests
                     .Select(path => Path.GetFileName(path) + "=" + new FileInfo(path).Length));
                 throw new InvalidOperationException($"Journal open failed: readOnly={readOnly}; "
                     + $"SQLite={error.SqliteErrorCode}/{error.SqliteExtendedErrorCode}; "
-                    + $"hostExited={firstHost?.HasExited}; files={files}", error);
+                    + $"hostExited={firstHost?.HasExited}; files={files}; "
+                    + (Environment.GetEnvironmentVariable("OMNICORE_SQLITE_DIAGNOSTICS") == "1"
+                        ? SqliteIoDiagnostic.LastFailure : "native diagnostic disabled"), error);
             }
         }
         try
