@@ -25,6 +25,7 @@ public static class StdioProtocol
         "query.sessionSidebar",
         "query.changedFiles",
         "query.agents",
+        "query.agentSources",
         "query.sessionObservability",
         "events.replay",
         "events.replay.page",
@@ -43,13 +44,15 @@ public static class StdioProtocol
         "command.attachment.upload.begin.user",
         "command.attachment.upload.chunk.user",
         "command.attachment.upload.finish.user",
+        "command.external.memory.consent.user",
         "query.humanActionScope",
     ];
 
     public static bool IsSupportedQuery(string name) => name is "state" or "sessionIdentity" or "workingState" or "commands"
-        or "sessionSidebar" or "changedFiles" or "agents" or "sessionObservability" or "humanActionScope";
+        or "sessionSidebar" or "changedFiles" or "agents" or "agent.sources" or "sessionObservability" or "humanActionScope";
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
         or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
-        or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
+        or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
+        or "external.memory.consent";
 }

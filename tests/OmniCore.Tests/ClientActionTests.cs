@@ -220,6 +220,19 @@ public sealed class ClientActionTests
     }
 
     [Fact]
+    public void Skills_sources_and_external_memory_controls_use_the_source_query_without_shadowing_agents()
+    {
+        var client = new FakeClient();
+        client.Queries["agent.sources"] = "{\"workspaceTrusted\":true,\"externalMemoryAllowed\":false,\"sources\":[]}";
+        var inventory = Run("skills", Context(client), "sources");
+        Assert.Contains("Fuentes locales", inventory.Text);
+        Assert.Contains("Ask", inventory.Text);
+        Assert.Equal(new[] { "agent.sources" }, client.Queried);
+        Assert.Empty(client.Sent);
+        Assert.False(ClientCommandRegistry.Default.TryResolve(new CommandInvocation("agents", [], "Typed"), out _));
+    }
+
+    [Fact]
     public void Memory_command_queries_and_uses_trusted_user_actions_for_changes()
     {
         var client = new FakeClient();
@@ -238,6 +251,27 @@ public sealed class ClientActionTests
         Assert.Equal("memory.session.forget", forget.RootElement.GetProperty("cmd").GetString());
         Assert.Equal("abc123", forget.RootElement.GetProperty("memoryId").GetString());
         Assert.Equal(Context(client).Text.Resolve("client.memory.usage"), Run("memory", Context(client), "workspace").Text);
+    }
+
+    [Fact]
+    public void External_memory_cli_defaults_to_project_scope_and_requires_global_scope_explicitly()
+    {
+        var client = new FakeClient();
+        client.Queries["agent.sources"] = "{\"workspaceTrusted\":true,\"projectRootTrusted\":true,\"externalMemoryAllowed\":false,\"externalProjectMemoryAllowed\":false,\"sources\":[]}";
+
+        Run("memory", Context(client), "external", "allow");
+        using (var project = JsonDocument.Parse(client.Sent[0]))
+        {
+            Assert.Equal("external.memory.consent", project.RootElement.GetProperty("cmd").GetString());
+            Assert.Equal("allow", project.RootElement.GetProperty("decision").GetString());
+            Assert.Equal("project", project.RootElement.GetProperty("scope").GetString());
+        }
+
+        Run("memory", Context(client), "external", "revoke", "global");
+        using var global = JsonDocument.Parse(client.Sent[1]);
+        Assert.Equal("revoke", global.RootElement.GetProperty("decision").GetString());
+        Assert.Equal("global", global.RootElement.GetProperty("scope").GetString());
+        Assert.Contains("[project|global]", Context(client).Text.Resolve("client.agent_sources.memory.controls.scoped"));
     }
 
     [Fact]

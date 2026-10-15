@@ -50,7 +50,7 @@ public sealed class SkillTurnComposition
     public SkillTurnCompositionSnapshot Refresh()
     {
         var candidates = _discover().ToArray();
-        ReconcileAutomaticActivations(candidates);
+        ReconcileStaleActivations(candidates);
         var persisted = new SkillActivationResolver().LoadCandidates(candidates, _session, _store,
             limits: _limits);
         var remaining = new SkillSelectionLimits(
@@ -116,7 +116,7 @@ public sealed class SkillTurnComposition
             skill.Skill.Manifest.Version!, ContentHash.Sha256(
                 (skill.PackageContentSha256 ?? skill.ContentSha256) + "\nmanifest:" + skill.Skill.ManifestSha256))).ToArray();
         var contributors = loaded.Select(skill => (IContextContributor)new SkillContextContributor(_session, skill))
-            .Append(new SkillIndexContributor(_session, candidates, _guidanceEnabled))
+            .Append(new SkillIndexContributor(_session, candidates, _guidanceEnabled, _limits.ContextTokenBudget))
             .Append(new SessionMemoryContextContributor(new SessionMemoryStore(_workspaceData)))
             .Concat(_extensionContributorFactory?.Invoke() ?? _extensionContributors).ToArray();
         if (_includeWorkingState)
@@ -137,27 +137,28 @@ public sealed class SkillTurnComposition
         return new([], [], [], [], new ContextMaterializer(counter, []), new SkillCompletionValidator([]));
     }
 
-    private void ReconcileAutomaticActivations(IReadOnlyList<DiscoveredSkill> candidates)
+    private void ReconcileStaleActivations(IReadOnlyList<DiscoveredSkill> candidates)
     {
-        foreach (var (identity, activation) in _store.ReadDetailed(_session)
-            .Where(pair => pair.Value.Origin == "Automatic").ToArray())
+        foreach (var (identity, activation) in _store.ReadDetailed(_session).ToArray())
         {
             var matches = candidates.Where(candidate => candidate.Scope == identity.Scope
                 && candidate.Manifest.Id == identity.Id).ToArray();
-            if (matches.Length == 1 && matches[0].State == SkillLifecycleState.Eligible
-                && matches[0].ManifestSha256 == activation.ManifestSha256) continue;
+            var unchanged = matches.Length == 1 && matches[0].State is not (SkillLifecycleState.Conflict or SkillLifecycleState.Released)
+                && matches[0].ManifestSha256 == activation.ManifestSha256
+                && (activation.Origin != "Automatic" || matches[0].State == SkillLifecycleState.Eligible);
+            if (unchanged) continue;
             var emitLifecycle = _emitLifecycle ?? throw new InvalidOperationException(
-                "Automatic skill release requires a durable Session lifecycle event sink.");
+                "Stale skill release requires a durable Session lifecycle event sink.");
             _store.Release(_session, identity.Scope, identity.Id);
             try
             {
                 emitLifecycle(new SkillActivationChanged(identity.Id, identity.Scope,
-                    activation.ManifestSha256, Activated: false, Origin: "Automatic"));
+                    activation.ManifestSha256, Activated: false, Origin: activation.Origin));
             }
             catch
             {
-                _store.ActivateAutomatic(_session, identity.Scope, identity.Id, activation.ManifestSha256,
-                    activation.PackageContentSha256);
+                _store.Activate(_session, identity.Scope, identity.Id, activation.ManifestSha256,
+                    activation.PackageContentSha256, activation.Origin);
                 throw;
             }
         }

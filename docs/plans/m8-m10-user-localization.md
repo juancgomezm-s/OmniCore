@@ -4,20 +4,22 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 
 ## Estado vigente (2026-10-15)
 
-**Ampliación autorizada (2026-10-15):** M9-F2 incorpora imágenes generadas como
-salida del modelo, separando capacidades de entrada/salida, respuesta sólo visual
-o mixta, CAS/journal/replay, transporte acotado y presentación en OmniCoder/TUI.
-**Pendiente de construcción**; catálogo de modalidades no acredita recepción.
-Ver [contrato y aceptación](generated-image-responses.md). No reanuda el bloque
+**M9-F2 implementado e integrado; aceptación live sigue pendiente (2026-10-15):**
+incorpora imágenes generadas como salida del modelo, separa capacidades de
+entrada/salida y conserva respuesta sólo visual o mixta en CAS/journal/replay,
+transporte acotado y presentación OmniCoder/TUI. Una fixture Electron→Host→HTTP
+verifica bytes/hash/reapertura; no acredita generación live. Ver
+[contrato y aceptación](generated-image-responses.md). No reanuda el bloque
 de adjuntos detenido por la aceptación visual ni cambia el alcance independiente
 de skills/memorias. M8 OR5 continúa pendiente.
 
-**Ampliación independiente autorizada (2026-10-14):** descubrimiento local acotado
-de skills portables Claude/Codex/OpenCode, instrucciones `AGENTS.md`/`CLAUDE.md`
-y memorias por directorio/proyecto. **Pendiente de construcción**, separado del
-bloque de adjuntos de texto/documentos/imágenes y de la memoria completa M10.
-Alcance, ubicaciones, privacidad y aceptación en [su plan](external-agent-discovery.md).
-Mantener un solo worker Luna en alto y ejecutar ambos bloques secuencialmente.
+**M9-G construido, cableado, revisado e integrado en main de ambos productos (2026-10-15):** descubrimiento
+acotado de skills portables Claude/Codex/OpenCode, instrucciones `AGENTS.md`/`CLAUDE.md` y
+memorias por directorio/proyecto. Las pruebas focales, build multi-target y arquitectura pasan;
+una E2E Electron→Host comprueba inventario, confirmación main y Ask global/proyecto separado.
+Bloque cerrado en su alcance local. No cierra M9 ni la memoria completa M10. Alcance y límites en
+[su plan](external-agent-discovery.md) y [acta](../validation/m9-block-g-20261015.md). OR5 M8 y
+aceptaciones live/manual de F/F2 siguen pendientes por separado.
 
 **`P0-OMNI-UNIFICACION` cerrado globalmente (2026-10-14):** [acta consolidada](../validation/omni-family-homologation-closure-20261014.md), evidencias de los tres productos y aceptación del usuario de OmniCoder Electron, OmniCore CLI/TUI y OmniLlama React, con Svelte fuera de esta fase. El usuario confirma animación remota funcionando. Se levanta el bloqueo de homologación y se autoriza iniciar M9 con un solo worker Luna en alto; los criterios técnicos y de aceptación propios de M8–M10 continúan vigentes. OR5 autenticado sigue pendiente y no se declara M8 cerrado.
 

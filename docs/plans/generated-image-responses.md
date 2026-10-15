@@ -6,7 +6,9 @@ Código: Core `22128b1`, OmniCoder `db4c2a0`; evidencia y límites en
 Complementa M9-F (entrada de adjuntos). La integración con proveedor HTTP fixture
 se verificó hasta Electron, CAS/journal y reapertura, pero la aceptación de generación
 live sigue pendiente porque no hay una ruta compatible configurada y verificada.
-M9-G (skills, instrucciones y memorias) sigue siendo independiente y no iniciado.
+M9-G (skills, instrucciones y memorias) es independiente y está implementado/validado localmente;
+la revisión e integración de sus ramas sigue pendiente. Ver
+[acta M9-G](../validation/m9-block-g-20261015.md).
 M8 conserva OR5 pendiente.
 
 ## Base comprobada y objetivo

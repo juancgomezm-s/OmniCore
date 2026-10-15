@@ -76,7 +76,13 @@ public enum SkillLifecycleState
 
 public sealed record DiscoveredSkill(string Directory, SkillManifest Manifest, ScopeLevel Scope,
     TrustLevel Trust, string ManifestSha256, SkillLifecycleState State, string? Diagnostic,
-    string? ParentPackageSha256 = null, string? ParentPackageId = null);
+    string? ParentPackageSha256 = null, string? ParentPackageId = null,
+    SkillInvocationRestrictions? InvocationRestrictions = null, string? Description = null,
+    string? PortableContentSha256 = null);
+
+/// <summary>Additional portable-format restrictions; a source may narrow, never widen, OmniCore policy.</summary>
+public sealed record SkillInvocationRestrictions(bool AllowAutomatic, bool AllowModelInvocation,
+    bool AllowUserInvocation, string SourceFormat);
 
 public sealed record LoadedSkill(DiscoveredSkill Skill, string Instructions, string ContentSha256,
     IReadOnlyList<LoadedSkillResource>? Resources = null, string? PackageContentSha256 = null);

@@ -5,6 +5,22 @@ using OmniCore.Client;
 public sealed class SkillsInspectionTests
 {
     [Theory]
+    [InlineData("es", "Fuentes locales", "espera tu decisión")]
+    [InlineData("en", "Local agent sources", "awaiting your decision")]
+    [InlineData("fr", "Sources locales", "en attente")]
+    [InlineData("it", "Fonti locali", "in attesa")]
+    public void External_source_inspection_is_localized_and_does_not_display_source_bodies(string locale,
+        string title, string awaiting)
+    {
+        const string json = """{"workspaceTrusted":true,"externalMemoryAllowed":false,"sources":[{"kind":"Memory","adapter":"Claude","scope":"Project","path":"~/project/MEMORY.md","sha256":"","state":"awaiting-consent","diagnostic":"Ask decision required","requiresConsent":true,"content":"must not be disclosed"}]}""";
+        var formatted = ExternalAgentSourcesPresentation.Format(json, new Localization(locale));
+        Assert.Contains(title, formatted, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(awaiting, formatted, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("~/project/MEMORY.md", formatted);
+        Assert.DoesNotContain("must not be disclosed", formatted, StringComparison.Ordinal);
+    }
+
+    [Theory]
     [InlineData("es", "disponibles", "proyecto", "activada")]
     [InlineData("en", "Available", "project", "activated")]
     [InlineData("fr", "disponibles", "projet", "activée")]

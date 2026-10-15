@@ -18,6 +18,58 @@ namespace OmniCore.Tests;
 public sealed class StdioTransportTests
 {
     [Fact]
+    public void Stdio_host_query_discovers_a_trusted_project_skill_from_the_configured_roots()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-stdio-agent-source-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var home = Path.Combine(root, "agent-home");
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        Directory.CreateDirectory(workspace);
+        var skill = Path.Combine(workspace, ".agents", "skills", "stdio-guide");
+        Directory.CreateDirectory(skill);
+        File.WriteAllText(Path.Combine(skill, "SKILL.md"), "---\nname: stdio-guide\ndescription: Visible metadata\n---\nBody never leaves the source.", new UTF8Encoding(false));
+        var canonical = ProjectIdentity.CanonicalWorkspacePath(workspace);
+        var trustId = OmniCore.Domain.WorkspaceId.Of(canonical).ToString();
+        Directory.CreateDirectory(data);
+        File.WriteAllText(Path.Combine(data, "trust.yaml"), "workspaces:\n  " + trustId + ":\n    canonicalPath: "
+            + canonical + "\n    trusted: true\n", new UTF8Encoding(false));
+        var names = new[] { "OMNICORE_DATA_DIR", "OMNICORE_CONFIG_DIR", "OMNICORE_AGENT_HOME", "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR" };
+        var previous = names.ToDictionary(name => name, Environment.GetEnvironmentVariable, StringComparer.Ordinal);
+        var previousDirectory = Environment.CurrentDirectory;
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+            Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", home);
+            Environment.SetEnvironmentVariable("CODEX_HOME", Path.Combine(home, ".codex"));
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", Path.Combine(home, ".claude"));
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", Path.Combine(home, ".config"));
+            Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", Path.Combine(home, ".config", "opencode"));
+            Environment.CurrentDirectory = workspace;
+
+            var cli = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            using var client = StdioOmniClient.Start("dotnet", [cli, "host", "--stdio"], workspace,
+                cancellationToken: TestContext.Current.CancellationToken);
+            var query = Assert.IsType<SessionQueryResult>(client.Query("agent.sources", TestContext.Current.CancellationToken));
+            using var json = JsonDocument.Parse(query.Json);
+            Assert.True(json.RootElement.GetProperty("projectRootTrusted").GetBoolean());
+            Assert.Contains(json.RootElement.GetProperty("sources").EnumerateArray(), source =>
+                source.GetProperty("kind").GetString() == "Skill"
+                && source.GetProperty("state").GetString() == "Discovered"
+                && source.GetProperty("path").GetString()!.Contains("stdio-guide", StringComparison.Ordinal));
+            Assert.DoesNotContain("Body never leaves the source.", query.Json, StringComparison.Ordinal);
+        }
+        finally
+        {
+            foreach (var name in names) Environment.SetEnvironmentVariable(name, previous[name]);
+            Environment.CurrentDirectory = previousDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public async Task Session_writer_lock_is_exclusive_between_processes_and_released_on_owner_death()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-lock-" + Guid.NewGuid().ToString("N"));
@@ -224,7 +276,9 @@ public sealed class StdioTransportTests
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-user-action-" + Guid.NewGuid().ToString("N"));
         var workspace = Path.Combine(root, "workspace");
+        var dataDirectory = Path.Combine(root, "data");
         Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(dataDirectory);
         var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
         var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
         var oldDirectory = Environment.CurrentDirectory;
@@ -232,9 +286,13 @@ public sealed class StdioTransportTests
         var key = RandomNumberGenerator.GetBytes(32);
         try
         {
-            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", Path.Combine(root, "data"));
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", dataDirectory);
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(root, "config"));
             Environment.CurrentDirectory = workspace;
+            var canonicalWorkspace = ProjectIdentity.CanonicalWorkspacePath(workspace);
+            var trustId = OmniCore.Domain.WorkspaceId.Of(canonicalWorkspace).ToString();
+            File.WriteAllText(Path.Combine(dataDirectory, "trust.yaml"), "workspaces:\n  " + trustId
+                + ":\n    canonicalPath: " + canonicalWorkspace + "\n    trusted: true\n", new UTF8Encoding(false));
             var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
             host = StartRawHost(cliDll, workspace, Convert.ToHexString(key));
 
@@ -254,6 +312,37 @@ public sealed class StdioTransportTests
             var initialScope = JsonDocument.Parse(scopePayload.RootElement.GetProperty("json").GetString()!);
             Assert.Equal(JsonValueKind.Null, initialScope.RootElement.GetProperty("sessionId").ValueKind);
             Assert.Equal(JsonValueKind.Null, initialScope.RootElement.GetProperty("runId").ValueKind);
+
+            const string consentJson = "{\"cmd\":\"external.memory.consent\",\"decision\":\"allow\",\"scope\":\"global\"}";
+            var noProof = Ack(RawExchange(host, WireEnvelope.Command("memory-consent-no-proof",
+                "{\"operation\":\"command\",\"command\":" + WireEnvelope.Command("memory-consent-command", consentJson).ToJson() + "}")));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, noProof.Outcome?.Kind);
+            Assert.Contains("trusted_user_action_required", noProof.Error, StringComparison.Ordinal);
+            const string invalidScopeJson = "{\"cmd\":\"external.memory.consent\",\"decision\":\"allow\",\"scope\":\"other\"}";
+            var invalidConsentScope = Ack(RawExchange(host, TrustedActionEnvelope(
+                WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), invalidScopeJson), key, nonce, workspace, null, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, invalidConsentScope.Outcome?.Kind);
+            Assert.Contains("trusted_action_invalid", invalidConsentScope.Error, StringComparison.Ordinal);
+
+            var globalAllowed = Ack(RawExchange(host, TrustedActionEnvelope(
+                WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), consentJson), key, nonce, workspace, null, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, globalAllowed.Outcome?.Kind);
+            Assert.Equal((true, false), ReadAgentMemoryConsent(host));
+            const string projectAllowedJson = "{\"cmd\":\"external.memory.consent\",\"decision\":\"allow\",\"scope\":\"project\"}";
+            var projectAllowed = Ack(RawExchange(host, TrustedActionEnvelope(
+                WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), projectAllowedJson), key, nonce, workspace, null, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, projectAllowed.Outcome?.Kind);
+            Assert.Equal((true, true), ReadAgentMemoryConsent(host));
+            const string projectRevokedJson = "{\"cmd\":\"external.memory.consent\",\"decision\":\"revoke\",\"scope\":\"project\"}";
+            var projectRevoked = Ack(RawExchange(host, TrustedActionEnvelope(
+                WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), projectRevokedJson), key, nonce, workspace, null, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, projectRevoked.Outcome?.Kind);
+            Assert.Equal((true, false), ReadAgentMemoryConsent(host));
+            const string globalRevokedJson = "{\"cmd\":\"external.memory.consent\",\"decision\":\"revoke\",\"scope\":\"global\"}";
+            var globalRevoked = Ack(RawExchange(host, TrustedActionEnvelope(
+                WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), globalRevokedJson), key, nonce, workspace, null, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, globalRevoked.Outcome?.Kind);
+            Assert.Equal((false, false), ReadAgentMemoryConsent(host));
 
             const string guardedInputJson = "{\"cmd\":\"session.input\",\"text\":\"no debe pasar sin firma valida\",\"mode\":\"plan\",\"expectedRevision\":null}";
             var forgedCommand = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), guardedInputJson);
@@ -700,6 +789,16 @@ public sealed class StdioTransportTests
         using var scope = JsonDocument.Parse(payload.RootElement.GetProperty("json").GetString()!);
         return scope.RootElement.GetProperty("sessionId").GetString()
             ?? throw new InvalidOperationException("Session scope missing.");
+    }
+
+    private static (bool Global, bool Project) ReadAgentMemoryConsent(Process host)
+    {
+        var response = RawExchange(host, WireEnvelope.Command("agent-sources-" + Guid.NewGuid().ToString("N"),
+            "{\"operation\":\"query\",\"name\":\"agent.sources\"}"));
+        using var payload = JsonDocument.Parse(response.PayloadJson);
+        using var inventory = JsonDocument.Parse(payload.RootElement.GetProperty("json").GetString()!);
+        return (inventory.RootElement.GetProperty("externalMemoryAllowed").GetBoolean(),
+            inventory.RootElement.GetProperty("externalProjectMemoryAllowed").GetBoolean());
     }
 
     private static (string SessionId, string RunId, long Revision) ReadCurrentScope(Process host)

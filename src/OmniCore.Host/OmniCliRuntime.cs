@@ -2033,12 +2033,31 @@ public sealed class OmniCliRuntime : IDisposable
             var skillLimits = SkillSelectionLimits.FromHarness(harness,
                 (int)Math.Clamp(usableContext / 8, 1, 16_384));
             var skillSourceCatalog = new SkillSourceCatalog();
+            var externalAgentCatalog = new ExternalAgentDiscoveryCatalog();
+            var externalMemoryConsent = new ExternalAgentMemoryConsentStore(paths.DataDirectory);
+            var externalActiveDirectory = Directory.GetCurrentDirectory();
+            var externalProjectRoot = ExternalAgentDiscoveryCatalog.DiscoveryProjectRoot(workspaceRoot,
+                externalActiveDirectory);
+            var externalProjectIdentity = externalProjectRoot is null ? null
+                : ExternalAgentDiscoveryCatalog.ProjectIdentity(externalProjectRoot);
+            var externalTrustStore = new WorkspaceTrustStore(paths);
+            var externalProjectTrusted = externalProjectRoot is not null
+                && externalTrustStore.IsTrusted(externalProjectRoot);
+            IReadOnlyList<ExternalAgentSource> DiscoverExternalSources() => delegation is null
+                ? externalAgentCatalog.Discover(externalProjectRoot, externalActiveDirectory,
+                    externalProjectTrusted, externalMemoryConsent.IsAllowed(), cancellationToken,
+                    externalProjectTrusted && externalProjectIdentity is not null && externalMemoryConsent.IsProjectAllowed(externalProjectIdentity)
+                        ? externalProjectIdentity : null,
+                    externalTrustStore.IsTrusted)
+                : [];
             var skillActivationContext = SkillActivationContext.FromInput(prompt, workingState, workspaceRoot);
             IReadOnlyList<DiscoveredSkill> DiscoverSkills() => delegation is null
-                ? skillSourceCatalog.DiscoverWithExtensions(workspaceRoot, paths.DataDirectory, workspaceData,
-                    sessionId, workspaceConfig.Trusted,
+                ? SkillManifestLoader.ResolvePrecedence(skillSourceCatalog.DiscoverWithExtensions(workspaceRoot,
+                    paths.DataDirectory, workspaceData, sessionId, workspaceConfig.Trusted,
                     ProjectExtensionPackageCatalog.Ready(workspaceRoot, paths, workspaceConfig.Trusted),
-                    skillActivationContext)
+                    skillActivationContext).Where(skill => skill.State != SkillLifecycleState.Released)
+                    .Concat(DiscoverExternalSources().Where(source => source.Kind == ExternalAgentSourceKind.Skill
+                        && source.Skill is not null).Select(source => source.Skill!)))
                 : [];
             SkillCompletionValidator skillCompletionValidators = new([]);
             IReadOnlyList<DiscoveredSkill> skillCandidates = [];
@@ -2054,7 +2073,10 @@ public sealed class OmniCliRuntime : IDisposable
                     : [],
                 extensionContributorFactory: () => delegation is null
                     ? ProjectExtensionContributors.Load(workspaceRoot, paths, workspaceConfig.Trusted,
-                        extensionRpcInvoker)
+                        extensionRpcInvoker).Append((IContextContributor)new ExternalAgentContextContributor(
+                            DiscoverExternalSources, ExternalAgentSourceKind.Instruction))
+                        .Append(new ExternalAgentContextContributor(DiscoverExternalSources,
+                            ExternalAgentSourceKind.Memory)).ToArray()
                     : [],
                 emitLifecycle: payload => new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId)
                     .Append(payload, DurabilityClass.Barrier));

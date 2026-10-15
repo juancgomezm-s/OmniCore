@@ -102,15 +102,18 @@ public sealed class SkillSelector
 
         var eligible = skill.State == SkillLifecycleState.Eligible;
         var explicitEligible = skill.Manifest.Activation?.Explicit == true;
+        var restrictions = skill.InvocationRestrictions;
         return requestKind switch
         {
-            SkillSelectionRequestKind.Automatic => eligible
+            SkillSelectionRequestKind.Automatic => eligible && (restrictions?.AllowAutomatic ?? true)
                 ? SkillSelectionDisposition.Selected : SkillSelectionDisposition.NotEligible,
             SkillSelectionRequestKind.SessionReplay => skill.State is SkillLifecycleState.Activated or SkillLifecycleState.Loaded
                 ? SkillSelectionDisposition.Selected : SkillSelectionDisposition.NotEligible,
-            SkillSelectionRequestKind.UserExplicit => eligible || explicitEligible
+            SkillSelectionRequestKind.UserExplicit => (eligible || explicitEligible)
+                && (restrictions?.AllowUserInvocation ?? true)
                 ? SkillSelectionDisposition.Selected : SkillSelectionDisposition.NotEligible,
-            SkillSelectionRequestKind.ModelExplicit => eligible || skill.Manifest.ModelInvocable
+            SkillSelectionRequestKind.ModelExplicit => (eligible || skill.Manifest.ModelInvocable)
+                && (restrictions?.AllowModelInvocation ?? true)
                 ? SkillSelectionDisposition.Selected : SkillSelectionDisposition.ModelInvocationDisabled,
             _ => throw new ArgumentOutOfRangeException(nameof(requestKind)),
         };
