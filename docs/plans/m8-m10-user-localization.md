@@ -210,9 +210,23 @@ Evidencia: [acta M9-D](../validation/m9-block-d-20261014.md) y ADR-0050.
 La frontera asume mismo principal local del SO; no pretende proteger contra procesos maliciosos de ese
 mismo usuario. Capabilities no otorgan consentimiento y el JSON genérico no concede autoridad.
 
+**Bloque M9-E revisado e integrado en ambos main (2026-10-14):** OmniCoder
+usa el composer existente para enviar un único command confiable `conversation.start`, que admite un
+input durable y ejecuta el pipeline real de `OmniCliRuntime` enlazado a Session/Run/command exactos.
+El ACK Accepted sólo acredita admisión; `conversation.result` recupera el resultado sin reenvío y el
+texto assistant/terminal se reconstruye del journal y artifacts mediante replay acotado. El consumer
+presenta respuesta completa real, error clasificado, estados y cancelación, sin streaming, TTFT,
+usage/coste ficticios, fallback a Pi ni texto de stderr como conversación. Generic `session.input`,
+in-process y TUI no cambian. El selector de Pi no gobierna el modelo Core; el modelo efectivo se lee
+del Host. El estado Plan/Act sin Run queda ligado a generación de Host y se descarta al desconectar.
+El Host mantiene queries receptivas y serializa cancelación con el desenrollado del pipeline.
+Decisión: [ADR-0051](../adr/0051-conversation-inference-from-persisted-input.md); contrato:
+[stdio 1.0](../protocol/stdio/1.0/README.md#m9-e-conversation-execution-extension); evidencia en
+[acta M9-E](../validation/m9-block-e-20261014.md). Este bloque no cierra M9.
+
 Pendientes explícitos para cerrar M9: `media.read` consumido por proveedor con visión, controles de
-procesos persistentes/ConPTY, push/backpressure, validación Linux/macOS/filesystems, chat/inferencia
-completo sobre Core, aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
+procesos persistentes/ConPTY, push/backpressure, validación Linux/macOS/filesystems, paridad restante
+del cliente Core (gestión de sesiones e interacciones), aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
 exactly-once general y OR5 autenticado M8 sigue pendiente.
 
 | Resto de M9 tras M9-B | Construcción | Presentación y aceptación |
@@ -220,10 +234,10 @@ exactly-once general y OR5 autenticado M8 sigue pendiente.
 | Transporte y negociación | **Construido en M9-A/B:** Host real por stdio, framing UTF-8 y cap del frame final, `hello`/versiones/capabilities, queries/read models y replay legacy/paginado. Sin backpressure adicional. | Focales cross-process cubren caracteres es/en/fr/it, incompatible, malformed y oversized. La verificación de OS en este bloque es Windows. |
 | Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. M9-C agrega supervisor de proceso y reserva de workspace antes de spawn; esa reserva de producto no es el lease Core. | Pruebas de dos procesos/reclaim y lifecycle de child verificadas en Windows local. La UI muestra reserva y desconexión/fallo; falta aceptación de otros OS/filesystems y ownership coordinado con otros productos externos. |
 | Reconexión e historial | **Construido en M9-B:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, detección de gaps y tombstone de purge. No es exactly-once general ni reconexión push. Procedencia Native/Imported pendiente. | Prueba mata Host tras persistir receipt con ACK sin consumir, reconecta y confirma misma Session/ACK sin nuevos eventos. Unknown y cursor purgado muestran resultado/gap sin fingir finalización. |
-| Clientes y preferencias | **Construido en Core:** CLI in-process y stdio con Client multi-target net8/net10, capacidades consultables, fallback al `subscribe` legacy y goldens wire. **Consumidor M9-C revisado e integrado en OmniCoder main:** TypeScript sin CLR, Host hijo real y Sidecar de lectura. `ui.locale` sigue por Host con su esquema durable existente. | Consumer probado contra Host real en Windows con replay/receipt; revisión e integración completadas; queda aceptación multi-OS/cuatro idiomas y paridad Core completa. Goldens validan wire canónico, no traducción. No almacenar copy traducido en read models. |
-| Origen humano y resultado de acciones (U-C12) | **M9-D revisado e integrado en ambos main:** Electron main confirma workspace/acción y firma proof efímero vinculado a Host, nonce, payload exacto, Session/Run y revisión; Core revalida bajo lease y usa receipts M9-B. El contrato genérico se conserva y no concede autoridad. El input registra/abre Run, sin inferencia/respuesta. | E2E Electron→Host prueba denegación/aceptación del diálogo de fixture, input, modo, interrupt/cancel; test Core real rechaza firma, workspace/Run/revisión/nonce ajenos o obsoletos sin nuevos efectos. El diálogo de prueba no equivale a aceptación humana. Trust boundary: procesos del mismo principal local. Ver ADR-0050 y acta M9-D. |
+| Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E integrado:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
+| Origen humano, conversación y resultado (U-C12) | **M9-D integrado + M9-E integrado:** Electron main confirma acciones y firma proof efímero; Core valida conexión/workspace/Session/Run/revisión y ejecuta una única entrada persistida con el pipeline real. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051 y actas M9-D/E. |
 
-**Salida M9:** escenarios reales de transporte/lease/reconexión/net8, origen humano acotado Electron→Host, lectura `media.read` que alcanza un proveedor con visión compatible y controles de procesos persistentes/interactivos; validar aceptación en los cuatro idiomas y JSON/wire invariantes. Reusar la presentación Client y el mecanismo de idioma; no mandar frases ya traducidas por el Host para sustituir claves/argumentos. Negociación de recursos/capabilities y payload visual, si necesitan DTOs nuevos, respetan ADR-0013 sin migrar journals por un cambio de copy. M9-D no cierra el hito.
+**Salida M9:** transporte/lease/reconexión/net8 y chat/inferencia desde OmniCoder construidos e integrados; aún faltan `media.read` consumido por proveedor visual, controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-E no cierra el hito.
 
 ## M10: v1, memoria completa y evaluación
 

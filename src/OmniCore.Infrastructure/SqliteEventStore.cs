@@ -186,6 +186,30 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
         """;
         receipts.ExecuteNonQuery();
 
+        // Conversation execution is a second durable fact, separate from command admission.
+        // A missing execution_state after process death is Unknown; it must never authorize resend.
+        using (var receiptMigration = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: false))
+        {
+            var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var receiptColumns = _conn.CreateCommand()!)
+            {
+                receiptColumns.Transaction = receiptMigration;
+                receiptColumns.CommandText = "PRAGMA table_info(command_receipts)";
+                using var reader = receiptColumns.ExecuteReader()!;
+                while (reader.Read()) existing.Add(reader.GetString(1));
+            }
+            foreach (var column in new[] { (Name: "execution_state", Type: "TEXT"),
+                         (Name: "execution_code", Type: "TEXT"), (Name: "execution_run_id", Type: "TEXT") })
+            {
+                if (existing.Contains(column.Name)) continue;
+                using var add = _conn.CreateCommand()!;
+                add.Transaction = receiptMigration;
+                add.CommandText = $"ALTER TABLE command_receipts ADD COLUMN {column.Name} {column.Type}";
+                add.ExecuteNonQuery();
+            }
+            receiptMigration.Commit();
+        }
+
         using var tombstones = _conn.CreateCommand()!;
         tombstones.CommandText = "CREATE TABLE IF NOT EXISTS purged_sessions (session_id TEXT PRIMARY KEY, high_water INTEGER NOT NULL)";
         tombstones.ExecuteNonQuery();
@@ -515,11 +539,50 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
         return WithConnection(() => ReadCommandReceipt(commandId, scope, null));
     }
 
+    /// <summary>Persists a redacted terminal fact for an admitted conversation command.</summary>
+    public void CompleteCommandExecution(string commandId, string requestHash, string state, string code,
+        string sessionId, string runId, string? scope = null)
+    {
+        if (state is not ("completed" or "failed" or "cancelled" or "deferred")) throw new ArgumentOutOfRangeException(nameof(state));
+        if (code.Length is 0 or > 96 || !code.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-'))
+            throw new ArgumentException("Execution code must be a short canonical code.", nameof(code));
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        scope ??= CommandReceiptScope;
+        WithConnection(() =>
+        {
+            using var tx = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: false);
+            using var update = _conn.CreateCommand()!;
+            update.Transaction = tx;
+            update.CommandText = "UPDATE command_receipts SET execution_state=:state, execution_code=:code, execution_run_id=:run "
+                + "WHERE scope_id=:scope AND command_id=:command AND request_hash=:hash AND state=1 "
+                + "AND session_id=:session AND execution_state IS NULL";
+            update.Parameters.Add(S(update, "state", state));
+            update.Parameters.Add(S(update, "code", code));
+            update.Parameters.Add(S(update, "run", runId));
+            update.Parameters.Add(S(update, "session", sessionId));
+            update.Parameters.Add(S(update, "scope", scope));
+            update.Parameters.Add(S(update, "command", commandId));
+            update.Parameters.Add(S(update, "hash", requestHash));
+            var changed = update.ExecuteNonQuery();
+            if (changed == 0)
+            {
+                var existing = ReadCommandReceipt(commandId, scope, tx);
+                if (existing is not { State: CommandReceiptState.Completed }
+                    || existing.RequestHash != requestHash || existing.SessionId != sessionId
+                    || existing.ExecutionRunId != runId || existing.ExecutionState != state || existing.ExecutionCode != code)
+                    throw new InvalidOperationException("Conversation execution receipt conflicts with its admission.");
+            }
+            tx.Commit();
+            return true;
+        });
+    }
+
     private CommandReceipt? ReadCommandReceipt(string commandId, string scope, System.Data.Common.DbTransaction? tx)
     {
         using var query = _conn.CreateCommand()!;
         query.Transaction = tx;
-        query.CommandText = "SELECT request_hash, state, session_id, ack_status, ack_outcome, ack_reason, first_seq, last_seq "
+        query.CommandText = "SELECT request_hash, state, session_id, ack_status, ack_outcome, ack_reason, first_seq, last_seq, "
+            + "execution_state, execution_code, execution_run_id "
             + "FROM command_receipts WHERE scope_id = :scope AND command_id = :command";
         query.Parameters.Add(S(query, "scope", scope));
         query.Parameters.Add(S(query, "command", commandId));
@@ -533,7 +596,10 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
             reader.IsDBNull(4) ? null : reader.GetString(4),
             reader.IsDBNull(5) ? null : reader.GetString(5),
             reader.IsDBNull(6) ? null : _AsLong(reader.GetValue(6)),
-            reader.IsDBNull(7) ? null : _AsLong(reader.GetValue(7)));
+            reader.IsDBNull(7) ? null : _AsLong(reader.GetValue(7)),
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            reader.IsDBNull(9) ? null : reader.GetString(9),
+            reader.IsDBNull(10) ? null : reader.GetString(10));
     }
 
     private long CountEventsCore(SessionId sessionId)

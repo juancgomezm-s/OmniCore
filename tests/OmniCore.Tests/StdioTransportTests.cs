@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -308,7 +310,8 @@ public sealed class StdioTransportTests
                 + runScope.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}");
             var modeProof = TrustedActionEnvelope(selectMode, key, nonce, workspace, runScope.SessionId, runScope.RunId);
             var modeAck = Ack(RawExchange(host, modeProof));
-            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, modeAck.Outcome?.Kind);
+            Assert.True(modeAck.Outcome?.Kind == OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                $"mode selection rejected: status={modeAck.Status}, error={modeAck.Error}, expectedRevision={runScope.Revision}");
             Assert.Equal(modeAck.FirstSeq, Ack(RawExchange(host, modeProof)).FirstSeq); // Receipt, never a second mode effect.
 
             var unrelatedRunId = OmniCore.Protocol.Ids.NewV7();
@@ -394,6 +397,113 @@ public sealed class StdioTransportTests
             Environment.CurrentDirectory = oldDirectory;
             try { Directory.Delete(root, recursive: true); } catch (IOException) { }
         }
+    }
+
+    [Fact]
+    public async Task Conversation_admission_is_separate_from_result_and_cancel_is_serialized_with_runtime()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-conversation-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var config = Path.Combine(root, "config");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(config);
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldDirectory = Environment.CurrentDirectory;
+        Process? host = null;
+        var key = RandomNumberGenerator.GetBytes(32);
+        await using var provider = new BlockingHttpProvider();
+        try
+        {
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
+                providers:
+                  scripted:
+                    family: OpenAIResponses
+                    profile: api
+                    baseUrl: {{provider.BaseUrl}}
+                    auth: none
+                    billingMode: Local
+                """);
+            File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model:\n    provider: scripted\n    context: 4096\n    maxOutput: 256\n");
+            File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: scripted-model\n");
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+            Environment.CurrentDirectory = workspace;
+            var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            host = StartRawHost(cliDll, workspace, Convert.ToHexString(key));
+            var hello = RawExchange(host, WireEnvelope.FromJson(
+                "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"conv-hello\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}"));
+            using var helloPayload = JsonDocument.Parse(hello.PayloadJson);
+            Assert.Contains("command.conversation.start.user", helloPayload.RootElement.GetProperty("capabilities")
+                .EnumerateArray().Select(item => item.GetString()));
+
+            var command = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), "{\"cmd\":\"conversation.start\","
+                + "\"text\":\"único envío al proveedor de prueba\",\"mode\":\"plan\",\"expectedRevision\":null}");
+            var signed = TrustedActionEnvelope(command, key,
+                helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!, workspace, null, null);
+            var admission = Ack(RawExchange(host, signed));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, admission.Outcome?.Kind);
+            Assert.NotNull(admission.FirstSeq);
+            Assert.NotNull(admission.LastSeq);
+
+            await provider.RequestReceived.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+            var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+            var running = ConversationResult(host, command.MessageId, requestHash);
+            Assert.Equal("running", running.GetProperty("state").GetString());
+
+            var scope = ReadCurrentScope(host);
+            var duplicate = Ack(RawExchange(host, signed));
+            Assert.Equal(admission.FirstSeq, duplicate.FirstSeq);
+            Assert.Equal(admission.LastSeq, duplicate.LastSeq);
+            Assert.Equal(1, provider.RequestCount);
+
+            // The process remains responsive to queries while provider I/O is blocked.
+            var state = RawExchange(host, WireEnvelope.Command("state-during-conversation",
+                "{\"operation\":\"query\",\"name\":\"state\"}"));
+            using (var statePayload = JsonDocument.Parse(state.PayloadJson))
+                Assert.Equal("state", statePayload.RootElement.GetProperty("name").GetString());
+
+            var cancel = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"run.cancel\",\"runId\":" + JsonSerializer.Serialize(scope.RunId) + "}");
+            var cancelAck = Ack(RawExchange(host, TrustedActionEnvelope(cancel, key,
+                helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!, workspace,
+                scope.SessionId, scope.RunId)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, cancelAck.Outcome?.Kind);
+            Assert.Equal("cancelled", ConversationResult(host, command.MessageId, requestHash).GetProperty("state").GetString());
+            Assert.Equal(1, provider.RequestCount);
+
+            var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            using var store = new SqliteEventStore(journal, readOnly: true);
+            var codecs = EventCodecs.Create();
+            var events = store.ReadFrom(OmniCore.Domain.SessionId.Parse(scope.SessionId), 1)
+                .Select(codecs.Decode).ToArray();
+            Assert.Single(events.OfType<OmniCore.Domain.UserInputReceived>());
+            Assert.Single(events.OfType<OmniCore.Domain.RunCancelled>());
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                try { if (!host.HasExited) host.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                try { if (!host.HasExited) await host.WaitForExitAsync(TestContext.Current.CancellationToken); } catch (InvalidOperationException) { }
+                host.Dispose();
+            }
+            CryptographicOperations.ZeroMemory(key);
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.CurrentDirectory = oldDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    private static JsonElement ConversationResult(Process host, string commandId, string requestHash)
+    {
+        var payload = "{\"operation\":\"conversation.result\",\"commandId\":"
+            + JsonSerializer.Serialize(commandId) + ",\"requestHash\":" + JsonSerializer.Serialize(requestHash) + "}";
+        var response = RawExchange(host, WireEnvelope.Command("conversation-result-" + Guid.NewGuid().ToString("N"), payload));
+        using var document = JsonDocument.Parse(response.PayloadJson);
+        return document.RootElement.Clone();
     }
 
     private static Process StartRawHost(string cliDll, string workspace, string? bootstrap)
@@ -1128,6 +1238,65 @@ public sealed class StdioTransportTests
         {
             QueryCount++;
             return new SessionQueryResult(name, "{\"ready\":true}");
+        }
+    }
+
+    private sealed class BlockingHttpProvider : IAsyncDisposable
+    {
+        private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
+        private readonly CancellationTokenSource _stop = new();
+        private readonly Task _serve;
+        private int _requestCount;
+
+        public BlockingHttpProvider()
+        {
+            _listener.Start();
+            var port = ((IPEndPoint)_listener.LocalEndpoint).Port;
+            BaseUrl = $"http://127.0.0.1:{port}/v1";
+            _serve = ServeAsync();
+        }
+
+        public string BaseUrl { get; }
+        public int RequestCount => Volatile.Read(ref _requestCount);
+        public TaskCompletionSource<bool> RequestReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        private async Task ServeAsync()
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                TcpClient client;
+                try { client = await _listener.AcceptTcpClientAsync(_stop.Token); }
+                catch (OperationCanceledException) { break; }
+                catch (ObjectDisposedException) { break; }
+                _ = HandleAsync(client, _stop.Token);
+            }
+        }
+
+        private async Task HandleAsync(TcpClient client, CancellationToken cancellationToken)
+        {
+            using (client)
+            {
+                var stream = client.GetStream();
+                using var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, leaveOpen: true);
+                while (await reader.ReadLineAsync(cancellationToken) is { Length: > 0 }) { }
+                Interlocked.Increment(ref _requestCount);
+                RequestReceived.TrySetResult(true);
+                var buffer = new byte[1024];
+                try
+                {
+                    while (await stream.ReadAsync(buffer, cancellationToken) != 0) { }
+                }
+                catch (IOException) { }
+                catch (OperationCanceledException) { }
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _stop.Cancel();
+            _listener.Stop();
+            try { await _serve; } catch (OperationCanceledException) { }
+            _stop.Dispose();
         }
     }
 }

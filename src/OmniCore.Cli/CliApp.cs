@@ -75,12 +75,18 @@ public sealed class CliApp
             var hostText = new Localization(hostLocale);
             try
             {
+                Runtime.UseConsoleInput = false;
+                Runtime.QuestionnaireInput = null;
                 var client = Runtime.Connect(CancellationToken.None);
+                Runtime.PrepareConversationSessionPolicy();
                 var exitCode = trustedBootstrapKey is null
                     ? StdioProtocolHost.Run(client, Console.OpenStandardInput(), protocolOutput, Console.Error,
                         localizeDiagnostic: key => hostText.Resolve(key))
                     : StdioProtocolHost.RunWithTrustedActions(client, Console.OpenStandardInput(), protocolOutput,
-                        Console.Error, trustedBootstrapKey, localizeDiagnostic: key => hostText.Resolve(key));
+                        Console.Error, trustedBootstrapKey, localizeDiagnostic: key => hostText.Resolve(key),
+                        runPersistedConversation: (admitted, token) => Runtime.ExecutePersistedConversationAsync(admitted,
+                            diagnostic => Console.Error.WriteLine(OmniCliRuntime.RedactSensitive(diagnostic).Length > 2048
+                                ? OmniCliRuntime.RedactSensitive(diagnostic)[..2048] : OmniCliRuntime.RedactSensitive(diagnostic)), token));
                 return Task.FromResult(exitCode);
             }
             catch (Exception)
