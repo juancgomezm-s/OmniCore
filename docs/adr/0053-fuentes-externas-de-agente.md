@@ -1,6 +1,6 @@
 # ADR-0053: Fuentes locales de agentes, activación portable y consentimiento Ask
 
-**Estado:** Aceptada; implementación y validación local M9-G completadas en ramas de revisión. Integración pendiente.
+**Estado:** Aceptada; M9-G construido, cableado, revisado e integrado en main de OmniCore y OmniCoder. Cierre del alcance local; M9 permanece abierto.
 
 **Fecha:** 2026-10-15
 

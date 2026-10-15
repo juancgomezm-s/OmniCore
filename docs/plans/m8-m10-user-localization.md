@@ -13,11 +13,11 @@ verifica bytes/hash/reapertura; no acredita generación live. Ver
 de adjuntos detenido por la aceptación visual ni cambia el alcance independiente
 de skills/memorias. M8 OR5 continúa pendiente.
 
-**M9-G implementado y validado localmente en ramas de revisión (2026-10-15):** descubrimiento
+**M9-G construido, cableado, revisado e integrado en main de ambos productos (2026-10-15):** descubrimiento
 acotado de skills portables Claude/Codex/OpenCode, instrucciones `AGENTS.md`/`CLAUDE.md` y
 memorias por directorio/proyecto. Las pruebas focales, build multi-target y arquitectura pasan;
 una E2E Electron→Host comprueba inventario, confirmación main y Ask global/proyecto separado.
-Revisión/integración pendientes. No cierra la memoria completa M10. Alcance y límites en
+Bloque cerrado en su alcance local. No cierra M9 ni la memoria completa M10. Alcance y límites en
 [su plan](external-agent-discovery.md) y [acta](../validation/m9-block-g-20261015.md). OR5 M8 y
 aceptaciones live/manual de F/F2 siguen pendientes por separado.
 

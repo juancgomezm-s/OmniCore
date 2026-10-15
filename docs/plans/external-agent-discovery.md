@@ -1,17 +1,17 @@
 # Descubrimiento local de skills, instrucciones y memorias
 
-Estado: **implementado localmente en `codex/m9-agent-discovery-core`; revisión e integración pendientes** (2026-10-15). Bloque independiente
-de los adjuntos de texto/documentos/imágenes. OmniCoder también tiene cambios locales
-en `codex/m9-agent-discovery-coder`; ambos árboles requieren revisión raíz antes de integrar.
+Estado: **M9-G construido, cableado, revisado e integrado en `main` de OmniCore y OmniCoder** (2026-10-15). Bloque cerrado en su alcance local, independiente
+de los adjuntos de texto/documentos/imágenes. Se usó un solo worker Luna en alto; integración
+fast-forward y evidencia final en [el acta](../validation/m9-block-g-20261015.md).
 No reabre OR5 de M8 ni acredita la memoria multiscoped completa de M10.
 
 ## Base y resultado esperado
 
-OmniCore ya tiene discovery, `skill.load`, activación, presupuestos y permisos para
-su formato `skill.yaml` + instrucciones. Falta adaptar el formato portable
-`SKILL.md` y reconocer las fuentes locales de otros agentes. Reutilizar esos
-consumidores; descubrir un archivo no acredita que sus instrucciones lleguen al
-modelo.
+Antes de M9-G, OmniCore tenía discovery, `skill.load`, activación, presupuestos y permisos para
+su formato `skill.yaml` + instrucciones. M9-G adapta el formato portable
+`SKILL.md` y reconoce las fuentes locales de otros agentes, reutilizando esos
+consumidores. El request capturado acredita que las instrucciones y los cuerpos autorizados
+llegan al modelo; el inventario por sí solo no demuestra ese uso.
 
 Una misma inspección debe distinguir **skill**, **instrucciones** y **memoria**,
 mostrar procedencia, ámbito, ruta, hash y estado aplicable/inactivo/conflicto/error.
@@ -77,7 +77,7 @@ M9 incorpora estos adaptadores/lecturas externas; M10 conserva creación, promoc
 consolidación, expiración y almacenamiento completo Project/Workspace/Global.
 Su cierre se acredita por separado del bloque de adjuntos.
 
-## Implementación local M9-G (2026-10-15)
+## Implementación integrada M9-G (2026-10-15)
 
 El Host expone sólo metadatos por `agent.sources`; no devuelve cuerpos en el inventario.
 Las skills portables `SKILL.md` se adaptan al consumidor de skills existente y `skill.load`
