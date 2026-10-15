@@ -64,3 +64,54 @@ public static class SkillsInspectionPresentation
         return string.Join("\n", output);
     }
 }
+
+public static class ExternalAgentSourcesPresentation
+{
+    public static string Format(string? json, Localization text)
+    {
+        if (json is null) return text.Resolve("client.agent_sources.invalid");
+        try
+        {
+            using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 32 });
+            var root = document.RootElement;
+            if (!root.TryGetProperty("sources", out var sources) || sources.ValueKind != JsonValueKind.Array)
+                return text.Resolve("client.agent_sources.invalid");
+            var output = new List<string> { text.Resolve("client.agent_sources.title") };
+            var allowed = root.TryGetProperty("externalMemoryAllowed", out var consent)
+                && consent.ValueKind == JsonValueKind.True;
+            output.Add(text.Resolve(allowed ? "client.agent_sources.memory.allowed" : "client.agent_sources.memory.ask"));
+            foreach (var source in sources.EnumerateArray())
+            {
+                if (source.ValueKind != JsonValueKind.Object) return text.Resolve("client.agent_sources.invalid");
+                var kind = Text(source, "kind");
+                var adapter = Text(source, "adapter");
+                var scope = Text(source, "scope");
+                var path = Text(source, "path");
+                var state = Text(source, "state");
+                if (kind is null || adapter is null || scope is null || path is null || state is null)
+                    return text.Resolve("client.agent_sources.invalid");
+                var hash = Text(source, "sha256");
+                var id = Text(source, "skillId");
+                var diagnostic = Text(source, "diagnostic");
+                output.Add(text.Resolve("client.agent_sources.row", new Dictionary<string, string>
+                {
+                    ["kind"] = text.Resolve("client.agent_sources.kind." + kind),
+                    ["adapter"] = adapter,
+                    ["scope"] = text.Resolve("client.agent_sources.scope." + scope),
+                    ["path"] = path,
+                    ["state"] = text.Resolve("client.agent_sources.state." + state),
+                    ["identity"] = id is null ? (hash is { Length: >= 12 } ? hash[..12] : "") : id,
+                }));
+                if (diagnostic is { Length: > 0 }) output.Add("  " + text.Resolve("client.agent_sources.diagnostic") + ": " + diagnostic);
+            }
+            if (sources.GetArrayLength() == 0) output.Add(text.Resolve("client.agent_sources.empty"));
+            output.Add(text.Resolve("client.agent_sources.memory.controls"));
+            return string.Join("\n", output);
+        }
+        catch (JsonException) { return text.Resolve("client.agent_sources.invalid"); }
+    }
+
+    private static string? Text(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() : null;
+}

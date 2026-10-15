@@ -1,9 +1,9 @@
 # Descubrimiento local de skills, instrucciones y memorias
 
-Estado: **autorizado, pendiente de construcción** (2026-10-14). Bloque independiente
-de los adjuntos de texto/documentos/imágenes. Se ejecuta después de ese bloque con
-el mismo y único worker Luna en alto. No reabre OR5 de M8 ni acredita la memoria
-multiscoped completa de M10.
+Estado: **implementado localmente en `codex/m9-agent-discovery-core`; revisión e integración pendientes** (2026-10-15). Bloque independiente
+de los adjuntos de texto/documentos/imágenes. OmniCoder también tiene cambios locales
+en `codex/m9-agent-discovery-coder`; ambos árboles requieren revisión raíz antes de integrar.
+No reabre OR5 de M8 ni acredita la memoria multiscoped completa de M10.
 
 ## Base y resultado esperado
 
@@ -76,6 +76,42 @@ cliente real y pruebas focales, sin repetir la suite integral de M8.
 M9 incorpora estos adaptadores/lecturas externas; M10 conserva creación, promoción,
 consolidación, expiración y almacenamiento completo Project/Workspace/Global.
 Su cierre se acredita por separado del bloque de adjuntos.
+
+## Implementación local M9-G (2026-10-15)
+
+El Host expone sólo metadatos por `agent.sources`; no devuelve cuerpos en el inventario.
+Las skills portables `SKILL.md` se adaptan al consumidor de skills existente y `skill.load`
+recorre `Prepare → AuthorizedIntent → Execute` antes de aparecer en un request capturado.
+`SkillIndexContributor` incluye descripción acotada/redactada y filtra invocation restrictions;
+ningún `allowed-tools` se convierte en permiso. Las activaciones se invalidan ante cambios
+de directorio físico, cuerpo o política del paquete.
+
+La consulta y los controles Ask están conectados a `/skills sources` y `/memory external`
+en TUI, y al panel OmniCoder mediante query/capability stdio, main, preload y bridge. Electron
+main exige grant humano vigente y confirmación nativa por acción para permitir/revocar; no
+acepta grants del renderer. Memoria global Codex/Claude requiere Ask; memoria de proyecto se
+enlaza a la identidad exacta del workspace autorizado. Al revocar se limpian enlaces. Workspaces
+sin confianza no leen contenido local. `OMNICORE_AGENT_HOME` permite aislar las raíces de agente
+en pruebas, restringiendo overrides heredados a ese perfil.
+
+El lector usa cotas y sólo raíces conocidas; las fuentes no se ejecutan. Codex activa únicamente
+`MEMORY.md`, `memory_summary.md`, `raw_memories.md` y `rollout_summaries/*.md`; otros nombres
+quedan visibles como inactivos y no se recorren bases/transcripciones. Claude auto-memory respeta
+un `autoMemoryDirectory` de configuración confiable y Ask. Los imports Markdown Claude y globs
+OpenCode sólo expanden archivos locales bajo la raíz autorizada, con cotas; remoto, escape,
+reparse/symlink, secreto, ciclo, formato no admitido o configuración inválida se reportan sin
+seguirlos. El cwd/workspace de ejecución no cambia al detectar Git: para un cwd anidado se busca
+el checkout físico verificado y se consulta por separado su confianza antes de leer ancestros. Los
+worktrees enlazados leen desde su checkout físico; la identidad común comprobada se usa para asociar
+memoria, no para ampliar la raíz de lectura. Si la confianza del root no se puede confirmar, sus
+archivos quedan inactivos y visibles. No se ofrece paridad de extensiones de ejecución Claude (hooks/fork/model), imports
+remotos/recursivos OpenCode ni memorias internas Codex no incluidas en esa allowlist.
+
+La validación se registra en `docs/validation/m9-block-g-20261015.md`. Incluye pruebas de catálogo,
+instrucciones, `skill.load` y requests capturados, invalidación/revocación, diálogo y consulta desde
+Electron con Host real y perfil temporal. Son fixtures offline; no se leyó el perfil del usuario ni
+se declara M9 cerrado, M8 OR5 aceptado, aceptación live/manual TUI de F/F2, o verificación completa
+multi-OS/cuatro idiomas. Los conteos exactos se mantienen en esa acta tras la validación final.
 
 ## Fuentes de compatibilidad
 

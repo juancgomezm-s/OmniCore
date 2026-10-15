@@ -68,3 +68,4 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0049](0049-ownership-durable-y-reconexion-stdio.md) | Ownership durable por Session y recuperación stdio M9-B | Aceptada e integrada para M9-B; nota posterior M9-D |
 | [0050](0050-autoridad-humana-stdio-omnicoder.md) | Autoridad humana acotada desde OmniCoder a Host stdio | Aceptada para M9-D; entrega en revisión |
 | [0052](0052-multimodal-intake-and-materialization.md) | Intake multimodal, snapshots documentales y salida de imagen M9-F/F2 | Aceptada para F/F2; worktree pendiente de revisión/integración; live generation pendiente |
+| [0053](0053-fuentes-externas-de-agente.md) | Fuentes locales de agentes, activación portable y consentimiento Ask | Aceptada para construcción M9-G local; revisión/integración pendientes |

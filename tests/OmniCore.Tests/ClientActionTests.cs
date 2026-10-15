@@ -220,6 +220,19 @@ public sealed class ClientActionTests
     }
 
     [Fact]
+    public void Skills_sources_and_external_memory_controls_use_the_source_query_without_shadowing_agents()
+    {
+        var client = new FakeClient();
+        client.Queries["agent.sources"] = "{\"workspaceTrusted\":true,\"externalMemoryAllowed\":false,\"sources\":[]}";
+        var inventory = Run("skills", Context(client), "sources");
+        Assert.Contains("Fuentes locales", inventory.Text);
+        Assert.Contains("Ask", inventory.Text);
+        Assert.Equal(new[] { "agent.sources" }, client.Queried);
+        Assert.Empty(client.Sent);
+        Assert.False(ClientCommandRegistry.Default.TryResolve(new CommandInvocation("agents", [], "Typed"), out _));
+    }
+
+    [Fact]
     public void Memory_command_queries_and_uses_trusted_user_actions_for_changes()
     {
         var client = new FakeClient();

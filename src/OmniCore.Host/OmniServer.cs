@@ -109,6 +109,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private string? _workspaceRoot;
     private Func<IPlatformPaths> _platformPathsFactory = () => OmniHost.CreatePlatformPaths();
+    private Func<string> _externalAgentActiveDirectory = () => Directory.GetCurrentDirectory();
+    private Func<ExternalAgentDiscoveryCatalog> _externalAgentCatalogFactory = static () => new();
     private Func<IExtensionRpcInvoker> _lifecycleRpcInvokerFactory = static () => new ExtensionRpcProcessInvoker();
     private readonly Func<IPlatformPaths, OpenRouterConnectionService>? _openRouterServiceFactory;
     private SessionRoutingPolicy _newSessionRoutingPolicy = SessionRoutingPolicy.Empty();
@@ -203,6 +205,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     internal void ConfigurePlatformPaths(Func<IPlatformPaths> factory) =>
         _platformPathsFactory = factory ?? throw new ArgumentNullException(nameof(factory));
+
+    internal void ConfigureExternalAgentDiscovery(Func<string> activeDirectory,
+        Func<ExternalAgentDiscoveryCatalog>? catalogFactory = null)
+    {
+        _externalAgentActiveDirectory = activeDirectory ?? throw new ArgumentNullException(nameof(activeDirectory));
+        _externalAgentCatalogFactory = catalogFactory ?? (static () => new ExternalAgentDiscoveryCatalog());
+    }
 
     internal void ConfigureLifecycleRpcInvoker(Func<IExtensionRpcInvoker> factory) =>
         _lifecycleRpcInvokerFactory = factory ?? throw new ArgumentNullException(nameof(factory));
@@ -774,6 +783,19 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (commandName is "memory.session.add" or "memory.session.forget" or "memory.session.propose"
             or "memory.session.promote" or "memory.session.reject")
             return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
+        if (commandName == "external.memory.consent")
+        {
+            if (!trustedUserAction)
+                return new CommandAck(command.MessageId, "error", "External memory requires an explicit trusted user action.",
+                    RuntimeCommandOutcome.Rejected());
+            var decision = fields.GetValueOrDefault("decision");
+            if (decision is not ("allow" or "revoke"))
+                return new CommandAck(command.MessageId, "error", "External memory decision is unsupported.",
+                    RuntimeCommandOutcome.Rejected());
+            var identity = _workspaceRoot is null ? null : ExternalAgentDiscoveryCatalog.ProjectIdentity(_workspaceRoot);
+            new ExternalAgentMemoryConsentStore(_platformPathsFactory().DataDirectory).Set(decision == "allow", identity);
+            return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+        }
         if (commandName == "extensions.consent")
             return ChangeProjectExtensionConsent(command, fields, trustedUserAction);
 
@@ -2446,9 +2468,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 throw new InvalidOperationException("Trust the workspace before activating Project skills.");
             var workspaceData = workspaceRoot is null ? null : OmniHost.WorkspaceDataDirectory(paths, workspaceRoot);
             var store = new SessionSkillActivationStore(workspaceData ?? paths.DataDirectory);
-            var discovered = new SkillSourceCatalog().DiscoverWithExtensions(workspaceRoot, paths.DataDirectory,
-                workspaceData, session, trusted, ProjectExtensionPackageCatalog.Ready(
-                    workspaceRoot ?? Directory.GetCurrentDirectory(), paths, trusted));
+            var discovered = DiscoverAllSkillSources(paths, workspaceData, session, trusted);
             if (commandName == "skills.release")
             {
                 if (fields.TryGetValue("expectedManifestSha256", out var expectedReleaseHash))
@@ -2840,9 +2860,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var trusted = _workspaceRoot is not null && new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
             var workspaceData = _workspaceRoot is null ? null : OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
             var store = new SessionSkillActivationStore(workspaceData ?? paths.DataDirectory);
-            var discovered = new SkillSourceCatalog().DiscoverWithExtensions(_workspaceRoot, paths.DataDirectory,
-                workspaceData, _lastSessionId, trusted, ProjectExtensionPackageCatalog.Ready(
-                    _workspaceRoot ?? Directory.GetCurrentDirectory(), paths, trusted));
+            var discovered = DiscoverAllSkillSources(paths, workspaceData, _lastSessionId, trusted);
             var active = _lastSessionId is { } session ? store.ReadDetailed(session)
                 : new Dictionary<SkillActivationIdentity, SkillActivationRecord>();
             var entries = discovered.Select(skill =>
@@ -2877,17 +2895,47 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 skill.Manifest.Sealed ? "\"sealed\":true" : "\"sealed\":false",
                 "\"budgetTokens\":" + skill.Manifest.BudgetTokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "\"tools\":[" + string.Join(",", (skill.Manifest.Tools ?? []).Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]",
-                JsonObj.FieldBool("modelInvocable", skill.Manifest.ModelInvocable),
+                JsonObj.FieldBool("modelInvocable", skill.InvocationRestrictions?.AllowModelInvocation
+                    ?? skill.Manifest.ModelInvocable),
                 JsonObj.Field("activationOrigin", active.GetValueOrDefault(
                     new SkillActivationIdentity(skill.Scope, skill.Manifest.Id!))?.Origin
                     ?? (_lastSessionId is { } originSession && store.HasAutomaticSuppression(originSession,
                         skill.Scope, skill.Manifest.Id!, skill.ManifestSha256) ? "Automatic" : "None")),
+                skill.Description is { } description ? JsonObj.Field("description", description) : "\"description\":null",
+                skill.InvocationRestrictions is { } restrictions ? JsonObj.Field("sourceFormat", restrictions.SourceFormat) : "\"sourceFormat\":null",
+                "\"allowedToolsGrantPermissions\":false",
                 diagnostic is { } message ? JsonObj.Field("diagnostic", message) : "\"diagnostic\":null",
             }) + "}";
             });
             return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
                 + ",\"session\":" + (_lastSessionId is { } currentSession ? "\"" + JsonObj.Escape(currentSession.ToString()) + "\"" : "null")
                 + ",\"skills\":[" + string.Join(",", entries) + "]}");
+        }
+        if (name == "agent.sources")
+        {
+            var paths = _platformPathsFactory();
+            var trusted = _workspaceRoot is not null && new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+            var memoryConsent = new ExternalAgentMemoryConsentStore(paths.DataDirectory);
+            var consent = memoryConsent.IsAllowed();
+            var projectIdentity = _workspaceRoot is null ? null : ExternalAgentDiscoveryCatalog.ProjectIdentity(_workspaceRoot);
+            var sources = _externalAgentCatalogFactory().Discover(_workspaceRoot, _externalAgentActiveDirectory(),
+                trusted, consent, cancellationToken,
+                projectIdentity is not null && memoryConsent.IsProjectAllowed(projectIdentity) ? projectIdentity : null);
+            var entries = sources.Select(source => "{" + string.Join(",", new[]
+            {
+                JsonObj.Field("kind", source.Kind.ToString()),
+                JsonObj.Field("adapter", source.Adapter),
+                JsonObj.Field("scope", source.Scope),
+                JsonObj.Field("path", source.DisplayPath),
+                JsonObj.Field("sha256", source.Sha256),
+                source.ActivationSha256 is null ? "\"activationSha256\":null" : JsonObj.Field("activationSha256", source.ActivationSha256),
+                JsonObj.Field("state", source.State),
+                source.Diagnostic is null ? "\"diagnostic\":null" : JsonObj.Field("diagnostic", source.Diagnostic),
+                source.RequiresUserConsent ? "\"requiresConsent\":true" : "\"requiresConsent\":false",
+            }) + "}");
+            return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
+                + ",\"externalMemoryAllowed\":" + (consent ? "true" : "false")
+                + ",\"sources\":[" + string.Join(",", entries) + "]}");
         }
         if (name is "memory" or "memory.session")
         {
@@ -4557,4 +4605,5 @@ public sealed class Scenarios
         return OmniCore.Engine.WorkingStateProjector.Render(
             OmniCore.Engine.WorkingStateProjector.Project(run, plan));
     }
+
 }
