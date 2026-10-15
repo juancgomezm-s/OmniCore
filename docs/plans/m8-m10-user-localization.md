@@ -4,6 +4,13 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 
 ## Estado vigente (2026-10-14)
 
+**Ampliación independiente autorizada (2026-10-14):** descubrimiento local acotado
+de skills portables Claude/Codex/OpenCode, instrucciones `AGENTS.md`/`CLAUDE.md`
+y memorias por directorio/proyecto. **Pendiente de construcción**, separado del
+bloque de adjuntos de texto/documentos/imágenes y de la memoria completa M10.
+Alcance, ubicaciones, privacidad y aceptación en [su plan](external-agent-discovery.md).
+Mantener un solo worker Luna en alto y ejecutar ambos bloques secuencialmente.
+
 **`P0-OMNI-UNIFICACION` cerrado globalmente (2026-10-14):** [acta consolidada](../validation/omni-family-homologation-closure-20261014.md), evidencias de los tres productos y aceptación del usuario de OmniCoder Electron, OmniCore CLI/TUI y OmniLlama React, con Svelte fuera de esta fase. El usuario confirma animación remota funcionando. Se levanta el bloqueo de homologación y se autoriza iniciar M9 con un solo worker Luna en alto; los criterios técnicos y de aceptación propios de M8–M10 continúan vigentes. OR5 autenticado sigue pendiente y no se declara M8 cerrado.
 
 **Alcance aclarado por el usuario (2026-10-14): conservar la experiencia y los menús actuales de OmniCore, considerados una buena referencia.** La [matriz U-C01–U-C12](../architecture/arquitectura.md#matriz-ejecutable-de-omnicore--u-c01-a-u-c12-2026-10-14) se usa para contraste puntual, no como doce trabajos ni como una campaña de rediseño. Sólo corregir discrepancias concretas de uso; reutilizar la evidencia existente y completar lo necesario para el cierre cruzado. Los cuatro idiomas de Core se conservan. U-C12 mantiene su alcance técnico M9 y no queda construido por homologar pantallas.
