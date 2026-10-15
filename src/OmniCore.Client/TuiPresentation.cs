@@ -26,15 +26,20 @@ public sealed record TuiLayoutModel(TuiLayoutMode Mode, bool SidebarVisible, int
     public static TuiLayoutModel ForWidth(int width, bool sidebarRequested = true, OmniCore.Protocol.SidebarPreferences? preferences = null)
     {
         preferences ??= new();
+        // Respect the conversation at every breakpoint, including explicit overlay mode.
+        // Past 120 columns there is no need to keep growing the panel on maximize.
+        var maxSidebarWidth = Math.Min(Math.Max(0, width) / 3, 40);
+        sidebarRequested &= maxSidebarWidth > 0;
         // Narrow terminals always use overlay to preserve a usable conversation, even under an explicit mode.
         if (width >= preferences.TabbedMinWidth && preferences.Mode != "overlay")
         {
             var mode = preferences.Mode == "tabbed" ? TuiLayoutMode.Tabbed
                 : preferences.Mode == "stacked" || width >= preferences.StackedMinWidth ? TuiLayoutMode.Stacked : TuiLayoutMode.Tabbed;
-            return new(mode, sidebarRequested, sidebarRequested ? mode == TuiLayoutMode.Stacked ? Math.Clamp(width / 3, 32, 40) : 26 : 0);
+            return new(mode, sidebarRequested,
+                sidebarRequested ? Math.Min(maxSidebarWidth, mode == TuiLayoutMode.Stacked ? 40 : 26) : 0);
         }
         return new(TuiLayoutMode.Overlay, sidebarRequested,
-            sidebarRequested ? Math.Min(Math.Max(1, width), Math.Clamp(width - 4, 20, 44)) : 0);
+            sidebarRequested ? maxSidebarWidth : 0);
     }
 }
 

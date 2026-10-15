@@ -1895,7 +1895,7 @@ public sealed partial class TuiWiringTests
         // F2 abre el sidebar; a 80 columnas el layout es Overlay (centrado), la conversación no se reduce.
         fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => fx.App.Sidebar!.Visible, "F2 debe abrir el sidebar");
-        fx.Wait(() => fx.App.Sidebar!.Frame.Width == 44, "a 80 cols el sidebar Overlay mide 44");
+        fx.Wait(() => fx.App.Sidebar!.Frame.Width == 26, "a 80 cols el sidebar Overlay no supera un tercio");
         Assert.Equal(80, conversation.Frame.Width);
         Assert.Equal(0, fx.App.Sidebar!.Frame.Y);
         Assert.Equal(25, fx.App.Sidebar.Frame.Height);
@@ -1913,6 +1913,16 @@ public sealed partial class TuiWiringTests
         Assert.Equal(40, fx.App.Sidebar.Frame.Height);
         Assert.True(composerFrame.Right < fx.App.Sidebar.Frame.X);
         Assert.Equal(80, fx.App.Status!.Frame.Width);
+
+        // Maximizing grows the conversation, not the sidebar beyond its 40-column cap.
+        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 240, 40));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Width == 240 && fx.App.Sidebar!.Frame.Width == 40
+            && conversation.Frame.Width == 200, "al maximizar, el panel conserva 40 columnas");
+        Assert.Equal(200, fx.App.Sidebar.Frame.X);
+        fx.Wait(() => fx.App.Composer!.SuperView!.Frame.Width == 198, "el espacio extra queda para el mensaje");
+        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 120, 40));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Width == 120 && conversation.Frame.Width == 80,
+            "restaurar la ventana conserva los límites");
 
         // F2 cierra el sidebar: la conversación recupera el ancho completo.
         fx.InjectKey(new Key(KeyCode.F2));
