@@ -3,6 +3,7 @@ namespace OmniCore.Host;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using YamlDotNet.Core;
+using YamlDotNet.Core.Events;
 using YamlDotNet.RepresentationModel;
 
 /// <summary>
@@ -47,8 +48,9 @@ public static class ScenarioLoader
         Dictionary<object, object>? root;
         try
         {
+            using var reader = new StringReader(yaml);
             var stream = new YamlStream();
-            stream.Load(new StringReader(yaml));
+            stream.Load(new DepthLimitedParser(new Parser(reader)));
             if (stream.Documents.Count > 1) throw new YamlException("Expected one YAML document.");
             var value = stream.Documents.Count == 0 ? null : ReadNode(stream.Documents[0].RootNode,
                 new Dictionary<YamlNode, object>(ReferenceEqualityComparer.Instance), 0);
@@ -122,6 +124,25 @@ public static class ScenarioLoader
             PlanApproval = planApproval,
             StallThresholdTurns = stall,
         };
+    }
+
+    // Reject excessive nesting before YamlStream allocates or resolves the full graph.
+    private sealed class DepthLimitedParser(IParser inner) : IParser
+    {
+        private int _depth;
+        public ParsingEvent? Current => inner.Current;
+
+        public bool MoveNext()
+        {
+            if (!inner.MoveNext()) return false;
+            if (Current is MappingStart or SequenceStart)
+            {
+                if (++_depth > 128)
+                    throw new YamlException(Current.Start, Current.End, "Maximum YAML nesting exceeded.");
+            }
+            else if (Current is MappingEnd or SequenceEnd) _depth--;
+            return true;
+        }
     }
 
     // Read the YAML representation tree without reflection. Containers are memoized so

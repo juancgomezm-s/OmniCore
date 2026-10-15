@@ -52,7 +52,7 @@ public sealed class CliEndToEndTests
 
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.SetWorkspaceTrusted(true);
-            CliApp.UseRuntimeForTests(runtime);
+            CliApp.UseRuntimeForTests(runtime).Dispose();
             string? requestBody = null;
             provider.RespondWith((index, request) => index switch
             {
@@ -1453,7 +1453,7 @@ public sealed class CliEndToEndTests
                 Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
                 Assert.Equal(injectPostVerificationMutation ? 1 : 0, injectedMutation);
             }
-            finally { CliApp.UseRuntimeForTests(previousRuntime); }
+            finally { CliApp.UseRuntimeForTests(previousRuntime).Dispose(); }
         });
     }
 
@@ -1991,7 +1991,7 @@ public sealed class CliEndToEndTests
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.UseConsoleInput = false;
             runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
-            CliApp.UseRuntimeForTests(runtime);
+            CliApp.UseRuntimeForTests(runtime).Dispose();
             File.WriteAllText(Path.Combine(config, "models.yaml"), """
                 models:
                   small-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [small] }
@@ -2101,7 +2101,7 @@ public sealed class CliEndToEndTests
                 """);
             using var runtime = OmniCliRuntime.Create(workspace);
             runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
-            CliApp.UseRuntimeForTests(runtime);
+            CliApp.UseRuntimeForTests(runtime).Dispose();
 
             var first = await Run("ask", "primera pregunta");
             Assert.True(first.Code == 0, first.Output);
@@ -2208,7 +2208,7 @@ public sealed class CliEndToEndTests
             Assert.True(doctor.Code == 0, doctor.Output);
             Assert.Contains("Permisos: perfil Equilibrado; reglas de usuario: 1", doctor.Output);
 
-            // doctor sondea el servidor local (una conexión TCP que el provider de prueba cuenta como petición).
+            // A TCP connectivity probe is not a model HTTP request.
             var requests = provider.RequestCount;
             File.WriteAllText(Path.Combine(config, "permissions.yaml"), "profile: reckless\n");
             var ask = await Run("ask", "hola");
@@ -2394,6 +2394,7 @@ public sealed class CliEndToEndTests
             Assert.Equal(resumedEnvelope.Causation, resolutionEnvelope.Causation);
             if (reopenRuntime)
             {
+                runtime.Dispose();
                 runtime = OmniCliRuntime.Create(workspace);
                 client = runtime.Connect(CancellationToken.None);
                 host = new TuiTurnHost(runtime);
@@ -2616,7 +2617,7 @@ public sealed class CliEndToEndTests
             workspace = Path.Combine(root, "workspace-http");
             Directory.CreateDirectory(workspace);
             Environment.CurrentDirectory = workspace;
-            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace));
+            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace)).Dispose();
 
             // M2: actual HTTP Chat Completions provider, plus diagnostics and typed client commands.
             var doctor = await Run("doctor");
@@ -2826,7 +2827,7 @@ public sealed class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", priorLocale);
             Environment.SetEnvironmentVariable("OMNI_MODEL", priorModel);
             Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
-            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime);
+            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime).Dispose();
             Environment.CurrentDirectory = previousDirectory;
         }
     }
@@ -3148,7 +3149,7 @@ public sealed class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", priorLocale);
             Environment.SetEnvironmentVariable("OMNI_MODEL", priorModel);
             Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
-            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime);
+            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime).Dispose();
             Environment.CurrentDirectory = previousDirectory;
             try { Directory.Delete(root, true); } catch (IOException) { }
         }
@@ -3330,6 +3331,9 @@ public sealed class CliEndToEndTests
             {
                 var stream = client.GetStream();
                 using var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, leaveOpen: true);
+                // doctor may connect and close without sending HTTP. Do not count it as
+                // a model request or dispatch the scripted response for an empty socket.
+                if (string.IsNullOrWhiteSpace(await reader.ReadLineAsync(cancellationToken))) return;
                 var contentLength = 0;
                 while (await reader.ReadLineAsync(cancellationToken) is { Length: > 0 } header)
                     if (header.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))

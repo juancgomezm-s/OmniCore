@@ -108,6 +108,23 @@ intento no acredita Windows. Se asignan 50 minutos a Windows y se activa salida 
 para conservar progreso por prueba; Ubuntu mantiene 25. No se cambian los timeouts de
 las pruebas, incluido M4, ni se añaden retries ni resultados simulados.
 
+La siguiente [integral Ubuntu sobre 9fe934b](https://github.com/juancgomezm-s/OmniCore/actions/runs/38663511466/job/116190270718)
+ejecutó 4550 casos: 4533 PASS, 2 FAIL y 15 SKIP. Otra fixture de reapertura conservaba
+el runtime previo; ahora lo libera antes de volver a conectar, manteniendo el lease
+de producción. El servidor HTTP de pruebas contaba una conexión TCP vacía de doctor
+como petición al modelo: el cierre sin línea HTTP se descarta antes de incrementar
+el contador. Se conserva la assertion de que una configuración inválida impide toda
+petición al modelo. Las fixtures restauran y cierran sus runtimes al terminar.
+
+La revisión del lector YAML detectó que el límite posterior a YamlStream.Load llegaba
+demasiado tarde: una entrada de 64000 mapas anidados agotaba 15 segundos. Un wrapper
+del parser rechaza la profundidad superior a 128 antes de construir o resolver el
+grafo. Una prueba determinista exige ese rechazo antes de resolver un alias inválido;
+no usa umbrales de tiempo. El CLI Debug real rechaza la misma entrada de 64000 mapas
+en 0,943 s, exit 1 y mensaje «Maximum YAML nesting exceeded.». La suite completa de
+CLI y YAML posterior pasa en Debian y Windows: **74/74 PASS** en cada plataforma,
+sin omisiones. Estos resultados focales no sustituyen los tres gates finales del CI.
+
 ## Recuperación y TUI M4
 
 El probe de producción completa 200 turnos con compactación en SQLite/CAS. `seed`

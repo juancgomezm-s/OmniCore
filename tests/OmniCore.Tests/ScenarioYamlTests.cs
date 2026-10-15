@@ -175,6 +175,18 @@ public sealed class ScenarioYamlTests
     }
 
     [Fact]
+    public void Nesting_limit_rejects_input_before_loading_or_resolving_the_deep_graph()
+    {
+        var yaml = "input: probe\nexpect: " + string.Concat(Enumerable.Repeat("{x: ", 512))
+            + "*undefined" + new string('}', 512);
+        var error = Assert.Throws<ScenarioFormatException>(() => ScenarioLoader.Parse(yaml));
+
+        Assert.Equal("scenario.yaml_invalid", error.UserMessage.Key);
+        Assert.Contains("Maximum YAML nesting exceeded.", error.Message);
+        Assert.DoesNotContain("undefined", error.Message);
+    }
+
+    [Fact]
     public void Values_with_quotes_and_newlines_survive_the_protocol()
     {
         var text = "línea 1\n\"entre comillas\"\tfin \\ barra";
