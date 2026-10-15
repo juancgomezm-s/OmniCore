@@ -28,6 +28,8 @@ La rama incluye después `3d0aa8b`, que endurece únicamente los scripts/evidenc
 
 La combinación final pasa **10/10 focales** de layout/color, borrador, scroll y los cuatro idiomas, y **345/345 casos** de regresión de TUI/preferencias, sin fallos ni omisiones (4m39s). Los diez están incluidos en los 345. Logs `preferences-preserved-style-focal.log` y `preferences-preserved-style-full.log`. Los SVG de celdas reales se guardan en `preferences-preserved-style-captures`; las PNG de integración se actualizaron con ese último estilo. Las capturas originales de `bef4607` permanecen intactas. Se inspeccionó la nueva captura española; las vistas con sidebar abierto están en [120×35](assets/preferences-integration-20261014/settings-surface-distinct-120x35.png) y [80×25](assets/preferences-integration-20261014/settings-surface-distinct-80x25.png).
 
+Mientras terminaba CI se publicó main `ce805bf` con M9-E. Se incorporó mediante la combinación `f8c9b49` de la reparación, preservando las migraciones de receipts, el Host y el pipeline de conversación publicados. La rama de preferencias no sustituye ese trabajo desde su base antigua. La regresión de UI/preferencias sobre esta última combinación vuelve a pasar **345/345, 0 FAIL, 0 SKIP** (5m42s, `preferences-m9e-combined-full.log`). Los módulos funcionales de M8 y el cambio de superficie 572dacc siguen presentes. La rama continúa local hasta autorización de publicación; la aprobación de la captura confirma la referencia visual, no revoca por sí sola la restricción de push del plan.
+
 ## Estado de publicación
 
 Preparación local. No se ha fusionado esta interfaz a main ni publicado la rama: el plan original excluía push. El estado de esta evidencia no equivale a la aprobación del CI de la reparación Linux.
