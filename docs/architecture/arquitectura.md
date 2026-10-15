@@ -1004,6 +1004,13 @@ Contrato y evidencia de cada bloque en [el plan detallado](../plans/m8-m10-user-
 
 ### Estado real por epic
 
+**Ampliación M9 autorizada, pendiente de construcción (2026-10-14):** adaptar
+skills `SKILL.md` de Claude/Codex/OpenCode y descubrir instrucciones y memorias
+por directorio/proyecto exclusivamente en ubicaciones comunes acotadas.
+Es independiente de texto/documentos/imágenes; no acredita memoria multiscoped
+M10. [Plan y criterios](../plans/external-agent-discovery.md). Un solo worker
+Luna en alto, bloques secuenciales.
+
 > **Estado contrastado con código y tests:** la tabla distingue lo implementado de los criterios de salida
 > que aún requieren validación real. El conteo histórico de esta tabla fue 1112 tests
 > (1108 correctos, 4 omitidos por symlinks); no es el total vigente. Los resultados fechados
