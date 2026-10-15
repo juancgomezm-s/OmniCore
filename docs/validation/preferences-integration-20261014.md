@@ -89,3 +89,40 @@ desplaza el formulario y mantiene visible el campo. Una nueva regresión importa
 retira un archivo sobre CAS de prueba y comprueba la altura del compositor y su
 autocompletado, sin inferencias ni datos personales. La validación de esta reparación
 de integración está en curso; los resultados definitivos se registran después.
+
+### Resultado de la validación previa a publicación
+
+| Comprobación | Resultado |
+| --- | --- |
+| Focal Windows de los defectos y capturas reales | 48/48 PASS, 0 FAIL, 0 SKIP, 1m49s |
+| Regresión completa de TUI/preferencias Windows | 358/358 PASS, 0 FAIL, 0 SKIP, 4m44s |
+| Regresión completa de TUI/preferencias Debian/WSL2 | 358/358 PASS, 0 FAIL, 0 SKIP, 3m55s |
+| Arquitectura tras la corrección | Windows 62/62 PASS; Debian 62/62 PASS; sin omisiones |
+| Compilación de solución | Windows y Debian, cero warnings/errores; multi-target net8/net10 conservado |
+
+La fuente reparada corresponde a `fcad66c`; la incorporación posterior del main
+remoto `f4e21bf` sólo cambia seis documentos. Su único conflicto era la nota de
+estado M9-F2 en CLAUDE.md: se conserva el estado integrado, junto con la referencia
+de preferencias y la autorización de publicación. No cambia C# frente a la pasada
+probada. Los conjuntos son superpuestos y sus cantidades no se suman.
+
+Logs locales: `preferences-publish-layout-focal.log`,
+`preferences-publish-windows-final-full.log`,
+`preferences-publish-windows-final-architecture.log`,
+`preferences-publish-debian-final-full.log` y
+`preferences-publish-debian-final-architecture.log`, bajo
+`C:/Users/juanc/.codex/omnicore-linux-20261014`; los logs Debian originales siguen
+en `/home/omnicode-ci/omnicore-linux-evidence`. La nueva validación Linux usa
+`/home/omnicode-ci/OmniCore-preferences-publish-20261015`, separada del checkout
+que mantiene abierta la ventana de demostración.
+
+### Límite conocido del CI previo de Main
+
+El [run 38764533550 sobre f4e21bf](https://github.com/juancgomezm-s/OmniCore/actions/runs/38764533550)
+ya estaba ejecutándose antes de esta publicación. Su [job Ubuntu](https://github.com/juancgomezm-s/OmniCore/actions/runs/38764533550/job/116524176175)
+terminó con 4606 casos: 4555 PASS, 30 FAIL y 21 SKIP; linux-package aprobó.
+Catorce fallos son los de interfaz reproducidos y corregidos arriba. Los otros
+dieciséis afectan a contratos/eventos, goldens, huellas de cualificación y uso de
+conversación. Preexisten en el main remoto y quedan fuera de esta integración de
+interfaz. No se presentan las focales como cierre de esos fallos ni como una pasada
+integral verde. El push de main dispara la validación completa del árbol publicado.
