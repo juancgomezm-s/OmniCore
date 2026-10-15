@@ -21,7 +21,10 @@ public sealed record CommandReceipt(
     string? OutcomeKind,
     string? OutcomeReason,
     long? FirstSequence,
-    long? LastSequence);
+    long? LastSequence,
+    string? ExecutionState = null,
+    string? ExecutionCode = null,
+    string? ExecutionRunId = null);
 
 public sealed record CommandReceiptReservation(CommandReceiptState State, CommandReceipt Receipt);
 
