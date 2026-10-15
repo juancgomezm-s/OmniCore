@@ -122,7 +122,6 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or -not $env:RUNNER_TEMP -or -not $env:GITHU
     throw 'NUL device preparation is restricted to an ephemeral GitHub Actions runner.'
 }
 $snapshotPath = Join-Path $env:RUNNER_TEMP 'omnicore-original-nul-security.bin'
-$rootSnapshotPath = Join-Path $env:RUNNER_TEMP 'omnicore-original-temp-parent-security.bin'
 $volumeRoot = [IO.Path]::GetPathRoot([Environment]::GetFolderPath([Environment+SpecialFolder]::System))
 if ($Action -eq 'Enable') {
     if (Test-Path -LiteralPath $snapshotPath) { throw 'Original NUL security was already saved.' }
@@ -138,17 +137,7 @@ if ($Action -eq 'Enable') {
     # Git resolves its cwd through parent directory metadata. A fresh, synthetic
     # temp tree keeps that host prerequisite away from the runner user profile.
     # ContainerInherit without ObjectInherit applies to directories, never files.
-    $rootInfo = [IO.DirectoryInfo]::new($volumeRoot)
-    $rootSecurity = [IO.FileSystemAclExtensions]::GetAccessControl($rootInfo)
-    [IO.File]::WriteAllBytes($rootSnapshotPath, $rootSecurity.GetSecurityDescriptorBinaryForm())
     $packageSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-15-2-1')
-    $parentRule = [System.Security.AccessControl.FileSystemAccessRule]::new($packageSid,
-        [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
-        [System.Security.AccessControl.InheritanceFlags]::None,
-        [System.Security.AccessControl.PropagationFlags]::None,
-        [System.Security.AccessControl.AccessControlType]::Allow)
-    $rootSecurity.AddAccessRule($parentRule)
-    [IO.FileSystemAclExtensions]::SetAccessControl($rootInfo, $rootSecurity)
     $testTemp = Join-Path $volumeRoot ('omnicore-ci-' + [Guid]::NewGuid().ToString('N'))
     if (Test-Path -LiteralPath $testTemp) { throw 'Synthetic CI temp directory already exists.' }
     $tempInfo = [IO.Directory]::CreateDirectory($testTemp)
@@ -169,13 +158,6 @@ if ($Action -eq 'Enable') {
 } else {
     [OmniCiNullDevice]::Restore([IO.File]::ReadAllBytes($snapshotPath))
     Write-Output ('NUL restored: ' + [OmniCiNullDevice]::Describe([OmniCiNullDevice]::Read()))
-    if (Test-Path -LiteralPath $rootSnapshotPath) {
-        $rootSecurity = [System.Security.AccessControl.DirectorySecurity]::new()
-        $rootSecurity.SetSecurityDescriptorBinaryForm([IO.File]::ReadAllBytes($rootSnapshotPath),
-            [System.Security.AccessControl.AccessControlSections]::Access)
-        [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($volumeRoot), $rootSecurity)
-        Write-Output "Restored original directory ACL on $volumeRoot"
-    }
     foreach ($name in @('TEMP', 'TMP')) {
         $originalPath = [Environment]::GetEnvironmentVariable("OMNICORE_CI_ORIGINAL_$name")
         if ($originalPath) { "$name=$originalPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
