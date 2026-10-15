@@ -22,6 +22,8 @@ Logs locales: `preferences-integrated-tests.log`, `preferences-integrated-final.
 
 Tras integrar también el nuevo main con M9-D, se reconstruyó y ejecutó una focal de **28 casos, 28 PASS, 0 FAIL, 0 SKIP**: los 20 de idioma, los seis de experiencia integrada y los dos de navegación/detalles de memoria (80 y 120 columnas). Log `preferences-integrated-m9d.log`; las cuatro capturas se regeneraron en `preferences-integrated-captures-m9d`. M9-D no cambia los archivos de la TUI; no se atribuye esa focal al cierre completo de M9 ni de Linux.
 
+Se incorporó localmente también `b673091`, reparación final de CI/Linux y WAL de Windows, sin conflictos. Sobre esa combinación, la regresión completa de TUI/preferencias terminó con **341/341 PASS, 0 FAIL, 0 SKIP**, en 4m28s (`preferences-integrated-ci-compatible.log`). Esto reemplaza la expectativa antigua fallida de la primera pasada; no se suman los conjuntos anteriores. La interfaz se conserva en su rama local, sin incluirla en el PR de CI ni publicar la rama.
+
 ## Estado de publicación
 
 Preparación local. No se ha fusionado esta interfaz a main ni publicado la rama: el plan original excluía push. El estado de esta evidencia no equivale a la aprobación del CI de la reparación Linux.
