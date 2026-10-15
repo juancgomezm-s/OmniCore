@@ -83,6 +83,7 @@ public sealed class MaintenanceCommandHost
         var store = new SqliteEventStore(journalPath);
         try
         {
+            store.AcquireSessionWriterLease(session);
             var purger = new SessionPurger(store, new FileAuditSink(dataDir));
             var workspace = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(
                 ProjectIdentity.ResolvePhysicalWorkspaceRoot(".")));

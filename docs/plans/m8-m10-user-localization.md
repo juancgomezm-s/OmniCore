@@ -168,33 +168,38 @@ revisiones no soportadas; no se acredita compatibilidad universal por hablar JSO
 
 ## M9: Host separado y experiencia entre procesos
 
-**Checkpoint implementado en este worktree (2026-10-14): primer bloque transversal real del transporte.**
-`omni host --stdio` sirve el runtime/journal persistente existente; `StdioOmniClient` y `omni stdio`
-son consumidor y entrada CLI reales. Contrato v1.0: JSON Lines UTF-8 estricto, máximo 1 MiB por
-frame, hello correlacionado y capabilities honestas; operaciones construidas: `sim`, `sim.resume`,
-`session.input`, ocho read models enumerados en ADR-0019 §4 y replay por lotes desde N. El ack
-transporta `Outcome/FirstSeq/LastSeq`. Se mantienen rutas in-process y TUI. Goldens del wire real:
-[`docs/protocol/stdio/1.0`](../protocol/stdio/1.0/README.md).
-El handshake del cliente tiene plazo configurable (10 s por defecto) y token de cancelación; el
-timeout/cancelación limpia sólo el hijo propio. Frames con CR/LF físicos se rechazan antes de escribir;
-los LF escapados son válidos. Las requests con campos malformados reciben `unsupported_request` y
-no derriban la conexión; `input`/`sim` no consideran exitoso `Outcome=Rejected` aunque `Status=ok`.
-El acta focal registra pruebas con proceso fixture real y plazos de 2 s.
+**Bloque M9-B implementado en la rama `codex/m9-recovery` (2026-10-14; acta**
+**[`m9-block-b-20261014.md`](../validation/m9-block-b-20261014.md)**).** `omni host --stdio`,
+`StdioOmniClient` y `omni stdio` siguen sobre el runtime persistente real y el contrato v1.0.
+Se añade lease OS no expirable por Session, reclamado al morir el proceso; recibos durables hash-bound
+con `Completed` / `Unknown`, `command.result` sin reenvío y protección por ID después de purga; y
+`events.replay.page` con Session explícita, consulta SQL limitada, high-water fijo, cursor y detección
+de gaps. `subscribe` 1.0 conserva íntegramente su semántica anterior. Las páginas ajustan el prefijo
+para caber dentro del frame UTF-8 de 1 MiB; un único evento mayor devuelve `frame_too_large`.
+El Client conserva las capabilities negociadas y usa legacy replay cuando no se anuncia el paginado.
+La prueba de ACK no consumido mata un Host real tras observar el recibo durable, reconecta y verifica
+lookup/duplicado sin nuevos eventos. Reservas inconclusas permanecen Unknown y nunca se reejecutan.
+Se conservan las rutas in-process y la TUI; el hilo no afirma que M9 entero esté cerrado.
 
-**Pendiente del siguiente bloque y del cierre M9:** lease multiwriter/heartbeat, reconexión,
-deduplicación y lectura de resultado ambiguo; autoridad humana externa segura; stream push y
-supervisión de OmniCoder/TypeScript; `media.read`; controles de procesos persistentes y ConPTY.
-Replay del journal no acredita reconexión sin duplicación, recuperación del estado del cliente ni
-exactly-once. El CLI stdio no ofrece la TUI y no reenvía bytes arbitrarios ni acepta capabilities
-de humano. OR5 autenticado M8 sigue pendiente en su milestone separado.
+La exclusión se apoya en handles de lock de SO sobre archivos permanentes dentro de almacenamiento
+local; verificada en Windows únicamente. La semántica de procesos concurrentes no ha sido validada
+en Linux/macOS o filesystems de red. Replay por páginas no es push ni exactly-once. El contrato no
+autoriza origen humano externo ni acepta un booleano de humano. OR5 autenticado M8 sigue pendiente en
+su milestone separado.
 
-| Bloque restante | Construcción | Presentación y aceptación |
+**Pendiente del cierre M9:** binding TypeScript/Electron y supervisor real; autoridad humana externa
+segura; `media.read` llegando a un proveedor con visión; controles de procesos persistentes y ConPTY;
+recorridos de aceptación en cuatro idiomas y verificación Linux. Las respuestas ambiguas se exponen
+como `Unknown`; no hay reenvío ciego, lease por tiempo, reconexión push ni garantía exactly-once
+indiscriminada. El contrato y los límites exactos están en el README de stdio 1.0 y el ADR-0049.
+
+| Resto de M9 tras M9-B | Construcción | Presentación y aceptación |
 |---|---|---|
-| Transporte y negociación | Stdio real, framing, backpressure, `hello`/versiones/capabilities, Host separado y read models persistidos. Reusar DTOs Protocol y source generation/multi-target; stdout reservado al protocolo, diagnóstico fuera del stream. | Errores de arranque, incompatible/desconocido/desconectado y recuperación con código/clave/args. UTF-8 probado cruzando proceso con caracteres de los cuatro idiomas. Recursos opcionales desconocidos tienen diagnóstico seguro, sin romper framing ni afirmar cobertura. |
-| Lease y supervisión | Escritor único por Session entre procesos, heartbeat/recuperación, ownership y supervisor OmniCoder por transporte real. | Ocupado/esperando/supervisor perdido distinguidos de ejecución/cancelación/aceptación. Confirmaciones con identidad de sesión y consecuencias; idioma no altera lease, ownership o fallo Wait. |
-| Reconexión e historial | Resume después de N por stream sin duplicación; read models recuperables; procedencia Native/Imported y fidelidad Complete/Partial. Preservar IDs y texto original. | Re-renderizar etiquetas con idioma actual, manteniendo historial literal, secuencia y fidelidad. Reconectar no repite comandos, efectos, Ask resueltos ni consentimientos; mostrar hueco/historial parcial sin fingir integridad. |
-| Clientes y preferencias | Mismo CLI in-process/stdio, compatibilidad net8 y consumidor Electron/TypeScript de OmniCoder mediante wire externo. Publicar schemas/goldens de una revisión exacta y capabilities antes del binding TS; no cargar CLR ni crear un Host TS sustituto. Guardar `ui.locale` continúa por Host con revisión, lectura efectiva y origen. | Dos clientes es/fr sobre los mismos eventos producen decisiones equivalentes. El override local no muta la preferencia del otro cliente. Una edición persistente se detecta sin sobrescribir borradores; nunca guardar la traducción en read models como dato canónico. |
-| Origen humano y resultado de acciones (U-C12) | Definir en ADR-0019 el equivalente externo de `ITrustedUserActionClient`, ligado a la conexión/ownership y a la autorización del Host. Su marcador actual es in-process y no serializable; un payload del modelo o de wire genérico no puede declararse acción humana. Reusar `CommandAck.Outcome/FirstSeq/LastSeq`; falta especificar deduplicación/consulta de resultado y entrega ambigua por transporte. | Electron→Host real permite las acciones humanas autorizadas y rechaza el mismo intento sin origen válido, fuera de scope o expirado. Manipular renderer/JSON no concede grants. Reinicio/reconexión/resultado desconocido no repite efectos; permisos/conexiones/preferencias conservan autoridad, revisión y secretos fuera del renderer. No se acredita este canal con una fixture ni con el bridge MCP. |
+| Transporte y negociación | **Construido en M9-A/B:** Host real por stdio, framing UTF-8 y cap del frame final, `hello`/versiones/capabilities, queries/read models y replay legacy/paginado. Sin backpressure adicional. | Focales cross-process cubren caracteres es/en/fr/it, incompatible, malformed y oversized. La verificación de OS en este bloque es Windows. |
+| Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. Falta supervisor OmniCoder. | Pruebas de dos procesos y reclaim verificadas en Windows local. Falta aceptación de otros OS/filesystems; UI aún no distingue el nuevo lease para consumidor externo. |
+| Reconexión e historial | **Construido en M9-B:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, detección de gaps y tombstone de purge. No es exactly-once general ni reconexión push. Procedencia Native/Imported pendiente. | Prueba mata Host tras persistir receipt con ACK sin consumir, reconecta y confirma misma Session/ACK sin nuevos eventos. Unknown y cursor purgado muestran resultado/gap sin fingir finalización. |
+| Clientes y preferencias | **Construido:** CLI in-process y stdio con Client multi-target net8/net10, capacidades consultables, fallback al `subscribe` legacy y goldens wire. Falta consumidor OmniCoder TypeScript/Electron; no cargar CLR ni crear Host TS sustituto. `ui.locale` sigue por Host con su esquema durable existente. | Falta integración de dos clientes reales es/fr y acceptance UI; los goldens validan wire canónico, no traducción. No almacenar copy traducido en read models. |
+| Origen humano y resultado de acciones (U-C12) | **Construido en M9-B:** lookup/dedup con `CommandAck.Outcome/FirstSeq/LastSeq`. Falta definir equivalente externo seguro de `ITrustedUserActionClient` ligado a conexión/ownership/permiso; el marcador in-process no es serializable. | El wire genérico rechaza acciones que requieran autoridad humana; JSON y capabilities no crean grants. Falta acción real autorizada Electron→Host y denegación sin origen válido. |
 
 **Salida M9:** escenarios reales de transporte/lease/reconexión/net8, lectura `media.read` que alcanza un proveedor con visión compatible y controles de procesos persistentes/interactivos, recorridos en cuatro idiomas y JSON/wire invariantes. Reusar la presentación Client y el mecanismo de idioma; no mandar frases ya traducidas por el Host para sustituir claves/argumentos. Negociación de recursos/capabilities y payload visual, si necesitan DTOs nuevos, respetan ADR0013 sin migrar journals por un cambio de copy.
 

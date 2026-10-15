@@ -2,6 +2,8 @@ namespace OmniCore.Host;
 
 using OmniCore.Protocol;
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>Request/response stdio adapter over the same IOmniClient used by the in-process CLI.</summary>
 public static class StdioProtocolHost
@@ -31,7 +33,7 @@ public static class StdioProtocolHost
 
                 if (!negotiated)
                 {
-                    if (!TryNegotiate(request, out var response, out var accepted))
+                    if (!TryNegotiate(client, request, out var response, out var accepted))
                     {
                         WireFrame.Write(output, response!.ToJson());
                         return 3;
@@ -52,6 +54,11 @@ public static class StdioProtocolHost
                 {
                     var result = Dispatch(client, request);
                     WireFrame.Write(output, WireEnvelope.Response(request.MessageId, result).ToJson());
+                }
+                catch (ReplayFrameTooLargeException)
+                {
+                    WireFrame.Write(output, Error(request.MessageId, "frame_too_large",
+                        "A single replay event exceeds the negotiated frame limit.").ToJson());
                 }
                 catch (Exception ex) when (ex is InvalidDataException or ArgumentException or JsonException
                     or InvalidOperationException or NotSupportedException or FormatException
@@ -95,7 +102,7 @@ public static class StdioProtocolHost
                     || nameElement.ValueKind != JsonValueKind.String
                     || !StdioProtocol.IsSupportedCommand(nameElement.GetString()!))
                     throw new InvalidDataException();
-                var ack = client.Send(command, CancellationToken.None);
+                var ack = DispatchCommand(client, command);
                 var outcome = ack.Outcome is null ? "null" : "{\"kind\":"
                     + Quote(ack.Outcome.Kind.ToString()) + ",\"reason\":"
                     + (ack.Outcome.Reason is null ? "null" : Quote(ack.Outcome.Reason)) + "}";
@@ -104,6 +111,28 @@ public static class StdioProtocolHost
                     + (ack.Error is null ? "null" : Quote(ack.Error)) + ",\"outcome\":" + outcome
                     + ",\"firstSeq\":" + (ack.FirstSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
                     + ",\"lastSeq\":" + (ack.LastSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null") + "}}";
+            }
+            case StdioProtocol.CommandResultOperation:
+            {
+                if (client is not OmniServer server || server.ReceiptStore is not { } store
+                    || !root.TryGetProperty("commandId", out var idElement) || idElement.ValueKind != JsonValueKind.String
+                    || !root.TryGetProperty("requestHash", out var hashElement) || hashElement.ValueKind != JsonValueKind.String)
+                    throw new InvalidDataException();
+                var id = idElement.GetString()!;
+                var hash = hashElement.GetString()!;
+                var receipt = store.ReadCommandReceipt(id);
+                if (receipt is null) return "{\"state\":\"not_found\"}";
+                if (!string.Equals(receipt.RequestHash, hash, StringComparison.Ordinal))
+                    return "{\"state\":\"id_conflict\"}";
+                if (receipt.State != OmniCore.Infrastructure.CommandReceiptState.Completed)
+                    return "{\"state\":\"unknown\"}";
+                var ack = AckFromReceipt(receipt);
+                return "{\"state\":\"completed\",\"ack\":{\"commandId\":" + Quote(ack.CommandId)
+                    + ",\"status\":" + Quote(ack.Status) + ",\"outcome\":" + Quote(ack.Outcome?.Kind.ToString() ?? "Deferred")
+                    + ",\"reason\":" + (ack.Outcome?.Reason is null ? "null" : Quote(ack.Outcome.Reason))
+                    + ",\"firstSeq\":" + (ack.FirstSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
+                    + ",\"lastSeq\":" + (ack.LastSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
+                    + "},\"sessionId\":" + (receipt.SessionId is null ? "null" : Quote(receipt.SessionId)) + "}";
             }
             case StdioProtocol.QueryOperation:
             {
@@ -124,31 +153,123 @@ public static class StdioProtocolHost
                     || !fromElement.TryGetInt64(out var from) || from < 0)
                     throw new InvalidDataException();
                 var events = client.SubscribeSince(from);
-                var encodedEvents = EncodeEvents(events);
-                return "{\"events\":[" + encodedEvents + "]}";
+                var replay = "{\"events\":[" + EncodeEvents(events) + "]}";
+                if (Encoding.UTF8.GetByteCount(WireEnvelope.Response(request.MessageId, replay).ToJson())
+                    > StdioProtocol.MaximumFrameBytes) throw new InvalidDataException();
+                return replay;
+            }
+            case StdioProtocol.ReplayPageOperation:
+            {
+                if (client is not OmniServer server || server.ReceiptStore is not { } store)
+                    throw new NotSupportedException();
+                if (!root.TryGetProperty("fromSequence", out var fromElement)
+                    || fromElement.ValueKind != JsonValueKind.Number
+                    || !fromElement.TryGetInt64(out var from) || from < 0)
+                    throw new InvalidDataException();
+                var size = root.TryGetProperty("pageSize", out var sizeElement)
+                    && sizeElement.ValueKind == JsonValueKind.Number && sizeElement.TryGetInt32(out var parsedSize)
+                    ? parsedSize : 128;
+                if (size is < 1 or > 256) throw new InvalidDataException();
+                var hasSession = root.TryGetProperty("sessionId", out var sessionElement)
+                    && sessionElement.ValueKind == JsonValueKind.String;
+                var session = hasSession ? OmniCore.Domain.SessionId.Parse(sessionElement.GetString()!)
+                    : server.LastSessionId();
+                if (session is null)
+                {
+                    var next = Math.Max(1, from);
+                    return "{\"sessionId\":null,\"requestedSequence\":"
+                        + from.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + ",\"nextSequence\":" + next.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + ",\"highWater\":0,\"hasGap\":false,\"complete\":true,\"events\":[]}";
+                }
+                var highWater = root.TryGetProperty("highWater", out var highElement)
+                    && highElement.ValueKind == JsonValueKind.Number && highElement.TryGetInt64(out var parsedHigh)
+                    ? parsedHigh : (long?)null;
+                var pageSize = size;
+                var page = store.ReadPage(session, from, pageSize, highWater);
+                while (true)
+                {
+                    var mapped = server.MapReplayPage(page.Events);
+                    var result = "{\"sessionId\":" + Quote(session.ToString())
+                        + ",\"requestedSequence\":" + page.RequestedSequence.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + ",\"nextSequence\":" + page.NextSequence.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + ",\"highWater\":" + page.HighWater.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                        + ",\"hasGap\":" + (page.HasGap ? "true" : "false")
+                        + ",\"complete\":" + (page.Complete ? "true" : "false")
+                        + ",\"events\":[" + EncodeEvents(mapped) + "]}";
+                    if (Encoding.UTF8.GetByteCount(WireEnvelope.Response(request.MessageId, result).ToJson())
+                        <= StdioProtocol.MaximumFrameBytes) return result;
+                    if (page.Events.Count <= 1) throw new ReplayFrameTooLargeException();
+                    pageSize = Math.Max(1, Math.Min(page.Events.Count - 1, pageSize / 2));
+                    page = store.ReadPage(session, from, pageSize, page.HighWater);
+                }
             }
             default: throw new InvalidDataException();
         }
     }
 
+
+    private static CommandAck DispatchCommand(IOmniClient client, WireEnvelope command)
+    {
+        if (client is not OmniServer server || server.ReceiptStore is not { } store)
+            return client.Send(command, CancellationToken.None);
+
+        // Do not reserve a receipt while another live owner prevents execution: otherwise a
+        // transient busy response would poison the command ID as an ambiguous result.
+        if (!server.EnsureWriterOwnershipForCommand())
+            return new CommandAck(command.MessageId, "busy", "session_writer_owned",
+                RuntimeCommandOutcome.Deferred("session_writer_owned"));
+
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+        var scope = store.CommandReceiptScope;
+        var expectedSession = server.LastSessionId()?.ToString();
+        var reservation = store.ReserveCommandReceipt(command.MessageId, hash, scope, expectedSession);
+        if (reservation.State != OmniCore.Infrastructure.CommandReceiptState.Reserved
+            && !string.Equals(reservation.Receipt.SessionId, expectedSession, StringComparison.Ordinal))
+            return new CommandAck(command.MessageId, "error", "command_session_conflict",
+                RuntimeCommandOutcome.Rejected());
+        if (reservation.State == OmniCore.Infrastructure.CommandReceiptState.IdConflict)
+            return new CommandAck(command.MessageId, "error", "command_id_conflict",
+                RuntimeCommandOutcome.Rejected());
+        if (reservation.State == OmniCore.Infrastructure.CommandReceiptState.Completed)
+            return AckFromReceipt(reservation.Receipt);
+        if (reservation.State != OmniCore.Infrastructure.CommandReceiptState.Reserved)
+            return new CommandAck(command.MessageId, "unknown", "command_result_unknown",
+                RuntimeCommandOutcome.Deferred("command_result_unknown"));
+
+        var ack = client.Send(command, CancellationToken.None);
+        store.CompleteCommandReceipt(command.MessageId, hash, ack.Status, ack.Outcome?.Kind.ToString(), ack.Outcome?.Reason,
+            ack.FirstSeq, ack.LastSeq, scope, server.LastSessionId()?.ToString());
+        return ack;
+    }
+
+    private static CommandAck AckFromReceipt(OmniCore.Infrastructure.CommandReceipt receipt)
+    {
+        var outcome = receipt.OutcomeKind switch
+        {
+            "Accepted" => RuntimeCommandOutcome.Accepted(),
+            "Rejected" => RuntimeCommandOutcome.Rejected(),
+            "NoOp" => RuntimeCommandOutcome.NoOp(),
+            "Deferred" => RuntimeCommandOutcome.Deferred(receipt.OutcomeReason ?? "receipt_result_unknown"),
+            _ => RuntimeCommandOutcome.Deferred("receipt_result_unknown"),
+        };
+        return new CommandAck(receipt.CommandId, receipt.AckStatus ?? "unknown", null, outcome,
+            receipt.FirstSequence, receipt.LastSequence);
+    }
+
     private static string EncodeEvents(IReadOnlyList<WireEnvelope> events)
     {
         var builder = new System.Text.StringBuilder();
-        var byteCount = 0;
         foreach (var item in events)
         {
             var json = item.ToJson();
-            var count = System.Text.Encoding.UTF8.GetByteCount(json) + (builder.Length == 0 ? 0 : 1);
-            if (byteCount + count > StdioProtocol.MaximumFrameBytes - 512)
-                throw new InvalidDataException("Event replay exceeds the maximum stdio response frame.");
             if (builder.Length > 0) builder.Append(',');
             builder.Append(json);
-            byteCount += count;
         }
         return builder.ToString();
     }
 
-    private static bool TryNegotiate(WireEnvelope request, out WireEnvelope? response, out bool accepted)
+    private static bool TryNegotiate(IOmniClient client, WireEnvelope request, out WireEnvelope? response, out bool accepted)
     {
         accepted = false;
         if (request.Version != ProtocolVersions.V1 || request.MessageType != MessageTypes.Hello)
@@ -165,7 +286,10 @@ public static class StdioProtocolHost
             response = Error(request.MessageId, "incompatible_protocol", "No common protocol version.");
             return false;
         }
-        var capabilities = "[" + string.Join(",", StdioProtocol.SupportedCapabilities.Select(Quote)) + "]";
+        var supported = StdioProtocol.SupportedCapabilities.AsEnumerable();
+        if (client is not OmniServer { ReceiptStore: not null })
+            supported = supported.Where(capability => capability is not ("command.result.lookup" or "events.replay.page"));
+        var capabilities = "[" + string.Join(",", supported.Select(Quote)) + "]";
         response = WireEnvelope.Response(request.MessageId,
             "{\"protocolVersion\":\"1.0\",\"capabilities\":" + capabilities + "}");
         accepted = true;
@@ -193,4 +317,6 @@ public static class StdioProtocolHost
         + ",\"payload\":{\"code\":" + Quote(code) + ",\"message\":" + Quote(message) + "}}");
 
     private static string Quote(string value) => "\"" + JsonObj.Escape(value) + "\"";
+
+    private sealed class ReplayFrameTooLargeException : Exception { }
 }

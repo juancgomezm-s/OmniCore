@@ -32,6 +32,24 @@ public static class WorktreeStartupRecoveryHost
         }
         catch (Exception) { return WorktreeStartupRecoveryOutcome.Failure(GitWorktreeErrorCode.InvalidPath); }
 
+        if (store is SqliteEventStore sqlite)
+        {
+            var sessions = reader.ReadEvents(EventType.Of("session.created"))
+                .Select(codecs.Decode).OfType<SessionCreated>()
+                .Where(created => created.WorkspaceId == workspaceId).Select(created => created.SessionId).Distinct().ToArray();
+            var newlyAcquired = new List<SessionId>();
+            try
+            {
+                foreach (var session in sessions)
+                    if (sqlite.AcquireSessionWriterLease(session)) newlyAcquired.Add(session);
+            }
+            catch (SessionWriterLeaseUnavailableException)
+            {
+                foreach (var session in newlyAcquired) sqlite.ReleaseSessionWriterLease(session);
+                return WorktreeStartupRecoveryOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
+            }
+        }
+
         var repository = await new GitWorktreeStore(SystemProcessRuntime.Instance())
             .InspectAsync(root, cancellationToken).ConfigureAwait(false);
         if (!repository.Succeeded)

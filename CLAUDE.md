@@ -15,7 +15,9 @@ resueltos para el alcance actual, con diferencias explícitas; menús conservado
 recorte del prompt/pérdida de borrador ante rechazo o referencia no disponible. Evidencia en
 `docs/validation/omnicore-homologation-closure-20261014.md`. No reiniciar los lotes UC por
 capacidades diferidas; reabrir sólo por un defecto concreto. El cierre global y OR5 autenticado
-de M8 permanecen separados. El primer bloque CLI↔Host stdio M9 está integrado; lease, reconexión y autoridad humana externa siguen pendientes (acta M9).
+de M8 permanecen separados. M9-B añade lease por OS, recibos/dedup, resultado ambiguo y replay
+paginado en la rama `codex/m9-recovery`; revisar su acta antes de integrar. M9 sigue abierto para
+autoridad humana externa, consumidor TypeScript, `media.read` y procesos persistentes/ConPTY.
 
 ## Comandos
 

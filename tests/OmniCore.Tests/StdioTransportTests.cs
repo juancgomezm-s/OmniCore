@@ -1,7 +1,11 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Cli;
 using OmniCore.Client;
+using OmniCore.Engine;
 using OmniCore.Host;
+using OmniCore.Infrastructure;
 using OmniCore.Protocol;
 
 namespace OmniCore.Tests;
@@ -9,6 +13,256 @@ namespace OmniCore.Tests;
 [Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class StdioTransportTests
 {
+    [Fact]
+    public async Task Session_writer_lock_is_exclusive_between_processes_and_released_on_owner_death()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-lock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var journal = Path.Combine(root, "journal.db");
+        var session = OmniCore.Domain.SessionId.New();
+        using (new SqliteEventStore(journal)) { }
+        var helper = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+            ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
+        var start = new ProcessStartInfo(helper)
+        {
+            WorkingDirectory = root,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+            CreateNoWindow = true,
+        };
+        start.ArgumentList.Add("session-lock");
+        start.ArgumentList.Add(journal);
+        start.ArgumentList.Add(session.ToString());
+        using var owner = Process.Start(start)!;
+        var ready = await owner.StandardOutput.ReadLineAsync(TestContext.Current.CancellationToken).AsTask()
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Equal("READY", ready);
+        try
+        {
+            using var contender = new SqliteEventStore(journal);
+            Assert.Throws<SessionWriterLeaseUnavailableException>(() => contender.AcquireSessionWriterLease(session));
+            owner.Kill(entireProcessTree: true);
+            await owner.WaitForExitAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            contender.AcquireSessionWriterLease(session);
+            contender.Close();
+        }
+        finally
+        {
+            try { if (!owner.HasExited) owner.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+            try { if (!owner.HasExited) await owner.WaitForExitAsync(TestContext.Current.CancellationToken); } catch (InvalidOperationException) { }
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void Command_receipt_survives_reopen_and_never_replays_changed_content()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-receipt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var journal = Path.Combine(root, "journal.db");
+        var id = Guid.NewGuid().ToString("D");
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData("safe payload"u8));
+        var store = new SqliteEventStore(journal);
+        var first = store.ReserveCommandReceipt(id, hash, sessionId: null);
+        Assert.Equal(CommandReceiptState.Reserved, first.State);
+        var sessionId = OmniCore.Domain.SessionId.New().ToString();
+        store.CompleteCommandReceipt(id, hash, "ok", "Accepted", null, 1, 2, sessionId: sessionId);
+        store.PurgeSession(OmniCore.Domain.SessionId.Parse(sessionId), TestContext.Current.CancellationToken);
+        store.Close();
+
+        using var reopened = new SqliteEventStore(journal);
+        var duplicate = reopened.ReserveCommandReceipt(id, hash, sessionId: "session-a");
+        Assert.Equal(CommandReceiptState.Completed, duplicate.State);
+        Assert.Equal(sessionId, duplicate.Receipt.SessionId);
+        Assert.Equal(OmniCore.Infrastructure.CommandReceiptState.Completed, duplicate.State);
+        Assert.Equal(CommandReceiptState.IdConflict,
+            reopened.ReserveCommandReceipt(id, new string('0', 64), sessionId: "session-a").State);
+        Assert.Equal("ok", reopened.ReadCommandReceipt(id)?.AckStatus);
+        reopened.Close();
+        try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+    }
+
+    [Fact]
+    public async Task Unread_ack_reconnect_lookup_and_unknown_reservation_never_repeat_command_effects()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-lost-ack-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        Directory.CreateDirectory(workspace);
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldDirectory = Environment.CurrentDirectory;
+        Process? firstHost = null;
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", Path.Combine(root, "data"));
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(root, "config"));
+            Environment.CurrentDirectory = workspace;
+            var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            var command = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"session.input\",\"text\":\"persist once after an unread acknowledgment\"}");
+            firstHost = StartRawHost(cliDll, workspace);
+            WireFrame.Write(firstHost.StandardInput.BaseStream,
+                "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"hello-lost-ack\",\"payload\":{\"supportedVersions\":[\"1.0\"],\"client\":\"test\"}}");
+            var hello = WireEnvelope.FromJson(WireFrame.Read(firstHost.StandardOutput.BaseStream)!);
+            Assert.Equal("response", hello.MessageType);
+            var request = WireEnvelope.Command("outer-lost-ack", "{\"operation\":\"command\",\"command\":"
+                + command.ToJson() + "}");
+            WireFrame.Write(firstHost.StandardInput.BaseStream, request.ToJson());
+
+            CommandReceipt? receipt = null;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (File.Exists(journal))
+                {
+                    using var read = new SqliteEventStore(journal, readOnly: true);
+                    receipt = read.ReadCommandReceipt(command.MessageId);
+                    if (receipt?.State == CommandReceiptState.Completed) break;
+                }
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
+            Assert.NotNull(receipt);
+            Assert.Equal(CommandReceiptState.Completed, receipt.State);
+            Assert.False(firstHost.HasExited);
+            firstHost.Kill(entireProcessTree: true); // response was deliberately left unread by this client.
+            await firstHost.WaitForExitAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            var session = OmniCore.Domain.SessionId.Parse(receipt.SessionId!);
+            long committedCount;
+            using (var read = new SqliteEventStore(journal, readOnly: true))
+                committedCount = read.CountEvents(session);
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+            var unknownId = "00000000-0000-7000-8000-000000000099";
+            using (var reserveUnknown = new SqliteEventStore(journal))
+                Assert.Equal(CommandReceiptState.Reserved,
+                    reserveUnknown.ReserveCommandReceipt(unknownId, hash, sessionId: receipt.SessionId).State);
+
+            using var reconnected = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace,
+                cancellationToken: TestContext.Current.CancellationToken);
+            var recovered = reconnected.LookupCommandResult(command, TestContext.Current.CancellationToken);
+            Assert.Equal(receipt.SessionId, recovered.SessionId);
+            Assert.Equal(receipt.FirstSequence, recovered.Ack.FirstSeq);
+            var duplicate = reconnected.Send(command, TestContext.Current.CancellationToken);
+            Assert.Equal(recovered.Ack.FirstSeq, duplicate.FirstSeq);
+            var unknown = WireEnvelope.Command(unknownId, command.PayloadJson);
+            var unknownAck = reconnected.Send(unknown, TestContext.Current.CancellationToken);
+            Assert.Equal("unknown", unknownAck.Status);
+            Assert.Contains("command_result_unknown", unknownAck.Error, StringComparison.Ordinal);
+            using var after = new SqliteEventStore(journal, readOnly: true);
+            Assert.Equal(committedCount, after.CountEvents(session));
+            Assert.Equal(CommandReceiptState.Unknown, after.ReadCommandReceipt(unknownId)?.State);
+        }
+        finally
+        {
+            if (firstHost is not null)
+            {
+                try { if (!firstHost.HasExited) firstHost.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) { }
+                try { if (!firstHost.HasExited) await firstHost.WaitForExitAsync(TestContext.Current.CancellationToken); }
+                catch (InvalidOperationException) { }
+                firstHost.Dispose();
+            }
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.CurrentDirectory = oldDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    private static Process StartRawHost(string cliDll, string workspace)
+    {
+        var start = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = workspace,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        start.ArgumentList.Add(cliDll);
+        start.ArgumentList.Add("host");
+        start.ArgumentList.Add("--stdio");
+        return Process.Start(start) ?? throw new InvalidOperationException("Could not start raw stdio Host fixture.");
+    }
+
+    [Fact]
+    public async Task Reconnected_stdio_client_recovers_receipt_without_resending_and_rejects_changed_id_content()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-reconnect-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        Directory.CreateDirectory(workspace);
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldDirectory = Environment.CurrentDirectory;
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", Path.Combine(root, "data"));
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(root, "config"));
+            Environment.CurrentDirectory = workspace;
+            var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            var id = OmniCore.Protocol.Ids.NewV7();
+            var command = WireEnvelope.Command(id, "{\"cmd\":\"session.input\",\"text\":\"persisted once, español français italiano\"}");
+            CommandAck first;
+            using (var client = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace,
+                cancellationToken: TestContext.Current.CancellationToken))
+                first = client.Send(command, TestContext.Current.CancellationToken);
+            Assert.Equal("ok", first.Status);
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, first.Outcome?.Kind);
+
+            using var reconnected = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace,
+                cancellationToken: TestContext.Current.CancellationToken);
+            var recovered = reconnected.LookupCommandResult(command, TestContext.Current.CancellationToken);
+            var replayed = recovered.Ack;
+            Assert.Equal(first.FirstSeq, replayed.FirstSeq);
+            Assert.Equal(first.LastSeq, replayed.LastSeq);
+            Assert.Equal(first.Outcome?.Kind, replayed.Outcome?.Kind);
+
+            var duplicate = reconnected.Send(command, TestContext.Current.CancellationToken);
+            Assert.Equal(first.FirstSeq, duplicate.FirstSeq);
+            Assert.Equal(first.LastSeq, duplicate.LastSeq);
+
+            var page = reconnected.ReadReplayPage(1, recovered.SessionId, pageSize: 2,
+                cancellationToken: TestContext.Current.CancellationToken);
+            Assert.False(page.HasGap);
+            Assert.True(page.NextSequence <= 3);
+            var pinnedHighWater = page.HighWater;
+            var cursor = page.NextSequence;
+            var pages = 1;
+            while (!page.Complete)
+            {
+                page = reconnected.ReadReplayPage(cursor, page.SessionId, pageSize: 2,
+                    highWater: pinnedHighWater, cancellationToken: TestContext.Current.CancellationToken);
+                Assert.False(page.HasGap);
+                Assert.Equal(pinnedHighWater, page.HighWater);
+                Assert.True(page.NextSequence > cursor);
+                cursor = page.NextSequence;
+                pages++;
+                Assert.InRange(pages, 1, 100);
+            }
+            Assert.True(page.Complete);
+
+            var modified = WireEnvelope.Command(id,
+                "{\"cmd\":\"session.input\",\"text\":\"different request\"}");
+            var conflict = reconnected.Send(modified, TestContext.Current.CancellationToken);
+            Assert.Equal("error", conflict.Status);
+            Assert.Contains("command_id_conflict", conflict.Error, StringComparison.Ordinal);
+            Assert.NotNull(reconnected.Query("state", TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.CurrentDirectory = oldDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
     [Fact]
     public void Wire_frame_is_bounded_and_decodes_utf8_by_bytes()
     {
@@ -34,6 +288,110 @@ public sealed class StdioTransportTests
         Assert.Empty(noMultiFrame.ToArray());
         WireFrame.Write(noMultiFrame, "{\"text\":\"line1\\nline2\"}");
         Assert.Equal("{\"text\":\"line1\\nline2\"}\n", System.Text.Encoding.UTF8.GetString(noMultiFrame.ToArray()));
+    }
+
+    [Fact]
+    public void Client_uses_negotiated_legacy_replay_and_rejects_unadvertised_operations()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-legacy-client-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var helper = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+                ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
+            using var client = StdioOmniClient.Start(helper, ["legacy-stdio"], root,
+                cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Contains("events.replay", client.Capabilities);
+            Assert.DoesNotContain("events.replay.page", client.Capabilities);
+            Assert.Empty(client.SubscribeSince(1));
+            Assert.Throws<NotSupportedException>(() => client.ReadReplayPage(1,
+                cancellationToken: TestContext.Current.CancellationToken));
+            Assert.Throws<NotSupportedException>(() => client.LookupCommandResult(
+                WireEnvelope.Command("m9-legacy-cmd", "{\"cmd\":\"session.input\",\"text\":\"x\"}"),
+                TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void Empty_replay_completes_and_utf8_budgeted_pages_retain_all_events()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-replay-budget-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        Directory.CreateDirectory(workspace);
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldDirectory = Environment.CurrentDirectory;
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", Path.Combine(root, "data"));
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(root, "config"));
+            Environment.CurrentDirectory = workspace;
+            var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            using (var emptyHost = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace,
+                cancellationToken: TestContext.Current.CancellationToken))
+            {
+                Assert.Empty(emptyHost.SubscribeSince(1));
+                var emptyPage = emptyHost.ReadReplayPage(1, cancellationToken: TestContext.Current.CancellationToken);
+                Assert.True(emptyPage.Complete);
+                Assert.Empty(emptyPage.Events);
+                Assert.Null(emptyPage.SessionId);
+            }
+
+            var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            var session = OmniCore.Domain.SessionId.New();
+            var codecs = EventCodecs.Create();
+            using (var seed = new SqliteEventStore(journal))
+            {
+                var stream = new EventStream(seed, codecs, session);
+                stream.Append(new OmniCore.Domain.SessionCreated(session,
+                    OmniCore.Domain.WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
+                    workspace, OmniCore.Domain.ProfileId.New(), DateTimeOffset.UtcNow));
+                var run = OmniCore.Domain.RunId.New();
+                stream.Append(new OmniCore.Domain.RunCreated(run, session, "large replay", OmniCore.Domain.RunMode.Act,
+                    OmniCore.Domain.ExecutionStrategy.Direct, OmniCore.Domain.FailurePolicy.BlockDependents,
+                    new OmniCore.Domain.TaskBudget(null, null, null, null), OmniCore.Domain.TaskId.New(), DateTimeOffset.UtcNow));
+                stream.Append(new OmniCore.Domain.RunStarted(run));
+                for (var i = 0; i < 129; i++)
+                    stream.Append(new OmniCore.Domain.UserInputReceived(run,
+                        System.Text.Json.JsonSerializer.Serialize(new string('x', 10_000)), null));
+            }
+
+            using var client = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace,
+                cancellationToken: TestContext.Current.CancellationToken);
+            var page = client.ReadReplayPage(1, session.ToString(), pageSize: 128,
+                cancellationToken: TestContext.Current.CancellationToken);
+            Assert.False(page.HasGap);
+            Assert.Equal(132, page.HighWater);
+            Assert.InRange(page.Events.Count, 1, 127); // the 128-row response exceeds the UTF-8 frame budget.
+            var events = new List<WireEnvelope>(page.Events);
+            var cursor = page.NextSequence;
+            var pages = 1;
+            while (!page.Complete)
+            {
+                page = client.ReadReplayPage(cursor, page.SessionId, pageSize: 128, highWater: 132,
+                    cancellationToken: TestContext.Current.CancellationToken);
+                Assert.False(page.HasGap);
+                Assert.Equal(132, page.HighWater);
+                Assert.True(page.NextSequence > cursor);
+                events.AddRange(page.Events);
+                cursor = page.NextSequence;
+                Assert.InRange(++pages, 1, 10);
+            }
+            Assert.Equal(131, events.Count);
+            Assert.Equal(131, events.Select(item => item.MessageId).Distinct(StringComparer.Ordinal).Count());
+
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.CurrentDirectory = oldDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
     }
 
     [Fact]
@@ -117,7 +475,7 @@ public sealed class StdioTransportTests
     {
         var path = Path.Combine(AppContext.BaseDirectory, "protocol", "stdio", "1.0", "goldens.jsonl");
         var frames = File.ReadAllLines(path);
-        Assert.Equal(8, frames.Length);
+        Assert.Equal(12, frames.Length);
         foreach (var frame in frames)
         {
             Assert.InRange(System.Text.Encoding.UTF8.GetByteCount(frame), 1, StdioProtocol.MaximumFrameBytes);

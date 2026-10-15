@@ -46,6 +46,9 @@ public static class WorktreeCleanupHost
             if (journal is not IWorkspaceJournalReader reader)
                 return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
             var codecs = EventCodecs.Create();
+            if (!AcquireWorkspaceLeases(journal, codecs,
+                WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root)).ToString()))
+                return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
             var artifacts = OmniHost.CreateArtifactStore(dataRoot);
             if (HasUnfinishedLane(reader, journal, codecs, identity)
                 || HasActiveWorkflowConsumer(reader, journal, codecs, artifacts,
@@ -93,6 +96,9 @@ public static class WorktreeCleanupHost
     {
         if (journal is not IWorkspaceJournalReader reader)
             return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+        if (journal is SqliteEventStore sqlite && !AcquireWorkspaceLeases(sqlite, codecs,
+            WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root)).ToString()))
+            return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
         var loaded = await store.LoadIdentityAsync(root, dataRoot, ownershipId, cancellationToken).ConfigureAwait(false);
         if (!loaded.Succeeded || loaded.Worktree is not { } identity)
             return WorktreeCleanupOutcome.Failure(loaded.Error ?? GitWorktreeErrorCode.OwnershipMismatch);
@@ -108,6 +114,25 @@ public static class WorktreeCleanupHost
                 WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root)).ToString(), identity.OwnershipId))
             return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
         return await store.CleanupAsync(identity.Ownership, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static bool AcquireWorkspaceLeases(SqliteEventStore store, IEventCodecRegistry codecs, string workspaceId)
+    {
+        var sessions = ((IWorkspaceJournalReader)store).ReadEvents(EventType.Of("session.created"))
+            .Select(codecs.Decode).OfType<SessionCreated>()
+            .Where(item => item.WorkspaceId == workspaceId).Select(item => item.SessionId).Distinct().ToArray();
+        var newlyAcquired = new List<SessionId>();
+        try
+        {
+            foreach (var session in sessions)
+                if (store.AcquireSessionWriterLease(session)) newlyAcquired.Add(session);
+            return true;
+        }
+        catch (SessionWriterLeaseUnavailableException)
+        {
+            foreach (var session in newlyAcquired) store.ReleaseSessionWriterLease(session);
+            return false;
+        }
     }
 
     internal static bool HasUnfinishedLane(IWorkspaceJournalReader reader, IEventStore journal,

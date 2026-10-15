@@ -6,6 +6,7 @@
     <RootNamespace>OmniCore.SandboxTestProcess</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\src\OmniCore.Infrastructure\OmniCore.Infrastructure.csproj" />
     <Using Remove="Xunit" />
   </ItemGroup>
 </Project>

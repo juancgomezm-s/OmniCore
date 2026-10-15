@@ -196,13 +196,15 @@ public sealed class CliApp
         }
 
         StdioOmniClient client;
+        string executable;
+        List<string> childArgs;
         try
         {
             var processPath = Environment.ProcessPath
                 ?? throw new InvalidOperationException("Current executable path is unavailable.");
             var isDotnetHost = Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase);
-            var executable = processPath;
-            var childArgs = new List<string>();
+            executable = processPath;
+            childArgs = new List<string>();
             if (isDotnetHost)
             {
                 var entryAssembly = Path.Combine(AppContext.BaseDirectory, "omni.dll");
@@ -223,7 +225,7 @@ public sealed class CliApp
             return Task.FromResult(1);
         }
 
-        using (client)
+        try
         {
             try
             {
@@ -247,7 +249,20 @@ public sealed class CliApp
                     }
                     var input = string.Join(" ", args.Skip(2));
                     var inputPayload = "{" + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", input) + "}";
-                    var inputAck = client.Send(WireEnvelope.Command(Ids.NewV7(), inputPayload), CancellationToken.None);
+                    var command = WireEnvelope.Command(Ids.NewV7(), inputPayload);
+                    CommandAck inputAck;
+                    string? inputSessionId = null;
+                    try { inputAck = client.Send(command, CancellationToken.None); }
+                    catch (Exception ex) when (ex is IOException or InvalidDataException or EndOfStreamException)
+                    {
+                        // A lost ACK is never resent. Start a fresh Host and resolve the durable
+                        // receipt by command ID + content hash; Unknown remains an honest failure.
+                        client.Dispose();
+                        client = StdioOmniClient.Start(executable, childArgs, Environment.CurrentDirectory);
+                        var recovered = client.LookupCommandResult(command, CancellationToken.None);
+                        inputAck = recovered.Ack;
+                        inputSessionId = recovered.SessionId;
+                    }
                     Console.WriteLine("{" + JsonObj.Field("status", inputAck.Status) + "," + JsonObj.Field("outcome",
                         inputAck.Outcome?.Kind.ToString() ?? "Unknown") + "," + JsonObj.FieldRaw("firstSeq",
                         inputAck.FirstSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
@@ -258,7 +273,20 @@ public sealed class CliApp
                         Console.Error.WriteLine(inputAck.Error ?? Loc().Resolve("cli.stdio.command_rejected"));
                         return Task.FromResult(1);
                     }
-                    foreach (var envelope in client.SubscribeSince(inputAck.FirstSeq ?? 1))
+                    if (inputSessionId is null)
+                    {
+                        var identity = client.Query("sessionIdentity", CancellationToken.None);
+                        if (identity is not null)
+                        {
+                            try
+                            {
+                                using var identityDocument = System.Text.Json.JsonDocument.Parse(identity.Json);
+                                inputSessionId = identityDocument.RootElement.GetProperty("sessionId").GetString();
+                            }
+                            catch (System.Text.Json.JsonException) { }
+                        }
+                    }
+                    foreach (var envelope in client.SubscribeSince(inputSessionId, inputAck.FirstSeq ?? 1))
                         new JsonRenderer().Emit(envelope);
                     var stateAfterInput = client.Query("state", CancellationToken.None);
                     if (stateAfterInput is not null) Console.WriteLine(stateAfterInput.Json);
@@ -290,6 +318,7 @@ public sealed class CliApp
                 return Task.FromResult(1);
             }
         }
+        finally { client.Dispose(); }
     }
 
     internal static bool IsStdioAckSuccessful(CommandAck ack) =>

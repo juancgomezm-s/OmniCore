@@ -2,6 +2,7 @@ using System.Globalization;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Host;
 using OmniCore.Infrastructure;
 using Task = System.Threading.Tasks.Task;
 
@@ -174,32 +175,106 @@ public sealed class JournalEnvelopeTests
     }
 
     [Fact]
-    public async Task Two_writers_on_the_same_journal_never_reuse_a_sequence()
+    public void A_second_writer_cannot_open_a_stale_projection_for_the_same_session()
     {
         var path = TempJournal();
         var session = SessionId.New();
         new SqliteEventStore(path).Close(); // crea el esquema antes de competir
         const int perWriter = 40;
+        var first = new SqliteEventStore(path);
+        var firstStream = new EventStream(first, EventCodecs.Create(), session);
+        first.AcquireSessionWriterLease(session);
+        for (var i = 0; i < perWriter; i++) firstStream.Append(Neutral());
 
-        void Write()
+        using (var second = new SqliteEventStore(path))
         {
-            var store = new SqliteEventStore(path);
-            var stream = new EventStream(store, EventCodecs.Create(), session);
-            for (var i = 0; i < perWriter; i++)
-            {
-                stream.Append(Neutral());
-            }
-
-            store.Close();
+            Assert.Throws<SessionWriterLeaseUnavailableException>(() => second.AcquireSessionWriterLease(session));
+            Assert.Throws<SessionWriterLeaseUnavailableException>(() =>
+                new EventStream(second, EventCodecs.Create(), session).Append(Neutral()));
         }
 
-        await Task.WhenAll(Task.Run(Write, TestContext.Current.CancellationToken),
-            Task.Run(Write, TestContext.Current.CancellationToken));
+        first.Close();
+        using (var second = new SqliteEventStore(path))
+        {
+            var stream = new EventStream(second, EventCodecs.Create(), session);
+            second.AcquireSessionWriterLease(session);
+            for (var i = 0; i < perWriter; i++) stream.Append(Neutral());
+        }
 
-        var reader = new SqliteEventStore(path);
+        using var reader = new SqliteEventStore(path);
         var sequences = reader.ReadFrom(session, 1).Select(e => e.Sequence).ToArray();
-        reader.Close();
         Assert.Equal(Enumerable.Range(1, 2 * perWriter).Select(i => (long) i), sequences);
+    }
+
+    [Fact]
+    public void Failed_workspace_lease_sweep_preserves_leases_owned_before_the_sweep()
+    {
+        var testRoot = Path.Combine(Path.GetTempPath(), "omnicore-lease-sweep", Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(testRoot, "workspace");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var path = Path.Combine(testRoot, "journal.db");
+            var workspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString();
+            var sessionA = SessionId.New();
+            var sessionB = SessionId.New();
+            var codecs = EventCodecs.Create();
+            using (var seed = new SqliteEventStore(path))
+            {
+                var events = new EventStream(seed, codecs, sessionA);
+                events.Append(new SessionCreated(sessionA, workspaceId, workspace, ProfileId.New(), DateTimeOffset.UtcNow));
+                new EventStream(seed, codecs, sessionB).Append(
+                    new SessionCreated(sessionB, workspaceId, workspace, ProfileId.New(), DateTimeOffset.UtcNow));
+            }
+
+            using var sweepingStore = new SqliteEventStore(path);
+            using var competingStore = new SqliteEventStore(path);
+            using var thirdStore = new SqliteEventStore(path);
+            Assert.True(sweepingStore.AcquireSessionWriterLease(sessionA));
+            Assert.True(competingStore.AcquireSessionWriterLease(sessionB));
+
+            Assert.False(WorktreeCleanupHost.AcquireWorkspaceLeases(sweepingStore, codecs, workspaceId));
+            Assert.Throws<SessionWriterLeaseUnavailableException>(() => thirdStore.AcquireSessionWriterLease(sessionA));
+            Assert.False(competingStore.AcquireSessionWriterLease(sessionB));
+        }
+        finally
+        {
+            try { if (Directory.Exists(testRoot)) Directory.Delete(testRoot, recursive: true); }
+            catch (IOException) { /* SQLite may still own pooled handles; the isolated temp root is disposable. */ }
+        }
+    }
+
+    [Fact]
+    public void Replay_is_paged_from_sql_and_reports_purge_gap_with_durable_highwater()
+    {
+        var path = TempJournal();
+        var session = SessionId.New();
+        using var store = new SqliteEventStore(path);
+        var stream = new EventStream(store, EventCodecs.Create(), session);
+        for (var i = 0; i < 300; i++) stream.Append(Neutral());
+
+        var first = store.ReadPage(session, 1, 100);
+        Assert.Equal(100, first.Events.Count);
+        Assert.Equal(101, first.NextSequence);
+        Assert.Equal(300, first.HighWater);
+        Assert.False(first.Complete);
+        stream.Append(Neutral()); // A pinned replay must not chase this later write.
+        var second = store.ReadPage(session, first.NextSequence, 100, first.HighWater);
+        Assert.Equal(100, second.Events.Count);
+        Assert.Equal(201, second.NextSequence);
+        var last = store.ReadPage(session, second.NextSequence, 100, first.HighWater);
+        Assert.Equal(100, last.Events.Count);
+        Assert.True(last.Complete);
+        var later = store.ReadPage(session, last.NextSequence, 100);
+        Assert.Single(later.Events);
+        Assert.Equal(301, later.HighWater);
+
+        store.PurgeSession(session, TestContext.Current.CancellationToken);
+        var purged = store.ReadPage(session, 1, 100);
+        Assert.True(purged.HasGap);
+        Assert.True(purged.Complete);
+        Assert.Equal(301, purged.HighWater);
+        Assert.Empty(purged.Events);
     }
 
     // ── Transiciones canónicas (EPIC-003) ──────────────────────────────────────────────

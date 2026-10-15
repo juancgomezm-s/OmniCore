@@ -7,12 +7,15 @@ public static class StdioProtocol
     public const string QueryOperation = "query";
     public const string SubscribeOperation = "subscribe";
     public const string CommandOperation = "command";
+    public const string CommandResultOperation = "command.result";
+    public const string ReplayPageOperation = "events.replay.page";
 
     public static readonly string[] SupportedCapabilities =
     [
         "command.sim",
         "command.sim.resume",
         "command.session.input",
+        "command.result.lookup",
         "query.state",
         "query.sessionIdentity",
         "query.workingState",
@@ -22,6 +25,7 @@ public static class StdioProtocol
         "query.agents",
         "query.sessionObservability",
         "events.replay",
+        "events.replay.page",
     ];
 
     public static bool IsSupportedQuery(string name) => name is "state" or "sessionIdentity" or "workingState" or "commands"

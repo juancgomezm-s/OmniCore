@@ -44,6 +44,7 @@ public sealed class SessionPurger
     public PurgeResult? Purge(SessionId sessionId, WorkspaceId? workspace, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
+        _store.AcquireSessionWriterLease(sessionId);
         var events = _store.CountEvents(sessionId);
         if (events == 0)
         {
