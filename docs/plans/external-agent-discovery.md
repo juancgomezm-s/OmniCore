@@ -107,11 +107,12 @@ memoria, no para ampliar la raíz de lectura. Si la confianza del root no se pue
 archivos quedan inactivos y visibles. No se ofrece paridad de extensiones de ejecución Claude (hooks/fork/model), imports
 remotos/recursivos OpenCode ni memorias internas Codex no incluidas en esa allowlist.
 
-La validación se registra en `docs/validation/m9-block-g-20261015.md`. Incluye pruebas de catálogo,
-instrucciones, `skill.load` y requests capturados, invalidación/revocación, diálogo y consulta desde
-Electron con Host real y perfil temporal. Son fixtures offline; no se leyó el perfil del usuario ni
-se declara M9 cerrado, M8 OR5 aceptado, aceptación live/manual TUI de F/F2, o verificación completa
-multi-OS/cuatro idiomas. Los conteos exactos se mantienen en esa acta tras la validación final.
+La validación se registra en `docs/validation/m9-block-g-20261015.md`: 77/77 pruebas focales Core,
+build multi-target sin advertencias, arquitectura 62/62, y una E2E Electron→Host con inventario,
+consentimiento global/proyecto y refresh de Session vacía; Coder build y catálogo IPC 138/138/138.
+Incluye requests capturados tras `skill.load`, invalidación/revocación, diálogo y consulta con
+perfiles temporales. Son fixtures offline; no se leyó el perfil del usuario ni se declara M9 cerrado,
+M8 OR5 aceptado, aceptación live/manual TUI de F/F2, ni validación completa multi-OS/cuatro idiomas.
 
 ## Fuentes de compatibilidad
 

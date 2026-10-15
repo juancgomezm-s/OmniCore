@@ -1,6 +1,6 @@
 # ADR-0053: Fuentes locales de agentes, activación portable y consentimiento Ask
 
-**Estado:** Aceptada para la construcción local M9-G; revisión e integración pendientes.
+**Estado:** Aceptada; implementación y validación local M9-G completadas en ramas de revisión. Integración pendiente.
 
 **Fecha:** 2026-10-15
 
@@ -45,3 +45,8 @@ El adaptador es aditivo y no cambia el schema durable ni eleva autoridad del mod
 no pretende replicar todos los formatos o extensiones de cada agente. M9-G no cierra M9; OR5 M8,
 validación multi-OS, aceptación manual TUI de F/F2 y aceptación live de generación de imagen continúan
 pendientes. Evidencia local en `docs/validation/m9-block-g-20261015.md`.
+
+La validación local incluye consentimiento stdio con proof ligado a la conexión, forma cerrada de
+payload, alcance global/proyecto separado y lecturas de estado tras cada allow/revoke. La UI
+Electron normaliza la identidad de Session vacía del Host a `null` antes de comparar el scope de
+consentimiento. Estas comprobaciones no equivalen a aceptación manual ni a validación en otros OS.
