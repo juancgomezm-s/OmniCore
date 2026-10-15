@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using OmniCore.Cli;
 using OmniCore.Client;
 using OmniCore.Engine;
@@ -213,6 +214,270 @@ public sealed class StdioTransportTests
         start.ArgumentList.Add("host");
         start.ArgumentList.Add("--stdio");
         return Process.Start(start) ?? throw new InvalidOperationException("Could not start raw stdio Host fixture.");
+    }
+
+    [Fact]
+    public async Task Trusted_stdio_actions_are_connection_bound_scoped_and_receipt_idempotent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-user-action-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        Directory.CreateDirectory(workspace);
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldDirectory = Environment.CurrentDirectory;
+        Process? host = null;
+        var key = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", Path.Combine(root, "data"));
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", Path.Combine(root, "config"));
+            Environment.CurrentDirectory = workspace;
+            var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            host = StartRawHost(cliDll, workspace, Convert.ToHexString(key));
+
+            var hello = RawExchange(host, WireEnvelope.FromJson(
+                "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"trusted-hello-1\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}"));
+            using var helloPayload = JsonDocument.Parse(hello.PayloadJson);
+            var capabilities = helloPayload.RootElement.GetProperty("capabilities").EnumerateArray()
+                .Select(item => item.GetString()).ToHashSet(StringComparer.Ordinal);
+            Assert.Contains("command.session.input", capabilities); // M9-A/B generic behavior remains available.
+            Assert.Contains("command.session.input.user", capabilities);
+            Assert.Contains("query.humanActionScope", capabilities);
+            var nonce = helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!;
+
+            var scopeResponse = RawExchange(host, WireEnvelope.Command("scope-query-1",
+                "{\"operation\":\"query\",\"name\":\"humanActionScope\"}"));
+            using var scopePayload = JsonDocument.Parse(scopeResponse.PayloadJson);
+            var initialScope = JsonDocument.Parse(scopePayload.RootElement.GetProperty("json").GetString()!);
+            Assert.Equal(JsonValueKind.Null, initialScope.RootElement.GetProperty("sessionId").ValueKind);
+            Assert.Equal(JsonValueKind.Null, initialScope.RootElement.GetProperty("runId").ValueKind);
+
+            const string guardedInputJson = "{\"cmd\":\"session.input\",\"text\":\"no debe pasar sin firma valida\",\"mode\":\"plan\",\"expectedRevision\":null}";
+            var forgedCommand = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), guardedInputJson);
+            var forgedOuter = TrustedActionEnvelope(forgedCommand, key, nonce, workspace, null, null);
+            var signature = JsonDocument.Parse(forgedOuter.PayloadJson).RootElement.GetProperty("actionProof").GetProperty("signature").GetString()!;
+            var tamperedSignature = signature[..^1] + (signature[^1] == '0' ? "1" : "0");
+            var invalidSignature = Ack(RawExchange(host, WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                forgedOuter.PayloadJson.Replace(signature, tamperedSignature, StringComparison.Ordinal))));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, invalidSignature.Outcome?.Kind);
+            Assert.Contains("trusted_action_invalid", invalidSignature.Error, StringComparison.Ordinal);
+
+            var wrongWorkspace = Ack(RawExchange(host, TrustedActionEnvelope(
+                WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), guardedInputJson), key, nonce,
+                workspace + "-alias", null, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, wrongWorkspace.Outcome?.Kind);
+            Assert.Contains("trusted_action_invalid", wrongWorkspace.Error, StringComparison.Ordinal);
+            var afterInvalidScope = RawExchange(host, WireEnvelope.Command("scope-after-invalid-proof",
+                "{\"operation\":\"query\",\"name\":\"humanActionScope\"}"));
+            using (var afterInvalidPayload = JsonDocument.Parse(afterInvalidScope.PayloadJson))
+            using (var afterInvalid = JsonDocument.Parse(afterInvalidPayload.RootElement.GetProperty("json").GetString()!))
+            {
+                Assert.Equal(JsonValueKind.Null, afterInvalid.RootElement.GetProperty("sessionId").ValueKind);
+                Assert.Equal(JsonValueKind.Null, afterInvalid.RootElement.GetProperty("runId").ValueKind);
+            }
+
+            const string inputJson = "{\"cmd\":\"session.input\",\"text\":\"Entrada humana sin inferencia\",\"mode\":\"plan\",\"expectedRevision\":null}";
+            var command = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), inputJson);
+            var validOuter = TrustedActionEnvelope(command, key, nonce, workspace, null, null);
+            var accepted = Ack(RawExchange(host, validOuter));
+            Assert.True(accepted.Status == "ok", accepted.Error);
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, accepted.Outcome?.Kind);
+            var changedPayload = WireEnvelope.Command(command.MessageId,
+                  "{\"cmd\":\"session.input\",\"text\":\"alterado\",\"mode\":\"plan\",\"expectedRevision\":null}");
+            var changedIdResult = Ack(RawExchange(host, TrustedActionEnvelope(
+                changedPayload, key, nonce, workspace, null, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, changedIdResult.Outcome?.Kind);
+            Assert.Contains("command_id_conflict", changedIdResult.Error, StringComparison.Ordinal);
+
+            // A repeated exact proof can only return the original durable receipt, even though
+            // the first input created a Session and the current Host pointer is no longer null.
+            var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            var createdSession = OmniCore.Domain.SessionId.Parse(ReadCurrentSessionId(host));
+            long eventCount;
+            using (var read = new SqliteEventStore(journal, readOnly: true))
+                eventCount = read.CountEvents(createdSession);
+            var repeated = Ack(RawExchange(host, validOuter));
+            Assert.Equal(accepted.FirstSeq, repeated.FirstSeq);
+            using (var read = new SqliteEventStore(journal, readOnly: true))
+                Assert.Equal(eventCount, read.CountEvents(createdSession));
+
+            var runScope = ReadCurrentScope(host);
+            var selectMode = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"run.mode.select\",\"runId\":\"" + runScope.RunId
+                + "\",\"mode\":\"act\",\"expectedRevision\":"
+                + runScope.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}");
+            var modeProof = TrustedActionEnvelope(selectMode, key, nonce, workspace, runScope.SessionId, runScope.RunId);
+            var modeAck = Ack(RawExchange(host, modeProof));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, modeAck.Outcome?.Kind);
+            Assert.Equal(modeAck.FirstSeq, Ack(RawExchange(host, modeProof)).FirstSeq); // Receipt, never a second mode effect.
+
+            var unrelatedRunId = OmniCore.Protocol.Ids.NewV7();
+            var wrongRunCommand = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"run.interrupt\",\"runId\":\"" + unrelatedRunId + "\"}");
+            long beforeWrongRun;
+            using (var read = new SqliteEventStore(journal, readOnly: true)) beforeWrongRun = read.CountEvents(OmniCore.Domain.SessionId.Parse(runScope.SessionId));
+            var wrongRunAck = Ack(RawExchange(host, TrustedActionEnvelope(wrongRunCommand, key, nonce,
+                workspace, runScope.SessionId, unrelatedRunId)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, wrongRunAck.Outcome?.Kind);
+            Assert.Contains("trusted_action_scope_changed", wrongRunAck.Error, StringComparison.Ordinal);
+            using (var read = new SqliteEventStore(journal, readOnly: true))
+                Assert.Equal(beforeWrongRun, read.CountEvents(OmniCore.Domain.SessionId.Parse(runScope.SessionId)));
+
+            // A UI preflight can race another queued mode change. The signed input carries
+            // the revision it reviewed; the Host revalidates it under writer ownership.
+            var inputFromStalePlan = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"session.input\",\"text\":\"no debe registrarse en Act\",\"mode\":\"plan\",\"expectedRevision\":"
+                + runScope.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}");
+            long beforeStaleInput;
+            using (var read = new SqliteEventStore(journal, readOnly: true)) beforeStaleInput = read.CountEvents(OmniCore.Domain.SessionId.Parse(runScope.SessionId));
+            var staleInputAck = Ack(RawExchange(host, TrustedActionEnvelope(inputFromStalePlan, key, nonce,
+                workspace, runScope.SessionId, runScope.RunId)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, staleInputAck.Outcome?.Kind);
+            Assert.Contains("trusted_action_scope_changed", staleInputAck.Error, StringComparison.Ordinal);
+            using (var read = new SqliteEventStore(journal, readOnly: true))
+                Assert.Equal(beforeStaleInput, read.CountEvents(OmniCore.Domain.SessionId.Parse(runScope.SessionId)));
+            var staleHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(inputFromStalePlan.PayloadJson)));
+            var staleLookup = RawExchange(host, WireEnvelope.Command("lookup-stale-input",
+                "{\"operation\":\"command.result\",\"commandId\":\"" + inputFromStalePlan.MessageId
+                + "\",\"requestHash\":\"" + staleHash + "\"}"));
+            using (var staleResult = JsonDocument.Parse(staleLookup.PayloadJson))
+            {
+                Assert.Equal("completed", staleResult.RootElement.GetProperty("state").GetString());
+                Assert.Equal("Rejected", staleResult.RootElement.GetProperty("ack").GetProperty("outcome").GetString());
+                Assert.Equal(JsonValueKind.Null, staleResult.RootElement.GetProperty("ack").GetProperty("firstSeq").ValueKind);
+                Assert.Equal(JsonValueKind.Null, staleResult.RootElement.GetProperty("ack").GetProperty("lastSeq").ValueKind);
+            }
+
+            var cancel = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"run.cancel\",\"runId\":\"" + runScope.RunId + "\"}");
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                Ack(RawExchange(host, TrustedActionEnvelope(cancel, key, nonce, workspace,
+                    runScope.SessionId, runScope.RunId))).Outcome?.Kind);
+            var nextInput = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                  "{\"cmd\":\"session.input\",\"text\":\"segunda entrada\",\"mode\":\"plan\",\"expectedRevision\":null}");
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                Ack(RawExchange(host, TrustedActionEnvelope(nextInput, key, nonce, workspace,
+                    runScope.SessionId, null))).Outcome?.Kind);
+            var nextRunScope = ReadCurrentScope(host);
+
+            var interrupt = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"run.interrupt\",\"runId\":\"" + nextRunScope.RunId + "\"}");
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                Ack(RawExchange(host, TrustedActionEnvelope(interrupt, key, nonce, workspace,
+                    nextRunScope.SessionId, nextRunScope.RunId))).Outcome?.Kind);
+
+            // Reusing the old proof on a fresh connection fails because its nonce is different.
+            host.Kill(entireProcessTree: true);
+            await host.WaitForExitAsync(TestContext.Current.CancellationToken);
+            host.Dispose();
+            host = StartRawHost(cliDll, workspace, Convert.ToHexString(key));
+            var newHello = RawExchange(host, WireEnvelope.FromJson(
+                "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"trusted-hello-2\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}"));
+            using var newHelloPayload = JsonDocument.Parse(newHello.PayloadJson);
+            var newNonce = newHelloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!;
+            Assert.NotEqual(nonce, newNonce);
+            var oldProof = TrustedActionEnvelope(command, key, nonce, workspace, null, null);
+            var oldProofResponse = Ack(RawExchange(host, oldProof));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, oldProofResponse.Outcome?.Kind);
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                try { if (!host.HasExited) host.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                try { if (!host.HasExited) await host.WaitForExitAsync(TestContext.Current.CancellationToken); } catch (InvalidOperationException) { }
+                host.Dispose();
+            }
+            CryptographicOperations.ZeroMemory(key);
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.CurrentDirectory = oldDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    private static Process StartRawHost(string cliDll, string workspace, string? bootstrap)
+    {
+        var start = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = workspace,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        if (bootstrap is not null) start.Environment["OMNICORE_TRUSTED_ACTION_BOOTSTRAP"] = bootstrap;
+        start.ArgumentList.Add(cliDll);
+        start.ArgumentList.Add("host");
+        start.ArgumentList.Add("--stdio");
+        return Process.Start(start) ?? throw new InvalidOperationException("Could not start raw stdio Host fixture.");
+    }
+
+    private static WireEnvelope RawExchange(Process host, WireEnvelope request)
+    {
+        WireFrame.Write(host.StandardInput.BaseStream, request.ToJson());
+        var frame = WireFrame.Read(host.StandardOutput.BaseStream)
+            ?? throw new EndOfStreamException("Host closed before its response.");
+        var response = WireEnvelope.FromJson(frame);
+        Assert.Equal(request.MessageId, response.MessageId);
+        return response;
+    }
+
+    private static string ReadCurrentSessionId(Process host)
+    {
+        var response = RawExchange(host, WireEnvelope.Command("scope-query-" + Guid.NewGuid().ToString("N"),
+            "{\"operation\":\"query\",\"name\":\"humanActionScope\"}"));
+        using var payload = JsonDocument.Parse(response.PayloadJson);
+        using var scope = JsonDocument.Parse(payload.RootElement.GetProperty("json").GetString()!);
+        return scope.RootElement.GetProperty("sessionId").GetString()
+            ?? throw new InvalidOperationException("Session scope missing.");
+    }
+
+    private static (string SessionId, string RunId, long Revision) ReadCurrentScope(Process host)
+    {
+        var response = RawExchange(host, WireEnvelope.Command("scope-query-" + Guid.NewGuid().ToString("N"),
+            "{\"operation\":\"query\",\"name\":\"humanActionScope\"}"));
+        using var payload = JsonDocument.Parse(response.PayloadJson);
+        using var scope = JsonDocument.Parse(payload.RootElement.GetProperty("json").GetString()!);
+        return (scope.RootElement.GetProperty("sessionId").GetString()!,
+            scope.RootElement.GetProperty("runId").GetString()!, scope.RootElement.GetProperty("revision").GetInt64());
+    }
+
+    private static WireEnvelope TrustedActionEnvelope(WireEnvelope command, byte[] key, string nonce,
+        string workspace, string? expectedSessionId, string? expectedRunId)
+    {
+        var canonical = Path.GetFullPath(workspace).Replace('\\', '/').TrimEnd('/');
+        if (OperatingSystem.IsWindows()) canonical = canonical.ToLowerInvariant();
+        var workspaceHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+        var payloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+        var signed = string.Join("\n", "omnicore-user-action-v1", nonce, command.MessageId, payloadHash,
+            workspaceHash, expectedSessionId ?? "-", expectedRunId ?? "-");
+        var signature = Convert.ToHexString(HMACSHA256.HashData(key, Encoding.UTF8.GetBytes(signed)));
+        var sessionJson = expectedSessionId is null ? "null" : "\"" + expectedSessionId + "\"";
+        var runJson = expectedRunId is null ? "null" : "\"" + expectedRunId + "\"";
+        var payload = "{\"operation\":\"command\",\"command\":" + command.ToJson()
+            + ",\"actionProof\":{\"nonce\":\"" + nonce + "\",\"expectedSessionId\":" + sessionJson
+            + ",\"expectedRunId\":" + runJson + ",\"signature\":\"" + signature + "\"}}";
+        return WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), payload);
+    }
+
+    private static CommandAck Ack(WireEnvelope response)
+    {
+        using var document = JsonDocument.Parse(response.PayloadJson);
+        var ack = document.RootElement.GetProperty("ack");
+        var kind = ack.GetProperty("outcome").GetProperty("kind").GetString();
+        return new CommandAck(ack.GetProperty("commandId").GetString()!, ack.GetProperty("status").GetString()!,
+            ack.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? error.GetString() : null,
+            kind switch
+            {
+                "Accepted" => RuntimeCommandOutcome.Accepted(),
+                "Rejected" => RuntimeCommandOutcome.Rejected(),
+                "Deferred" => RuntimeCommandOutcome.Deferred("unknown"),
+                _ => null,
+            },
+            ack.TryGetProperty("firstSeq", out var first) && first.ValueKind == JsonValueKind.Number ? first.GetInt64() : null,
+            ack.TryGetProperty("lastSeq", out var last) && last.ValueKind == JsonValueKind.Number ? last.GetInt64() : null);
     }
 
     [Fact]

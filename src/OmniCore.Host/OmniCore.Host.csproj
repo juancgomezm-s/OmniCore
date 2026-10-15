@@ -21,6 +21,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Schemas/*.schema.json" />
     <InternalsVisibleTo Include="OmniCore.Tests" />
+    <InternalsVisibleTo Include="omni" />
   </ItemGroup>
 
 </Project>

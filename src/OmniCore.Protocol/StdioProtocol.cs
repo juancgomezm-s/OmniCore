@@ -28,8 +28,19 @@ public static class StdioProtocol
         "events.replay.page",
     ];
 
-    public static bool IsSupportedQuery(string name) => name is "state" or "sessionIdentity" or "workingState" or "commands"
-        or "sessionSidebar" or "changedFiles" or "agents" or "sessionObservability";
+    /// <summary>Capabilities available only to a stdio connection with a private user-action bootstrap.</summary>
+    public static readonly string[] TrustedUserActionCapabilities =
+    [
+        "command.session.input.user",
+        "command.run.interrupt.user",
+        "command.run.cancel.user",
+        "command.run.mode.select.user",
+        "query.humanActionScope",
+    ];
 
-    public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input";
+    public static bool IsSupportedQuery(string name) => name is "state" or "sessionIdentity" or "workingState" or "commands"
+        or "sessionSidebar" or "changedFiles" or "agents" or "sessionObservability" or "humanActionScope";
+
+    public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
+        or "run.interrupt" or "run.cancel" or "run.mode.select";
 }
