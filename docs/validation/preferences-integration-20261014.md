@@ -24,6 +24,10 @@ Tras integrar también el nuevo main con M9-D, se reconstruyó y ejecutó una fo
 
 Se incorporó localmente también `b673091`, reparación final de CI/Linux y WAL de Windows, sin conflictos. Sobre esa combinación, la regresión completa de TUI/preferencias terminó con **341/341 PASS, 0 FAIL, 0 SKIP**, en 4m28s (`preferences-integrated-ci-compatible.log`). Esto reemplaza la expectativa antigua fallida de la primera pasada; no se suman los conjuntos anteriores. La interfaz se conserva en su rama local, sin incluirla en el PR de CI ni publicar la rama.
 
+La rama incluye después `3d0aa8b`, que endurece únicamente los scripts/evidencia del empaquetado. Se detectó además un commit local nuevo en main, `572dacc`: diferencia la superficie de preferencias (`#332B40`) del sidebar (`#202C3B`) y mantiene el modo sin color. Se conserva ese trabajo y su historial. El único conflicto estaba en la creación/ancho de la ventana; se mantuvieron la identidad `PreferenceFrame` del ajuste local y el ancho integrado del checkpoint confirmado, sin sustituir ninguno de los dos archivos completos.
+
+La combinación final pasa **10/10 focales** de layout/color, borrador, scroll y los cuatro idiomas, y **345/345 casos** de regresión de TUI/preferencias, sin fallos ni omisiones (4m39s). Los diez están incluidos en los 345. Logs `preferences-preserved-style-focal.log` y `preferences-preserved-style-full.log`. Los SVG de celdas reales se guardan en `preferences-preserved-style-captures`; las PNG de integración se actualizaron con ese último estilo. Las capturas originales de `bef4607` permanecen intactas. Se inspeccionó la nueva captura española; las vistas con sidebar abierto están en [120×35](assets/preferences-integration-20261014/settings-surface-distinct-120x35.png) y [80×25](assets/preferences-integration-20261014/settings-surface-distinct-80x25.png).
+
 ## Estado de publicación
 
 Preparación local. No se ha fusionado esta interfaz a main ni publicado la rama: el plan original excluía push. El estado de esta evidencia no equivale a la aprobación del CI de la reparación Linux.
