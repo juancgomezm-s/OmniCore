@@ -206,7 +206,7 @@ proveedores. Conserva logs, hashes, resúmenes y ANSI de los paquetes como artef
   permanecen en M8. El CI no configura ni consume la cuenta del usuario.
 - OAuth: las pruebas offline no acreditan login/inferencia real; el almacén AES-GCM
   Linux sigue siendo provisional según ADR-0018/0038, sin atribuir Secret Service.
-- M9/M10: M9-B ya integra lease, receipts, dedup/Unknown y replay/reconexión; 38 focales reales pasaron en Debian. Siguen pendientes autoridad humana externa, consumidor OmniCoder/TypeScript, push, media y procesos persistentes/ConPTY. M9 no se declara cerrado globalmente.
+- M9/M10: M9-B ya integra lease, receipts, dedup/Unknown y replay/reconexión; 38 focales reales pasaron en Debian. M9-C integró después el consumidor TypeScript de lectura y el supervisor Electron en Windows. Siguen pendientes autoridad humana externa, aceptación Linux del consumidor OmniCoder, chat/acciones, push, media y procesos persistentes/ConPTY. M9 no se declara cerrado globalmente.
 - Linux arm64 y macOS no se validaron por ejecutar Linux x64 en este equipo.
 ## Conservación del estilo aprobado
 
@@ -226,3 +226,9 @@ las pruebas ni se usa el código de esa envoltura como prueba de éxito.
 [Ubuntu CI sobre el mismo código](https://github.com/juancgomezm-s/OmniCore/actions/runs/38666001163/job/116198154334)
 y linux-package también aprobaron. La revisión posterior de fixtures Windows y stdin
 requiere una nueva pasada del CI antes de integrar.
+
+Main avanzó a `f823371` durante la última publicación. Se integró también M9-C,
+resolviendo únicamente solapamientos de documentación en CLAUDE.md y arquitectura: se
+conservan tanto el avance del consumidor Electron/TypeScript como la evidencia Linux.
+Los tres commits nuevos de main no cambian código Core ni estilos. La aceptación
+Windows del consumidor M9-C no acredita su interfaz Electron en Linux.
