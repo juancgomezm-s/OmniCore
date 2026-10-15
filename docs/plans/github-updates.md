@@ -9,7 +9,9 @@ existe; todavía no existe un servicio de actualizaciones de OmniCore.
 **Instalación manual actualizada (2026-10-15):** `scripts/install.ps1` y
 `scripts/install.sh` compilan el checkout actual, verifican el arranque y entregan
 a npm un paquete preparado. Repetirlos actualiza la instalación; Linux usa
-`~/.local` por defecto. Uso y requisitos en el README. Este recorrido manual
+`~/.local` por defecto. Uso y requisitos en el README;
+[aceptación Windows/Debian y CI Windows/Ubuntu](../validation/npm-install-update-20261015.md).
+Este recorrido manual
 no implementa el servicio de releases, comprobación ni rollback de M10.
 
 ## Distribución y canales

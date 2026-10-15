@@ -242,6 +242,9 @@ herramientas solamente en Windows no basta. Comprueba `node --version`,
 [Node.js](https://nodejs.org/en/download) y
 [.NET para Debian](https://learn.microsoft.com/dotnet/core/install/linux-debian).
 En WSL, utiliza una terminal interactiva como Windows Terminal.
+Si instalaste el SDK manualmente en `~/.dotnet`, agrega antes
+`export DOTNET_ROOT="$HOME/.dotnet"` y
+`export PATH="$DOTNET_ROOT:$PATH"` a la sesión y a `~/.profile`.
 
 ```bash
 git clone https://github.com/juancgomezm-s/OmniCore.git
