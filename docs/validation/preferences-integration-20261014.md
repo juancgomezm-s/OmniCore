@@ -1,4 +1,11 @@
-# Integración local de la referencia de preferencias
+# Integración de la referencia de preferencias
+
+**Estado al 2026-10-15:** el usuario autoriza expresamente integrar esta versión
+con main y subirla al remoto. Se incorpora el main local `22128b1` con M9-F/F2
+mediante `28f6a3a`, sin conflictos ni sustitución de archivos completos. Se
+conservan los controles nuevos del catálogo, modalidades y generación de imágenes;
+la validación de publicación se registra al final. La restricción inicial de push
+descrita en la historia siguiente queda levantada por esta autorización.
 
 El 14 de octubre de 2026 el usuario confirmó explícitamente la captura de preferencias del checkpoint `bef46075a4042e2559a73c3f88e4bb56268155d0`: «Sí, esta versión integrada». Se conserva la rama original y su historial; la integración se prepara en `codex/preferencias-integradas`, inicialmente sobre `f823371` y actualizada después a `0ffdadb88512b358760925de7f6ad7865c1ffa0f`, que incluye la implementación y documentación de M9-D.
 

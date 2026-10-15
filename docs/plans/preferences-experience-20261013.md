@@ -4,7 +4,9 @@ Plan aprobado el 13 de octubre de 2026. Mejorar la experiencia del centro de pre
 
 ## Alcance e integración
 
-Base confirmada de implementación: `2bd2fe448aac33084a9152bfb6416bca0c52c78b`. Trabajo aislado en `preferences-experience-20261013`, sin importar cambios no confirmados de memoria y M8 presentes en el checkout principal. Antes de integrar se revisarán las modificaciones concurrentes y se conservarán sus funciones. No se autoriza push, cambios de cuentas o credenciales, reinicios de servidores reales ni inferencias pagadas por este plan.
+Base confirmada de implementación: `2bd2fe448aac33084a9152bfb6416bca0c52c78b`. Trabajo aislado en `preferences-experience-20261013`, sin importar cambios no confirmados de memoria y M8 presentes en el checkout principal. Antes de integrar se revisarán las modificaciones concurrentes y se conservarán sus funciones. El alcance inicial excluía push, cambios de cuentas o credenciales, reinicios de servidores reales e inferencias pagadas.
+
+**Autorización de integración y publicación (2026-10-15):** el usuario indica «Ya integra esta versión de la interfaz con Main y súbela al remoto». Queda autorizada la publicación de la rama y su integración en main, conservando los cambios concurrentes. Siguen fuera de alcance los cambios de cuentas/credenciales, reinicios de servidores reales e inferencias pagadas.
 
 Referencia de producto: `omni_llama/examples/server/webui/src/components/SettingDialog.tsx`, `RuntimeSettings.tsx` y `utils/server-config.ts`, revisados en el checkout local de OmniLlama. Se reinterpreta su experiencia en Terminal.Gui; no se copia React ni se cambia el estilo de la conversación.
 
