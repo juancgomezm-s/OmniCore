@@ -240,3 +240,16 @@ de que cada control cabe en el viewport se ejecuta ahora en el hilo UI; no se ca
 el layout ni se amplían tolerancias. Catálogo/scrollbar después del ajuste:
 **4/4 PASS en Debian y 4/4 PASS en Windows**, sin omisiones, exit 0 en ambos.
 La integral y el empaquetado del PR siguen siendo obligatorios sobre la revisión final.
+
+La [integral de 0789ebf](https://github.com/juancgomezm-s/OmniCore/actions/runs/38668015994)
+aprobó Ubuntu (4553 casos, 4536 PASS, 17 SKIP, 0 FAIL, 8m45s) y linux-package.
+Windows ejecutó los 4553 casos: 4543 PASS, 2 FAIL, 8 SKIP, 27m03s. Persisten SQLite
+Error 10 después de matar el Host (ahora al abrir el writer, línea 144 del test) y
+el fallo Git /dev/null. El ajuste previo de readonly no resolvió el primero y el
+pipe válido de stdin no resolvió el segundo, aunque corrige un defecto independiente
+demostrado por el probe nativo. No se presenta esa integral Windows como verde.
+El runner usa Git 2.55.0.windows.5; este equipo tenía 2.54.0.windows.1. Se descarga
+la distribución oficial exacta a un directorio de diagnóstico, verificando su digest,
+sin cambiar Git instalado ni versiones del proyecto. Se añade temporalmente un job
+focal Windows para exponer SQLiteErrorCode/ExtendedErrorCode y el stderr completo;
+la matriz y todas las pruebas integrales siguen activas.

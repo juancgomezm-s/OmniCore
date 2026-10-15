@@ -95,6 +95,18 @@ public sealed class StdioTransportTests
         var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
         var oldDirectory = Environment.CurrentDirectory;
         Process? firstHost = null;
+        SqliteEventStore OpenJournal(string journal, bool readOnly = false)
+        {
+            try { return new SqliteEventStore(journal, readOnly); }
+            catch (Microsoft.Data.Sqlite.SqliteException error)
+            {
+                var files = string.Join(", ", Directory.GetFiles(Path.GetDirectoryName(journal)!)
+                    .Select(path => Path.GetFileName(path) + "=" + new FileInfo(path).Length));
+                throw new InvalidOperationException($"Journal open failed: readOnly={readOnly}; "
+                    + $"SQLite={error.SqliteErrorCode}/{error.SqliteExtendedErrorCode}; "
+                    + $"hostExited={firstHost?.HasExited}; files={files}", error);
+            }
+        }
         try
         {
             Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", Path.Combine(root, "data"));
@@ -119,7 +131,7 @@ public sealed class StdioTransportTests
             {
                 if (File.Exists(journal))
                 {
-                    using var read = new SqliteEventStore(journal, readOnly: true);
+                    using var read = OpenJournal(journal, readOnly: true);
                     receipt = read.ReadCommandReceipt(command.MessageId);
                     if (receipt?.State == CommandReceiptState.Completed) break;
                 }
@@ -130,7 +142,7 @@ public sealed class StdioTransportTests
             Assert.False(firstHost.HasExited);
             var session = OmniCore.Domain.SessionId.Parse(receipt.SessionId!);
             long committedCount;
-            using (var read = new SqliteEventStore(journal, readOnly: true))
+            using (var read = OpenJournal(journal, readOnly: true))
                 committedCount = read.CountEvents(session);
             firstHost.Kill(entireProcessTree: true); // response was deliberately left unread by this client.
             await firstHost.WaitForExitAsync(TestContext.Current.CancellationToken)
@@ -141,7 +153,7 @@ public sealed class StdioTransportTests
             // connection to recover an abruptly terminated Windows WAL.
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             var unknownId = "00000000-0000-7000-8000-000000000099";
-            using (var reserveUnknown = new SqliteEventStore(journal))
+            using (var reserveUnknown = OpenJournal(journal))
                 Assert.Equal(CommandReceiptState.Reserved,
                     reserveUnknown.ReserveCommandReceipt(unknownId, hash, sessionId: receipt.SessionId).State);
 
@@ -156,7 +168,7 @@ public sealed class StdioTransportTests
             var unknownAck = reconnected.Send(unknown, TestContext.Current.CancellationToken);
             Assert.Equal("unknown", unknownAck.Status);
             Assert.Contains("command_result_unknown", unknownAck.Error, StringComparison.Ordinal);
-            using var after = new SqliteEventStore(journal, readOnly: true);
+            using var after = OpenJournal(journal, readOnly: true);
             Assert.Equal(committedCount, after.CountEvents(session));
             Assert.Equal(CommandReceiptState.Unknown, after.ReadCommandReceipt(unknownId)?.State);
         }
