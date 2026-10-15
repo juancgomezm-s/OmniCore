@@ -1594,6 +1594,7 @@ public sealed partial class TuiApp
     // Menus (category lists and overlay title bars) use a violet slate so they never blend
     // into the blue-slate panel surface they sit next to.
     private const string MenuSurface = "#2E2647";
+    private const string PreferencesSurface = "#332B40";
 
     private static void ApplyTheme(View view, string surface = "#061822", bool dimmed = false)
     {
@@ -1602,16 +1603,17 @@ public sealed partial class TuiApp
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         if (view.Id == "omni-composer") surface = "#293648";
         else if (view.Id == "omni-composer-accent") surface = "#B47CE7";
-        else if (view.Id == "omni-panel" || view is FrameView
+        else if (view.Id == "preferences-center" || view is FrameView
             && (view.Id?.StartsWith("session-preferences", StringComparison.Ordinal) == true
                 || view.Id?.StartsWith("model-catalog-", StringComparison.Ordinal) == true
                 || view.Id is "policy-preferences" or "security-preferences" or "security-preferences-confirm"
-                    or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences")) surface = "#202C3B";
+                    or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences")) surface = PreferencesSurface;
+        else if (view.Id == "omni-panel") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = MenuSurface;
         else if (view.Id is "omni-model-list" or "tools-list" or "session-preferences-list" or "model-catalog-list"
             or "commands-list" or "security-rules" or "security-grants" or "diagnostics-configuration") surface = "#142636";
         else if (view.Id == "session-preferences-details") surface = "#1B2836";
-        else if (view.Id == "preferences-panel") surface = "#202C3B";
+        else if (view.Id == "preferences-panel") surface = PreferencesSurface;
         else if (view.Id == "preferences-categories") surface = MenuSurface;
         else if (view.Id is "preferences-search" or "commands-filter") surface = "#102331";
         else if (view is TextField) surface = "#293E51";

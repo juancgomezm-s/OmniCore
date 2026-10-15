@@ -37,6 +37,14 @@ public sealed partial class TuiApp
 
     private string Pref(string key) => _localization.Resolve("preferences.ui." + key);
 
+    private FrameView PreferenceFrame(string title, int height)
+    {
+        var frame = OverlayFrame(title, height);
+        // A stable surface identity survives recursive theme refreshes and resize.
+        frame.Id = "preferences-center";
+        return frame;
+    }
+
     private void ShowPreferences(string? categoryId = null, bool categoryPage = false)
     {
         if (_window is null || _overlay is not null) return;
@@ -78,7 +86,7 @@ public sealed partial class TuiApp
         var selected = categories.FirstOrDefault(item => item.Id == _preferencesCategory) ?? categories[0];
         var wide = PreferencesPresentation.IsWideLayout(_window.Frame.Width);
         var title = categoryPage ? Pref("title") + " › " + selected.Title : Pref("title");
-        var frame = OverlayFrame(title, _window.Frame.Height - 3);
+        var frame = PreferenceFrame(title, _window.Frame.Height - 3);
         frame.Width = wide ? Dim.Percent(82) : Dim.Percent(92);
         frame.Height = Dim.Fill(2);
         if (!categoryPage)
@@ -437,7 +445,7 @@ public sealed partial class TuiApp
             "context" => Pref("context_open"), "extensions" => Pref("extensions_open"),
             "skills" => Pref("skills_open"), _ => Pref("memory_open"),
         };
-        var frame = OverlayFrame(title, _window.Frame.Height - 3);
+        var frame = PreferenceFrame(title, _window.Frame.Height - 3);
         frame.Width = Dim.Percent(90); frame.Height = Dim.Fill(2);
         var content = new TextView { Id = "preferences-inspection", X = 2, Y = 2,
             Width = Dim.Fill(4), Height = Dim.Fill(5), ReadOnly = true, WordWrap = true,
@@ -453,7 +461,7 @@ public sealed partial class TuiApp
     {
         if (_window is null) return;
         CloseOverlay();
-        var frame = OverlayFrame(title, _window.Frame.Height - 3);
+        var frame = PreferenceFrame(title, _window.Frame.Height - 3);
         frame.Width = Dim.Percent(90); frame.Height = Dim.Fill(2);
         var content = new TextView { Id = "preferences-inspection", X = 2, Y = 2,
             Width = Dim.Fill(4), Height = Dim.Fill(5), ReadOnly = true, WordWrap = true, Text = text };
@@ -700,7 +708,7 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is null) return;
         CloseOverlay();
-        var frame = OverlayFrame(Pref("local_title") + " › " + row.ProviderId, 12);
+        var frame = PreferenceFrame(Pref("local_title") + " › " + row.ProviderId, 12);
         var message = new Label { Id = "local-engine-delete-question", X = 2, Y = 2,
             Width = Dim.Fill(4), Height = 3, Text = Pref("local_error_removeConfirm") };
         var status = new Label { Id = "local-engine-delete-status", X = 2, Y = 6,
@@ -733,7 +741,7 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is null || _localEngineSupervisor is null) return;
         CloseOverlay();
-        var frame = OverlayFrame(Pref("local_title") + " › " + row.ProviderId, 12);
+        var frame = PreferenceFrame(Pref("local_title") + " › " + row.ProviderId, 12);
         var messageKey = stop ? "local_runtime_stopConfirm" : row.Mode == "managed"
             ? "local_runtime_startConfirm" : "local_runtime_readyConfirm";
         var message = new Label { Id = "local-engine-runtime-question", X = 2, Y = 2,
@@ -787,7 +795,7 @@ public sealed partial class TuiApp
     {
         if (_overlay is null || _window is null) return;
         CloseOverlay();
-        var frame = OverlayFrame(Pref("local_title") + " › " + (existing?.ProviderId ?? Pref("local_add")), _window.Frame.Height - 3);
+        var frame = PreferenceFrame(Pref("local_title") + " › " + (existing?.ProviderId ?? Pref("local_add")), _window.Frame.Height - 3);
         frame.Width = Dim.Percent(82);
         frame.Height = Dim.Fill(2);
         var y = 2;
