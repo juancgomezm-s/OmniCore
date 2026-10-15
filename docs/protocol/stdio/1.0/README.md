@@ -104,3 +104,36 @@ interrupt and cancel. Renderer cannot access the process or signing key; Electro
 native action confirmation. Input does not produce a model response. See [M9-C](../../../validation/m9-block-c-20261014.md)
 and [M9-D](../../../validation/m9-block-d-20261014.md) for exact product scope and evidence. Neither
 block introduces a new wire version.
+
+## M9-E conversation execution extension
+
+This additive extension keeps wire version `1.0` and is advertised only when the trusted conversation
+runner is available. It adds `command.conversation.start.user`; its command payload is
+`{"cmd":"conversation.start","text":"...","mode":"plan|act","expectedRevision":null|N}` and
+uses the M9-D `actionProof` over the exact payload. The command writes one human input and admits the
+existing persisted Run. It then runs the normal `OmniCliRuntime` conversation pipeline for that exact
+Session, Run and admitted command; it does not resubmit `session.input` or alter the User default mode.
+The generic `command.session.input` remains unchanged and does not invoke inference.
+
+An `Accepted` command acknowledgement means only that input/Run admission was durable; it is not a
+model completion. `conversation.result` with `commandId` and the SHA-256 `requestHash` reads the durable
+execution receipt without resending. It reports `running`, `completed`, `failed`, `deferred`,
+`cancelled`, `unknown`, `not_admitted`, `not_found` or `id_conflict`, with the bound `sessionId` and
+`runId` when available. `code` is a stable safe classification (`turn_completed`, `turn_cancelled`,
+`input_required`, `model_tools_unsupported` or `runtime_failed`); it is not the raw provider diagnostic.
+Canonical assistant content and terminal Run events remain in the journal and are recovered by the
+existing bounded replay operation. The consumer drains replay before presenting a settled turn, and
+deduplicates by event identity. No token stream, TTFT, usage or cost is invented from final text or
+replay. Consent/policy failures stay deferred or failed, never become assistant messages.
+
+This is request/replay polling, not push streaming. It does not add exactly-once provider execution:
+after an ambiguous execution receipt the Client performs lookup and replay only, never a blind resend.
+Only a real terminal journal event establishes the Run outcome; an admission receipt is transport
+metadata, not a second source of Run state. The current Electron consumer is wired to the existing
+composer and preserves Pi as the per-workspace legacy backend. It exposes Core's effective model but
+does not route Core selection through Pi's provider selector.
+
+The earlier goldens continue to pin legacy wire envelopes; this extension adds capability and
+conversation behavior without changing those envelopes, durable event schemas or protocol version.
+See [ADR-0051](../../../adr/0051-conversation-inference-from-persisted-input.md) and the
+[M9-E validation record](../../../validation/m9-block-e-20261014.md).

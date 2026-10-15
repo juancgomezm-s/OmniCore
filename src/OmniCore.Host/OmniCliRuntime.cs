@@ -288,6 +288,26 @@ public sealed class OmniCliRuntime : IDisposable
         return Server();
     }
 
+    /// <summary>
+    /// Establishes the configured non-metered initial routing snapshot before stdio can admit
+    /// its first input (which may create the Session). Existing Sessions keep their own snapshot.
+    /// </summary>
+    internal void PrepareConversationSessionPolicy()
+    {
+        var paths = OmniHost.CreatePlatformPaths();
+        var loaded = OmniHost.LoadUserConfiguration(paths);
+        var trusted = new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+        var scoped = ScopedSettingsLoader.Load(paths, _workspaceRoot, trusted, alias =>
+        {
+            try { _ = loaded.Registry.Resolve(alias); return true; }
+            catch (UnknownModelException) { return false; }
+            catch (AmbiguousModelAliasException) { return false; }
+        });
+        var model = scoped.Settings?.DefaultModel is { } scopedModel
+            ? loaded.Registry.Resolve(scopedModel) : loaded.Registry.ResolveDefault();
+        Server().ConfigureNewSessionRoutingPolicy(ModelRoutingHost.InitialSessionPolicy(loaded, model.ProviderId));
+    }
+
     /// <summary>Output guidance, not a substitute for tool permissions or completion gates.</summary>
     internal static string TurnInstruction(bool executingAct) =>
         TurnInstruction(executingAct ? RunMode.Act : RunMode.Plan);
@@ -588,6 +608,66 @@ public sealed class OmniCliRuntime : IDisposable
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null) =>
         RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true, turnBoost: turnBoost,
             turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed);
+
+    /// <summary>
+    /// Continues a conversation whose human input was already committed by the authenticated Host
+    /// command. The Explorer reconstructs that input from the journal; this path never writes it a
+    /// second time.
+    /// </summary>
+    internal async Task<int> ExecutePersistedConversationAsync(PersistedConversationCommand admitted,
+        Action<string> diagnostics, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(admitted);
+        if (!Guid.TryParse(admitted.SessionId, out var sessionGuid)
+            || !Guid.TryParse(admitted.RunId, out var runGuid)) return 1;
+        var server = Server();
+        var session = new SessionId(sessionGuid);
+        var run = new RunId(runGuid);
+        var receipt = server.ReceiptStore?.ReadCommandReceipt(admitted.CommandId);
+        var expectedSession = session.ToString();
+        if (server.LastSessionId() != session || server.LastRunId() != run
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run
+            || receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                OutcomeKind: "Accepted" }
+            || !string.Equals(receipt.RequestHash, admitted.RequestHash, StringComparison.Ordinal)
+            || !string.Equals(receipt.SessionId, expectedSession, StringComparison.Ordinal)
+            || receipt.FirstSequence != admitted.FirstSequence || receipt.LastSequence != admitted.LastSequence)
+            return 1;
+        var runIsAct = server.CurrentRunMode() is RunMode.Act or RunMode.Orchestrate;
+        int exitCode;
+        try
+        {
+            exitCode = await RunTurnAsync("", runIsAct, diagnostics, cancellationToken, conversationOnly: true,
+                inputAlreadyPersisted: true, expectedSession: session, expectedRun: run).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            diagnostics(RedactSensitive(ex.Message));
+            return 1;
+        }
+        var afterInput = admitted.LastSequence;
+        if (afterInput is null || afterInput < 1) return 1;
+        var codecs = server.AcquireCodecs();
+        var journal = server.AcquireStore().ReadFrom(session, afterInput.Value + 1)
+            .Where(evt => evt.RunId == run)
+            .Select(evt => (evt.Sequence, Payload: codecs.Decode(evt)))
+            .ToArray();
+        if (exitCode != 0 && journal.Any(item => item.Payload is TurnAbandoned abandoned
+            && abandoned.Reason.Contains("does not support tools", StringComparison.OrdinalIgnoreCase)))
+            return 4; // Safe, actionable category; never expose provider diagnostics as chat text.
+        if (exitCode == 0)
+        {
+            var started = journal.Where(item => item.Payload is TurnStarted)
+                .Select(item => ((TurnStarted)item.Payload).TurnId).ToHashSet();
+            var completed = journal.Where(item => item.Payload is TurnCompleted)
+                .Select(item => ((TurnCompleted)item.Payload).TurnId).ToHashSet();
+            return started.Intersect(completed).Any(turnId => journal.Any(item => item.Payload is AssistantMessageRecorded assistant
+                && assistant.TurnId == turnId)) ? 0 : 1;
+        }
+        if (journal.Any(item => item.Payload is TurnInterrupted)) return 130;
+        return exitCode == 130 ? 1 : exitCode;
+    }
 
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>
         RunTurnAsync("", false, diagnostics, token, delegationId: new DelegationId(Guid.Parse(delegationId)));
@@ -1069,7 +1149,8 @@ public sealed class OmniCliRuntime : IDisposable
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
-        DelegationId? delegationId = null, string? forcedInitialToolName = null)
+        DelegationId? delegationId = null, string? forcedInitialToolName = null,
+        bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null)
     {
         if (delegationId is { } child)
         {
@@ -1081,7 +1162,8 @@ public sealed class OmniCliRuntime : IDisposable
             try
             {
                 return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
-                    routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName).ConfigureAwait(false);
+                    routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
+                    inputAlreadyPersisted, expectedSession, expectedRun).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -1094,7 +1176,8 @@ public sealed class OmniCliRuntime : IDisposable
         try
         {
             return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
-                routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName).ConfigureAwait(false);
+                routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
+                inputAlreadyPersisted, expectedSession, expectedRun).ConfigureAwait(false);
         }
         finally
         {
@@ -1105,7 +1188,8 @@ public sealed class OmniCliRuntime : IDisposable
     private async Task<int> RunTurnCoreAsync(string prompt, bool act, Action<string> writeLine,
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
-        DelegationId? delegationId = null, string? forcedInitialToolName = null)
+        DelegationId? delegationId = null, string? forcedInitialToolName = null,
+        bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null)
     {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
@@ -1397,6 +1481,16 @@ public sealed class OmniCliRuntime : IDisposable
 
             server.ConfigureNewSessionRoutingPolicy(ModelRoutingHost.InitialSessionPolicy(loaded,
                 modelDefinition?.ProviderId ?? "local"));
+            if (expectedSession is not null || expectedRun is not null)
+            {
+                if (expectedSession is not { } exactSession || expectedRun is not { } exactRun
+                    || server.LastSessionId() != exactSession || server.LastRunId() != exactRun
+                    || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(exactSession) != exactRun)
+                {
+                    writeLine(Text(LocalizedText.Of("cli.runtime.resume.session_changed")));
+                    return 1;
+                }
+            }
             string workingState = "";
             if (delegation is not null)
             {
@@ -1414,11 +1508,14 @@ public sealed class OmniCliRuntime : IDisposable
             }
             else if (conversationOnly)
             {
-                var input = server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
-                    + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt) + "}"), cancellationToken);
-                if (input.Status != "ok") throw new InvalidOperationException(input.Error ?? "Conversation input rejected");
-                // session.input already persisted/queued the intent. Explorer reads that history;
-                // submitting the same text again would duplicate input and provider context.
+                if (!inputAlreadyPersisted)
+                {
+                    var input = server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
+                        + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt) + "}"), cancellationToken);
+                    if (input.Status != "ok") throw new InvalidOperationException(input.Error ?? "Conversation input rejected");
+                }
+                // The authenticated stdio conversation command may already have committed input.
+                // Explorer reads the canonical history; submitting the same text again would duplicate it.
                 prompt = "";
                 workingState = ReadWorkingState(server, cancellationToken);
             }

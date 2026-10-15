@@ -9,6 +9,7 @@ public static class StdioProtocol
     public const string CommandOperation = "command";
     public const string CommandResultOperation = "command.result";
     public const string ReplayPageOperation = "events.replay.page";
+    public const string ConversationResultOperation = "conversation.result";
 
     public static readonly string[] SupportedCapabilities =
     [
@@ -26,12 +27,14 @@ public static class StdioProtocol
         "query.sessionObservability",
         "events.replay",
         "events.replay.page",
+        "conversation.result.lookup",
     ];
 
     /// <summary>Capabilities available only to a stdio connection with a private user-action bootstrap.</summary>
     public static readonly string[] TrustedUserActionCapabilities =
     [
         "command.session.input.user",
+        "command.conversation.start.user",
         "command.run.interrupt.user",
         "command.run.cancel.user",
         "command.run.mode.select.user",
@@ -42,5 +45,5 @@ public static class StdioProtocol
         or "sessionSidebar" or "changedFiles" or "agents" or "sessionObservability" or "humanActionScope";
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
-        or "run.interrupt" or "run.cancel" or "run.mode.select";
+        or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select";
 }
