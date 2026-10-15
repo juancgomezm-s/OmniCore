@@ -125,6 +125,34 @@ en 0,943 s, exit 1 y mensaje «Maximum YAML nesting exceeded.». La suite comple
 CLI y YAML posterior pasa en Debian y Windows: **74/74 PASS** en cada plataforma,
 sin omisiones. Estos resultados focales no sustituyen los tres gates finales del CI.
 
+Los logs del intento Windows de esa revisión, cancelado al publicar la siguiente,
+también registraron tres fallos adicionales. La captura de scrollbar esperaba el texto «Enter enviar», pero al enfocar la conversación
+el pie puede mostrar la ayuda de enlaces. El fotograma diagnóstico mostró esa ayuda
+y el rail correcto; la espera usa ahora «Historia», contenido de la conversación.
+Se mantienen las assertions de colores, glifos y navegación, sin tocar la TUI.
+Forzar un repintado completo no resolvió la causa y se retiró esa tentativa. El caso de ACK perdido intentaba abrir SQLite en solo lectura justo
+después de matar el writer; Windows devolvió SQLite Error 10 al leer el esquema.
+Ahora toma el conteo antes de matar el proceso, deja la recuperación WAL al siguiente
+writer y exige que la reconexión conserve ese conteo, los recibos y la deduplicación.
+No se ignoran errores de SQLite ni se degrada la durabilidad. Referencia del formato:
+[recuperación WAL](https://sqlite.org/walformat.html).
+La suite completa de TuiWiringTests, StdioTransportTests y M3CoderGatesTests después
+de esas correcciones pasó en Windows: **224/224 PASS**, cero omisiones, exit 0.
+El tercer síntoma fue Git intentando abrir /dev/null. El launcher AppContainer
+configuraba STARTF_USESTDHANDLES pero entregaba stdin=0 si no había payload. La nueva
+prueba nativa falló con exit 28/INVALID_STDIN sin payload y pasó con texto. Se crea
+siempre un pipe válido, se limita su herencia al hijo y se cierra su writer para dar
+EOF. No se hereda la consola ni se amplían ACL/capabilities. La corrección sigue
+el [contrato de STARTUPINFO](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa).
+La pasada intermedia dio 40 PASS / 1 FAIL: stdin ya pasó, pero reapareció la espera
+del pie de la captura. Ese resultado motivó el diagnóstico exacto descrito arriba;
+no se acredita como verde ni se añaden retries.
+
+Con el marcador correcto y el pipe de stdin válido, la focal Windows final pasó:
+**41/41 PASS, cero omisiones, exit 0, 1m14s**. Incluye los dos casos de stdin
+(payload y EOF sin payload), AppContainer, MCP Strong, transporte/reconexión, gates
+M3 y scrollbar en color/NO_COLOR. La integral del nuevo commit sigue siendo gate.
+
 ## Recuperación y TUI M4
 
 El probe de producción completa 200 turnos con compactación en SQLite/CAS. `seed`
@@ -183,3 +211,18 @@ proveedores. Conserva logs, hashes, resúmenes y ANSI de los paquetes como artef
 ## Conservación del estilo aprobado
 
 La comparación de la rama con main no presenta cambios en src/OmniCore.Cli/Tui ni en los estilos del Client. El primer arnés usaba -noColor y una rasterización monocroma; servía para comprobar recuperación, pero no para presentar el diseño. Tras la observación del usuario se retiró ese flag del probe visual, se conservan foreground/background RGB del ANSI y se sustituyen las tres imágenes. Las pruebas de accesibilidad NO_COLOR siguen activas y se distinguen de la evidencia visual normal.
+
+El árbol Git de `src/OmniCore.Cli/Tui` es idéntico al de main `db8e844`:
+`67cd1d6469662f5967cfb0db439a4bce65183eb2`. Este identificador permite verificar que
+los archivos visuales aprobados se conservaron íntegros.
+
+## Integral Debian después de las correcciones de CLI/YAML
+
+Sobre `5a581f9`, build limpio y suite completa: **4551 casos, 4536 PASS, 0 FAIL,
+15 SKIP, 11m37s**. El runner registró exit 0 en acceptance-next-exit.txt. La envoltura
+externa terminó después con error de sintaxis al interpretar un CRLF en su última
+línea exit; se corrigió el archivo del arnés externo para usar LF. No es un fallo de
+las pruebas ni se usa el código de esa envoltura como prueba de éxito.
+[Ubuntu CI sobre el mismo código](https://github.com/juancgomezm-s/OmniCore/actions/runs/38666001163/job/116198154334)
+y linux-package también aprobaron. La revisión posterior de fixtures Windows y stdin
+requiere una nueva pasada del CI antes de integrar.

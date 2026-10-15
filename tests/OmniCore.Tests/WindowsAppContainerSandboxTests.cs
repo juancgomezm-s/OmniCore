@@ -84,6 +84,39 @@ public sealed class WindowsAppContainerSandboxTests
         Assert.Equal(0, runtime.Wait(noInput, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken).ExitCode);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData("hello-from-host")]
+    public async Task Strong_process_receives_a_valid_stdin_pipe_and_eof(string? input)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("AppContainer integration tests run only on Windows.");
+            return;
+        }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable)
+        {
+            Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason);
+            return;
+        }
+        var workspace = Path.Combine(Path.GetTempPath(), "OmniCoreSandboxInput-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var launch = new SandboxLaunchSpec(SandboxStrength.Strong, HelperExecutable(), ["stdin-state"],
+                workspace, new Dictionary<string, string>(),
+                [new SandboxAllowedPath(workspace, SandboxPathAccess.Read | SandboxPathAccess.Write)],
+                new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []), TimeSpan.FromSeconds(10), input);
+            await using var process = await new WindowsAppContainerProcessLauncher()
+                .StartAsync(launch, TestContext.Current.CancellationToken);
+            var result = await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Equal(input is null ? "PIPE:" : "PIPE:" + input + "\n", OutputText(result));
+        }
+        finally { TryDelete(workspace); }
+    }
+
     [Fact]
     public async Task Strong_process_reads_allowed_workspace_but_not_outside_file()
     {

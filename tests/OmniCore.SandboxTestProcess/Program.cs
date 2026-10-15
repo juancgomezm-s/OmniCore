@@ -61,6 +61,8 @@ if (args.Length == 1 && args[0] == "stdin-echo")
     return 0;
 }
 
+if (args.Length == 1 && args[0] == "stdin-state") return StandardInputProbe.Run();
+
 if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
 {
     var line = Console.ReadLine();

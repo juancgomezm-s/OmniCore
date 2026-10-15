@@ -128,14 +128,17 @@ public sealed class StdioTransportTests
             Assert.NotNull(receipt);
             Assert.Equal(CommandReceiptState.Completed, receipt.State);
             Assert.False(firstHost.HasExited);
-            firstHost.Kill(entireProcessTree: true); // response was deliberately left unread by this client.
-            await firstHost.WaitForExitAsync(TestContext.Current.CancellationToken)
-                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-
             var session = OmniCore.Domain.SessionId.Parse(receipt.SessionId!);
             long committedCount;
             using (var read = new SqliteEventStore(journal, readOnly: true))
                 committedCount = read.CountEvents(session);
+            firstHost.Kill(entireProcessTree: true); // response was deliberately left unread by this client.
+            await firstHost.WaitForExitAsync(TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            // The next writer performs WAL crash recovery. Compare its replay against
+            // the count observed before the crash, rather than requiring a read-only
+            // connection to recover an abruptly terminated Windows WAL.
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             var unknownId = "00000000-0000-7000-8000-000000000099";
             using (var reserveUnknown = new SqliteEventStore(journal))
