@@ -168,7 +168,7 @@ revisiones no soportadas; no se acredita compatibilidad universal por hablar JSO
 
 ## M9: Host separado y experiencia entre procesos
 
-**Bloque M9-B implementado en la rama `codex/m9-recovery` (2026-10-14; acta**
+**Bloque M9-B revisado e integrado en `main` (2026-10-14; acta**
 **[`m9-block-b-20261014.md`](../validation/m9-block-b-20261014.md)**).** `omni host --stdio`,
 `StdioOmniClient` y `omni stdio` siguen sobre el runtime persistente real y el contrato v1.0.
 Se añade lease OS no expirable por Session, reclamado al morir el proceso; recibos durables hash-bound

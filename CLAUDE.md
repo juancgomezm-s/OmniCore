@@ -16,7 +16,7 @@ recorte del prompt/pérdida de borrador ante rechazo o referencia no disponible.
 `docs/validation/omnicore-homologation-closure-20261014.md`. No reiniciar los lotes UC por
 capacidades diferidas; reabrir sólo por un defecto concreto. El cierre global y OR5 autenticado
 de M8 permanecen separados. M9-B añade lease por OS, recibos/dedup, resultado ambiguo y replay
-paginado en la rama `codex/m9-recovery`; revisar su acta antes de integrar. M9 sigue abierto para
+paginado integrados en `main` (2026-10-14); evidencia en `docs/validation/m9-block-b-20261014.md`. M9 sigue abierto para
 autoridad humana externa, consumidor TypeScript, `media.read` y procesos persistentes/ConPTY.
 
 ## Comandos

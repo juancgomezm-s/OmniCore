@@ -1,6 +1,6 @@
 # ADR-0049: Ownership durable por Session y recuperación stdio de M9-B
 
-**Estado:** Aceptada para el bloque M9-B, pendiente de revisión e integración en `main`  
+**Estado:** Aceptada e integrada en `main` para el bloque M9-B.
 **Fecha:** 2026-10-14
 
 ## Contexto
