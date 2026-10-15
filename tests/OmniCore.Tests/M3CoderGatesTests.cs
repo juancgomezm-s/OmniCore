@@ -55,6 +55,9 @@ public sealed class M3CoderGatesTests
     {
         Run("git", ["init", "--quiet"], workspace);
         Run("git", ["config", "core.autocrlf", "false"], workspace);
+        // The fixture contains no symlinks. Git's Windows symlink resolver queries
+        // the Volume Mount Manager, which is unavailable in an AppContainer.
+        if (OperatingSystem.IsWindows()) Run("git", ["config", "core.symlinks", "false"], workspace);
         Run("git", ["-c", "user.name=OmniCore tests", "-c", "user.email=tests@example.invalid",
             "add", "Program.cs"], workspace);
         Run("git", ["-c", "user.name=OmniCore tests", "-c", "user.email=tests@example.invalid",

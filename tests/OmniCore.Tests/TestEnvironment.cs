@@ -21,10 +21,5 @@ internal static class TestEnvironment
         Environment.SetEnvironmentVariable(OmniCore.Infrastructure.DefaultPlatformPaths.DataDirVariable, DataDirectory);
         Environment.SetEnvironmentVariable(OmniCore.Infrastructure.DefaultPlatformPaths.ConfigDirVariable,
             Path.Combine(root, "config"));
-        if (Environment.GetEnvironmentVariable("OMNICORE_SQLITE_DIAGNOSTICS") == "1")
-        {
-            SQLitePCL.Batteries_V2.Init();
-            SqliteIoDiagnostic.EnableOsTrace();
-        }
     }
 }

@@ -19,29 +19,6 @@ env:
   DOTNET_NOLOGO: '1'
 
 jobs:
-  windows-diagnostics:
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Prepare Windows sandbox null device
-        run: ./scripts/prepare-windows-ci.ps1 -Action Enable
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
-        with:
-          global-json-file: global.json
-      - run: dotnet restore OmniCore.slnx
-      - run: dotnet build OmniCore.slnx --no-restore
-      - name: Diagnose real Windows crash recovery and Git failures
-        env:
-          OMNICORE_SQLITE_DIAGNOSTICS: '1'
-        shell: bash
-        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Failing_test_gate_returns_output_feedback|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file|FullyQualifiedName~WindowsCiDiagnosticTests' < /dev/null
-      - name: Restore Windows null-device permissions
-        if: always() && env.OMNICORE_CI_NUL_PREPARED == 'true'
-        run: ./scripts/prepare-windows-ci.ps1 -Action Restore
-
   test:
     strategy:
       fail-fast: false
@@ -54,7 +31,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Prepare Windows sandbox null device
+      - name: Prepare Windows AppContainer prerequisites
         if: runner.os == 'Windows'
         run: ./scripts/prepare-windows-ci.ps1 -Action Enable
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
@@ -62,10 +39,14 @@ jobs:
           global-json-file: global.json
       - run: dotnet restore OmniCore.slnx
       - run: dotnet build OmniCore.slnx --no-restore
+      - name: Windows crash recovery, Git and isolation regression checks
+        if: runner.os == 'Windows'
+        shell: bash
+        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~WindowsWalRecoveryTests|FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Failing_test_gate_returns_output_feedback|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file' < /dev/null
       - name: All tests, including architecture and process recovery
         shell: bash
         run: dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null
-      - name: Restore Windows null-device permissions
+      - name: Restore Windows NUL permissions and temp settings
         if: always() && runner.os == 'Windows' && env.OMNICORE_CI_NUL_PREPARED == 'true'
         run: ./scripts/prepare-windows-ci.ps1 -Action Restore
 

@@ -81,6 +81,16 @@ rechazadas. La capability sólo anuncia handlers construidos para el backend act
 
 ## Evidencia
 
+En Windows, la apertura WAL espera de forma acotada (cinco segundos, como el presupuesto
+de busy del store) ante `SQLITE_IOERR_TRUNCATE` durante el `PRAGMA journal_mode=WAL`.
+La causa observada tras matar el Host es `ERROR_USER_MAPPED_FILE` (1224) sobre `journal.db-shm`:
+el proceso puede estar señalado como terminado antes de liberar el mapeo. Sólo se repite
+esa operación previa al esquema; no commands, receipts, eventos ni efectos. La espera se
+registra por Trace y, si persiste, se propaga la excepción SQLite original. No introduce
+caducidad ni espera sobre el lease de Session. Las pruebas usan un mapeo real de Windows,
+verifican recuperación y persistencia de recibos al liberar el recurso, y el fallo original
+cuando permanece retenido. Evidencia y límites en `docs/ci-failure-analysis.md`.
+
 Implementación y pruebas focales: [acta M9-B del 2026-10-14](../validation/m9-block-b-20261014.md).
 
 ## Nota posterior M9-D (2026-10-14)

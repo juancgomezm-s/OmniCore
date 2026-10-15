@@ -327,3 +327,29 @@ cada salida distinta de cero hace fallar el diagnóstico. Se retirará esa
 instrumentación y el job adicional antes de validar los tres jobs finales.
 Las pasadas locales de 100 caídas sin error bajo instrumentación no acreditan una
 corrección: la anterior sin instrumentación sí reprodujo el I/O y CI sigue rojo.
+
+La [focal nativa 793e1fa](https://github.com/juancgomezm-s/OmniCore/actions/runs/38677276693/job/116233729188)
+identifica finalmente `ERROR_USER_MAPPED_FILE` **1224** en SetEndOfFile sobre
+`journal.db-shm`. El BOOL real no se alteró. Se añade recuperación acotada a cinco
+segundos sólo en el PRAGMA inicial WAL de Windows para SQLite 10/1546, con Trace
+y propagación del error original si persiste. No se repiten efectos/commands y no
+se borra WAL/SHM. Las dos pruebas nuevas usan mapeos reales: liberar el recurso
+permite persistir/reabrir un recibo Completed; mantenerlo produce el error original
+tras cinco segundos, conserva el archivo y permite reabrir después de liberarlo.
+
+La misma focal descarta permisos del repo y raíz de instalación como causa del
+último error Git: puede leer HEAD/config y reconocer el worktree, pero chdir usa
+GetFinalPathNameByHandleW/VOLUME_NAME_DOS al habilitar symlinks. Esa API depende
+del Mount Manager inaccesible desde AppContainer ([microsoft/STL #6286](https://github.com/microsoft/STL/issues/6286)).
+El repo sintético M3, sin symlinks, fija core.symlinks=false en Windows; conserva
+el diff de whitespace real y todo el recorrido de feedback y reparación. La
+prueba Strong de denegación externa sigue activa. No se cambia un repo real ni
+la política del runtime; Git Strong con symlinks conserva esa limitación del SO.
+
+Sobre la integración M9-D en Debian: build sin warnings/errores y **20/20
+StdioTransportTests PASS** (`m9d-build.log`, `m9d-stdio.log`, fuente 793e1fa).
+Windows con la reparación ejecuta **23/23 PASS**, sin omisiones: veinte de stdio,
+dos de mapeos reales y el gate Git (`windows-wal-git-final.log`). Los hooks y las
+pruebas temporales de diagnóstico se retiran; quedan tres jobs de aceptación y
+una focal Windows previa dentro de la matriz, además de la integral completa.
+La ejecución final debe aprobar los tres; esta evidencia local no sustituye CI.
