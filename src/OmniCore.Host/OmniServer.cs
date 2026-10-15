@@ -73,6 +73,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private string? _worktreeMaintenanceProblem;
 
     private bool _worktreeStartupRecoveryAttempted;
+    private bool _writerOwnershipUnavailable;
 
     private readonly string? _stateFile;
 
@@ -175,7 +176,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // file). Once the caller supplies its physically established workspace, recovery may
         // still find old provisioning failures in that workspace's durable journal history.
         // The sweeper independently verifies the root binding and ownership before any cleanup.
-        RecoverExpiredWorktreesAtStartup();
+        if (!_writerOwnershipUnavailable) RecoverExpiredWorktreesAtStartup();
     }
 
     internal void ConfigurePlatformPaths(Func<IPlatformPaths> factory) =>
@@ -203,10 +204,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = null;
         LoadLastSession();
+        RehydrateUnderWriterOwnership();
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
-        RecoverPendingEffects();
-        RecoverPendingAgentOrchestration();
-        RecoverExpiredWorktreesAtStartup();
+        if (!_writerOwnershipUnavailable)
+        {
+            RecoverPendingEffects();
+            RecoverPendingAgentOrchestration();
+            RecoverExpiredWorktreesAtStartup();
+        }
     }
 
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
@@ -228,10 +233,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _engine = BuildEngine(store, codecs, audit);
         _stateFile = stateFile;
         LoadLastSession();
+        RehydrateUnderWriterOwnership();
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
-        RecoverPendingEffects();
-        RecoverPendingAgentOrchestration();
-        RecoverExpiredWorktreesAtStartup();
+        if (!_writerOwnershipUnavailable)
+        {
+            RecoverPendingEffects();
+            RecoverPendingAgentOrchestration();
+            RecoverExpiredWorktreesAtStartup();
+        }
     }
 
     /// <summary>Composición común: tools Core + defaults por modo (modo Act del sim).</summary>
@@ -260,7 +269,72 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         // Reconstruir el snapshot desde el journal (P0-3): una nueva invocación recupera el
         // contexto que el run de otra invocación materializó, sin re-ejecutar el sim.
-        _lastSnapshot = MaterializeFromJournal(_lastSessionId!, _lastRunId!);
+        if (_store is not SqliteEventStore) _lastSnapshot = MaterializeFromJournal(_lastSessionId!, _lastRunId!);
+    }
+
+    private void RehydrateUnderWriterOwnership()
+    {
+        if (_store is not SqliteEventStore) return;
+        if (!EnsureWriterOwnershipForCommand())
+        {
+            // Query-only hosts may observe the existing journal, but never run recovery or
+            // mutate a projection while another process owns this Session.
+            _writerOwnershipUnavailable = true;
+            _lastSnapshot = null;
+        }
+    }
+
+    internal SqliteEventStore? ReceiptStore => _store as SqliteEventStore;
+
+    internal void ClosePersistentStore() => (_store as SqliteEventStore)?.Close();
+
+    internal bool EnsureWriterOwnershipForCommand()
+    {
+        if (_store is not SqliteEventStore store) return true;
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var before = ReadSessionPointer();
+            if (before is { } pointer && pointer.Session is { } target)
+            {
+                try { store.AcquireSessionWriterLease(target); }
+                catch (SessionWriterLeaseUnavailableException) { return false; }
+                var after = ReadSessionPointer();
+                if (after != before) continue;
+                _lastSessionId = target;
+                _lastRunId = pointer.Run;
+                _lastSnapshot = pointer.Run is { } run ? MaterializeFromJournal(target, run) : null;
+            }
+            else if (_stateFile is not null)
+            {
+                if (ReadSessionPointer() is not null) continue;
+                _lastSessionId = null;
+                _lastRunId = null;
+                _lastSnapshot = null;
+            }
+            else if (_lastSessionId is { } existing)
+            {
+                try { store.AcquireSessionWriterLease(existing); }
+                catch (SessionWriterLeaseUnavailableException) { return false; }
+                _lastSnapshot = _lastRunId is { } run ? MaterializeFromJournal(existing, run) : null;
+            }
+            _writerOwnershipUnavailable = false;
+            return true;
+        }
+        return false;
+    }
+
+    private (SessionId? Session, RunId? Run)? ReadSessionPointer()
+    {
+        if (_stateFile is null || !File.Exists(_stateFile)) return null;
+        var text = File.ReadAllText(_stateFile);
+        var separator = text.IndexOf('\n');
+        if (separator <= 0 || separator == text.Length - 1)
+            throw new InvalidDataException("The durable session pointer is malformed.");
+        try { return (SessionId.Parse(text[..separator]), RunId.Parse(text[(separator + 1)..].TrimEnd('\r', '\n'))); }
+        catch (FormatException exception)
+        {
+            throw new InvalidDataException("The durable session pointer is malformed.", exception);
+        }
     }
 
     /// <summary>
@@ -582,6 +656,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 RuntimeCommandOutcome.Rejected());
         }
 
+        if (!EnsureWriterOwnershipForCommand())
+            return new CommandAck(command.MessageId, "busy", "session_writer_owned",
+                RuntimeCommandOutcome.Deferred("session_writer_owned"));
+
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
         if (commandName == UiLocalePreferencesProtocol.ConfigureCommand)
@@ -744,6 +822,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         result.AddRange(_events);
         return result;
     }
+
+    internal IReadOnlyList<WireEnvelope> MapReplayPage(IReadOnlyList<DomainEvent> events) =>
+        new ProtocolMapper(_codecs, _artifacts).Map(events);
 
     /// <summary>Publica PlanApproval tras una propuesta aceptada de plan.propose; no contesta por el usuario.</summary>
     public InteractionId? RequestPlanApprovalIfNeeded() => RequirePlanApprovalInteraction(RequestPlanApprovalCommand());

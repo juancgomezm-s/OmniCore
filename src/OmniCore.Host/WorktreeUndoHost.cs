@@ -14,7 +14,7 @@ public static class WorktreeUndoHost
     public static WorktreeUndoPlanView? PlanForCli(string workspacePath, string? effectId = null)
     {
         var effect = effectId is null ? null : ToolCallId.Parse(effectId);
-        using var composition = Open(workspacePath, effect);
+        using var composition = Open(workspacePath, effect, acquireWriterLease: false);
         var plan = composition?.Service.Plan(composition.Session, effect);
         return plan is null ? null : new WorktreeUndoPlanView(plan.SessionId.ToString(),
             plan.Entries.Select(entry => new WorktreeUndoPlanEntryView(entry.OriginalEffect.ToString(),
@@ -32,20 +32,20 @@ public static class WorktreeUndoHost
 
     public static UndoPlan? Plan(string workspacePath, ToolCallId? effectId = null)
     {
-        using var composition = Open(workspacePath, effectId);
+        using var composition = Open(workspacePath, effectId, acquireWriterLease: false);
         return composition?.Service.Plan(composition.Session, effectId);
     }
 
     public static UndoResult Undo(string workspacePath, ToolCallId effectId,
         CancellationToken cancellationToken)
     {
-        using var composition = Open(workspacePath, effectId);
+        using var composition = Open(workspacePath, effectId, acquireWriterLease: true);
         if (composition is null)
             return new(UndoOutcome.Unsupported, effectId, [], "No verified OmniCore session exists for this workspace.");
         return composition.Service.Undo(composition.Session, effectId, cancellationToken);
     }
 
-    private static Composition? Open(string workspacePath, ToolCallId? effectId)
+    private static Composition? Open(string workspacePath, ToolCallId? effectId, bool acquireWriterLease)
     {
         var root = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspacePath);
         var canonical = ProjectIdentity.CanonicalWorkspacePath(root);
@@ -58,10 +58,19 @@ public static class WorktreeUndoHost
         try
         {
             var codecs = EventCodecs.Create();
-            var sessions = ((IWorkspaceJournalReader)store).ReadEvents(EventType.Of("session.created"))
+            var workspaceSessions = ((IWorkspaceJournalReader)store).ReadEvents(EventType.Of("session.created"))
                 .OrderByDescending(item => item.Timestamp).Select(item => (Envelope: item,
                     Payload: codecs.Decode(item) as SessionCreated)).Where(item => item.Payload is not null
-                    && item.Payload.WorkspaceId == workspaceId.ToString())
+                    && item.Payload.WorkspaceId == workspaceId.ToString()).ToArray();
+            if (acquireWriterLease)
+            {
+                // Undo mutates the journal and external workspace. Establish ownership before
+                // inspecting session projections; retain all acquired handles through selection
+                // and execution, and let Close release them on every exit path.
+                foreach (var candidate in workspaceSessions)
+                    store.AcquireSessionWriterLease(candidate.Payload!.SessionId);
+            }
+            var sessions = workspaceSessions
                 .Where(item => effectId is null || store.ReadFrom(item.Payload!.SessionId, 1).Any(evt =>
                     codecs.Decode(evt) is ToolCallStarted start && start.ToolCallId == effectId)).ToArray();
             if (effectId is not null && sessions.Length != 1)
@@ -71,9 +80,10 @@ public static class WorktreeUndoHost
             }
             foreach (var candidate in sessions)
             {
-                var events = store.ReadFrom(candidate.Payload!.SessionId, 1);
+                var session = candidate.Payload!.SessionId;
+                var events = store.ReadFrom(session, 1);
                 var established = events.Select(codecs.Decode).OfType<WorkspaceRootEstablished>()
-                    .SingleOrDefault(item => item.SessionId == candidate.Payload.SessionId);
+                    .SingleOrDefault(item => item.SessionId == session);
                 if (established is null || !PathEquals(established.CanonicalRoot, canonical)
                     || !WorkspaceRootIdentity.Verify(root, established.DurableIdentity)) continue;
 
@@ -84,7 +94,7 @@ public static class WorktreeUndoHost
                 policy.WithGrantStore(OmniHost.CreatePermissionGrantStore(root), workspaceId, null);
                 var artifacts = OmniHost.CreateArtifactStore(workspaceData);
                 var service = new UndoService(root, established.DurableIdentity, store, codecs, artifacts, policy);
-                return new Composition(store, candidate.Payload.SessionId, service);
+                return new Composition(store, session, service);
             }
             store.Close();
             return null;

@@ -48,7 +48,11 @@ public sealed class OmniCliRuntime : IDisposable
     }
 
     /// <summary>Detiene los servidores locales managed que este runtime lanzó (ADR-0011 §4).</summary>
-    public void Dispose() => _localServers.Dispose();
+    public void Dispose()
+    {
+        _localServers.Dispose();
+        _server?.ClosePersistentStore();
+    }
 
     /// <summary>
     /// Re-reads provider configuration under the shared writer lease immediately before an

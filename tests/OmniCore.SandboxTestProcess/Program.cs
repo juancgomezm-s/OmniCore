@@ -1,6 +1,37 @@
 using System.Diagnostics;
 using System.Net.Sockets;
 
+if (args.Length == 1 && args[0] == "legacy-stdio")
+{
+    var helloLine = Console.ReadLine();
+    if (helloLine is null) return 31;
+    using var helloDocument = System.Text.Json.JsonDocument.Parse(helloLine);
+    var helloId = helloDocument.RootElement.GetProperty("messageId").GetString()!;
+    Console.WriteLine("{\"version\":\"1.0\",\"messageType\":\"response\",\"messageId\":\"" + helloId
+        + "\",\"payload\":{\"protocolVersion\":\"1.0\",\"capabilities\":[\"events.replay\"]},\"causationId\":\""
+        + helloId + "\"}");
+    await Console.Out.FlushAsync();
+    var replayLine = Console.ReadLine();
+    if (replayLine is null) return 32;
+    using var replayDocument = System.Text.Json.JsonDocument.Parse(replayLine);
+    var replayId = replayDocument.RootElement.GetProperty("messageId").GetString()!;
+    Console.WriteLine("{\"version\":\"1.0\",\"messageType\":\"response\",\"messageId\":\"" + replayId
+        + "\",\"payload\":{\"events\":[]},\"causationId\":\"" + replayId + "\"}");
+    await Console.Out.FlushAsync();
+    await Console.In.ReadLineAsync();
+    return 0;
+}
+
+if (args.Length == 3 && args[0] == "session-lock")
+{
+    using var store = new OmniCore.Infrastructure.SqliteEventStore(args[1]);
+    store.AcquireSessionWriterLease(OmniCore.Domain.SessionId.Parse(args[2]));
+    Console.WriteLine("READY");
+    await Console.Out.FlushAsync();
+    await Console.In.ReadLineAsync();
+    return 0;
+}
+
 if (args.Length == 1 && args[0] == "stream")
 {
     Console.WriteLine("streamed stdout line");

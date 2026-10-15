@@ -13,20 +13,27 @@ using OmniCore.Domain;
 /// mientras se comete la transacción, restaurando NORMAL en finally. Un error nunca deja la
 /// conexión en FULL. Standard conserva NORMAL.
 /// </summary>
-public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
+public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDisposable
 {
     private readonly System.Data.Common.DbConnection _conn;
     private readonly object _connectionSync = new();
     private readonly string _executionColumn = "execution_id";
     private readonly string _sourceColumn = "source";
+    private readonly string _journalPath;
+    private readonly Dictionary<SessionId, FileStream> _sessionWriterLeases = [];
+    private bool _closed;
+
+    /// <summary>Opaque receipt scope: receipts are isolated by this workspace journal database.</summary>
+    public string CommandReceiptScope => "workspace-journal-v1";
 
     public SqliteEventStore(string filePath) : this(filePath, readOnly: false) { }
 
     internal SqliteEventStore(string filePath, bool readOnly)
     {
+        _journalPath = Path.GetFullPath(filePath);
         var connString = readOnly ? new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
         {
-            DataSource = Path.GetFullPath(filePath), Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,
+            DataSource = _journalPath, Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,
             Pooling = false,
         }.ToString() : "DataSource=" + filePath;
         _conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!.CreateDataSource(connString)!.OpenConnection()!;
@@ -139,6 +146,33 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
         migration.Commit();
 
+        using var receipts = _conn.CreateCommand()!;
+        receipts.CommandText = """
+            CREATE TABLE IF NOT EXISTS command_receipts (
+                scope_id TEXT NOT NULL,
+                command_id TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                state INTEGER NOT NULL,
+                session_id TEXT,
+                ack_status TEXT,
+                ack_outcome TEXT,
+                ack_reason TEXT,
+                first_seq INTEGER,
+                last_seq INTEGER,
+                PRIMARY KEY (scope_id, command_id),
+                CHECK (state IN (0, 1))
+            )
+        """;
+        receipts.ExecuteNonQuery();
+
+        using var tombstones = _conn.CreateCommand()!;
+        tombstones.CommandText = "CREATE TABLE IF NOT EXISTS purged_sessions (session_id TEXT PRIMARY KEY, high_water INTEGER NOT NULL)";
+        tombstones.ExecuteNonQuery();
+
+        using var receiptIndex = _conn.CreateCommand()!;
+        receiptIndex.CommandText = "CREATE UNIQUE INDEX IF NOT EXISTS ux_command_receipt_id ON command_receipts (command_id)";
+        receiptIndex.ExecuteNonQuery();
+
         using var idx = _conn.CreateCommand()!;
         idx.CommandText = """
             CREATE UNIQUE INDEX IF NOT EXISTS ux_events_session_seq ON events (session_id, seq)
@@ -170,7 +204,12 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     private void InsertRows(SessionId sessionId, IReadOnlyList<DomainEvent> events,
         DurabilityClass durability, CancellationToken cancellationToken)
     {
-        lock (_connectionSync) InsertRowsCore(sessionId, events, durability, cancellationToken);
+        lock (_connectionSync)
+        {
+            ThrowIfClosed();
+            AcquireSessionWriterLeaseCore(sessionId);
+            InsertRowsCore(sessionId, events, durability, cancellationToken);
+        }
     }
 
     private void InsertRowsCore(SessionId sessionId, IReadOnlyList<DomainEvent> events,
@@ -246,6 +285,64 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive)
         => WithConnection(() => ReadFromCore(sessionId, fromSequenceInclusive));
 
+    /// <summary>Reads a bounded replay page against a stable SQLite snapshot.</summary>
+    public EventReplayPage ReadPage(SessionId sessionId, long fromSequenceInclusive, int pageSize = 128,
+        long? highWaterSnapshot = null)
+    {
+        if (fromSequenceInclusive < 0) throw new ArgumentOutOfRangeException(nameof(fromSequenceInclusive));
+        if (pageSize is < 1 or > 256) throw new ArgumentOutOfRangeException(nameof(pageSize));
+        return WithConnection(() =>
+        {
+            using var tx = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: true);
+            using var high = _conn.CreateCommand()!;
+            high.Transaction = tx;
+            high.CommandText = "SELECT MAX(value) FROM (SELECT COALESCE(MAX(seq),0) AS value FROM events WHERE session_id=:sid "
+                + "UNION ALL SELECT COALESCE(MAX(high_water),0) FROM purged_sessions WHERE session_id=:sid)";
+            high.Parameters.Add(S(high, "sid", sessionId.ToString()));
+            var currentHighWater = _AsLong(high.ExecuteScalar()!);
+            var highWater = highWaterSnapshot ?? currentHighWater;
+            if (highWater < 0 || highWater > currentHighWater)
+                throw new ArgumentOutOfRangeException(nameof(highWaterSnapshot));
+
+            var requested = Math.Max(1, fromSequenceInclusive);
+            using var first = _conn.CreateCommand()!;
+            first.Transaction = tx;
+            first.CommandText = "SELECT MIN(seq) FROM events WHERE session_id=:sid AND seq>=:from AND seq<=:high";
+            first.Parameters.Add(S(first, "sid", sessionId.ToString()));
+            first.Parameters.Add(S(first, "from", requested));
+            first.Parameters.Add(S(first, "high", highWater));
+            var firstValue = first.ExecuteScalar();
+            var firstAvailable = firstValue is null or DBNull ? (long?)null : _AsLong(firstValue);
+            using var purged = _conn.CreateCommand()!;
+            purged.Transaction = tx;
+            purged.CommandText = "SELECT EXISTS(SELECT 1 FROM purged_sessions WHERE session_id=:sid)";
+            purged.Parameters.Add(S(purged, "sid", sessionId.ToString()));
+            var wasPurged = Convert.ToInt64(purged.ExecuteScalar(), CultureInfo.InvariantCulture) != 0;
+            var gap = firstAvailable is { } available && requested < available
+                || wasPurged && firstAvailable is null && requested <= highWater;
+
+            using var query = _conn.CreateCommand()!;
+            query.Transaction = tx;
+            query.CommandText = "SELECT event_id, seq, event_type, schema_version, timestamp, causation, correlation, "
+                + "run_id, task_id, lane_id, turn_id, plan_item_id, toolcall_id, execution_id, payload, artifacts, source "
+                + "FROM events WHERE session_id=:sid AND seq>=:from AND seq<=:high ORDER BY seq LIMIT :limit";
+            query.Parameters.Add(S(query, "sid", sessionId.ToString()));
+            query.Parameters.Add(S(query, "from", requested));
+            query.Parameters.Add(S(query, "high", highWater));
+            query.Parameters.Add(S(query, "limit", pageSize));
+            var events = new List<DomainEvent>(pageSize);
+            using (var reader = query.ExecuteReader()!)
+                while (reader.Read()) events.Add(ReadRow(sessionId, reader));
+            tx.Commit();
+            if (events.Count > 0 && events[0].Sequence != requested) gap = true;
+            for (var i = 1; i < events.Count; i++)
+                if (events[i].Sequence != events[i - 1].Sequence + 1) { gap = true; break; }
+            if (events.Count == 0 && requested <= highWater) gap = true;
+            var next = events.Count == 0 ? highWater + 1 : events[^1].Sequence + 1;
+            return new EventReplayPage(fromSequenceInclusive, next, highWater, gap, next > highWater, events);
+        });
+    }
+
     private IReadOnlyList<DomainEvent> ReadFromCore(SessionId sessionId, long fromSequenceInclusive)
     {
         using var cmd = _conn.CreateCommand()!;
@@ -309,6 +406,115 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
     public long CountEvents(SessionId sessionId)
         => WithConnection(() => CountEventsCore(sessionId));
 
+    public CommandReceiptReservation ReserveCommandReceipt(string commandId, string requestHash, string? scope = null,
+        string? sessionId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
+        if (requestHash.Length != 64 || !requestHash.All(Uri.IsHexDigit))
+            throw new ArgumentException("A SHA-256 request hash is required.", nameof(requestHash));
+        scope ??= CommandReceiptScope;
+        lock (_connectionSync)
+        {
+            ThrowIfClosed();
+            SetSynchronous("FULL");
+            try
+            {
+                using var tx = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: false);
+                var existing = ReadCommandReceipt(commandId, scope, tx);
+                if (existing is not null)
+                {
+                    tx.Commit();
+                    return string.Equals(existing.RequestHash, requestHash, StringComparison.Ordinal)
+                        ? existing.State == CommandReceiptState.Completed
+                            ? new(CommandReceiptState.Completed, existing)
+                            : new(CommandReceiptState.Unknown, existing)
+                        : new(CommandReceiptState.IdConflict, existing);
+                }
+
+                using var insert = _conn.CreateCommand()!;
+                insert.Transaction = tx;
+                insert.CommandText = "INSERT INTO command_receipts (scope_id, command_id, request_hash, state, session_id) "
+                    + "VALUES (:scope, :command, :hash, 0, :sid)";
+                insert.Parameters.Add(S(insert, "scope", scope));
+                insert.Parameters.Add(S(insert, "command", commandId));
+                insert.Parameters.Add(S(insert, "hash", requestHash));
+                insert.Parameters.Add(S(insert, "sid", sessionId));
+                insert.ExecuteNonQuery();
+                tx.Commit();
+                return new(CommandReceiptState.Reserved, new(commandId, requestHash,
+                    CommandReceiptState.Unknown, null, null, null, null, null, null));
+            }
+            finally { SetSynchronous("NORMAL"); }
+        }
+    }
+
+    public void CompleteCommandReceipt(string commandId, string requestHash, string status,
+        string? outcomeKind, string? outcomeReason, long? firstSequence, long? lastSequence, string? scope = null,
+        string? sessionId = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(status);
+        scope ??= CommandReceiptScope;
+        lock (_connectionSync)
+        {
+            ThrowIfClosed();
+            SetSynchronous("FULL");
+            try
+            {
+                using var tx = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: false);
+                using var update = _conn.CreateCommand()!;
+                update.Transaction = tx;
+                update.CommandText = "UPDATE command_receipts SET state = 1, session_id = COALESCE(session_id, :sid), ack_status = :status, "
+                    + "ack_outcome = :outcome, ack_reason = :reason, first_seq = :first, last_seq = :last "
+                    + "WHERE scope_id = :scope AND command_id = :command AND request_hash = :hash AND state = 0";
+                update.Parameters.Add(S(update, "status", status));
+                update.Parameters.Add(S(update, "sid", sessionId));
+                update.Parameters.Add(S(update, "outcome", outcomeKind));
+                update.Parameters.Add(S(update, "reason", outcomeReason is { Length: > 0 and <= 96 }
+                    && outcomeReason.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-')
+                    ? outcomeReason : null));
+                update.Parameters.Add(S(update, "first", firstSequence));
+                update.Parameters.Add(S(update, "last", lastSequence));
+                update.Parameters.Add(S(update, "scope", scope));
+                update.Parameters.Add(S(update, "command", commandId));
+                update.Parameters.Add(S(update, "hash", requestHash));
+                var changed = update.ExecuteNonQuery();
+                if (changed == 0 && ReadCommandReceipt(commandId, scope, tx) is not { State: CommandReceiptState.Completed })
+                    throw new InvalidOperationException("Command receipt reservation was not found.");
+                tx.Commit();
+            }
+            finally { SetSynchronous("NORMAL"); }
+        }
+    }
+
+    public CommandReceipt? ReadCommandReceipt(string commandId, string? scope = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
+        scope ??= CommandReceiptScope;
+        return WithConnection(() => ReadCommandReceipt(commandId, scope, null));
+    }
+
+    private CommandReceipt? ReadCommandReceipt(string commandId, string scope, System.Data.Common.DbTransaction? tx)
+    {
+        using var query = _conn.CreateCommand()!;
+        query.Transaction = tx;
+        query.CommandText = "SELECT request_hash, state, session_id, ack_status, ack_outcome, ack_reason, first_seq, last_seq "
+            + "FROM command_receipts WHERE scope_id = :scope AND command_id = :command";
+        query.Parameters.Add(S(query, "scope", scope));
+        query.Parameters.Add(S(query, "command", commandId));
+        using var reader = query.ExecuteReader()!;
+        if (!reader.Read()) return null;
+        var completed = _AsLong(reader.GetValue(1)) == 1;
+        return new CommandReceipt(commandId, reader.GetString(0), completed
+            ? CommandReceiptState.Completed : CommandReceiptState.Unknown,
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.IsDBNull(6) ? null : _AsLong(reader.GetValue(6)),
+            reader.IsDBNull(7) ? null : _AsLong(reader.GetValue(7)));
+    }
+
     private long CountEventsCore(SessionId sessionId)
     {
         using var cmd = _conn.CreateCommand()!;
@@ -319,12 +525,25 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     /// <summary>Elimina atómicamente los eventos de una sesión después de auditar la purga.</summary>
     public long PurgeSession(SessionId sessionId, CancellationToken cancellationToken)
-        => WithConnection(() => PurgeSessionCore(sessionId, cancellationToken));
+        => WithConnection(() =>
+        {
+            AcquireSessionWriterLeaseCore(sessionId);
+            return PurgeSessionCore(sessionId, cancellationToken);
+        });
 
     private long PurgeSessionCore(SessionId sessionId, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var tx = _conn.BeginTransaction();
+        using (var tombstone = _conn.CreateCommand()!)
+        {
+            tombstone.Transaction = tx;
+            tombstone.CommandText = "INSERT INTO purged_sessions(session_id, high_water) "
+                + "VALUES(:sid, COALESCE((SELECT MAX(seq) FROM events WHERE session_id=:sid),0)) "
+                + "ON CONFLICT(session_id) DO UPDATE SET high_water=MAX(high_water, excluded.high_water)";
+            tombstone.Parameters.Add(S(tombstone, "sid", sessionId.ToString()));
+            tombstone.ExecuteNonQuery();
+        }
         using var cmd = _conn.CreateCommand()!;
         cmd.Transaction = tx;
         cmd.CommandText = "DELETE FROM events WHERE session_id = :sid";
@@ -336,7 +555,66 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
 
     public void Close()
     {
-        lock (_connectionSync) CloseCore();
+        lock (_connectionSync)
+        {
+            if (_closed) return;
+            _closed = true;
+            try { CloseCore(); }
+            finally
+            {
+                foreach (var lease in _sessionWriterLeases.Values) lease.Dispose();
+                _sessionWriterLeases.Clear();
+            }
+        }
+    }
+
+    public void Dispose() => Close();
+
+    /// <summary>
+    /// Acquires a non-expiring OS lock for one Session and retains its open handle until Close.
+    /// The lock file is intentionally permanent: deleting it while another process has it open
+    /// could create two independently locked inodes and split-brain ownership.
+    /// </summary>
+    /// <returns>True when this call acquired a new handle; false when this store already owned it.</returns>
+    public bool AcquireSessionWriterLease(SessionId sessionId)
+    {
+        lock (_connectionSync)
+        {
+            ThrowIfClosed();
+            return AcquireSessionWriterLeaseCore(sessionId);
+        }
+    }
+
+    /// <summary>Releases only this store's lease; the permanent lock path is never removed.</summary>
+    public void ReleaseSessionWriterLease(SessionId sessionId)
+    {
+        lock (_connectionSync)
+        {
+            if (_sessionWriterLeases.Remove(sessionId, out var lease)) lease.Dispose();
+        }
+    }
+
+    private bool AcquireSessionWriterLeaseCore(SessionId sessionId)
+    {
+        if (_sessionWriterLeases.ContainsKey(sessionId)) return false;
+        var directory = _journalPath + ".session-writers";
+        Directory.CreateDirectory(directory);
+        var leasePath = Path.Combine(directory, sessionId + ".lock");
+        try
+        {
+            _sessionWriterLeases.Add(sessionId, new FileStream(leasePath, FileMode.OpenOrCreate,
+                FileAccess.ReadWrite, FileShare.None, 1, FileOptions.WriteThrough));
+            return true;
+        }
+        catch (IOException)
+        {
+            throw new SessionWriterLeaseUnavailableException(sessionId);
+        }
+    }
+
+    private void ThrowIfClosed()
+    {
+        if (_closed) throw new ObjectDisposedException(nameof(SqliteEventStore));
     }
 
     private void CloseCore()
@@ -392,7 +670,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader
         return p;
     }
 
-    private DomainEvent ReadRow(SessionId sessionId, System.Data.Common.DbDataRecord row, int offset = 0)
+    private DomainEvent ReadRow(SessionId sessionId, System.Data.IDataRecord row, int offset = 0)
     {
         return DomainEvent.Stored(
             EventId.Parse(_AsString(row.GetValue(offset))),
