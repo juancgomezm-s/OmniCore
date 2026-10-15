@@ -220,7 +220,9 @@ public sealed class M2WiringTests
     {
         // IProcessRuntime mínimo (ADR-0038 §2): lanzar, esperar, capturar y cancelar.
         var runtime = SystemProcessRuntime.Instance();
-        var launch = new ProcessLaunch("cmd.exe", ["/c", "echo hola-proceso"], "", new Dictionary<string, string>(), true);
+        var launch = OperatingSystem.IsWindows()
+            ? new ProcessLaunch("cmd.exe", ["/c", "echo hola-proceso"], "", new Dictionary<string, string>(), true)
+            : new ProcessLaunch("/bin/echo", ["hola-proceso"], "", new Dictionary<string, string>(), true);
         var handle = runtime.Launch(launch, CancellationToken.None);
 
         var result = runtime.Wait(handle, System.TimeSpan.FromSeconds(30), CancellationToken.None);
@@ -280,7 +282,9 @@ public sealed class M2WiringTests
         Assert.Equal(LocalServerStatus.Unreachable, host.Attach(() => false));
 
         // managed: lanza un proceso largo (nunca listo); el timeout readiness lo cancela.
-        var spec = new ManagedServerSpec("cmd.exe", ["/c", "ping -n 30 127.0.0.1 > NUL"], "", 0);
+        var spec = OperatingSystem.IsWindows()
+            ? new ManagedServerSpec("cmd.exe", ["/c", "ping -n 30 127.0.0.1 > NUL"], "", 0)
+            : new ManagedServerSpec("/bin/sleep", ["30"], "", 0);
         var ready = host.StartManaged(spec, () => false, System.TimeSpan.FromSeconds(2));
         Assert.Equal(LocalServerStatus.Unreachable, ready);
         Assert.False(host.IsManagedRunning(), "El timeout de readiness cancela el árbol");

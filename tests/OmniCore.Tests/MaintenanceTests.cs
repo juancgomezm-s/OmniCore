@@ -255,6 +255,8 @@ public sealed class MaintenanceTests
         var session = fx.AppendSessionWithArtifact();
         var userDataDir = Path.Combine(fx.Root, "user-data");
         var output = new StringWriter();
+        // Seeding is complete; the standalone command must acquire its own writer lease.
+        fx.Store.ReleaseSessionWriterLease(session);
 
         var exitCode = await MaintenanceCommandHost.SessionPurge(new[] {
             "session", "purge", session.ToString(), "--journal", fx.JournalPath, "--data-dir", userDataDir,
@@ -266,6 +268,27 @@ public sealed class MaintenanceTests
         Assert.False(File.Exists(FileAuditSink.AuditFilePath(fx.DataDir)),
             "el registro de purga no debe escribirse bajo los datos del workspace");
         Assert.Contains("session.purged", File.ReadAllText(FileAuditSink.AuditFilePath(userDataDir)));
+    }
+
+    [Fact]
+    public async Task Session_purge_command_reports_busy_without_mutating_the_owned_session_or_audit()
+    {
+        using var fx = NewFixture();
+        var session = fx.AppendSessionWithArtifact();
+        var output = new StringWriter();
+        var eventsBefore = fx.Store.CountEvents(session);
+
+        var exitCode = await MaintenanceCommandHost.SessionPurge(new[] {
+            "session", "purge", session.ToString(), "--journal", fx.JournalPath, "--data-dir", fx.DataDir,
+        }, output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("sesión está en uso", output.ToString());
+        Assert.Equal(eventsBefore, fx.Store.CountEvents(session));
+        Assert.False(File.Exists(FileAuditSink.AuditFilePath(fx.DataDir)));
+        // The failed contender must not release the existing owner's lock.
+        using var contender = new SqliteEventStore(fx.JournalPath);
+        Assert.Throws<SessionWriterLeaseUnavailableException>(() => contender.AcquireSessionWriterLease(session));
     }
 
     [Fact]

@@ -55,6 +55,9 @@ public sealed class M3CoderGatesTests
     {
         Run("git", ["init", "--quiet"], workspace);
         Run("git", ["config", "core.autocrlf", "false"], workspace);
+        // The fixture contains no symlinks. Git's Windows symlink resolver queries
+        // the Volume Mount Manager, which is unavailable in an AppContainer.
+        if (OperatingSystem.IsWindows()) Run("git", ["config", "core.symlinks", "false"], workspace);
         Run("git", ["-c", "user.name=OmniCore tests", "-c", "user.email=tests@example.invalid",
             "add", "Program.cs"], workspace);
         Run("git", ["-c", "user.name=OmniCore tests", "-c", "user.email=tests@example.invalid",
@@ -431,7 +434,10 @@ public sealed class M3CoderGatesTests
             var outputArtifact = Assert.Single(rejected.OutputArtifacts!);
             var output = new FileArtifactStore(Path.Combine(context.Data, "gate-artifacts"))
                 .GetText(outputArtifact.Hash);
-            Assert.Contains("trailing whitespace", output, StringComparison.OrdinalIgnoreCase);
+            Assert.NotNull(output);
+            Assert.True(output.Contains("trailing whitespace", StringComparison.OrdinalIgnoreCase),
+                "Expected the real whitespace diagnostic from the test gate. Workspace: "
+                + context.Workspace + ". Actual output:\n" + output);
             var feedback = "Runtime completion validation failed. Fix the following feedback, then propose completion again:\n"
                 + string.Join("\n", rejected.Missing) + "\nGate output:\n" + output;
             var repaired = turn.Ask(feedback, "Coder instructions", context.Session, context.Run,

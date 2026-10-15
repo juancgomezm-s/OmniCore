@@ -733,24 +733,25 @@ internal static partial class AppContainerNative
             stderrRead = new SafeFileHandle(stderrReadRaw, true);
             if (!SetHandleInformation(stderrReadRaw, HandleFlagInherit, 0))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to protect stderr pipe.");
-            if (initialStandardInput is not null && !CreatePipe(out stdinRead, out stdinWrite, ref pipeAttributes, 0))
+            // STARTF_USESTDHANDLES requires valid handles even without an input payload.
+            // A closed pipe gives deterministic EOF without inheriting the host console.
+            if (!CreatePipe(out stdinRead, out stdinWrite, ref pipeAttributes, 0))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to create stdin pipe.");
             if (stdinWrite != IntPtr.Zero && !SetHandleInformation(stdinWrite, HandleFlagInherit, 0))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to protect stdin pipe.");
-            var handleList = Marshal.AllocHGlobal(IntPtr.Size * (initialStandardInput is null ? 2 : 3));
+            var handleList = Marshal.AllocHGlobal(IntPtr.Size * 3);
             try
             {
                 Marshal.WriteIntPtr(handleList, 0, stdoutWrite);
                 Marshal.WriteIntPtr(handleList, IntPtr.Size, stderrWrite);
-                if (initialStandardInput is not null)
-                    Marshal.WriteIntPtr(handleList, IntPtr.Size * 2, stdinRead);
+                Marshal.WriteIntPtr(handleList, IntPtr.Size * 2, stdinRead);
                 if (!UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributeHandleList, handleList,
-                    (nuint)(IntPtr.Size * (initialStandardInput is null ? 2 : 3)), IntPtr.Zero, IntPtr.Zero))
+                    (nuint)(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to restrict inherited handles.");
                 var startup = new StartupInfoEx
                 {
                     StartupInfo = new StartupInfo { Cb = (uint)Marshal.SizeOf<StartupInfoEx>(), Flags = StartfUseStdHandles,
-                        StdInput = initialStandardInput is null ? IntPtr.Zero : stdinRead,
+                        StdInput = stdinRead,
                         StdOutput = stdoutWrite, StdError = stderrWrite },
                     AttributeList = attributes
                 };
@@ -795,13 +796,15 @@ internal static partial class AppContainerNative
             if (ResumeThread(threadHandle) == ResumeFailed)
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to resume AppContainer process.");
             CloseHandle(threadHandle); threadHandle = IntPtr.Zero;
-            if (initialStandardInput is not null)
+            using (var inputHandle = new SafeFileHandle(stdinWrite, ownsHandle: true))
             {
-                using var inputHandle = new SafeFileHandle(stdinWrite, ownsHandle: true);
                 stdinWrite = IntPtr.Zero;
-                using var input = new FileStream(inputHandle, FileAccess.Write, 4096, isAsync: false);
-                input.Write(Encoding.UTF8.GetBytes(initialStandardInput));
-                input.WriteByte((byte)'\n');
+                if (initialStandardInput is not null)
+                {
+                    using var input = new FileStream(inputHandle, FileAccess.Write, 4096, isAsync: false);
+                    input.Write(Encoding.UTF8.GetBytes(initialStandardInput));
+                    input.WriteByte((byte)'\n');
+                }
             }
             return true;
         }

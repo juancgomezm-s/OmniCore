@@ -168,7 +168,9 @@ public static class ProjectIdentity
     public static string CanonicalWorkspacePath(string path, bool? foldCase = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var canonical = Path.GetFullPath(path).Replace('\\', '/').TrimEnd('/');
+        var canonical = Path.GetFullPath(path);
+        if (OperatingSystem.IsWindows()) canonical = canonical.Replace('\\', '/');
+        canonical = canonical.TrimEnd('/');
         return (foldCase ?? OperatingSystem.IsWindows()) ? canonical.ToLowerInvariant() : canonical;
     }
 

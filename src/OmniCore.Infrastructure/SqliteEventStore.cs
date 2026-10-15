@@ -67,7 +67,28 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
         // synchronous es por conexión y se alterna alrededor de un commit Barrier.
         using var wal = _conn.CreateCommand()!;
         wal.CommandText = "PRAGMA journal_mode=WAL";
-        wal.ExecuteNonQuery();
+        var recovery = System.Diagnostics.Stopwatch.StartNew();
+        var waitingForWindowsMapping = false;
+        while (true)
+        {
+            try { wal.ExecuteNonQuery(); break; }
+            catch (Microsoft.Data.Sqlite.SqliteException error) when (
+                OperatingSystem.IsWindows() && error.SqliteExtendedErrorCode == 1546
+                && recovery.ElapsedMilliseconds < 5000)
+            {
+                // Windows may release the dead owner's WAL-index mapping after its process
+                // handle is signaled. SQLite's first client truncates that nonpersistent
+                // -shm file and reports IOERR_TRUNCATE while the mapping still exists.
+                // Only this pre-schema operation is repeated: no command/event effects.
+                // Permanent failures retain the original SQLite exception and error code.
+                if (!waitingForWindowsMapping)
+                    System.Diagnostics.Trace.TraceWarning("Journal WAL recovery is waiting for Windows to release a mapped file (SQLite 10/1546).");
+                waitingForWindowsMapping = true;
+                Thread.Sleep(10);
+            }
+        }
+        if (waitingForWindowsMapping)
+            System.Diagnostics.Trace.TraceInformation("Journal WAL recovery completed after Windows released the mapped file.");
 
         using var syncDefault = _conn.CreateCommand()!;
         syncDefault.CommandText = "PRAGMA synchronous=NORMAL";

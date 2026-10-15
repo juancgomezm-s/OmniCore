@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # The first Windows run reached the 25-minute job limit while tests were active.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 50 || 25 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Prepare Windows AppContainer prerequisites
+        if: runner.os == 'Windows'
+        run: ./scripts/prepare-windows-ci.ps1 -Action Enable
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - run: dotnet restore OmniCore.slnx
+      - run: dotnet build OmniCore.slnx --no-restore
+      - name: Windows crash recovery, Git, isolation and managed-server regression checks
+        if: runner.os == 'Windows'
+        shell: bash
+        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~WindowsWalRecoveryTests|FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Failing_test_gate_returns_output_feedback|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file|FullyQualifiedName~Managed_fixture_accepts_authenticated_readiness|FullyQualifiedName~Managed_local_server_is_launched' < /dev/null
+      - name: All tests, including architecture and process recovery
+        shell: bash
+        run: dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null
+      - name: Restore Windows NUL permissions and temp settings
+        if: always() && runner.os == 'Windows' && env.OMNICORE_CI_NUL_PREPARED == 'true'
+        run: ./scripts/prepare-windows-ci.ps1 -Action Restore
+
+  linux-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Native AOT prerequisites
+        run: sudo apt-get update && sudo apt-get install -y clang build-essential zlib1g-dev
+      - name: Publish and exercise both Linux distributions
+        run: bash scripts/validate-linux-package.sh "$RUNNER_TEMP/linux-package"
+      - name: Preserve package validation evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: linux-package-evidence
+          path: |
+            ${{ runner.temp }}/linux-package/*-publish.log
+            ${{ runner.temp }}/linux-package/*-smoke.log
+            ${{ runner.temp }}/linux-package/*-terminal.log
+            ${{ runner.temp }}/linux-package/*-files.txt
+            ${{ runner.temp }}/linux-package/*.sha256
+            ${{ runner.temp }}/linux-package/*-smoke/summary.json
+            ${{ runner.temp }}/linux-package/*-terminal/*/terminal.ansi
+          if-no-files-found: error

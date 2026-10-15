@@ -52,7 +52,7 @@ public sealed class CliEndToEndTests
 
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.SetWorkspaceTrusted(true);
-            CliApp.UseRuntimeForTests(runtime);
+            CliApp.UseRuntimeForTests(runtime).Dispose();
             string? requestBody = null;
             provider.RespondWith((index, request) => index switch
             {
@@ -1453,7 +1453,7 @@ public sealed class CliEndToEndTests
                 Assert.Equal(toolCalls, retryEvents.OfType<ToolCallRequested>().Count());
                 Assert.Equal(injectPostVerificationMutation ? 1 : 0, injectedMutation);
             }
-            finally { CliApp.UseRuntimeForTests(previousRuntime); }
+            finally { CliApp.UseRuntimeForTests(previousRuntime).Dispose(); }
         });
     }
 
@@ -1991,7 +1991,7 @@ public sealed class CliEndToEndTests
             var runtime = OmniCliRuntime.Create(workspace);
             runtime.UseConsoleInput = false;
             runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
-            CliApp.UseRuntimeForTests(runtime);
+            CliApp.UseRuntimeForTests(runtime).Dispose();
             File.WriteAllText(Path.Combine(config, "models.yaml"), """
                 models:
                   small-model: { provider: scripted, context: 8192, maxOutput: 2048, aliases: [small] }
@@ -2044,12 +2044,16 @@ public sealed class CliEndToEndTests
                 $stream = $client.GetStream()
                 $reader = New-Object System.IO.StreamReader($stream)
                 $request = $reader.ReadLine()
+                # A connection may close before sending HTTP (probe or cancelled client).
+                # EOF is not an empty header line; never spin forever on a null ReadLine.
+                if ([string]::IsNullOrEmpty($request)) { continue }
                 $auth = ''
                 $length = 0
-                while (($line = $reader.ReadLine()) -ne '') {
+                while ($null -ne ($line = $reader.ReadLine()) -and $line -ne '') {
                     if ($line -like 'Authorization:*') { $auth = $line.Substring(14).Trim() }
                     if ($line -like 'Content-Length:*') { $length = [int]$line.Substring(15).Trim() }
                 }
+                if ($null -eq $line) { continue }
                 if ($length -gt 0) {
                     $buffer = New-Object char[] $length
                     $read = 0
@@ -2076,6 +2080,50 @@ public sealed class CliEndToEndTests
         }
         """;
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Managed_fixture_accepts_authenticated_readiness_after_an_empty_or_partial_tcp_probe(bool partialRequest)
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("The fixture is a Windows PowerShell server."); return; }
+        await InIsolatedCli((workspace, config, _, _) =>
+        {
+            var script = Path.Combine(config, "fake-llama-empty-probe.ps1");
+            var log = Path.Combine(config, "fake-llama-empty-probe.log");
+            File.WriteAllText(script, FakeLlamaServer);
+            var host = new LocalModelHost(SystemProcessRuntime.Instance());
+            var probed = false;
+            try
+            {
+                var spec = new ManagedServerSpec("powershell.exe",
+                    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Port", "{port}", "-Log", log], workspace, 0);
+                var status = host.StartManaged(spec, () =>
+                {
+                    var endpoint = "http://127.0.0.1:" + host.ChosenPort() + "/v1";
+                    if (!probed)
+                    {
+                        if (!LocalServerSupervisor.TcpReachable(endpoint, TimeSpan.FromMilliseconds(200))) return false;
+                        probed = true; // Deliberately connect and close without an HTTP request.
+                        if (partialRequest)
+                        {
+                            using var client = new TcpClient();
+                            client.Connect(IPAddress.Loopback, host.ChosenPort());
+                            client.GetStream().Write(Encoding.ASCII.GetBytes("GET /v1/models HTTP/1.1\r\n"));
+                        }
+                    }
+                    return LocalServerSupervisor.HttpReady(endpoint, host.GeneratedApiKeyValue(), TimeSpan.FromSeconds(1));
+                // Match the existing managed fixture's startup budget. On Windows CI the
+                // new ten-second budget expired before even the first TCP connection.
+                }, TimeSpan.FromSeconds(90));
+                Assert.True(probed, "The real child server accepted the empty connection.");
+                Assert.Equal(LocalServerStatus.Ready, status);
+                Assert.Contains("GET auth=ok", File.ReadAllLines(log));
+            }
+            finally { host.StopManaged(); }
+            return Task.CompletedTask;
+        });
+    }
+
     [Fact]
     public async Task Managed_local_server_is_launched_with_its_own_key_reused_across_turns_and_stopped_on_dispose()
     {
@@ -2101,7 +2149,7 @@ public sealed class CliEndToEndTests
                 """);
             using var runtime = OmniCliRuntime.Create(workspace);
             runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
-            CliApp.UseRuntimeForTests(runtime);
+            CliApp.UseRuntimeForTests(runtime).Dispose();
 
             var first = await Run("ask", "primera pregunta");
             Assert.True(first.Code == 0, first.Output);
@@ -2208,7 +2256,7 @@ public sealed class CliEndToEndTests
             Assert.True(doctor.Code == 0, doctor.Output);
             Assert.Contains("Permisos: perfil Equilibrado; reglas de usuario: 1", doctor.Output);
 
-            // doctor sondea el servidor local (una conexión TCP que el provider de prueba cuenta como petición).
+            // A TCP connectivity probe is not a model HTTP request.
             var requests = provider.RequestCount;
             File.WriteAllText(Path.Combine(config, "permissions.yaml"), "profile: reckless\n");
             var ask = await Run("ask", "hola");
@@ -2394,6 +2442,7 @@ public sealed class CliEndToEndTests
             Assert.Equal(resumedEnvelope.Causation, resolutionEnvelope.Causation);
             if (reopenRuntime)
             {
+                runtime.Dispose();
                 runtime = OmniCliRuntime.Create(workspace);
                 client = runtime.Connect(CancellationToken.None);
                 host = new TuiTurnHost(runtime);
@@ -2492,11 +2541,14 @@ public sealed class CliEndToEndTests
         await InIsolatedCli(async (workspace, _, _, provider) =>
         {
             provider.RespondWith((_, _) => TextResponse("Usaremos PostgreSQL y el puerto 5432."));
-            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            using var firstRuntime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(firstRuntime);
             Assert.Equal(0, await host.ExecuteAsync("Mi proyecto se llama Brújula; usa PostgreSQL.",
                 _ => { }, TestContext.Current.CancellationToken));
             var original = ReadCurrentSessionEvents(workspace).OfType<RunCreated>().Single().SessionId;
-            if (reopen) host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            if (reopen) firstRuntime.Dispose();
+            using var reopenedRuntime = reopen ? OmniCliRuntime.Create(workspace) : null;
+            if (reopenedRuntime is not null) host = new TuiTurnHost(reopenedRuntime);
             string? received = null;
             provider.RespondWith((_, body) => { received = body; return TextResponse("Continuación."); });
             Assert.Equal(0, await host.ExecuteAsync("¿Qué base y puerto acordamos?", _ => { },
@@ -2613,7 +2665,7 @@ public sealed class CliEndToEndTests
             workspace = Path.Combine(root, "workspace-http");
             Directory.CreateDirectory(workspace);
             Environment.CurrentDirectory = workspace;
-            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace));
+            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace)).Dispose();
 
             // M2: actual HTTP Chat Completions provider, plus diagnostics and typed client commands.
             var doctor = await Run("doctor");
@@ -2788,6 +2840,8 @@ public sealed class CliEndToEndTests
                 sessionId = Convert.ToString(command.ExecuteScalar()) ?? "";
             }
             Assert.False(string.IsNullOrWhiteSpace(sessionId));
+            // Separate CLI invocations release the previous process's Session writer.
+            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace)).Dispose();
             var purge = await Run("session", "purge", sessionId);
             Assert.Equal(0, purge.Code);
             Assert.Contains("sesión", purge.Output, StringComparison.OrdinalIgnoreCase);
@@ -2821,7 +2875,7 @@ public sealed class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", priorLocale);
             Environment.SetEnvironmentVariable("OMNI_MODEL", priorModel);
             Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
-            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime);
+            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime).Dispose();
             Environment.CurrentDirectory = previousDirectory;
         }
     }
@@ -3143,7 +3197,7 @@ public sealed class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", priorLocale);
             Environment.SetEnvironmentVariable("OMNI_MODEL", priorModel);
             Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
-            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime);
+            if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime).Dispose();
             Environment.CurrentDirectory = previousDirectory;
             try { Directory.Delete(root, true); } catch (IOException) { }
         }
@@ -3325,6 +3379,9 @@ public sealed class CliEndToEndTests
             {
                 var stream = client.GetStream();
                 using var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, leaveOpen: true);
+                // doctor may connect and close without sending HTTP. Do not count it as
+                // a model request or dispatch the scripted response for an empty socket.
+                if (string.IsNullOrWhiteSpace(await reader.ReadLineAsync(cancellationToken))) return;
                 var contentLength = 0;
                 while (await reader.ReadLineAsync(cancellationToken) is { Length: > 0 } header)
                     if (header.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
