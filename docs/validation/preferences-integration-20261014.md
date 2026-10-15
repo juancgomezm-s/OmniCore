@@ -32,4 +32,16 @@ Mientras terminaba CI se publicó main `ce805bf` con M9-E. Se incorporó mediant
 
 ## Estado de publicación
 
+Se incorporan después los ajustes de fixtures/CI `958b7d1` y `fd59905`, sin cambios
+adicionales de interfaz. La combinación `4ed23b51f23cbb4eaf4992ff12e222f6adcf6b34`
+se verifica también en Debian 13.5/WSL2 sin privilegios: build con cero warnings y
+errores, **348/348 PASS, 0 FAIL, 0 SKIP**, 3m45s. La selección
+`TuiWiringTests|Preference|UiLocale` incluye los casos de la regresión Windows y
+tres casos adicionales de `TuiLocalEngineDeletionTests`; las cantidades no se
+suman. Logs `preferences-debian-preserved-build.log` y
+`preferences-debian-preserved-full.log`, conservados también en la evidencia
+persistente Linux. Son pruebas automatizadas de TUI/preferencias; no se presentan
+como aceptación humana ni ejecución de una cuenta real. La rama original y el
+respaldo `preferences-preserved-fd599.bundle` conservan el historial completo.
+
 Preparación local. No se ha fusionado esta interfaz a main ni publicado la rama: el plan original excluía push. El estado de esta evidencia no equivale a la aprobación del CI de la reparación Linux.
