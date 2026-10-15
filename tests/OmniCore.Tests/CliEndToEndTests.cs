@@ -2044,12 +2044,16 @@ public sealed class CliEndToEndTests
                 $stream = $client.GetStream()
                 $reader = New-Object System.IO.StreamReader($stream)
                 $request = $reader.ReadLine()
+                # A connection may close before sending HTTP (probe or cancelled client).
+                # EOF is not an empty header line; never spin forever on a null ReadLine.
+                if ([string]::IsNullOrEmpty($request)) { continue }
                 $auth = ''
                 $length = 0
-                while (($line = $reader.ReadLine()) -ne '') {
+                while ($null -ne ($line = $reader.ReadLine()) -and $line -ne '') {
                     if ($line -like 'Authorization:*') { $auth = $line.Substring(14).Trim() }
                     if ($line -like 'Content-Length:*') { $length = [int]$line.Substring(15).Trim() }
                 }
+                if ($null -eq $line) { continue }
                 if ($length -gt 0) {
                     $buffer = New-Object char[] $length
                     $read = 0
@@ -2075,6 +2079,48 @@ public sealed class CliEndToEndTests
             } finally { $client.Close() }
         }
         """;
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Managed_fixture_accepts_authenticated_readiness_after_an_empty_or_partial_tcp_probe(bool partialRequest)
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("The fixture is a Windows PowerShell server."); return; }
+        await InIsolatedCli((workspace, config, _, _) =>
+        {
+            var script = Path.Combine(config, "fake-llama-empty-probe.ps1");
+            var log = Path.Combine(config, "fake-llama-empty-probe.log");
+            File.WriteAllText(script, FakeLlamaServer);
+            var host = new LocalModelHost(SystemProcessRuntime.Instance());
+            var probed = false;
+            try
+            {
+                var spec = new ManagedServerSpec("powershell.exe",
+                    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Port", "{port}", "-Log", log], workspace, 0);
+                var status = host.StartManaged(spec, () =>
+                {
+                    var endpoint = "http://127.0.0.1:" + host.ChosenPort() + "/v1";
+                    if (!probed)
+                    {
+                        if (!LocalServerSupervisor.TcpReachable(endpoint, TimeSpan.FromMilliseconds(200))) return false;
+                        probed = true; // Deliberately connect and close without an HTTP request.
+                        if (partialRequest)
+                        {
+                            using var client = new TcpClient();
+                            client.Connect(IPAddress.Loopback, host.ChosenPort());
+                            client.GetStream().Write(Encoding.ASCII.GetBytes("GET /v1/models HTTP/1.1\r\n"));
+                        }
+                    }
+                    return LocalServerSupervisor.HttpReady(endpoint, host.GeneratedApiKeyValue(), TimeSpan.FromSeconds(1));
+                }, TimeSpan.FromSeconds(10));
+                Assert.True(probed, "The real child server accepted the empty connection.");
+                Assert.Equal(LocalServerStatus.Ready, status);
+                Assert.Contains("GET auth=ok", File.ReadAllLines(log));
+            }
+            finally { host.StopManaged(); }
+            return Task.CompletedTask;
+        });
+    }
 
     [Fact]
     public async Task Managed_local_server_is_launched_with_its_own_key_reused_across_turns_and_stopped_on_dispose()
