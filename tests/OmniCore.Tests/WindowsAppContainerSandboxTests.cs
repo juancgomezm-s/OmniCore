@@ -294,7 +294,8 @@ public sealed class WindowsAppContainerSandboxTests
         return await process.WaitForExitAsync(TestContext.Current.CancellationToken);
     }
 
-    private static string HelperExecutable() => Path.Combine(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.exe");
+    private static string HelperExecutable() => Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+        ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
 
     private static string OutputText(SandboxProcessOutput output) => string.Concat(output.Chunks.Select(chunk => chunk.Text));
 

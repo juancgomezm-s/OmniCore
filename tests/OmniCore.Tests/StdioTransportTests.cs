@@ -79,17 +79,15 @@ public sealed class StdioTransportTests
     [Fact]
     public async Task Handshake_timeout_and_cancellation_kill_the_owned_child_process()
     {
-        if (!OperatingSystem.IsWindows())
-            Assert.Skip("La fixture adversaria de negociación requiere Windows PowerShell; no acredita Linux.");
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-stall-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        var script = Path.Combine(root, "stall.ps1");
         var pidFile = Path.Combine(root, "child.pid");
-        File.WriteAllText(script, "$PID | Set-Content -LiteralPath '" + pidFile + "'; Start-Sleep -Seconds 30");
+        var executable = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+            ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
         try
         {
-            var timedOut = Assert.Throws<TimeoutException>(() => StdioOmniClient.Start("powershell.exe",
-                ["-NoProfile", "-NonInteractive", "-File", script], root, TimeSpan.FromSeconds(2),
+            var timedOut = Assert.Throws<TimeoutException>(() => StdioOmniClient.Start(executable,
+                ["stdio-stall", pidFile], root, TimeSpan.FromSeconds(2),
                 TestContext.Current.CancellationToken));
             Assert.Contains("negotiation", timedOut.Message, StringComparison.OrdinalIgnoreCase);
             Assert.True(File.Exists(pidFile));
@@ -100,7 +98,7 @@ public sealed class StdioTransportTests
             cancellation.CancelAfter(TimeSpan.FromSeconds(2));
 #pragma warning disable xUnit1051 // The linked token also carries the test cancellation token.
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Task.Run(() => StdioOmniClient.Start(
-                "powershell.exe", ["-NoProfile", "-NonInteractive", "-File", script], root,
+                executable, ["stdio-stall", pidFile], root,
                 TimeSpan.FromSeconds(5), cancellation.Token)));
 #pragma warning restore xUnit1051
             Assert.True(File.Exists(pidFile));

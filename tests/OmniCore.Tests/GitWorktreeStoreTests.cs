@@ -415,8 +415,11 @@ public sealed class GitWorktreeStoreTests
         var store = new GitWorktreeStore(new SystemProcessRuntime());
         var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
         var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        // Different trees make distinct snapshot commits even when both are created in one second.
+        fixture.Write("tracked.txt", "active snapshot\n");
         var activeCreate = await store.CreateAsync(fixture.Request(), CancellationToken.None);
         var active = Assert.IsType<WorktreeIdentity>(activeCreate.Worktree);
+        Assert.NotEqual(worktree.SnapshotCommit, active.SnapshotCommit);
 
         Assert.True((await store.CleanupAsync(worktree.Ownership, CancellationToken.None)).Removed);
         var refBefore = fixture.Git("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}").Trim();
@@ -444,6 +447,34 @@ public sealed class GitWorktreeStoreTests
             fixture.Git("rev-parse", "--verify", active.SnapshotRef + "^{commit}").Trim());
         Assert.False(Directory.Exists(worktree.WorktreePath));
         _ = fixture.GitExpectFailure("rev-parse", "--verify", worktree.SnapshotRef + "^{commit}");
+        Assert.True((await store.CleanupAsync(active.Ownership, CancellationToken.None)).Removed);
+    }
+
+    [Fact]
+    public async Task Snapshot_retention_preserves_a_removed_ref_when_an_active_worktree_uses_the_same_commit()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var removed = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(
+            fixture.Request() with { Base = WorktreeBase.Head }, CancellationToken.None)).Worktree);
+        var active = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(
+            fixture.Request() with { Base = WorktreeBase.Head }, CancellationToken.None)).Worktree);
+        Assert.Equal(removed.SnapshotCommit, active.SnapshotCommit);
+        Assert.True((await store.CleanupAsync(removed.Ownership, CancellationToken.None)).Removed);
+
+        var outcome = await store.PruneExpiredSnapshotRefsAsync(fixture.Repository, fixture.Data,
+            removed.WorkspaceId.ToString(), DateTimeOffset.UtcNow.AddDays(8), dryRun: false,
+            CancellationToken.None);
+
+        Assert.Equal(0, outcome.Eligible);
+        Assert.Equal(0, outcome.Pruned);
+        Assert.Equal(2, outcome.Preserved);
+        Assert.Equal(removed.SnapshotCommit,
+            fixture.Git("rev-parse", "--verify", removed.SnapshotRef + "^{commit}").Trim());
+        Assert.True(Directory.Exists(active.WorktreePath));
         Assert.True((await store.CleanupAsync(active.Ownership, CancellationToken.None)).Removed);
     }
 

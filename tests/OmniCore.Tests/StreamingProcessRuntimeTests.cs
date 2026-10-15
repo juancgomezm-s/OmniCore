@@ -42,6 +42,7 @@ public sealed class StreamingProcessRuntimeTests
     }
 
     private static ProcessLaunch FixtureLaunch(string mode) => new(
-        Path.Combine(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.exe"), [mode],
+        Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+            ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess"), [mode],
         AppContext.BaseDirectory, new Dictionary<string, string>(), captureOutput: true);
 }

@@ -131,6 +131,13 @@ if (args.Length == 2 && args[0] == "connect")
     }
 }
 
+if (args.Length == 2 && args[0] == "stdio-stall")
+{
+    File.WriteAllText(args[1], Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    await Task.Delay(TimeSpan.FromSeconds(30));
+    return 0;
+}
+
 if (args.Length == 1 && args[0] == "sleep")
 {
     await Task.Delay(TimeSpan.FromMinutes(10));
