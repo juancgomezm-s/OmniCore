@@ -433,7 +433,8 @@ public sealed class M3CoderGatesTests
                 .GetText(outputArtifact.Hash);
             Assert.NotNull(output);
             Assert.True(output.Contains("trailing whitespace", StringComparison.OrdinalIgnoreCase),
-                "Expected the real whitespace diagnostic from the test gate. Actual output:\n" + output);
+                "Expected the real whitespace diagnostic from the test gate. Workspace: "
+                + context.Workspace + ". Actual output:\n" + output);
             var feedback = "Runtime completion validation failed. Fix the following feedback, then propose completion again:\n"
                 + string.Join("\n", rejected.Missing) + "\nGate output:\n" + output;
             var repaired = turn.Ask(feedback, "Coder instructions", context.Session, context.Run,

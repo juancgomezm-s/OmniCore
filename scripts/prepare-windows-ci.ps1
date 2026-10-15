@@ -12,6 +12,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 public static class OmniCiNullDevice
@@ -41,6 +42,17 @@ public static class OmniCiNullDevice
     [DllImport("advapi32.dll")]
     static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr pointer);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern uint GetLongPathNameW(string path, StringBuilder result, uint capacity);
+
+    public static string LongPath(string path)
+    {
+        var result = new StringBuilder(32768);
+        var length = GetLongPathNameW(path, result, (uint)result.Capacity);
+        if (length == 0) throw new Win32Exception(Marshal.GetLastWin32Error(), "Normalize CI temporary path");
+        if (length >= result.Capacity) throw new InvalidOperationException("Temporary path exceeds Windows limit");
+        return result.ToString();
+    }
 
     static SafeFileHandle Open(bool write)
     {
@@ -133,7 +145,20 @@ if ($Action -eq 'Enable') {
     'OMNICORE_CI_NUL_PREPARED=true' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
     [OmniCiNullDevice]::Grant()
     Write-Output ('NUL prepared: ' + [OmniCiNullDevice]::Describe([OmniCiNullDevice]::Read()))
+    foreach ($name in @('TEMP', 'TMP')) {
+        $originalPath = [Environment]::GetEnvironmentVariable($name)
+        if ($originalPath) {
+            $longPath = [OmniCiNullDevice]::LongPath($originalPath)
+            Write-Output ("$name path: $originalPath -> $longPath")
+            "OMNICORE_CI_ORIGINAL_$name=$originalPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            "$name=$longPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        }
+    }
 } else {
     [OmniCiNullDevice]::Restore([IO.File]::ReadAllBytes($snapshotPath))
     Write-Output ('NUL restored: ' + [OmniCiNullDevice]::Describe([OmniCiNullDevice]::Read()))
+    foreach ($name in @('TEMP', 'TMP')) {
+        $originalPath = [Environment]::GetEnvironmentVariable("OMNICORE_CI_ORIGINAL_$name")
+        if ($originalPath) { "$name=$originalPath" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+    }
 }

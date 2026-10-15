@@ -277,3 +277,20 @@ Se añade estrés acotado de doce caídas/reaperturas con journals independiente
 Cada iteración conserva todas las assertions de recibos, conteos y deduplicación;
 un solo fallo hace fallar el test. No son reintentos para acreditar una pasada: se
 busca el código extendido del I/O intermitente antes de decidir la corrección.
+
+La [focal con preparación NUL](https://github.com/juancgomezm-s/OmniCore/actions/runs/38672460009/job/116218578138)
+confirma la diferencia: el descriptor inicial no tenía AppContainer; la ACE se añadió
+y se retiró al terminar, sin cambiar otros principals/derechos. Git superó NUL y
+mostró otro fallo: «Unable to read current working directory: Permission denied».
+Se prueba la expansión de TEMP/TMP a ruta larga antes de crear fixtures, sin conceder
+lectura a carpetas ajenas. La [implementación Git de getcwd](https://github.com/git-for-windows/git/blob/v2.55.0.windows.5/compat/mingw.c)
+normaliza el directorio; el helper de CI conserva y restaura también esas variables.
+
+El estrés reproduce SQLite **10/1546 (IOERR_TRUNCATE)** tanto localmente como en
+el runner, con el Host ya terminado. El síntoma es truncado de un archivo durante
+PRAGMA journal_mode=WAL. La pasada diagnóstica local de 100 iteraciones abortó al
+primer error; liberar además todos los handles del proceso antes de reabrir tampoco
+eliminó el fallo. No se acredita ninguna de esas pasadas como verde. La siguiente
+instrumentación local obtiene el errno nativo antes de cerrar la conexión fallida;
+se retirará del Core antes de confirmar una corrección. No se introduce retry de I/O
+ni se modifica la durabilidad mientras la causa nativa siga sin identificarse.
