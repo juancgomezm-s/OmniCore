@@ -210,7 +210,7 @@ Evidencia: [acta M9-D](../validation/m9-block-d-20261014.md) y ADR-0050.
 La frontera asume mismo principal local del SO; no pretende proteger contra procesos maliciosos de ese
 mismo usuario. Capabilities no otorgan consentimiento y el JSON genérico no concede autoridad.
 
-**Bloque M9-E construido en worktree; pendiente de revisión/integración (2026-10-14):** OmniCoder
+**Bloque M9-E revisado e integrado en ambos main (2026-10-14):** OmniCoder
 usa el composer existente para enviar un único command confiable `conversation.start`, que admite un
 input durable y ejecuta el pipeline real de `OmniCliRuntime` enlazado a Session/Run/command exactos.
 El ACK Accepted sólo acredita admisión; `conversation.result` recupera el resultado sin reenvío y el
@@ -225,8 +225,8 @@ Decisión: [ADR-0051](../adr/0051-conversation-inference-from-persisted-input.md
 [acta M9-E](../validation/m9-block-e-20261014.md). Este bloque no cierra M9.
 
 Pendientes explícitos para cerrar M9: `media.read` consumido por proveedor con visión, controles de
-procesos persistentes/ConPTY, push/backpressure, validación Linux/macOS/filesystems, chat/inferencia
-completo sobre Core, aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
+procesos persistentes/ConPTY, push/backpressure, validación Linux/macOS/filesystems, paridad restante
+del cliente Core (gestión de sesiones e interacciones), aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
 exactly-once general y OR5 autenticado M8 sigue pendiente.
 
 | Resto de M9 tras M9-B | Construcción | Presentación y aceptación |
@@ -234,10 +234,10 @@ exactly-once general y OR5 autenticado M8 sigue pendiente.
 | Transporte y negociación | **Construido en M9-A/B:** Host real por stdio, framing UTF-8 y cap del frame final, `hello`/versiones/capabilities, queries/read models y replay legacy/paginado. Sin backpressure adicional. | Focales cross-process cubren caracteres es/en/fr/it, incompatible, malformed y oversized. La verificación de OS en este bloque es Windows. |
 | Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. M9-C agrega supervisor de proceso y reserva de workspace antes de spawn; esa reserva de producto no es el lease Core. | Pruebas de dos procesos/reclaim y lifecycle de child verificadas en Windows local. La UI muestra reserva y desconexión/fallo; falta aceptación de otros OS/filesystems y ownership coordinado con otros productos externos. |
 | Reconexión e historial | **Construido en M9-B:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, detección de gaps y tombstone de purge. No es exactly-once general ni reconexión push. Procedencia Native/Imported pendiente. | Prueba mata Host tras persistir receipt con ACK sin consumir, reconecta y confirma misma Session/ACK sin nuevos eventos. Unknown y cursor purgado muestran resultado/gap sin fingir finalización. |
-| Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E en rama:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
-| Origen humano, conversación y resultado (U-C12) | **M9-D integrado + M9-E en rama:** Electron main confirma acciones y firma proof efímero; Core valida conexión/workspace/Session/Run/revisión y ejecuta una única entrada persistida con el pipeline real. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051 y actas M9-D/E. |
+| Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E integrado:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
+| Origen humano, conversación y resultado (U-C12) | **M9-D integrado + M9-E integrado:** Electron main confirma acciones y firma proof efímero; Core valida conexión/workspace/Session/Run/revisión y ejecuta una única entrada persistida con el pipeline real. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051 y actas M9-D/E. |
 
-**Salida M9:** transporte/lease/reconexión/net8 y chat/inferencia desde OmniCoder en construcción; aún faltan `media.read` consumido por proveedor visual, controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-E no cierra el hito.
+**Salida M9:** transporte/lease/reconexión/net8 y chat/inferencia desde OmniCoder construidos e integrados; aún faltan `media.read` consumido por proveedor visual, controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-E no cierra el hito.
 
 ## M10: v1, memoria completa y evaluación
 
