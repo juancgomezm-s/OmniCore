@@ -180,7 +180,8 @@ public sealed class RuntimeFingerprintContentTests
                     Assert.Contains("private-fixture.invalid", store.GetText(component.Hash)!);
                 else Assert.DoesNotContain("private-fixture.invalid", store.GetText(component.Hash)!);
             }
-            Assert.Equal(6, Directory.GetFiles(root, "*", SearchOption.AllDirectories).Count(path =>
+            Assert.NotNull(Assert.Single(first.Components, c => c.Name == "model.output").Content);
+            Assert.Equal(7, Directory.GetFiles(root, "*", SearchOption.AllDirectories).Count(path =>
                 Path.GetFileName(path).Length == 64));
         });
     }

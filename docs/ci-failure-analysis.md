@@ -1,5 +1,32 @@
 # Reparación y validación de CI/Linux de OmniCore
 
+## Seguimiento: regresiones de Core tras M9-F/F2 — 2026-10-15
+
+Rama de corrección: `codex/core-ci-regressions`. Se conserva la interfaz integrada
+y el recorrido de instalación Windows/Linux. Las secciones siguientes a este
+seguimiento documentan la reparación histórica del 14 de octubre.
+
+La [ejecución 38767223307 sobre df3d148](https://github.com/juancgomezm-s/OmniCore/actions/runs/38767223307/job/116533681326)
+falla en `All tests, including architecture and process recovery`, comando
+`dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress`.
+Ubuntu informa 16 fallos y salida 2. El empaquetado independiente pasa. La
+reproducción focal **antes de corregir**, en Windows y Debian, da el mismo
+resultado: 54 casos, 38 PASS, 16 FAIL, 0 SKIP, salida 2.
+
+| Causa raíz y origen | Casos y evidencia exacta | Reparación |
+|---|---|---|
+| Regresión de disponibilidad del costo en `22128b1` (M9-F2): separó facturas de tokens, pero permitió también estimaciones sin evidencia válida de tokens. | 11: `Unrepresentable_token_sum...` (5), `Assert.Null`: `Money { Amount = 0, Currency = USD }`; `Contradictory_reported_breakdown...` (6), `Expected: Unknown / Actual: Estimated`. | Exigir evidencia completa, coherente y representable para las estimaciones; mantener las facturas reales independientes de los contadores de tokens. Pruebas adicionales de sesiones mixtas, persistencia y reapertura. |
+| Pruebas de versiones desactualizadas tras M9-F/F2 (`67c9a03`, `22128b1`). | 2: `EventCodecTests.cs:55`, `Expected: 2 / Actual: 3`; `GenerationRequestAttemptEvidenceTests.cs:59`, `Expected: 3 / Actual: 5`. | Conservar schemas actuales y verificar explícitamente input v1/v2 y completions v2/v3/v4, con defaults y evidencia de intentos intactos. No se bajan versiones ni se retiran assertions de compatibilidad. |
+| `22128b1` cambió el JSON de `model.profile` sin cambiar su etiqueta v2. | 2: hashes exactos de `QualificationFingerprintTests.cs:44,56` difieren. | Restituir exactamente el perfil v2; registrar modalidades de salida y cota de imagen en `model.output` v1. Los hashes históricos esperados permanecen sin editar. Se comprueba hash canónico, aislamiento de componentes y contenido CAS. ADR-0017 documenta el componente. |
+| Golden de negociación sin actualizar al añadir lectura de artifacts en `22128b1`. | 1: `StdioTransportTests.cs:1045`, falta `artifact.read.chunk` en `goldens.jsonl`. | Añadir la capacidad real al golden; mantener la comparación exacta con el contrato del Host. |
+
+No se modifica el workflow para obtener verde ni se deshabilitan pruebas. Son
+fallos reproducibles de lógica y contratos, sin dependencia de cuentas, claves,
+red de proveedores ni diferencias de mayúsculas/rutas entre sistemas.
+
+Validación posterior: en curso; se registrarán aquí resultados locales, PR y
+ejecución real sobre el código corregido antes de declarar cerrado el CI.
+
 Fecha: 2026-10-14, Ciudad de México. Rama `codex/cierre-linux` y [PR #1](https://github.com/juancgomezm-s/OmniCore/pull/1). El [acta Linux](validation/linux-milestones-closure-20261014.md) conserva el inventario, logs, hashes y pasadas intermedias. La recuperación de la interfaz de preferencias confirmada por el usuario se prepara en otra rama; esta reparación no modifica su diseño.
 
 ## Workflow y criterio de cierre

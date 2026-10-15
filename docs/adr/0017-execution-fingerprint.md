@@ -26,6 +26,7 @@ Componentes:
 |---|---|
 | `model.descriptor` | `ModelDescriptor` + `ModelSelection` (esfuerzo, `ToolMode`, presupuesto) |
 | `model.profile` | `EffectiveModelProfile` + `ModelQualificationKey` + revisión del perfil y del estado de cualificación (ADR-0007) |
+| `model.output` | Modalidades de salida efectivas y cota de costo de generación de imagen (M9-F2); componente v1 independiente, conservando la representación y hashes históricos de `model.profile` v2 |
 | `model.harness` | `HarnessPolicy` resuelta |
 | `provider.adapter` | familia, versión del adapter, compat flags y perfil (`api`, `codex`…) (ADR-0005) |
 | `context.policy` | `ContextPolicy` y presupuesto |

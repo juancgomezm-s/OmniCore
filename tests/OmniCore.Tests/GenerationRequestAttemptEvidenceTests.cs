@@ -41,7 +41,7 @@ public sealed class GenerationRequestAttemptEvidenceTests
     }
 
     [Fact]
-    public void Completed_and_meta_terminal_v3_round_trip_attempt_evidence_while_v2_remains_legacy_null()
+    public void Current_completed_and_meta_terminal_schemas_round_trip_attempt_evidence_while_v2_remains_legacy_null()
     {
         var codecs = EventCodecs.Create();
         var attempts = new GenerationRequestAttemptEvidence(2, 3);
@@ -56,7 +56,7 @@ public sealed class GenerationRequestAttemptEvidenceTests
                 new TokenUsage(17, 4, 0, 0, 0), null, TokenUsageFields.Input | TokenUsageFields.Output, attempts),
         ];
 
-        Assert.Equal(3, codecs.CurrentVersion(EventType.Of("model_step.completed")));
+        Assert.Equal(5, codecs.CurrentVersion(EventType.Of("model_step.completed")));
         Assert.Equal(3, codecs.CurrentVersion(EventType.Of("meta_model.invocation_completed")));
         Assert.Equal(3, codecs.CurrentVersion(EventType.Of("meta_model.invocation_failed")));
 
@@ -92,7 +92,32 @@ public sealed class GenerationRequestAttemptEvidenceTests
     {
         var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
         node.Remove("GenerationAttempts");
+        node.Remove("CostIncomplete");
+        node.Remove("ReportedProviderCostUsd");
         return node.ToJsonString();
+    }
+
+    [Theory]
+    [InlineData(3, false)]
+    [InlineData(4, true)]
+    public void Completed_v3_and_v4_preserve_attempts_without_fabricating_a_provider_invoice(
+        int version, bool incompleteCost)
+    {
+        var codecs = EventCodecs.Create();
+        var attempts = new GenerationRequestAttemptEvidence(2, 3);
+        var payload = new ModelStepCompleted(TurnId.New(), 0, new TokenUsage(17, 4, 0, 0, 0),
+            StopReason.EndTurn, null, "2026-10-07", null,
+            TokenUsageFields.Input | TokenUsageFields.Output, attempts, CostIncomplete: incompleteCost);
+        var json = System.Text.Json.Nodes.JsonNode.Parse(codecs.CodecFor(payload.Type()).Encode(payload))!.AsObject();
+        json.Remove("ReportedProviderCostUsd");
+        if (version == 3) json.Remove("CostIncomplete");
+        var stored = DomainEvent.Create(SessionId.New(), payload.Type(), version, null, null, null,
+            null, null, null, null, null, [], json.ToJsonString());
+
+        var restored = Assert.IsType<ModelStepCompleted>(codecs.Decode(stored));
+        Assert.Equal(attempts, restored.GenerationAttempts);
+        Assert.Equal(incompleteCost, restored.CostIncomplete);
+        Assert.Null(restored.ReportedProviderCostUsd);
     }
 
     private static ArtifactRef Reference() => new(ArtifactId.New(),

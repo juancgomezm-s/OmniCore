@@ -52,14 +52,23 @@ public sealed class EventCodecTests
         var encoded = codec.Encode(input);
         var restored = (OmniCore.Domain.UserInputReceived)codec.Decode(input.Type(), encoded);
         Assert.Equal(input.Origin, restored.Origin);
-        Assert.Equal(2, codecs.CurrentVersion(input.Type()));
+        Assert.Equal(3, codecs.CurrentVersion(input.Type()));
 
         var legacy = System.Text.Json.Nodes.JsonNode.Parse(codec.Encode(input))!.AsObject();
         legacy.Remove("Origin");
+        legacy.Remove("Attachments");
         var journalV1 = OmniCore.Domain.DomainEvent.Create(session, input.Type(), 1, null, run, run,
             null, null, null, null, null, Array.Empty<OmniCore.Domain.ArtifactRef>(), legacy.ToJsonString());
         var fromOldJournal = (OmniCore.Domain.UserInputReceived)codecs.Decode(journalV1);
         Assert.Null(fromOldJournal.Origin);
+        Assert.Null(fromOldJournal.Attachments);
+
+        legacy["Origin"] = input.Origin;
+        var journalV2 = OmniCore.Domain.DomainEvent.Create(session, input.Type(), 2, null, run, run,
+            null, null, null, null, null, [], legacy.ToJsonString());
+        var fromV2 = (OmniCore.Domain.UserInputReceived)codecs.Decode(journalV2);
+        Assert.Equal(input.Origin, fromV2.Origin);
+        Assert.Null(fromV2.Attachments);
     }
 
     [Fact]
