@@ -2062,7 +2062,10 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(55, 18));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 55 && fx.App.Overlay!.Frame.Height <= 18, "resize compacto aplicado");
         fx.Wait(() => list.Frame.Height > 0, "lista sigue siendo navegable");
-        Assert.All(fx.App.Overlay!.SubViews, child => Assert.True(child.Frame.Bottom <= fx.App.Overlay.Viewport.Height));
+        // The parent frame can change before the same layout pass reaches its children.
+        // Read the completed hierarchy on the UI thread instead of racing that pass.
+        fx.Invoke(() => Assert.All(fx.App.Overlay!.SubViews,
+            child => Assert.True(child.Frame.Bottom <= fx.App.Overlay.Viewport.Height)));
         if (noColor) Assert.Equal(Terminal.Gui.Drawing.Color.None, list.GetScheme().Normal.Foreground);
         Assert.Equal(1, client.Queries);
         Assert.Equal(0, client.Commands);

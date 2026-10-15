@@ -232,3 +232,11 @@ resolviendo únicamente solapamientos de documentación en CLAUDE.md y arquitect
 conservan tanto el avance del consumidor Electron/TypeScript como la evidencia Linux.
 Los tres commits nuevos de main no cambian código Core ni estilos. La aceptación
 Windows del consumidor M9-C no acredita su interfaz Electron en Linux.
+
+La focal ampliada Debian posterior ejecutó 236 casos: 228 PASS, 1 FAIL y 7 SKIP
+AppContainer. El fallo de catálogo tras resize leía desde el hilo del test el frame
+del padre ya actualizado junto a un botón hijo todavía en layout. La assertion exacta
+de que cada control cabe en el viewport se ejecuta ahora en el hilo UI; no se cambia
+el layout ni se amplían tolerancias. Catálogo/scrollbar después del ajuste:
+**4/4 PASS en Debian y 4/4 PASS en Windows**, sin omisiones, exit 0 en ambos.
+La integral y el empaquetado del PR siguen siendo obligatorios sobre la revisión final.
